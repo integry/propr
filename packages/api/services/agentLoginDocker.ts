@@ -38,6 +38,7 @@ export class AgentLoginInputError extends Error {
 interface BoundedFile {
   text: string;
   fingerprintPart: string;
+  contentFingerprintPart: string;
 }
 
 async function readBoundedFile(filePath: string, maxLength: number): Promise<BoundedFile | undefined> {
@@ -54,9 +55,11 @@ async function readBoundedFile(filePath: string, maxLength: number): Promise<Bou
       offset += bytesRead;
     }
     if (offset > maxLength) return undefined;
+    const contentFingerprintPart = `${stat.size}:${createHash('sha256').update(buffer.subarray(0, offset)).digest('hex')}`;
     return {
       text: buffer.subarray(0, offset).toString('utf8'),
-      fingerprintPart: `${stat.size}:${stat.mtimeMs}:${createHash('sha256').update(buffer.subarray(0, offset)).digest('hex')}`,
+      fingerprintPart: `${stat.mtimeMs}:${contentFingerprintPart}`,
+      contentFingerprintPart,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
@@ -196,6 +199,7 @@ function hasValidCredential(payload: Record<string, unknown>, now = Date.now()):
 export interface AgentLoginCompletion {
   complete: boolean;
   fingerprint?: string;
+  contentFingerprint?: string;
 }
 
 export async function inspectAgentLoginCompletion(
@@ -225,8 +229,13 @@ export async function inspectAgentLoginCompletion(
       .update('\0')
       .update(onboardingFile.fingerprintPart)
       .digest('hex');
+    const contentFingerprint = createHash('sha256')
+      .update(tokenFile.contentFingerprintPart)
+      .update('\0')
+      .update(onboardingFile.contentFingerprintPart)
+      .digest('hex');
     const token = tokenFile.text.trim();
-    if (!token) return { complete: false, fingerprint };
+    if (!token) return { complete: false, fingerprint, contentFingerprint };
     const payload = JSON.parse(token) as unknown;
     const credentialValid = Boolean(payload && typeof payload === 'object' && !Array.isArray(payload)
       && hasValidCredential(payload as Record<string, unknown>));
@@ -235,7 +244,7 @@ export async function inspectAgentLoginCompletion(
       && typeof onboarding === 'object'
       && !Array.isArray(onboarding)
       && (onboarding as Record<string, unknown>).onboardingComplete === true);
-    return { complete: credentialValid && onboardingComplete, fingerprint };
+    return { complete: credentialValid && onboardingComplete, fingerprint, contentFingerprint };
   } catch {
     return { complete: false };
   }

@@ -97,6 +97,13 @@ test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
         ]);
     });
 
+    await t.test('fails instead of substituting a default when every explicit model is invalid', async () => {
+        await assert.rejects(
+            resolveReviewAssignments(['unknown-model'], null, mockLogger as any),
+            /None of the explicitly requested review models could be resolved: unknown-model/,
+        );
+    });
+
     await t.test('uses pr_review_model when no requestedModels, ignoring the llm parameter', async () => {
         mockPrReviewModel = 'antigravity-gemini-2.5-pro';
         mockLoadPrReviewModel.mock.resetCalls();

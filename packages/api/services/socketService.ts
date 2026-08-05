@@ -31,7 +31,21 @@ export interface QueueDependencies {
   taskQueue: Queue;
   redisClient: RedisClientType;
   db: Knex;
-  workerStateOptions?: Pick<WorkerStateManagerOptions, 'keyPrefix' | 'revisionKeyPrefix'>;
+  workerStateOptions?: Pick<WorkerStateManagerOptions, 'keyPrefix' | 'revisionKeyPrefix' | 'revisionExpiry'>;
+}
+
+const DEFAULT_TASK_REVISION_EXPIRY_SECONDS = 30 * 24 * 3600;
+
+export interface TaskRevisionCacheEntry {
+  version: number;
+  expiresAt: number;
+}
+
+export function readCachedTaskRevision(
+  entry: TaskRevisionCacheEntry | undefined,
+  now = Date.now(),
+): number | undefined {
+  return entry && entry.expiresAt > now ? entry.version : undefined;
 }
 
 export function shouldBroadcastTaskUpdate(
@@ -91,7 +105,7 @@ export class SocketService {
   private queueBroadcaster: QueueBroadcaster | null = null;
   private taskWatcherManager: TaskWatcherManager;
   private queueDeps: QueueDependencies | null = null;
-  private taskRevisions = new Map<string, number>();
+  private taskRevisions = new Map<string, TaskRevisionCacheEntry>();
   private taskUpdateTails = new Map<string, Promise<void>>();
 
   constructor(httpServer: HttpServer, corsOrigins: string | string[] | CorsOriginFunction) {
@@ -308,7 +322,10 @@ export class SocketService {
   }
 
   private async handleTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
-    let latestVersion = this.taskRevisions.get(payload.taskId);
+    const now = Date.now();
+    const cachedRevision = this.taskRevisions.get(payload.taskId);
+    let latestVersion = readCachedTaskRevision(cachedRevision, now);
+    if (cachedRevision && latestVersion === undefined) this.taskRevisions.delete(payload.taskId);
     let allowSeededEquality = false;
     if (latestVersion === undefined && this.queueDeps) {
       try {
@@ -331,8 +348,15 @@ export class SocketService {
     // versioned producer establishes the ordered stream for this task.
     if (!shouldBroadcastTaskUpdate(latestVersion, payload.version, allowSeededEquality)) return;
     if (payload.version !== undefined) {
+      const revisionExpirySeconds = Math.max(
+        1,
+        this.queueDeps?.workerStateOptions?.revisionExpiry ?? DEFAULT_TASK_REVISION_EXPIRY_SECONDS,
+      );
       this.taskRevisions.delete(payload.taskId);
-      this.taskRevisions.set(payload.taskId, payload.version);
+      this.taskRevisions.set(payload.taskId, {
+        version: payload.version,
+        expiresAt: now + revisionExpirySeconds * 1000,
+      });
       if (this.taskRevisions.size > 10_000) {
         const oldestTaskId = this.taskRevisions.keys().next().value;
         if (oldestTaskId !== undefined) this.taskRevisions.delete(oldestTaskId);

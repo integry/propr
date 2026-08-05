@@ -12,28 +12,31 @@ import { getCurrentPRHead, areAllChecksPassing, SupersededTaskAttemptError } fro
 import type { CommentJobData } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
+import type { UltrafixMutationLease } from './ultrafixLeaseTransitions.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, saveDeferredContinuation, type UltrafixAction } from './ultrafixOrchestrationService.js';
 
 /** Re-check CI readiness for ultrafix jobs before executing. Returns true if ready. */
 export async function checkUltrafixReadiness(
     job: Job<CommentJobData>,
-    params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis; mutationLease: UltrafixMutationLease }
 ): Promise<boolean> {
     if (!job.data.ultrafixMeta) return true;
-    const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = params;
+    const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient, mutationLease } = params;
+    let checksPassing: boolean;
     try {
         const headSha = await getCurrentPRHead(repoOwner, repoName, pullRequestNumber);
         if (!headSha) { correlatedLogger.warn({ pullRequestNumber }, 'Ultrafix pre-check: could not get PR head SHA'); return true; }
-        const checksPassing = await areAllChecksPassing(repoOwner, repoName, headSha);
-        if (checksPassing) { correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks passing, proceeding'); return true; }
-        correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks not passing, deferring');
-        await saveDeferredContinuation(redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber, nextAction: job.data.commandMode as 'review' | 'fix', savedAt: new Date().toISOString(), reason: 'pre_execution_ci_check_failed', continuationId: job.id });
-        return false;
+        checksPassing = await areAllChecksPassing(repoOwner, repoName, headSha);
     } catch (err) {
+        if (err instanceof SupersededTaskAttemptError) throw err;
         correlatedLogger.warn({ pullRequestNumber, error: (err as Error).message }, 'Ultrafix pre-check: error checking CI, proceeding anyway');
         return true;
     }
+    if (checksPassing) { correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks passing, proceeding'); return true; }
+    correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks not passing, deferring');
+    await saveDeferredContinuation(redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber, nextAction: job.data.commandMode as 'review' | 'fix', savedAt: new Date().toISOString(), reason: 'pre_execution_ci_check_failed', continuationId: job.id }, mutationLease);
+    return false;
 }
 
 export async function handleUltrafixContinuation(

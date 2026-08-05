@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -80,6 +81,52 @@ describe('Antigravity agent login', () => {
     assert.match(entrypoint, /trustedWorkspaces\.push\('\/home\/node\/workspace'\)/);
     assert.match(entrypoint, /fs\.renameSync\(settingsPath, backupPath\)/);
     assert.match(entrypoint, /invalid Antigravity settings were backed up/);
+    assert.match(entrypoint, /fs\.lstatSync/);
+    assert.match(entrypoint, /fs\.constants\.O_NOFOLLOW/);
+  });
+
+  test('rejects credential-controlled symlinks while preparing login defaults', () => {
+    const entrypoint = fs.readFileSync(
+      new URL('../../../scripts/antigravity-entrypoint.sh', import.meta.url),
+      'utf8',
+    );
+    const scriptMatch = entrypoint.match(/node - "\$settings_path" <<-'NODE'\n([\s\S]*?)\n\s*NODE/);
+    assert.ok(scriptMatch);
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-symlink-'));
+    const protectedPath = path.join(temporaryRoot, 'protected.json');
+    const configPath = path.join(temporaryRoot, 'config');
+    const cliPath = path.join(configPath, 'antigravity-cli');
+    const settingsPath = path.join(cliPath, 'settings.json');
+    try {
+      fs.mkdirSync(cliPath, { recursive: true });
+      fs.writeFileSync(protectedPath, '{"protected":true}\n');
+      fs.symlinkSync(protectedPath, settingsPath);
+
+      const result = spawnSync(process.execPath, ['-', settingsPath], {
+        input: scriptMatch[1],
+        encoding: 'utf8',
+      });
+
+      assert.notEqual(result.status, 0);
+      assert.equal(fs.readFileSync(protectedPath, 'utf8'), '{"protected":true}\n');
+
+      fs.unlinkSync(settingsPath);
+      fs.rmdirSync(cliPath);
+      const protectedDirectory = path.join(temporaryRoot, 'protected-directory');
+      const protectedSettings = path.join(protectedDirectory, 'settings.json');
+      fs.mkdirSync(protectedDirectory);
+      fs.writeFileSync(protectedSettings, '{"parentProtected":true}\n');
+      fs.symlinkSync(protectedDirectory, cliPath, 'dir');
+
+      const parentResult = spawnSync(process.execPath, ['-', settingsPath], {
+        input: scriptMatch[1],
+        encoding: 'utf8',
+      });
+      assert.notEqual(parentResult.status, 0);
+      assert.equal(fs.readFileSync(protectedSettings, 'utf8'), '{"parentProtected":true}\n');
+    } finally {
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
   });
 
   test('recognizes only known, non-empty, unexpired authentication after onboarding is saved', async () => {
@@ -223,11 +270,12 @@ describe('Antigravity agent login', () => {
 
     try {
       fs.mkdirSync(path.join(cliPath, 'cache'), { recursive: true });
-      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), antigravityCredential('existing-token'));
-      fs.writeFileSync(
-        path.join(cliPath, 'cache', 'onboarding.json'),
-        JSON.stringify({ onboardingComplete: true }),
-      );
+      const tokenPath = path.join(cliPath, 'antigravity-oauth-token');
+      const onboardingPath = path.join(cliPath, 'cache', 'onboarding.json');
+      const existingToken = antigravityCredential('existing-token');
+      const existingOnboarding = JSON.stringify({ onboardingComplete: true });
+      fs.writeFileSync(tokenPath, existingToken);
+      fs.writeFileSync(onboardingPath, existingOnboarding);
 
       const started = await manager.start(agent({
         id: 'antigravity-existing',
@@ -243,11 +291,18 @@ describe('Antigravity agent login', () => {
       assert.ok(dockerCalls[1].includes('PROPR_AGENT_LOGIN=1'));
       assert.deepEqual(dockerCalls[2], ['start', '-a', '-i', 'propr-agent-login-antigravity-existing-session']);
 
-      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), 'transient-token-fragment');
+      // Provider startup may touch or rewrite already-valid files. Metadata-only
+      // churn must not be mistaken for an explicit authentication refresh.
+      fs.writeFileSync(tokenPath, existingToken);
+      fs.writeFileSync(onboardingPath, existingOnboarding);
       await new Promise(resolve => setTimeout(resolve, 100));
       assert.equal(manager.get(started.id, 'owner').status, 'running');
 
-      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), antigravityCredential('refreshed-token'));
+      fs.writeFileSync(tokenPath, 'transient-token-fragment');
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(manager.get(started.id, 'owner').status, 'running');
+
+      fs.writeFileSync(tokenPath, antigravityCredential('refreshed-token'));
       await waitFor(() => manager.get(started.id, 'owner').status === 'succeeded');
       assert.match(manager.get(started.id, 'owner').output, /Authentication saved/);
     } finally {

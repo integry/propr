@@ -155,14 +155,17 @@ async function rollbackWorkerStartup(options: {
     subscriberRedis: Redis;
     workerId: string;
 }): Promise<void> {
+    // Keep terminal-state finalizers attached until active jobs have drained.
+    const cleanupResults: PromiseSettledResult<unknown>[] = [
+        ...await Promise.allSettled([options.worker.close()]),
+    ];
     const cleanupTasks: Array<Promise<unknown>> = [
-        options.worker.close(),
         options.heartbeatRedis.srem('system:status:workers', options.workerId),
         options.subscriberRedis.quit(),
     ];
     if (options.runtimeBuildWorker) cleanupTasks.push(options.runtimeBuildWorker.close());
     if (options.taskStateRecovery) cleanupTasks.push(options.taskStateRecovery.close());
-    const cleanupResults = await Promise.allSettled(cleanupTasks);
+    cleanupResults.push(...await Promise.allSettled(cleanupTasks));
     cleanupResults.push(...await Promise.allSettled([options.heartbeatRedis.quit()]));
     for (const result of cleanupResults) {
         if (result.status === 'rejected') {

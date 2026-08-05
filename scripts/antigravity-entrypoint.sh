@@ -84,26 +84,95 @@ prepare_antigravity_login_defaults() {
     local config_dir="$1"
     local settings_path="$config_dir/antigravity-cli/settings.json"
 
-    node - "$settings_path" <<'NODE'
+    node - "$settings_path" <<-'NODE'
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const settingsPath = process.argv[2];
+const settingsDirectory = path.dirname(settingsPath);
+
+function ensureSafeDirectoryTree(directory) {
+    const resolved = path.resolve(directory);
+    const root = path.parse(resolved).root;
+    let current = root;
+    for (const segment of resolved.slice(root.length).split(path.sep).filter(Boolean)) {
+        current = path.join(current, segment);
+        let stat;
+        try {
+            stat = fs.lstatSync(current);
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+            fs.mkdirSync(current, { mode: 0o755 });
+            stat = fs.lstatSync(current);
+        }
+        if (stat.isSymbolicLink() || !stat.isDirectory()) {
+            throw new Error(`Unsafe Antigravity settings parent: ${current}`);
+        }
+    }
+}
+
+function readRegularFileNoFollow(filePath) {
+    const pathStat = fs.lstatSync(filePath);
+    if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+        throw new Error(`Unsafe Antigravity settings file: ${filePath}`);
+    }
+    const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+        if (!fs.fstatSync(descriptor).isFile()) {
+            throw new Error(`Antigravity settings are not a regular file: ${filePath}`);
+        }
+        return fs.readFileSync(descriptor, 'utf8');
+    } finally {
+        fs.closeSync(descriptor);
+    }
+}
+
+function writeRegularFileAtomicNoFollow(filePath, contents) {
+    ensureSafeDirectoryTree(path.dirname(filePath));
+    const temporaryPath = path.join(
+        path.dirname(filePath),
+        `.${path.basename(filePath)}.propr-tmp-${process.pid}-${crypto.randomBytes(8).toString('hex')}`,
+    );
+    let descriptor;
+    try {
+        descriptor = fs.openSync(
+            temporaryPath,
+            fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+            0o600,
+        );
+        fs.writeFileSync(descriptor, contents);
+        fs.fsyncSync(descriptor);
+        const descriptorStat = fs.fstatSync(descriptor);
+        const pathStat = fs.lstatSync(temporaryPath);
+        if (!descriptorStat.isFile() || pathStat.isSymbolicLink()
+            || descriptorStat.dev !== pathStat.dev || descriptorStat.ino !== pathStat.ino) {
+            throw new Error('Antigravity settings temporary file changed unexpectedly');
+        }
+        ensureSafeDirectoryTree(path.dirname(filePath));
+        fs.renameSync(temporaryPath, filePath);
+    } finally {
+        if (descriptor !== undefined) fs.closeSync(descriptor);
+        try { fs.unlinkSync(temporaryPath); } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+    }
+}
+
+ensureSafeDirectoryTree(settingsDirectory);
 let settings = {};
 try {
-    const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const parsed = JSON.parse(readRegularFileNoFollow(settingsPath));
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new Error('settings must contain a JSON object');
     }
     settings = parsed;
 } catch (error) {
     if (error.code !== 'ENOENT') {
+        const pathStat = fs.lstatSync(settingsPath);
+        if (pathStat.isSymbolicLink() || !pathStat.isFile()) throw error;
         const backupPath = `${settingsPath}.invalid-${Date.now()}`;
-        try {
-            fs.renameSync(settingsPath, backupPath);
-            console.error(`Warning: invalid Antigravity settings were backed up to ${backupPath}; recreating safe defaults`);
-        } catch (backupError) {
-            console.error(`Warning: invalid Antigravity settings could not be backed up (${backupError.message}); recreating safe defaults in place`);
-        }
+        fs.renameSync(settingsPath, backupPath);
+        console.error(`Warning: invalid Antigravity settings were backed up to ${backupPath}; recreating safe defaults`);
         settings = {};
     }
 }
@@ -116,8 +185,7 @@ if (!trustedWorkspaces.includes('/home/node/workspace')) {
     trustedWorkspaces.push('/home/node/workspace');
 }
 settings.trustedWorkspaces = trustedWorkspaces;
-fs.mkdirSync(path.dirname(settingsPath), { recursive: true, mode: 0o755 });
-fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+writeRegularFileAtomicNoFollow(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 NODE
 
     if [ "$(id -u)" = "0" ]; then

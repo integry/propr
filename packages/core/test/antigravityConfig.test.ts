@@ -159,6 +159,19 @@ test('Antigravity output parser preserves plain responses that are valid JSON va
     assert.deepEqual(commonMessage.conversationLog, []);
 });
 
+test('Antigravity output parser requires framing for ambiguous standalone protocol shapes', () => {
+    for (const value of [
+        { type: 'result', status: 'success' },
+        { type: 'tool_use', tool_name: 'shell', tool_id: 'tool-1', parameters: {} },
+        { type: 'tool_result', tool_id: 'tool-1', status: 'success', output: 'done' },
+    ]) {
+        const line = JSON.stringify(value);
+        const parsed = parseAntigravityJsonl(line);
+        assert.equal(parsed.summary, line);
+        assert.deepEqual(parsed.conversationLog, []);
+    }
+});
+
 test('Antigravity output parser reads real transcript JSONL events', () => {
     const transcript = [
         JSON.stringify({

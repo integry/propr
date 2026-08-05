@@ -57,3 +57,38 @@ test('close waits for an in-flight poll and suppresses its late abort result', a
     assert.equal(abortSpawnedExecution.mock.calls.length, 0);
     assert.equal(quit.mock.calls.length, 1);
 });
+
+test('close disconnects after a bounded wait for an unresponsive Redis poll', async () => {
+    const getStarted = Promise.withResolvers<void>();
+    const pendingGet = new Promise<string | null>(() => {});
+    const disconnect = mock.fn();
+    const redis = {
+        get: mock.fn(async () => {
+            getStarted.resolve();
+            return await pendingGet;
+        }),
+        del: mock.fn(async () => 1),
+        quit: mock.fn(async () => {}),
+        disconnect,
+    };
+    const handle = setupAbortChecker({
+        taskId: 'task-unresponsive-redis',
+        plannerAbortKey: 'planner:abort:task-unresponsive-redis',
+        child: { kill: mock.fn(), exitCode: null, signalCode: null } as never,
+        state: {
+            aborted: { value: false },
+            containerId: { value: null },
+            teardownPromise: null,
+        },
+        namedContainer: 'propr-agent-task-unresponsive-redis',
+        redisFactory: () => redis,
+        pollIntervalMs: 1,
+        closeTimeoutMs: 10,
+    });
+
+    await getStarted.promise;
+    await handle.close();
+
+    assert.equal(disconnect.mock.calls.length, 1);
+    assert.equal(redis.quit.mock.calls.length, 0);
+});

@@ -83,3 +83,25 @@ test('rejects OSC-8 targets containing C1 terminal controls', () => {
   assert.equal(output, 'visible');
   assert.equal(session.emittedTerminalLinks.size, 0);
 });
+
+test('rejects OSC-8 targets containing Unicode formatting controls', () => {
+  const session = state();
+  const output = sanitizeTerminalChunk(
+    session,
+    '\u001b]8;;https://example.test/login\u202Espoofed\u0007visible\u001b]8;;\u0007',
+  );
+
+  assert.equal(output, 'visible');
+  assert.equal(session.emittedTerminalLinks.size, 0);
+});
+
+test('emits the normalized OSC-8 URL target', () => {
+  const session = state();
+  const output = sanitizeTerminalChunk(
+    session,
+    '\u001b]8;;https://EXAMPLE.test/login\u0007visible\u001b]8;;\u0007',
+  );
+
+  assert.equal(output, '\nhttps://example.test/login\nvisible');
+  assert.deepEqual([...session.emittedTerminalLinks], ['https://example.test/login']);
+});

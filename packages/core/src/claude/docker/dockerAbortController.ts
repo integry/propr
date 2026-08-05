@@ -16,6 +16,7 @@ export interface AbortCheckerOptions {
     attemptGeneration?: string;
     redisFactory?: AbortRedisFactory;
     pollIntervalMs?: number;
+    closeTimeoutMs?: number;
 }
 
 export interface AbortCheckerHandle {
@@ -38,6 +39,7 @@ export type AbortRedisFactory = () => AbortRedisClient;
 
 const plannerAbortContext = new AsyncLocalStorage<PlannerAbortContext>();
 const PLANNER_ABORT_LOOKUP_FAILURE_LIMIT = 2;
+const DEFAULT_ABORT_REDIS_TIMEOUT_MS = 5000;
 
 export function buildPlannerAbortSignalKey(draftId: string, runId?: string): string {
     return runId ? `planner:abort:${draftId}:run:${runId}` : `planner:abort:${draftId}`;
@@ -61,16 +63,34 @@ export function plannerAbortSignalKeyForTask(taskId: string): string {
 function createAbortRedis(): AbortRedisClient {
     return new Redis({
         host: process.env.REDIS_HOST || 'redis',
-        port: parseInt(process.env.REDIS_PORT || '6379', 10)
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        connectTimeout: DEFAULT_ABORT_REDIS_TIMEOUT_MS,
+        commandTimeout: DEFAULT_ABORT_REDIS_TIMEOUT_MS,
+        maxRetriesPerRequest: 1,
+        retryStrategy: attempts => attempts <= 1 ? 100 : null,
     });
 }
 
-async function closeAbortRedis(redis: AbortRedisClient): Promise<void> {
+async function settlesWithin(operation: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+    let timeout: NodeJS.Timeout | undefined;
     try {
-        await redis.quit();
-    } catch {
-        try { redis.disconnect(); } catch { /* best-effort fallback */ }
+        return await Promise.race([
+            operation.then(() => true, () => false),
+            new Promise<false>(resolve => {
+                timeout = setTimeout(() => resolve(false), timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (timeout) clearTimeout(timeout);
     }
+}
+
+async function closeAbortRedis(
+    redis: AbortRedisClient,
+    timeoutMs = DEFAULT_ABORT_REDIS_TIMEOUT_MS,
+): Promise<void> {
+    if (await settlesWithin(Promise.resolve().then(() => redis.quit()), timeoutMs)) return;
+    try { redis.disconnect(); } catch { /* best-effort fallback */ }
 }
 
 async function readAbortSignal(
@@ -150,6 +170,7 @@ export function setupAbortChecker({
     attemptGeneration,
     redisFactory = createAbortRedis,
     pollIntervalMs = 2000,
+    closeTimeoutMs = DEFAULT_ABORT_REDIS_TIMEOUT_MS,
 }: AbortCheckerOptions): AbortCheckerHandle {
     const redis = redisFactory();
     let pollInFlight = false;
@@ -192,8 +213,13 @@ export function setupAbortChecker({
             closePromise ??= (async () => {
                 active = false;
                 clearInterval(interval);
-                await pollPromise;
-                await closeAbortRedis(redis);
+                const pollSettled = !pollPromise || await settlesWithin(pollPromise, closeTimeoutMs);
+                if (!pollSettled) {
+                    logger.warn({ taskId, closeTimeoutMs }, 'Abort checker Redis poll did not settle before shutdown');
+                    try { redis.disconnect(); } catch { /* best-effort fallback */ }
+                    return;
+                }
+                await closeAbortRedis(redis, closeTimeoutMs);
             })();
             await closePromise;
         }

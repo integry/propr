@@ -18,11 +18,11 @@ import {
     loadState,
     claimDeferredContinuation,
     recordAction,
-    clearState,
+    clearStateWithLease,
     completeLoop,
     determineNextAction,
     saveDeferredContinuation,
-    clearDeferredContinuation,
+    clearDeferredContinuationWithLease,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import type { UltrafixMutationLease } from './ultrafixLeaseTransitions.js';
@@ -111,12 +111,16 @@ export async function continueUltrafixLoop(
         );
         return { continued: false, reason: 'no_active_loop' };
     }
+    if (!params.mutationLease) {
+        throw new Error('Ultrafix continuation mutations require a live PR lease');
+    }
+    const mutationLease = params.mutationLease;
 
     // 2. Record the completed action
     const updatedState = await recordAction(redisClient, {
         owner, repo, pr: pullRequestNumber, action: completedAction,
         continuationId: params.continuationId,
-    }, params.mutationLease);
+    }, mutationLease);
     if (!updatedState) {
         return { continued: false, reason: 'state_lost_after_record' };
     }
@@ -130,10 +134,9 @@ export async function continueUltrafixLoop(
     const labelPresent = await hasUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
     if (!labelPresent) {
         correlatedLogger.info({ pullRequestNumber }, 'Ultrafix loop: label removed, stopping loop');
-        await assertContinuationLease(params);
-        await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
-        await assertContinuationLease(params);
-        await clearState(redisClient, owner, repo, pullRequestNumber);
+        const prId = { owner, repo, pr: pullRequestNumber };
+        await clearDeferredContinuationWithLease(redisClient, prId, mutationLease);
+        await clearStateWithLease(redisClient, prId, mutationLease);
         return { continued: false, reason: 'label_removed', cycleCount: updatedState.cycleCount };
     }
 
@@ -173,7 +176,6 @@ export async function continueUltrafixLoop(
     // 6. If loop should stop, clean up
     if (decision.action === null) {
         const goalReached = latestScore !== null && latestScore >= updatedState.goal;
-        await assertContinuationLease(params);
         await completeLoop(redisClient, {
             owner,
             repo,
@@ -181,14 +183,13 @@ export async function continueUltrafixLoop(
             completionStatus: goalReached ? 'succeeded' : 'failed',
             completionReason: decision.reason,
             finalScore: latestScore,
-        });
+        }, mutationLease);
         if (goalReached) {
             await assertContinuationLease(params);
             await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
-            await assertContinuationLease(params);
-            await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
-            await assertContinuationLease(params);
-            await clearState(redisClient, owner, repo, pullRequestNumber);
+            const prId = { owner, repo, pr: pullRequestNumber };
+            await clearDeferredContinuationWithLease(redisClient, prId, mutationLease);
+            await clearStateWithLease(redisClient, prId, mutationLease);
             await assertContinuationLease(params);
             await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
         } else {
@@ -226,7 +227,6 @@ export async function continueUltrafixLoop(
 
     if (!readiness.ready) {
         // Defer the continuation — a check_run event can wake it later
-        await assertContinuationLease(params);
         await saveDeferredContinuation(redisClient, {
             owner,
             repo,
@@ -236,7 +236,7 @@ export async function continueUltrafixLoop(
             reason: readiness.reasons.join(', '),
             continuationId: params.continuationId,
             ultrafixMeta: params.ultrafixMeta,
-        });
+        }, mutationLease);
         correlatedLogger.info(
             { pullRequestNumber, nextAction: decision.action, blockingReasons: readiness.reasons },
             'Ultrafix loop: deferred continuation — waiting for readiness',
@@ -252,8 +252,11 @@ export async function continueUltrafixLoop(
     }
 
     // Clear any stale deferred record before proceeding
-    await assertContinuationLease(params);
-    await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
+    await clearDeferredContinuationWithLease(
+        redisClient,
+        { owner, repo, pr: pullRequestNumber },
+        mutationLease,
+    );
 
     // 8. Enqueue the next step with configured pause
     const delayMs = (updatedState.pauseSeconds || 60) * 1000;

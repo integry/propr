@@ -84,9 +84,12 @@ const ANTIGRAVITY_EVENT_VALIDATORS: Record<string, (candidate: Record<string, un
     message: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
         && (candidate.role === 'user' || candidate.role === 'assistant')
         && typeof candidate.content === 'string',
-    tool_use: candidate => typeof candidate.tool_name === 'string' && typeof candidate.tool_id === 'string' && isRecord(candidate.parameters),
-    tool_result: candidate => typeof candidate.tool_id === 'string' && hasProtocolStatus(candidate) && typeof candidate.output === 'string',
-    result: candidate => hasProtocolStatus(candidate) && (candidate.stats === undefined || isRecord(candidate.stats)),
+    tool_use: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && typeof candidate.tool_name === 'string' && typeof candidate.tool_id === 'string' && isRecord(candidate.parameters),
+    tool_result: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && typeof candidate.tool_id === 'string' && hasProtocolStatus(candidate) && typeof candidate.output === 'string',
+    result: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && hasProtocolStatus(candidate) && (candidate.stats === undefined || isRecord(candidate.stats)),
     error: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual) && typeof candidate.message === 'string',
 };
 
@@ -97,6 +100,14 @@ function isAntigravityEvent(event: unknown, contextual = false): event is Antigr
 
 function isAntigravityOutputEvent(event: unknown, contextual = false): event is AntigravityOutputEvent {
     return isTranscriptEvent(event) || isAntigravityEvent(event, contextual);
+}
+
+function isAntigravityFramingEvent(event: unknown): boolean {
+    if (isTranscriptEvent(event)) return true;
+    if (!isRecord(event)) return false;
+    if (event.type === 'init') return ANTIGRAVITY_EVENT_VALIDATORS.init(event, false);
+    return (event.type === 'message' || event.type === 'error')
+        && isAntigravityEvent(event, false);
 }
 
 function normalizeTokenUsage(stats: AntigravityResultEvent['stats'] | undefined): { input_tokens?: number; output_tokens?: number } {
@@ -161,7 +172,7 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
             logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in Antigravity output');
         }
     }
-    const hasProtocolContext = parsedLines.some(({ value }) => isAntigravityOutputEvent(value));
+    const hasProtocolContext = parsedLines.some(({ value }) => isAntigravityFramingEvent(value));
     const plainLines: string[] = [];
     for (const { line, value } of parsedLines) {
         if (!isAntigravityOutputEvent(value, hasProtocolContext)) {

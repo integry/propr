@@ -3,6 +3,7 @@ import { after, describe, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import {
   loadDurableTaskRevision,
+  readCachedTaskRevision,
   shouldBroadcastTaskUpdate,
 } from '../services/socketService.js';
 
@@ -20,6 +21,13 @@ describe('SocketService task update ordering', () => {
     assert.equal(shouldBroadcastTaskUpdate(5, 5), false);
     assert.equal(shouldBroadcastTaskUpdate(5, 5, true), true);
     assert.equal(shouldBroadcastTaskUpdate(5, 6), true);
+  });
+
+  test('expires socket revision cache entries so recreated task IDs can reseed', () => {
+    const entry = { version: 42, expiresAt: 30_000 };
+
+    assert.equal(readCachedTaskRevision(entry, 29_999), 42);
+    assert.equal(readCachedTaskRevision(entry, 30_000), undefined);
   });
 
   test('seeds ordering from the greatest durable revision after restart or cache eviction', async () => {

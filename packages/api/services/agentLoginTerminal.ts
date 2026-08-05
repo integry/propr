@@ -22,6 +22,7 @@ const CONTROL_STRING_STARTS = new Set([']', 'P', 'X', '^', '_']);
 const C1_CONTROL_STRING_STARTS = new Set(['\u0090', '\u0098', '\u009d', '\u009e', '\u009f']);
 const CSI_FINAL_CHARACTER = /[\u0040-\u007e]/u;
 const ESCAPE_INTERMEDIATE_CHARACTER = /[\u0020-\u002f]/u;
+const UNSAFE_UNICODE_FORMAT_CHARACTER = /\p{Cf}/u;
 const UNSAFE_CONTROL_RANGES = [[0x00, 0x08], [0x0b, 0x0c], [0x0e, 0x1a], [0x1c, 0x1f], [0x7f, 0x9f]];
 
 const ESCAPE_TRANSITIONS: Record<
@@ -128,9 +129,15 @@ function terminalLinkTarget(payload: string): string | undefined {
   if (!target.startsWith('http://') && !target.startsWith('https://')) return undefined;
   if ([...target].some(value => {
     const code = value.charCodeAt(0);
-    return code <= 0x20 || isUnsafeControlCharacter(value);
+    return code <= 0x20 || isUnsafeControlCharacter(value) || UNSAFE_UNICODE_FORMAT_CHARACTER.test(value);
   })) return undefined;
-  return target;
+  try {
+    const parsed = new URL(target);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    return parsed.href;
+  } catch {
+    return undefined;
+  }
 }
 
 function finishControlString(session: TerminalSanitizerState): string {
@@ -144,12 +151,6 @@ function finishControlString(session: TerminalSanitizerState): string {
   if (kind !== ']') return '';
   const target = terminalLinkTarget(payload);
   if (!target || session.emittedTerminalLinks.has(target)) return '';
-  try {
-    const parsed = new URL(target);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
-  } catch {
-    return '';
-  }
   if (session.emittedTerminalLinks.size >= MAX_EMITTED_TERMINAL_LINKS) {
     const oldest = session.emittedTerminalLinks.values().next().value;
     if (oldest !== undefined) session.emittedTerminalLinks.delete(oldest);

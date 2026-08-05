@@ -9,8 +9,12 @@ import {
     saveState,
     loadState,
     clearState,
+    clearStateWithLease,
+    clearDeferredContinuationWithLease,
+    completeLoop,
     startLoop,
     recordAction,
+    saveDeferredContinuation,
     stopLoop,
     type UltrafixLoopState,
     type StartLoopOptions,
@@ -275,6 +279,45 @@ describe('Redis persistence', () => {
             'attempt-token',
             'task-1748:review',
         ]);
+    });
+
+    test('fences completion, deferred writes, and cleanup in their Redis mutations', async () => {
+        const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1 });
+        const calls: unknown[][] = [];
+        const redis = {
+            eval: async (...args: unknown[]) => {
+                calls.push(args);
+                return String(args[0]).includes('state.completionStatus')
+                    ? [1, JSON.stringify({ ...state, active: false, completionStatus: 'failed' })]
+                    : 1;
+            },
+        };
+        const lease = {
+            lockKey: 'lock:pr:o:r:1',
+            lockToken: 'attempt-token',
+            assertLease: async () => {},
+        };
+
+        await saveDeferredContinuation(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, nextAction: 'fix', savedAt: new Date().toISOString(), reason: 'checks',
+        }, lease);
+        await completeLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1,
+            completionStatus: 'failed', completionReason: 'limit', finalScore: 4,
+        }, lease);
+        await clearDeferredContinuationWithLease(redis as any, { owner: 'o', repo: 'r', pr: 1 }, lease);
+        await clearStateWithLease(redis as any, { owner: 'o', repo: 'r', pr: 1 }, lease);
+
+        assert.equal(calls.length, 4);
+        assert.deepStrictEqual(calls.map(call => call[3]), [
+            'ultrafix:deferred:o:r:1',
+            'ultrafix:state:o:r:1',
+            'ultrafix:deferred:o:r:1',
+            'ultrafix:state:o:r:1',
+        ]);
+        assert.ok(calls.every(call => call[1] === 2
+            && call[2] === 'lock:pr:o:r:1'
+            && call[4] === 'attempt-token'));
     });
 });
 

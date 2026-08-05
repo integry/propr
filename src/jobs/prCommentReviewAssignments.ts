@@ -12,6 +12,7 @@ export async function resolveReviewAssignments(
     await registry.ensureInitialized();
     const assignments: ReviewAssignment[] = [];
     const resolvedAssignments = new Set<string>();
+    const hasExplicitRequestedModels = Boolean(requestedModels && requestedModels.length > 0);
 
     const addAssignment = (assignment: ReviewAssignment): void => {
         const key = `${assignment.agentAlias}\u0000${assignment.model}`;
@@ -56,6 +57,9 @@ export async function resolveReviewAssignments(
     }
 
     if (assignments.length === 0) {
+        if (hasExplicitRequestedModels) {
+            throw new Error(`None of the explicitly requested review models could be resolved: ${requestedModels!.join(', ')}`);
+        }
         const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
         addAssignment({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
     }

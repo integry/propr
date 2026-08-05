@@ -41,7 +41,8 @@ export const CLEAR_REMOTE_OUTCOME_SCRIPT = `
 if redis.call('get', KEYS[1]) ~= ARGV[1] then
     return 0
 end
-return redis.call('del', KEYS[2])
+redis.call('del', KEYS[2])
+return 1
 `;
 
 export function getPRCommentRemoteOutcomeKey(taskId: string): string {

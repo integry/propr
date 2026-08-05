@@ -22,6 +22,14 @@ test('clears a pre-push checkpoint only with the live lease', async () => {
     assert.equal(evalMock.mock.calls[0].arguments[4], 'attempt-token');
 });
 
+test('treats an already-absent checkpoint as an idempotent clear', async () => {
+    await clearPRCommentPublicationCheckpoint({ eval: async () => 1 } as never, {
+        taskId: 'already-cleared-task',
+        lockKey: 'lock:pr:integry:propr:1748',
+        lockToken: 'attempt-token',
+    });
+});
+
 test('persists a remote outcome with the live lease and a bounded TTL', async () => {
     const evalMock = mock.fn(async () => 1);
     const result = {

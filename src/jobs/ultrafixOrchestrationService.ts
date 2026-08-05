@@ -8,7 +8,10 @@
 
 import type { Redis } from 'ioredis';
 import {
+    completeUltrafixLoopWithLease,
+    deleteUltrafixValueWithLease,
     recordUltrafixActionWithLease,
+    saveUltrafixValueWithLease,
     type UltrafixMutationLease,
 } from './ultrafixLeaseTransitions.js';
 
@@ -219,9 +222,26 @@ export async function loadState(redis: Redis, owner: string, repo: string, pr: n
     return JSON.parse(raw) as UltrafixLoopState;
 }
 
-export async function clearState(redis: Redis, owner: string, repo: string, pr: number): Promise<void> {
+export async function clearState(
+    redis: Redis,
+    owner: string,
+    repo: string,
+    pr: number,
+): Promise<void> {
     const key = getUltrafixStateKey(owner, repo, pr);
     await redis.del(key);
+}
+
+export async function clearStateWithLease(
+    redis: Redis,
+    params: { owner: string; repo: string; pr: number },
+    lease: UltrafixMutationLease,
+): Promise<void> {
+    await deleteUltrafixValueWithLease(
+        redis,
+        getUltrafixStateKey(params.owner, params.repo, params.pr),
+        lease,
+    );
 }
 
 // --- High-level helpers ---
@@ -297,7 +317,17 @@ export async function completeLoop(
         completionReason: string;
         finalScore: number | null;
     },
+    lease?: UltrafixMutationLease,
 ): Promise<UltrafixLoopState | null> {
+    if (lease) {
+        const stateJson = await completeUltrafixLoopWithLease(redis, {
+            stateKey: getUltrafixStateKey(params.owner, params.repo, params.pr),
+            completionStatus: params.completionStatus,
+            completionReason: params.completionReason,
+            finalScore: params.finalScore,
+        }, lease);
+        return stateJson ? JSON.parse(stateJson) as UltrafixLoopState : null;
+    }
     const state = await loadState(redis, params.owner, params.repo, params.pr);
     if (!state) return null;
 
@@ -403,8 +433,13 @@ export function areChecksReadyForUltrafix(status: UltrafixCheckStatus): boolean 
 export async function saveDeferredContinuation(
     redis: Redis,
     deferred: UltrafixDeferredContinuation,
+    lease?: UltrafixMutationLease,
 ): Promise<void> {
     const key = getUltrafixDeferredKey(deferred.owner, deferred.repo, deferred.pr);
+    if (lease) {
+        await saveUltrafixValueWithLease(redis, { key, value: JSON.stringify(deferred) }, lease);
+        return;
+    }
     await redis.set(key, JSON.stringify(deferred));
 }
 
@@ -440,6 +475,18 @@ export async function clearDeferredContinuation(
 ): Promise<void> {
     const key = getUltrafixDeferredKey(owner, repo, pr);
     await redis.del(key);
+}
+
+export async function clearDeferredContinuationWithLease(
+    redis: Redis,
+    params: { owner: string; repo: string; pr: number },
+    lease: UltrafixMutationLease,
+): Promise<void> {
+    await deleteUltrafixValueWithLease(
+        redis,
+        getUltrafixDeferredKey(params.owner, params.repo, params.pr),
+        lease,
+    );
 }
 
 /**

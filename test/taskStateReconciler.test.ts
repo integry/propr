@@ -620,7 +620,7 @@ describe('task state reconciliation', () => {
         assert.equal(evalMock.mock.calls.length, 1);
     });
 
-    test('treats an implausible future timestamp as stale', async () => {
+    test('defers an implausible future timestamp instead of treating it as stale', async () => {
         const future = task('pr-comments-future-clock', TaskStates.PROCESSING);
         future.updatedAt = '2026-08-05T00:00:00.000Z';
         const manager = stateManager([future]);
@@ -634,9 +634,9 @@ describe('task state reconciliation', () => {
             findRunningContainer: async () => null,
         });
 
-        assert.equal(manager.states.get(future.taskId)?.state, TaskStates.FAILED);
-        assert.equal(summary.fresh, 0);
-        assert.equal(summary.interrupted, 1);
+        assert.equal(manager.states.get(future.taskId)?.state, TaskStates.PROCESSING);
+        assert.equal(summary.fresh, 1);
+        assert.equal(summary.interrupted, 0);
     });
 
     test('makes the state terminal before retrying owned-lock cleanup', async () => {

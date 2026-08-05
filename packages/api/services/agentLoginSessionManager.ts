@@ -60,7 +60,7 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot, TerminalSanitizer
   timeout?: ReturnType<typeof setTimeout>;
   retentionTimeout?: ReturnType<typeof setTimeout>;
   providerCompletionTimeout?: ReturnType<typeof setTimeout>; providerLoginInitiallyComplete?: boolean;
-  initialCredentialFingerprint?: string; providerCompletionFingerprint?: string;
+  initialCredentialContentFingerprint?: string; providerCompletionFingerprint?: string;
   providerCompletionStablePolls?: number; cleanupStarted?: boolean;
 }
 
@@ -220,7 +220,7 @@ export class AgentLoginSessionManager {
       }
       const initialLogin = await inspectAgentLoginCompletion(agent.type, credentialPath);
       session.providerLoginInitiallyComplete = initialLogin.complete;
-      session.initialCredentialFingerprint = initialLogin.fingerprint;
+      session.initialCredentialContentFingerprint = initialLogin.contentFingerprint;
       if (session.providerLoginInitiallyComplete) {
         this.appendOutput(session, 'Existing Antigravity authentication will be revalidated by the provider.\n');
       }
@@ -391,7 +391,8 @@ export class AgentLoginSessionManager {
       void inspectAgentLoginCompletion(session.agentType, session.credentialPath)
         .then(completion => {
           if (isTerminal(session.status)) return;
-          const credentialsChanged = completion.fingerprint !== undefined && completion.fingerprint !== session.initialCredentialFingerprint;
+          const credentialsChanged = completion.contentFingerprint !== undefined
+            && completion.contentFingerprint !== session.initialCredentialContentFingerprint;
           const isCompletionCandidate = completion.complete && (!session.providerLoginInitiallyComplete || credentialsChanged)
             && completion.fingerprint !== undefined;
           if (isCompletionCandidate) {

@@ -11,9 +11,9 @@ export function taskAgeMs(
     futureSkewAllowanceMs: number,
 ): number {
     const updatedAt = new Date(task.updatedAt).getTime();
-    if (!Number.isFinite(updatedAt) || updatedAt > now + futureSkewAllowanceMs) {
-        return Number.POSITIVE_INFINITY;
-    }
+    if (!Number.isFinite(updatedAt)) return Number.POSITIVE_INFINITY;
+    // Quarantine clock-skewed future state in the fresh bucket until time catches up.
+    if (updatedAt > now + futureSkewAllowanceMs) return 0;
     return Math.max(0, now - updatedAt);
 }
 
