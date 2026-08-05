@@ -109,12 +109,11 @@ jobs:
         run: ./scripts/ci-redis.sh stop
 
   comment:
-    name: Report Full Test Result
+    name: Report Full Test Failure
     needs: test
     if: >-
       ${{ always() && github.event_name == 'pull_request' &&
-          needs.test.result != 'skipped' &&
-          needs.test.result != 'cancelled' &&
+          needs.test.result == 'failure' &&
           github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     permissions:
@@ -129,11 +128,8 @@ jobs:
           name: full-test-output-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Post result comment
-        continue-on-error: true
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
-          TEST_JOB_RESULT: ${{ needs.test.result }}
-          TEST_STEP_RESULT: ${{ needs.test.outputs.test_result }}
           INSTALL_RESULT: ${{ needs.test.outputs.install_result }}
           BUILD_RESULT: ${{ needs.test.outputs.build_result }}
           DOCS_RESULT: ${{ needs.test.outputs.docs_result }}
@@ -142,7 +138,6 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const succeeded = process.env.TEST_JOB_RESULT === 'success' && process.env.TEST_STEP_RESULT === 'success';
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const outcomes = {
               'Dependency install': process.env.INSTALL_RESULT,
@@ -154,13 +149,12 @@ jobs:
             const failedStages = Object.entries(outcomes)
               .filter(([, outcome]) => outcome === 'failure')
               .map(([stage]) => stage);
-            const summary = succeeded
-              ? 'All tests passed.'
-              : failedStages.length > 0
-                ? `Validation failed during: ${failedStages.join(', ')}.`
-                : 'Validation did not complete successfully.';
+            const summary = failedStages.length > 0
+              ? `Validation failed during: ${failedStages.join(', ')}.`
+              : 'Validation did not complete successfully.';
             let output = 'Output file not available.';
             try { output = fs.readFileSync('test_output.sanitized.txt', 'utf8'); } catch {}
+            output = output.replace(/~~~/g, '~~\u200b~');
             if (output.length > 60000) output = output.substring(0, 60000) + '\n\n...(truncated)';
             const marker = '<!-- propr-full-test-results -->';
             const body = [
@@ -181,28 +175,9 @@ jobs:
               '',
               `**[View Workflow](${runUrl})**`,
             ].join('\n');
-            const commentParams = {
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              per_page: 100,
-            };
-            const comments = await github.paginate(github.rest.issues.listComments, commentParams);
-            const existing = comments.find(comment =>
-              comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker)
-            );
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
+              body,
+            });
