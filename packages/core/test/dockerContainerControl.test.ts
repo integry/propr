@@ -70,6 +70,11 @@ test('passes validated Docker values as argument-array entries', async () => {
             args: ['stop', '-t', '17', 'safe-container'],
             timeout: 22000,
         },
+        {
+            file: '/usr/bin/docker',
+            args: ['rm', '-f', 'safe-container'],
+            timeout: 10000,
+        },
     ]);
 });
 
@@ -96,6 +101,31 @@ test('stops a restarting container instead of treating it as terminal', async ()
 
     assert.equal(result.success, true);
     assert.deepEqual(dockerCalls[1]?.args, ['stop', '-t', '10', 'safe-container']);
+});
+
+test('removes a generation-matched container that never reached running state', async () => {
+    responses.push(
+        { error: null, stdout: 'created\n', stderr: '' },
+        { error: null, stdout: 'safe-container\n', stderr: '' },
+    );
+
+    const result = await stopDockerContainer('safe-container');
+
+    assert.equal(result.success, true);
+    assert.deepEqual(dockerCalls[1]?.args, ['rm', '-f', 'safe-container']);
+});
+
+test('reports failure when an abandoned non-running container cannot be removed', async () => {
+    responses.push(
+        { error: null, stdout: 'exited\n', stderr: '' },
+        { error: new Error('daemon refused removal'), stdout: '', stderr: 'daemon refused removal' },
+    );
+
+    const result = await stopDockerContainer('safe-container');
+
+    assert.equal(result.success, false);
+    assert.match(result.error ?? '', /refused removal/);
+    assert.equal(dockerCalls.length, 2);
 });
 
 test('inspects and stops an exact container name when no container ID is available yet', async () => {

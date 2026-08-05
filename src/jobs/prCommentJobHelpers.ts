@@ -1,4 +1,4 @@
-import { logger } from '@propr/core';
+import { logger, SupersededTaskAttemptError } from '@propr/core';
 import type { Logger } from 'pino';
 import fs from 'fs-extra';
 import type { Redis } from 'ioredis';
@@ -341,11 +341,14 @@ export function createSessionIdCallbackForPR(
             // Check current state - don't update if already in a terminal state
             const currentState = await stateManager.getTaskState(taskId);
             if (currentState && TERMINAL_STATES.includes(currentState.state)) {
+                if (prProcessingLockToken !== undefined) throw new SupersededTaskAttemptError(taskId);
                 correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping session ID update');
                 return;
             }
             if (prProcessingLockToken !== undefined
-                && currentState?.prProcessingLockToken !== prProcessingLockToken) return;
+                && currentState?.prProcessingLockToken !== prProcessingLockToken) {
+                throw new SupersededTaskAttemptError(taskId);
+            }
             if (currentState?.state === TaskStates.CLAUDE_EXECUTION) {
                 // Already in claude_execution, just update the history metadata with session info
                 await stateManager.updateHistoryMetadata(taskId, 'claude_execution', {
@@ -382,6 +385,7 @@ export function createSessionIdCallbackForPR(
             if (sessionId) await redisClient.set(`execution:logs:session:${sessionId}`, JSON.stringify(logData), 'EX', 86400 * 30);
             if (conversationId) await redisClient.set(`execution:logs:conversation:${conversationId}`, JSON.stringify(logData), 'EX', 86400 * 30);
         } catch (error) {
+            if (error instanceof SupersededTaskAttemptError) throw error;
             correlatedLogger.warn({ error: (error as Error).message, taskId, sessionId }, 'Failed to update task state with early sessionId');
         }
     };
@@ -398,16 +402,20 @@ export function createContainerIdCallbackForPR(
             // Check current state - don't update if already in a terminal state
             const currentState = await stateManager.getTaskState(taskId);
             if (!currentState) {
+                if (prProcessingLockToken !== undefined) throw new SupersededTaskAttemptError(taskId);
                 logger.warn({ taskId }, 'Task state not found when trying to store container info');
                 return;
             }
 
             if (TERMINAL_STATES.includes(currentState.state)) {
+                if (prProcessingLockToken !== undefined) throw new SupersededTaskAttemptError(taskId);
                 logger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping container ID update');
                 return;
             }
             if (prProcessingLockToken !== undefined
-                && currentState.prProcessingLockToken !== prProcessingLockToken) return;
+                && currentState.prProcessingLockToken !== prProcessingLockToken) {
+                throw new SupersededTaskAttemptError(taskId);
+            }
 
             if (currentState.state === TaskStates.CLAUDE_EXECUTION) {
                 // Already in claude_execution, just update the history metadata
@@ -422,6 +430,7 @@ export function createContainerIdCallbackForPR(
             }
             logger.info({ taskId, containerId, containerName }, 'Docker container info added to task state');
         } catch (err) {
+            if (err instanceof SupersededTaskAttemptError) throw err;
             logger.warn({ taskId, error: (err as Error).message }, 'Failed to update state with container info');
         }
     };

@@ -4,7 +4,7 @@ import type { Redis } from 'ioredis';
 import {
     generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
-    resolveModelAlias, getPendingPrCommentsKey,
+    resolveModelAlias, getPendingPrCommentsKey, hashTaskAttemptToken,
     describeAgentTermination, resolveAgentTerminationReason,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager,
@@ -328,9 +328,46 @@ export interface CleanupOptions {
 
 export function buildPRCommentWorktreeDirName(pullRequestNumber: number, lockToken: string): string {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const attemptSlug = lockToken.split(':').at(-1)?.replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 48)
-        || 'attempt';
+    const attemptSlug = hashTaskAttemptToken(lockToken).slice(0, 24);
     return `pr-${pullRequestNumber}-followup-${timestamp}-${attemptSlug}`;
+}
+
+export interface CleanupRecoveryOptions {
+    repoOwner: string;
+    repoName: string;
+    pullRequestNumber: number;
+    jobBranchName: string | undefined;
+    jobLlm: string | null | undefined;
+    jobReasoningLevel?: ReasoningLevel;
+    attemptGeneration: string;
+    correlatedLogger: Logger;
+}
+
+/** Queues an empty batch that will collect pending comments without rerunning this attempt. */
+export async function schedulePRCommentCleanupRecovery(options: CleanupRecoveryOptions): Promise<void> {
+    const {
+        repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm,
+        jobReasoningLevel, attemptGeneration, correlatedLogger,
+    } = options;
+    const ownerSlug = repoOwner.replace(/[^a-zA-Z0-9-]/g, '-');
+    const repoSlug = repoName.replace(/[^a-zA-Z0-9-]/g, '-');
+    const recoveryCorrelationId = generateCorrelationId();
+    const recoverySuffix = recoveryCorrelationId.replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 16);
+    const recoveryJobId = `pr-comments-cleanup-recovery-${ownerSlug}-${repoSlug}-${pullRequestNumber}-${attemptGeneration.slice(0, 16)}-${recoverySuffix}`;
+    await issueQueue.add('processPullRequestComment', {
+        pullRequestNumber,
+        comments: [],
+        repoOwner,
+        repoName,
+        branchName: jobBranchName,
+        llm: jobLlm,
+        correlationId: recoveryCorrelationId,
+        reasoningLevel: jobReasoningLevel,
+    }, { jobId: recoveryJobId, delay: 3000 });
+    correlatedLogger.info(
+        { jobId: recoveryJobId, pullRequestNumber },
+        'Queued durable cleanup recovery for comments that may still be pending',
+    );
 }
 
 export async function cleanupJob(options: CleanupOptions, beforeRelease?: () => Promise<void>): Promise<void> {
@@ -392,6 +429,7 @@ export async function cleanupJob(options: CleanupOptions, beforeRelease?: () => 
         }
     } catch (pendingCheckError) {
         correlatedLogger.warn({ error: (pendingCheckError as Error).message }, 'Failed to check/queue pending comments');
+        throw pendingCheckError;
     }
 }
 
@@ -399,6 +437,16 @@ export async function cleanupJobBeforeStoppingHeartbeat(options: CleanupOptions,
     await runJobCleanupLifecycle(
         beforeRelease => cleanupJob(options, beforeRelease),
         stopLockHeartbeat, options.correlatedLogger, preserveJobOutcome,
+        () => schedulePRCommentCleanupRecovery({
+            repoOwner: options.repoOwner,
+            repoName: options.repoName,
+            pullRequestNumber: options.pullRequestNumber,
+            jobBranchName: options.jobBranchName,
+            jobLlm: options.jobLlm,
+            jobReasoningLevel: options.jobReasoningLevel,
+            attemptGeneration: hashTaskAttemptToken(options.lockToken),
+            correlatedLogger: options.correlatedLogger,
+        }),
     );
 }
 

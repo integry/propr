@@ -293,6 +293,40 @@ describe('task state reconciliation', () => {
         assert.equal(summary.finalized, 1);
     });
 
+    test('completes a failed queue job from its generation-fenced remote outcome checkpoint', async () => {
+        const published = task('pr-comments-remote-published', TaskStates.POST_PROCESSING);
+        const manager = stateManager([published]);
+        const checkpoint = {
+            status: 'complete',
+            commit: 'commit-remote',
+            pullRequestNumber: 1738,
+            prProcessingAttemptGeneration: hashTaskAttemptToken(published.prProcessingLockToken!),
+        };
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({
+                [published.taskId]: {
+                    state: 'failed',
+                    failedReason: 'Redis completion transition failed',
+                },
+            }),
+            redis: {
+                eval: async () => 1,
+                pttl: async () => -2,
+                get: async () => JSON.stringify(checkpoint),
+            },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(published.taskId)?.state, TaskStates.COMPLETED);
+        assert.equal(manager.updates[0]?.metadata.commitHash, 'commit-remote');
+        assert.equal(summary.finalized, 1);
+        assert.equal(summary.interrupted, 0);
+    });
+
     test('reconciles a legacy PR-comment state without issueRef.type', async () => {
         const legacy = task('pr-comments-integry-propr-1738-1785928912960', TaskStates.PROCESSING);
         delete legacy.issueRef.type;

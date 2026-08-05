@@ -136,6 +136,6 @@ export interface WorkerStateManagerOptions {
     /** Namespace for durable task revisions; kept outside state scans. */
     revisionKeyPrefix?: string;
     stateExpiry?: number;
-    /** @deprecated Durable revision keys no longer expire; this option is ignored. */
+    /** Retains ordering after state cleanup without leaking one key per task forever. */
     revisionExpiry?: number;
 }

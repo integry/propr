@@ -396,14 +396,15 @@ test('createTaskState stores expiring state with a durable revision', async () =
 
     await stateManager.createTaskState(taskId, issueRef);
 
-    // Verify the atomic creation script received a separate durable revision key.
+    // Verify the atomic creation script received a separate retained revision key.
     assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
     const createCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(createCall.arguments[2], `${TEST_KEY_PREFIX}${taskId}`);
     assert.strictEqual(createCall.arguments[3], `revision:${TEST_KEY_PREFIX}${taskId}`);
     assert.strictEqual(createCall.arguments[4], TEST_STATE_EXPIRY);
-    assert.strictEqual(createCall.arguments.length, 6);
-    assert.match(createCall.arguments[0] as string, /redis\.call\('set', KEYS\[2\], version\)/);
+    assert.strictEqual(createCall.arguments[6], 30 * 24 * 3600);
+    assert.strictEqual(createCall.arguments.length, 7);
+    assert.match(createCall.arguments[0] as string, /redis\.call\('setex', KEYS\[2\], ARGV\[3\], version\)/);
 
     // Verify the stored state is valid JSON with correct structure
     const storedState = JSON.parse(createCall.arguments[5] as string) as TaskStateData;
@@ -1128,7 +1129,8 @@ test('updateTaskState persists to Redis with TTL renewal', async () => {
     const evalCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-redis-persist`);
     assert.strictEqual(evalCall.arguments[5], TEST_STATE_EXPIRY);
-    assert.strictEqual(evalCall.arguments.length, 7);
+    assert.strictEqual(evalCall.arguments[7], 30 * 24 * 3600);
+    assert.strictEqual(evalCall.arguments.length, 8);
 
     // Verify state was stored correctly
     const storedState = JSON.parse(evalCall.arguments[6] as string) as TaskStateData;
@@ -1682,7 +1684,8 @@ test('markTaskFailed persists failure to Redis atomically', async () => {
     const evalCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-fail-redis`);
     assert.strictEqual(evalCall.arguments[5], TEST_STATE_EXPIRY);
-    assert.strictEqual(evalCall.arguments.length, 7);
+    assert.strictEqual(evalCall.arguments[7], 30 * 24 * 3600);
+    assert.strictEqual(evalCall.arguments.length, 8);
 
     // Verify stored state has FAILED status
     const storedState = JSON.parse(evalCall.arguments[6] as string) as TaskStateData;
@@ -2420,6 +2423,7 @@ test('cleanupOldTasks removes tasks older than maxAge', async () => {
     assert.strictEqual(cleanedCount, 1);
     assert.strictEqual(mockRedisInstance.del.mock.calls.length, 1);
     assert.strictEqual(mockRedisInstance.del.mock.calls[0].arguments[0], 'test:worker:state:task-old-completed');
+    assert.strictEqual(mockRedisInstance.del.mock.calls[0].arguments[1], 'revision:test:worker:state:task-old-completed');
 
     await stateManager.close();
 });

@@ -71,3 +71,15 @@ test('bounds remembered OSC-8 hyperlinks and evicts the oldest target', () => {
   assert.match(reEmitted, /https:\/\/example\.test\/login\/0/);
   assert.equal(session.emittedTerminalLinks.size, 128);
 });
+
+test('rejects OSC-8 targets containing C1 terminal controls', () => {
+  const session = state();
+  const target = 'https://example.test/login\u0085spoofed';
+  const output = sanitizeTerminalChunk(
+    session,
+    `\u001b]8;;${target}\u0007visible\u001b]8;;\u0007`,
+  );
+
+  assert.equal(output, 'visible');
+  assert.equal(session.emittedTerminalLinks.size, 0);
+});

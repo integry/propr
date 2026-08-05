@@ -142,15 +142,21 @@ test('Antigravity output parser preserves plain responses that are valid JSON va
     const object = parseAntigravityJsonl('{"answer":2}\n');
     const commonType = parseAntigravityJsonl('{"type":"result","value":2}\n');
     const sourceAndType = parseAntigravityJsonl('{"source":"data","type":"answer"}\n');
+    const commonError = parseAntigravityJsonl('{"type":"error","message":"No issues"}\n');
+    const commonMessage = parseAntigravityJsonl('{"type":"message","role":"assistant","content":"plain JSON"}\n');
 
     assert.equal(numeric.summary, '2');
     assert.equal(object.summary, '{"answer":2}');
     assert.equal(commonType.summary, '{"type":"result","value":2}');
     assert.equal(sourceAndType.summary, '{"source":"data","type":"answer"}');
+    assert.equal(commonError.summary, '{"type":"error","message":"No issues"}');
+    assert.equal(commonMessage.summary, '{"type":"message","role":"assistant","content":"plain JSON"}');
     assert.deepEqual(numeric.conversationLog, []);
     assert.deepEqual(object.conversationLog, []);
     assert.deepEqual(commonType.conversationLog, []);
     assert.deepEqual(sourceAndType.conversationLog, []);
+    assert.deepEqual(commonError.conversationLog, []);
+    assert.deepEqual(commonMessage.conversationLog, []);
 });
 
 test('Antigravity output parser reads real transcript JSONL events', () => {

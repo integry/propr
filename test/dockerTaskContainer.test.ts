@@ -28,10 +28,11 @@ describe('running Docker task container lookup', () => {
             name: 'codex-issue-1734-96957312',
         });
         assert.ok(receivedArgs.includes('label=propr.task.id=pr-comments-propr-gitfix-1734-96957312'));
+        assert.ok(receivedArgs.includes('-a'));
         assert.ok(!receivedArgs.some(arg => arg.startsWith('name=')));
     });
 
-    test('returns null when no matching container is running', async () => {
+    test('returns null when no matching container exists in any lifecycle state', async () => {
         const container = await findRunningDockerContainerForTask(
             'pr-comments-propr-gitfix-1734-96957312',
             async () => result(''),

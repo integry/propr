@@ -64,6 +64,7 @@ export class WorkerStateManager {
     private keyPrefix: string;
     private revisionKeyPrefix: string;
     private stateExpiry: number;
+    private revisionExpiry: number;
     private nonTerminalScanPositions = new Map<string, { cursor: string; pendingKeys: string[] }>();
     private persistenceTails = new Map<string, Promise<void>>();
 
@@ -78,6 +79,7 @@ export class WorkerStateManager {
         this.keyPrefix = options.keyPrefix ?? DEFAULT_WORKER_STATE_KEY_PREFIX;
         this.revisionKeyPrefix = options.revisionKeyPrefix ?? `revision:${this.keyPrefix}`;
         this.stateExpiry = options.stateExpiry ?? 7 * 24 * 3600;
+        this.revisionExpiry = options.revisionExpiry ?? 30 * 24 * 3600;
         this.redis.on('error', (error: Error) => {
             logger.error({ error: error.message }, 'Redis error in WorkerStateManager');
         });
@@ -112,6 +114,7 @@ export class WorkerStateManager {
         const revisionKey = `${this.revisionKeyPrefix}${taskId}`;
         const createdVersion = await createTaskStateRecord(this.redis, {
             stateKey: key, revisionKey, stateExpiry: this.stateExpiry,
+            revisionExpiry: this.revisionExpiry,
             state,
             ...options,
         });
@@ -178,6 +181,7 @@ export class WorkerStateManager {
                 stateKey: key,
                 revisionKey: `${this.revisionKeyPrefix}${taskId}`,
                 stateExpiry: this.stateExpiry,
+                revisionExpiry: this.revisionExpiry,
                 expectedJson: stateJson,
                 state,
             });
@@ -226,6 +230,7 @@ export class WorkerStateManager {
             stateKey: key,
             revisionKey: `${this.revisionKeyPrefix}${taskId}`,
             stateExpiry: this.stateExpiry,
+            revisionExpiry: this.revisionExpiry,
             expectedJson: stateJson,
             state,
         });
@@ -288,6 +293,7 @@ export class WorkerStateManager {
                 stateKey: key,
                 revisionKey: `${this.revisionKeyPrefix}${taskId}`,
                 stateExpiry: this.stateExpiry,
+                revisionExpiry: this.revisionExpiry,
                 expectedJson: stateJson,
                 state,
             });
@@ -365,6 +371,7 @@ export class WorkerStateManager {
                 stateKey: key,
                 revisionKey: `${this.revisionKeyPrefix}${taskId}`,
                 stateExpiry: this.stateExpiry,
+                revisionExpiry: this.revisionExpiry,
                 expectedJson: stateJson,
                 state,
             });
@@ -489,7 +496,12 @@ export class WorkerStateManager {
      * @returns Number of tasks cleaned up
      */
     async cleanupOldTasks(maxAge: number = 24 * 3600): Promise<number> {
-        return await cleanupOldTaskStates(this.redis, this.keyPrefix, maxAge);
+        return await cleanupOldTaskStates(
+            this.redis,
+            this.keyPrefix,
+            this.revisionKeyPrefix,
+            maxAge,
+        );
     }
 
     /**

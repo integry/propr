@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 
 const events: string[] = [];
+const markReviewCommentsProcessed = mock.fn(async () => {});
+const schedulePRCommentCleanupRecovery = mock.fn(async () => {
+    events.push('cleanup-recovery');
+});
 const andWhere = mock.fn(() => ({
     update: async () => {
         events.push('commit-hash');
@@ -29,11 +33,14 @@ await mock.module('../src/jobs/prCompletionComment.js', {
 });
 
 await mock.module('../src/jobs/prCommentJobUtils.js', {
-    namedExports: { buildCommitMessage: () => 'commit message' },
+    namedExports: {
+        buildCommitMessage: () => 'commit message',
+        schedulePRCommentCleanupRecovery,
+    },
 });
 
 await mock.module('../src/jobs/reviewCommentGatherer.js', {
-    namedExports: { markReviewCommentsProcessed: async () => {} },
+    namedExports: { markReviewCommentsProcessed },
 });
 
 await mock.module('../src/jobs/ultrafixJobHelpers.js', {
@@ -83,9 +90,9 @@ test('terminal completion is the final fenced operation after continuation work'
                 warn: () => {},
             },
         },
-        unprocessedReviewComments: [],
+        unprocessedReviewComments: [{ id: 5192431716 }],
         llm: null,
-        redisClient: {},
+        redisClient: { eval: async () => 1 },
         prProcessingLockToken: 'attempt-token',
         assertLease,
         beforeCompletion: async () => {
@@ -99,4 +106,52 @@ test('terminal completion is the final fenced operation after continuation work'
     assert.ok(events.indexOf('assert') < events.indexOf('commit-hash'));
     assert.ok(events.indexOf('continuation') < events.indexOf('complete'));
     assert.equal(events.at(-1), 'complete');
+    assert.ok(events.indexOf('cleanup-recovery') < events.indexOf('complete'));
+    assert.equal(markReviewCommentsProcessed.mock.calls.length, 1);
+    assert.equal(markReviewCommentsProcessed.mock.calls[0].arguments[1].prProcessingLockToken, 'attempt-token');
+    assert.equal(
+        markReviewCommentsProcessed.mock.calls[0].arguments[1].prProcessingLockKey,
+        'lock:pr:integry:propr:1748',
+    );
+});
+
+test('preserves the published result when the final task-state transition fails', async () => {
+    const terminalFailure = new Error('Redis transition unavailable');
+    const warn = mock.fn();
+    const result = await handlePostExecution({
+        state: {
+            octokit: {
+                auth: async () => ({ token: 'token' }),
+                request: async () => ({
+                    data: { html_url: 'https://example.test/comment', body: 'complete' },
+                }),
+            },
+            worktreeInfo: { worktreePath: '/attempt-worktree', branchName: 'branch' },
+            claudeResult: { success: true, summary: 'done' },
+            authorsText: '@owner',
+            unprocessedComments: [{ id: 1, body: '/fix', author: 'owner', type: 'issue' }],
+            startingWorkComment: { data: { id: 2, html_url: 'https://example.test/start' } },
+        },
+        job: { data: { commandMode: 'fix' } },
+        taskId: 'task-remote-published',
+        stateManager: {
+            updateTaskState: async () => { throw terminalFailure; },
+        },
+        context: {
+            pullRequestNumber: 1748,
+            repoOwner: 'integry',
+            repoName: 'propr',
+            correlatedLogger: { info: () => {}, warn },
+        },
+        unprocessedReviewComments: [],
+        llm: null,
+        redisClient: { eval: async () => 1 },
+        prProcessingLockToken: 'attempt-token',
+        assertLease: async () => {},
+        beforeCompletion: async () => {},
+    } as never, 'https://example.test/task');
+
+    assert.equal(result.partial, false);
+    assert.equal(result.commitHash, 'commit-abc');
+    assert.equal(warn.mock.calls[0].arguments[0].error, terminalFailure.message);
 });

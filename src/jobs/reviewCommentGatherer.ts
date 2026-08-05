@@ -14,6 +14,17 @@ import type { Redis } from 'ioredis';
 import { getProcessedReviewCommentsKey } from '@propr/core';
 import { isReviewComment } from './reviewCommentFormatter.js';
 
+export const MARK_REVIEW_COMMENTS_PROCESSED_SCRIPT = `
+if redis.call('get', KEYS[1]) ~= ARGV[1] then
+    return 0
+end
+for index = 3, #ARGV do
+    redis.call('sadd', KEYS[2], ARGV[index])
+end
+redis.call('expire', KEYS[2], ARGV[2])
+return 1
+`;
+
 export interface AIReviewComment {
     id: number;
     body: string;
@@ -193,7 +204,11 @@ export async function getPendingReviewState(
  */
 export async function markReviewCommentsProcessed(
     commentIds: number[],
-    options: Pick<GatherOptions, 'repoOwner' | 'repoName' | 'pullRequestNumber' | 'redisClient' | 'correlatedLogger'>,
+    options: Pick<GatherOptions, 'repoOwner' | 'repoName' | 'pullRequestNumber' | 'redisClient' | 'correlatedLogger'> & {
+        prProcessingLockKey: string;
+        prProcessingLockToken: string;
+        assertLease: () => Promise<void>;
+    },
 ): Promise<void> {
     if (commentIds.length === 0) return;
 
@@ -201,14 +216,23 @@ export async function markReviewCommentsProcessed(
     const redisKey = getProcessedReviewCommentsKey(repoOwner, repoName, pullRequestNumber);
     const TTL_SECONDS = 30 * 24 * 3600; // 30 days
 
-    try {
-        await redisClient.sadd(redisKey, ...commentIds.map(String));
-        await redisClient.expire(redisKey, TTL_SECONDS);
-        correlatedLogger.info(
-            { pullRequestNumber, count: commentIds.length, commentIds },
-            'Marked AI review comments as processed',
-        );
-    } catch (err) {
-        correlatedLogger.warn({ error: (err as Error).message }, 'Failed to mark review comments as processed in Redis');
+    const marked = await redisClient.eval(
+        MARK_REVIEW_COMMENTS_PROCESSED_SCRIPT,
+        2,
+        options.prProcessingLockKey,
+        redisKey,
+        options.prProcessingLockToken,
+        TTL_SECONDS,
+        ...commentIds.map(String),
+    );
+    if (Number(marked) !== 1) {
+        // Convert the failed atomic fence into the processor's canonical lease
+        // loss error so execution stops before a successor consumes comments.
+        await options.assertLease();
+        throw new Error('Could not generation-fence processed AI review comments');
     }
+    correlatedLogger.info(
+        { pullRequestNumber, count: commentIds.length, commentIds },
+        'Marked AI review comments as processed',
+    );
 }

@@ -7,6 +7,7 @@ const releaseLease = mock.fn(async () => true);
 const findRunningDockerContainerForTask = mock.fn(async () => null as { id: string; name: string } | null);
 const inspectLegacyDockerContainerLivenessForTask = mock.fn(async () => 'not_found' as 'running' | 'not_found' | 'unavailable');
 const stopDockerContainer = mock.fn(async () => ({ success: true }));
+const issueQueueAdd = mock.fn(async () => ({}));
 
 class PRProcessingLeaseLostError extends Error {}
 
@@ -21,7 +22,8 @@ await mock.module('@propr/core', {
         getDefaultModel: () => null,
         getPendingPrCommentsKey: () => 'pending-comments',
         handleError: () => {},
-        issueQueue: { add: async () => {} },
+        hashTaskAttemptToken: () => '0123456789abcdef0123456789abcdef',
+        issueQueue: { add: issueQueueAdd },
         inspectLegacyDockerContainerLivenessForTask,
         recordLLMMetrics: async () => {},
         resolveModelAlias: (value: string) => value,
@@ -67,6 +69,7 @@ await mock.module('../src/jobs/prCommentCommandContext.js', {
 });
 
 const {
+    buildPRCommentWorktreeDirName,
     cleanupJob,
     cleanupJobBeforeStoppingHeartbeat,
     handleJobError,
@@ -87,6 +90,7 @@ function cleanupOptions() {
         jobLlm: null,
         correlatedLogger: {
             debug: mock.fn(),
+            error: mock.fn(),
             info: mock.fn(),
             warn: mock.fn(),
         } as never,
@@ -106,6 +110,16 @@ beforeEach(() => {
     inspectLegacyDockerContainerLivenessForTask.mock.mockImplementation(async () => 'not_found');
     stopDockerContainer.mock.resetCalls();
     stopDockerContainer.mock.mockImplementation(async () => ({ success: true }));
+    issueQueueAdd.mock.resetCalls();
+    issueQueueAdd.mock.mockImplementation(async () => ({}));
+});
+
+test('uses only a one-way attempt generation in worktree names', () => {
+    const lockToken = 'correlation-visible:raw-secret-uuid';
+    const worktreeName = buildPRCommentWorktreeDirName(1748, lockToken);
+
+    assert.match(worktreeName, /^pr-1748-followup-/);
+    assert.doesNotMatch(worktreeName, /raw-secret-uuid|correlation-visible/);
 });
 
 test('stops an abandoned task container before allowing a successor attempt', async () => {
@@ -237,7 +251,7 @@ test('stops the heartbeat immediately before intentionally releasing the PR leas
     assert.equal(stopHeartbeat.mock.calls.length, 1);
 });
 
-test('preserves a committed job outcome when cleanup ownership checks remain unavailable', async () => {
+test('queues durable recovery before preserving a committed outcome after ownership checks fail', async () => {
     assertLease.mock.mockImplementation(async () => {
         throw new Error('Redis unavailable');
     });
@@ -250,6 +264,10 @@ test('preserves a committed job outcome when cleanup ownership checks remain una
     assert.equal(releaseLease.mock.calls.length, 0);
     assert.equal(stopHeartbeat.mock.calls.length, 1);
     assert.equal((options.correlatedLogger.warn as ReturnType<typeof mock.fn>).mock.calls.length, 2);
+    assert.equal(issueQueueAdd.mock.calls.length, 1);
+    assert.equal(issueQueueAdd.mock.calls[0].arguments[0], 'processPullRequestComment');
+    assert.deepEqual((issueQueueAdd.mock.calls[0].arguments[1] as { comments: unknown[] }).comments, []);
+    assert.match(issueQueueAdd.mock.calls[0].arguments[2].jobId, /cleanup-recovery/);
 });
 
 test('preserves a committed job outcome when stopping the heartbeat fails', async () => {
@@ -265,6 +283,21 @@ test('preserves a committed job outcome when stopping the heartbeat fails', asyn
     assert.equal(releaseLease.mock.calls.length, 0);
     assert.equal(stopHeartbeat.mock.calls.length, 2);
     assert.equal((options.correlatedLogger.warn as ReturnType<typeof mock.fn>).mock.calls.length, 1);
+    assert.equal(issueQueueAdd.mock.calls.length, 1);
+});
+
+test('fails a committed job when durable cleanup recovery cannot be queued', async () => {
+    assertLease.mock.mockImplementation(async () => {
+        throw new Error('Redis unavailable');
+    });
+    issueQueueAdd.mock.mockImplementationOnce(async () => {
+        throw new Error('queue unavailable');
+    });
+
+    await assert.rejects(
+        cleanupJobBeforeStoppingHeartbeat(cleanupOptions(), async () => {}, true),
+        /durable recovery job/,
+    );
 });
 
 test('performs no generic error side effects after the live lease is lost', async () => {

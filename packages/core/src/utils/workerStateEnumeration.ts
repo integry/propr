@@ -163,6 +163,7 @@ export async function getProcessingTaskStates(
 export async function cleanupOldTaskStates(
     redis: StateMaintenanceRedis,
     keyPrefix: string,
+    revisionKeyPrefix: string,
     maxAge: number,
 ): Promise<number> {
     const keys = await redis.keys(`${keyPrefix}*`);
@@ -177,7 +178,8 @@ export async function cleanupOldTaskStates(
             if (!cleanupStates.includes(state.state)) continue;
             const updatedAt = new Date(state.updatedAt).getTime();
             if (updatedAt >= cutoffTime) continue;
-            await redis.del(key);
+            const taskKeySuffix = key.slice(keyPrefix.length);
+            await redis.del(key, `${revisionKeyPrefix}${taskKeySuffix}`);
             cleanedCount++;
             logger.debug({ taskId: state.taskId, state: state.state, age: Date.now() - updatedAt }, 'Cleaned up old task state');
         } catch (error) {

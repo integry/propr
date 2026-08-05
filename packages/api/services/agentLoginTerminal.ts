@@ -128,7 +128,7 @@ function terminalLinkTarget(payload: string): string | undefined {
   if (!target.startsWith('http://') && !target.startsWith('https://')) return undefined;
   if ([...target].some(value => {
     const code = value.charCodeAt(0);
-    return code <= 0x20 || code === 0x7f;
+    return code <= 0x20 || isUnsafeControlCharacter(value);
   })) return undefined;
   return target;
 }

@@ -52,8 +52,8 @@ export interface AgentTaskOptions {
     retryReason?: string;
 
     // Callbacks
-    onSessionId?: (sessionId: string, conversationId?: string) => void;
-    onContainerId?: (containerId: string, containerName: string) => void;
+    onSessionId?: (sessionId: string, conversationId?: string) => void | Promise<void>;
+    onContainerId?: (containerId: string, containerName: string) => void | Promise<void>;
 
     // GitHub token for container
     githubToken: string;

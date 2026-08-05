@@ -40,6 +40,19 @@ function waitForRetry(delayMs: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, delayMs));
 }
 
+async function removeStoppedContainer(containerId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        await runDocker(['rm', '-f', containerId], 10000);
+        return { success: true };
+    } catch (error) {
+        const message = (error as Error).message;
+        if (message.includes('No such container') || message.includes('No such object')) {
+            return { success: true };
+        }
+        return { success: false, error: message };
+    }
+}
+
 export interface DockerExecutionTeardownOptions {
     taskId?: string;
     attemptGeneration?: string;
@@ -112,16 +125,11 @@ export async function stopDockerContainer(
 
     logger.info({ containerId, timeoutSeconds }, 'Attempting to stop Docker container');
     try {
+        let statusOutput: string | undefined;
         try {
-            const statusOutput = (await runDocker([
+            statusOutput = (await runDocker([
                 'inspect', '--type', 'container', '--format', '{{.State.Status}}', containerId,
             ], 5000)).trim();
-            // Restarting and paused containers are still live resources. Only
-            // Docker's known terminal/non-started states can skip termination.
-            if (/^(exited|dead|created)$/iu.test(statusOutput)) {
-                logger.info({ containerId, status: statusOutput }, 'Container is already stopped');
-                return { success: true };
-            }
         } catch (checkError) {
             if ((checkError as Error).message.includes('No such')) {
                 logger.info({ containerId }, 'Container no longer exists');
@@ -129,25 +137,45 @@ export async function stopDockerContainer(
             }
             logger.debug({ containerId, error: (checkError as Error).message }, 'Could not check container status, attempting stop anyway');
         }
+        // Restarting and paused containers are still live resources. Remove
+        // terminal/non-started containers so deterministic names are reusable.
+        if (statusOutput && /^(exited|dead|created)$/iu.test(statusOutput)) {
+            const removed = await removeStoppedContainer(containerId);
+            if (removed.success) {
+                logger.info({ containerId, status: statusOutput }, 'Removed abandoned non-running container');
+                return { success: true };
+            }
+            logger.error({ containerId, status: statusOutput, error: removed.error }, 'Failed to remove abandoned non-running container');
+            return removed;
+        }
 
         try {
             await runDocker(
                 ['stop', '-t', String(timeoutSeconds), containerId],
                 (timeoutSeconds + 5) * 1000,
             );
-            logger.info({ containerId }, 'Docker container stopped gracefully');
-            return { success: true };
+            const removed = await removeStoppedContainer(containerId);
+            if (removed.success) logger.info({ containerId }, 'Docker container stopped and removed gracefully');
+            else logger.error({ containerId, error: removed.error }, 'Docker container stopped but could not be removed');
+            return removed;
         } catch (stopError) {
             logger.warn({ containerId, error: (stopError as Error).message }, 'Graceful stop failed, attempting force kill');
             try {
                 await runDocker(['kill', containerId], 10000);
-                logger.info({ containerId }, 'Docker container force killed');
-                return { success: true };
+                const removed = await removeStoppedContainer(containerId);
+                if (removed.success) logger.info({ containerId }, 'Docker container force killed and removed');
+                else logger.error({ containerId, error: removed.error }, 'Docker container was killed but could not be removed');
+                return removed;
             } catch (killError) {
                 const message = (killError as Error).message;
-                if (message.includes('No such container') || message.includes('is not running')) {
-                    logger.info({ containerId }, 'Container already stopped or removed');
+                if (message.includes('No such container')) {
+                    logger.info({ containerId }, 'Container already removed');
                     return { success: true };
+                }
+                if (message.includes('is not running')) {
+                    const removed = await removeStoppedContainer(containerId);
+                    if (removed.success) logger.info({ containerId }, 'Removed container that stopped during termination');
+                    return removed;
                 }
                 logger.error({ containerId, error: message }, 'Failed to force kill Docker container');
                 return { success: false, error: message };

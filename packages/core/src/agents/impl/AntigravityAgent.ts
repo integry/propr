@@ -120,7 +120,7 @@ export class AntigravityAgent implements Agent {
     private async processExecutionResult(opts: {
         result: { stdout: string; stderr: string; exitCode: number | null; timedOut?: boolean }; executionTime: number;
         issueRef: { number: number; repoOwner: string; repoName: string }; effectiveModel: string | undefined;
-        prompt: string; worktreePath: string; worktreeGitContent: string | null; onSessionId?: (sessionId: string) => void;
+        prompt: string; worktreePath: string; worktreeGitContent: string | null; onSessionId?: (sessionId: string) => void | Promise<void>;
         taskId?: string; prNumber?: number; isRetry?: boolean; retryReason?: string; usageMetrics?: UsageTrackingMetrics | null;
         transcriptPath?: string;
     }): Promise<AgentExecutionResult> {
@@ -150,7 +150,7 @@ export class AntigravityAgent implements Agent {
         return agentResult;
     }
 
-    private async resolveSessionOutput(stdout: string, transcriptPath?: string, onSessionId?: (sessionId: string) => void) {
+    private async resolveSessionOutput(stdout: string, transcriptPath?: string, onSessionId?: (sessionId: string) => void | Promise<void>) {
         const parsedOutput = parseAntigravityJsonl(stdout);
         const sessionOutput = await this.readTransientSessionOutput(transcriptPath, parsedOutput.sessionId);
         const sessionId = sessionOutput.sessionId || parsedOutput.sessionId;
@@ -159,7 +159,7 @@ export class AntigravityAgent implements Agent {
         const conversationLog = filterAntigravityAnalysisEvents(rawConversationLog);
         const tokenUsage = this.mergeTokenUsage(parsedOutput.tokenUsage, sessionOutput.tokenUsage);
         const modelUsed = parsedOutput.modelUsed || sessionOutput.modelUsed;
-        if (sessionId && onSessionId) onSessionId(sessionId);
+        if (sessionId && onSessionId) await onSessionId(sessionId);
         // rawConversationLog (full agentic trace: file views, searches, command
         // output, code edits) is kept for token estimation; conversationLog stays
         // filtered to the displayed assistant responses.

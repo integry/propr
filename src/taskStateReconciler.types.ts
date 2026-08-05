@@ -20,6 +20,8 @@ export interface ReconciliationQueue {
 export interface ReconciliationRedis {
     eval(script: string, numberOfKeys: number, ...args: Array<string | number>): Promise<unknown>;
     pttl(key: string): Promise<number>;
+    /** Optional for compatibility with embedded reconcilers predating remote-outcome checkpoints. */
+    get?(key: string): Promise<string | null>;
 }
 
 export type ReconciliationStateManager = Pick<

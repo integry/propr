@@ -24,6 +24,7 @@ import {
     taskMatchesExpectation,
     throwIfAborted,
 } from './taskStateReconciler.types.js';
+import { loadPRCommentRemoteOutcome } from './jobs/prCommentRemoteOutcome.js';
 import type {
     ReconciliationContext,
     ReconciliationJob,
@@ -337,6 +338,30 @@ async function reconcileStaleTask(
     throwIfAborted(options.signal);
     let queueState = job ? await job.getState() : 'missing';
     throwIfAborted(options.signal);
+
+    if (options.redis.get) {
+        const checkpoint = await loadPRCommentRemoteOutcome(
+            { get: key => options.redis.get!(key) },
+            task.taskId,
+        );
+        if (checkpoint && completedResultMatchesAttempt(task, checkpoint)) {
+            // A live retry will discover this same checkpoint and finish
+            // itself. Otherwise complete the durable task without rerunning
+            // or reclassifying already-published work as a failure.
+            if (queueState === 'active' && await hasLiveAttempt(task, options.queue, options.redis)) {
+                summary.live++;
+                return;
+            }
+            await stopAbandonedTaskContainer(task, context);
+            await finalizeCompletedJob(
+                task,
+                { getState: async () => 'completed', returnvalue: checkpoint },
+                options,
+                summary,
+            );
+            return;
+        }
+    }
     if (await handleTerminalQueueState(task, job, queueState, context)) return;
     if (await handleQueuedState(task, queueState, context)) return;
 

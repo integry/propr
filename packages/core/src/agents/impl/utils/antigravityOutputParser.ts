@@ -72,13 +72,17 @@ function hasProtocolStatus(candidate: Record<string, unknown>): boolean {
     return candidate.status === 'success' || candidate.status === 'error';
 }
 
+function hasProtocolTimestamp(candidate: Record<string, unknown>): boolean {
+    return typeof candidate.timestamp === 'string' && candidate.timestamp.trim().length > 0;
+}
+
 const ANTIGRAVITY_EVENT_VALIDATORS: Record<string, (candidate: Record<string, unknown>) => boolean> = {
-    init: candidate => typeof candidate.session_id === 'string' && typeof candidate.model === 'string',
-    message: candidate => (candidate.role === 'user' || candidate.role === 'assistant') && typeof candidate.content === 'string',
-    tool_use: candidate => typeof candidate.tool_name === 'string' && typeof candidate.tool_id === 'string' && isRecord(candidate.parameters),
-    tool_result: candidate => typeof candidate.tool_id === 'string' && hasProtocolStatus(candidate) && typeof candidate.output === 'string',
-    result: candidate => hasProtocolStatus(candidate) && isRecord(candidate.stats),
-    error: candidate => typeof candidate.message === 'string',
+    init: candidate => hasProtocolTimestamp(candidate) && typeof candidate.session_id === 'string' && typeof candidate.model === 'string',
+    message: candidate => hasProtocolTimestamp(candidate) && (candidate.role === 'user' || candidate.role === 'assistant') && typeof candidate.content === 'string',
+    tool_use: candidate => hasProtocolTimestamp(candidate) && typeof candidate.tool_name === 'string' && typeof candidate.tool_id === 'string' && isRecord(candidate.parameters),
+    tool_result: candidate => hasProtocolTimestamp(candidate) && typeof candidate.tool_id === 'string' && hasProtocolStatus(candidate) && typeof candidate.output === 'string',
+    result: candidate => hasProtocolTimestamp(candidate) && hasProtocolStatus(candidate) && isRecord(candidate.stats),
+    error: candidate => hasProtocolTimestamp(candidate) && typeof candidate.message === 'string',
 };
 
 function isAntigravityEvent(event: unknown): event is AntigravityEvent {

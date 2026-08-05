@@ -102,6 +102,39 @@ describe('partial agent execution', () => {
         }
     });
 
+    test('rejects when an ownership callback reports a superseded attempt', async () => {
+        const superseded = new Error('superseded callback');
+        superseded.name = 'SupersededTaskAttemptError';
+
+        await assert.rejects(
+            executeDockerCommand(process.execPath, [
+                '-e',
+                'console.log(JSON.stringify({type:"assistant",session_id:"session-old"}))',
+            ], {
+                onSessionId: async () => { throw superseded; },
+            }),
+            error => error === superseded,
+        );
+    });
+
+    test('waits for a delayed ownership callback before completing execution', async () => {
+        const superseded = new Error('delayed superseded callback');
+        superseded.name = 'SupersededTaskAttemptError';
+
+        await assert.rejects(
+            executeDockerCommand(process.execPath, [
+                '-e',
+                'console.log(JSON.stringify({type:"assistant",session_id:"session-old"}))',
+            ], {
+                onSessionId: async () => {
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                    throw superseded;
+                },
+            }),
+            error => error === superseded,
+        );
+    });
+
     test('retains Claude max-turn metadata and the latest assistant update', () => {
         const stdout = [
             JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Implemented the parser; validation remains.' }] } }),

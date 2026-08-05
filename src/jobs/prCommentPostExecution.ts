@@ -21,11 +21,15 @@ import type {
 } from '@propr/core';
 import { buildCompletionComment } from './prCompletionComment.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
-import { buildCommitMessage } from './prCommentJobUtils.js';
+import {
+    buildCommitMessage,
+    schedulePRCommentCleanupRecovery,
+} from './prCommentJobUtils.js';
 import { markReviewCommentsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
+import { persistPRCommentRemoteOutcome } from './prCommentRemoteOutcome.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -187,7 +191,16 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
 
     if (unprocessedReviewComments.length > 0) {
         await assertLease();
-        await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger });
+        await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), {
+            repoOwner,
+            repoName,
+            pullRequestNumber,
+            redisClient,
+            correlatedLogger,
+            prProcessingLockKey: `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`,
+            prProcessingLockToken,
+            assertLease,
+        });
     }
 
     await beforeCompletion();
@@ -195,17 +208,54 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     await assertLease();
     await persistCommitHash(taskId, commitResult?.commitHash, prProcessingLockToken, correlatedLogger);
     await assertLease();
-    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-        reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
-        commitHash: commitResult?.commitHash,
-        historyMetadata: {
-            commandMode: job.data.commandMode || 'default',
-            githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
-            ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
-            ...(partial && { incompleteExecution: { reason: terminationReason } }),
-            ...ultrafixHistoryMeta,
-        }
-    }, prProcessingLockToken);
+    const result = {
+        status: partial ? 'partial' : 'complete',
+        commit: commitResult?.commitHash,
+        pullRequestNumber,
+        claudeResult: { success: state.claudeResult.success },
+        prProcessingAttemptGeneration: hashTaskAttemptToken(prProcessingLockToken),
+    };
+    await persistPRCommentRemoteOutcome(redisClient, {
+        taskId,
+        lockKey: `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`,
+        lockToken: prProcessingLockToken,
+        result,
+    });
+    // Queue the recovery before the terminal Redis transition. If the worker
+    // exits anywhere after publishing remotely, this batch will still inspect
+    // and collect comments that arrived during the attempt.
+    await schedulePRCommentCleanupRecovery({
+        repoOwner,
+        repoName,
+        pullRequestNumber,
+        jobBranchName: state.worktreeInfo.branchName,
+        jobLlm: llm,
+        jobReasoningLevel: job.data.reasoningLevel,
+        attemptGeneration: result.prProcessingAttemptGeneration,
+        correlatedLogger,
+    });
+    await assertLease();
+    try {
+        await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
+            reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
+            commitHash: commitResult?.commitHash,
+            historyMetadata: {
+                commandMode: job.data.commandMode || 'default',
+                githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
+                ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
+                ...(partial && { incompleteExecution: { reason: terminationReason } }),
+                ...ultrafixHistoryMeta,
+            }
+        }, prProcessingLockToken);
+    } catch (error) {
+        // The published outcome and cleanup recovery are already durable. Let
+        // BullMQ complete so its completion hook or the periodic reconciler can
+        // repair Redis state without executing the agent again.
+        correlatedLogger.warn(
+            { taskId, error: (error as Error).message },
+            'Deferred terminal task-state persistence after committing the remote PR outcome',
+        );
+    }
 
     return { commitHash: commitResult?.commitHash, partial };
 }

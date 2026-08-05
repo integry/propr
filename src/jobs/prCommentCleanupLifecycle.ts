@@ -6,6 +6,7 @@ export async function runJobCleanupLifecycle(
     stopHeartbeat: () => Promise<void>,
     correlatedLogger: Logger,
     preserveJobOutcome: boolean,
+    recoverPreservedFailure?: (failure: unknown) => Promise<void>,
 ): Promise<void> {
     let heartbeatStopped = false;
     let heartbeatStopPromise: Promise<void> | null = null;
@@ -39,5 +40,19 @@ export async function runJobCleanupLifecycle(
             );
         }
     }
-    if (failure && !preserveJobOutcome) throw failure;
+    if (!failure) return;
+    if (!preserveJobOutcome) throw failure;
+    if (!recoverPreservedFailure) throw failure;
+    try {
+        await recoverPreservedFailure(failure);
+    } catch (recoveryError) {
+        correlatedLogger.error(
+            { error: (recoveryError as Error).message },
+            'Could not persist cleanup recovery after a committed job outcome',
+        );
+        throw new AggregateError(
+            [failure, recoveryError],
+            'Committed job cleanup failed without a durable recovery job',
+        );
+    }
 }
