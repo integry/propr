@@ -8,6 +8,7 @@ import {
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
 import { scanNonTerminalTaskStates } from './workerStateEnumeration.js';
+import { assertTaskAttemptOwnership, SupersededTaskAttemptError } from './taskAttemptGeneration.js';
 import {
     applyTaskStateUpdate,
     canTransitionTaskState,
@@ -19,15 +20,7 @@ import {
     waitForCASRetry,
 } from './workerStatePersistence.js';
 
-export { TaskStates, type TaskState, type IssueRef };
-
-/** Raised when a task mutation is attempted by an execution that no longer owns the task generation. */
-export class SupersededTaskAttemptError extends Error {
-    constructor(taskId: string) {
-        super(`PR processing attempt was superseded for taskId: ${taskId}`);
-        this.name = 'SupersededTaskAttemptError';
-    }
-}
+export { TaskStates, SupersededTaskAttemptError, type TaskState, type IssueRef };
 
 /**
  * Worker state manager for persistent task state tracking
@@ -126,10 +119,7 @@ export class WorkerStateManager {
             if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
             const state: TaskStateData = JSON.parse(stateJson);
-            if (expectedPrProcessingLockToken !== undefined
-                && state.prProcessingLockToken !== expectedPrProcessingLockToken) {
-                throw new SupersededTaskAttemptError(taskId);
-            }
+            assertTaskAttemptOwnership(taskId, state.prProcessingLockToken, expectedPrProcessingLockToken);
             // Terminal state is monotonic. A retry is the sole intentional path
             // back into processing and must opt in explicitly.
             if (!canTransitionTaskState(state.state, newState, metadata)) return state;
@@ -240,10 +230,7 @@ export class WorkerStateManager {
             if (!stateJson) return null;
 
             state = JSON.parse(stateJson) as TaskStateData;
-            if (expectedPrProcessingLockToken !== undefined
-                && state.prProcessingLockToken !== expectedPrProcessingLockToken) {
-                throw new SupersededTaskAttemptError(taskId);
-            }
+            assertTaskAttemptOwnership(taskId, state.prProcessingLockToken, expectedPrProcessingLockToken);
             state.issueRef = { ...state.issueRef, ...issueRefPatch };
             state.updatedAt = new Date().toISOString();
             state.version = (state.version ?? 0) + 1;
@@ -337,10 +324,7 @@ export class WorkerStateManager {
             if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
             const state: TaskStateData = JSON.parse(stateJson);
-            if (expectedPrProcessingLockToken !== undefined
-                && state.prProcessingLockToken !== expectedPrProcessingLockToken) {
-                throw new SupersededTaskAttemptError(taskId);
-            }
+            assertTaskAttemptOwnership(taskId, state.prProcessingLockToken, expectedPrProcessingLockToken);
             const historyIndex = state.history.findLastIndex(h => h.state === historyState);
 
             if (historyIndex < 0) {
@@ -527,9 +511,7 @@ export class WorkerStateManager {
     /**
      * Closes Redis connection
      */
-    async close(): Promise<void> {
-        await this.redis.quit();
-    }
+    async close(): Promise<void> { await this.redis.quit(); }
 }
 
 /**
