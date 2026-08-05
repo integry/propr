@@ -79,6 +79,15 @@ interface UndoContextParams {
     branchName: string;
 }
 
+interface PublishedOutcomeParams {
+    execution: PostExecutionParams;
+    state: ReadyPostExecutionState;
+    commitHash?: string;
+    completionComment: { data: { html_url: string; body?: string } };
+    partial: boolean;
+    terminationReason: ReturnType<typeof resolveAgentTerminationReason>;
+}
+
 async function commitAndPush(
     state: ReadyPostExecutionState,
     issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number },
@@ -153,8 +162,87 @@ export function getPostExecutionDisposition(result: ClaudeCodeResponse): 'comple
     return resolveAgentTerminationReason(result) ? 'partial' : 'failed';
 }
 
+async function finalizePublishedOutcome(options: PublishedOutcomeParams): Promise<void> {
+    const {
+        execution, state, commitHash, completionComment, partial, terminationReason,
+    } = options;
+    const {
+        job, taskId, stateManager, context, unprocessedReviewComments, llm,
+        redisClient, prProcessingLockToken, assertLease, beforeCompletion,
+    } = execution;
+    const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
+
+    if (unprocessedReviewComments.length > 0) {
+        await assertLease();
+        await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), {
+            repoOwner,
+            repoName,
+            pullRequestNumber,
+            redisClient,
+            correlatedLogger,
+            prProcessingLockKey: `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`,
+            prProcessingLockToken,
+            assertLease,
+        });
+    }
+
+    await beforeCompletion();
+    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(
+        job,
+        { repoOwner, repoName, pullRequestNumber },
+        redisClient,
+    );
+    await assertLease();
+    await persistCommitHash(taskId, commitHash, prProcessingLockToken, correlatedLogger);
+    await assertLease();
+    const result = {
+        status: partial ? 'partial' : 'complete',
+        commit: commitHash,
+        pullRequestNumber,
+        claudeResult: { success: state.claudeResult.success },
+        prProcessingAttemptGeneration: hashTaskAttemptToken(prProcessingLockToken),
+    };
+    await persistPRCommentRemoteOutcome(redisClient, {
+        taskId,
+        lockKey: `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`,
+        lockToken: prProcessingLockToken,
+        result,
+    });
+    // Keep recovery durable before the terminal Redis transition so a worker
+    // exit cannot rerun already-published work or strand newly pending comments.
+    await schedulePRCommentCleanupRecovery({
+        repoOwner,
+        repoName,
+        pullRequestNumber,
+        jobBranchName: state.worktreeInfo.branchName,
+        jobLlm: llm,
+        jobReasoningLevel: job.data.reasoningLevel,
+        attemptGeneration: result.prProcessingAttemptGeneration,
+        correlatedLogger,
+    });
+    await assertLease();
+    try {
+        await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
+            reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
+            commitHash,
+            historyMetadata: {
+                commandMode: job.data.commandMode || 'default',
+                githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
+                ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
+                ...(partial && { incompleteExecution: { reason: terminationReason } }),
+                ...ultrafixHistoryMeta,
+            }
+        }, prProcessingLockToken);
+    } catch (error) {
+        correlatedLogger.warn(
+            { taskId, error: (error as Error).message },
+            'Deferred terminal task-state persistence after committing the remote PR outcome',
+        );
+    }
+}
+
 export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
-    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient, prProcessingLockToken, assertLease, signal, beforeCompletion } = params;
+    const { state, context, unprocessedReviewComments, llm, assertLease, signal } = params;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
 
     requirePostExecutionState(state);
@@ -189,73 +277,14 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     await assertLease();
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
 
-    if (unprocessedReviewComments.length > 0) {
-        await assertLease();
-        await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), {
-            repoOwner,
-            repoName,
-            pullRequestNumber,
-            redisClient,
-            correlatedLogger,
-            prProcessingLockKey: `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`,
-            prProcessingLockToken,
-            assertLease,
-        });
-    }
-
-    await beforeCompletion();
-    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
-    await assertLease();
-    await persistCommitHash(taskId, commitResult?.commitHash, prProcessingLockToken, correlatedLogger);
-    await assertLease();
-    const result = {
-        status: partial ? 'partial' : 'complete',
-        commit: commitResult?.commitHash,
-        pullRequestNumber,
-        claudeResult: { success: state.claudeResult.success },
-        prProcessingAttemptGeneration: hashTaskAttemptToken(prProcessingLockToken),
-    };
-    await persistPRCommentRemoteOutcome(redisClient, {
-        taskId,
-        lockKey: `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`,
-        lockToken: prProcessingLockToken,
-        result,
+    await finalizePublishedOutcome({
+        execution: params,
+        state,
+        commitHash: commitResult?.commitHash,
+        completionComment,
+        partial,
+        terminationReason,
     });
-    // Queue the recovery before the terminal Redis transition. If the worker
-    // exits anywhere after publishing remotely, this batch will still inspect
-    // and collect comments that arrived during the attempt.
-    await schedulePRCommentCleanupRecovery({
-        repoOwner,
-        repoName,
-        pullRequestNumber,
-        jobBranchName: state.worktreeInfo.branchName,
-        jobLlm: llm,
-        jobReasoningLevel: job.data.reasoningLevel,
-        attemptGeneration: result.prProcessingAttemptGeneration,
-        correlatedLogger,
-    });
-    await assertLease();
-    try {
-        await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-            reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
-            commitHash: commitResult?.commitHash,
-            historyMetadata: {
-                commandMode: job.data.commandMode || 'default',
-                githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
-                ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
-                ...(partial && { incompleteExecution: { reason: terminationReason } }),
-                ...ultrafixHistoryMeta,
-            }
-        }, prProcessingLockToken);
-    } catch (error) {
-        // The published outcome and cleanup recovery are already durable. Let
-        // BullMQ complete so its completion hook or the periodic reconciler can
-        // repair Redis state without executing the agent again.
-        correlatedLogger.warn(
-            { taskId, error: (error as Error).message },
-            'Deferred terminal task-state persistence after committing the remote PR outcome',
-        );
-    }
 
     return { commitHash: commitResult?.commitHash, partial };
 }

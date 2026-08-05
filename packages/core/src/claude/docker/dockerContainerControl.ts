@@ -53,6 +53,29 @@ async function removeStoppedContainer(containerId: string): Promise<{ success: b
     }
 }
 
+async function forceRemoveContainer(containerId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+        await runDocker(['kill', containerId], 10000);
+        const removed = await removeStoppedContainer(containerId);
+        if (removed.success) logger.info({ containerId }, 'Docker container force killed and removed');
+        else logger.error({ containerId, error: removed.error }, 'Docker container was killed but could not be removed');
+        return removed;
+    } catch (killError) {
+        const message = (killError as Error).message;
+        if (message.includes('No such container')) {
+            logger.info({ containerId }, 'Container already removed');
+            return { success: true };
+        }
+        if (message.includes('is not running')) {
+            const removed = await removeStoppedContainer(containerId);
+            if (removed.success) logger.info({ containerId }, 'Removed container that stopped during termination');
+            return removed;
+        }
+        logger.error({ containerId, error: message }, 'Failed to force kill Docker container');
+        return { success: false, error: message };
+    }
+}
+
 export interface DockerExecutionTeardownOptions {
     taskId?: string;
     attemptGeneration?: string;
@@ -160,26 +183,7 @@ export async function stopDockerContainer(
             return removed;
         } catch (stopError) {
             logger.warn({ containerId, error: (stopError as Error).message }, 'Graceful stop failed, attempting force kill');
-            try {
-                await runDocker(['kill', containerId], 10000);
-                const removed = await removeStoppedContainer(containerId);
-                if (removed.success) logger.info({ containerId }, 'Docker container force killed and removed');
-                else logger.error({ containerId, error: removed.error }, 'Docker container was killed but could not be removed');
-                return removed;
-            } catch (killError) {
-                const message = (killError as Error).message;
-                if (message.includes('No such container')) {
-                    logger.info({ containerId }, 'Container already removed');
-                    return { success: true };
-                }
-                if (message.includes('is not running')) {
-                    const removed = await removeStoppedContainer(containerId);
-                    if (removed.success) logger.info({ containerId }, 'Removed container that stopped during termination');
-                    return removed;
-                }
-                logger.error({ containerId, error: message }, 'Failed to force kill Docker container');
-                return { success: false, error: message };
-            }
+            return await forceRemoveContainer(containerId);
         }
     } catch (error) {
         const message = (error as Error).message;

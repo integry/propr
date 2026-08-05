@@ -8,7 +8,8 @@ export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId, s
 export { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, WORK_TYPES } from './utils/llmLogger.js';
 export type { LlmLogEntry, WorkReference, WorkType } from './utils/llmLogger.js';
 export type { LLMMetricsSummary, LLMMetricsData, RecordMetricsOptions, ClaudeResult as LLMClaudeResult, IssueRef as LLMIssueRef, ModelPricing, ExtractedMetrics, AggregatedMetrics, CostCheckMetrics, PersistMetrics, ConversationDetail, LLMMetricsSummaryResult, ModelMetrics, DailyMetric, HighCostAlert, ConversationStep, TokenUsage, ExecutionType } from './utils/llmMetrics.types.js';
-export { ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE, WorkerStateManager, getStateManager, closeStateManager, DEFAULT_WORKER_STATE_KEY_PREFIX, getWorkerStateRedisKeys, SupersededTaskAttemptError, TaskStates } from './utils/workerStateManager.js';
+export { ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE, WorkerStateManager, getStateManager, closeStateManager, SupersededTaskAttemptError, TaskStates } from './utils/workerStateManager.js';
+export { DEFAULT_WORKER_STATE_KEY_PREFIX, getWorkerStateRedisKeys } from './utils/workerStateKeys.js';
 export { hashTaskAttemptToken } from './utils/taskAttemptGeneration.js';
 export { isPRCommentTaskState } from './utils/workerStateEnumeration.js';
 export { getEventPublisher, closeEventPublisher, EventPublisher } from './utils/eventPublisher.js';

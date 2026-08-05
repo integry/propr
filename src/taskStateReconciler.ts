@@ -24,7 +24,7 @@ import {
     taskMatchesExpectation,
     throwIfAborted,
 } from './taskStateReconciler.types.js';
-import { loadPRCommentRemoteOutcome } from './jobs/prCommentRemoteOutcome.js';
+import { completedResultMatchesAttempt, loadMatchingPRCommentRemoteOutcome, taskAgeMs } from './taskStateReconciliationChecks.js';
 import type {
     ReconciliationContext,
     ReconciliationJob,
@@ -60,29 +60,6 @@ return 0
 const ASSERT_OWNED_PR_LOCK_SCRIPT = `
 return redis.call('get', KEYS[1]) == ARGV[1] and 1 or 0
 `;
-
-function taskAgeMs(task: TaskStateData, now: number, futureSkewAllowanceMs: number): number {
-    const updatedAt = new Date(task.updatedAt).getTime();
-    if (!Number.isFinite(updatedAt) || updatedAt > now + futureSkewAllowanceMs) {
-        return Number.POSITIVE_INFINITY;
-    }
-    return Math.max(0, now - updatedAt);
-}
-
-function completedResultMatchesAttempt(task: TaskStateData, result: unknown): boolean {
-    if (task.prProcessingLockToken === undefined) return true;
-    if (!result || typeof result !== 'object') return false;
-    const record = result as {
-        prProcessingAttemptGeneration?: unknown;
-        prProcessingLockToken?: unknown;
-    };
-    if (typeof record.prProcessingAttemptGeneration === 'string') {
-        return record.prProcessingAttemptGeneration === hashTaskAttemptToken(task.prProcessingLockToken);
-    }
-    // Accept results produced during a rolling upgrade, but never emit the raw
-    // token in new BullMQ return values.
-    return record.prProcessingLockToken === task.prProcessingLockToken;
-}
 
 async function clearOwnedPRLock(
     task: TaskStateData,
@@ -339,28 +316,21 @@ async function reconcileStaleTask(
     let queueState = job ? await job.getState() : 'missing';
     throwIfAborted(options.signal);
 
-    if (options.redis.get) {
-        const checkpoint = await loadPRCommentRemoteOutcome(
-            { get: key => options.redis.get!(key) },
-            task.taskId,
-        );
-        if (checkpoint && completedResultMatchesAttempt(task, checkpoint)) {
-            // A live retry will discover this same checkpoint and finish
-            // itself. Otherwise complete the durable task without rerunning
-            // or reclassifying already-published work as a failure.
-            if (queueState === 'active' && await hasLiveAttempt(task, options.queue, options.redis)) {
-                summary.live++;
-                return;
-            }
-            await stopAbandonedTaskContainer(task, context);
-            await finalizeCompletedJob(
-                task,
-                { getState: async () => 'completed', returnvalue: checkpoint },
-                options,
-                summary,
-            );
+    const checkpoint = await loadMatchingPRCommentRemoteOutcome(options.redis, task);
+    if (checkpoint) {
+        // A live retry will discover this same checkpoint and finish itself.
+        if (queueState === 'active' && await hasLiveAttempt(task, options.queue, options.redis)) {
+            summary.live++;
             return;
         }
+        await stopAbandonedTaskContainer(task, context);
+        await finalizeCompletedJob(
+            task,
+            { getState: async () => 'completed', returnvalue: checkpoint },
+            options,
+            summary,
+        );
+        return;
     }
     if (await handleTerminalQueueState(task, job, queueState, context)) return;
     if (await handleQueuedState(task, queueState, context)) return;

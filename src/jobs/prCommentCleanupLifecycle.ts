@@ -1,13 +1,19 @@
 import type { Logger } from 'pino';
 
+interface JobCleanupLifecycleOptions {
+    cleanup: (beforeRelease: () => Promise<void>) => Promise<void>;
+    stopHeartbeat: () => Promise<void>;
+    correlatedLogger: Logger;
+    preserveJobOutcome: boolean;
+    recoverPreservedFailure?: (failure: unknown) => Promise<void>;
+}
+
 /** Stops the heartbeat at lease release while preserving an already-committed job outcome. */
-export async function runJobCleanupLifecycle(
-    cleanup: (beforeRelease: () => Promise<void>) => Promise<void>,
-    stopHeartbeat: () => Promise<void>,
-    correlatedLogger: Logger,
-    preserveJobOutcome: boolean,
-    recoverPreservedFailure?: (failure: unknown) => Promise<void>,
-): Promise<void> {
+export async function runJobCleanupLifecycle(options: JobCleanupLifecycleOptions): Promise<void> {
+    const {
+        cleanup, stopHeartbeat, correlatedLogger,
+        preserveJobOutcome, recoverPreservedFailure,
+    } = options;
     let heartbeatStopped = false;
     let heartbeatStopPromise: Promise<void> | null = null;
     const stopHeartbeatOnce = async (): Promise<void> => {

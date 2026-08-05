@@ -21,7 +21,7 @@ import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildPrompt,
     handleJobError, cleanupJobBeforeStoppingHeartbeat, buildPRCommentWorktreeDirName,
-    schedulePRCommentCleanupRecovery, stopAbandonedPRTaskContainer, toClaudeResult
+    stopAbandonedPRTaskContainer, toClaudeResult
 } from './prCommentJobUtils.js';
 import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
@@ -59,7 +59,7 @@ import {
     clearRetainedPRProcessingLockToken,
     requeuePRCommentJobWithoutLease,
 } from './prCommentProcessingLease.js';
-import { loadPRCommentRemoteOutcome } from './prCommentRemoteOutcome.js';
+import { recoverPRCommentRemoteOutcome } from './prCommentRemoteOutcomeRecovery.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -324,26 +324,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     const taskId = job.id || `pr-comment-${job.data.pullRequestNumber}-${Date.now()}`;
-    const checkpoint = await loadPRCommentRemoteOutcome(redisClient, taskId);
-    if (checkpoint) {
-        const correlatedLogger = logger.withCorrelation(job.data.correlationId);
-        correlatedLogger.warn(
-            { taskId, status: checkpoint.status },
-            'Recovered a remotely committed PR outcome without rerunning the agent',
-        );
-        await schedulePRCommentCleanupRecovery({
-            repoOwner: job.data.repoOwner,
-            repoName: job.data.repoName,
-            pullRequestNumber: job.data.pullRequestNumber,
-            jobBranchName: job.data.branchName,
-            jobLlm: job.data.llm,
-            jobReasoningLevel: job.data.reasoningLevel,
-            attemptGeneration: checkpoint.prProcessingAttemptGeneration as string,
-            correlatedLogger,
-        });
-        await clearRetainedPRProcessingLockToken(job, taskId, correlatedLogger);
-        return checkpoint;
-    }
+    const recoveredOutcome = await recoverPRCommentRemoteOutcome(redisClient, job, taskId);
+    if (recoveredOutcome) return recoveredOutcome;
     const context = await initializePRJobContext(job);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);

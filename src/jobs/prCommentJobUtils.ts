@@ -21,6 +21,14 @@ import {
     PRProcessingLeaseLostError,
     releasePRProcessingLock,
 } from './prProcessingLock.js';
+import {
+    schedulePRCommentCleanupRecovery,
+} from './prCommentCleanupRecovery.js';
+
+export {
+    buildPRCommentWorktreeDirName,
+    schedulePRCommentCleanupRecovery,
+} from './prCommentCleanupRecovery.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -326,50 +334,6 @@ export interface CleanupOptions {
     correlatedLogger: Logger; redisClient: Redis;
 }
 
-export function buildPRCommentWorktreeDirName(pullRequestNumber: number, lockToken: string): string {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const attemptSlug = hashTaskAttemptToken(lockToken).slice(0, 24);
-    return `pr-${pullRequestNumber}-followup-${timestamp}-${attemptSlug}`;
-}
-
-export interface CleanupRecoveryOptions {
-    repoOwner: string;
-    repoName: string;
-    pullRequestNumber: number;
-    jobBranchName: string | undefined;
-    jobLlm: string | null | undefined;
-    jobReasoningLevel?: ReasoningLevel;
-    attemptGeneration: string;
-    correlatedLogger: Logger;
-}
-
-/** Queues an empty batch that will collect pending comments without rerunning this attempt. */
-export async function schedulePRCommentCleanupRecovery(options: CleanupRecoveryOptions): Promise<void> {
-    const {
-        repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm,
-        jobReasoningLevel, attemptGeneration, correlatedLogger,
-    } = options;
-    const ownerSlug = repoOwner.replace(/[^a-zA-Z0-9-]/g, '-');
-    const repoSlug = repoName.replace(/[^a-zA-Z0-9-]/g, '-');
-    const recoveryCorrelationId = generateCorrelationId();
-    const recoverySuffix = recoveryCorrelationId.replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 16);
-    const recoveryJobId = `pr-comments-cleanup-recovery-${ownerSlug}-${repoSlug}-${pullRequestNumber}-${attemptGeneration.slice(0, 16)}-${recoverySuffix}`;
-    await issueQueue.add('processPullRequestComment', {
-        pullRequestNumber,
-        comments: [],
-        repoOwner,
-        repoName,
-        branchName: jobBranchName,
-        llm: jobLlm,
-        correlationId: recoveryCorrelationId,
-        reasoningLevel: jobReasoningLevel,
-    }, { jobId: recoveryJobId, delay: 3000 });
-    correlatedLogger.info(
-        { jobId: recoveryJobId, pullRequestNumber },
-        'Queued durable cleanup recovery for comments that may still be pending',
-    );
-}
-
 export async function cleanupJob(options: CleanupOptions, beforeRelease?: () => Promise<void>): Promise<void> {
     const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
     let ownsLease = true;
@@ -434,10 +398,12 @@ export async function cleanupJob(options: CleanupOptions, beforeRelease?: () => 
 }
 
 export async function cleanupJobBeforeStoppingHeartbeat(options: CleanupOptions, stopLockHeartbeat: () => Promise<void>, preserveJobOutcome = false): Promise<void> {
-    await runJobCleanupLifecycle(
-        beforeRelease => cleanupJob(options, beforeRelease),
-        stopLockHeartbeat, options.correlatedLogger, preserveJobOutcome,
-        () => schedulePRCommentCleanupRecovery({
+    await runJobCleanupLifecycle({
+        cleanup: beforeRelease => cleanupJob(options, beforeRelease),
+        stopHeartbeat: stopLockHeartbeat,
+        correlatedLogger: options.correlatedLogger,
+        preserveJobOutcome,
+        recoverPreservedFailure: () => schedulePRCommentCleanupRecovery({
             repoOwner: options.repoOwner,
             repoName: options.repoName,
             pullRequestNumber: options.pullRequestNumber,
@@ -447,45 +413,11 @@ export async function cleanupJobBeforeStoppingHeartbeat(options: CleanupOptions,
             attemptGeneration: hashTaskAttemptToken(options.lockToken),
             correlatedLogger: options.correlatedLogger,
         }),
-    );
+    });
 }
 
 export { buildMetricsSection } from './prCommentMetrics.js';
 export { stopAbandonedPRTaskContainer } from './prCommentContainerCleanup.js';
-
-export function parsePendingComment(commentJson: string, correlatedLogger: Logger): UnprocessedComment | null {
-    try {
-        return JSON.parse(commentJson) as UnprocessedComment;
-    } catch (parseError) {
-        correlatedLogger.warn({ error: (parseError as Error).message }, 'Failed to parse pending comment');
-        return null;
-    }
-}
-
-export function processPendingComments(commentsToProcess: UnprocessedComment[], pendingComments: string[], correlatedLogger: Logger): void {
-    for (const commentJson of pendingComments) {
-        const pendingComment = parsePendingComment(commentJson, correlatedLogger);
-        if (pendingComment && !commentsToProcess.some(c => c.id === pendingComment.id)) {
-            commentsToProcess.push(pendingComment);
-        }
-    }
-}
-
-export async function pickUpPendingComments(commentsToProcess: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }): Promise<UnprocessedComment[]> {
-    const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = options;
-    const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
-    try {
-        const pendingComments = await redisClient.lrange(pendingCommentsKey, 0, -1);
-        if (pendingComments.length > 0) {
-            await redisClient.del(pendingCommentsKey);
-            processPendingComments(commentsToProcess, pendingComments, correlatedLogger);
-            correlatedLogger.info({ pullRequestNumber, pendingCount: pendingComments.length, totalCount: commentsToProcess.length }, 'Picked up pending comments from Redis');
-        }
-    } catch (redisError) {
-        correlatedLogger.warn({ error: (redisError as Error).message }, 'Failed to fetch pending comments from Redis');
-    }
-    return commentsToProcess;
-}
 
 export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
@@ -498,4 +430,9 @@ export {
     formatFileContents,
     agentResultToClaudeResponse,
 } from './prFileUtils.js';
+export {
+    parsePendingComment,
+    pickUpPendingComments,
+    processPendingComments,
+} from './prPendingComments.js';
 export { applyPendingCommentCommandContext } from './prCommentCommandContext.js';
