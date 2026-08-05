@@ -8,6 +8,7 @@ import {
 } from './workerStateManager.types.js';
 
 type StateEnumerationRedis = Pick<InstanceType<typeof Redis>, 'pipeline' | 'scan'>;
+type StateMaintenanceRedis = Pick<InstanceType<typeof Redis>, 'del' | 'get' | 'keys'>;
 
 export interface NonTerminalTaskScanResult {
     tasks: TaskStateData[];
@@ -95,4 +96,56 @@ export async function scanNonTerminalTaskStates(
         }
     } while (cursor !== '0');
     return { tasks: nonTerminalTasks, nextCursor: cursor };
+}
+
+export async function getProcessingTaskStates(
+    redis: StateMaintenanceRedis,
+    keyPrefix: string,
+): Promise<TaskStateData[]> {
+    const keys = await redis.keys(`${keyPrefix}*`);
+    const processingTasks: TaskStateData[] = [];
+    const processingStates: TaskState[] = [
+        TaskStates.PROCESSING,
+        TaskStates.CLAUDE_EXECUTION,
+        TaskStates.POST_PROCESSING,
+    ];
+    for (const key of keys) {
+        try {
+            const stateJson = await redis.get(key);
+            if (!stateJson) continue;
+            const state: TaskStateData = JSON.parse(stateJson);
+            if (processingStates.includes(state.state)) processingTasks.push(state);
+        } catch (error) {
+            logger.warn({ key, error: (error as Error).message }, 'Failed to parse task state during recovery scan');
+        }
+    }
+    return processingTasks;
+}
+
+export async function cleanupOldTaskStates(
+    redis: StateMaintenanceRedis,
+    keyPrefix: string,
+    maxAge: number,
+): Promise<number> {
+    const keys = await redis.keys(`${keyPrefix}*`);
+    const cutoffTime = Date.now() - (maxAge * 1000);
+    const cleanupStates: TaskState[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
+    let cleanedCount = 0;
+    for (const key of keys) {
+        try {
+            const stateJson = await redis.get(key);
+            if (!stateJson) continue;
+            const state: TaskStateData = JSON.parse(stateJson);
+            if (!cleanupStates.includes(state.state)) continue;
+            const updatedAt = new Date(state.updatedAt).getTime();
+            if (updatedAt >= cutoffTime) continue;
+            await redis.del(key);
+            cleanedCount++;
+            logger.debug({ taskId: state.taskId, state: state.state, age: Date.now() - updatedAt }, 'Cleaned up old task state');
+        } catch (error) {
+            logger.warn({ key, error: (error as Error).message }, 'Failed to cleanup task state');
+        }
+    }
+    logger.info({ cleanedCount, totalKeys: keys.length, maxAge }, 'Task state cleanup completed');
+    return cleanedCount;
 }

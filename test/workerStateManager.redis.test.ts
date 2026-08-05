@@ -116,7 +116,11 @@ test('fenced task revisions remain monotonic after the expiring state is recreat
         updatedAt: new Date().toISOString(),
         version: 1,
         attempts: 0,
-        history: [],
+        history: [{
+            state: TaskStates.PENDING,
+            timestamp: new Date().toISOString(),
+            reason: 'Task created',
+        }],
         prProcessingLockToken: lockToken,
     };
 

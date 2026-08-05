@@ -6,8 +6,15 @@ import {
     type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions,
     type CreateTaskStateOptions, type NonTerminalTaskFilter, type TaskStateExpectation
 } from './workerStateManager.types.js';
-import { getEventPublisher } from './eventPublisher.js';
-import { scanNonTerminalTaskStates } from './workerStateEnumeration.js';
+import {
+    cleanupOldTaskStates,
+    getProcessingTaskStates,
+    scanNonTerminalTaskStates,
+} from './workerStateEnumeration.js';
+import {
+    publishHistoryMetadataUpdate,
+    publishIssueRefUpdate,
+} from './workerStateNotifications.js';
 import {
     ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE,
     assertTaskAttemptOwnership,
@@ -285,32 +292,7 @@ export class WorkerStateManager {
             throw new Error(`Task issue reference update contention exceeded ${MAX_CAS_ATTEMPTS} attempts for taskId: ${taskId}`);
         }
 
-        const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-        correlatedLogger.info({
-            taskId,
-            issueNumber: state.issueRef.number,
-            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-            updatedFields: Object.keys(issueRefPatch)
-        }, 'Task issue reference updated');
-
-        try {
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
-                taskId,
-                state: state.state,
-                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                issueNumber: state.issueRef.number,
-                version: state.version,
-                updatedAt: state.updatedAt,
-                metadata: {
-                    issueRefUpdated: true,
-                    updatedFields: Object.keys(issueRefPatch)
-                }
-            });
-        } catch (error) {
-            correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish issue reference update event');
-        }
-
+        await publishIssueRefUpdate(state, issueRefPatch);
         return state;
     }
 
@@ -382,27 +364,7 @@ export class WorkerStateManager {
                 continue;
             }
             state.version = updatedVersion;
-            const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-            correlatedLogger.debug({ taskId, historyState, metadata }, 'Updated history metadata');
-
-            // Publish real-time event for metadata update so UI can refresh
-            try {
-                const eventPublisher = getEventPublisher();
-                await eventPublisher.publishTaskUpdate({
-                    taskId,
-                    state: state.state,
-                    repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                    issueNumber: state.issueRef.number,
-                    version: state.version,
-                    updatedAt: state.updatedAt,
-                    metadata: {
-                        metadataUpdate: true,
-                        updatedFields: Object.keys(metadata)
-                    }
-                });
-            } catch (error) {
-                correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish metadata update event');
-            }
+            await publishHistoryMetadataUpdate(state, historyState, metadata);
             return state;
         }
         throw new Error(`Task history metadata update contention exceeded ${MAX_CAS_ATTEMPTS} attempts for taskId: ${taskId}`);
@@ -498,22 +460,7 @@ export class WorkerStateManager {
      * @returns Array of processing tasks
      */
     async getProcessingTasks(): Promise<TaskStateData[]> {
-        const pattern = `${this.keyPrefix}*`;
-        const keys = await this.redis.keys(pattern);
-        const processingTasks: TaskStateData[] = [];
-
-        for (const key of keys) {
-            try {
-                const stateJson = await this.redis.get(key);
-                if (!stateJson) continue;
-                const state: TaskStateData = JSON.parse(stateJson);
-                const processingStates: TaskState[] = [TaskStates.PROCESSING, TaskStates.CLAUDE_EXECUTION, TaskStates.POST_PROCESSING];
-                if (processingStates.includes(state.state)) processingTasks.push(state);
-            } catch (error) {
-                logger.warn({ key, error: (error as Error).message }, 'Failed to parse task state during recovery scan');
-            }
-        }
-        return processingTasks;
+        return await getProcessingTaskStates(this.redis, this.keyPrefix);
     }
 
     /**
@@ -522,31 +469,7 @@ export class WorkerStateManager {
      * @returns Number of tasks cleaned up
      */
     async cleanupOldTasks(maxAge: number = 24 * 3600): Promise<number> {
-        const pattern = `${this.keyPrefix}*`;
-        const keys = await this.redis.keys(pattern);
-        let cleanedCount = 0;
-        const cutoffTime = Date.now() - (maxAge * 1000);
-
-        for (const key of keys) {
-            try {
-                const stateJson = await this.redis.get(key);
-                if (!stateJson) continue;
-                const state: TaskStateData = JSON.parse(stateJson);
-                const cleanupStates: TaskState[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
-                if (cleanupStates.includes(state.state)) {
-                    const updatedAt = new Date(state.updatedAt).getTime();
-                    if (updatedAt < cutoffTime) {
-                        await this.redis.del(key);
-                        cleanedCount++;
-                        logger.debug({ taskId: state.taskId, state: state.state, age: Date.now() - updatedAt }, 'Cleaned up old task state');
-                    }
-                }
-            } catch (error) {
-                logger.warn({ key, error: (error as Error).message }, 'Failed to cleanup task state');
-            }
-        }
-        logger.info({ cleanedCount, totalKeys: keys.length, maxAge }, 'Task state cleanup completed');
-        return cleanedCount;
+        return await cleanupOldTaskStates(this.redis, this.keyPrefix, maxAge);
     }
 
     /**
