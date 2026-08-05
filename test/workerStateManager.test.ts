@@ -194,6 +194,30 @@ test('getNonTerminalTasks safely includes legacy PR-comment records without a ty
     await stateManager.close();
 });
 
+test('getNonTerminalTasks includes standard pre-migration pr-comments task IDs', async () => {
+    const legacyPRComment: TaskStateData = {
+        taskId: 'pr-comments-integry-propr-1748-1785928912960',
+        issueRef: { number: 1748, repoOwner: 'integry', repoName: 'propr' },
+        correlationId: 'legacy-standard-pr-comment',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+        attempts: 0,
+        history: [],
+    };
+    mockRedisInstance.scan.mock.mockImplementation(async () => [
+        '0',
+        [`${TEST_KEY_PREFIX}${legacyPRComment.taskId}`],
+    ]);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(legacyPRComment));
+
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+    const result = await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'] });
+
+    assert.deepStrictEqual(result.map(task => task.taskId), [legacyPRComment.taskId]);
+    await stateManager.close();
+});
+
 test('getNonTerminalTasks maintains independent cursors for task-type filters', async () => {
     const prTask: TaskStateData = {
         taskId: 'pr-task',

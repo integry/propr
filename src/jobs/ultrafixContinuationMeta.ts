@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import type { UltrafixCommandMeta, WorkerStateManager } from '@propr/core';
-import { TaskStates, db } from '@propr/core';
+import { SupersededTaskAttemptError, TaskStates, db } from '@propr/core';
 
 interface ContinuationMetaInput {
     continued: boolean;
@@ -37,6 +37,7 @@ export async function patchUltrafixContinuationMeta(
         }
     }
     try { await stateManager.updateHistoryMetadata(taskId, TaskStates.COMPLETED, continuationMeta, prProcessingLockToken); } catch (e) {
+        if (e instanceof SupersededTaskAttemptError) throw e;
         correlatedLogger.warn({ error: (e as Error).message, taskId }, 'Failed to patch ultrafix metadata into Redis history entry');
     }
     try {

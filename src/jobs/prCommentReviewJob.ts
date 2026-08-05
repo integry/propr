@@ -76,6 +76,7 @@ export interface ExecuteReviewParams {
     redisClient: Redis;
     prProcessingLockToken: string;
     assertLease: () => Promise<void>;
+    signal: AbortSignal;
     validatePRAndComments: (octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }) => Promise<{
         skip: boolean;
         reason?: string;
@@ -170,13 +171,14 @@ interface RunReviewsContext {
     reasoningLevel?: ReasoningLevel;
     correlatedLogger: Logger;
     assertLease: () => Promise<void>;
+    signal: AbortSignal;
 }
 
 async function runSingleReview(
     assignment: ReviewAssignment,
     ctx: RunReviewsContext
 ): Promise<ReviewResult> {
-    const { registry, octokit, pullRequestNumber, repoOwner, repoName, taskId, taskUrl, correlatedLogger, assertLease } = ctx;
+    const { registry, octokit, pullRequestNumber, repoOwner, repoName, taskId, taskUrl, correlatedLogger, assertLease, signal } = ctx;
     const { agentAlias, model, label } = assignment;
     correlatedLogger.info({ pullRequestNumber, agentAlias, model, label }, 'Starting review analysis');
 
@@ -210,6 +212,7 @@ async function runSingleReview(
         await assertLease();
         const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
+            request: { signal },
         });
 
         return { assignment, analysisResult, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt };
@@ -222,6 +225,7 @@ async function runSingleReview(
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
                 body: buildReviewErrorComment(label, model, errorMsg),
+                request: { signal },
             });
         } catch (commentError) {
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post review error comment');
@@ -258,9 +262,9 @@ async function recordReviewMetrics(
 
 async function updateReviewCompletionComment(
     state: ProcessingState, reviewResults: ReviewResult[],
-    options: { repoOwner: string; repoName: string; taskUrl: string; correlatedLogger: Logger; assertLease: () => Promise<void> }
+    options: { repoOwner: string; repoName: string; taskUrl: string; correlatedLogger: Logger; assertLease: () => Promise<void>; signal: AbortSignal }
 ): Promise<void> {
-    const { repoOwner, repoName, taskUrl, correlatedLogger, assertLease } = options;
+    const { repoOwner, repoName, taskUrl, correlatedLogger, assertLease, signal } = options;
     if (!state.startingWorkComment) return;
 
     const successCount = reviewResults.filter(r => r.analysisResult.success).length;
@@ -281,6 +285,7 @@ async function updateReviewCompletionComment(
         await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
             owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id,
             body: `${statusEmoji} **AI Code Review Complete** requested by ${state.authorsText}\n\n${statusText}:\n${reviewLinks}\n\n[View Task Details](${taskUrl})${completedEvidence ? `\n${completedEvidence}` : ''}`,
+            request: { signal },
         });
     } catch (updateError) {
         await assertLease();
@@ -294,7 +299,7 @@ function getWebUiTaskUrl(taskId: string): string {
 }
 
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {
-    const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken, assertLease } = params;
+    const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken, assertLease, signal } = params;
     let { llm } = params;
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger } = context;
 
@@ -349,7 +354,13 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
     const startedEvidence = buildWorkEvidenceMarker('started', realComments.map(comment => comment.id));
     await assertLease();
-    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${startedEvidence ? `\n${startedEvidence}` : ''}` });
+    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: repoOwner,
+        repo: repoName,
+        issue_number: pullRequestNumber,
+        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${startedEvidence ? `\n${startedEvidence}` : ''}`,
+        request: { signal },
+    });
 
     const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
     const titleContext = buildPrTaskTitleContext({ workflow, pullRequestNumber, prTitle: prData!.data.title, instructionText: job.data.commandInstructions, recentComments: allComments, prDescription: prData!.data.body, excludeCommentIds: state.unprocessedComments.map(comment => comment.id) });
@@ -405,6 +416,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         reasoningLevel: job.data.reasoningLevel,
         correlatedLogger,
         assertLease,
+        signal,
     };
 
     const reviewResults: ReviewResult[] = [];
@@ -414,7 +426,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
 
     await assertLease();
     await recordReviewMetrics(reviewResults, { pullRequestNumber, repoOwner, repoName, correlationId, taskId });
-    await updateReviewCompletionComment(state, reviewResults, { repoOwner, repoName, taskUrl, correlatedLogger, assertLease });
+    await updateReviewCompletionComment(state, reviewResults, { repoOwner, repoName, taskUrl, correlatedLogger, assertLease, signal });
 
     const successCount = reviewResults.filter(r => r.analysisResult.success).length;
     const failCount = reviewResults.length - successCount;

@@ -130,6 +130,6 @@ export interface WorkerStateManagerOptions {
     /** Namespace for durable task revisions; kept outside state scans. */
     revisionKeyPrefix?: string;
     stateExpiry?: number;
-    /** Revision retention in seconds. Defaults to twice the state retention. */
+    /** @deprecated Revision keys are durable so reused task IDs remain monotonic. */
     revisionExpiry?: number;
 }

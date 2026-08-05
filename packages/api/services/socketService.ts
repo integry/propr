@@ -35,13 +35,12 @@ export interface QueueDependencies {
 export function shouldBroadcastTaskUpdate(
   latestVersion: number | undefined,
   incomingVersion: number | undefined,
+  allowSeededEquality = false,
 ): boolean {
   if (latestVersion === undefined) return true;
   if (incomingVersion === undefined) return false;
-  // Equality is intentional: the cache may have been seeded from durable
-  // state before the corresponding pub/sub event arrives. This can rebroadcast
-  // a true duplicate, but dropping equality would lose that first live event.
-  return incomingVersion >= latestVersion;
+  return incomingVersion > latestVersion
+    || (allowSeededEquality && incomingVersion === latestVersion);
 }
 
 export async function loadDurableTaskRevision(
@@ -300,20 +299,26 @@ export class SocketService {
 
   private async handleTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
     let latestVersion = this.taskRevisions.get(payload.taskId);
+    let allowSeededEquality = false;
     if (latestVersion === undefined && this.queueDeps) {
       try {
         latestVersion = await loadDurableTaskRevision(
           key => this.queueDeps!.redisClient.get(key),
           payload.taskId,
         );
+        allowSeededEquality = latestVersion !== undefined;
       } catch (error) {
         console.error(`[SocketService] Failed to seed task revision for ${payload.taskId}:`, error);
-        return;
+        // A versioned pub/sub event is already self-ordering. Accept it as the
+        // live baseline when durable state is transiently unavailable rather
+        // than silently dropping the only update clients may receive.
+        if (payload.version === undefined) return;
+        latestVersion = undefined;
       }
     }
     // During rolling upgrades, legacy events may be accepted until a
     // versioned producer establishes the ordered stream for this task.
-    if (!shouldBroadcastTaskUpdate(latestVersion, payload.version)) return;
+    if (!shouldBroadcastTaskUpdate(latestVersion, payload.version, allowSeededEquality)) return;
     if (payload.version !== undefined) {
       this.taskRevisions.delete(payload.taskId);
       this.taskRevisions.set(payload.taskId, payload.version);

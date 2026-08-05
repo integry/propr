@@ -2,6 +2,7 @@ import type { TaskStateData } from '@propr/core';
 import {
     findRunningDockerContainerForTask,
     hashTaskAttemptToken,
+    inspectLegacyDockerContainerLivenessForTask,
     isPRCommentTaskState,
     logger,
     stopDockerContainer,
@@ -171,11 +172,23 @@ async function findGenerationSpecificContainer(
     task: TaskStateData,
     context: ReconciliationContext,
 ): Promise<Awaited<ReturnType<typeof findRunningDockerContainerForTask>>> {
-    if (!task.prProcessingLockToken) return null;
+    if (!task.prProcessingLockToken) return context.findRunningContainer(task.taskId);
     return context.findRunningContainer(
         task.taskId,
         hashTaskAttemptToken(task.prProcessingLockToken),
     );
+}
+
+async function deferForPossibleLegacyContainer(task: TaskStateData, context: ReconciliationContext): Promise<boolean> {
+    if (task.prProcessingLockToken) return false;
+    throwIfAborted(context.options.signal);
+    const labeledContainer = await findGenerationSpecificContainer(task, context);
+    throwIfAborted(context.options.signal);
+    const liveness = labeledContainer ? 'running' : await context.inspectLegacyContainerLiveness(task.taskId);
+    throwIfAborted(context.options.signal);
+    if (liveness === 'not_found') return false;
+    context.summary.live++;
+    return true;
 }
 
 async function stopAbandonedTaskContainer(
@@ -241,6 +254,7 @@ async function handleTerminalQueueState(
     context: ReconciliationContext,
 ): Promise<boolean> {
     const { options, summary } = context;
+    if (await deferForPossibleLegacyContainer(task, context)) return true;
     if (queueState === 'completed' && job) {
         if (!completedResultMatchesAttempt(task, job.returnvalue)) {
             // A legacy/tokenless or stale completion may describe a previous
@@ -298,6 +312,7 @@ async function handleQueuedState(
 ): Promise<boolean> {
     const { options, summary } = context;
     if (!['waiting', 'delayed', 'prioritized', 'waiting-children'].includes(queueState)) return false;
+    if (await deferForPossibleLegacyContainer(task, context)) return true;
     await stopAbandonedTaskContainer(task, context);
     if (task.state !== TaskStates.PENDING) {
         throwIfAborted(options.signal);
@@ -348,6 +363,7 @@ async function reconcileStaleTask(
         if (await handleQueuedState(task, queueState, context)) return;
     }
 
+    if (await deferForPossibleLegacyContainer(task, context)) return;
     await stopAbandonedTaskContainer(task, context);
     await finalizeFailedJob(
         task,
@@ -378,9 +394,11 @@ export async function reconcileStaleTaskStates(
     const now = (options.now ?? Date.now)();
     const deadline = Date.now() + timeBudgetMs;
     const findRunningContainer = options.findRunningContainer ?? findRunningDockerContainerForTask;
+    const inspectLegacyContainerLiveness = options.inspectLegacyContainerLiveness
+        ?? inspectLegacyDockerContainerLivenessForTask;
     const stopContainer = options.stopContainer ?? stopDockerContainer;
     const summary = createTaskReconciliationSummary();
-    const context = { options, summary, findRunningContainer, stopContainer };
+    const context = { options, summary, findRunningContainer, inspectLegacyContainerLiveness, stopContainer };
     const seenTaskIds = new Set<string>();
 
     const reconcileOne = async (task: TaskStateData): Promise<void> => {

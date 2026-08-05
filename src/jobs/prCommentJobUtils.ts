@@ -325,18 +325,18 @@ export function buildPRCommentWorktreeDirName(pullRequestNumber: number, lockTok
     return `pr-${pullRequestNumber}-followup-${timestamp}-${attemptSlug}`;
 }
 
-export async function stopAbandonedPRTaskContainer(taskId: string, correlatedLogger: Logger): Promise<boolean> {
-    const container = await findRunningDockerContainerForTask(taskId);
-    if (!container) return true;
-    correlatedLogger.warn({ taskId, containerId: container.id, containerName: container.name }, 'Found an agent container after acquiring an unowned PR lease; stopping the abandoned execution');
-    const stopped = await stopDockerContainer(container.id, 10);
-    if (!stopped.success) {
-        correlatedLogger.error({ taskId, containerId: container.id, error: stopped.error }, 'Could not stop abandoned agent container; rescheduling to avoid overlapping executions');
+export async function stopAbandonedPRTaskContainer(taskId: string, correlatedLogger: Logger, assertLease: () => Promise<void>): Promise<boolean> {
+    for (;;) {
+        const container = await findRunningDockerContainerForTask(taskId);
+        if (!container) return true;
+        await assertLease();
+        correlatedLogger.warn({ taskId, containerId: container.id, containerName: container.name }, 'Found an agent container after acquiring an unowned PR lease; stopping the abandoned execution');
+        const stopped = await stopDockerContainer(container.id, 10);
+        if (!stopped.success) { correlatedLogger.error({ taskId, containerId: container.id, error: stopped.error }, 'Could not stop abandoned agent container; rescheduling to avoid overlapping executions'); return false; }
     }
-    return stopped.success;
 }
 
-export async function cleanupJob(options: CleanupOptions): Promise<void> {
+export async function cleanupJob(options: CleanupOptions, beforeRelease?: () => Promise<void>): Promise<void> {
     const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
     let ownsLease = true;
     let ownershipCheckError: unknown;
@@ -367,18 +367,15 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
     }
 
     if (ownershipCheckError && ownsLease) {
-        // Do not turn an unverified cleanup into a successful BullMQ result.
-        // Throwing leaves the job on its configured retry path, which is the
-        // durable recovery mechanism for pending comments during Redis faults.
+        // Keep the job retryable when ownership cannot be verified.
         correlatedLogger.warn({ error: (ownershipCheckError as Error).message }, 'Could not verify PR lease ownership during cleanup; deferring cleanup finalization');
         throw ownershipCheckError;
     }
     if (!ownsLease) return;
 
+    await beforeRelease?.();
     const releasedLock = await releasePRProcessingLock(redisClient, lockKey, lockToken);
-    if (releasedLock) {
-        correlatedLogger.debug('Released PR processing lock after cleaning attempt resources');
-    }
+    if (releasedLock) correlatedLogger.debug('Released PR processing lock after cleaning attempt resources');
     if (!releasedLock) return;
 
     try {
@@ -402,11 +399,14 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
 }
 
 export async function cleanupJobBeforeStoppingHeartbeat(options: CleanupOptions, stopLockHeartbeat: () => Promise<void>): Promise<void> {
-    try {
-        await cleanupJob(options);
-    } finally {
+    let heartbeatStopped = false;
+    const stopHeartbeatOnce = async (): Promise<void> => {
+        if (heartbeatStopped) return;
+        heartbeatStopped = true;
         await stopLockHeartbeat();
-    }
+    };
+    try { await cleanupJob(options, stopHeartbeatOnce); }
+    finally { await stopHeartbeatOnce(); }
 }
 
 export { buildMetricsSection } from './prCommentMetrics.js';

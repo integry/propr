@@ -61,6 +61,7 @@ interface PostExecutionParams {
     redisClient: Redis;
     prProcessingLockToken: string;
     assertLease: () => Promise<void>;
+    signal: AbortSignal;
     /** Runs fenced continuation work immediately before terminal completion. */
     beforeCompletion: () => Promise<void>;
 }
@@ -77,13 +78,17 @@ interface UndoContextParams {
 async function commitAndPush(
     state: ReadyPostExecutionState,
     issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number },
-    llm: string | null | undefined,
-    assertLease: () => Promise<void>,
+    options: { llm: string | null | undefined; assertLease: () => Promise<void>; signal: AbortSignal },
 ) {
+    const { llm, assertLease, signal } = options;
     const changesSummary = state.claudeResult.summary || state.claudeResult.finalResult?.result || '';
     const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: issueRef.pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });
     await assertLease();
-    const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, { issueNumber: issueRef.pullRequestNumber, issueTitle: 'Follow-up changes' });
+    const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, {
+        issueNumber: issueRef.pullRequestNumber,
+        issueTitle: 'Follow-up changes',
+        signal,
+    });
 
     if (commitResult) {
         await assertLease();
@@ -94,6 +99,7 @@ async function commitAndPush(
             repoUrl,
             authToken: githubToken.token,
             rebaseOnNonFastForward: true,
+            signal,
         });
         if (pushResult.rebased && pushResult.commitHash) {
             commitResult.commitHash = pushResult.commitHash;
@@ -144,7 +150,7 @@ export function getPostExecutionDisposition(result: ClaudeCodeResponse): 'comple
 }
 
 export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
-    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient, prProcessingLockToken, assertLease, beforeCompletion } = params;
+    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient, prProcessingLockToken, assertLease, signal, beforeCompletion } = params;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
 
     requirePostExecutionState(state);
@@ -155,7 +161,11 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
     }
 
-    const { commitResult, changesSummary, commitMessage } = await commitAndPush(state, { repoOwner, repoName, pullRequestNumber }, llm, assertLease);
+    const { commitResult, changesSummary, commitMessage } = await commitAndPush(
+        state,
+        { repoOwner, repoName, pullRequestNumber },
+        { llm, assertLease, signal },
+    );
     if (partial && !commitResult) {
         throw new Error(`Agent execution ${terminationReason === 'timeout' ? 'timed out' : 'reached the maximum turn limit'} before producing changes to publish`);
     }
@@ -165,7 +175,13 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(c => c.id) : undefined;
     const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl, consumedReviewCommentIds }, state.claudeResult);
     await assertLease();
-    const completionComment = await state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', { owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id, body: prCommentBody }) as { data: { html_url: string; body?: string } };
+    const completionComment = await state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+        owner: repoOwner,
+        repo: repoName,
+        comment_id: state.startingWorkComment.data.id,
+        body: prCommentBody,
+        request: { signal },
+    }) as { data: { html_url: string; body?: string } };
     await assertLease();
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
 

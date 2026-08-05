@@ -236,23 +236,53 @@ describe('task state reconciliation', () => {
     });
 
     test('reconciles a legacy PR-comment state without issueRef.type', async () => {
-        const legacy = task('pr-comments-batch-integry-propr-1738-legacy', TaskStates.PROCESSING);
+        const legacy = task('pr-comments-integry-propr-1738-1785928912960', TaskStates.PROCESSING);
         delete legacy.issueRef.type;
+        delete legacy.prProcessingLockToken;
         const manager = stateManager([legacy]);
 
         const summary = await reconcileStaleTaskStates({
             stateManager: manager as never,
-            queue: queue({
-                [legacy.taskId]: { state: 'completed', returnvalue: { status: 'skipped' } },
-            }),
+            queue: {
+                getJob: async () => ({
+                    getState: async () => 'completed',
+                    returnvalue: { status: 'skipped' },
+                }),
+                toKey: (type: string) => `bull:queue:${type}`,
+            },
             redis: { eval: async () => 0, pttl: async () => -2 },
             staleAfterMs: 1000,
             now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
             findRunningContainer: async () => null,
+            inspectLegacyContainerLiveness: async () => 'not_found',
         });
 
         assert.equal(summary.scanned, 1);
         assert.equal(manager.states.get(legacy.taskId)?.state, TaskStates.COMPLETED);
+    });
+
+    test('defers terminalization while a tokenless legacy container may still be running', async () => {
+        const legacy = task('pr-comments-integry-propr-1738-12345678', TaskStates.CLAUDE_EXECUTION);
+        delete legacy.issueRef.type;
+        delete legacy.prProcessingLockToken;
+        const manager = stateManager([legacy]);
+        const stopContainer = mock.fn(async () => ({ success: true }));
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+            inspectLegacyContainerLiveness: async () => 'running',
+            stopContainer,
+        });
+
+        assert.equal(manager.states.get(legacy.taskId)?.state, TaskStates.CLAUDE_EXECUTION);
+        assert.equal(stopContainer.mock.calls.length, 0);
+        assert.equal(summary.live, 1);
+        assert.equal(summary.interrupted, 0);
     });
 
     test('stops a detached container left by a completed reschedule outcome', async () => {

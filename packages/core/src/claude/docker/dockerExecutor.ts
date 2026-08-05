@@ -27,6 +27,7 @@ export interface ExecutionResult {
     timeoutMs?: number;
 }
 export interface RunningTaskContainer { id: string; name: string; }
+export type LegacyTaskContainerLiveness = 'running' | 'not_found' | 'unavailable';
 
 export interface DockerCommandOptions {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
@@ -259,31 +260,21 @@ function getDockerRunContainerName(args: string[]): string | null {
 }
 
 /**
- * Finds a running agent container by exact task/attempt labels when a
- * generation is supplied. Legacy callers retain the task-id name-suffix
- * lookup. This survives worker/Redis restarts because Docker remains the
- * source of truth for an execution that is still active.
+ * Finds a running agent container by its exact task label and, when supplied,
+ * its attempt-generation label. Name suffixes are intentionally excluded:
+ * they are not unique enough to authorize a destructive container stop.
  */
-export async function findRunningDockerContainerForTask(
-    taskId: string,
-    attemptGenerationOrExecutor?: string | typeof executeDockerCommand,
-    executor: typeof executeDockerCommand = executeDockerCommand,
-): Promise<RunningTaskContainer | null> {
+export async function findRunningDockerContainerForTask(taskId: string, attemptGenerationOrExecutor?: string | typeof executeDockerCommand, executor: typeof executeDockerCommand = executeDockerCommand): Promise<RunningTaskContainer | null> {
     const attemptGeneration = typeof attemptGenerationOrExecutor === 'string'
         ? attemptGenerationOrExecutor
         : undefined;
     const commandExecutor = typeof attemptGenerationOrExecutor === 'function'
         ? attemptGenerationOrExecutor
         : executor;
-    const shortTaskId = taskId.slice(-8);
-    if (!shortTaskId) return null;
-    const escapedSuffix = shortTaskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const filters = attemptGeneration
-        ? [
-            '--filter', `label=propr.task.id=${taskId}`,
-            '--filter', `label=propr.task.attempt-generation=${attemptGeneration}`,
-        ]
-        : ['--filter', `name=${escapedSuffix}$`];
+    const filters = attemptGeneration ? [
+        '--filter', `label=propr.task.id=${taskId}`,
+        '--filter', `label=propr.task.attempt-generation=${attemptGeneration}`,
+    ] : ['--filter', `label=propr.task.id=${taskId}`];
 
     try {
         const result = await commandExecutor('docker', [
@@ -304,6 +295,28 @@ export async function findRunningDockerContainerForTask(
     } catch (error) {
         logger.warn({ taskId, error: (error as Error).message }, 'Failed to inspect running Docker containers for task');
         return null;
+    }
+}
+
+/**
+ * Checks for a possibly-live pre-label container by the legacy task suffix.
+ * This result is a liveness hint only and must never authorize a stop: two
+ * unrelated task IDs can share the same final eight characters.
+ */
+export async function inspectLegacyDockerContainerLivenessForTask(taskId: string, executor: typeof executeDockerCommand = executeDockerCommand): Promise<LegacyTaskContainerLiveness> {
+    const shortTaskId = taskId.slice(-8);
+    if (!shortTaskId) return 'not_found';
+    const escapedSuffix = shortTaskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    try {
+        const result = await executor('docker', ['ps', '--filter', `name=${escapedSuffix}$`, '--format', '{{.ID}}:{{.Names}}'], { timeout: 10000 });
+        if (result.exitCode !== 0) {
+            logger.warn({ taskId, stderr: result.stderr }, 'Failed to inspect legacy Docker container liveness for task');
+            return 'unavailable';
+        }
+        return result.stdout.split('\n').some(line => line.trim()) ? 'running' : 'not_found';
+    } catch (error) {
+        logger.warn({ taskId, error: (error as Error).message }, 'Failed to inspect legacy Docker container liveness for task');
+        return 'unavailable';
     }
 }
 

@@ -5,7 +5,8 @@ const MAX_ESCAPE_SEQUENCE_LENGTH = 64;
 const MAX_EMITTED_TERMINAL_LINKS = 128;
 
 export type TerminalEscapeState = 'text' | 'escape' | 'escape_intermediate' | 'csi'
-  | 'control_string' | 'control_string_escape';
+  | 'control_string' | 'control_string_escape' | 'control_string_discard'
+  | 'control_string_discard_escape';
 type EscapeSequenceState = Exclude<TerminalEscapeState, 'text'>;
 
 export interface TerminalSanitizerState {
@@ -44,6 +45,14 @@ const ESCAPE_TRANSITIONS: Record<
     if (value === '\\' || value === '\u009c') return 'text';
     return value === '\u001b' ? 'control_string_escape' : 'control_string';
   },
+  control_string_discard: value => {
+    if (value === '\u0007' || value === '\u009c') return 'text';
+    return value === '\u001b' ? 'control_string_discard_escape' : 'control_string_discard';
+  },
+  control_string_discard_escape: value => {
+    if (value === '\\' || value === '\u009c') return 'text';
+    return value === '\u001b' ? 'control_string_discard_escape' : 'control_string_discard';
+  },
 };
 
 export function buildDockerAttachCommand(args: string[]): string {
@@ -78,7 +87,9 @@ function appendControlString(
   if (session.controlStringBuffer.length >= MAX_CONTROL_STRING_LENGTH) {
     session.controlStringKind = undefined;
     session.controlStringBuffer = '';
-    session.escapeState = 'text';
+    session.escapeState = nextState === 'control_string_escape'
+      ? 'control_string_discard_escape'
+      : 'control_string_discard';
     return;
   }
   session.controlStringBuffer += value;
@@ -94,6 +105,11 @@ function advanceEscapeSequence(
   state: EscapeSequenceState,
   value: string,
 ): void {
+  if (state === 'control_string_discard' || state === 'control_string_discard_escape') {
+    session.escapeState = ESCAPE_TRANSITIONS[state](value);
+    if (session.escapeState === 'text') session.escapeSequenceLength = 0;
+    return;
+  }
   const length = (session.escapeSequenceLength ?? 0) + 1;
   if (length > MAX_ESCAPE_SEQUENCE_LENGTH) {
     session.escapeState = 'text';

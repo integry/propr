@@ -138,6 +138,7 @@ interface ExecuteProcessingParams {
     llm: string | null | undefined; taskId: string;
     stateManager: WorkerStateManager; state: ProcessingState;
     lockToken: string; assertLease: () => Promise<void>;
+    signal: AbortSignal;
 }
 
 function formatReviewCommentsSection(reviewComments: AIReviewComment[]): string {
@@ -185,7 +186,7 @@ function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: 
 }
 
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
-    const { job, context, taskId, stateManager, state, lockToken, assertLease } = params;
+    const { job, context, taskId, stateManager, state, lockToken, assertLease, signal } = params;
     let { llm } = params;
     const { pullRequestNumber, jobBranchName, repoOwner, repoName, correlationId, correlatedLogger } = context;
 
@@ -330,6 +331,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         {
             state, job, taskId, stateManager, context, unprocessedReviewComments, llm,
             redisClient, prProcessingLockToken: lockToken, assertLease,
+            signal,
             beforeCompletion: () => handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken: lockToken, assertLease }),
         },
         taskUrl,
@@ -369,43 +371,39 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
 
     const lockAcquired = await acquirePRLock({ lockKey, lockToken, correlatedLogger, job });
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
+    const stopLockHeartbeat = startPRProcessingLockHeartbeat({
+        redisClient, lockKey, lockToken,
+        onLockLost: () => { correlatedLogger.error({ lockKey }, 'Lost PR processing lock; aborting superseded execution'); loseLease(new PRProcessingLeaseLostError()); },
+        onError: error => { correlatedLogger.error({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock; aborting execution fail closed'); loseLease(new PRProcessingLeaseLostError('Failed to renew PR processing lease', { cause: error })); },
+    });
     job.data.prProcessingLockToken = lockToken;
     try {
         await job.updateData({ ...job.data });
     } catch (error) {
+        await stopLockHeartbeat();
         await releasePRProcessingLock(redisClient, lockKey, lockToken);
         correlatedLogger.error({ taskId, error: (error as Error).message }, 'Failed to persist PR attempt generation to BullMQ job data');
         throw error;
     }
 
-    if (!await stopAbandonedPRTaskContainer(taskId, correlatedLogger)) {
-        await issueQueue.add(job.name, job.data, { delay: 60000 });
-        await releasePRProcessingLock(redisClient, lockKey, lockToken);
+    let abandonedContainerStopped: boolean;
+    try {
+        abandonedContainerStopped = await stopAbandonedPRTaskContainer(taskId, correlatedLogger, assertLease);
+    } catch (error) {
+        await stopLockHeartbeat(); await releasePRProcessingLock(redisClient, lockKey, lockToken);
+        throw error;
+    }
+    if (!abandonedContainerStopped) {
+        try {
+            await issueQueue.add(job.name, job.data, { delay: 60000 });
+        } finally {
+            await stopLockHeartbeat();
+            await releasePRProcessingLock(redisClient, lockKey, lockToken);
+        }
         return { status: 'rescheduled', reason: 'orphan_container_stop_failed', prProcessingAttemptGeneration: attemptGeneration };
     }
 
-    const stopLockHeartbeat = startPRProcessingLockHeartbeat({
-        redisClient,
-        lockKey,
-        lockToken,
-        onLockLost: () => {
-            correlatedLogger.error({ lockKey }, 'Lost PR processing lock; aborting superseded execution');
-            loseLease(new PRProcessingLeaseLostError());
-        },
-        onError: error => {
-            correlatedLogger.error({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock; aborting execution fail closed');
-            loseLease(new PRProcessingLeaseLostError('Failed to renew PR processing lease', { cause: error }));
-        },
-    });
-
-    const issueRef: IssueRef = {
-        number: pullRequestNumber,
-        repoOwner,
-        repoName,
-        type: 'pr_comment',
-        comments: job.data.comments,
-        modelName,
-    };
+    const issueRef: IssueRef = { number: pullRequestNumber, repoOwner, repoName, type: 'pr_comment', comments: job.data.comments, modelName };
     try {
         await stateManager.createTaskState(
             taskId,
@@ -425,10 +423,10 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     try {
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
-            const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken: lockToken, assertLease }), attemptGeneration);
+            const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal }), attemptGeneration);
             return { ...result, prProcessingAttemptGeneration: attemptGeneration };
         }
-        const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockToken, assertLease }), attemptGeneration);
+        const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockToken, assertLease, signal: leaseController.signal }), attemptGeneration);
         return { ...result, prProcessingAttemptGeneration: attemptGeneration };
     } catch (error) {
         if (error instanceof PRProcessingLeaseLostError || error instanceof SupersededTaskAttemptError) {

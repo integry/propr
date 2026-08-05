@@ -1,5 +1,6 @@
 import type {
     findRunningDockerContainerForTask,
+    inspectLegacyDockerContainerLivenessForTask,
     stopDockerContainer,
     WorkerStateManager,
 } from '@propr/core';
@@ -44,6 +45,7 @@ export interface TaskReconciliationOptions {
     staleAfterMs?: number;
     now?: () => number;
     findRunningContainer?: typeof findRunningDockerContainerForTask;
+    inspectLegacyContainerLiveness?: typeof inspectLegacyDockerContainerLivenessForTask;
     stopContainer?: typeof stopDockerContainer;
     signal?: AbortSignal;
     batchSize?: number;
@@ -57,6 +59,7 @@ export interface ReconciliationContext {
     options: TaskReconciliationOptions;
     summary: TaskReconciliationSummary;
     findRunningContainer: typeof findRunningDockerContainerForTask;
+    inspectLegacyContainerLiveness: typeof inspectLegacyDockerContainerLivenessForTask;
     stopContainer: typeof stopDockerContainer;
 }
 

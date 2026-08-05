@@ -11,7 +11,7 @@ function result(stdout: string, exitCode = 0, stderr = ''): ExecutionResult {
 }
 
 describe('running Docker task container lookup', () => {
-    test('finds a running container by the task ID suffix', async () => {
+    test('finds a running container by the exact task label', async () => {
         let receivedArgs: string[] = [];
         const executor = async (_command: string, args: string[]) => {
             receivedArgs = args;
@@ -27,7 +27,8 @@ describe('running Docker task container lookup', () => {
             id: '417758dda147',
             name: 'codex-issue-1734-96957312',
         });
-        assert.ok(receivedArgs.includes('name=96957312$'));
+        assert.ok(receivedArgs.includes('label=propr.task.id=pr-comments-propr-gitfix-1734-96957312'));
+        assert.ok(!receivedArgs.some(arg => arg.startsWith('name=')));
     });
 
     test('returns null when no matching container is running', async () => {
@@ -55,6 +56,21 @@ describe('running Docker task container lookup', () => {
         assert.ok(!receivedArgs.some(arg => arg.startsWith('name=')));
     });
 
+    test('does not use a shared eight-character suffix to identify a task container', async () => {
+        let receivedArgs: string[] = [];
+        const firstTask = 'pr-comments-owner-one-1748-12345678';
+        const secondTask = 'pr-comments-owner-two-1748-12345678';
+
+        await findRunningDockerContainerForTask(firstTask, async (_command, args) => {
+            receivedArgs = args;
+            return result('');
+        });
+
+        assert.ok(receivedArgs.includes(`label=propr.task.id=${firstTask}`));
+        assert.ok(!receivedArgs.includes(`label=propr.task.id=${secondTask}`));
+        assert.ok(!receivedArgs.some(arg => arg.includes('12345678$')));
+    });
+
     test('adds attempt labels to every protected Docker run', () => {
         const args = addTaskAttemptLabelsToDockerArgs(
             ['run', '--rm', '--name', 'agent-task', 'agent-image'],
@@ -67,6 +83,20 @@ describe('running Docker task container lookup', () => {
             '--label', 'propr.task.id=task-1748',
             '--label', 'propr.task.attempt-generation=generation-hash',
         ]);
+    });
+
+    test('adds the exact task label even when no attempt generation is available', () => {
+        const args = addTaskAttemptLabelsToDockerArgs(
+            ['run', '--rm', '--name', 'agent-task', 'agent-image'],
+            'task-legacy-compatible',
+            undefined,
+        );
+
+        assert.deepStrictEqual(args.slice(0, 3), [
+            'run',
+            '--label', 'propr.task.id=task-legacy-compatible',
+        ]);
+        assert.ok(!args.some(arg => arg.startsWith('propr.task.attempt-generation=')));
     });
 
     test('fails open when Docker inspection is unavailable', async () => {

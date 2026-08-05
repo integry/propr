@@ -53,11 +53,13 @@ export function addTaskAttemptLabelsToDockerArgs(
     taskId: string | undefined,
     attemptGeneration: string | undefined,
 ): string[] {
-    if (args[0] !== 'run' || !taskId || !attemptGeneration) return args;
+    if (args[0] !== 'run' || !taskId) return args;
     return [
         'run',
         '--label', `propr.task.id=${taskId}`,
-        '--label', `propr.task.attempt-generation=${attemptGeneration}`,
+        ...(attemptGeneration
+            ? ['--label', `propr.task.attempt-generation=${attemptGeneration}`]
+            : []),
         ...args.slice(1),
     ];
 }

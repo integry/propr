@@ -21,6 +21,7 @@ interface CommitMessageObject {
 interface CommitOptions {
     issueNumber?: number;
     issueTitle?: string;
+    signal?: AbortSignal;
 }
 
 export interface CommitResult {
@@ -101,7 +102,8 @@ function resolveCommitMessage(commitMessage: string | CommitMessageObject, issue
 }
 
 export async function commitChanges(worktreePath: string, commitMessage: string | CommitMessageObject, author: Author | null, options: CommitOptions = {}): Promise<CommitResult | null> {
-    const { issueNumber, issueTitle } = options;
+    const { issueNumber, issueTitle, signal } = options;
+    signal?.throwIfAborted();
     try {
         await validateWorktree(worktreePath, issueNumber);
     } catch (validationError) {
@@ -109,7 +111,7 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
         throw validationError;
     }
 
-    const git: SimpleGit = simpleGit({ baseDir: worktreePath });
+    const git: SimpleGit = simpleGit({ baseDir: worktreePath, abort: signal });
     logger.debug({ worktreePath, issueNumber }, 'Initializing git operations in worktree');
 
     try {

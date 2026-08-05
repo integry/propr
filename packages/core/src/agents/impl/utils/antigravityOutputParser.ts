@@ -59,11 +59,26 @@ function isTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent 
         && !['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(candidate.type);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasProtocolStatus(candidate: Record<string, unknown>): boolean {
+    return candidate.status === 'success' || candidate.status === 'error';
+}
+
+const ANTIGRAVITY_EVENT_VALIDATORS: Record<string, (candidate: Record<string, unknown>) => boolean> = {
+    init: candidate => typeof candidate.session_id === 'string' && typeof candidate.model === 'string',
+    message: candidate => (candidate.role === 'user' || candidate.role === 'assistant') && typeof candidate.content === 'string',
+    tool_use: candidate => typeof candidate.tool_name === 'string' && typeof candidate.tool_id === 'string' && isRecord(candidate.parameters),
+    tool_result: candidate => typeof candidate.tool_id === 'string' && hasProtocolStatus(candidate) && typeof candidate.output === 'string',
+    result: candidate => hasProtocolStatus(candidate) && isRecord(candidate.stats),
+    error: candidate => typeof candidate.message === 'string',
+};
+
 function isAntigravityEvent(event: unknown): event is AntigravityEvent {
-    if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
-    const type = (event as { type?: unknown }).type;
-    return typeof type === 'string'
-        && ['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(type);
+    if (!isRecord(event) || typeof event.type !== 'string') return false;
+    return ANTIGRAVITY_EVENT_VALIDATORS[event.type]?.(event) ?? false;
 }
 
 function isAntigravityOutputEvent(event: unknown): event is AntigravityOutputEvent {

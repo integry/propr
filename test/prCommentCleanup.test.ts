@@ -66,6 +66,7 @@ await mock.module('../src/jobs/prCommentCommandContext.js', {
 
 const {
     cleanupJob,
+    cleanupJobBeforeStoppingHeartbeat,
     handleJobError,
     stopAbandonedPRTaskContainer,
 } = await import('../src/jobs/prCommentJobUtils.js');
@@ -112,10 +113,29 @@ test('stops an abandoned task container before allowing a successor attempt', as
     const canProceed = await stopAbandonedPRTaskContainer(
         'task-1748',
         cleanupOptions().correlatedLogger,
+        assertLease,
     );
 
     assert.equal(canProceed, true);
+    assert.equal(assertLease.mock.calls.length, 1);
     assert.deepEqual(stopDockerContainer.mock.calls[0].arguments, ['container-1748', 10]);
+});
+
+test('does not stop an abandoned container after startup lease ownership is lost', async () => {
+    findRunningDockerContainerForTask.mock.mockImplementationOnce(async () => ({
+        id: 'container-1748',
+        name: 'propr-task-1748',
+    }));
+    assertLease.mock.mockImplementationOnce(async () => {
+        throw new PRProcessingLeaseLostError('lease expired before stop');
+    });
+
+    await assert.rejects(
+        stopAbandonedPRTaskContainer('task-1748', cleanupOptions().correlatedLogger, assertLease),
+        /lease expired before stop/,
+    );
+
+    assert.equal(stopDockerContainer.mock.calls.length, 0);
 });
 
 test('removes its generation-specific worktree after lease ownership has been lost', async () => {
@@ -168,6 +188,21 @@ test('finishes attempt worktree cleanup before releasing the PR lease', async ()
     await cleaning;
 
     assert.equal(releaseLease.mock.calls.length, 1);
+});
+
+test('stops the heartbeat immediately before intentionally releasing the PR lease', async () => {
+    const order: string[] = [];
+    cleanupWorktree.mock.mockImplementationOnce(async () => { order.push('worktree'); });
+    releaseLease.mock.mockImplementationOnce(async () => {
+        order.push('release');
+        return true;
+    });
+    const stopHeartbeat = mock.fn(async () => { order.push('heartbeat'); });
+
+    await cleanupJobBeforeStoppingHeartbeat(cleanupOptions(), stopHeartbeat);
+
+    assert.deepEqual(order, ['worktree', 'heartbeat', 'release']);
+    assert.equal(stopHeartbeat.mock.calls.length, 1);
 });
 
 test('performs no generic error side effects after the live lease is lost', async () => {

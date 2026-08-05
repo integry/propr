@@ -15,9 +15,10 @@ describe('SocketService task update ordering', () => {
     assert.equal(shouldBroadcastTaskUpdate(5, undefined), false);
   });
 
-  test('drops older revisions but permits seeded equality and newer revisions', () => {
+  test('permits equality only for the first event after a durable seed', () => {
     assert.equal(shouldBroadcastTaskUpdate(5, 4), false);
-    assert.equal(shouldBroadcastTaskUpdate(5, 5), true);
+    assert.equal(shouldBroadcastTaskUpdate(5, 5), false);
+    assert.equal(shouldBroadcastTaskUpdate(5, 5, true), true);
     assert.equal(shouldBroadcastTaskUpdate(5, 6), true);
   });
 
@@ -31,6 +32,8 @@ describe('SocketService task update ordering', () => {
 
     assert.equal(revision, 21);
     assert.equal(shouldBroadcastTaskUpdate(revision, 19), false);
+    assert.equal(shouldBroadcastTaskUpdate(revision, 21, true), true);
+    assert.equal(shouldBroadcastTaskUpdate(revision, 21), false);
     assert.equal(shouldBroadcastTaskUpdate(revision, 22), true);
   });
 });

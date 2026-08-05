@@ -29,7 +29,7 @@ export interface NonTerminalTaskScanPosition {
  */
 export function isPRCommentTaskState(state: TaskStateData): boolean {
     if (state.issueRef.type !== undefined) return state.issueRef.type === 'pr_comment';
-    return state.taskId.startsWith('pr-comments-batch-')
+    return state.taskId.startsWith('pr-comments-')
         || state.taskId.startsWith('pr-comment-')
         || (/^\d+$/.test(state.taskId)
             && Number.isInteger(state.issueRef.number)

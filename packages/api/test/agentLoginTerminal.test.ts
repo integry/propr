@@ -13,14 +13,17 @@ function state(): TerminalSanitizerState {
   };
 }
 
-test('recovers visible output after an oversized unterminated control string', () => {
+test('discards the tail of an oversized control string until its terminator', () => {
   const session = state();
   const output = sanitizeTerminalChunk(
     session,
     `\u001b]0;${'x'.repeat(16 * 1024 + 1)}VISIBLE`,
   );
 
-  assert.match(output, /VISIBLE$/);
+  assert.equal(output, '');
+  assert.equal(session.escapeState, 'control_string_discard');
+  const recovered = sanitizeTerminalChunk(session, '\u0007VISIBLE');
+  assert.equal(recovered, 'VISIBLE');
   assert.equal(session.escapeState, 'text');
   assert.equal(session.controlStringBuffer, '');
 });
