@@ -109,12 +109,11 @@ jobs:
         run: ./scripts/ci-redis.sh stop
 
   comment:
-    name: Report Full Test Result
+    name: Report Full Test Failure
     needs: test
     if: >-
       ${{ always() && github.event_name == 'pull_request' &&
-          needs.test.result != 'skipped' &&
-          needs.test.result != 'cancelled' &&
+          needs.test.result == 'failure' &&
           github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     permissions:
@@ -128,7 +127,7 @@ jobs:
         with:
           name: full-test-output-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Post result comment
+      - name: Post failure comment
         continue-on-error: true
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
