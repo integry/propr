@@ -2,7 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert';
 import {
     addTaskAttemptLabelsToDockerArgs,
-    findRunningDockerContainerForTask,
+    findTaskContainer,
     type ExecutionResult,
 } from '../packages/core/src/claude/docker/dockerExecutor.js';
 
@@ -18,7 +18,7 @@ describe('running Docker task container lookup', () => {
             return result('417758dda147:codex-issue-1734-96957312\n');
         };
 
-        const container = await findRunningDockerContainerForTask(
+        const container = await findTaskContainer(
             'pr-comments-propr-gitfix-1734-96957312',
             executor,
         );
@@ -33,7 +33,7 @@ describe('running Docker task container lookup', () => {
     });
 
     test('returns null when no matching container exists in any lifecycle state', async () => {
-        const container = await findRunningDockerContainerForTask(
+        const container = await findTaskContainer(
             'pr-comments-propr-gitfix-1734-96957312',
             async () => result(''),
         );
@@ -43,7 +43,7 @@ describe('running Docker task container lookup', () => {
 
     test('uses exact task and attempt-generation labels for fenced lookup', async () => {
         let receivedArgs: string[] = [];
-        await findRunningDockerContainerForTask(
+        await findTaskContainer(
             'pr-comments-propr-gitfix-1734-96957312',
             'generation-hash',
             async (_command, args) => {
@@ -62,7 +62,7 @@ describe('running Docker task container lookup', () => {
         const firstTask = 'pr-comments-owner-one-1748-12345678';
         const secondTask = 'pr-comments-owner-two-1748-12345678';
 
-        await findRunningDockerContainerForTask(firstTask, async (_command, args) => {
+        await findTaskContainer(firstTask, async (_command, args) => {
             receivedArgs = args;
             return result('');
         });
@@ -101,7 +101,7 @@ describe('running Docker task container lookup', () => {
     });
 
     test('fails open when Docker inspection is unavailable', async () => {
-        const container = await findRunningDockerContainerForTask(
+        const container = await findTaskContainer(
             'pr-comments-propr-gitfix-1734-96957312',
             async () => { throw new Error('Docker unavailable'); },
         );

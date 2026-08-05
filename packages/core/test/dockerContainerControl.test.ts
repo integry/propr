@@ -167,5 +167,21 @@ test('retries generation-labeled teardown across the Docker creation race', asyn
     assert.deepEqual(dockerCalls[1]?.args, ['ps', '-aq', '--filter', 'label=propr.task.id=task-1748', '--filter', 'label=propr.task.attempt-generation=generation-hash']);
     assert.deepEqual(dockerCalls[2]?.args, ['rm', '-f', 'container-one']);
     assert.deepEqual(dockerCalls[3]?.args, ['rm', '-f', 'container-two']);
-    assert.deepEqual(dockerCalls[4]?.args, ['ps', '-aq', '--filter', 'label=propr.task.id=task-1748', '--filter', 'label=propr.task.attempt-generation=generation-hash']);
+    assert.equal(dockerCalls.length, 4);
+});
+
+test('does not retry label queries when the Docker daemon is unavailable', async () => {
+    responses.push({
+        error: new Error('Cannot connect to the Docker daemon'),
+        stdout: '',
+        stderr: 'Cannot connect to the Docker daemon',
+    });
+
+    await teardownDockerExecution({
+        taskId: 'task-1748',
+        attemptGeneration: 'generation-hash',
+    });
+
+    assert.equal(dockerCalls.length, 1);
+    assert.equal(dockerCalls[0]?.timeout, 1000);
 });

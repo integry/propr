@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import {
-    findRunningDockerContainerForTask,
+    findTaskContainer,
     getIssueQueue,
     getRedisConnectionOptions,
     getStateManager,
@@ -138,7 +138,7 @@ export async function runWithTaskReconciliationLease(
 export function attachPRCommentTaskStateFinalizers(
     worker: MainWorker,
     stateManager: Pick<WorkerStateManager, 'getTaskState' | 'updateTaskStateIfCurrent'>,
-    findRunningContainer: typeof findRunningDockerContainerForTask = findRunningDockerContainerForTask,
+    findRunningContainer: typeof findTaskContainer = findTaskContainer,
 ): WorkerTaskStateFinalizers {
     const pendingEventHandlers = new Set<Promise<void>>();
     const track = (operation: Promise<void>): void => {

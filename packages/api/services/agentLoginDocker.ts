@@ -111,52 +111,84 @@ function parseExpiration(value: unknown): number | undefined {
   return parsed < 10_000_000_000 ? parsed * 1000 : parsed;
 }
 
+interface CredentialTraversalBudget { visited: number }
+
+interface CredentialRecordScan {
+  localExpiration?: unknown;
+  localRefreshExpiration?: unknown;
+  credentials: Array<[string, unknown]>;
+  children: unknown[];
+}
+
+function consumeCredentialBudget(budget: CredentialTraversalBudget): boolean {
+  budget.visited += 1;
+  return budget.visited <= MAX_CREDENTIAL_JSON_NODES;
+}
+
+function scanCredentialRecord(
+  record: Record<string, unknown>,
+  budget: CredentialTraversalBudget,
+): CredentialRecordScan | null {
+  const scan: CredentialRecordScan = { credentials: [], children: [] };
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    if (!consumeCredentialBudget(budget)) return null;
+    const normalizedKey = normalizedCredentialKey(key);
+    const credential = record[key];
+    if (EXPIRATION_FIELD_NAMES.has(normalizedKey)) scan.localExpiration = credential;
+    if (REFRESH_EXPIRATION_FIELD_NAMES.has(normalizedKey)) scan.localRefreshExpiration = credential;
+    if (CREDENTIAL_FIELD_NAMES.has(normalizedKey)) scan.credentials.push([normalizedKey, credential]);
+    if (credential && typeof credential === 'object') scan.children.push(credential);
+  }
+  return scan;
+}
+
+function containsUsableCredential(
+  credentials: Array<[string, unknown]>,
+  expiration: unknown,
+  refreshExpiration: unknown,
+  now: number,
+): boolean {
+  for (const [normalizedKey, credential] of credentials) {
+    if (typeof credential !== 'string' || !credential.trim()) continue;
+    const credentialExpiration = REFRESH_CREDENTIAL_FIELD_NAMES.has(normalizedKey)
+      ? refreshExpiration
+      : expiration;
+    if (credentialExpiration === undefined) return true;
+    const parsedExpiration = parseExpiration(credentialExpiration);
+    if (parsedExpiration !== undefined && parsedExpiration > now) return true;
+  }
+  return false;
+}
+
 function hasValidCredential(payload: Record<string, unknown>, now = Date.now()): boolean {
-  let visited = 0;
+  const budget: CredentialTraversalBudget = { visited: 0 };
   const visit = (
     value: unknown,
     depth: number,
     inheritedExpiration?: unknown,
     inheritedRefreshExpiration?: unknown,
   ): boolean => {
+    if (!consumeCredentialBudget(budget)) return false;
     if (!value || typeof value !== 'object' || depth > MAX_CREDENTIAL_JSON_DEPTH) return false;
-    if (++visited > MAX_CREDENTIAL_JSON_NODES) return false;
     if (Array.isArray(value)) {
-      return value.some(item => visit(
-        item,
-        depth + 1,
-        inheritedExpiration,
-        inheritedRefreshExpiration,
-      ));
+      for (const item of value) {
+        if (budget.visited >= MAX_CREDENTIAL_JSON_NODES) return false;
+        if (visit(item, depth + 1, inheritedExpiration, inheritedRefreshExpiration)) return true;
+      }
+      return false;
     }
 
-    const record = value as Record<string, unknown>;
-    const localExpirationEntry = Object.entries(record).find(([key]) => (
-      EXPIRATION_FIELD_NAMES.has(normalizedCredentialKey(key))
-    ));
-    const localRefreshExpirationEntry = Object.entries(record).find(([key]) => (
-      REFRESH_EXPIRATION_FIELD_NAMES.has(normalizedCredentialKey(key))
-    ));
-    const effectiveExpiration = localExpirationEntry?.[1] ?? inheritedExpiration;
-    const effectiveRefreshExpiration = localRefreshExpirationEntry?.[1]
-      ?? inheritedRefreshExpiration;
-    for (const [key, credential] of Object.entries(record)) {
-      const normalizedKey = normalizedCredentialKey(key);
-      if (!CREDENTIAL_FIELD_NAMES.has(normalizedKey)) continue;
-      if (typeof credential !== 'string' || !credential.trim()) continue;
-      const credentialExpiration = REFRESH_CREDENTIAL_FIELD_NAMES.has(normalizedKey)
-        ? effectiveRefreshExpiration
-        : effectiveExpiration;
-      if (credentialExpiration === undefined) return true;
-      const expiration = parseExpiration(credentialExpiration);
-      if (expiration !== undefined && expiration > now) return true;
+    const scan = scanCredentialRecord(value as Record<string, unknown>, budget);
+    if (!scan) return false;
+    const effectiveExpiration = scan.localExpiration ?? inheritedExpiration;
+    const effectiveRefreshExpiration = scan.localRefreshExpiration ?? inheritedRefreshExpiration;
+    if (containsUsableCredential(scan.credentials, effectiveExpiration, effectiveRefreshExpiration, now)) return true;
+    for (const child of scan.children) {
+      if (budget.visited >= MAX_CREDENTIAL_JSON_NODES) return false;
+      if (visit(child, depth + 1, effectiveExpiration, effectiveRefreshExpiration)) return true;
     }
-    return Object.values(record).some(child => visit(
-      child,
-      depth + 1,
-      effectiveExpiration,
-      effectiveRefreshExpiration,
-    ));
+    return false;
   };
   return visit(payload, 0);
 }

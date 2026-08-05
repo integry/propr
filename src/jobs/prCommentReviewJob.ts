@@ -4,17 +4,15 @@ import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { TaskStates } from '@propr/core';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
-import { AgentRegistry, resolveLlmLabel } from '@propr/core';
-import type { AnalysisResult } from '@propr/core';
-import { recordLLMMetrics } from '@propr/core';
+import { AgentRegistry } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { loadPrReviewModel, loadSettings } from '@propr/core';
+import { loadSettings } from '@propr/core';
 import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prCommentJobHelpers.js';
 import { buildCombinedComment } from './prCommentJobUtils.js';
 import { calculateReviewCost, fetchReviewContext, type PRData } from './reviewContextHelpers.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
-import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
+import { generateSummaryTitle } from './prCommentAgentUtils.js';
 import { handleUltrafixContinuation, resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 import {
     buildDeterministicPrTaskSubtitle,
@@ -28,20 +26,19 @@ import type { Redis } from 'ioredis';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
 import { finalizePRCommentTaskResultBestEffort } from './prCommentTaskFinalizer.js';
+import {
+    buildReviewAssignmentMarker,
+    persistReviewRemoteOutcome,
+    recordReviewMetrics,
+    recoverPublishedReview,
+    type ReviewAssignment,
+    type ReviewResult,
+} from './prCommentReviewRecovery.js';
 
-export interface ReviewAssignment {
-    agentAlias: string;
-    model: string;
-    label: string;
-}
-
-export interface ReviewResult {
-    assignment: ReviewAssignment;
-    analysisResult: AnalysisResult;
-    commentUrl?: string;
-    error?: string;
-    prompt?: string;
-}
+export { buildReviewAssignmentMarker } from './prCommentReviewRecovery.js';
+export type { ReviewAssignment, ReviewResult } from './prCommentReviewRecovery.js';
+export { resolveReviewAssignments } from './prCommentReviewAssignments.js';
+import { resolveReviewAssignments } from './prCommentReviewAssignments.js';
 
 export interface PRJobContext {
     pullRequestNumber: number;
@@ -83,6 +80,12 @@ export interface ExecuteReviewParams {
         prData?: PRData;
         unprocessedComments?: UnprocessedComment[];
         llm?: string | null;
+        prCommentsForValidation?: Array<{
+            id: number;
+            body: string | null;
+            user: { login: string; type?: string };
+            html_url?: string;
+        }>;
     }>;
 }
 
@@ -93,63 +96,6 @@ export interface JobResult {
     reviewsPosted?: number;
     reviewsFailed?: number;
     [key: string]: unknown;
-}
-
-export async function resolveReviewAssignments(
-    requestedModels: string[] | undefined,
-    llm: string | null | undefined,
-    correlatedLogger: Logger
-): Promise<ReviewAssignment[]> {
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
-    const assignments: ReviewAssignment[] = [];
-
-    let modelsToReview: string[];
-    if (requestedModels && requestedModels.length > 0) {
-        // Explicit model(s) specified in /review command
-        modelsToReview = requestedModels;
-    } else {
-        // No explicit models - use pr_review_model config, ignoring llm from PR labels
-        // (labels specify implementation model, not review model)
-        let prReviewModel = '';
-        try {
-            prReviewModel = await loadPrReviewModel();
-        } catch (err) {
-            correlatedLogger.debug({ error: (err as Error).message }, 'Failed to load pr_review_model setting');
-        }
-        if (prReviewModel) {
-            modelsToReview = [prReviewModel];
-            correlatedLogger.info({ prReviewModel }, 'Using configured pr_review_model as default review model');
-        } else if (llm) {
-            // Fall back to llm from labels only if no pr_review_model configured
-            modelsToReview = [llm];
-            correlatedLogger.info({ llm }, 'No pr_review_model configured, falling back to llm from labels');
-        } else {
-            modelsToReview = ['default'];
-        }
-    }
-
-    for (const modelLabel of modelsToReview) {
-        try {
-            if (modelLabel === 'default') {
-                const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-                assignments.push({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
-            } else {
-                const resolution = await resolveLlmLabel(modelLabel);
-                assignments.push({ agentAlias: resolution.agentAlias, model: resolution.model, label: modelLabel });
-            }
-        } catch (resolveError) {
-            correlatedLogger.warn({ modelLabel, error: (resolveError as Error).message }, 'Failed to resolve review model, skipping');
-        }
-    }
-
-    if (assignments.length === 0) {
-        const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-        assignments.push({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
-    }
-
-    return assignments;
 }
 
 interface RunReviewsContext {
@@ -172,6 +118,7 @@ interface RunReviewsContext {
     correlatedLogger: Logger;
     assertLease: () => Promise<void>;
     signal: AbortSignal;
+    assignmentIndex: number;
 }
 
 async function runSingleReview(
@@ -208,10 +155,14 @@ async function runSingleReview(
         const reviewCommentBody = analysisResult.success
             ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles, costUsd })
             : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
+        const publicationStatus = analysisResult.success ? 'success' : 'error';
 
         await assertLease();
         const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
+            owner: repoOwner,
+            repo: repoName,
+            issue_number: pullRequestNumber,
+            body: `${reviewCommentBody}\n\n${buildReviewAssignmentMarker(taskId, assignment, ctx.assignmentIndex, publicationStatus)}`,
             request: { signal },
         });
 
@@ -224,7 +175,7 @@ async function runSingleReview(
         try {
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: buildReviewErrorComment(label, model, errorMsg),
+                body: `${buildReviewErrorComment(label, model, errorMsg)}\n\n${buildReviewAssignmentMarker(taskId, assignment, ctx.assignmentIndex, 'error')}`,
                 request: { signal },
             });
         } catch (commentError) {
@@ -232,31 +183,6 @@ async function runSingleReview(
         }
 
         return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg, prompt: reviewPrompt };
-    }
-}
-
-async function recordReviewMetrics(
-    reviewResults: ReviewResult[],
-    issueRef: { pullRequestNumber: number; repoOwner: string; repoName: string; correlationId: string; taskId: string }
-): Promise<void> {
-    const { pullRequestNumber, repoOwner, repoName, correlationId, taskId } = issueRef;
-    for (const result of reviewResults) {
-        const timestamp = new Date().toISOString();
-        const conversationLog = [
-            { type: 'user', timestamp, message: { content: [{ type: 'text', text: result.prompt || 'Review prompt not captured' }] } },
-            { type: 'assistant', timestamp, message: { content: [{ type: 'text', text: result.analysisResult.response || result.error || 'No response' }] } },
-        ];
-
-        const metricsResult: Parameters<typeof recordLLMMetrics>[0] = {
-            success: result.analysisResult.success,
-            model: result.analysisResult.modelUsed || result.assignment.model,
-            executionTime: result.analysisResult.executionTimeMs,
-            sessionId: result.analysisResult.sessionId || null,
-            tokenUsage: result.analysisResult.tokenUsage,
-            conversationLog,
-            ...(result.analysisResult.success ? {} : { error: result.analysisResult.error || result.error }),
-        };
-        await recordLLMMetrics(metricsResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_review', correlationId, taskId, executionType: 'pr-review' });
     }
 }
 
@@ -354,13 +280,22 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
     const startedEvidence = buildWorkEvidenceMarker('started', realComments.map(comment => comment.id));
     await assertLease();
-    state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner: repoOwner,
-        repo: repoName,
-        issue_number: pullRequestNumber,
-        body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${startedEvidence ? `\n${startedEvidence}` : ''}`,
-        request: { signal },
-    });
+    const previousStartingComment = startedEvidence
+        ? validation.prCommentsForValidation?.find(comment => (
+            comment.user.type === 'Bot'
+            && comment.body?.includes('**Starting AI Code Review**')
+            && comment.body.includes(startedEvidence)
+        ))
+        : undefined;
+    state.startingWorkComment = previousStartingComment
+        ? { data: { id: previousStartingComment.id, html_url: previousStartingComment.html_url || taskUrl } }
+        : await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: repoOwner,
+            repo: repoName,
+            issue_number: pullRequestNumber,
+            body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${startedEvidence ? `\n${startedEvidence}` : ''}`,
+            request: { signal },
+        });
 
     const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
     const titleContext = buildPrTaskTitleContext({ workflow, pullRequestNumber, prTitle: prData!.data.title, instructionText: job.data.commandInstructions, recentComments: allComments, prDescription: prData!.data.body, excludeCommentIds: state.unprocessedComments.map(comment => comment.id) });
@@ -417,11 +352,29 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         correlatedLogger,
         assertLease,
         signal,
+        assignmentIndex: 0,
     };
 
     const reviewResults: ReviewResult[] = [];
-    for (const assignment of assignments) {
-        reviewResults.push(await runSingleReview(assignment, reviewCtx));
+    for (const [assignmentIndex, assignment] of assignments.entries()) {
+        const recoveredReview = recoverPublishedReview(
+            allComments,
+            taskId,
+            assignment,
+            assignmentIndex,
+        );
+        if (recoveredReview) {
+            correlatedLogger.warn(
+                { taskId, assignmentIndex, model: assignment.model },
+                'Recovered an already-published review assignment',
+            );
+            reviewResults.push(recoveredReview);
+            continue;
+        }
+        reviewResults.push(await runSingleReview(assignment, {
+            ...reviewCtx,
+            assignmentIndex,
+        }));
     }
 
     await assertLease();
@@ -435,6 +388,10 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
 
     await assertLease();
+    const result = await persistReviewRemoteOutcome(redisClient, {
+        taskId, repoOwner, repoName, pullRequestNumber, prProcessingLockToken,
+        reviewsPosted: successCount, reviewsFailed: failCount,
+    });
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',
         historyMetadata: {
@@ -449,5 +406,5 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
 
     correlatedLogger.info({ pullRequestNumber, successCount, failCount, totalReviews: assignments.length }, 'Review processing completed');
 
-    return { status: 'complete', pullRequestNumber, reviewsPosted: successCount, reviewsFailed: failCount };
+    return result;
 }

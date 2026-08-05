@@ -1,18 +1,7 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { hashTaskAttemptToken, logger, runWithExecutionAbortSignal, SupersededTaskAttemptError } from '@propr/core';
-import { getAuthenticatedOctokit } from '@propr/core';
-import { withRetry, retryConfigs } from '@propr/core';
-import { getStateManager, TaskStates } from '@propr/core';
-import type { IssueRef, WorkerStateManager } from '@propr/core';
-import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '@propr/core';
-import { ensureGitRepository } from '@propr/core';
-import { createLogFiles } from '@propr/core';
-import { UsageLimitError } from '@propr/core';
-import { recordLLMMetrics } from '@propr/core';
-import { type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
+import { createLogFiles, createWorktreeFromExistingBranch, ensureGitRepository, ensureRepoCloned, getAuthenticatedOctokit, getRepoUrl, getStateManager, hashTaskAttemptToken, loadPrimaryProcessingLabels, logger, recordLLMMetrics, retryConfigs, runWithExecutionAbortSignal, SupersededTaskAttemptError, TaskStates, UsageLimitError, withRetry, type CommentJobData, type IssueRef, type JobResult, type UnprocessedComment, type WorkerStateManager } from '@propr/core';
 import { Redis } from 'ioredis';
-import { loadPrimaryProcessingLabels } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
     buildCommentHistory, updateTaskTitleForPR, resolvePrReasoningLevelOverride
@@ -30,6 +19,7 @@ import { gatherUnprocessedReviewComments } from './reviewCommentGatherer.js';
 import { formatReviewCommentsSection } from './prCommentReviewFormatting.js';
 import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
 import { handlePostExecution } from './prCommentPostExecution.js';
+import { resolvePRCommentJobContext, resumePRCommentPublicationJob } from './prCommentPublicationJobRecovery.js';
 import {
     buildDeterministicPrTaskSubtitle,
     buildPrTaskTitle,
@@ -60,6 +50,7 @@ import {
     requeuePRCommentJobWithoutLease,
 } from './prCommentProcessingLease.js';
 import { recoverPRCommentRemoteOutcome } from './prCommentRemoteOutcomeRecovery.js';
+import { loadPRCommentPublicationCheckpoint } from './prCommentRemoteOutcome.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -326,7 +317,8 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const taskId = job.id || `pr-comment-${job.data.pullRequestNumber}-${Date.now()}`;
     const recoveredOutcome = await recoverPRCommentRemoteOutcome(redisClient, job, taskId);
     if (recoveredOutcome) return recoveredOutcome;
-    const context = await initializePRJobContext(job);
+    const publicationCheckpoint = await loadPRCommentPublicationCheckpoint(redisClient, taskId);
+    const context = await resolvePRCommentJobContext(job, publicationCheckpoint, initializePRJobContext);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
 
@@ -410,6 +402,10 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     let preserveJobOutcome = false;
 
     try {
+        if (publicationCheckpoint) {
+            preserveJobOutcome = true;
+            return await resumePRCommentPublicationJob(publicationCheckpoint, { job, taskId, stateManager, context, llm, redisClient, correlationId, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal });
+        }
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
             const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal }), attemptGeneration);
@@ -423,6 +419,11 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
                 loseLease(new PRProcessingLeaseLostError(error.message, { cause: error }));
             }
             correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Stopped superseded PR processing attempt before further side effects');
+            throw error;
+        }
+        const stagedPublication = await loadPRCommentPublicationCheckpoint(redisClient, taskId).catch(() => null);
+        if (stagedPublication) {
+            correlatedLogger.warn({ taskId, stage: stagedPublication.stage }, 'Preserving staged remote publication for BullMQ recovery');
             throw error;
         }
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal });

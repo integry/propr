@@ -1,6 +1,6 @@
 import type {
     TaskStateData,
-    findRunningDockerContainerForTask,
+    findTaskContainer,
     inspectLegacyDockerContainerLivenessForTask,
     stopDockerContainer,
     WorkerStateManager,
@@ -47,7 +47,7 @@ export interface TaskReconciliationOptions {
     redis: ReconciliationRedis;
     staleAfterMs?: number;
     now?: () => number;
-    findRunningContainer?: typeof findRunningDockerContainerForTask;
+    findRunningContainer?: typeof findTaskContainer;
     inspectLegacyContainerLiveness?: typeof inspectLegacyDockerContainerLivenessForTask;
     stopContainer?: typeof stopDockerContainer;
     signal?: AbortSignal;
@@ -61,7 +61,7 @@ export interface TaskReconciliationOptions {
 export interface ReconciliationContext {
     options: TaskReconciliationOptions;
     summary: TaskReconciliationSummary;
-    findRunningContainer: typeof findRunningDockerContainerForTask;
+    findRunningContainer: typeof findTaskContainer;
     inspectLegacyContainerLiveness: typeof inspectLegacyDockerContainerLivenessForTask;
     stopContainer: typeof stopDockerContainer;
 }

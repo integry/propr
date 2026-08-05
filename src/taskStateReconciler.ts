@@ -1,6 +1,6 @@
 import type { TaskStateData } from '@propr/core';
 import {
-    findRunningDockerContainerForTask,
+    findTaskContainer,
     hashTaskAttemptToken,
     inspectLegacyDockerContainerLivenessForTask,
     isPRCommentTaskState,
@@ -138,7 +138,7 @@ async function hasMatchingPRLease(
 async function findGenerationSpecificContainer(
     task: TaskStateData,
     context: ReconciliationContext,
-): Promise<Awaited<ReturnType<typeof findRunningDockerContainerForTask>>> {
+): Promise<Awaited<ReturnType<typeof findTaskContainer>>> {
     if (!task.prProcessingLockToken) return context.findRunningContainer(task.taskId);
     return context.findRunningContainer(
         task.taskId,
@@ -383,7 +383,7 @@ export async function reconcileStaleTaskStates(
     );
     const now = (options.now ?? Date.now)();
     const deadline = Date.now() + timeBudgetMs;
-    const findRunningContainer = options.findRunningContainer ?? findRunningDockerContainerForTask;
+    const findRunningContainer = options.findRunningContainer ?? findTaskContainer;
     const inspectLegacyContainerLiveness = options.inspectLegacyContainerLiveness
         ?? inspectLegacyDockerContainerLivenessForTask;
     const stopContainer = options.stopContainer ?? stopDockerContainer;

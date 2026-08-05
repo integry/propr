@@ -147,6 +147,30 @@ export interface StartedWorker {
     close(): Promise<void>;
 }
 
+async function rollbackWorkerStartup(options: {
+    worker: MainWorker;
+    runtimeBuildWorker?: Worker<AgentRuntimeBuildJobData>;
+    taskStateRecovery?: Awaited<ReturnType<typeof startWorkerTaskStateRecovery>>;
+    heartbeatRedis: Redis;
+    subscriberRedis: Redis;
+    workerId: string;
+}): Promise<void> {
+    const cleanupTasks: Array<Promise<unknown>> = [
+        options.worker.close(),
+        options.heartbeatRedis.srem('system:status:workers', options.workerId),
+        options.subscriberRedis.quit(),
+    ];
+    if (options.runtimeBuildWorker) cleanupTasks.push(options.runtimeBuildWorker.close());
+    if (options.taskStateRecovery) cleanupTasks.push(options.taskStateRecovery.close());
+    const cleanupResults = await Promise.allSettled(cleanupTasks);
+    cleanupResults.push(...await Promise.allSettled([options.heartbeatRedis.quit()]));
+    for (const result of cleanupResults) {
+        if (result.status === 'rejected') {
+            logger.warn({ error: (result.reason as Error).message }, 'Worker startup cleanup failed');
+        }
+    }
+}
+
 async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> {
     const workerId = `worker:${generateCorrelationId()}`;
     let workerConcurrency = parseInt(process.env.WORKER_CONCURRENCY || '5', 10);
@@ -318,53 +342,46 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         },
     });
 
-    let taskStateRecovery: Awaited<ReturnType<typeof startWorkerTaskStateRecovery>>;
+    let taskStateRecovery!: Awaited<ReturnType<typeof startWorkerTaskStateRecovery>>;
+    let runtimeBuildWorker!: Worker<AgentRuntimeBuildJobData>;
     try {
         taskStateRecovery = await startWorkerTaskStateRecovery(worker);
+        runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
+            AGENT_RUNTIME_BUILD_QUEUE_NAME,
+            async (job) => {
+                logger.info({ buildId: job.data.buildId, packages: job.data.packages }, 'Building agent runtime package profile');
+                await job.updateProgress(5);
+                const state = await buildAgentRuntimePackageProfile(job.data);
+                if (state.buildId !== job.data.buildId) {
+                    logger.info({ buildId: job.data.buildId, currentBuildId: state.buildId }, 'Agent runtime build was superseded');
+                    return state;
+                }
+                await job.updateProgress(90);
+                await AgentRegistry.getInstance().refresh();
+                await job.updateProgress(100);
+                logger.info({ buildId: job.data.buildId, imageCount: Object.keys(state.images).length }, 'Agent runtime package profile activated');
+                return state;
+            },
+            {
+                connection: {
+                    host: process.env.REDIS_HOST || 'localhost',
+                    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+                    maxRetriesPerRequest: null
+                },
+                concurrency: 1
+            }
+        );
+        runtimeBuildWorker.on('failed', (job, error) => {
+            logger.error({ buildId: job?.data.buildId, error: error.message }, 'Agent runtime package build failed');
+        });
     } catch (error) {
         clearInterval(heartbeatInterval);
-        const cleanupResults = await Promise.allSettled([
-            worker.close(),
-            heartbeatRedis.srem('system:status:workers', workerId),
-            subscriberRedis.quit(),
-        ]);
-        cleanupResults.push(...await Promise.allSettled([heartbeatRedis.quit()]));
-        for (const result of cleanupResults) {
-            if (result.status === 'rejected') {
-                logger.warn({ error: (result.reason as Error).message }, 'Worker startup cleanup failed');
-            }
-        }
+        await rollbackWorkerStartup({
+            worker, runtimeBuildWorker, taskStateRecovery,
+            heartbeatRedis, subscriberRedis, workerId,
+        });
         throw error;
     }
-
-    const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
-        AGENT_RUNTIME_BUILD_QUEUE_NAME,
-        async (job) => {
-            logger.info({ buildId: job.data.buildId, packages: job.data.packages }, 'Building agent runtime package profile');
-            await job.updateProgress(5);
-            const state = await buildAgentRuntimePackageProfile(job.data);
-            if (state.buildId !== job.data.buildId) {
-                logger.info({ buildId: job.data.buildId, currentBuildId: state.buildId }, 'Agent runtime build was superseded');
-                return state;
-            }
-            await job.updateProgress(90);
-            await AgentRegistry.getInstance().refresh();
-            await job.updateProgress(100);
-            logger.info({ buildId: job.data.buildId, imageCount: Object.keys(state.images).length }, 'Agent runtime package profile activated');
-            return state;
-        },
-        {
-            connection: {
-                host: process.env.REDIS_HOST || 'localhost',
-                port: parseInt(process.env.REDIS_PORT || '6379', 10),
-                maxRetriesPerRequest: null
-            },
-            concurrency: 1
-        }
-    );
-    runtimeBuildWorker.on('failed', (job, error) => {
-        logger.error({ buildId: job?.data.buildId, error: error.message }, 'Agent runtime package build failed');
-    });
 
     const close = async (): Promise<void> => {
         clearInterval(heartbeatInterval);

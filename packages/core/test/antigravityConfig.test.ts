@@ -196,6 +196,32 @@ test('Antigravity output parser accepts camelCase result token stats', () => {
     assert.deepEqual(parsed.tokenUsage, { input_tokens: 12, output_tokens: 4 });
 });
 
+test('Antigravity output parser accepts optional protocol fields and mixed plain output', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ type: 'init', session_id: 'session-1', model: 'provider-model' }),
+        'provider progress text',
+        JSON.stringify({ type: 'error', message: 'provider failed' }),
+        JSON.stringify({ type: 'result', status: 'error' }),
+    ].join('\n'));
+
+    assert.equal(parsed.sessionId, 'session-1');
+    assert.equal(parsed.modelUsed, 'provider-model');
+    assert.equal(parsed.summary, 'provider progress text');
+    assert.equal(parsed.conversationLog.length, 3);
+});
+
+test('Antigravity output parser accepts lower-case transcript identifiers without optional metadata', () => {
+    const parsed = parseAntigravityJsonl(JSON.stringify({
+        source: 'model',
+        type: 'planner_response',
+        content: 'schema-compatible response',
+    }));
+
+    assert.equal(parsed.summary, 'schema-compatible response');
+    assert.equal(parsed.conversationLog.length, 1);
+    assert.equal(filterAntigravityAnalysisEvents(parsed.conversationLog).length, 1);
+});
+
 test('Antigravity display log keeps planner analysis and drops tool output', () => {
     const transcript: AntigravityOutputEvent[] = [
         {

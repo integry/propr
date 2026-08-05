@@ -141,6 +141,12 @@ describe('Antigravity agent login', () => {
       }));
       assert.equal(await isAgentLoginComplete('antigravity', credentialPath), true);
 
+      fs.writeFileSync(tokenPath, JSON.stringify({
+        ...Object.fromEntries(Array.from({ length: 3000 }, (_, index) => [`field_${index}`, index])),
+        access_token: 'outside-complexity-budget',
+      }));
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
+
       fs.truncateSync(tokenPath, 1024 * 1024 + 1);
       assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
     } finally {

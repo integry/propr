@@ -23,6 +23,26 @@ beforeEach(() => {
     });
 });
 
+test('reports task ownership mismatch as a superseded attempt', async () => {
+    await assert.rejects(
+        patchUltrafixContinuationMeta(
+            {
+                getTaskState: async () => ({ prProcessingLockToken: 'replacement-token' }),
+                updateHistoryMetadata: mock.fn(),
+            } as never,
+            'task-1748',
+            { ultrafixCycleCount: 2 },
+            {
+                correlatedLogger: { warn: mock.fn() } as never,
+                prProcessingLockToken: 'attempt-token',
+            },
+        ),
+        SupersededTaskAttemptError,
+    );
+
+    assert.equal(database.mock.calls.length, 0);
+});
+
 test('stops ultrafix persistence when the fenced Redis update is superseded', async () => {
     const updateHistoryMetadata = mock.fn(async () => {
         throw new SupersededTaskAttemptError('replacement attempt owns task');

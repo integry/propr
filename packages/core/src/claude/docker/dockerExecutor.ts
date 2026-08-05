@@ -80,7 +80,7 @@ function resolveDockerPath(command: string): string {
  * when supplied, its attempt-generation label. Name suffixes are intentionally excluded:
  * they are not unique enough to authorize a destructive container stop.
  */
-export async function findRunningDockerContainerForTask(taskId: string, attemptGenerationOrExecutor?: string | typeof executeDockerCommand, executor: typeof executeDockerCommand = executeDockerCommand): Promise<RunningTaskContainer | null> {
+export async function findTaskContainer(taskId: string, attemptGenerationOrExecutor?: string | typeof executeDockerCommand, executor: typeof executeDockerCommand = executeDockerCommand): Promise<RunningTaskContainer | null> {
     const attemptGeneration = typeof attemptGenerationOrExecutor === 'string'
         ? attemptGenerationOrExecutor
         : undefined;

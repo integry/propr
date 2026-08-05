@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import {
     getPRCommentRemoteOutcomeKey,
+    loadPRCommentPublicationCheckpoint,
     loadPRCommentRemoteOutcome,
+    persistPRCommentPublicationCheckpoint,
     persistPRCommentRemoteOutcome,
 } from '../src/jobs/prCommentRemoteOutcome.js';
 
@@ -58,4 +60,55 @@ test('loads only complete remote outcome shapes with an attempt generation', asy
 
     assert.equal(valid?.status, 'partial');
     assert.equal(invalid, null);
+});
+
+test('persists and validates an in-progress publication checkpoint', async () => {
+    const evalMock = mock.fn(async () => 1);
+    const checkpoint = {
+        kind: 'implementation-publication' as const,
+        stage: 'completion_comment_published' as const,
+        prProcessingAttemptGeneration: 'generation-hash',
+        result: {
+            status: 'complete',
+            commit: 'commit-abc',
+            prProcessingAttemptGeneration: 'generation-hash',
+        },
+        branchName: 'feature-branch',
+        completionComment: {
+            id: 42,
+            body: 'completed',
+            htmlUrl: 'https://example.test/comment/42',
+        },
+        reviewCommentIds: [10, 20],
+    };
+
+    await persistPRCommentPublicationCheckpoint({ eval: evalMock } as never, {
+        taskId: 'task-1748',
+        lockKey: 'lock:pr:integry:propr:1748',
+        lockToken: 'attempt-token',
+        checkpoint,
+    });
+    const serialized = evalMock.mock.calls[0].arguments[6] as string;
+    const loaded = await loadPRCommentPublicationCheckpoint({
+        get: async () => serialized,
+    }, 'task-1748');
+
+    assert.deepEqual(loaded, checkpoint);
+    assert.equal(await loadPRCommentRemoteOutcome({ get: async () => serialized }, 'task-1748'), null);
+});
+
+test('rejects a publication checkpoint whose nested result belongs to another generation', async () => {
+    const loaded = await loadPRCommentPublicationCheckpoint({
+        get: async () => JSON.stringify({
+            kind: 'implementation-publication',
+            stage: 'branch_pushed',
+            prProcessingAttemptGeneration: 'generation-new',
+            result: { status: 'complete', prProcessingAttemptGeneration: 'generation-old' },
+            branchName: 'feature-branch',
+            completionComment: { id: 42, body: 'completed' },
+            reviewCommentIds: [],
+        }),
+    }, 'task-1748');
+
+    assert.equal(loaded, null);
 });

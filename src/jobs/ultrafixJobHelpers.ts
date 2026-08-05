@@ -8,7 +8,7 @@
 import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
-import { getCurrentPRHead, areAllChecksPassing } from '@propr/core';
+import { getCurrentPRHead, areAllChecksPassing, SupersededTaskAttemptError } from '@propr/core';
 import type { CommentJobData } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
@@ -56,6 +56,7 @@ export async function handleUltrafixContinuation(
             prProcessingLockToken,
         });
     } catch (contErr) {
+        if (contErr instanceof SupersededTaskAttemptError) throw contErr;
         await assertLease?.();
         correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, `Ultrafix loop continuation failed after ${action}`);
     }

@@ -4,7 +4,7 @@ import { beforeEach, mock, test } from 'node:test';
 const cleanupWorktree = mock.fn(async () => {});
 const assertLease = mock.fn(async () => {});
 const releaseLease = mock.fn(async () => true);
-const findRunningDockerContainerForTask = mock.fn(async () => null as { id: string; name: string } | null);
+const findTaskContainer = mock.fn(async () => null as { id: string; name: string } | null);
 const inspectLegacyDockerContainerLivenessForTask = mock.fn(async () => 'not_found' as 'running' | 'not_found' | 'unavailable');
 const stopDockerContainer = mock.fn(async () => ({ success: true }));
 const issueQueueAdd = mock.fn(async () => ({}));
@@ -16,7 +16,7 @@ await mock.module('@propr/core', {
         cleanupWorktree,
         describeAgentTermination: () => '',
         formatResetTime: () => '',
-        findRunningDockerContainerForTask,
+        findTaskContainer,
         generateCorrelationId: () => 'correlation',
         getAuthenticatedOctokit: async () => ({}),
         getDefaultModel: () => null,
@@ -104,8 +104,8 @@ beforeEach(() => {
     assertLease.mock.mockImplementation(async () => {});
     releaseLease.mock.resetCalls();
     releaseLease.mock.mockImplementation(async () => true);
-    findRunningDockerContainerForTask.mock.resetCalls();
-    findRunningDockerContainerForTask.mock.mockImplementation(async () => null);
+    findTaskContainer.mock.resetCalls();
+    findTaskContainer.mock.mockImplementation(async () => null);
     inspectLegacyDockerContainerLivenessForTask.mock.resetCalls();
     inspectLegacyDockerContainerLivenessForTask.mock.mockImplementation(async () => 'not_found');
     stopDockerContainer.mock.resetCalls();
@@ -123,7 +123,7 @@ test('uses only a one-way attempt generation in worktree names', () => {
 });
 
 test('stops an abandoned task container before allowing a successor attempt', async () => {
-    findRunningDockerContainerForTask.mock.mockImplementationOnce(async () => ({
+    findTaskContainer.mock.mockImplementationOnce(async () => ({
         id: 'container-1748',
         name: 'propr-task-1748',
     }));
@@ -168,7 +168,7 @@ test('reschedules startup when legacy container liveness cannot be verified', as
 });
 
 test('does not stop an abandoned container after startup lease ownership is lost', async () => {
-    findRunningDockerContainerForTask.mock.mockImplementationOnce(async () => ({
+    findTaskContainer.mock.mockImplementationOnce(async () => ({
         id: 'container-1748',
         name: 'propr-task-1748',
     }));

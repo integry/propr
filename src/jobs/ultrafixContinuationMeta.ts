@@ -30,8 +30,11 @@ export async function patchUltrafixContinuationMeta(
     if (prProcessingLockToken !== undefined) {
         try {
             const currentState = await stateManager.getTaskState(taskId);
-            if (currentState?.prProcessingLockToken !== prProcessingLockToken) return;
+            if (currentState?.prProcessingLockToken !== prProcessingLockToken) {
+                throw new SupersededTaskAttemptError(taskId);
+            }
         } catch (e) {
+            if (e instanceof SupersededTaskAttemptError) throw e;
             correlatedLogger.warn({ error: (e as Error).message, taskId }, 'Failed to verify ultrafix metadata attempt ownership');
             return;
         }

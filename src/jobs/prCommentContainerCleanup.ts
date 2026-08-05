@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import {
-    findRunningDockerContainerForTask,
+    findTaskContainer,
     inspectLegacyDockerContainerLivenessForTask,
     stopDockerContainer,
 } from '@propr/core';
@@ -12,7 +12,7 @@ export async function stopAbandonedPRTaskContainer(
     assertLease: () => Promise<void>,
 ): Promise<boolean> {
     for (;;) {
-        const container = await findRunningDockerContainerForTask(taskId);
+        const container = await findTaskContainer(taskId);
         if (!container) break;
         await assertLease();
         correlatedLogger.warn({ taskId, containerId: container.id, containerName: container.name }, 'Found an agent container after acquiring an unowned PR lease; stopping the abandoned execution');

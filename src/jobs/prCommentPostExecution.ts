@@ -1,16 +1,12 @@
-import { Job } from 'bullmq';
+import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import {
     commitChanges,
-    db,
     getRepoUrl,
     getAuthenticatedOctokit,
-    hashTaskAttemptToken,
     pushBranch,
     resolveAgentTerminationReason,
-    SupersededTaskAttemptError,
-    TaskStates,
 } from '@propr/core';
 import type {
     ClaudeCodeResponse,
@@ -21,15 +17,14 @@ import type {
 } from '@propr/core';
 import { buildCompletionComment } from './prCompletionComment.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
-import {
-    buildCommitMessage,
-    schedulePRCommentCleanupRecovery,
-} from './prCommentJobUtils.js';
-import { markReviewCommentsProcessed } from './reviewCommentGatherer.js';
+import { buildCommitMessage } from './prCommentJobUtils.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
-import { resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
-import { persistPRCommentRemoteOutcome } from './prCommentRemoteOutcome.js';
+import {
+    checkpointPRCommentPublication,
+    finalizePRCommentPublication,
+    type PRCommentPublicationState,
+} from './prCommentPublicationRecovery.js';
 
 interface PostExecutionState {
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
@@ -79,68 +74,43 @@ interface UndoContextParams {
     branchName: string;
 }
 
-interface PublishedOutcomeParams {
-    execution: PostExecutionParams;
-    state: ReadyPostExecutionState;
-    commitHash?: string;
-    completionComment: { data: { html_url: string; body?: string } };
-    partial: boolean;
-    terminationReason: ReturnType<typeof resolveAgentTerminationReason>;
-}
-
-async function commitAndPush(
+async function commitForPublication(
     state: ReadyPostExecutionState,
-    issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number },
+    pullRequestNumber: number,
     options: { llm: string | null | undefined; assertLease: () => Promise<void>; signal: AbortSignal },
 ) {
     const { llm, assertLease, signal } = options;
     const changesSummary = state.claudeResult.summary || state.claudeResult.finalResult?.result || '';
-    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber: issueRef.pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });
+    const commitMessage = buildCommitMessage({ changesSummary, unprocessedComments: state.unprocessedComments, pullRequestNumber, claudeResult: state.claudeResult, llm, authorsText: state.authorsText });
     await assertLease();
     const commitResult = await commitChanges(state.worktreeInfo.worktreePath, commitMessage, AI_COMMIT_AUTHOR, {
-        issueNumber: issueRef.pullRequestNumber,
+        issueNumber: pullRequestNumber,
         issueTitle: 'Follow-up changes',
         signal,
     });
-
-    if (commitResult) {
-        await assertLease();
-        const repoUrl = getRepoUrl({ repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
-        const githubToken = await state.octokit.auth({ type: "installation" }) as GitHubToken;
-        await assertLease();
-        const pushResult = await pushBranch(state.worktreeInfo.worktreePath, state.worktreeInfo.branchName, {
-            repoUrl,
-            authToken: githubToken.token,
-            rebaseOnNonFastForward: true,
-            signal,
-        });
-        if (pushResult.rebased && pushResult.commitHash) {
-            commitResult.commitHash = pushResult.commitHash;
-        }
-        await assertLease();
-    }
-
     return { commitResult, changesSummary, commitMessage };
 }
 
-async function persistCommitHash(
-    taskId: string,
-    commitHash: string | undefined,
-    prProcessingLockToken: string,
-    correlatedLogger: Logger,
-): Promise<void> {
-    if (!commitHash) return;
-    try {
-        const updatedRows = await db('tasks')
-            .where({ task_id: taskId })
-            .andWhere('attempt_generation', hashTaskAttemptToken(prProcessingLockToken))
-            .update({ commit_hash: commitHash });
-        if (updatedRows !== 1) throw new SupersededTaskAttemptError(taskId);
-        correlatedLogger.info({ taskId, commitHash }, 'Saved commit hash to tasks table');
-    } catch (dbError) {
-        if (dbError instanceof SupersededTaskAttemptError) throw dbError;
-        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
+async function pushCommittedChanges(
+    state: ReadyPostExecutionState,
+    commitResult: NonNullable<Awaited<ReturnType<typeof commitChanges>>>,
+    issueRef: { repoOwner: string; repoName: string },
+    options: { assertLease: () => Promise<void>; signal: AbortSignal },
+): Promise<boolean> {
+    await options.assertLease();
+    const repoUrl = getRepoUrl(issueRef);
+    const githubToken = await state.octokit.auth({ type: 'installation' }) as GitHubToken;
+    await options.assertLease();
+    const pushResult = await pushBranch(state.worktreeInfo.worktreePath, state.worktreeInfo.branchName, {
+        repoUrl,
+        authToken: githubToken.token,
+        rebaseOnNonFastForward: true,
+        signal: options.signal,
+    });
+    if (pushResult.rebased && pushResult.commitHash) {
+        commitResult.commitHash = pushResult.commitHash;
     }
+    return Boolean(pushResult.rebased && pushResult.commitHash);
 }
 
 function buildUndoContext(params: UndoContextParams) {
@@ -162,83 +132,30 @@ export function getPostExecutionDisposition(result: ClaudeCodeResponse): 'comple
     return resolveAgentTerminationReason(result) ? 'partial' : 'failed';
 }
 
-async function finalizePublishedOutcome(options: PublishedOutcomeParams): Promise<void> {
-    const {
-        execution, state, commitHash, completionComment, partial, terminationReason,
-    } = options;
-    const {
-        job, taskId, stateManager, context, unprocessedReviewComments, llm,
-        redisClient, prProcessingLockToken, assertLease, beforeCompletion,
-    } = execution;
-    const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
-
-    if (unprocessedReviewComments.length > 0) {
-        await assertLease();
-        await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), {
-            repoOwner,
-            repoName,
-            pullRequestNumber,
-            redisClient,
-            correlatedLogger,
-            prProcessingLockKey: `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`,
-            prProcessingLockToken,
-            assertLease,
-        });
-    }
-
-    await beforeCompletion();
-    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(
-        job,
-        { repoOwner, repoName, pullRequestNumber },
-        redisClient,
-    );
-    await assertLease();
-    await persistCommitHash(taskId, commitHash, prProcessingLockToken, correlatedLogger);
-    await assertLease();
-    const result = {
-        status: partial ? 'partial' : 'complete',
-        commit: commitHash,
-        pullRequestNumber,
-        claudeResult: { success: state.claudeResult.success },
-        prProcessingAttemptGeneration: hashTaskAttemptToken(prProcessingLockToken),
+function buildPublicationState(
+    options: {
+        state: ReadyPostExecutionState;
+        body: string;
+        commitHash: string | undefined;
+        reviewCommentIds: number[];
+        partial: boolean;
+        terminationReason: ReturnType<typeof resolveAgentTerminationReason>;
+    },
+): PRCommentPublicationState {
+    const { state, body, commitHash, reviewCommentIds, partial, terminationReason } = options;
+    return {
+        branchName: state.worktreeInfo.branchName,
+        claudeSuccess: state.claudeResult.success,
+        commitHash,
+        completionComment: {
+            id: state.startingWorkComment.data.id,
+            htmlUrl: '',
+            body,
+        },
+        reviewCommentIds,
+        partial,
+        terminationReason,
     };
-    await persistPRCommentRemoteOutcome(redisClient, {
-        taskId,
-        lockKey: `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`,
-        lockToken: prProcessingLockToken,
-        result,
-    });
-    // Keep recovery durable before the terminal Redis transition so a worker
-    // exit cannot rerun already-published work or strand newly pending comments.
-    await schedulePRCommentCleanupRecovery({
-        repoOwner,
-        repoName,
-        pullRequestNumber,
-        jobBranchName: state.worktreeInfo.branchName,
-        jobLlm: llm,
-        jobReasoningLevel: job.data.reasoningLevel,
-        attemptGeneration: result.prProcessingAttemptGeneration,
-        correlatedLogger,
-    });
-    await assertLease();
-    try {
-        await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
-            reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',
-            commitHash,
-            historyMetadata: {
-                commandMode: job.data.commandMode || 'default',
-                githubComment: { url: completionComment.data.html_url, body: completionComment.data.body },
-                ...(unprocessedReviewComments.length > 0 && { consumedReviewCommentIds: unprocessedReviewComments.map(c => c.id) }),
-                ...(partial && { incompleteExecution: { reason: terminationReason } }),
-                ...ultrafixHistoryMeta,
-            }
-        }, prProcessingLockToken);
-    } catch (error) {
-        correlatedLogger.warn(
-            { taskId, error: (error as Error).message },
-            'Deferred terminal task-state persistence after committing the remote PR outcome',
-        );
-    }
 }
 
 export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
@@ -253,38 +170,80 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
         throw new Error(`Agent execution failed: ${state.claudeResult.error || 'Unknown error'}`);
     }
 
-    const { commitResult, changesSummary, commitMessage } = await commitAndPush(
+    const { commitResult, changesSummary, commitMessage } = await commitForPublication(
         state,
-        { repoOwner, repoName, pullRequestNumber },
+        pullRequestNumber,
         { llm, assertLease, signal },
     );
     if (partial && !commitResult) {
-        throw new Error(`Agent execution ${terminationReason === 'timeout' ? 'timed out' : 'reached the maximum turn limit'} before producing changes to publish`);
+        const reason = terminationReason === 'timeout' ? 'timed out' : 'reached the maximum turn limit';
+        throw new Error(`Agent execution ${reason} before producing changes to publish`);
     }
     if (commitResult?.filesChanged?.length) state.claudeResult.modifiedFiles = commitResult.filesChanged;
 
     const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
-    const consumedReviewCommentIds = unprocessedReviewComments.length > 0 ? unprocessedReviewComments.map(c => c.id) : undefined;
-    const prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, { changesSummary, commitMessage, llm, authorsText: state.authorsText, undoContext, taskUrl, consumedReviewCommentIds }, state.claudeResult);
+    const reviewCommentIds = unprocessedReviewComments.map(comment => comment.id);
+    let prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, {
+        changesSummary,
+        commitMessage,
+        llm,
+        authorsText: state.authorsText,
+        undoContext,
+        taskUrl,
+        consumedReviewCommentIds: reviewCommentIds.length > 0 ? reviewCommentIds : undefined,
+    }, state.claudeResult);
+    const publication = buildPublicationState({
+        state,
+        body: prCommentBody,
+        commitHash: commitResult?.commitHash,
+        reviewCommentIds,
+        partial,
+        terminationReason,
+    });
+    if (commitResult) {
+        const rebased = await pushCommittedChanges(
+            state,
+            commitResult,
+            { repoOwner, repoName },
+            { assertLease, signal },
+        );
+        publication.commitHash = commitResult.commitHash;
+        // Persist immediately after the irreversible push. If a rebase changed
+        // the SHA, the prepared body is corrected in the next checkpoint.
+        await checkpointPRCommentPublication(params, publication, 'branch_pushed');
+        if (rebased) {
+            prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, {
+                changesSummary,
+                commitMessage,
+                llm,
+                authorsText: state.authorsText,
+                undoContext,
+                taskUrl,
+                consumedReviewCommentIds: reviewCommentIds.length > 0 ? reviewCommentIds : undefined,
+            }, state.claudeResult);
+            publication.completionComment.body = prCommentBody;
+            await checkpointPRCommentPublication(params, publication, 'branch_pushed');
+        }
+    } else {
+        await checkpointPRCommentPublication(params, publication, 'branch_pushed');
+    }
+
     await assertLease();
     const completionComment = await state.octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
         owner: repoOwner,
         repo: repoName,
-        comment_id: state.startingWorkComment.data.id,
-        body: prCommentBody,
+        comment_id: publication.completionComment.id,
+        body: publication.completionComment.body,
         request: { signal },
     }) as { data: { html_url: string; body?: string } };
-    await assertLease();
-    correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
+    publication.completionComment.htmlUrl = completionComment.data.html_url;
+    publication.completionComment.body = completionComment.data.body ?? publication.completionComment.body;
+    await checkpointPRCommentPublication(params, publication, 'completion_comment_published');
 
-    await finalizePublishedOutcome({
-        execution: params,
-        state,
-        commitHash: commitResult?.commitHash,
-        completionComment,
-        partial,
-        terminationReason,
-    });
-
-    return { commitHash: commitResult?.commitHash, partial };
+    correlatedLogger.info(
+        { pullRequestNumber, commitHash: publication.commitHash, commentUrl: publication.completionComment.htmlUrl, partial, terminationReason },
+        partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes',
+    );
+    await finalizePRCommentPublication(params, publication, 'completion_comment_published');
+    return { commitHash: publication.commitHash, partial };
 }
