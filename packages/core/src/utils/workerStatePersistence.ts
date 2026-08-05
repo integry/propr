@@ -12,10 +12,23 @@ import {
 
 export const COMPARE_AND_SET_TASK_STATE_SCRIPT = `
 if redis.call('get', KEYS[1]) ~= ARGV[1] then
-    return 0
+    return {0, 0}
 end
-redis.call('setex', KEYS[1], ARGV[2], ARGV[3])
-return 1
+local current = cjson.decode(ARGV[1])
+local next = cjson.decode(ARGV[4])
+local durable_version = tonumber(redis.call('get', KEYS[2])) or 0
+local current_version = tonumber(current.version) or 0
+local next_version = tonumber(next.version) or (current_version + 1)
+if current_version > durable_version then
+    durable_version = current_version
+end
+if next_version <= durable_version then
+    next_version = durable_version + 1
+end
+next.version = next_version
+redis.call('setex', KEYS[2], ARGV[3], next_version)
+redis.call('setex', KEYS[1], ARGV[2], cjson.encode(next))
+return {1, next_version}
 `;
 
 export const CREATE_TASK_STATE_SCRIPT = `
@@ -28,8 +41,8 @@ if current then
     end
 end
 version = version + 1
-redis.call('set', KEYS[2], version)
-local next = cjson.decode(ARGV[2])
+redis.call('setex', KEYS[2], ARGV[2], version)
+local next = cjson.decode(ARGV[3])
 next.version = version
 redis.call('setex', KEYS[1], ARGV[1], cjson.encode(next))
 return version
@@ -48,11 +61,23 @@ if current then
     end
 end
 version = version + 1
-redis.call('set', KEYS[3], version)
-local next = cjson.decode(ARGV[3])
+redis.call('setex', KEYS[3], ARGV[3], version)
+local next = cjson.decode(ARGV[4])
 next.version = version
 redis.call('setex', KEYS[1], ARGV[2], cjson.encode(next))
 return version
+`;
+
+export const DELETE_TASK_STATE_IF_ATTEMPT_SCRIPT = `
+local current = redis.call('get', KEYS[1])
+if not current then
+    return 0
+end
+local decoded, state = pcall(cjson.decode, current)
+if not decoded or state.prProcessingLockToken ~= ARGV[1] or tonumber(state.version) ~= tonumber(ARGV[2]) then
+    return 0
+end
+return redis.call('del', KEYS[1])
 `;
 
 export const MAX_CAS_ATTEMPTS = 8;
@@ -68,6 +93,7 @@ interface CreateTaskStateRecordOptions {
     stateKey: string;
     revisionKey: string;
     stateExpiry: number;
+    revisionExpiry: number;
     state: TaskStateData;
     prProcessingLockToken?: string;
     prProcessingLockKey?: string;
@@ -77,18 +103,63 @@ export async function createTaskStateRecord(
     redis: Pick<InstanceType<typeof Redis>, 'eval'>,
     options: CreateTaskStateRecordOptions,
 ): Promise<number> {
-    const { stateKey, revisionKey, stateExpiry, state } = options;
+    const { stateKey, revisionKey, stateExpiry, revisionExpiry, state } = options;
     if (options.prProcessingLockToken && options.prProcessingLockKey) {
         return Number(await redis.eval(
             CREATE_FENCED_TASK_STATE_SCRIPT, 3,
             stateKey, options.prProcessingLockKey, revisionKey,
-            options.prProcessingLockToken, stateExpiry, JSON.stringify(state),
+            options.prProcessingLockToken, stateExpiry, revisionExpiry, JSON.stringify(state),
         ));
     }
     return Number(await redis.eval(
         CREATE_TASK_STATE_SCRIPT, 2,
-        stateKey, revisionKey, stateExpiry, JSON.stringify(state),
+        stateKey, revisionKey, stateExpiry, revisionExpiry, JSON.stringify(state),
     ));
+}
+
+interface CompareAndSetTaskStateRecordOptions {
+    stateKey: string;
+    revisionKey: string;
+    stateExpiry: number;
+    revisionExpiry: number;
+    expectedJson: string;
+    state: TaskStateData;
+}
+
+/** Commits the state and its durable revision in one Redis CAS operation. */
+export async function compareAndSetTaskStateRecord(
+    redis: Pick<InstanceType<typeof Redis>, 'eval'>,
+    options: CompareAndSetTaskStateRecordOptions,
+): Promise<number | null> {
+    const result = await redis.eval(
+        COMPARE_AND_SET_TASK_STATE_SCRIPT,
+        2,
+        options.stateKey,
+        options.revisionKey,
+        options.expectedJson,
+        options.stateExpiry,
+        options.revisionExpiry,
+        JSON.stringify(options.state),
+    );
+    // Numeric results keep lightweight Redis mocks backwards compatible.
+    if (!Array.isArray(result)) return Number(result) === 1 ? (options.state.version ?? 0) : null;
+    return Number(result[0]) === 1 ? Number(result[1]) : null;
+}
+
+export async function deleteTaskStateIfAttempt(
+    redis: Pick<InstanceType<typeof Redis>, 'eval'>,
+    stateKey: string,
+    token: string,
+    version: number,
+): Promise<boolean> {
+    const deleted = await redis.eval(
+        DELETE_TASK_STATE_IF_ATTEMPT_SCRIPT,
+        1,
+        stateKey,
+        token,
+        version,
+    );
+    return Number(deleted) === 1;
 }
 
 export interface PersistedTaskStateTransition {

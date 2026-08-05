@@ -141,14 +141,16 @@ describe('task state reconciliation', () => {
             queued: 1,
             finalized: 2,
             interrupted: 1,
+            containersStopped: 0,
             locksCleared: 3,
             errors: 0,
         });
         assert.equal(pttlMock.mock.calls.length, 2);
     });
 
-    test('leaves a task alone when its agent container is still running', async () => {
+    test('stops an orphan container before terminalizing a task with no live BullMQ attempt', async () => {
         const manager = stateManager([task('pr-comments-container-live', TaskStates.CLAUDE_EXECUTION)]);
+        const stopContainer = mock.fn(async () => ({ success: true }));
 
         const summary = await reconcileStaleTaskStates({
             stateManager: manager as never,
@@ -157,10 +159,13 @@ describe('task state reconciliation', () => {
             staleAfterMs: 1000,
             now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
             findRunningContainer: async () => ({ id: 'container-1', name: 'agent-task' }),
+            stopContainer,
         });
 
-        assert.equal(manager.updates.length, 0);
-        assert.equal(summary.live, 1);
+        assert.equal(stopContainer.mock.calls.length, 1);
+        assert.equal(manager.states.get('pr-comments-container-live')?.state, TaskStates.FAILED);
+        assert.equal(summary.containersStopped, 1);
+        assert.equal(summary.interrupted, 1);
     });
 
     test('finalizes success when an active job completes while its lock is checked', async () => {
@@ -224,8 +229,9 @@ describe('task state reconciliation', () => {
         assert.equal(manager.states.get(legacy.taskId)?.state, TaskStates.COMPLETED);
     });
 
-    test('does not supersede a rescheduled task while its original agent is still alive', async () => {
+    test('stops a detached container left by a completed reschedule outcome', async () => {
         const manager = stateManager([task('pr-comments-rescheduled-live', TaskStates.CLAUDE_EXECUTION)]);
+        const stopContainer = mock.fn(async () => ({ success: true }));
 
         const summary = await reconcileStaleTaskStates({
             stateManager: manager as never,
@@ -239,10 +245,13 @@ describe('task state reconciliation', () => {
             staleAfterMs: 1000,
             now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
             findRunningContainer: async () => ({ id: 'container-1', name: 'agent-task' }),
+            stopContainer,
         });
 
-        assert.equal(manager.updates.length, 0);
-        assert.equal(summary.live, 1);
+        assert.equal(stopContainer.mock.calls.length, 1);
+        assert.equal(manager.states.get('pr-comments-rescheduled-live')?.state, TaskStates.CANCELLED);
+        assert.equal(summary.containersStopped, 1);
+        assert.equal(summary.finalized, 1);
     });
 
     test('does not inspect fresh task state', async () => {
@@ -550,5 +559,42 @@ describe('task state reconciliation', () => {
         assert.equal(evalMock.mock.calls[0].arguments[3], 'shared-correlation:old-attempt');
         assert.notEqual(evalMock.mock.calls[0].arguments[3], successorToken);
         assert.equal(summary.locksCleared, 0);
+    });
+
+    test('stops a crashed attempt orphan, clears only its lease, and permits a successor', async () => {
+        const abandoned = task('pr-comments-crash-orphan', TaskStates.CLAUDE_EXECUTION);
+        abandoned.prProcessingLockToken = 'old-attempt-token';
+        const manager = stateManager([abandoned]);
+        let leaseOwner: string | null = abandoned.prProcessingLockToken;
+        const stopContainer = mock.fn(async () => ({ success: true }));
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: {
+                eval: async (_script, _numberOfKeys, _lockKey, requestedToken) => {
+                    if (leaseOwner !== requestedToken) return 0;
+                    leaseOwner = null;
+                    return 1;
+                },
+                pttl: async () => -2,
+            },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => ({ id: 'orphan-container', name: 'agent-task' }),
+            stopContainer,
+        });
+
+        assert.equal(stopContainer.mock.calls[0].arguments[0], 'orphan-container');
+        assert.equal(summary.containersStopped, 1);
+        assert.equal(summary.locksCleared, 1);
+        assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.FAILED);
+        assert.equal(leaseOwner, null);
+
+        const successorToken = 'successor-attempt-token';
+        const successorAcquired = leaseOwner === null;
+        if (successorAcquired) leaseOwner = successorToken;
+        assert.equal(successorAcquired, true);
+        assert.equal(leaseOwner, successorToken);
     });
 });

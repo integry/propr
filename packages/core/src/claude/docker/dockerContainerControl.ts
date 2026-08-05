@@ -52,7 +52,9 @@ export async function stopDockerContainer(
                 logger.info({ containerId }, 'Container no longer exists');
                 return { success: true };
             }
-            if (!statusOutput.includes('Up')) {
+            // Restarting and paused containers are still live resources. Only
+            // Docker's known terminal/non-started states can skip termination.
+            if (/^(Exited|Dead|Created)\b/u.test(statusOutput)) {
                 logger.info({ containerId, status: statusOutput }, 'Container is already stopped');
                 return { success: true };
             }

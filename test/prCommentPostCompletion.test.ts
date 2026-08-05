@@ -2,16 +2,24 @@ import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 
 const events: string[] = [];
+const andWhere = mock.fn(() => ({
+    update: async () => {
+        events.push('commit-hash');
+        return 1;
+    },
+}));
 
 await mock.module('@propr/core', {
     namedExports: {
-        commitChanges: async () => null,
+        commitChanges: async () => ({ commitHash: 'commit-abc', filesChanged: [] }),
         AI_COMMIT_AUTHOR: { name: 'ProPR', email: 'propr@example.test' },
-        db: () => ({ where: () => ({ update: async () => 1 }) }),
+        db: () => ({ where: () => ({ andWhere }) }),
         getAuthenticatedOctokit: async () => ({}),
         getRepoUrl: () => 'https://example.test/repo.git',
+        hashTaskAttemptToken: (token: string) => `hash:${token}`,
         pushBranch: async () => ({ rebased: false }),
         resolveAgentTerminationReason: () => undefined,
+        SupersededTaskAttemptError: class SupersededTaskAttemptError extends Error {},
         TaskStates: { COMPLETED: 'completed' },
     },
 });
@@ -87,6 +95,8 @@ test('terminal completion is the final fenced operation after continuation work'
 
     assert.equal(result.partial, false);
     assert.equal(completed, true);
+    assert.deepEqual(andWhere.mock.calls[0].arguments, ['attempt_generation', 'hash:attempt-token']);
+    assert.ok(events.indexOf('assert') < events.indexOf('commit-hash'));
     assert.ok(events.indexOf('continuation') < events.indexOf('complete'));
     assert.equal(events.at(-1), 'complete');
 });

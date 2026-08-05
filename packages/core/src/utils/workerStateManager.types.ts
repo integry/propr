@@ -127,7 +127,9 @@ export interface ResumableTaskInfo extends TaskStateData {
 export interface WorkerStateManagerOptions {
     redis?: Record<string, unknown>;
     keyPrefix?: string;
-    /** Non-expiring namespace for task revisions; kept outside state scans. */
+    /** Namespace for durable task revisions; kept outside state scans. */
     revisionKeyPrefix?: string;
     stateExpiry?: number;
+    /** Revision retention in seconds. Defaults to twice the state retention. */
+    revisionExpiry?: number;
 }

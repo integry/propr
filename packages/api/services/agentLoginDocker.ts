@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { open } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -16,6 +18,9 @@ const CONTAINER_WORKSPACE = '/home/node/workspace';
 const ANTIGRAVITY_TOKEN_PATH = 'antigravity-cli/antigravity-oauth-token';
 const ANTIGRAVITY_ONBOARDING_PATH = 'antigravity-cli/cache/onboarding.json';
 const MAX_ANTIGRAVITY_TOKEN_LENGTH = 1024 * 1024;
+const MAX_ANTIGRAVITY_ONBOARDING_LENGTH = 64 * 1024;
+const MAX_CREDENTIAL_JSON_DEPTH = 16;
+const MAX_CREDENTIAL_JSON_NODES = 2048;
 
 export const AGENT_LOGIN_TERMINAL = {
   rows: 30,
@@ -30,54 +35,137 @@ export class AgentLoginInputError extends Error {
   }
 }
 
-function readJsonObject(filePath: string, label: string): Record<string, unknown> {
+interface BoundedFile {
+  text: string;
+  fingerprintPart: string;
+}
+
+async function readBoundedFile(filePath: string, maxLength: number): Promise<BoundedFile | undefined> {
+  let handle;
   try {
-    const value = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      return value as Record<string, unknown>;
+    handle = await open(filePath, 'r');
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maxLength) return undefined;
+    const buffer = Buffer.alloc(Math.min(maxLength + 1, stat.size + 1));
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
     }
+    if (offset > maxLength) return undefined;
+    return {
+      text: buffer.subarray(0, offset).toString('utf8'),
+      fingerprintPart: `${stat.size}:${stat.mtimeMs}:${createHash('sha256').update(buffer.subarray(0, offset)).digest('hex')}`,
+    };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    throw new AgentLoginInputError(`${label} is not valid JSON`);
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  } finally {
+    await handle?.close();
   }
-  throw new AgentLoginInputError(`${label} must contain a JSON object`);
 }
 
-function containsNonEmptyString(value: unknown): boolean {
-  if (typeof value === 'string') return value.trim().length > 0;
-  if (Array.isArray(value)) return value.some(containsNonEmptyString);
-  if (value && typeof value === 'object') {
-    return Object.values(value as Record<string, unknown>).some(containsNonEmptyString);
-  }
-  return false;
+const CREDENTIAL_FIELD_NAMES = new Set([
+  'token',
+  'oauthtoken',
+  'accesstoken',
+  'refreshtoken',
+  'idtoken',
+]);
+const EXPIRATION_FIELD_NAMES = new Set([
+  'expiresat',
+  'expires',
+  'expiry',
+  'expiration',
+  'expirydate',
+]);
+
+function normalizedCredentialKey(value: string): string {
+  return value.replace(/[^a-zA-Z]/g, '').toLowerCase();
 }
 
-export function isAgentLoginComplete(type: AgentType, credentialPath: string): boolean {
-  if (type !== 'antigravity') return false;
+function parseExpiration(value: unknown): number | undefined {
+  let parsed: number;
+  if (typeof value === 'number') {
+    parsed = value;
+  } else if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    parsed = /^\d+(?:\.\d+)?$/.test(trimmed) ? Number(trimmed) : Date.parse(trimmed);
+  } else {
+    return undefined;
+  }
+  if (!Number.isFinite(parsed)) return undefined;
+  return parsed < 10_000_000_000 ? parsed * 1000 : parsed;
+}
+
+function hasValidCredential(payload: Record<string, unknown>, now = Date.now()): boolean {
+  let visited = 0;
+  const visit = (value: unknown, depth: number, inheritedExpiration?: unknown): boolean => {
+    if (!value || typeof value !== 'object' || depth > MAX_CREDENTIAL_JSON_DEPTH) return false;
+    if (++visited > MAX_CREDENTIAL_JSON_NODES) return false;
+    if (Array.isArray(value)) return value.some(item => visit(item, depth + 1, inheritedExpiration));
+
+    const record = value as Record<string, unknown>;
+    const localExpirationEntry = Object.entries(record).find(([key]) => (
+      EXPIRATION_FIELD_NAMES.has(normalizedCredentialKey(key))
+    ));
+    const effectiveExpiration = localExpirationEntry?.[1] ?? inheritedExpiration;
+    for (const [key, credential] of Object.entries(record)) {
+      if (!CREDENTIAL_FIELD_NAMES.has(normalizedCredentialKey(key))) continue;
+      if (typeof credential !== 'string' || !credential.trim()) continue;
+      if (effectiveExpiration === undefined) return true;
+      const expiration = parseExpiration(effectiveExpiration);
+      if (expiration !== undefined && expiration > now) return true;
+    }
+    return Object.values(record).some(child => visit(child, depth + 1, effectiveExpiration));
+  };
+  return visit(payload, 0);
+}
+
+export interface AgentLoginCompletion {
+  complete: boolean;
+  fingerprint?: string;
+}
+
+export async function inspectAgentLoginCompletion(
+  type: AgentType,
+  credentialPath: string,
+): Promise<AgentLoginCompletion> {
+  if (type !== 'antigravity') return { complete: false };
   try {
-    const token = fs.readFileSync(path.join(credentialPath, ANTIGRAVITY_TOKEN_PATH), 'utf8').trim();
-    if (!token || token.length > MAX_ANTIGRAVITY_TOKEN_LENGTH) return false;
+    const [tokenFile, onboardingFile] = await Promise.all([
+      readBoundedFile(path.join(credentialPath, ANTIGRAVITY_TOKEN_PATH), MAX_ANTIGRAVITY_TOKEN_LENGTH),
+      readBoundedFile(path.join(credentialPath, ANTIGRAVITY_ONBOARDING_PATH), MAX_ANTIGRAVITY_ONBOARDING_LENGTH),
+    ]);
+    if (!tokenFile || !onboardingFile) return { complete: false };
+    const fingerprint = createHash('sha256')
+      .update(tokenFile.fingerprintPart)
+      .update('\0')
+      .update(onboardingFile.fingerprintPart)
+      .digest('hex');
+    const token = tokenFile.text.trim();
+    if (!token) return { complete: false, fingerprint };
+    let credentialValid = true;
     if (token.startsWith('{') || token.startsWith('[')) {
       const payload = JSON.parse(token) as unknown;
-      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
-      const tokenPayload = payload as Record<string, unknown>;
-      const expiration = tokenPayload.expiresAt ?? tokenPayload.expires_at ?? tokenPayload.expiry;
-      if (expiration !== undefined) {
-        const numericExpiration = typeof expiration === 'number'
-          ? (expiration < 10_000_000_000 ? expiration * 1000 : expiration)
-          : Date.parse(String(expiration));
-        if (!Number.isFinite(numericExpiration) || numericExpiration <= Date.now()) return false;
-      }
-      if (!containsNonEmptyString(tokenPayload)) return false;
+      credentialValid = Boolean(payload && typeof payload === 'object' && !Array.isArray(payload)
+        && hasValidCredential(payload as Record<string, unknown>));
     }
-    const onboarding = readJsonObject(
-      path.join(credentialPath, ANTIGRAVITY_ONBOARDING_PATH),
-      'Antigravity onboarding state',
-    );
-    return onboarding.onboardingComplete === true;
+    const onboarding = JSON.parse(onboardingFile.text) as unknown;
+    const onboardingComplete = Boolean(onboarding
+      && typeof onboarding === 'object'
+      && !Array.isArray(onboarding)
+      && (onboarding as Record<string, unknown>).onboardingComplete === true);
+    return { complete: credentialValid && onboardingComplete, fingerprint };
   } catch {
-    return false;
+    return { complete: false };
   }
+}
+
+export async function isAgentLoginComplete(type: AgentType, credentialPath: string): Promise<boolean> {
+  return (await inspectAgentLoginCompletion(type, credentialPath)).complete;
 }
 
 function envConfigPath(type: AgentType): string | undefined {

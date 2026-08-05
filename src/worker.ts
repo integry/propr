@@ -377,10 +377,15 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             runtimeBuildWorker.close(),
         ]);
         cleanupResults.push(...await Promise.allSettled([heartbeatRedis.quit()]));
+        const shutdownErrors: unknown[] = [];
         for (const result of [...workerClose, ...cleanupResults]) {
             if (result.status === 'rejected') {
+                shutdownErrors.push(result.reason);
                 logger.warn({ error: (result.reason as Error).message }, 'Worker shutdown cleanup failed');
             }
+        }
+        if (shutdownErrors.length > 0) {
+            throw new AggregateError(shutdownErrors, 'Worker shutdown did not complete cleanly');
         }
     };
 

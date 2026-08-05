@@ -1,6 +1,7 @@
 import { AGENT_LOGIN_TERMINAL } from './agentLoginDocker.js';
 
 const MAX_CONTROL_STRING_LENGTH = 16 * 1024;
+const MAX_ESCAPE_SEQUENCE_LENGTH = 64;
 const MAX_EMITTED_TERMINAL_LINKS = 128;
 
 export type TerminalEscapeState = 'text' | 'escape' | 'escape_intermediate' | 'csi'
@@ -11,6 +12,7 @@ export interface TerminalSanitizerState {
   escapeState: TerminalEscapeState;
   controlStringKind?: string;
   controlStringBuffer: string;
+  escapeSequenceLength?: number;
   emittedTerminalLinks: Set<string>;
   outputEndedWithCarriageReturn?: boolean;
 }
@@ -65,6 +67,7 @@ function isUnsafeControlCharacter(value: string): boolean {
 function startControlString(session: TerminalSanitizerState, kind: string): void {
   session.controlStringKind = kind;
   session.controlStringBuffer = '';
+  session.escapeSequenceLength = 0;
 }
 
 function appendControlString(
@@ -84,6 +87,21 @@ function appendControlString(
 
 function controlStringEscapeState(value: string): TerminalEscapeState {
   return value === '\u001b' ? 'control_string_escape' : 'control_string';
+}
+
+function advanceEscapeSequence(
+  session: TerminalSanitizerState,
+  state: EscapeSequenceState,
+  value: string,
+): void {
+  const length = (session.escapeSequenceLength ?? 0) + 1;
+  if (length > MAX_ESCAPE_SEQUENCE_LENGTH) {
+    session.escapeState = 'text';
+    session.escapeSequenceLength = 0;
+    return;
+  }
+  session.escapeState = ESCAPE_TRANSITIONS[state](value);
+  session.escapeSequenceLength = session.escapeState === 'text' ? 0 : length;
 }
 
 function terminalLinkTarget(payload: string): string | undefined {
@@ -154,7 +172,7 @@ export function sanitizeTerminalChunk(session: TerminalSanitizerState, chunk: st
         }
         continue;
       }
-      session.escapeState = ESCAPE_TRANSITIONS[state](value);
+      advanceEscapeSequence(session, state, value);
       continue;
     }
     const escapeState = startEscapeSequence(value);
@@ -163,6 +181,7 @@ export function sanitizeTerminalChunk(session: TerminalSanitizerState, chunk: st
         startControlString(session, value === '\u009d' ? ']' : value);
       }
       session.escapeState = escapeState;
+      session.escapeSequenceLength = escapeState === 'control_string' ? 0 : 1;
       continue;
     }
     if (value === '\r') {

@@ -6,6 +6,7 @@ import {
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
     resolveModelAlias, getPendingPrCommentsKey,
     describeAgentTermination, resolveAgentTerminationReason,
+    findRunningDockerContainerForTask, stopDockerContainer,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager,
 } from '@propr/core';
@@ -165,6 +166,7 @@ export interface JobErrorOptions {
     claudeResult: ClaudeCodeResponse | null; correlationId: string;
     correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string;
     prProcessingLockToken?: string;
+    assertLease: () => Promise<void>;
 }
 
 export class UsageLimitError extends Error {
@@ -211,6 +213,7 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
 
     if (octokit) {
         try {
+            await options.assertLease();
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
                 body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`
@@ -220,14 +223,17 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
         }
     }
 
+    await options.assertLease();
     await issueQueue.add(job.name, job.data, { jobId: requeueJobId, delay: Math.max(0, delay) });
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
     const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId, prProcessingLockToken } = options;
+    await options.assertLease();
     await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } }, prProcessingLockToken);
     correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
     if (octokit && startingWorkComment) {
+        await options.assertLease();
         await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
     }
 }
@@ -236,9 +242,11 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
     const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId, prProcessingLockToken } = options;
     handleError(error, 'Failed to process PR comment job', { correlationId });
     const sanitizedMessage = sanitizeErrorMessage(error.message);
+    await options.assertLease();
     await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage } }, prProcessingLockToken);
     if (claudeResult) {
         try {
+            await options.assertLease();
             await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
         } catch (metricsError) {
             correlatedLogger.error({ error: (metricsError as Error).message, correlationId }, 'Failed to record LLM metrics for failed PR comment job');
@@ -246,6 +254,7 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
     }
     if (octokit && startingWorkComment) {
         try {
+            await options.assertLease();
             const realCommentIds = filterRealComments(unprocessedComments).map(comment => comment.id);
             const failedEvidence = buildWorkEvidenceMarker('failed', realCommentIds);
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
@@ -264,6 +273,10 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
     const isUserCancelled = error.message?.includes('aborted by user');
     const isUsageLimit = error.name === 'UsageLimitError' || error.message?.includes('usage limit');
 
+    // A matching token in task JSON is not sufficient: the renewable PR lease
+    // may already have expired while no successor has rewritten the state yet.
+    await options.assertLease();
+
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     const currentState = await stateManager.getTaskState(taskId);
 
@@ -276,6 +289,7 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
     if (currentState && TERMINAL_STATES.includes(currentState.state)) {
         correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping error handler state update');
         if (currentState.state === TaskStates.CANCELLED && octokit && startingWorkComment) {
+            await options.assertLease();
             await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
             correlatedLogger.info({ taskId, commentId: startingWorkComment.data.id }, 'Updated GitHub comment for cancelled task');
         }
@@ -307,13 +321,25 @@ export function buildPRCommentWorktreeDirName(pullRequestNumber: number, lockTok
     return `pr-${pullRequestNumber}-followup-${timestamp}-${attemptSlug}`;
 }
 
+export async function stopAbandonedPRTaskContainer(taskId: string, correlatedLogger: Logger): Promise<boolean> {
+    const container = await findRunningDockerContainerForTask(taskId);
+    if (!container) return true;
+    correlatedLogger.warn({ taskId, containerId: container.id, containerName: container.name }, 'Found an agent container after acquiring an unowned PR lease; stopping the abandoned execution');
+    const stopped = await stopDockerContainer(container.id, 10);
+    if (!stopped.success) {
+        correlatedLogger.error({ taskId, containerId: container.id, error: stopped.error }, 'Could not stop abandoned agent container; rescheduling to avoid overlapping executions');
+    }
+    return stopped.success;
+}
+
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
     const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
+    let ownsLease = true;
     try {
         await assertPRProcessingLock(redisClient, lockKey, lockToken);
     } catch {
-        correlatedLogger.info('Skipping worktree cleanup because this attempt no longer owns the PR lease');
-        return;
+        ownsLease = false;
+        correlatedLogger.info('Cleaning the generation-specific worktree after this attempt lost the PR lease');
     }
 
     if (localRepoPath && worktreeInfo) {
@@ -323,6 +349,8 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
             correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
         }
     }
+
+    if (!ownsLease) return;
 
     const releasedLock = await releasePRProcessingLock(redisClient, lockKey, lockToken);
     if (releasedLock) {

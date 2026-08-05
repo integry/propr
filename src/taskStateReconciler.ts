@@ -3,6 +3,7 @@ import {
     findRunningDockerContainerForTask,
     isPRCommentTaskState,
     logger,
+    stopDockerContainer,
     TaskStates,
 } from '@propr/core';
 import {
@@ -40,6 +41,7 @@ export interface TaskReconciliationSummary {
     queued: number;
     finalized: number;
     interrupted: number;
+    containersStopped: number;
     locksCleared: number;
     errors: number;
 }
@@ -51,6 +53,7 @@ export interface TaskReconciliationOptions {
     staleAfterMs?: number;
     now?: () => number;
     findRunningContainer?: typeof findRunningDockerContainerForTask;
+    stopContainer?: typeof stopDockerContainer;
     signal?: AbortSignal;
     batchSize?: number;
     concurrency?: number;
@@ -69,6 +72,7 @@ interface ReconciliationContext {
     options: TaskReconciliationOptions;
     summary: TaskReconciliationSummary;
     findRunningContainer: typeof findRunningDockerContainerForTask;
+    stopContainer: typeof stopDockerContainer;
 }
 
 const RELEASE_OWNED_PR_LOCK_SCRIPT = `
@@ -77,6 +81,10 @@ if current == ARGV[1] then
     return redis.call('del', KEYS[1])
 end
 return 0
+`;
+
+const ASSERT_OWNED_PR_LOCK_SCRIPT = `
+return redis.call('get', KEYS[1]) == ARGV[1] and 1 or 0
 `;
 
 function taskAgeMs(task: TaskStateData, now: number, futureSkewAllowanceMs: number): number {
@@ -137,6 +145,41 @@ async function hasLiveBullLock(
     return (await redis.pttl(queue.toKey(`${taskId}:lock`))) > 0;
 }
 
+async function hasLiveAttempt(
+    task: TaskStateData,
+    queue: ReconciliationQueue,
+    redis: ReconciliationRedis,
+): Promise<boolean> {
+    if (!await hasLiveBullLock(task.taskId, queue, redis)) return false;
+    if (!task.prProcessingLockToken) return true;
+    const { repoOwner, repoName, number } = task.issueRef;
+    if (!repoOwner || !repoName || !Number.isFinite(number)) return false;
+    const lockKey = `lock:pr:${repoOwner}:${repoName}:${number}`;
+    const currentAttempt = await redis.eval(
+        ASSERT_OWNED_PR_LOCK_SCRIPT,
+        1,
+        lockKey,
+        task.prProcessingLockToken,
+    );
+    return Number(currentAttempt) === 1;
+}
+
+async function stopAbandonedTaskContainer(
+    task: TaskStateData,
+    context: ReconciliationContext,
+): Promise<void> {
+    const { options, summary, findRunningContainer, stopContainer } = context;
+    throwIfAborted(options.signal);
+    const container = await findRunningContainer(task.taskId);
+    if (!container) return;
+    throwIfAborted(options.signal);
+    const result = await stopContainer(container.id, 10);
+    if (!result.success) {
+        throw new Error(`Could not stop abandoned agent container ${container.id}: ${result.error ?? 'unknown error'}`);
+    }
+    summary.containersStopped++;
+}
+
 async function finalizeCompletedJob(
     task: TaskStateData,
     job: ReconciliationJob,
@@ -177,7 +220,7 @@ async function handleTerminalQueueState(
     queueState: string,
     context: ReconciliationContext,
 ): Promise<boolean> {
-    const { options, summary, findRunningContainer } = context;
+    const { options, summary } = context;
     if (queueState === 'completed' && job) {
         if (!completedResultMatchesAttempt(task, job.returnvalue)) return true;
         const parsed = parsePRCommentJobResult(job.returnvalue);
@@ -187,6 +230,7 @@ async function handleTerminalQueueState(
                 && typeof (job.returnvalue as { status?: unknown }).status === 'string'
                 ? (job.returnvalue as { status: string }).status
                 : 'missing';
+            await stopAbandonedTaskContainer(task, context);
             await finalizeFailedJob(
                 task,
                 `Completed BullMQ job returned an invalid result status: ${returnedStatus}`,
@@ -195,15 +239,12 @@ async function handleTerminalQueueState(
             );
             return true;
         }
-        const isRetryOutcome = parsed.status === 'rescheduled' || parsed.status === 'requeued';
-        if (isRetryOutcome && await findRunningContainer(task.taskId)) {
-            throwIfAborted(options.signal);
-            summary.live++;
-        }
-        else await finalizeCompletedJob(task, job, options, summary);
+        await stopAbandonedTaskContainer(task, context);
+        await finalizeCompletedJob(task, job, options, summary);
         return true;
     }
     if (queueState === 'failed' && job) {
+        await stopAbandonedTaskContainer(task, context);
         await finalizeFailedJob(
             task,
             job.failedReason || 'BullMQ job failed without updating task state',
@@ -222,6 +263,7 @@ async function handleQueuedState(
 ): Promise<boolean> {
     const { options, summary } = context;
     if (!['waiting', 'delayed', 'prioritized', 'waiting-children'].includes(queueState)) return false;
+    await stopAbandonedTaskContainer(task, context);
     if (task.state !== TaskStates.PENDING) {
         throwIfAborted(options.signal);
         const updated = await options.stateManager.updateTaskStateIfCurrent(
@@ -244,7 +286,7 @@ async function reconcileStaleTask(
     task: TaskStateData,
     context: ReconciliationContext,
 ): Promise<void> {
-    const { options, summary, findRunningContainer } = context;
+    const { options, summary } = context;
     throwIfAborted(options.signal);
     let job = await options.queue.getJob(task.taskId);
     throwIfAborted(options.signal);
@@ -253,14 +295,8 @@ async function reconcileStaleTask(
     if (await handleTerminalQueueState(task, job, queueState, context)) return;
     if (await handleQueuedState(task, queueState, context)) return;
 
-    if (await findRunningContainer(task.taskId)) {
-        throwIfAborted(options.signal);
-        summary.live++;
-        return;
-    }
-    throwIfAborted(options.signal);
     if (queueState === 'active') {
-        if (await hasLiveBullLock(task.taskId, options.queue, options.redis)) {
+        if (await hasLiveAttempt(task, options.queue, options.redis)) {
             throwIfAborted(options.signal);
             summary.live++;
             return;
@@ -277,6 +313,7 @@ async function reconcileStaleTask(
         if (await handleQueuedState(task, queueState, context)) return;
     }
 
+    await stopAbandonedTaskContainer(task, context);
     await finalizeFailedJob(
         task,
         queueState === 'active'
@@ -306,6 +343,7 @@ export async function reconcileStaleTaskStates(
     const now = (options.now ?? Date.now)();
     const deadline = Date.now() + timeBudgetMs;
     const findRunningContainer = options.findRunningContainer ?? findRunningDockerContainerForTask;
+    const stopContainer = options.stopContainer ?? stopDockerContainer;
     const summary: TaskReconciliationSummary = {
         scanned: 0,
         fresh: 0,
@@ -313,10 +351,11 @@ export async function reconcileStaleTaskStates(
         queued: 0,
         finalized: 0,
         interrupted: 0,
+        containersStopped: 0,
         locksCleared: 0,
         errors: 0,
     };
-    const context = { options, summary, findRunningContainer };
+    const context = { options, summary, findRunningContainer, stopContainer };
     const seenTaskIds = new Set<string>();
 
     const reconcileOne = async (task: TaskStateData): Promise<void> => {

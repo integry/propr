@@ -73,7 +73,7 @@ describe('Antigravity agent login', () => {
     assert.match(entrypoint, /trustedWorkspaces\.push\('\/home\/node\/workspace'\)/);
   });
 
-  test('recognizes only non-empty, unexpired authentication after onboarding is saved', () => {
+  test('recognizes only known, non-empty, unexpired authentication after onboarding is saved', async () => {
     const credentialPath = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-complete-'));
     const tokenPath = path.join(credentialPath, 'antigravity-cli', 'antigravity-oauth-token');
     const onboardingPath = path.join(credentialPath, 'antigravity-cli', 'cache', 'onboarding.json');
@@ -81,22 +81,41 @@ describe('Antigravity agent login', () => {
       fs.mkdirSync(path.dirname(onboardingPath), { recursive: true });
       fs.writeFileSync(tokenPath, 'token');
       fs.writeFileSync(onboardingPath, JSON.stringify({ onboardingComplete: false }));
-      assert.equal(isAgentLoginComplete('antigravity', credentialPath), false);
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
 
       fs.writeFileSync(onboardingPath, JSON.stringify({ onboardingComplete: true }));
-      assert.equal(isAgentLoginComplete('antigravity', credentialPath), true);
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), true);
 
       fs.writeFileSync(tokenPath, '');
-      assert.equal(isAgentLoginComplete('antigravity', credentialPath), false);
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
 
       fs.writeFileSync(tokenPath, '{malformed');
-      assert.equal(isAgentLoginComplete('antigravity', credentialPath), false);
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
 
       fs.writeFileSync(tokenPath, JSON.stringify({ access_token: 'expired', expires_at: '2000-01-01T00:00:00.000Z' }));
-      assert.equal(isAgentLoginComplete('antigravity', credentialPath), false);
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
 
-      fs.writeFileSync(tokenPath, JSON.stringify({ credentials: { access_token: 'nested-token' } }));
-      assert.equal(isAgentLoginComplete('antigravity', credentialPath), true);
+      fs.writeFileSync(tokenPath, JSON.stringify({ expires_at: '2099-01-01T00:00:00.000Z', message: 'authenticated' }));
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
+
+      fs.writeFileSync(tokenPath, JSON.stringify({
+        credentials: {
+          access_token: 'nested-expired-token',
+          expires_at: '2000-01-01T00:00:00.000Z',
+        },
+      }));
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
+
+      fs.writeFileSync(tokenPath, JSON.stringify({
+        credentials: {
+          access_token: 'nested-token',
+          expires_at: String(Math.floor(Date.now() / 1000) + 3600),
+        },
+      }));
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), true);
+
+      fs.truncateSync(tokenPath, 1024 * 1024 + 1);
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
     } finally {
       fs.rmSync(credentialPath, { recursive: true, force: true });
     }
@@ -163,6 +182,7 @@ describe('Antigravity agent login', () => {
         dockerCalls.push(args);
         return fakeChild();
       },
+      providerCompletionPollMs: 5,
       sessionTimeoutMs: 60_000,
       sessionRetentionMs: 60_000,
     });
@@ -189,6 +209,10 @@ describe('Antigravity agent login', () => {
       assert.equal(dockerCalls[1][0], 'create');
       assert.ok(dockerCalls[1].includes('PROPR_AGENT_LOGIN=1'));
       assert.deepEqual(dockerCalls[2], ['start', '-a', '-i', 'propr-agent-login-antigravity-existing-session']);
+
+      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), 'refreshed-token');
+      await waitFor(() => manager.get(started.id, 'owner').status === 'succeeded');
+      assert.match(manager.get(started.id, 'owner').output, /Authentication saved/);
     } finally {
       fs.rmSync(credentialPath, { recursive: true, force: true });
     }

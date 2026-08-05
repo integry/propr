@@ -4,12 +4,15 @@ import { beforeEach, mock, test } from 'node:test';
 const cleanupWorktree = mock.fn(async () => {});
 const assertLease = mock.fn(async () => {});
 const releaseLease = mock.fn(async () => true);
+const findRunningDockerContainerForTask = mock.fn(async () => null as { id: string; name: string } | null);
+const stopDockerContainer = mock.fn(async () => ({ success: true }));
 
 await mock.module('@propr/core', {
     namedExports: {
         cleanupWorktree,
         describeAgentTermination: () => '',
         formatResetTime: () => '',
+        findRunningDockerContainerForTask,
         generateCorrelationId: () => 'correlation',
         getAuthenticatedOctokit: async () => ({}),
         getDefaultModel: () => null,
@@ -19,6 +22,7 @@ await mock.module('@propr/core', {
         recordLLMMetrics: async () => {},
         resolveModelAlias: (value: string) => value,
         resolveAgentTerminationReason: () => undefined,
+        stopDockerContainer,
         TaskStates: {
             COMPLETED: 'completed',
             FAILED: 'failed',
@@ -57,7 +61,11 @@ await mock.module('../src/jobs/prCommentCommandContext.js', {
     namedExports: { applyPendingCommentCommandContext: () => {} },
 });
 
-const { cleanupJob } = await import('../src/jobs/prCommentJobUtils.js');
+const {
+    cleanupJob,
+    handleJobError,
+    stopAbandonedPRTaskContainer,
+} = await import('../src/jobs/prCommentJobUtils.js');
 
 function cleanupOptions() {
     return {
@@ -86,16 +94,35 @@ beforeEach(() => {
     assertLease.mock.mockImplementation(async () => {});
     releaseLease.mock.resetCalls();
     releaseLease.mock.mockImplementation(async () => true);
+    findRunningDockerContainerForTask.mock.resetCalls();
+    findRunningDockerContainerForTask.mock.mockImplementation(async () => null);
+    stopDockerContainer.mock.resetCalls();
+    stopDockerContainer.mock.mockImplementation(async () => ({ success: true }));
 });
 
-test('never removes a worktree after lease ownership has already been lost', async () => {
+test('stops an abandoned task container before allowing a successor attempt', async () => {
+    findRunningDockerContainerForTask.mock.mockImplementationOnce(async () => ({
+        id: 'container-1748',
+        name: 'propr-task-1748',
+    }));
+
+    const canProceed = await stopAbandonedPRTaskContainer(
+        'task-1748',
+        cleanupOptions().correlatedLogger,
+    );
+
+    assert.equal(canProceed, true);
+    assert.deepEqual(stopDockerContainer.mock.calls[0].arguments, ['container-1748', 10]);
+});
+
+test('removes its generation-specific worktree after lease ownership has been lost', async () => {
     assertLease.mock.mockImplementationOnce(async () => {
         throw new Error('lease lost');
     });
 
     await cleanupJob(cleanupOptions());
 
-    assert.equal(cleanupWorktree.mock.calls.length, 0);
+    assert.equal(cleanupWorktree.mock.calls.length, 1);
     assert.equal(releaseLease.mock.calls.length, 0);
 });
 
@@ -115,4 +142,38 @@ test('finishes attempt worktree cleanup before releasing the PR lease', async ()
     await cleaning;
 
     assert.equal(releaseLease.mock.calls.length, 1);
+});
+
+test('performs no generic error side effects after the live lease is lost', async () => {
+    const updateTaskState = mock.fn(async () => {});
+    const request = mock.fn(async () => ({}));
+
+    await assert.rejects(
+        handleJobError(new Error('agent failed'), { name: 'processPullRequestComment', data: {} } as never, {
+            pullRequestNumber: 1748,
+            repoOwner: 'owner',
+            repoName: 'repo',
+            authorsText: '@owner',
+            unprocessedComments: [],
+            octokit: { request } as never,
+            startingWorkComment: { data: { id: 1 } },
+            claudeResult: null,
+            correlationId: 'correlation',
+            correlatedLogger: cleanupOptions().correlatedLogger,
+            stateManager: {
+                getTaskState: async () => ({
+                    state: 'processing',
+                    prProcessingLockToken: 'attempt-token',
+                }),
+                updateTaskState,
+            } as never,
+            taskId: 'task-1748',
+            prProcessingLockToken: 'attempt-token',
+            assertLease: async () => { throw new Error('lease lost'); },
+        }),
+        /lease lost/,
+    );
+
+    assert.equal(updateTaskState.mock.calls.length, 0);
+    assert.equal(request.mock.calls.length, 0);
 });

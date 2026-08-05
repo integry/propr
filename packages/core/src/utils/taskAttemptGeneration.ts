@@ -8,12 +8,18 @@ export class SupersededTaskAttemptError extends Error {
     }
 }
 
+/** Explicit authority for control-plane mutations such as a user cancellation. */
+export const ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE = Symbol('administrative-task-attempt-override');
+export type TaskAttemptMutationAuthority = string | typeof ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE;
+
 export function assertTaskAttemptOwnership(
     taskId: string,
     actualToken: string | undefined,
-    expectedToken: string | undefined,
+    expectedToken: TaskAttemptMutationAuthority | undefined,
 ): void {
-    if (expectedToken !== undefined && actualToken !== expectedToken) {
+    if (expectedToken === ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE) return;
+    if ((actualToken !== undefined && expectedToken === undefined)
+        || (expectedToken !== undefined && actualToken !== expectedToken)) {
         throw new SupersededTaskAttemptError(taskId);
     }
 }

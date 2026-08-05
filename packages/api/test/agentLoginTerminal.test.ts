@@ -25,6 +25,29 @@ test('recovers visible output after an oversized unterminated control string', (
   assert.equal(session.controlStringBuffer, '');
 });
 
+test('recovers visible output after an oversized unterminated CSI sequence', () => {
+  const session = state();
+  const output = sanitizeTerminalChunk(
+    session,
+    `\u001b[${'?'.repeat(65)}VISIBLE`,
+  );
+
+  assert.match(output, /VISIBLE$/);
+  assert.equal(session.escapeState, 'text');
+  assert.equal(session.escapeSequenceLength, 0);
+});
+
+test('recovers visible output after oversized escape intermediates', () => {
+  const session = state();
+  const output = sanitizeTerminalChunk(
+    session,
+    `\u001b${' '.repeat(65)}VISIBLE`,
+  );
+
+  assert.match(output, /VISIBLE$/);
+  assert.equal(session.escapeState, 'text');
+});
+
 test('bounds remembered OSC-8 hyperlinks and evicts the oldest target', () => {
   const session = state();
   for (let index = 0; index < 140; index++) {

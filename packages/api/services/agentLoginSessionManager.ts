@@ -10,7 +10,7 @@ import type { AgentConfig } from '@propr/core';
 import {
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
-  isAgentLoginComplete,
+  inspectAgentLoginCompletion,
   resolveAgentLoginConfigPath,
   resolveAgentLoginImage,
 } from './agentLoginDocker.js';
@@ -60,6 +60,7 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot, TerminalSanitizer
   retentionTimeout?: ReturnType<typeof setTimeout>;
   providerCompletionTimeout?: ReturnType<typeof setTimeout>;
   providerLoginInitiallyComplete?: boolean;
+  initialCredentialFingerprint?: string;
   cleanupStarted?: boolean;
 }
 
@@ -217,7 +218,9 @@ export class AgentLoginSessionManager {
           // The root-started login container repairs an existing bind source.
         }
       }
-      session.providerLoginInitiallyComplete = isAgentLoginComplete(agent.type, credentialPath);
+      const initialLogin = await inspectAgentLoginCompletion(agent.type, credentialPath);
+      session.providerLoginInitiallyComplete = initialLogin.complete;
+      session.initialCredentialFingerprint = initialLogin.fingerprint;
       if (session.providerLoginInitiallyComplete) {
         this.appendOutput(session, 'Existing Antigravity authentication will be revalidated by the provider.\n');
       }
@@ -382,18 +385,26 @@ export class AgentLoginSessionManager {
   }
 
   private scheduleProviderCompletionCheck(session: AgentLoginSession): void {
-    if (session.agentType !== 'antigravity' || session.providerLoginInitiallyComplete) return;
+    if (session.agentType !== 'antigravity') return;
     session.providerCompletionTimeout = setTimeout(() => {
       session.providerCompletionTimeout = undefined;
-      if (isTerminal(session.status)) return;
-      if (isAgentLoginComplete(session.agentType, session.credentialPath)) {
-        this.appendOutput(session, '\nAuthentication saved. Closing the provider prompt…\n');
-        this.finish(session, 'succeeded', 0);
-        session.process?.kill();
-        void this.cleanupContainer(session);
-        return;
-      }
-      this.scheduleProviderCompletionCheck(session);
+      void inspectAgentLoginCompletion(session.agentType, session.credentialPath)
+        .then(completion => {
+          if (isTerminal(session.status)) return;
+          const credentialsChanged = completion.fingerprint !== undefined
+            && completion.fingerprint !== session.initialCredentialFingerprint;
+          if (completion.complete && (!session.providerLoginInitiallyComplete || credentialsChanged)) {
+            this.appendOutput(session, '\nAuthentication saved. Closing the provider prompt…\n');
+            this.finish(session, 'succeeded', 0);
+            session.process?.kill();
+            void this.cleanupContainer(session);
+            return;
+          }
+          this.scheduleProviderCompletionCheck(session);
+        })
+        .catch(() => {
+          if (!isTerminal(session.status)) this.scheduleProviderCompletionCheck(session);
+        });
     }, this.providerCompletionPollMs);
     unrefTimer(session.providerCompletionTimeout);
   }

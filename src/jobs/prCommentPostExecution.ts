@@ -6,8 +6,10 @@ import {
     db,
     getRepoUrl,
     getAuthenticatedOctokit,
+    hashTaskAttemptToken,
     pushBranch,
     resolveAgentTerminationReason,
+    SupersededTaskAttemptError,
     TaskStates,
 } from '@propr/core';
 import type {
@@ -102,14 +104,22 @@ async function commitAndPush(
     return { commitResult, changesSummary, commitMessage };
 }
 
-async function persistCommitHash(taskId: string, commitHash: string | undefined, correlatedLogger: Logger): Promise<void> {
+async function persistCommitHash(
+    taskId: string,
+    commitHash: string | undefined,
+    prProcessingLockToken: string,
+    correlatedLogger: Logger,
+): Promise<void> {
     if (!commitHash) return;
     try {
-        await db('tasks')
+        const updatedRows = await db('tasks')
             .where({ task_id: taskId })
+            .andWhere('attempt_generation', hashTaskAttemptToken(prProcessingLockToken))
             .update({ commit_hash: commitHash });
+        if (updatedRows !== 1) throw new SupersededTaskAttemptError(taskId);
         correlatedLogger.info({ taskId, commitHash }, 'Saved commit hash to tasks table');
     } catch (dbError) {
+        if (dbError instanceof SupersededTaskAttemptError) throw dbError;
         correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
     }
 }
@@ -166,8 +176,8 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
 
     await beforeCompletion();
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
-    await persistCommitHash(taskId, commitResult?.commitHash, correlatedLogger);
-
+    await assertLease();
+    await persistCommitHash(taskId, commitResult?.commitHash, prProcessingLockToken, correlatedLogger);
     await assertLease();
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: partial ? 'PR comment processing published partial work after interrupted execution' : 'PR comment processing completed successfully',

@@ -8,19 +8,31 @@ import {
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
 import { scanNonTerminalTaskStates } from './workerStateEnumeration.js';
-import { assertTaskAttemptOwnership, SupersededTaskAttemptError } from './taskAttemptGeneration.js';
+import {
+    ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE,
+    assertTaskAttemptOwnership,
+    SupersededTaskAttemptError,
+    type TaskAttemptMutationAuthority,
+} from './taskAttemptGeneration.js';
 import {
     applyTaskStateUpdate,
     canTransitionTaskState,
-    COMPARE_AND_SET_TASK_STATE_SCRIPT,
+    compareAndSetTaskStateRecord,
     createTaskStateRecord,
+    deleteTaskStateIfAttempt,
     MAX_CAS_ATTEMPTS,
     persistTaskStateCreation,
     persistTaskStateUpdate,
     waitForCASRetry,
 } from './workerStatePersistence.js';
 
-export { TaskStates, SupersededTaskAttemptError, type TaskState, type IssueRef };
+export {
+    ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE,
+    TaskStates,
+    SupersededTaskAttemptError,
+    type TaskState,
+    type IssueRef,
+};
 
 /**
  * Worker state manager for persistent task state tracking
@@ -30,6 +42,7 @@ export class WorkerStateManager {
     private keyPrefix: string;
     private revisionKeyPrefix: string;
     private stateExpiry: number;
+    private revisionExpiry: number;
     private nonTerminalScanCursors = new Map<string, string>();
     private persistenceTails = new Map<string, Promise<void>>();
 
@@ -44,6 +57,7 @@ export class WorkerStateManager {
         this.keyPrefix = options.keyPrefix ?? 'worker:state:';
         this.revisionKeyPrefix = options.revisionKeyPrefix ?? `revision:${this.keyPrefix}`;
         this.stateExpiry = options.stateExpiry ?? 7 * 24 * 3600;
+        this.revisionExpiry = options.revisionExpiry ?? this.stateExpiry * 2;
         this.redis.on('error', (error: Error) => {
             logger.error({ error: error.message }, 'Redis error in WorkerStateManager');
         });
@@ -77,7 +91,8 @@ export class WorkerStateManager {
         const key = this.getTaskKey(taskId);
         const revisionKey = `${this.revisionKeyPrefix}${taskId}`;
         const createdVersion = await createTaskStateRecord(this.redis, {
-            stateKey: key, revisionKey, stateExpiry: this.stateExpiry, state,
+            stateKey: key, revisionKey, stateExpiry: this.stateExpiry,
+            revisionExpiry: this.revisionExpiry, state,
             ...options,
         });
         if (options.prProcessingLockToken && createdVersion < 1) {
@@ -90,7 +105,26 @@ export class WorkerStateManager {
             repository: `${issueRef.repoOwner}/${issueRef.repoName}`, state: TaskStates.PENDING
         }, 'Task state created');
 
-        await persistTaskStateCreation(state, { requireDatabase: options.prProcessingLockToken !== undefined });
+        try {
+            await persistTaskStateCreation(state, { requireDatabase: options.prProcessingLockToken !== undefined });
+        } catch (error) {
+            if (options.prProcessingLockToken) {
+                try {
+                    await deleteTaskStateIfAttempt(
+                        this.redis,
+                        key,
+                        options.prProcessingLockToken,
+                        state.version,
+                    );
+                } catch (cleanupError) {
+                    correlatedLogger.warn({
+                        taskId,
+                        error: (cleanupError as Error).message,
+                    }, 'Failed to compensate fenced task state after SQL persistence failure');
+                }
+            }
+            throw error;
+        }
         return state;
     }
 
@@ -105,7 +139,7 @@ export class WorkerStateManager {
         taskId: string,
         newState: TaskState,
         metadata: UpdateMetadata = {},
-        expectedPrProcessingLockToken?: string,
+        expectedPrProcessingLockToken?: TaskAttemptMutationAuthority,
     ): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
         for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
@@ -120,18 +154,19 @@ export class WorkerStateManager {
 
             const previousState = state.state;
             applyTaskStateUpdate(state, newState, metadata);
-            const updated = await this.redis.eval(
-                COMPARE_AND_SET_TASK_STATE_SCRIPT,
-                1,
-                key,
-                stateJson,
-                this.stateExpiry,
-                JSON.stringify(state),
-            );
-            if (Number(updated) !== 1) {
+            const updatedVersion = await compareAndSetTaskStateRecord(this.redis, {
+                stateKey: key,
+                revisionKey: `${this.revisionKeyPrefix}${taskId}`,
+                stateExpiry: this.stateExpiry,
+                revisionExpiry: this.revisionExpiry,
+                expectedJson: stateJson,
+                state,
+            });
+            if (updatedVersion === null) {
                 await waitForCASRetry(attempt);
                 continue;
             }
+            state.version = updatedVersion;
 
             await this.enqueueTaskStatePersistence(
                 taskId,
@@ -162,19 +197,22 @@ export class WorkerStateManager {
         if (expectation.version !== undefined && (state.version ?? 0) !== expectation.version) return null;
         if (expectation.prProcessingLockToken !== undefined
             && state.prProcessingLockToken !== expectation.prProcessingLockToken) return null;
+        if (state.prProcessingLockToken !== undefined
+            && expectation.prProcessingLockToken === undefined) return null;
         if (!canTransitionTaskState(state.state, newState, metadata)) return null;
 
         const previousState = state.state;
         applyTaskStateUpdate(state, newState, metadata);
-        const updated = await this.redis.eval(
-            COMPARE_AND_SET_TASK_STATE_SCRIPT,
-            1,
-            key,
-            stateJson,
-            this.stateExpiry,
-            JSON.stringify(state),
-        );
-        if (Number(updated) !== 1) return null;
+        const updatedVersion = await compareAndSetTaskStateRecord(this.redis, {
+            stateKey: key,
+            revisionKey: `${this.revisionKeyPrefix}${taskId}`,
+            stateExpiry: this.stateExpiry,
+            revisionExpiry: this.revisionExpiry,
+            expectedJson: stateJson,
+            state,
+        });
+        if (updatedVersion === null) return null;
+        state.version = updatedVersion;
 
         await this.enqueueTaskStatePersistence(
             taskId,
@@ -215,7 +253,7 @@ export class WorkerStateManager {
     async updateIssueRef(
         taskId: string,
         issueRefPatch: Partial<IssueRef>,
-        expectedPrProcessingLockToken?: string,
+        expectedPrProcessingLockToken?: TaskAttemptMutationAuthority,
     ): Promise<TaskStateData | null> {
         const key = this.getTaskKey(taskId);
         let state: TaskStateData | null = null;
@@ -228,15 +266,18 @@ export class WorkerStateManager {
             state.issueRef = { ...state.issueRef, ...issueRefPatch };
             state.updatedAt = new Date().toISOString();
             state.version = (state.version ?? 0) + 1;
-            const updated = await this.redis.eval(
-                COMPARE_AND_SET_TASK_STATE_SCRIPT,
-                1,
-                key,
-                stateJson,
-                this.stateExpiry,
-                JSON.stringify(state),
-            );
-            if (Number(updated) === 1) break;
+            const updatedVersion = await compareAndSetTaskStateRecord(this.redis, {
+                stateKey: key,
+                revisionKey: `${this.revisionKeyPrefix}${taskId}`,
+                stateExpiry: this.stateExpiry,
+                revisionExpiry: this.revisionExpiry,
+                expectedJson: stateJson,
+                state,
+            });
+            if (updatedVersion !== null) {
+                state.version = updatedVersion;
+                break;
+            }
             state = null;
             await waitForCASRetry(attempt);
         }
@@ -310,7 +351,7 @@ export class WorkerStateManager {
         taskId: string,
         historyState: TaskState,
         metadata: Record<string, unknown> = {},
-        expectedPrProcessingLockToken?: string,
+        expectedPrProcessingLockToken?: TaskAttemptMutationAuthority,
     ): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
         for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
@@ -328,18 +369,19 @@ export class WorkerStateManager {
             state.history[historyIndex].metadata = { ...state.history[historyIndex].metadata, ...metadata };
             state.updatedAt = new Date().toISOString();
             state.version = (state.version ?? 0) + 1;
-            const updated = await this.redis.eval(
-                COMPARE_AND_SET_TASK_STATE_SCRIPT,
-                1,
-                key,
-                stateJson,
-                this.stateExpiry,
-                JSON.stringify(state),
-            );
-            if (Number(updated) !== 1) {
+            const updatedVersion = await compareAndSetTaskStateRecord(this.redis, {
+                stateKey: key,
+                revisionKey: `${this.revisionKeyPrefix}${taskId}`,
+                stateExpiry: this.stateExpiry,
+                revisionExpiry: this.revisionExpiry,
+                expectedJson: stateJson,
+                state,
+            });
+            if (updatedVersion === null) {
                 await waitForCASRetry(attempt);
                 continue;
             }
+            state.version = updatedVersion;
             const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
             correlatedLogger.debug({ taskId, historyState, metadata }, 'Updated history metadata');
 
@@ -373,13 +415,18 @@ export class WorkerStateManager {
      * @param metadata - Additional metadata
      * @returns Updated state
      */
-    async markTaskFailed(taskId: string, error: Error, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
+    async markTaskFailed(
+        taskId: string,
+        error: Error,
+        metadata: UpdateMetadata = {},
+        authority?: TaskAttemptMutationAuthority,
+    ): Promise<TaskStateData> {
         const errorMetadata: UpdateMetadata = {
             ...metadata,
             error: { message: error.message, category: metadata.errorCategory ?? 'unknown' },
             reason: `Task failed: ${error.message}`
         };
-        return await this.updateTaskState(taskId, TaskStates.FAILED, errorMetadata);
+        return await this.updateTaskState(taskId, TaskStates.FAILED, errorMetadata, authority);
     }
 
     /**
@@ -389,7 +436,12 @@ export class WorkerStateManager {
      * @param metadata - Additional metadata
      * @returns Updated state
      */
-    async markTaskCancelled(taskId: string, cancelledBy: string = 'user', metadata: UpdateMetadata = {}): Promise<TaskStateData> {
+    async markTaskCancelled(
+        taskId: string,
+        cancelledBy: string = 'user',
+        metadata: UpdateMetadata = {},
+        authority?: TaskAttemptMutationAuthority,
+    ): Promise<TaskStateData> {
         const cancelMetadata: UpdateMetadata = {
             ...metadata,
             reason: metadata.reason ?? `Task cancelled by ${cancelledBy}`,
@@ -399,7 +451,7 @@ export class WorkerStateManager {
                 cancelledAt: new Date().toISOString()
             }
         };
-        return await this.updateTaskState(taskId, TaskStates.CANCELLED, cancelMetadata);
+        return await this.updateTaskState(taskId, TaskStates.CANCELLED, cancelMetadata, authority);
     }
 
     /**
@@ -408,7 +460,11 @@ export class WorkerStateManager {
      * @param result - Task result
      * @returns Updated state
      */
-    async markTaskCompleted(taskId: string, result: TaskResult = {}): Promise<TaskStateData> {
+    async markTaskCompleted(
+        taskId: string,
+        result: TaskResult = {},
+        authority?: TaskAttemptMutationAuthority,
+    ): Promise<TaskStateData> {
         const metadata: UpdateMetadata = {
             prResult: result, reason: 'Task completed successfully',
             historyMetadata: {
@@ -416,7 +472,7 @@ export class WorkerStateManager {
                 commitResult: result.commitResult ?? null
             }
         };
-        return await this.updateTaskState(taskId, TaskStates.COMPLETED, metadata);
+        return await this.updateTaskState(taskId, TaskStates.COMPLETED, metadata, authority);
     }
 
     /**

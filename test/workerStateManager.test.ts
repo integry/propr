@@ -285,7 +285,7 @@ test('createTaskState stores state in Redis with TTL', async () => {
     assert.strictEqual(createCall.arguments[4], TEST_STATE_EXPIRY);
 
     // Verify the stored state is valid JSON with correct structure
-    const storedState = JSON.parse(createCall.arguments[5] as string) as TaskStateData;
+    const storedState = JSON.parse(createCall.arguments[6] as string) as TaskStateData;
     assert.strictEqual(storedState.taskId, taskId);
     assert.strictEqual(storedState.state, TaskStates.PENDING);
     assert.strictEqual(storedState.issueRef.number, 100);
@@ -569,7 +569,7 @@ test('createTaskState stores valid JSON in Redis', async () => {
     await stateManager.createTaskState(taskId, issueRef);
 
     const createCall = mockRedisInstance.eval.mock.calls[0];
-    const storedJson = createCall.arguments[5] as string;
+    const storedJson = createCall.arguments[6] as string;
 
     // Should not throw when parsing
     let parsed: TaskStateData | undefined;
@@ -1006,10 +1006,11 @@ test('updateTaskState persists to Redis with TTL renewal', async () => {
     assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
     const evalCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-redis-persist`);
-    assert.strictEqual(evalCall.arguments[4], TEST_STATE_EXPIRY);
+    assert.strictEqual(evalCall.arguments[5], TEST_STATE_EXPIRY);
+    assert.strictEqual(evalCall.arguments[6], TEST_STATE_EXPIRY * 2);
 
     // Verify state was stored correctly
-    const storedState = JSON.parse(evalCall.arguments[5] as string) as TaskStateData;
+    const storedState = JSON.parse(evalCall.arguments[7] as string) as TaskStateData;
     assert.strictEqual(storedState.state, TaskStates.PROCESSING);
     assert.strictEqual(storedState.history.length, 2);
 
@@ -1523,10 +1524,11 @@ test('markTaskFailed persists failure to Redis atomically', async () => {
     assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
     const evalCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-fail-redis`);
-    assert.strictEqual(evalCall.arguments[4], TEST_STATE_EXPIRY);
+    assert.strictEqual(evalCall.arguments[5], TEST_STATE_EXPIRY);
+    assert.strictEqual(evalCall.arguments[6], TEST_STATE_EXPIRY * 2);
 
     // Verify stored state has FAILED status
-    const storedState = JSON.parse(evalCall.arguments[5] as string) as TaskStateData;
+    const storedState = JSON.parse(evalCall.arguments[7] as string) as TaskStateData;
     assert.strictEqual(storedState.state, TaskStates.FAILED);
     assert.ok(storedState.lastError);
     assert.strictEqual(storedState.lastError.message, 'System failure');
@@ -2902,6 +2904,7 @@ test('updateTaskStateIfCurrent loses atomically to a concurrent cancellation', a
         _script: string,
         _numberOfKeys: number,
         _key: string,
+        _revisionKey: string,
         expectedJson: string,
     ) => {
         stored = JSON.stringify({
@@ -2996,8 +2999,10 @@ test('updateIssueRef applies its patch to a concurrent terminal state without re
         _script: string,
         _numberOfKeys: number,
         _key: string,
+        _revisionKey: string,
         expectedJson: string,
         _expiry: number,
+        _revisionExpiry: number,
         updatedJson: string,
     ) => {
         if (!cancellationCommitted) {
@@ -3045,8 +3050,10 @@ test('updateHistoryMetadata merges into a concurrent completed state without res
         _script: string,
         _numberOfKeys: number,
         _key: string,
+        _revisionKey: string,
         expectedJson: string,
         _expiry: number,
+        _revisionExpiry: number,
         updatedJson: string,
     ) => {
         if (!completionCommitted) {
@@ -3162,6 +3169,12 @@ test('fenced creation fails closed when its SQL generation cannot be persisted',
         /database unavailable/,
     );
 
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 2);
+    const rollbackCall = mockRedisInstance.eval.mock.calls[1];
+    assert.strictEqual(rollbackCall.arguments[2], `${TEST_KEY_PREFIX}task-required-generation`);
+    assert.strictEqual(rollbackCall.arguments[3], 'replacement-token');
+    assert.strictEqual(rollbackCall.arguments[4], 1);
+
     await stateManager.close();
 });
 
@@ -3189,6 +3202,10 @@ test('fenced task mutations throw when a successor owns the generation', async (
             {},
             'stale-token',
         ),
+        SupersededTaskAttemptError,
+    );
+    await assert.rejects(
+        stateManager.updateIssueRef(successor.taskId, { title: 'unfenced mutation' }),
         SupersededTaskAttemptError,
     );
     assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 0);

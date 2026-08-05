@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { findRunningDockerContainerForTask, logger, runWithExecutionAbortSignal, SupersededTaskAttemptError } from '@propr/core';
+import { logger, runWithExecutionAbortSignal, SupersededTaskAttemptError } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
@@ -20,7 +20,8 @@ import {
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildPrompt,
-    handleJobError, cleanupJobBeforeStoppingHeartbeat, buildPRCommentWorktreeDirName, toClaudeResult
+    handleJobError, cleanupJobBeforeStoppingHeartbeat, buildPRCommentWorktreeDirName,
+    stopAbandonedPRTaskContainer, toClaudeResult
 } from './prCommentJobUtils.js';
 import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
@@ -373,12 +374,10 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
     job.data.prProcessingLockToken = lockToken;
 
-    const runningContainer = await findRunningDockerContainerForTask(taskId);
-    if (runningContainer) {
-        correlatedLogger.warn({ taskId, containerId: runningContainer.id, containerName: runningContainer.name }, 'Agent execution for this task is already running. Rescheduling without starting another attempt.');
+    if (!await stopAbandonedPRTaskContainer(taskId, correlatedLogger)) {
         await issueQueue.add(job.name, job.data, { delay: 60000 });
         await releasePRProcessingLock(redisClient, lockKey, lockToken);
-        return { status: 'rescheduled', reason: 'agent_container_already_running' };
+        return { status: 'rescheduled', reason: 'orphan_container_stop_failed' };
     }
 
     const stopLockHeartbeat = startPRProcessingLockHeartbeat({
@@ -435,7 +434,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
             correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Stopped superseded PR processing attempt before further side effects');
             throw error;
         }
-        await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, prProcessingLockToken: lockToken });
+        await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, prProcessingLockToken: lockToken, assertLease });
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
         if (isUserCancelled) {

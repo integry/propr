@@ -85,3 +85,15 @@ test('force-kills asynchronously when graceful stop fails', async () => {
     assert.equal(result.success, true);
     assert.deepEqual(dockerCalls[2]?.args, ['kill', 'abcdef123456']);
 });
+
+test('stops a restarting container instead of treating it as terminal', async () => {
+    responses.push(
+        { error: null, stdout: 'Restarting (1) 2 seconds ago\n', stderr: '' },
+        { error: null, stdout: 'safe-container\n', stderr: '' },
+    );
+
+    const result = await stopDockerContainer('safe-container');
+
+    assert.equal(result.success, true);
+    assert.deepEqual(dockerCalls[1]?.args, ['stop', '-t', '10', 'safe-container']);
+});

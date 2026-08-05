@@ -41,6 +41,28 @@ export function shouldBroadcastTaskUpdate(
   return incomingVersion >= latestVersion;
 }
 
+export async function loadDurableTaskRevision(
+  get: (key: string) => Promise<string | null>,
+  taskId: string,
+): Promise<number | undefined> {
+  const [revisionValue, stateValue] = await Promise.all([
+    get(`revision:worker:state:${taskId}`),
+    get(`worker:state:${taskId}`),
+  ]);
+  const revision = revisionValue === null ? Number.NaN : Number(revisionValue);
+  let stateRevision = Number.NaN;
+  if (stateValue) {
+    try {
+      const parsed = JSON.parse(stateValue) as { version?: unknown };
+      stateRevision = typeof parsed.version === 'number' ? parsed.version : Number.NaN;
+    } catch {
+      // A malformed/partially-written state cannot seed event ordering.
+    }
+  }
+  const versions = [revision, stateRevision].filter(Number.isFinite);
+  return versions.length > 0 ? Math.max(...versions) : undefined;
+}
+
 /**
  * SocketService manages WebSocket connections and Redis pub/sub subscriptions.
  * It subscribes to Redis channels and broadcasts events to connected WebSocket clients.
@@ -58,6 +80,7 @@ export class SocketService {
   private taskWatcherManager: TaskWatcherManager;
   private queueDeps: QueueDependencies | null = null;
   private taskRevisions = new Map<string, number>();
+  private taskUpdateTails = new Map<string, Promise<void>>();
 
   constructor(httpServer: HttpServer, corsOrigins: string | string[] | CorsOriginFunction) {
     // Initialize Socket.IO server with CORS configuration
@@ -239,7 +262,7 @@ export class SocketService {
   private handleEvent(_channel: string, payload: EventPayload): void {
     switch (payload.eventType) {
       case TASK_UPDATE:
-        this.handleTaskUpdate(payload as TaskUpdatePayload);
+        this.enqueueTaskUpdate(payload as TaskUpdatePayload);
         break;
       case DRAFT_UPDATE:
         this.handleDraftUpdate(payload as DraftUpdatePayload);
@@ -259,8 +282,32 @@ export class SocketService {
     }
   }
 
-  private handleTaskUpdate(payload: TaskUpdatePayload): void {
-    const latestVersion = this.taskRevisions.get(payload.taskId);
+  private enqueueTaskUpdate(payload: TaskUpdatePayload): void {
+    const previous = this.taskUpdateTails.get(payload.taskId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.handleTaskUpdate(payload))
+      .finally(() => {
+        if (this.taskUpdateTails.get(payload.taskId) === current) {
+          this.taskUpdateTails.delete(payload.taskId);
+        }
+      });
+    this.taskUpdateTails.set(payload.taskId, current);
+  }
+
+  private async handleTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
+    let latestVersion = this.taskRevisions.get(payload.taskId);
+    if (latestVersion === undefined && this.queueDeps) {
+      try {
+        latestVersion = await loadDurableTaskRevision(
+          key => this.queueDeps!.redisClient.get(key),
+          payload.taskId,
+        );
+      } catch (error) {
+        console.error(`[SocketService] Failed to seed task revision for ${payload.taskId}:`, error);
+        return;
+      }
+    }
     // During rolling upgrades, legacy events may be accepted until a
     // versioned producer establishes the ordered stream for this task.
     if (!shouldBroadcastTaskUpdate(latestVersion, payload.version)) return;
