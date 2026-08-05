@@ -73,12 +73,23 @@ const CREDENTIAL_FIELD_NAMES = new Set([
   'refreshtoken',
   'idtoken',
 ]);
+const REFRESH_CREDENTIAL_FIELD_NAMES = new Set(['refreshtoken']);
 const EXPIRATION_FIELD_NAMES = new Set([
   'expiresat',
   'expires',
   'expiry',
   'expiration',
   'expirydate',
+]);
+const REFRESH_EXPIRATION_FIELD_NAMES = new Set([
+  'refreshexpires',
+  'refreshexpiresat',
+  'refreshexpiry',
+  'refreshexpiration',
+  'refreshtokenexpires',
+  'refreshtokenexpiresat',
+  'refreshtokenexpiry',
+  'refreshtokenexpiration',
 ]);
 
 function normalizedCredentialKey(value: string): string {
@@ -102,24 +113,50 @@ function parseExpiration(value: unknown): number | undefined {
 
 function hasValidCredential(payload: Record<string, unknown>, now = Date.now()): boolean {
   let visited = 0;
-  const visit = (value: unknown, depth: number, inheritedExpiration?: unknown): boolean => {
+  const visit = (
+    value: unknown,
+    depth: number,
+    inheritedExpiration?: unknown,
+    inheritedRefreshExpiration?: unknown,
+  ): boolean => {
     if (!value || typeof value !== 'object' || depth > MAX_CREDENTIAL_JSON_DEPTH) return false;
     if (++visited > MAX_CREDENTIAL_JSON_NODES) return false;
-    if (Array.isArray(value)) return value.some(item => visit(item, depth + 1, inheritedExpiration));
+    if (Array.isArray(value)) {
+      return value.some(item => visit(
+        item,
+        depth + 1,
+        inheritedExpiration,
+        inheritedRefreshExpiration,
+      ));
+    }
 
     const record = value as Record<string, unknown>;
     const localExpirationEntry = Object.entries(record).find(([key]) => (
       EXPIRATION_FIELD_NAMES.has(normalizedCredentialKey(key))
     ));
+    const localRefreshExpirationEntry = Object.entries(record).find(([key]) => (
+      REFRESH_EXPIRATION_FIELD_NAMES.has(normalizedCredentialKey(key))
+    ));
     const effectiveExpiration = localExpirationEntry?.[1] ?? inheritedExpiration;
+    const effectiveRefreshExpiration = localRefreshExpirationEntry?.[1]
+      ?? inheritedRefreshExpiration;
     for (const [key, credential] of Object.entries(record)) {
-      if (!CREDENTIAL_FIELD_NAMES.has(normalizedCredentialKey(key))) continue;
+      const normalizedKey = normalizedCredentialKey(key);
+      if (!CREDENTIAL_FIELD_NAMES.has(normalizedKey)) continue;
       if (typeof credential !== 'string' || !credential.trim()) continue;
-      if (effectiveExpiration === undefined) return true;
-      const expiration = parseExpiration(effectiveExpiration);
+      const credentialExpiration = REFRESH_CREDENTIAL_FIELD_NAMES.has(normalizedKey)
+        ? effectiveRefreshExpiration
+        : effectiveExpiration;
+      if (credentialExpiration === undefined) return true;
+      const expiration = parseExpiration(credentialExpiration);
       if (expiration !== undefined && expiration > now) return true;
     }
-    return Object.values(record).some(child => visit(child, depth + 1, effectiveExpiration));
+    return Object.values(record).some(child => visit(
+      child,
+      depth + 1,
+      effectiveExpiration,
+      effectiveRefreshExpiration,
+    ));
   };
   return visit(payload, 0);
 }

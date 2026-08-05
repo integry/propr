@@ -1,0 +1,38 @@
+import type { Logger } from 'pino';
+
+/** Stops the heartbeat at lease release while preserving an already-committed job outcome. */
+export async function runJobCleanupLifecycle(
+    cleanup: (beforeRelease: () => Promise<void>) => Promise<void>,
+    stopHeartbeat: () => Promise<void>,
+    correlatedLogger: Logger,
+    preserveJobOutcome: boolean,
+): Promise<void> {
+    let heartbeatStopped = false;
+    const stopHeartbeatOnce = async (): Promise<void> => {
+        if (heartbeatStopped) return;
+        heartbeatStopped = true;
+        await stopHeartbeat();
+    };
+    let failure: unknown;
+    try { await cleanup(stopHeartbeatOnce); }
+    catch (error) {
+        failure = error;
+        if (preserveJobOutcome) {
+            correlatedLogger.warn(
+                { error: (error as Error).message },
+                'Cleanup finalization failed after the job outcome was committed; allowing the lease to expire without retrying the job',
+            );
+        }
+    }
+    try { await stopHeartbeatOnce(); }
+    catch (error) {
+        failure ??= error;
+        if (preserveJobOutcome) {
+            correlatedLogger.warn(
+                { error: (error as Error).message },
+                'Heartbeat cleanup failed after the job outcome was committed; preserving the completed job result',
+            );
+        }
+    }
+    if (failure && !preserveJobOutcome) throw failure;
+}

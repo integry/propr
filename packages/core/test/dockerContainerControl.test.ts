@@ -62,7 +62,7 @@ test('passes validated Docker values as argument-array entries', async () => {
     assert.deepEqual(dockerCalls, [
         {
             file: '/usr/bin/docker',
-            args: ['ps', '-a', '--filter', 'id=safe-container', '--format', '{{.Status}}'],
+            args: ['inspect', '--type', 'container', '--format', '{{.State.Status}}', 'safe-container'],
             timeout: 5000,
         },
         {
@@ -96,4 +96,19 @@ test('stops a restarting container instead of treating it as terminal', async ()
 
     assert.equal(result.success, true);
     assert.deepEqual(dockerCalls[1]?.args, ['stop', '-t', '10', 'safe-container']);
+});
+
+test('inspects and stops an exact container name when no container ID is available yet', async () => {
+    responses.push(
+        { error: null, stdout: 'running\n', stderr: '' },
+        { error: null, stdout: 'propr-agent-task-name\n', stderr: '' },
+    );
+
+    const result = await stopDockerContainer('propr-agent-task-name');
+
+    assert.equal(result.success, true);
+    assert.deepEqual(dockerCalls[0]?.args, [
+        'inspect', '--type', 'container', '--format', '{{.State.Status}}', 'propr-agent-task-name',
+    ]);
+    assert.deepEqual(dockerCalls[1]?.args, ['stop', '-t', '10', 'propr-agent-task-name']);
 });

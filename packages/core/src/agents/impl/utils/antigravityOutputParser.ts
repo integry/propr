@@ -56,6 +56,11 @@ function isTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent 
     const candidate = event as Partial<AntigravityTranscriptEvent>;
     return typeof candidate.source === 'string'
         && typeof candidate.type === 'string'
+        && Number.isInteger(candidate.step_index)
+        && typeof candidate.status === 'string'
+        && typeof candidate.created_at === 'string'
+        && /^[A-Z][A-Z0-9_]*$/u.test(candidate.source)
+        && /^[A-Z][A-Z0-9_]*$/u.test(candidate.type)
         && !['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(candidate.type);
 }
 

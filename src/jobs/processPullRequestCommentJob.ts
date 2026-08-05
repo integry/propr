@@ -419,15 +419,16 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     }
 
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
+    let preserveJobOutcome = false;
 
     try {
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
             const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal }), attemptGeneration);
-            return { ...result, prProcessingAttemptGeneration: attemptGeneration };
+            preserveJobOutcome = true; return { ...result, prProcessingAttemptGeneration: attemptGeneration };
         }
         const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockToken, assertLease, signal: leaseController.signal }), attemptGeneration);
-        return { ...result, prProcessingAttemptGeneration: attemptGeneration };
+        preserveJobOutcome = true; return { ...result, prProcessingAttemptGeneration: attemptGeneration };
     } catch (error) {
         if (error instanceof PRProcessingLeaseLostError || error instanceof SupersededTaskAttemptError) {
             if (error instanceof SupersededTaskAttemptError) {
@@ -440,11 +441,11 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
         if (isUserCancelled) {
-            return { status: 'cancelled', reason: 'user_cancelled', prProcessingAttemptGeneration: attemptGeneration };
+            preserveJobOutcome = true; return { status: 'cancelled', reason: 'user_cancelled', prProcessingAttemptGeneration: attemptGeneration };
         }
         if (!(error instanceof UsageLimitError)) throw error;
-        return { status: 'requeued', reason: 'usage_limit', prProcessingAttemptGeneration: attemptGeneration };
+        preserveJobOutcome = true; return { status: 'requeued', reason: 'usage_limit', prProcessingAttemptGeneration: attemptGeneration };
     } finally {
-        await cleanupJobBeforeStoppingHeartbeat({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient }, stopLockHeartbeat);
+        await cleanupJobBeforeStoppingHeartbeat({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient }, stopLockHeartbeat, preserveJobOutcome);
     }
 }

@@ -413,6 +413,7 @@ describe('task state reconciliation', () => {
         const scanned = task('pr-comments-finalizer-generation-race', TaskStates.PROCESSING);
         const manager = stateManager([scanned]);
         const successorToken = 'replacement-attempt-token';
+        const evalMock = mock.fn(async () => 1);
         const queueWithReplacement = {
             getJob: async () => ({
                 getState: async () => {
@@ -430,7 +431,7 @@ describe('task state reconciliation', () => {
         const summary = await reconcileStaleTaskStates({
             stateManager: manager as never,
             queue: queueWithReplacement,
-            redis: { eval: async () => 0, pttl: async () => -2 },
+            redis: { eval: evalMock, pttl: async () => -2 },
             staleAfterMs: 1000,
             now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
             findRunningContainer: async () => null,
@@ -440,6 +441,7 @@ describe('task state reconciliation', () => {
         assert.equal(manager.states.get(scanned.taskId)?.prProcessingLockToken, successorToken);
         assert.equal(manager.updates.length, 0);
         assert.equal(summary.finalized, 0);
+        assert.equal(evalMock.mock.calls.length, 0);
     });
 
     test('does not stop a successor container when state changes during Docker lookup', async () => {
@@ -542,7 +544,7 @@ describe('task state reconciliation', () => {
         assert.equal(summary.interrupted, 1);
     });
 
-    test('retries owned-lock cleanup before making the state terminal', async () => {
+    test('makes the state terminal before retrying owned-lock cleanup', async () => {
         const abandoned = task('pr-comments-lock-cleanup-retry', TaskStates.PROCESSING);
         const manager = stateManager([abandoned]);
         let attempts = 0;
@@ -552,7 +554,7 @@ describe('task state reconciliation', () => {
             queue: queue({}),
             redis: {
                 eval: async () => {
-                    assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.PROCESSING);
+                    assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.FAILED);
                     attempts++;
                     if (attempts === 1) throw new Error('temporary Redis failure');
                     return 1;
@@ -570,7 +572,7 @@ describe('task state reconciliation', () => {
         assert.equal(summary.interrupted, 1);
     });
 
-    test('keeps failed lock cleanup non-terminal so a later reconciliation can retry it', async () => {
+    test('keeps the fenced terminal state when lock cleanup fails', async () => {
         const abandoned = task('pr-comments-lock-cleanup-deferred', TaskStates.PROCESSING);
         const manager = stateManager([abandoned]);
         const failingSummary = await reconcileStaleTaskStates({
@@ -585,22 +587,10 @@ describe('task state reconciliation', () => {
             findRunningContainer: async () => null,
         });
 
-        assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.PROCESSING);
-        assert.equal(failingSummary.errors, 1);
-        assert.equal(failingSummary.interrupted, 0);
-
-        const recoveredSummary = await reconcileStaleTaskStates({
-            stateManager: manager as never,
-            queue: queue({}),
-            redis: { eval: async () => 1, pttl: async () => -2 },
-            staleAfterMs: 1000,
-            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
-            findRunningContainer: async () => null,
-        });
-
         assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.FAILED);
-        assert.equal(recoveredSummary.locksCleared, 1);
-        assert.equal(recoveredSummary.interrupted, 1);
+        assert.equal(failingSummary.errors, 1);
+        assert.equal(failingSummary.interrupted, 1);
+        assert.equal(failingSummary.locksCleared, 0);
     });
 
     test('terminalizes an invalid completed result as a diagnostic failure', async () => {

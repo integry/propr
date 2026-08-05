@@ -5,6 +5,7 @@ const cleanupWorktree = mock.fn(async () => {});
 const assertLease = mock.fn(async () => {});
 const releaseLease = mock.fn(async () => true);
 const findRunningDockerContainerForTask = mock.fn(async () => null as { id: string; name: string } | null);
+const inspectLegacyDockerContainerLivenessForTask = mock.fn(async () => 'not_found' as 'running' | 'not_found' | 'unavailable');
 const stopDockerContainer = mock.fn(async () => ({ success: true }));
 
 class PRProcessingLeaseLostError extends Error {}
@@ -21,6 +22,7 @@ await mock.module('@propr/core', {
         getPendingPrCommentsKey: () => 'pending-comments',
         handleError: () => {},
         issueQueue: { add: async () => {} },
+        inspectLegacyDockerContainerLivenessForTask,
         recordLLMMetrics: async () => {},
         resolveModelAlias: (value: string) => value,
         resolveAgentTerminationReason: () => undefined,
@@ -100,6 +102,8 @@ beforeEach(() => {
     releaseLease.mock.mockImplementation(async () => true);
     findRunningDockerContainerForTask.mock.resetCalls();
     findRunningDockerContainerForTask.mock.mockImplementation(async () => null);
+    inspectLegacyDockerContainerLivenessForTask.mock.resetCalls();
+    inspectLegacyDockerContainerLivenessForTask.mock.mockImplementation(async () => 'not_found');
     stopDockerContainer.mock.resetCalls();
     stopDockerContainer.mock.mockImplementation(async () => ({ success: true }));
 });
@@ -117,8 +121,36 @@ test('stops an abandoned task container before allowing a successor attempt', as
     );
 
     assert.equal(canProceed, true);
-    assert.equal(assertLease.mock.calls.length, 1);
+    assert.equal(assertLease.mock.calls.length, 3);
     assert.deepEqual(stopDockerContainer.mock.calls[0].arguments, ['container-1748', 10]);
+});
+
+test('reschedules startup while a pre-label container may still be running', async () => {
+    inspectLegacyDockerContainerLivenessForTask.mock.mockImplementationOnce(async () => 'running');
+
+    const canProceed = await stopAbandonedPRTaskContainer(
+        'pr-comments-integry-propr-1748-12345678',
+        cleanupOptions().correlatedLogger,
+        assertLease,
+    );
+
+    assert.equal(canProceed, false);
+    assert.equal(inspectLegacyDockerContainerLivenessForTask.mock.calls.length, 1);
+    assert.equal(stopDockerContainer.mock.calls.length, 0);
+    assert.equal(assertLease.mock.calls.length, 2);
+});
+
+test('reschedules startup when legacy container liveness cannot be verified', async () => {
+    inspectLegacyDockerContainerLivenessForTask.mock.mockImplementationOnce(async () => 'unavailable');
+
+    const canProceed = await stopAbandonedPRTaskContainer(
+        'pr-comments-integry-propr-1748-12345678',
+        cleanupOptions().correlatedLogger,
+        assertLease,
+    );
+
+    assert.equal(canProceed, false);
+    assert.equal(stopDockerContainer.mock.calls.length, 0);
 });
 
 test('does not stop an abandoned container after startup lease ownership is lost', async () => {
@@ -203,6 +235,34 @@ test('stops the heartbeat immediately before intentionally releasing the PR leas
 
     assert.deepEqual(order, ['worktree', 'heartbeat', 'release']);
     assert.equal(stopHeartbeat.mock.calls.length, 1);
+});
+
+test('preserves a committed job outcome when cleanup ownership checks remain unavailable', async () => {
+    assertLease.mock.mockImplementation(async () => {
+        throw new Error('Redis unavailable');
+    });
+    const options = cleanupOptions();
+    const stopHeartbeat = mock.fn(async () => {});
+
+    await cleanupJobBeforeStoppingHeartbeat(options, stopHeartbeat, true);
+
+    assert.equal(assertLease.mock.calls.length, 3);
+    assert.equal(releaseLease.mock.calls.length, 0);
+    assert.equal(stopHeartbeat.mock.calls.length, 1);
+    assert.equal((options.correlatedLogger.warn as ReturnType<typeof mock.fn>).mock.calls.length, 2);
+});
+
+test('preserves a committed job outcome when stopping the heartbeat fails', async () => {
+    const stopHeartbeat = mock.fn(async () => {
+        throw new Error('heartbeat shutdown failed');
+    });
+    const options = cleanupOptions();
+
+    await cleanupJobBeforeStoppingHeartbeat(options, stopHeartbeat, true);
+
+    assert.equal(releaseLease.mock.calls.length, 0);
+    assert.equal(stopHeartbeat.mock.calls.length, 1);
+    assert.equal((options.correlatedLogger.warn as ReturnType<typeof mock.fn>).mock.calls.length, 1);
 });
 
 test('performs no generic error side effects after the live lease is lost', async () => {

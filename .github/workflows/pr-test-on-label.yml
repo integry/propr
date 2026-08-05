@@ -168,7 +168,9 @@ jobs:
               repo: context.repo.repo,
               issue_number: context.issue.number,
             });
-            const existing = [...comments].reverse().find(comment => comment.body?.includes(marker));
+            const existing = [...comments].reverse().find(comment =>
+              comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker)
+            );
             if (succeeded && !existing) return;
             const body = [
               marker,

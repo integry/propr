@@ -6,7 +6,6 @@ import {
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
     resolveModelAlias, getPendingPrCommentsKey,
     describeAgentTermination, resolveAgentTerminationReason,
-    findRunningDockerContainerForTask, stopDockerContainer,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager,
 } from '@propr/core';
@@ -15,6 +14,7 @@ import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.j
 import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
+import { runJobCleanupLifecycle } from './prCommentCleanupLifecycle.js';
 import {
     assertPRProcessingLock,
     PRProcessingLeaseLostError,
@@ -325,17 +325,6 @@ export function buildPRCommentWorktreeDirName(pullRequestNumber: number, lockTok
     return `pr-${pullRequestNumber}-followup-${timestamp}-${attemptSlug}`;
 }
 
-export async function stopAbandonedPRTaskContainer(taskId: string, correlatedLogger: Logger, assertLease: () => Promise<void>): Promise<boolean> {
-    for (;;) {
-        const container = await findRunningDockerContainerForTask(taskId);
-        if (!container) return true;
-        await assertLease();
-        correlatedLogger.warn({ taskId, containerId: container.id, containerName: container.name }, 'Found an agent container after acquiring an unowned PR lease; stopping the abandoned execution');
-        const stopped = await stopDockerContainer(container.id, 10);
-        if (!stopped.success) { correlatedLogger.error({ taskId, containerId: container.id, error: stopped.error }, 'Could not stop abandoned agent container; rescheduling to avoid overlapping executions'); return false; }
-    }
-}
-
 export async function cleanupJob(options: CleanupOptions, beforeRelease?: () => Promise<void>): Promise<void> {
     const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
     let ownsLease = true;
@@ -398,18 +387,15 @@ export async function cleanupJob(options: CleanupOptions, beforeRelease?: () => 
     }
 }
 
-export async function cleanupJobBeforeStoppingHeartbeat(options: CleanupOptions, stopLockHeartbeat: () => Promise<void>): Promise<void> {
-    let heartbeatStopped = false;
-    const stopHeartbeatOnce = async (): Promise<void> => {
-        if (heartbeatStopped) return;
-        heartbeatStopped = true;
-        await stopLockHeartbeat();
-    };
-    try { await cleanupJob(options, stopHeartbeatOnce); }
-    finally { await stopHeartbeatOnce(); }
+export async function cleanupJobBeforeStoppingHeartbeat(options: CleanupOptions, stopLockHeartbeat: () => Promise<void>, preserveJobOutcome = false): Promise<void> {
+    await runJobCleanupLifecycle(
+        beforeRelease => cleanupJob(options, beforeRelease),
+        stopLockHeartbeat, options.correlatedLogger, preserveJobOutcome,
+    );
 }
 
 export { buildMetricsSection } from './prCommentMetrics.js';
+export { stopAbandonedPRTaskContainer } from './prCommentContainerCleanup.js';
 
 export function parsePendingComment(commentJson: string, correlatedLogger: Logger): UnprocessedComment | null {
     try {

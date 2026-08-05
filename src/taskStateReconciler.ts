@@ -220,13 +220,13 @@ async function finalizeCompletedJob(
     summary: TaskReconciliationSummary,
 ): Promise<void> {
     throwIfAborted(options.signal);
-    const lockCleared = await clearOwnedPRLock(task, options.redis, options.signal);
-    throwIfAborted(options.signal);
     const finalized = await finalizePRCommentTaskResult(task.taskId, options.stateManager, job.returnvalue, {
         expectation: taskStateExpectation(task),
     });
     if (!finalized) return;
     summary.finalized++;
+    throwIfAborted(options.signal);
+    const lockCleared = await clearOwnedPRLock(task, options.redis, options.signal);
     if (lockCleared) summary.locksCleared++;
 }
 
@@ -237,13 +237,13 @@ async function finalizeFailedJob(
     summary: TaskReconciliationSummary,
 ): Promise<void> {
     throwIfAborted(options.signal);
-    const lockCleared = await clearOwnedPRLock(task, options.redis, options.signal);
-    throwIfAborted(options.signal);
     const finalized = await finalizePRCommentTaskFailure(task.taskId, options.stateManager, new Error(message), {
         expectation: taskStateExpectation(task),
     });
     if (!finalized) return;
     summary.interrupted++;
+    throwIfAborted(options.signal);
+    const lockCleared = await clearOwnedPRLock(task, options.redis, options.signal);
     if (lockCleared) summary.locksCleared++;
 }
 

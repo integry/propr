@@ -95,6 +95,21 @@ describe('Antigravity agent login', () => {
       fs.writeFileSync(tokenPath, JSON.stringify({ access_token: 'expired', expires_at: '2000-01-01T00:00:00.000Z' }));
       assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
 
+      fs.writeFileSync(tokenPath, JSON.stringify({
+        access_token: 'expired',
+        refresh_token: 'still-usable',
+        expires_at: '2000-01-01T00:00:00.000Z',
+      }));
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), true);
+
+      fs.writeFileSync(tokenPath, JSON.stringify({
+        access_token: 'expired',
+        refresh_token: 'also-expired',
+        expires_at: '2000-01-01T00:00:00.000Z',
+        refresh_token_expires_at: '2000-01-01T00:00:00.000Z',
+      }));
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
+
       fs.writeFileSync(tokenPath, JSON.stringify({ expires_at: '2099-01-01T00:00:00.000Z', message: 'authenticated' }));
       assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
 

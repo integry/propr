@@ -106,6 +106,7 @@ await mock.module('../packages/core/src/utils/logger.js', {
 
 // Import after mocks are set up
 const { SupersededTaskAttemptError, WorkerStateManager, TaskStates } = await import('../packages/core/src/utils/workerStateManager.js');
+const { hashTaskAttemptToken } = await import('../packages/core/src/utils/taskAttemptGeneration.js');
 import type { IssueRef, TaskStateData } from '../packages/core/src/utils/workerStateManager.types.js';
 
 // Test configuration
@@ -364,12 +365,14 @@ test('createTaskState stores state in Redis with TTL', async () => {
 
     await stateManager.createTaskState(taskId, issueRef);
 
-    // Verify the atomic creation script received a persistent revision key and TTL.
+    // Verify the atomic creation script received a bounded revision key and TTL.
     assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
     const createCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(createCall.arguments[2], `${TEST_KEY_PREFIX}${taskId}`);
     assert.strictEqual(createCall.arguments[3], `revision:${TEST_KEY_PREFIX}${taskId}`);
     assert.strictEqual(createCall.arguments[4], TEST_STATE_EXPIRY);
+    assert.strictEqual(createCall.arguments[5], TEST_STATE_EXPIRY * 2);
+    assert.match(createCall.arguments[0] as string, /setex.*KEYS\[2\].*ARGV\[2\]/s);
 
     // Verify the stored state is valid JSON with correct structure
     const storedState = JSON.parse(createCall.arguments[6] as string) as TaskStateData;
@@ -1145,6 +1148,42 @@ test('updateTaskState inserts history record into database', async () => {
     assert.strictEqual(metadata.customField, 'customValue');
     assert.strictEqual(metadata.previousState, TaskStates.PENDING);
 
+    await stateManager.close();
+});
+
+test('fenced state updates record their generation and Redis version in SQL history', async () => {
+    const attemptToken = 'correlation:attempt-token';
+    const existingState: TaskStateData = {
+        taskId: 'task-fenced-db-history',
+        issueRef: { number: 1748, repoOwner: 'integry', repoName: 'propr', type: 'pr_comment' },
+        correlationId: 'corr-fenced-db-history',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-05T00:00:00.000Z',
+        updatedAt: '2026-08-05T00:01:00.000Z',
+        version: 7,
+        attempts: 0,
+        history: [],
+        prProcessingLockToken: attemptToken,
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => [1, 8]);
+    mockDbHistoryInsert.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+    await stateManager.updateTaskState(
+        existingState.taskId,
+        TaskStates.COMPLETED,
+        { reason: 'Completed current generation' },
+        attemptToken,
+    );
+
+    const historyData = mockDbHistoryInsert.mock.calls[0].arguments[0] as Record<string, unknown>;
+    assert.strictEqual(historyData.attempt_generation, hashTaskAttemptToken(attemptToken));
+    assert.strictEqual(historyData.task_version, 8);
     await stateManager.close();
 });
 

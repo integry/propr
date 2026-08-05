@@ -491,6 +491,7 @@ jobs:
     needs: validate
     if: >-
       ${{ always() &&
+          (needs.validate.result == 'success' || needs.validate.result == 'failure') &&
           github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     permissions:
@@ -524,7 +525,9 @@ jobs:
               repo: context.repo.repo,
               issue_number: context.issue.number,
             });
-            const existing = [...comments].reverse().find(comment => comment.body?.includes(marker));
+            const existing = [...comments].reverse().find(comment =>
+              comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker)
+            );
             if (succeeded && !existing) return;
             const body = succeeded
               ? [marker, '### Checks Passed', '', 'The latest build, lint, and packaging checks passed.', '', `**[View Workflow](${runUrl})**`].join('\n')

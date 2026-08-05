@@ -46,19 +46,19 @@ export async function stopDockerContainer(
     try {
         try {
             const statusOutput = (await runDocker([
-                'ps', '-a', '--filter', `id=${containerId}`, '--format', '{{.Status}}',
+                'inspect', '--type', 'container', '--format', '{{.State.Status}}', containerId,
             ], 5000)).trim();
-            if (!statusOutput) {
-                logger.info({ containerId }, 'Container no longer exists');
-                return { success: true };
-            }
             // Restarting and paused containers are still live resources. Only
             // Docker's known terminal/non-started states can skip termination.
-            if (/^(Exited|Dead|Created)\b/u.test(statusOutput)) {
+            if (/^(exited|dead|created)$/iu.test(statusOutput)) {
                 logger.info({ containerId, status: statusOutput }, 'Container is already stopped');
                 return { success: true };
             }
         } catch (checkError) {
+            if ((checkError as Error).message.includes('No such')) {
+                logger.info({ containerId }, 'Container no longer exists');
+                return { success: true };
+            }
             logger.debug({ containerId, error: (checkError as Error).message }, 'Could not check container status, attempting stop anyway');
         }
 

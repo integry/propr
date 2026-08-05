@@ -26,7 +26,7 @@ if next_version <= durable_version then
     next_version = durable_version + 1
 end
 next.version = next_version
-redis.call('set', KEYS[2], next_version)
+redis.call('setex', KEYS[2], ARGV[3], next_version)
 redis.call('setex', KEYS[1], ARGV[2], cjson.encode(next))
 return {1, next_version}
 `;
@@ -41,7 +41,7 @@ if current then
     end
 end
 version = version + 1
-redis.call('set', KEYS[2], version)
+redis.call('setex', KEYS[2], ARGV[2], version)
 local next = cjson.decode(ARGV[3])
 next.version = version
 redis.call('setex', KEYS[1], ARGV[1], cjson.encode(next))
@@ -61,7 +61,7 @@ if current then
     end
 end
 version = version + 1
-redis.call('set', KEYS[3], version)
+redis.call('setex', KEYS[3], ARGV[3], version)
 local next = cjson.decode(ARGV[4])
 next.version = version
 redis.call('setex', KEYS[1], ARGV[2], cjson.encode(next))
@@ -285,6 +285,8 @@ export async function persistTaskStateCreation(
             timestamp: state.createdAt,
             reason: 'Task created',
             metadata: JSON.stringify({}),
+            attempt_generation: taskData.attempt_generation,
+            task_version: state.version ?? 0,
         });
     } catch (error) {
         correlatedLogger.error(
@@ -334,6 +336,10 @@ export async function persistTaskStateUpdate(
         state: newState,
         timestamp: historyTimestamp,
         reason: metadata.reason ?? `State changed from ${previousState}`,
+        attempt_generation: state.prProcessingLockToken
+            ? hashTaskAttemptToken(state.prProcessingLockToken)
+            : null,
+        task_version: state.version ?? 0,
         metadata: JSON.stringify({
             ...(metadata.historyMetadata ?? {}),
             previousState,
