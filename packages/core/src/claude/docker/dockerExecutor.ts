@@ -4,8 +4,17 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
 import { stopDockerContainer } from './dockerContainerControl.js';
+import {
+    abortSpawnedExecution,
+    getExecutionOwnershipContext,
+    resolveExecutionArgs,
+} from './dockerExecutionOwnership.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
+export {
+    addTaskAttemptLabelsToDockerArgs,
+    runWithExecutionAbortSignal,
+} from './dockerExecutionOwnership.js';
 
 
 export interface ExecutionResult {
@@ -49,12 +58,6 @@ interface PlannerAbortContext {
     runId: string;
 }
 
-interface ExecutionOwnershipContext {
-    signal: AbortSignal;
-    /** One-way identifier for the PR attempt that owns this container. */
-    attemptGeneration?: string;
-}
-
 export interface AbortRedisClient {
     get(key: string): Promise<string | null>;
     del(key: string): Promise<unknown>;
@@ -65,7 +68,6 @@ export interface AbortRedisClient {
 export type AbortRedisFactory = () => AbortRedisClient;
 
 const plannerAbortContext = new AsyncLocalStorage<PlannerAbortContext>();
-const executionOwnershipContext = new AsyncLocalStorage<ExecutionOwnershipContext>();
 
 export function buildPlannerAbortSignalKey(draftId: string, runId?: string): string {
     return runId ? `planner:abort:${draftId}:run:${runId}` : `planner:abort:${draftId}`;
@@ -77,14 +79,6 @@ export function runWithPlannerAbortContext<T>(
     operation: () => Promise<T>
 ): Promise<T> {
     return plannerAbortContext.run({ draftId, runId }, operation);
-}
-
-export function runWithExecutionAbortSignal<T>(
-    signal: AbortSignal,
-    operation: () => Promise<T>,
-    attemptGeneration?: string,
-): Promise<T> {
-    return executionOwnershipContext.run({ signal, attemptGeneration }, operation);
 }
 
 export function plannerAbortSignalKeyForTask(taskId: string): string {
@@ -264,25 +258,6 @@ function getDockerRunContainerName(args: string[]): string | null {
     return null;
 }
 
-function abortSpawnedExecution(
-    child: ChildProcess,
-    state: { aborted: { value: boolean }; containerId: { value: string | null } },
-    namedContainer: string | null,
-): void {
-    if (state.aborted.value || child.killed) return;
-    state.aborted.value = true;
-    const containerToStop = state.containerId.value || namedContainer;
-    if (containerToStop) {
-        void stopDockerContainer(containerToStop, 10).then(stopResult => {
-            if (!stopResult.success) {
-                logger.warn({ containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container after execution ownership loss');
-            }
-        });
-    }
-    child.kill('SIGTERM');
-    scheduleForceKill(child);
-}
-
 /**
  * Finds a running agent container by exact task/attempt labels when a
  * generation is supplied. Legacy callers retain the task-id name-suffix
@@ -352,34 +327,10 @@ function spawnCommandProcess(
     return child;
 }
 
-export function addTaskAttemptLabelsToDockerArgs(
-    args: string[],
-    taskId: string | undefined,
-    attemptGeneration: string | undefined,
-): string[] {
-    if (args[0] !== 'run' || !taskId || !attemptGeneration) return args;
-    return [
-        'run',
-        '--label', `propr.task.id=${taskId}`,
-        '--label', `propr.task.attempt-generation=${attemptGeneration}`,
-        ...args.slice(1),
-    ];
-}
-
-function resolveExecutionArgs(
-    command: string,
-    args: string[],
-    taskId: string | undefined,
-    attemptGeneration: string | undefined,
-): string[] {
-    if (command !== 'docker') return args;
-    return addTaskAttemptLabelsToDockerArgs(args, taskId, attemptGeneration);
-}
-
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false } = options;
-        const ownershipContext = executionOwnershipContext.getStore();
+        const ownershipContext = getExecutionOwnershipContext();
         const executionSignal = options.signal ?? ownershipContext?.signal;
         const executionArgs = resolveExecutionArgs(command, args, taskId, ownershipContext?.attemptGeneration);
         const executablePath = resolveDockerPath(command);
@@ -389,7 +340,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         let stdout = '', stderr = '';
         const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
         const messageTimestamps = new Map<string, string>();
-        const abortForExecutionSignal = (): void => abortSpawnedExecution(child, state, namedContainer);
+        const abortForExecutionSignal = (): void => abortSpawnedExecution(child, state, namedContainer, scheduleForceKill);
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
         if (executionSignal?.aborted) abortForExecutionSignal();
         const timeoutHandle = setTimeout(() => {

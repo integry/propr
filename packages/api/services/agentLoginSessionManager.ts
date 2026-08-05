@@ -59,12 +59,9 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot, TerminalSanitizer
   process?: ChildProcessWithoutNullStreams;
   timeout?: ReturnType<typeof setTimeout>;
   retentionTimeout?: ReturnType<typeof setTimeout>;
-  providerCompletionTimeout?: ReturnType<typeof setTimeout>;
-  providerLoginInitiallyComplete?: boolean;
-  initialCredentialFingerprint?: string;
-  providerCompletionFingerprint?: string;
-  providerCompletionStablePolls?: number;
-  cleanupStarted?: boolean;
+  providerCompletionTimeout?: ReturnType<typeof setTimeout>; providerLoginInitiallyComplete?: boolean;
+  initialCredentialFingerprint?: string; providerCompletionFingerprint?: string;
+  providerCompletionStablePolls?: number; cleanupStarted?: boolean;
 }
 
 export interface DockerCommandResult {
@@ -394,10 +391,8 @@ export class AgentLoginSessionManager {
       void inspectAgentLoginCompletion(session.agentType, session.credentialPath)
         .then(completion => {
           if (isTerminal(session.status)) return;
-          const credentialsChanged = completion.fingerprint !== undefined
-            && completion.fingerprint !== session.initialCredentialFingerprint;
-          const isCompletionCandidate = completion.complete
-            && (!session.providerLoginInitiallyComplete || credentialsChanged)
+          const credentialsChanged = completion.fingerprint !== undefined && completion.fingerprint !== session.initialCredentialFingerprint;
+          const isCompletionCandidate = completion.complete && (!session.providerLoginInitiallyComplete || credentialsChanged)
             && completion.fingerprint !== undefined;
           if (isCompletionCandidate) {
             if (completion.fingerprint === session.providerCompletionFingerprint) {
@@ -410,8 +405,7 @@ export class AgentLoginSessionManager {
             session.providerCompletionFingerprint = undefined;
             session.providerCompletionStablePolls = 0;
           }
-          if (isCompletionCandidate
-            && (session.providerCompletionStablePolls ?? 0) >= REQUIRED_PROVIDER_COMPLETION_STABLE_POLLS) {
+          if (isCompletionCandidate && (session.providerCompletionStablePolls ?? 0) >= REQUIRED_PROVIDER_COMPLETION_STABLE_POLLS) {
             this.appendOutput(session, '\nAuthentication saved. Closing the provider prompt…\n');
             this.finish(session, 'succeeded', 0);
             session.process?.kill();

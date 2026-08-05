@@ -134,14 +134,10 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
 }
 
 interface ExecuteProcessingParams {
-    job: Job<CommentJobData>;
-    context: PRJobContext;
-    llm: string | null | undefined;
-    taskId: string;
-    stateManager: WorkerStateManager;
-    state: ProcessingState;
-    lockToken: string;
-    assertLease: () => Promise<void>;
+    job: Job<CommentJobData>; context: PRJobContext;
+    llm: string | null | undefined; taskId: string;
+    stateManager: WorkerStateManager; state: ProcessingState;
+    lockToken: string; assertLease: () => Promise<void>;
 }
 
 function formatReviewCommentsSection(reviewComments: AIReviewComment[]): string {

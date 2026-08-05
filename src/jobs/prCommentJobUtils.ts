@@ -401,10 +401,7 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
     }
 }
 
-export async function cleanupJobBeforeStoppingHeartbeat(
-    options: CleanupOptions,
-    stopLockHeartbeat: () => Promise<void>,
-): Promise<void> {
+export async function cleanupJobBeforeStoppingHeartbeat(options: CleanupOptions, stopLockHeartbeat: () => Promise<void>): Promise<void> {
     try {
         await cleanupJob(options);
     } finally {

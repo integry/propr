@@ -1,4 +1,4 @@
-import type { TaskStateData, WorkerStateManager } from '@propr/core';
+import type { TaskStateData } from '@propr/core';
 import {
     findRunningDockerContainerForTask,
     hashTaskAttemptToken,
@@ -13,68 +13,37 @@ import {
     parsePRCommentJobResult,
     taskStateExpectation,
 } from './jobs/prCommentTaskFinalizer.js';
+import {
+    createTaskReconciliationSummary,
+    DEFAULT_TASK_FUTURE_SKEW_ALLOWANCE_MS,
+    DEFAULT_TASK_RECONCILIATION_BATCH_SIZE,
+    DEFAULT_TASK_RECONCILIATION_CONCURRENCY,
+    DEFAULT_TASK_RECONCILIATION_STALE_MS,
+    DEFAULT_TASK_RECONCILIATION_TIME_BUDGET_MS,
+} from './taskStateReconciler.types.js';
+import type {
+    ReconciliationContext,
+    ReconciliationJob,
+    ReconciliationQueue,
+    ReconciliationRedis,
+    TaskReconciliationOptions,
+    TaskReconciliationSummary,
+} from './taskStateReconciler.types.js';
 
-interface ReconciliationJob {
-    getState(): Promise<string>;
-    returnvalue?: unknown;
-    failedReason?: string;
-}
-
-export interface ReconciliationQueue {
-    getJob(jobId: string): Promise<ReconciliationJob | undefined>;
-    toKey(type: string): string;
-}
-
-export interface ReconciliationRedis {
-    eval(script: string, numberOfKeys: number, ...args: Array<string | number>): Promise<unknown>;
-    pttl(key: string): Promise<number>;
-}
-
-export type ReconciliationStateManager = Pick<
-    WorkerStateManager,
-    'getNonTerminalTasks' | 'getTaskState' | 'updateTaskStateIfCurrent'
->;
-
-export interface TaskReconciliationSummary {
-    scanned: number;
-    fresh: number;
-    live: number;
-    queued: number;
-    finalized: number;
-    interrupted: number;
-    containersStopped: number;
-    locksCleared: number;
-    errors: number;
-}
-
-export interface TaskReconciliationOptions {
-    stateManager: ReconciliationStateManager;
-    queue: ReconciliationQueue;
-    redis: ReconciliationRedis;
-    staleAfterMs?: number;
-    now?: () => number;
-    findRunningContainer?: typeof findRunningDockerContainerForTask;
-    stopContainer?: typeof stopDockerContainer;
-    signal?: AbortSignal;
-    batchSize?: number;
-    concurrency?: number;
-    /** Maximum wall-clock time in which new reconciliation batches may start. */
-    timeBudgetMs?: number;
-    futureSkewAllowanceMs?: number;
-}
-
-export const DEFAULT_TASK_RECONCILIATION_STALE_MS = 90 * 1000;
-export const DEFAULT_TASK_RECONCILIATION_BATCH_SIZE = 100;
-export const DEFAULT_TASK_RECONCILIATION_CONCURRENCY = 4;
-export const DEFAULT_TASK_RECONCILIATION_TIME_BUDGET_MS = 30 * 1000;
-export const DEFAULT_TASK_FUTURE_SKEW_ALLOWANCE_MS = 5 * 60 * 1000;
-
-interface ReconciliationContext {
-    options: TaskReconciliationOptions;
-    summary: TaskReconciliationSummary;
-    findRunningContainer: typeof findRunningDockerContainerForTask;
-    stopContainer: typeof stopDockerContainer;
-}
+export {
+    DEFAULT_TASK_FUTURE_SKEW_ALLOWANCE_MS,
+    DEFAULT_TASK_RECONCILIATION_BATCH_SIZE,
+    DEFAULT_TASK_RECONCILIATION_CONCURRENCY,
+    DEFAULT_TASK_RECONCILIATION_STALE_MS,
+    DEFAULT_TASK_RECONCILIATION_TIME_BUDGET_MS,
+} from './taskStateReconciler.types.js';
+export type {
+    ReconciliationQueue,
+    ReconciliationRedis,
+    ReconciliationStateManager,
+    TaskReconciliationOptions,
+    TaskReconciliationSummary,
+} from './taskStateReconciler.types.js';
 
 const RELEASE_OWNED_PR_LOCK_SCRIPT = `
 local current = redis.call('get', KEYS[1])
@@ -410,17 +379,7 @@ export async function reconcileStaleTaskStates(
     const deadline = Date.now() + timeBudgetMs;
     const findRunningContainer = options.findRunningContainer ?? findRunningDockerContainerForTask;
     const stopContainer = options.stopContainer ?? stopDockerContainer;
-    const summary: TaskReconciliationSummary = {
-        scanned: 0,
-        fresh: 0,
-        live: 0,
-        queued: 0,
-        finalized: 0,
-        interrupted: 0,
-        containersStopped: 0,
-        locksCleared: 0,
-        errors: 0,
-    };
+    const summary = createTaskReconciliationSummary();
     const context = { options, summary, findRunningContainer, stopContainer };
     const seenTaskIds = new Set<string>();
 
