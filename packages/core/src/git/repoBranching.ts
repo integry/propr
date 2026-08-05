@@ -116,6 +116,8 @@ interface PushBranchOptions {
     remote?: string;
     rebaseOnNonFastForward?: boolean;
     signal?: AbortSignal;
+    /** Called with the exact local HEAD immediately before each remote push attempt. */
+    beforePush?: (commitHash: string) => Promise<void>;
 }
 
 export interface PushBranchResult {
@@ -160,7 +162,7 @@ async function getHeadCommitHash(git: SimpleGit): Promise<string | undefined> {
 }
 
 export async function pushBranch(worktreePath: string, branchName: string, options: PushBranchOptions = {}): Promise<PushBranchResult> {
-    const { repoUrl, authToken, remote = 'origin', rebaseOnNonFastForward = false, signal } = options;
+    const { repoUrl, authToken, remote = 'origin', rebaseOnNonFastForward = false, signal, beforePush } = options;
 
     signal?.throwIfAborted();
     const git = simpleGit({ baseDir: worktreePath, abort: signal });
@@ -192,6 +194,12 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
         signal?.throwIfAborted();
         await assertRemoteHeadIsAncestor(git, expectedRemoteHead, branchName);
         signal?.throwIfAborted();
+        if (beforePush) {
+            const commitHash = await getHeadCommitHash(git);
+            if (!commitHash) throw new Error(`Could not resolve HEAD before pushing ${branchName}`);
+            await beforePush(commitHash);
+            signal?.throwIfAborted();
+        }
         // A normal push asks receive-pack to update the exact advertised head
         // and rejects a concurrent change. Do not use force-with-lease here:
         // although it checks the head, it would also permit a non-fast-forward

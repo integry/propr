@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
-import { closeConnection, TaskStates, type TaskStateData, type TaskStateExpectation, type UpdateMetadata } from '@propr/core';
+import { closeConnection, hashTaskAttemptToken, TaskStates, type TaskStateData, type TaskStateExpectation, type UpdateMetadata } from '@propr/core';
 import {
     finalizePRCommentTaskFailure,
     finalizePRCommentTaskResult,
@@ -206,6 +206,33 @@ describe('PR comment task finalization', () => {
         );
 
         assert.equal(changed, false);
+        assert.equal(manager.updates.length, 0);
+    });
+
+    test('does not let an explicit current token mask stale result authority', async () => {
+        const generated = task(TaskStates.PROCESSING);
+        generated.prProcessingLockToken = 'successor-token';
+        const manager = stateManager(generated);
+
+        const staleRawToken = await finalizePRCommentTaskResult(
+            'task-1',
+            manager as never,
+            { status: 'complete', prProcessingLockToken: 'stale-token' },
+            { prProcessingLockToken: 'successor-token' },
+        );
+        const staleGeneration = await finalizePRCommentTaskResult(
+            'task-1',
+            manager as never,
+            {
+                status: 'complete',
+                prProcessingLockToken: 'successor-token',
+                prProcessingAttemptGeneration: hashTaskAttemptToken('stale-token'),
+            },
+            { prProcessingLockToken: 'successor-token' },
+        );
+
+        assert.equal(staleRawToken, false);
+        assert.equal(staleGeneration, false);
         assert.equal(manager.updates.length, 0);
     });
 

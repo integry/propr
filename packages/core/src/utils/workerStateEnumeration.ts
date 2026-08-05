@@ -163,7 +163,7 @@ export async function getProcessingTaskStates(
 export async function cleanupOldTaskStates(
     redis: StateMaintenanceRedis,
     keyPrefix: string,
-    revisionKeyPrefix: string,
+    _revisionKeyPrefix: string,
     maxAge: number,
 ): Promise<number> {
     const keys = await redis.keys(`${keyPrefix}*`);
@@ -178,8 +178,11 @@ export async function cleanupOldTaskStates(
             if (!cleanupStates.includes(state.state)) continue;
             const updatedAt = new Date(state.updatedAt).getTime();
             if (updatedAt >= cutoffTime) continue;
-            const taskKeySuffix = key.slice(keyPrefix.length);
-            await redis.del(key, `${revisionKeyPrefix}${taskKeySuffix}`);
+            // The revision is a longer-lived monotonic fence. Deleting it with
+            // the expiring state lets a recreated task restart at version 1,
+            // which live socket caches and SQL generation checks can reject as
+            // stale. Its own revisionExpiry bounds retention.
+            await redis.del(key);
             cleanedCount++;
             logger.debug({ taskId: state.taskId, state: state.state, age: Date.now() - updatedAt }, 'Cleaned up old task state');
         } catch (error) {

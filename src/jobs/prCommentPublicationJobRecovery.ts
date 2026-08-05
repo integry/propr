@@ -35,14 +35,15 @@ export async function resolvePRCommentJobContext(
     checkpoint: PRCommentPublicationCheckpoint | null,
     initialize: (job: Job<CommentJobData>) => Promise<PRJobContext>,
 ): Promise<PRJobContext> {
-    if (checkpoint) return buildPRCommentPublicationRecoveryContext(job);
+    if (checkpoint && checkpoint.stage !== 'push_pending') return buildPRCommentPublicationRecoveryContext(job);
     return await initialize(job);
 }
 
 export async function resumePRCommentPublicationJob(
-    checkpoint: PRCommentPublicationCheckpoint,
+    checkpoint: PRCommentPublicationCheckpoint | null,
     params: Omit<ResumePRCommentPublicationParams, 'beforeCompletion'> & { correlationId: string },
-): Promise<JobResult> {
+): Promise<JobResult | null> {
+    if (!checkpoint) return null;
     const { context, correlationId } = params;
     const postResult = await resumePRCommentPublication(checkpoint, {
         ...params,
@@ -60,6 +61,7 @@ export async function resumePRCommentPublicationJob(
             assertLease: params.assertLease,
         }),
     });
+    if (!postResult) return null;
     return {
         status: postResult.partial ? 'partial' : 'complete',
         commit: postResult.commitHash,

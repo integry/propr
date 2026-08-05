@@ -164,19 +164,26 @@ function finalizationAttemptMatches(
     values: {
         expectationToken?: string;
         optionToken?: string;
+        resultToken?: string;
         resultGeneration?: string;
-        expectedToken?: string;
         requiresMatchingToken: boolean;
     },
 ): boolean {
-    const { expectationToken, optionToken, resultGeneration, expectedToken, requiresMatchingToken } = values;
-    if (requiresMatchingToken && expectationToken !== undefined) {
-        const expectedGeneration = optionToken
-            ? hashTaskAttemptToken(optionToken)
-            : resultGeneration;
-        if (expectedGeneration !== hashTaskAttemptToken(expectationToken)) return false;
-    }
-    return expectedToken === undefined || expectationToken === expectedToken;
+    const { expectationToken, optionToken, resultToken, resultGeneration, requiresMatchingToken } = values;
+    const suppliedIdentifiers = [optionToken, resultToken, resultGeneration].filter(value => value !== undefined);
+
+    // Legacy task states have no attempt identity. They can accept only an
+    // equally unfenced legacy result; explicit authority cannot match an
+    // identity that is absent from the current state.
+    if (expectationToken === undefined) return suppliedIdentifiers.length === 0;
+    if (requiresMatchingToken && suppliedIdentifiers.length === 0) return false;
+
+    // These are independent claims of authority. Do not let a valid option
+    // token mask a stale raw token or hashed generation embedded in a result.
+    if (optionToken !== undefined && optionToken !== expectationToken) return false;
+    if (resultToken !== undefined && resultToken !== expectationToken) return false;
+    return resultGeneration === undefined
+        || resultGeneration === hashTaskAttemptToken(expectationToken);
 }
 
 async function resolveFinalizationExpectation(
@@ -194,7 +201,6 @@ async function resolveFinalizationExpectation(
     const resultGeneration = typeof resultRecord?.prProcessingAttemptGeneration === 'string'
         ? resultRecord.prProcessingAttemptGeneration
         : resultToken ? hashTaskAttemptToken(resultToken) : undefined;
-    const expectedToken = options.prProcessingLockToken ?? (completedResult ? resultToken : undefined);
     const requiresMatchingToken = completedResult !== undefined
         || options.prProcessingLockToken !== undefined
         || options.expectation === undefined;
@@ -203,8 +209,8 @@ async function resolveFinalizationExpectation(
     if (!finalizationAttemptMatches({
         expectationToken: expectation.prProcessingLockToken,
         optionToken: options.prProcessingLockToken,
+        resultToken,
         resultGeneration,
-        expectedToken,
         requiresMatchingToken,
     })) return null;
     return options.expectation ?? taskStateExpectation(expectation as TaskStateData);

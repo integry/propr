@@ -95,8 +95,8 @@ async function pushCommittedChanges(
     state: ReadyPostExecutionState,
     commitResult: NonNullable<Awaited<ReturnType<typeof commitChanges>>>,
     issueRef: { repoOwner: string; repoName: string },
-    options: { assertLease: () => Promise<void>; signal: AbortSignal },
-): Promise<boolean> {
+    options: { assertLease: () => Promise<void>; signal: AbortSignal; beforePush: (commitHash: string) => Promise<void> },
+): Promise<void> {
     await options.assertLease();
     const repoUrl = getRepoUrl(issueRef);
     const githubToken = await state.octokit.auth({ type: 'installation' }) as GitHubToken;
@@ -106,11 +106,9 @@ async function pushCommittedChanges(
         authToken: githubToken.token,
         rebaseOnNonFastForward: true,
         signal: options.signal,
+        beforePush: options.beforePush,
     });
-    if (pushResult.rebased && pushResult.commitHash) {
-        commitResult.commitHash = pushResult.commitHash;
-    }
-    return Boolean(pushResult.rebased && pushResult.commitHash);
+    if (pushResult.commitHash) commitResult.commitHash = pushResult.commitHash;
 }
 
 function buildUndoContext(params: UndoContextParams) {
@@ -181,49 +179,51 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     }
     if (commitResult?.filesChanged?.length) state.claudeResult.modifiedFiles = commitResult.filesChanged;
 
-    const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
     const reviewCommentIds = unprocessedReviewComments.map(comment => comment.id);
-    let prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, {
-        changesSummary,
-        commitMessage,
-        llm,
-        authorsText: state.authorsText,
-        undoContext,
-        taskUrl,
-        consumedReviewCommentIds: reviewCommentIds.length > 0 ? reviewCommentIds : undefined,
-    }, state.claudeResult);
+    const buildCurrentCompletionBody = async () => {
+        // Construct this only after commitResult carries the exact SHA that the
+        // corresponding push attempt will publish. This keeps the visible hash
+        // and the encoded /undo payload on the same generation after a rebase.
+        const undoContext = buildUndoContext({ commitResult, unprocessedComments: state.unprocessedComments, repoOwner, repoName, pullRequestNumber, branchName: state.worktreeInfo.branchName });
+        return await buildCompletionComment(commitResult, state.unprocessedComments, {
+            changesSummary,
+            commitMessage,
+            llm,
+            authorsText: state.authorsText,
+            undoContext,
+            taskUrl,
+            consumedReviewCommentIds: reviewCommentIds.length > 0 ? reviewCommentIds : undefined,
+        }, state.claudeResult);
+    };
+    const initialBody = commitResult ? '' : await buildCurrentCompletionBody();
     const publication = buildPublicationState({
         state,
-        body: prCommentBody,
+        body: initialBody,
         commitHash: commitResult?.commitHash,
         reviewCommentIds,
         partial,
         terminationReason,
     });
     if (commitResult) {
-        const rebased = await pushCommittedChanges(
+        await pushCommittedChanges(
             state,
             commitResult,
             { repoOwner, repoName },
-            { assertLease, signal },
+            {
+                assertLease,
+                signal,
+                beforePush: async commitHash => {
+                    commitResult.commitHash = commitHash;
+                    publication.commitHash = commitHash;
+                    publication.completionComment.body = await buildCurrentCompletionBody();
+                    await checkpointPRCommentPublication(params, publication, 'push_pending');
+                },
+            },
         );
         publication.commitHash = commitResult.commitHash;
-        // Persist immediately after the irreversible push. If a rebase changed
-        // the SHA, the prepared body is corrected in the next checkpoint.
+        // beforePush already made the commit and body internally consistent;
+        // this first post-push checkpoint is therefore immediately recoverable.
         await checkpointPRCommentPublication(params, publication, 'branch_pushed');
-        if (rebased) {
-            prCommentBody = await buildCompletionComment(commitResult, state.unprocessedComments, {
-                changesSummary,
-                commitMessage,
-                llm,
-                authorsText: state.authorsText,
-                undoContext,
-                taskUrl,
-                consumedReviewCommentIds: reviewCommentIds.length > 0 ? reviewCommentIds : undefined,
-            }, state.claudeResult);
-            publication.completionComment.body = prCommentBody;
-            await checkpointPRCommentPublication(params, publication, 'branch_pushed');
-        }
     } else {
         await checkpointPRCommentPublication(params, publication, 'branch_pushed');
     }

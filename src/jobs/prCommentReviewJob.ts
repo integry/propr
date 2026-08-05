@@ -274,6 +274,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     });
 
     const realComments = filterRealComments(state.unprocessedComments);
+    const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr-dev[bot]';
     const commentIdsSuffix = realComments.length > 0
         ? `\n\n---\n_Processing comment ID${realComments.length > 1 ? 's' : ''}: ${realComments.map(c => String(c.id)).join(', ')}_`
         : '';
@@ -283,6 +284,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const previousStartingComment = startedEvidence
         ? validation.prCommentsForValidation?.find(comment => (
             comment.user.type === 'Bot'
+            && comment.user.login.toLowerCase() === botUsername.toLowerCase()
             && comment.body?.includes('**Starting AI Code Review**')
             && comment.body.includes(startedEvidence)
         ))
@@ -361,7 +363,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             allComments,
             taskId,
             assignment,
-            assignmentIndex,
+            { assignmentIndex, botUsername },
         );
         if (recoveredReview) {
             correlatedLogger.warn(

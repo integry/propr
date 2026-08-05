@@ -35,8 +35,8 @@ export async function schedulePRCommentCleanupRecovery(options: CleanupRecoveryO
     const ownerSlug = repoOwner.replace(/[^a-zA-Z0-9-]/g, '-');
     const repoSlug = repoName.replace(/[^a-zA-Z0-9-]/g, '-');
     const recoveryCorrelationId = generateCorrelationId();
-    const recoverySuffix = recoveryCorrelationId.replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 16);
-    const recoveryJobId = `pr-comments-cleanup-recovery-${ownerSlug}-${repoSlug}-${pullRequestNumber}-${attemptGeneration.slice(0, 16)}-${recoverySuffix}`;
+    const generationSlug = attemptGeneration.replace(/[^a-zA-Z0-9-]/g, '-');
+    const recoveryJobId = `pr-comments-cleanup-recovery-${ownerSlug}-${repoSlug}-${pullRequestNumber}-${generationSlug}`;
     await issueQueue.add('processPullRequestComment', {
         pullRequestNumber,
         comments: [],

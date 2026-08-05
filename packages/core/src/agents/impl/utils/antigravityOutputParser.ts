@@ -51,11 +51,13 @@ function extractAntigravityResult(cleanedOutput: string): string | undefined {
     return result || undefined;
 }
 
+const ANTIGRAVITY_TRANSCRIPT_SOURCES = new Set(['MODEL', 'USER_EXPLICIT']);
+
 function isTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent {
     if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
     const candidate = event as Partial<AntigravityTranscriptEvent>;
     return typeof candidate.source === 'string'
-        && candidate.source.trim().length > 0
+        && ANTIGRAVITY_TRANSCRIPT_SOURCES.has(candidate.source.trim().toUpperCase())
         && typeof candidate.type === 'string'
         && candidate.type.trim().length > 0
         && !['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(candidate.type.toLowerCase())

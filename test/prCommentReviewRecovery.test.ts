@@ -24,13 +24,17 @@ test('review assignment markers are deterministic and distinguish assignment ind
 test('recovers only bot-published assignment evidence', () => {
     const marker = buildReviewAssignmentMarker('task-1748', assignment, 0, 'success');
     const userResult = recoverPublishedReview([
-        { user: { type: 'User' }, body: marker, html_url: 'https://example.test/user' },
-    ], 'task-1748', assignment, 0);
+        { user: { login: 'owner', type: 'User' }, body: marker, html_url: 'https://example.test/user' },
+    ], 'task-1748', assignment, { assignmentIndex: 0, botUsername: 'propr-dev[bot]' });
+    const otherBotResult = recoverPublishedReview([
+        { user: { login: 'other-app[bot]', type: 'Bot' }, body: marker, html_url: 'https://example.test/other-bot' },
+    ], 'task-1748', assignment, { assignmentIndex: 0, botUsername: 'propr-dev[bot]' });
     const botResult = recoverPublishedReview([
-        { user: { type: 'Bot' }, body: `review\n${marker}`, html_url: 'https://example.test/bot' },
-    ], 'task-1748', assignment, 0);
+        { user: { login: 'propr-dev[bot]', type: 'Bot' }, body: `review\n${marker}`, html_url: 'https://example.test/bot' },
+    ], 'task-1748', assignment, { assignmentIndex: 0, botUsername: 'propr-dev[bot]' });
 
     assert.equal(userResult, null);
+    assert.equal(otherBotResult, null);
     assert.equal(botResult?.recovered, true);
     assert.equal(botResult?.analysisResult.success, true);
     assert.equal(botResult?.commentUrl, 'https://example.test/bot');

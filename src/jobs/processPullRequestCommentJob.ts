@@ -402,10 +402,8 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     let preserveJobOutcome = false;
 
     try {
-        if (publicationCheckpoint) {
-            preserveJobOutcome = true;
-            return await resumePRCommentPublicationJob(publicationCheckpoint, { job, taskId, stateManager, context, llm, redisClient, correlationId, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal });
-        }
+        const resumedPublication = await resumePRCommentPublicationJob(publicationCheckpoint, { job, taskId, stateManager, context, llm, redisClient, correlationId, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal });
+        if (resumedPublication) { preserveJobOutcome = true; return resumedPublication; }
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
             const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal }), attemptGeneration);

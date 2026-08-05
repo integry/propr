@@ -20,7 +20,7 @@ export interface ReviewResult {
 interface PublishedReviewComment {
     body: string | null;
     html_url?: string;
-    user: { type?: string };
+    user: { login: string; type?: string };
 }
 
 export function buildReviewAssignmentMarker(
@@ -39,12 +39,15 @@ export function recoverPublishedReview(
     comments: PublishedReviewComment[],
     taskId: string,
     assignment: ReviewAssignment,
-    assignmentIndex: number,
+    options: { assignmentIndex: number; botUsername: string },
 ): ReviewResult | null {
+    const { assignmentIndex, botUsername } = options;
     for (const status of ['success', 'error'] as const) {
         const marker = buildReviewAssignmentMarker(taskId, assignment, assignmentIndex, status);
         const comment = comments.find(candidate => (
-            candidate.user.type === 'Bot' && candidate.body?.includes(marker)
+            candidate.user.type === 'Bot'
+            && candidate.user.login.toLowerCase() === botUsername.toLowerCase()
+            && candidate.body?.includes(marker)
         ));
         if (!comment) continue;
         const success = status === 'success';

@@ -12,6 +12,7 @@ import {
 } from '@propr/core';
 import { schedulePRCommentCleanupRecovery } from './prCommentJobUtils.js';
 import {
+    clearPRCommentPublicationCheckpoint,
     persistPRCommentPublicationCheckpoint,
     persistPRCommentRemoteOutcome,
     type PRCommentPublicationCheckpoint,
@@ -54,11 +55,12 @@ export interface ResumePRCommentPublicationParams extends PRCommentPublicationEx
 }
 
 const PUBLICATION_STAGE_INDEX: Record<PRCommentPublicationStage, number> = {
-    branch_pushed: 0,
-    completion_comment_published: 1,
-    review_comments_processed: 2,
-    continuation_handled: 3,
-    commit_hash_persisted: 4,
+    push_pending: 0,
+    branch_pushed: 1,
+    completion_comment_published: 2,
+    review_comments_processed: 3,
+    continuation_handled: 4,
+    commit_hash_persisted: 5,
 };
 
 function buildPublicationResult(
@@ -118,7 +120,8 @@ async function persistCommitHash(
         correlatedLogger.info({ taskId, commitHash }, 'Saved commit hash to tasks table');
     } catch (dbError) {
         if (dbError instanceof SupersededTaskAttemptError) throw dbError;
-        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database');
+        correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to save commit hash to database; publication recovery will retry');
+        throw dbError;
     }
 }
 
@@ -245,13 +248,71 @@ async function adoptPublicationCheckpoint(
     });
 }
 
+function isNotFoundError(error: unknown): boolean {
+    return (error as { status?: unknown }).status === 404;
+}
+
+async function remoteBranchContainsCommit(
+    checkpoint: PRCommentPublicationCheckpoint,
+    params: ResumePRCommentPublicationParams,
+): Promise<boolean> {
+    const commitHash = checkpoint.result.commit as string;
+    const octokit = await getAuthenticatedOctokit();
+    await params.assertLease();
+    let remoteHead: string;
+    try {
+        const response = await octokit.request('GET /repos/{owner}/{repo}/git/ref/{ref}', {
+            owner: params.context.repoOwner,
+            repo: params.context.repoName,
+            ref: `heads/${checkpoint.branchName}`,
+            request: { signal: params.signal },
+        }) as { data: { object: { sha: string } } };
+        remoteHead = response.data.object.sha;
+    } catch (error) {
+        if (isNotFoundError(error)) return false;
+        throw error;
+    }
+    if (remoteHead === commitHash) return true;
+
+    try {
+        const comparison = await octokit.request('GET /repos/{owner}/{repo}/compare/{basehead}', {
+            owner: params.context.repoOwner,
+            repo: params.context.repoName,
+            basehead: `${commitHash}...${checkpoint.branchName}`,
+            request: { signal: params.signal },
+        }) as { data: { status: string } };
+        return comparison.data.status === 'ahead' || comparison.data.status === 'identical';
+    } catch (error) {
+        if (isNotFoundError(error)) return false;
+        throw error;
+    }
+}
+
 /** Resumes publication side effects from the last generation-fenced checkpoint. */
 export async function resumePRCommentPublication(
     checkpoint: PRCommentPublicationCheckpoint,
     params: ResumePRCommentPublicationParams,
-): Promise<{ commitHash?: string; partial: boolean }> {
+): Promise<{ commitHash?: string; partial: boolean } | null> {
     const { context, taskId, assertLease, signal } = params;
     const publication = publicationFromCheckpoint(checkpoint);
+
+    if (checkpoint.stage === 'push_pending') {
+        const branchContainsCommit = await remoteBranchContainsCommit(checkpoint, params);
+        await assertLease();
+        if (!branchContainsCommit) {
+            await clearPRCommentPublicationCheckpoint(params.redisClient, {
+                taskId,
+                lockKey: `lock:pr:${context.repoOwner}:${context.repoName}:${context.pullRequestNumber}`,
+                lockToken: params.prProcessingLockToken,
+            });
+            context.correlatedLogger.warn(
+                { taskId, commitHash: publication.commitHash, branchName: publication.branchName },
+                'Discarded an uncommitted pre-push checkpoint; the agent attempt will rerun',
+            );
+            return null;
+        }
+        checkpoint = { ...checkpoint, stage: 'branch_pushed' };
+    }
     await adoptPublicationCheckpoint(checkpoint, params);
 
     let completedStage = checkpoint.stage;

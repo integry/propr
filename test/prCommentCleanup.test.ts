@@ -73,6 +73,7 @@ const {
     cleanupJob,
     cleanupJobBeforeStoppingHeartbeat,
     handleJobError,
+    schedulePRCommentCleanupRecovery,
     stopAbandonedPRTaskContainer,
 } = await import('../src/jobs/prCommentJobUtils.js');
 
@@ -120,6 +121,23 @@ test('uses only a one-way attempt generation in worktree names', () => {
 
     assert.match(worktreeName, /^pr-1748-followup-/);
     assert.doesNotMatch(worktreeName, /raw-secret-uuid|correlation-visible/);
+});
+
+test('uses a deterministic cleanup-recovery job ID for one attempt generation', async () => {
+    await schedulePRCommentCleanupRecovery({
+        repoOwner: 'integry',
+        repoName: 'propr',
+        pullRequestNumber: 1748,
+        jobBranchName: 'feature',
+        jobLlm: null,
+        attemptGeneration: 'generation-hash',
+        correlatedLogger: cleanupOptions().correlatedLogger,
+    });
+
+    assert.equal(
+        issueQueueAdd.mock.calls[0].arguments[2].jobId,
+        'pr-comments-cleanup-recovery-integry-propr-1748-generation-hash',
+    );
 });
 
 test('stops an abandoned task container before allowing a successor attempt', async () => {

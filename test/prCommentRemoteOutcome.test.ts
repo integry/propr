@@ -1,12 +1,26 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import {
+    clearPRCommentPublicationCheckpoint,
     getPRCommentRemoteOutcomeKey,
     loadPRCommentPublicationCheckpoint,
     loadPRCommentRemoteOutcome,
     persistPRCommentPublicationCheckpoint,
     persistPRCommentRemoteOutcome,
 } from '../src/jobs/prCommentRemoteOutcome.js';
+
+test('clears a pre-push checkpoint only with the live lease', async () => {
+    const evalMock = mock.fn(async () => 1);
+    await clearPRCommentPublicationCheckpoint({ eval: evalMock } as never, {
+        taskId: 'task-1748',
+        lockKey: 'lock:pr:integry:propr:1748',
+        lockToken: 'attempt-token',
+    });
+
+    assert.equal(evalMock.mock.calls[0].arguments[2], 'lock:pr:integry:propr:1748');
+    assert.equal(evalMock.mock.calls[0].arguments[3], getPRCommentRemoteOutcomeKey('task-1748'));
+    assert.equal(evalMock.mock.calls[0].arguments[4], 'attempt-token');
+});
 
 test('persists a remote outcome with the live lease and a bounded TTL', async () => {
     const evalMock = mock.fn(async () => 1);
@@ -104,6 +118,22 @@ test('rejects a publication checkpoint whose nested result belongs to another ge
             stage: 'branch_pushed',
             prProcessingAttemptGeneration: 'generation-new',
             result: { status: 'complete', prProcessingAttemptGeneration: 'generation-old' },
+            branchName: 'feature-branch',
+            completionComment: { id: 42, body: 'completed' },
+            reviewCommentIds: [],
+        }),
+    }, 'task-1748');
+
+    assert.equal(loaded, null);
+});
+
+test('requires a commit hash for a pre-push publication checkpoint', async () => {
+    const loaded = await loadPRCommentPublicationCheckpoint({
+        get: async () => JSON.stringify({
+            kind: 'implementation-publication',
+            stage: 'push_pending',
+            prProcessingAttemptGeneration: 'generation-new',
+            result: { status: 'complete', prProcessingAttemptGeneration: 'generation-new' },
             branchName: 'feature-branch',
             completionComment: { id: 42, body: 'completed' },
             reviewCommentIds: [],

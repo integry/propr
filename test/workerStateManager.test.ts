@@ -2423,7 +2423,7 @@ test('cleanupOldTasks removes tasks older than maxAge', async () => {
     assert.strictEqual(cleanedCount, 1);
     assert.strictEqual(mockRedisInstance.del.mock.calls.length, 1);
     assert.strictEqual(mockRedisInstance.del.mock.calls[0].arguments[0], 'test:worker:state:task-old-completed');
-    assert.strictEqual(mockRedisInstance.del.mock.calls[0].arguments[1], 'revision:test:worker:state:task-old-completed');
+    assert.strictEqual(mockRedisInstance.del.mock.calls[0].arguments.length, 1, 'durable revision fence must be retained');
 
     await stateManager.close();
 });
