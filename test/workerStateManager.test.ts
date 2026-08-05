@@ -36,7 +36,7 @@ await mock.module('ioredis', {
 // Mock database with proper chain methods
 const mockDbTasksInsert = mock.fn(() => ({
     onConflict: mock.fn(() => ({
-        ignore: mock.fn(async () => [1])
+        merge: mock.fn(async () => [1])
     }))
 }));
 
@@ -94,7 +94,7 @@ await mock.module('../packages/core/src/utils/logger.js', {
 });
 
 // Import after mocks are set up
-const { WorkerStateManager, TaskStates } = await import('../packages/core/src/utils/workerStateManager.js');
+const { SupersededTaskAttemptError, WorkerStateManager, TaskStates } = await import('../packages/core/src/utils/workerStateManager.js');
 import type { IssueRef, TaskStateData } from '../packages/core/src/utils/workerStateManager.types.js';
 
 // Test configuration
@@ -161,18 +161,56 @@ test('getNonTerminalTasks safely includes legacy PR-comment records without a ty
             comments: [{ id: 2, body: 'imported issue comment' }],
         },
     };
+    const emptyComments = {
+        ...legacyPRComment,
+        taskId: '43',
+        issueRef: { ...legacyPRComment.issueRef, comments: [] },
+    };
     mockRedisInstance.scan.mock.mockImplementation(async () => [
         '0',
-        [`${TEST_KEY_PREFIX}42`, `${TEST_KEY_PREFIX}legacy-issue`],
+        [`${TEST_KEY_PREFIX}42`, `${TEST_KEY_PREFIX}43`, `${TEST_KEY_PREFIX}legacy-issue`],
     ]);
     mockRedisInstance.get.mock.mockImplementation(async key => (
-        key.endsWith('legacy-issue') ? JSON.stringify(unrelated) : JSON.stringify(legacyPRComment)
+        key.endsWith('legacy-issue')
+            ? JSON.stringify(unrelated)
+            : key.endsWith('43') ? JSON.stringify(emptyComments) : JSON.stringify(legacyPRComment)
     ));
 
     const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
     const result = await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'] });
 
     assert.deepStrictEqual(result.map(task => task.taskId), ['42']);
+    await stateManager.close();
+});
+
+test('getNonTerminalTasks maintains independent cursors for task-type filters', async () => {
+    const prTask: TaskStateData = {
+        taskId: 'pr-task',
+        issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        correlationId: 'pr',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    const issueTask = { ...prTask, taskId: 'issue-task', issueRef: { ...prTask.issueRef, type: 'issue' } };
+    mockRedisInstance.scan.mock.resetCalls();
+    mockRedisInstance.scan.mock.mockImplementation(async (cursor: string) => {
+        return cursor === '0'
+            ? ['17', [`${TEST_KEY_PREFIX}${prTask.taskId}`, `${TEST_KEY_PREFIX}${issueTask.taskId}`]]
+            : ['0', []];
+    });
+    mockRedisInstance.get.mock.mockImplementation(async key => (
+        key.endsWith(prTask.taskId) ? JSON.stringify(prTask) : JSON.stringify(issueTask)
+    ));
+
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+    await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'], limit: 1 });
+    await stateManager.getNonTerminalTasks({ taskTypes: ['issue'], limit: 1 });
+
+    assert.strictEqual(mockRedisInstance.scan.mock.calls[0].arguments[0], '0');
+    assert.strictEqual(mockRedisInstance.scan.mock.calls[1].arguments[0], '0');
     await stateManager.close();
 });
 
@@ -3071,5 +3109,52 @@ test('fenced creation and bounded CAS retries reject stale attempts predictably'
     );
 
     assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 8);
+    await stateManager.close();
+});
+
+test('fenced task recreation continues after the previous task revision', async () => {
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 8);
+    mockPublishTaskUpdate.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const created = await stateManager.createTaskState(
+        'task-replacement-revision',
+        { number: 631, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        'replacement-correlation',
+        { prProcessingLockToken: 'replacement-token', prProcessingLockKey: 'lock:pr:owner:repo:631' },
+    );
+
+    assert.strictEqual(created.version, 8);
+    await stateManager.close();
+});
+
+test('fenced task mutations throw when a successor owns the generation', async () => {
+    const successor: TaskStateData = {
+        taskId: 'task-successor-fence',
+        issueRef: { number: 632, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        correlationId: 'successor',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
+        version: 9,
+        attempts: 0,
+        history: [],
+        prProcessingLockToken: 'successor-token',
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(successor));
+    mockRedisInstance.eval.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    await assert.rejects(
+        stateManager.updateTaskState(
+            successor.taskId,
+            TaskStates.CLAUDE_EXECUTION,
+            {},
+            'stale-token',
+        ),
+        SupersededTaskAttemptError,
+    );
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 0);
     await stateManager.close();
 });

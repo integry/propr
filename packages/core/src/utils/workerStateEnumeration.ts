@@ -27,6 +27,7 @@ export function isPRCommentTaskState(state: TaskStateData): boolean {
             && Number.isInteger(state.issueRef.number)
             && state.issueRef.number > 0
             && Array.isArray(state.issueRef.comments)
+            && state.issueRef.comments.length > 0
             && state.issueRef.comments.every(comment => (
                 comment !== null
                 && typeof comment === 'object'

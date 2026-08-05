@@ -21,6 +21,14 @@ import {
 
 export { TaskStates, type TaskState, type IssueRef };
 
+/** Raised when a task mutation is attempted by an execution that no longer owns the task generation. */
+export class SupersededTaskAttemptError extends Error {
+    constructor(taskId: string) {
+        super(`PR processing attempt was superseded for taskId: ${taskId}`);
+        this.name = 'SupersededTaskAttemptError';
+    }
+}
+
 /**
  * Worker state manager for persistent task state tracking
  */
@@ -28,7 +36,7 @@ export class WorkerStateManager {
     private redis: InstanceType<typeof Redis>;
     private keyPrefix: string;
     private stateExpiry: number;
-    private nonTerminalScanCursor = '0';
+    private nonTerminalScanCursors = new Map<string, string>();
     private persistenceTails = new Map<string, Promise<void>>();
 
     constructor(options: WorkerStateManagerOptions = {}) {
@@ -73,7 +81,7 @@ export class WorkerStateManager {
         };
         const key = this.getTaskKey(taskId);
         if (options.prProcessingLockToken && options.prProcessingLockKey) {
-            const created = await this.redis.eval(
+            const createdVersion = await this.redis.eval(
                 CREATE_FENCED_TASK_STATE_SCRIPT,
                 2,
                 key,
@@ -82,9 +90,10 @@ export class WorkerStateManager {
                 this.stateExpiry,
                 JSON.stringify(state),
             );
-            if (Number(created) !== 1) {
+            if (Number(createdVersion) < 1) {
                 throw new Error(`PR processing attempt no longer owns its lease for taskId: ${taskId}`);
             }
+            state.version = Number(createdVersion);
         } else {
             await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
         }
@@ -118,7 +127,9 @@ export class WorkerStateManager {
 
             const state: TaskStateData = JSON.parse(stateJson);
             if (expectedPrProcessingLockToken !== undefined
-                && state.prProcessingLockToken !== expectedPrProcessingLockToken) return state;
+                && state.prProcessingLockToken !== expectedPrProcessingLockToken) {
+                throw new SupersededTaskAttemptError(taskId);
+            }
             // Terminal state is monotonic. A retry is the sole intentional path
             // back into processing and must opt in explicitly.
             if (!canTransitionTaskState(state.state, newState, metadata)) return state;
@@ -230,7 +241,9 @@ export class WorkerStateManager {
 
             state = JSON.parse(stateJson) as TaskStateData;
             if (expectedPrProcessingLockToken !== undefined
-                && state.prProcessingLockToken !== expectedPrProcessingLockToken) return state;
+                && state.prProcessingLockToken !== expectedPrProcessingLockToken) {
+                throw new SupersededTaskAttemptError(taskId);
+            }
             state.issueRef = { ...state.issueRef, ...issueRefPatch };
             state.updatedAt = new Date().toISOString();
             state.version = (state.version ?? 0) + 1;
@@ -325,7 +338,9 @@ export class WorkerStateManager {
 
             const state: TaskStateData = JSON.parse(stateJson);
             if (expectedPrProcessingLockToken !== undefined
-                && state.prProcessingLockToken !== expectedPrProcessingLockToken) return state;
+                && state.prProcessingLockToken !== expectedPrProcessingLockToken) {
+                throw new SupersededTaskAttemptError(taskId);
+            }
             const historyIndex = state.history.findLastIndex(h => h.state === historyState);
 
             if (historyIndex < 0) {
@@ -431,13 +446,16 @@ export class WorkerStateManager {
      * reconciler to repair state after an unclean restart.
      */
     async getNonTerminalTasks(filter: NonTerminalTaskFilter = {}): Promise<TaskStateData[]> {
+        const cursorKey = filter.taskTypes?.length
+            ? [...filter.taskTypes].sort().join(',')
+            : '*';
         const result = await scanNonTerminalTaskStates(
             this.redis,
             this.keyPrefix,
             filter,
-            this.nonTerminalScanCursor,
+            this.nonTerminalScanCursors.get(cursorKey) ?? '0',
         );
-        this.nonTerminalScanCursor = result.nextCursor;
+        this.nonTerminalScanCursors.set(cursorKey, result.nextCursor);
         return result.tasks;
     }
 

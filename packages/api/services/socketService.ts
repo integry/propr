@@ -32,6 +32,15 @@ export interface QueueDependencies {
   db: Knex;
 }
 
+export function shouldBroadcastTaskUpdate(
+  latestVersion: number | undefined,
+  incomingVersion: number | undefined,
+): boolean {
+  if (latestVersion === undefined) return true;
+  if (incomingVersion === undefined) return false;
+  return incomingVersion >= latestVersion;
+}
+
 /**
  * SocketService manages WebSocket connections and Redis pub/sub subscriptions.
  * It subscribes to Redis channels and broadcasts events to connected WebSocket clients.
@@ -251,9 +260,11 @@ export class SocketService {
   }
 
   private handleTaskUpdate(payload: TaskUpdatePayload): void {
+    const latestVersion = this.taskRevisions.get(payload.taskId);
+    // During rolling upgrades, legacy events may be accepted until a
+    // versioned producer establishes the ordered stream for this task.
+    if (!shouldBroadcastTaskUpdate(latestVersion, payload.version)) return;
     if (payload.version !== undefined) {
-      const latestVersion = this.taskRevisions.get(payload.taskId) ?? -1;
-      if (payload.version < latestVersion) return;
       this.taskRevisions.delete(payload.taskId);
       this.taskRevisions.set(payload.taskId, payload.version);
       if (this.taskRevisions.size > 10_000) {

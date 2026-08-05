@@ -17,6 +17,7 @@ import {
     DEFAULT_TASK_RECONCILIATION_BATCH_SIZE,
     DEFAULT_TASK_RECONCILIATION_CONCURRENCY,
     DEFAULT_TASK_RECONCILIATION_STALE_MS,
+    DEFAULT_TASK_RECONCILIATION_TIME_BUDGET_MS,
     reconcileStaleTaskStates,
 } from './taskStateReconciler.js';
 import { readBoundedIntegerEnv } from './config/numericEnv.js';
@@ -119,12 +120,16 @@ export async function runWithTaskReconciliationLease(
     } finally {
         clearInterval(renewalInterval);
         await renewal;
-        await redis.eval(
-            RELEASE_RECONCILIATION_LEASE_SCRIPT,
-            1,
-            RECONCILIATION_LEASE_KEY,
-            token,
-        );
+        try {
+            await redis.eval(
+                RELEASE_RECONCILIATION_LEASE_SCRIPT,
+                1,
+                RECONCILIATION_LEASE_KEY,
+                token,
+            );
+        } catch (releaseError) {
+            logger.warn({ error: (releaseError as Error).message }, 'Failed to release task reconciliation lease');
+        }
     }
     return completed && !leaseController.signal.aborted;
 }
@@ -243,7 +248,12 @@ export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<
         min: 1,
         max: 32,
     });
-    const leaseTtlMs = Math.max(intervalMs * 2, 2 * 60 * 1000);
+    const timeBudgetMs = readBoundedIntegerEnv('TASK_RECONCILIATION_TIME_BUDGET_MS', {
+        fallback: DEFAULT_TASK_RECONCILIATION_TIME_BUDGET_MS,
+        min: 100,
+        max: 5 * 60 * 1000,
+    });
+    const leaseTtlMs = 2 * 60 * 1000;
     let inFlight: Promise<void> | null = null;
     let closing = false;
     const shutdownController = new AbortController();
@@ -259,6 +269,7 @@ export async function startWorkerTaskStateRecovery(worker: MainWorker): Promise<
                 staleAfterMs,
                 batchSize,
                 concurrency,
+                timeBudgetMs,
                 signal,
             });
             logger.info(summary, 'Task state reconciliation completed');

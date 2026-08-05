@@ -25,6 +25,13 @@ export const PR_PROCESSING_LOCK_TTL_SECONDS = readLockTtlSeconds();
 
 export type PRProcessingLockRedisClient = Pick<Redis, 'set' | 'eval'>;
 
+export class PRProcessingLeaseLostError extends Error {
+    constructor(message: string = 'PR processing attempt lost its renewable lease', options?: ErrorOptions) {
+        super(message, options);
+        this.name = 'PRProcessingLeaseLostError';
+    }
+}
+
 interface LockHeartbeatOptions {
     redisClient: PRProcessingLockRedisClient;
     lockKey: string;
@@ -47,6 +54,10 @@ if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
 end
 return 0
+`;
+
+const ASSERT_LOCK_SCRIPT = `
+return redis.call('get', KEYS[1]) == ARGV[1] and 1 or 0
 `;
 
 export function createPRProcessingLockToken(correlationId: string): string {
@@ -80,6 +91,15 @@ export async function releasePRProcessingLock(
 ): Promise<boolean> {
     const result = await redisClient.eval(RELEASE_LOCK_SCRIPT, 1, lockKey, lockToken);
     return Number(result) === 1;
+}
+
+export async function assertPRProcessingLock(
+    redisClient: PRProcessingLockRedisClient,
+    lockKey: string,
+    lockToken: string,
+): Promise<void> {
+    const result = await redisClient.eval(ASSERT_LOCK_SCRIPT, 1, lockKey, lockToken);
+    if (Number(result) !== 1) throw new PRProcessingLeaseLostError();
 }
 
 export function startPRProcessingLockHeartbeat(options: LockHeartbeatOptions): () => Promise<void> {

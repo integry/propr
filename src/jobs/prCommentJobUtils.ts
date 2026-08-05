@@ -302,7 +302,8 @@ export interface CleanupOptions {
 
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
     const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
-    if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
+    const releasedLock = await releasePRProcessingLock(redisClient, lockKey, lockToken);
+    if (releasedLock) {
         correlatedLogger.debug('Released PR processing lock');
     }
 
@@ -313,6 +314,8 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
             correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
         }
     }
+
+    if (!releasedLock) return;
 
     try {
         const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);

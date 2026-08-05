@@ -1,6 +1,7 @@
 import { db } from '../db/connection.js';
 import { getEventPublisher } from './eventPublisher.js';
 import logger from './logger.js';
+import { hashTaskAttemptToken } from './taskAttemptGeneration.js';
 import {
     TaskStates,
     type TaskState,
@@ -20,8 +21,18 @@ export const CREATE_FENCED_TASK_STATE_SCRIPT = `
 if redis.call('get', KEYS[2]) ~= ARGV[1] then
     return 0
 end
-redis.call('setex', KEYS[1], ARGV[2], ARGV[3])
-return 1
+local version = 1
+local current = redis.call('get', KEYS[1])
+if current then
+    local decoded, existing = pcall(cjson.decode, current)
+    if decoded and tonumber(existing.version) then
+        version = tonumber(existing.version) + 1
+    end
+end
+local next = cjson.decode(ARGV[3])
+next.version = version
+redis.call('setex', KEYS[1], ARGV[2], cjson.encode(next))
+return version
 `;
 
 export const MAX_CAS_ATTEMPTS = 8;
@@ -107,8 +118,15 @@ export async function persistTaskStateCreation(state: TaskStateData): Promise<vo
             model_name: state.issueRef.modelName ?? null,
             created_at: state.createdAt,
             initial_job_data: JSON.stringify(state.issueRef),
+            attempt_generation: state.prProcessingLockToken
+                ? hashTaskAttemptToken(state.prProcessingLockToken)
+                : null,
         };
-        await db('tasks').insert(taskData).onConflict('task_id').ignore();
+        await db('tasks').insert(taskData).onConflict('task_id').merge({
+            correlation_id: taskData.correlation_id,
+            initial_job_data: taskData.initial_job_data,
+            attempt_generation: taskData.attempt_generation,
+        });
         await db('task_history').insert({
             task_id: taskId,
             state: TaskStates.PENDING,

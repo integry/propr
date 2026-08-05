@@ -38,22 +38,25 @@ export async function checkUltrafixReadiness(
 
 export async function handleUltrafixContinuation(
     action: UltrafixAction,
-    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string; prProcessingLockToken?: string }
+    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string; prProcessingLockToken?: string; assertLease?: () => Promise<void> }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;
-    const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken } = params;
+    const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken, assertLease } = params;
     try {
+        await assertLease?.();
         const continuationResult = await continueUltrafixLoop({
             owner: repoOwner, repo: repoName, pullRequestNumber, completedAction: action,
             ultrafixMeta: job.data.ultrafixMeta!, redisClient, correlatedLogger, correlationId,
             currentJobId: job.id,
         });
+        await assertLease?.();
         correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
         await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), {
             correlatedLogger,
             prProcessingLockToken,
         });
     } catch (contErr) {
+        await assertLease?.();
         correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, `Ultrafix loop continuation failed after ${action}`);
     }
 }

@@ -15,9 +15,7 @@ import { calculateReviewCost, fetchReviewContext, type PRData } from './reviewCo
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
-import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
-import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
-import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import { handleUltrafixContinuation, resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 import {
     buildDeterministicPrTaskSubtitle,
     buildPrTaskTitle,
@@ -77,6 +75,7 @@ export interface ExecuteReviewParams {
     state: ProcessingState;
     redisClient: Redis;
     prProcessingLockToken: string;
+    assertLease: () => Promise<void>;
     validatePRAndComments: (octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }) => Promise<{
         skip: boolean;
         reason?: string;
@@ -170,13 +169,14 @@ interface RunReviewsContext {
     reviewPromptOverride: string;
     reasoningLevel?: ReasoningLevel;
     correlatedLogger: Logger;
+    assertLease: () => Promise<void>;
 }
 
 async function runSingleReview(
     assignment: ReviewAssignment,
     ctx: RunReviewsContext
 ): Promise<ReviewResult> {
-    const { registry, octokit, pullRequestNumber, repoOwner, repoName, taskId, taskUrl, correlatedLogger } = ctx;
+    const { registry, octokit, pullRequestNumber, repoOwner, repoName, taskId, taskUrl, correlatedLogger, assertLease } = ctx;
     const { agentAlias, model, label } = assignment;
     correlatedLogger.info({ pullRequestNumber, agentAlias, model, label }, 'Starting review analysis');
 
@@ -194,7 +194,9 @@ async function runSingleReview(
     });
 
     try {
+        await assertLease();
         const analysisResult = await agent.analyze(reviewPrompt, { model, taskId, prNumber: pullRequestNumber, repository: `${repoOwner}/${repoName}`, executionType: 'pr-review', reasoningLevel: ctx.reasoningLevel });
+        await assertLease();
         correlatedLogger.info({
             pullRequestNumber, model: analysisResult.modelUsed, success: analysisResult.success,
             executionTimeMs: analysisResult.executionTimeMs, responseLength: analysisResult.response.length,
@@ -205,12 +207,14 @@ async function runSingleReview(
             ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles, costUsd })
             : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
 
+        await assertLease();
         const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
         });
 
         return { assignment, analysisResult, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt };
     } catch (reviewError) {
+        await assertLease();
         const errorMsg = (reviewError as Error).message;
         correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');
 
@@ -254,12 +258,13 @@ async function recordReviewMetrics(
 
 async function updateReviewCompletionComment(
     state: ProcessingState, reviewResults: ReviewResult[],
-    options: { repoOwner: string; repoName: string; taskUrl: string; correlatedLogger: Logger }
+    options: { repoOwner: string; repoName: string; taskUrl: string; correlatedLogger: Logger; assertLease: () => Promise<void> }
 ): Promise<void> {
-    const { repoOwner, repoName, taskUrl, correlatedLogger } = options;
+    const { repoOwner, repoName, taskUrl, correlatedLogger, assertLease } = options;
     if (!state.startingWorkComment) return;
 
-    const successCount = reviewResults.filter(r => r.analysisResult.success).length, failCount = reviewResults.length - successCount;
+    const successCount = reviewResults.filter(r => r.analysisResult.success).length;
+    const failCount = reviewResults.length - successCount;
 
     try {
         const reviewLinks = reviewResults.filter(r => r.commentUrl).map(r => `- [${r.assignment.label}](${r.commentUrl})`).join('\n');
@@ -272,11 +277,13 @@ async function updateReviewCompletionComment(
             filterRealComments(state.unprocessedComments).map(comment => comment.id),
         );
 
+        await assertLease();
         await state.octokit!.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
             owner: repoOwner, repo: repoName, comment_id: state.startingWorkComment.data.id,
             body: `${statusEmoji} **AI Code Review Complete** requested by ${state.authorsText}\n\n${statusText}:\n${reviewLinks}\n\n[View Task Details](${taskUrl})${completedEvidence ? `\n${completedEvidence}` : ''}`,
         });
     } catch (updateError) {
+        await assertLease();
         correlatedLogger.warn({ error: (updateError as Error).message }, 'Failed to update starting review comment');
     }
 }
@@ -286,43 +293,15 @@ function getWebUiTaskUrl(taskId: string): string {
     return `${webUiUrl}/tasks/${taskId}`;
 }
 
-async function handleUltrafixContinuation(
-    action: UltrafixAction,
-    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string; prProcessingLockToken: string }
-): Promise<void> {
-    if (!params.job.data.ultrafixMeta) return;
-    const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken } = params;
-    try {
-        const continuationResult = await continueUltrafixLoop({
-            owner: repoOwner, repo: repoName, pullRequestNumber, completedAction: action,
-            ultrafixMeta: job.data.ultrafixMeta!, redisClient, correlatedLogger, correlationId,
-            currentJobId: job.id,
-        });
-        correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
-        await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), {
-            correlatedLogger,
-            prProcessingLockToken,
-        });
-    } catch (contErr) {
-        correlatedLogger.error({ error: (contErr as Error).message, pullRequestNumber }, `Ultrafix loop continuation failed after ${action}`);
-    }
-}
-
-async function resolveUltrafixHistoryMeta(
-    job: Job<CommentJobData>, redisClient: Redis, issueRef: { repoOwner: string; repoName: string; pullRequestNumber: number }
-): Promise<Record<string, unknown> | undefined> {
-    if (!job.data.ultrafixMeta) return undefined;
-    return buildUltrafixHistoryMeta(job.data.ultrafixMeta, await loadUltrafixState(redisClient, issueRef.repoOwner, issueRef.repoName, issueRef.pullRequestNumber));
-}
-
 export async function executeReviewProcessing(params: ExecuteReviewParams): Promise<JobResult> {
-    const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken } = params;
+    const { job, context, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken, assertLease } = params;
     let { llm } = params;
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger } = context;
 
     state.octokit = await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
     const validation = await validatePRAndComments(state.octokit, { ...context, llm });
     if (validation.skip) {
+        await assertLease();
         correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping review processing');
         const result = { status: 'skipped', reason: validation.reason, pullRequestNumber };
         await finalizePRCommentTaskResultBestEffort(
@@ -344,6 +323,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     state.authorsText = commentAuthors.map(a => `@${a}`).join(', ');
     const taskUrl = getWebUiTaskUrl(taskId);
 
+    await assertLease();
     await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting review processing',
         historyMetadata: { commandMode: 'review' }
@@ -368,6 +348,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         : '';
     const modelList = assignments.map(a => `\`${a.label}\``).join(', ');
     const startedEvidence = buildWorkEvidenceMarker('started', realComments.map(comment => comment.id));
+    await assertLease();
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: `🔍 **Starting AI Code Review** requested by ${state.authorsText}\n\nAnalyzing the pull request with ${modelList}...\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${startedEvidence ? `\n${startedEvidence}` : ''}` });
 
     const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
@@ -384,12 +365,14 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 repoOwner, repoName, correlationId, taskId, correlatedLogger,
             });
         } catch (titleError) {
+            await assertLease();
             correlatedLogger.warn({ taskId, error: (titleError as Error).message }, 'Failed to generate review task subtitle');
         }
     }
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = titleContext.hasMeaningfulContext ? summaryTitle : fallbackSubtitle;
-    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber, prProcessingLockToken });
+    await assertLease();
+    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, linkedIssueNumber: linkedIssueResult.linkedIssueNumber, prProcessingLockToken });
     await stateManager.updateHistoryMetadata(taskId, TaskStates.PROCESSING, {
         titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
     }, prProcessingLockToken);
@@ -421,6 +404,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         reviewPromptOverride,
         reasoningLevel: job.data.reasoningLevel,
         correlatedLogger,
+        assertLease,
     };
 
     const reviewResults: ReviewResult[] = [];
@@ -428,13 +412,16 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         reviewResults.push(await runSingleReview(assignment, reviewCtx));
     }
 
+    await assertLease();
     await recordReviewMetrics(reviewResults, { pullRequestNumber, repoOwner, repoName, correlationId, taskId });
-    await updateReviewCompletionComment(state, reviewResults, { repoOwner, repoName, taskUrl, correlatedLogger });
+    await updateReviewCompletionComment(state, reviewResults, { repoOwner, repoName, taskUrl, correlatedLogger, assertLease });
 
-    const successCount = reviewResults.filter(r => r.analysisResult.success).length, failCount = reviewResults.length - successCount;
+    const successCount = reviewResults.filter(r => r.analysisResult.success).length;
+    const failCount = reviewResults.length - successCount;
 
-    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, redisClient, { repoOwner, repoName, pullRequestNumber });
+    const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);
 
+    await assertLease();
     await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, {
         reason: 'Review processing completed successfully',
         historyMetadata: {
@@ -448,7 +435,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     }, prProcessingLockToken);
 
     correlatedLogger.info({ pullRequestNumber, successCount, failCount, totalReviews: assignments.length }, 'Review processing completed');
-    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken });
+    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken, assertLease });
 
     return { status: 'complete', pullRequestNumber, reviewsPosted: successCount, reviewsFailed: failCount };
 }

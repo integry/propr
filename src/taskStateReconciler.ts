@@ -54,12 +54,15 @@ export interface TaskReconciliationOptions {
     signal?: AbortSignal;
     batchSize?: number;
     concurrency?: number;
+    /** Maximum wall-clock time in which new reconciliation batches may start. */
+    timeBudgetMs?: number;
     futureSkewAllowanceMs?: number;
 }
 
 export const DEFAULT_TASK_RECONCILIATION_STALE_MS = 90 * 1000;
 export const DEFAULT_TASK_RECONCILIATION_BATCH_SIZE = 100;
 export const DEFAULT_TASK_RECONCILIATION_CONCURRENCY = 4;
+export const DEFAULT_TASK_RECONCILIATION_TIME_BUDGET_MS = 30 * 1000;
 export const DEFAULT_TASK_FUTURE_SKEW_ALLOWANCE_MS = 5 * 60 * 1000;
 
 interface ReconciliationContext {
@@ -134,11 +137,13 @@ async function finalizeCompletedJob(
     summary: TaskReconciliationSummary,
 ): Promise<void> {
     throwIfAborted(options.signal);
-    if (await clearOwnedPRLock(task, options.redis, options.signal)) summary.locksCleared++;
-    throwIfAborted(options.signal);
-    if (await finalizePRCommentTaskResult(task.taskId, options.stateManager, job.returnvalue, {
+    const finalized = await finalizePRCommentTaskResult(task.taskId, options.stateManager, job.returnvalue, {
         expectation: taskStateExpectation(task),
-    })) summary.finalized++;
+    });
+    if (!finalized) return;
+    summary.finalized++;
+    throwIfAborted(options.signal);
+    if (await clearOwnedPRLock(task, options.redis, options.signal)) summary.locksCleared++;
 }
 
 async function finalizeFailedJob(
@@ -148,11 +153,13 @@ async function finalizeFailedJob(
     summary: TaskReconciliationSummary,
 ): Promise<void> {
     throwIfAborted(options.signal);
-    if (await clearOwnedPRLock(task, options.redis, options.signal)) summary.locksCleared++;
-    throwIfAborted(options.signal);
-    if (await finalizePRCommentTaskFailure(task.taskId, options.stateManager, new Error(message), {
+    const finalized = await finalizePRCommentTaskFailure(task.taskId, options.stateManager, new Error(message), {
         expectation: taskStateExpectation(task),
-    })) summary.interrupted++;
+    });
+    if (!finalized) return;
+    summary.interrupted++;
+    throwIfAborted(options.signal);
+    if (await clearOwnedPRLock(task, options.redis, options.signal)) summary.locksCleared++;
 }
 
 async function handleTerminalQueueState(
@@ -281,20 +288,16 @@ export async function reconcileStaleTaskStates(
     const staleAfterMs = options.staleAfterMs ?? DEFAULT_TASK_RECONCILIATION_STALE_MS;
     const batchSize = Math.max(1, options.batchSize ?? DEFAULT_TASK_RECONCILIATION_BATCH_SIZE);
     const concurrency = Math.max(1, options.concurrency ?? DEFAULT_TASK_RECONCILIATION_CONCURRENCY);
+    const timeBudgetMs = Math.max(1, options.timeBudgetMs ?? DEFAULT_TASK_RECONCILIATION_TIME_BUDGET_MS);
     const futureSkewAllowanceMs = Math.max(
         0,
         options.futureSkewAllowanceMs ?? DEFAULT_TASK_FUTURE_SKEW_ALLOWANCE_MS,
     );
     const now = (options.now ?? Date.now)();
+    const deadline = Date.now() + timeBudgetMs;
     const findRunningContainer = options.findRunningContainer ?? findRunningDockerContainerForTask;
-    throwIfAborted(options.signal);
-    const tasks = (await options.stateManager.getNonTerminalTasks({
-        taskTypes: ['pr_comment'],
-        limit: batchSize,
-    })).filter(isPRCommentTaskState);
-    throwIfAborted(options.signal);
     const summary: TaskReconciliationSummary = {
-        scanned: tasks.length,
+        scanned: 0,
         fresh: 0,
         live: 0,
         queued: 0,
@@ -304,6 +307,7 @@ export async function reconcileStaleTaskStates(
         errors: 0,
     };
     const context = { options, summary, findRunningContainer };
+    const seenTaskIds = new Set<string>();
 
     const reconcileOne = async (task: TaskStateData): Promise<void> => {
         try {
@@ -319,9 +323,26 @@ export async function reconcileStaleTaskStates(
             logger.warn({ taskId: task.taskId, error: (error as Error).message }, 'Failed to reconcile stale task state');
         }
     };
-    for (let index = 0; index < tasks.length; index += concurrency) {
+    while (Date.now() < deadline) {
         throwIfAborted(options.signal);
-        await Promise.all(tasks.slice(index, index + concurrency).map(reconcileOne));
+        const scannedTasks = (await options.stateManager.getNonTerminalTasks({
+            taskTypes: ['pr_comment'],
+            limit: batchSize,
+        })).filter(isPRCommentTaskState);
+        throwIfAborted(options.signal);
+        const tasks = scannedTasks.filter(task => {
+            if (seenTaskIds.has(task.taskId)) return false;
+            seenTaskIds.add(task.taskId);
+            return true;
+        });
+        if (tasks.length === 0) break;
+        summary.scanned += tasks.length;
+
+        for (let index = 0; index < tasks.length; index += concurrency) {
+            throwIfAborted(options.signal);
+            await Promise.all(tasks.slice(index, index + concurrency).map(reconcileOne));
+        }
+        if (scannedTasks.length < batchSize) break;
     }
 
     return summary;

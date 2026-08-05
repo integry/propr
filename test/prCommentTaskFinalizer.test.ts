@@ -95,6 +95,19 @@ describe('PR comment task finalization', () => {
         assert.equal(manager.updates[0].metadata.error?.message, 'worker exited');
     });
 
+    test('sanitizes recovery failures before persistence', async () => {
+        const manager = stateManager(task(TaskStates.PROCESSING));
+        await finalizePRCommentTaskFailure(
+            'task-1',
+            manager as never,
+            new Error('failed at https://x-access-token:secret-token@github.com/integry/propr'),
+        );
+
+        assert.doesNotMatch(manager.updates[0].metadata.error?.message ?? '', /secret-token/);
+        assert.match(manager.updates[0].metadata.error?.message ?? '', /REDACTED/);
+        assert.doesNotMatch(manager.updates[0].metadata.reason ?? '', /secret-token/);
+    });
+
     test('maps an explicit failed result to failed instead of completed', async () => {
         const manager = stateManager(task(TaskStates.PROCESSING));
 
@@ -172,6 +185,28 @@ describe('PR comment task finalization', () => {
         assert.equal(matching, true);
         assert.equal(manager.updates.length, 1);
         assert.equal(manager.updates[0].state, TaskStates.COMPLETED);
+    });
+
+    test('validates a completed result token even when reconciliation supplies an expectation', async () => {
+        const generated = task(TaskStates.PROCESSING);
+        generated.prProcessingLockToken = 'successor-token';
+        const manager = stateManager(generated);
+
+        const changed = await finalizePRCommentTaskResult(
+            'task-1',
+            manager as never,
+            { status: 'complete', prProcessingLockToken: 'stale-token' },
+            {
+                expectation: {
+                    state: generated.state,
+                    updatedAt: generated.updatedAt,
+                    prProcessingLockToken: generated.prProcessingLockToken,
+                },
+            },
+        );
+
+        assert.equal(changed, false);
+        assert.equal(manager.updates.length, 0);
     });
 
     test('defers a skipped result when Redis finalization fails', async () => {

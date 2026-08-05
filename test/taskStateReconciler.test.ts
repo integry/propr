@@ -52,9 +52,16 @@ function queue(states: Record<string, { state: string; returnvalue?: unknown; fa
         getJob: async (taskId: string) => {
             const value = states[taskId];
             if (!value) return undefined;
+            const returnvalue = value.returnvalue !== null && typeof value.returnvalue === 'object'
+                && (value.returnvalue as { prProcessingLockToken?: unknown }).prProcessingLockToken === undefined
+                ? {
+                    ...value.returnvalue as Record<string, unknown>,
+                    prProcessingLockToken: `correlation-${taskId}:attempt-token`,
+                }
+                : value.returnvalue;
             return {
                 getState: async () => value.state,
-                returnvalue: value.returnvalue,
+                returnvalue,
                 failedReason: value.failedReason,
             };
         },
@@ -63,6 +70,32 @@ function queue(states: Record<string, { state: string; returnvalue?: unknown; fa
 }
 
 describe('task state reconciliation', () => {
+    test('processes successive rotating scan batches within one recovery run', async () => {
+        const first = task('pr-comments-batch-first', TaskStates.PROCESSING);
+        const second = task('pr-comments-batch-second', TaskStates.PROCESSING);
+        const manager = stateManager([first, second]);
+        let page = 0;
+        manager.getNonTerminalTasks = async () => {
+            page++;
+            return page === 1 ? [first] : page === 2 ? [second] : [first];
+        };
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+            batchSize: 1,
+            timeBudgetMs: 1000,
+        });
+
+        assert.equal(summary.scanned, 2);
+        assert.equal(summary.interrupted, 2);
+        assert.equal(page, 3);
+    });
+
     test('repairs completed, superseded, interrupted, queued, and live tasks safely', async () => {
         const manager = stateManager([
             task('pr-comments-completed', TaskStates.PENDING),
@@ -143,7 +176,11 @@ describe('task state reconciliation', () => {
             }
             return {
                 getState: completedGetState,
-                returnvalue: { status: 'complete', pullRequestNumber: 1738 },
+                returnvalue: {
+                    status: 'complete',
+                    pullRequestNumber: 1738,
+                    prProcessingLockToken: completing.prProcessingLockToken,
+                },
             };
         });
 
@@ -320,7 +357,7 @@ describe('task state reconciliation', () => {
                     });
                     return 'completed';
                 },
-                returnvalue: { status: 'complete' },
+                returnvalue: { status: 'complete', prProcessingLockToken: scanned.prProcessingLockToken },
             }),
             toKey: (type: string) => type,
         };
@@ -338,6 +375,31 @@ describe('task state reconciliation', () => {
         assert.equal(manager.states.get(scanned.taskId)?.prProcessingLockToken, successorToken);
         assert.equal(manager.updates.length, 0);
         assert.equal(summary.finalized, 0);
+    });
+
+    test('does not finalize or release the current lease for a stale completed result token', async () => {
+        const current = task('pr-comments-stale-result-token', TaskStates.PROCESSING);
+        const manager = stateManager([current]);
+        const evalMock = mock.fn(async () => 1);
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({
+                [current.taskId]: {
+                    state: 'completed',
+                    returnvalue: { status: 'complete', prProcessingLockToken: 'stale-attempt-token' },
+                },
+            }),
+            redis: { eval: evalMock, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+        });
+
+        assert.equal(manager.states.get(current.taskId)?.state, TaskStates.PROCESSING);
+        assert.equal(summary.finalized, 0);
+        assert.equal(summary.locksCleared, 0);
+        assert.equal(evalMock.mock.calls.length, 0);
     });
 
     test('treats an implausible future timestamp as stale', async () => {

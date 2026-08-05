@@ -7,6 +7,7 @@ import type {
     WorkerStateManager,
 } from '@propr/core';
 import { TaskStates } from '@propr/core';
+import { sanitizeErrorMessage } from './errorSanitizer.js';
 
 type TaskStateStore = Pick<WorkerStateManager, 'getTaskState' | 'updateTaskStateIfCurrent'>;
 
@@ -115,15 +116,17 @@ function knownResultTransition(
                     historyMetadata: { ...historyMetadata, superseded: true },
                 },
             };
-        case 'failed':
+        case 'failed': {
+            const sanitizedReason = sanitizeErrorMessage(reason);
             return {
                 state: TaskStates.FAILED,
                 metadata: {
-                    reason: reason ? `Task failed: ${reason}` : 'Task failed',
-                    error: { message: reason ?? 'PR comment job returned a failed outcome', category: 'worker' },
-                    historyMetadata,
+                    reason: reason ? `Task failed: ${sanitizedReason}` : 'Task failed',
+                    error: { message: reason ? sanitizedReason : 'PR comment job returned a failed outcome', category: 'worker' },
+                    historyMetadata: { ...historyMetadata, resultReason: reason ? sanitizedReason : null },
                 },
             };
+        }
         case 'complete':
         case 'partial':
         case 'skipped':
@@ -161,24 +164,26 @@ async function resolveFinalizationExpectation(
     taskId: string,
     stateManager: TaskStateStore,
     options: PRCommentTaskFinalizationOptions,
-    result?: unknown,
+    completedResult?: { value: unknown },
 ): Promise<TaskStateExpectation | null> {
-    if (options.expectation) return options.expectation;
-
-    const task = await stateManager.getTaskState(taskId);
-    if (!task || isTerminalTaskState(task.state)) return null;
-    const resultRecord = asResultRecord(result);
+    const expectation = options.expectation ?? await stateManager.getTaskState(taskId);
+    if (!expectation || isTerminalTaskState(expectation.state)) return null;
+    const resultRecord = asResultRecord(completedResult?.value);
     const resultToken = typeof resultRecord?.prProcessingLockToken === 'string'
         ? resultRecord.prProcessingLockToken
         : undefined;
-    const expectedToken = options.prProcessingLockToken ?? resultToken;
+    const expectedToken = options.prProcessingLockToken ?? (completedResult ? resultToken : undefined);
+    const requiresMatchingToken = completedResult !== undefined
+        || options.prProcessingLockToken !== undefined
+        || options.expectation === undefined;
     // Once a task has an attempt generation, an unfenced old BullMQ event must
     // never be allowed to finalize whichever attempt happens to be current.
-    if (task.prProcessingLockToken !== undefined
-        && expectedToken !== task.prProcessingLockToken) return null;
+    if (requiresMatchingToken
+        && expectation.prProcessingLockToken !== undefined
+        && expectedToken !== expectation.prProcessingLockToken) return null;
     if (expectedToken !== undefined
-        && task.prProcessingLockToken !== expectedToken) return null;
-    return taskStateExpectation(task);
+        && expectation.prProcessingLockToken !== expectedToken) return null;
+    return options.expectation ?? taskStateExpectation(expectation as TaskStateData);
 }
 
 /**
@@ -200,7 +205,7 @@ export async function finalizePRCommentTaskResult(
     const transition = parsed
         ? knownResultTransition(parsed.result, parsed.status)
         : invalidResultTransition(result, status);
-    const expectation = await resolveFinalizationExpectation(taskId, stateManager, options, result);
+    const expectation = await resolveFinalizationExpectation(taskId, stateManager, options, { value: result });
     if (!expectation) return false;
     return Boolean(await stateManager.updateTaskStateIfCurrent(
         taskId,
@@ -234,14 +239,15 @@ export async function finalizePRCommentTaskFailure(
 ): Promise<boolean> {
     const expectation = await resolveFinalizationExpectation(taskId, stateManager, options);
     if (!expectation) return false;
+    const sanitizedMessage = sanitizeErrorMessage(error.message);
 
     return Boolean(await stateManager.updateTaskStateIfCurrent(
         taskId,
         expectation,
         TaskStates.FAILED,
         {
-            reason: `Worker job failed: ${error.message}`,
-            error: { message: error.message, category: 'worker' },
+            reason: `Worker job failed: ${sanitizedMessage}`,
+            error: { message: sanitizedMessage, category: 'worker' },
             historyMetadata: { outcome: 'failed' },
         },
     ));

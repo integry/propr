@@ -160,6 +160,20 @@ describe('worker task state recovery hooks', () => {
         assert.equal(mutations, 1);
     });
 
+    test('preserves the reconciliation error when lease release also fails', async () => {
+        const redis = {
+            set: async () => 'OK',
+            eval: async () => { throw new Error('release failed'); },
+        };
+
+        await assert.rejects(
+            runWithTaskReconciliationLease(redis, 120_000, async () => {
+                throw new Error('primary reconciliation failure');
+            }),
+            /primary reconciliation failure/,
+        );
+    });
+
     test('keeps completed hooks attached while graceful worker close drains a job', async () => {
         const manager = stateManager();
         const worker = new EventEmitter();

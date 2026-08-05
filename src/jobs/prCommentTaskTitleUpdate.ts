@@ -1,16 +1,20 @@
-import { db } from '@propr/core';
+import { db, hashTaskAttemptToken, SupersededTaskAttemptError } from '@propr/core';
 import type { CommentJobData, WorkerStateManager } from '@propr/core';
 import type { Logger } from 'pino';
-import type { Redis } from 'ioredis';
 
 interface UpdateTaskTitleOptions {
     taskId: string;
     jobData: CommentJobData;
     stateManager: WorkerStateManager;
     correlatedLogger: Logger;
-    redisClient?: InstanceType<typeof Redis>;
     linkedIssueNumber?: number | null;
     prProcessingLockToken?: string;
+}
+
+function sanitizeJobDataForPersistence(jobData: CommentJobData): CommentJobData {
+    const persistedJobData = { ...jobData };
+    delete persistedJobData.prProcessingLockToken;
+    return persistedJobData;
 }
 
 export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Promise<void> {
@@ -18,18 +22,26 @@ export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Pro
     if (prProcessingLockToken !== undefined) {
         const currentState = await stateManager.getTaskState(taskId);
         if (currentState?.prProcessingLockToken !== prProcessingLockToken) {
-            correlatedLogger.info({ taskId }, 'Skipped task title update for a superseded PR attempt');
-            return;
+            throw new SupersededTaskAttemptError(taskId);
         }
     }
 
+    const persistedJobData = sanitizeJobDataForPersistence(jobData);
     const jobDataWithIssue = linkedIssueNumber
-        ? { ...jobData, issueNumber: linkedIssueNumber }
-        : jobData;
+        ? { ...persistedJobData, issueNumber: linkedIssueNumber }
+        : persistedJobData;
     try {
-        await db('tasks').where({ task_id: taskId }).update({ initial_job_data: JSON.stringify(jobDataWithIssue) });
+        const query = db('tasks').where({ task_id: taskId });
+        if (prProcessingLockToken !== undefined) {
+            query.andWhere('attempt_generation', hashTaskAttemptToken(prProcessingLockToken));
+        }
+        const updatedRows = await query.update({ initial_job_data: JSON.stringify(jobDataWithIssue) });
+        if (prProcessingLockToken !== undefined && updatedRows !== 1) {
+            throw new SupersededTaskAttemptError(taskId);
+        }
         correlatedLogger.info({ taskId, title: jobData.title, subtitle: jobData.subtitle, linkedIssueNumber }, 'Updated task with title/subtitle in DB');
     } catch (dbError) {
+        if (dbError instanceof SupersededTaskAttemptError) throw dbError;
         correlatedLogger.warn({ taskId, error: (dbError as Error).message }, 'Failed to update task with title/subtitle in DB');
     }
     try {
@@ -44,6 +56,7 @@ export async function updateTaskTitleForPR(options: UpdateTaskTitleOptions): Pro
         }, prProcessingLockToken);
         correlatedLogger.info({ taskId, title: jobData.title, linkedIssueNumber }, 'Updated task with title/subtitle in Redis');
     } catch (redisError) {
+        if (redisError instanceof SupersededTaskAttemptError) throw redisError;
         correlatedLogger.warn({ taskId, error: (redisError as Error).message }, 'Failed to update task with title/subtitle in Redis');
     }
 }

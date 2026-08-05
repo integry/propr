@@ -3,6 +3,7 @@ import { after, describe, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import {
     executeDockerCommand,
+    runWithExecutionAbortSignal,
     type ExecutionResult,
 } from '../packages/core/src/claude/docker/dockerExecutor.js';
 import { parseStreamJsonOutput } from '../packages/core/src/claude/claudeHelpers.js';
@@ -62,6 +63,19 @@ describe('partial agent execution', () => {
         assert.strictEqual(result.timeoutMs, 200);
         assert.match(result.stdout, /partial-agent-output/);
         assert.match(result.stderr, /Command timed out after 200ms/);
+    });
+
+    test('terminates nested agent commands when protected execution ownership is lost', async () => {
+        const controller = new AbortController();
+        const leaseError = new Error('lease superseded');
+        const execution = runWithExecutionAbortSignal(controller.signal, () => executeDockerCommand(
+            process.execPath,
+            ['-e', 'setInterval(() => {}, 1000);'],
+            { timeout: 10_000 },
+        ));
+        setTimeout(() => controller.abort(leaseError), 50);
+
+        await assert.rejects(execution, error => error === leaseError);
     });
 
     test('retains Claude max-turn metadata and the latest assistant update', () => {
