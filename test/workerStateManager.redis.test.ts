@@ -3,10 +3,14 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import Redis from 'ioredis';
 import { closeConnection } from '../packages/core/src/db/connection.js';
+import { closeEventPublisher } from '../packages/core/src/utils/eventPublisher.js';
 import { TaskStates, WorkerStateManager } from '../packages/core/src/utils/workerStateManager.js';
 import type { TaskStateData } from '../packages/core/src/utils/workerStateManager.types.js';
 
-after(async () => { await closeConnection(); });
+after(async () => {
+    await closeEventPublisher();
+    await closeConnection();
+});
 
 test('real Redis CAS permits only one guarded terminal transition', { timeout: 5000 }, async t => {
     const redisOptions = {
