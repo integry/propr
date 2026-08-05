@@ -487,11 +487,10 @@ jobs:
         run: exit 1
 
   comment:
-    name: Report Build Status
+    name: Report Build Failure
     needs: validate
     if: >-
-      ${{ always() &&
-          (needs.validate.result == 'success' || needs.validate.result == 'failure') &&
+      ${{ always() && needs.validate.result == 'failure' &&
           github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     permissions:
@@ -500,7 +499,6 @@ jobs:
 
     steps:
       - name: Download failure log
-        if: needs.validate.result == 'failure'
         continue-on-error: true
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
@@ -508,56 +506,33 @@ jobs:
 
       - name: Post failure comment
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        env:
-          VALIDATE_RESULT: ${{ needs.validate.result }}
         with:
           script: |
             const fs = require('fs');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const succeeded = process.env.VALIDATE_RESULT === 'success';
             let log = 'Log file missing.';
             try { log = fs.readFileSync('build_log.txt', 'utf8'); } catch {}
             log = log.replace(/~~~/g, '~~\u200b~');
             if (log.length > 60000) log = log.substring(0, 60000) + '\n\n...(truncated)';
             const marker = '<!-- propr-build-check-results -->';
-            const comments = await github.paginate(github.rest.issues.listComments, {
+            const body = [
+              marker,
+              '### Checks Failed',
+              'Validation failed during setup, tests, CLI packaging, linting, or build checks.',
+              '',
+              '<details>',
+              '<summary>View Logs</summary>',
+              '',
+              '~~~text',
+              log,
+              '~~~',
+              '</details>',
+              '',
+              `**[View Workflow](${runUrl})**`,
+            ].join('\n');
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
+              body,
             });
-            const existing = [...comments].reverse().find(comment =>
-              comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker)
-            );
-            if (succeeded && !existing) return;
-            const body = succeeded
-              ? [marker, '### Checks Passed', '', 'The latest build, lint, and packaging checks passed.', '', `**[View Workflow](${runUrl})**`].join('\n')
-              : [
-                  marker,
-                  '### Checks Failed',
-                  'Validation failed during setup, tests, CLI packaging, linting, or build checks.',
-                  '',
-                  '<details>',
-                  '<summary>View Logs</summary>',
-                  '',
-                  '~~~text',
-                  log,
-                  '~~~',
-                  '</details>',
-                  '',
-                  `**[View Workflow](${runUrl})**`,
-                ].join('\n');
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }

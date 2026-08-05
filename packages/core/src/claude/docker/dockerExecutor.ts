@@ -5,13 +5,19 @@ import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
 import {
     abortSpawnedExecution,
+    createDockerExecutionState,
+    ExecutionAbortedError,
+    getExecutionAbortError,
+    getDockerRunContainerName,
     getExecutionOwnershipContext,
     resolveExecutionArgs,
+    type SpawnedExecutionState,
 } from './dockerExecutionOwnership.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
 export {
     addTaskAttemptLabelsToDockerArgs,
+    ExecutionAbortedError,
     runWithExecutionAbortSignal,
 } from './dockerExecutionOwnership.js';
 
@@ -44,11 +50,7 @@ interface AbortCheckerOptions {
     taskId: string;
     plannerAbortKey: string;
     child: ChildProcess;
-    state: {
-        aborted: { value: boolean };
-        containerId: { value: string | null };
-        teardownPromise: Promise<void> | null;
-    };
+    state: SpawnedExecutionState;
     namedContainer: string | null;
     attemptGeneration?: string;
 }
@@ -97,17 +99,6 @@ const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharC
 
 function stripAnsiCodes(text: string): string {
     return text.replace(ANSI_REGEX, '');
-}
-
-/**
- * Custom error class for when task execution is aborted by user request.
- * This allows job processors to distinguish between aborts and other errors.
- */
-export class ExecutionAbortedError extends Error {
-    constructor(message: string = 'Execution aborted by user request') {
-        super(message);
-        this.name = 'ExecutionAbortedError';
-    }
 }
 
 function createAbortRedis(): AbortRedisClient {
@@ -252,12 +243,6 @@ function setupAbortChecker({ taskId, plannerAbortKey, child, state, namedContain
     };
 }
 
-function getDockerRunContainerName(args: string[]): string | null {
-    const nameIndex = args.indexOf('--name');
-    if (nameIndex >= 0 && args[nameIndex + 1]) return args[nameIndex + 1];
-    return null;
-}
-
 /**
  * Finds a running agent container by its exact task label and, when supplied,
  * its attempt-generation label. Name suffixes are intentionally excluded:
@@ -342,11 +327,8 @@ function spawnCommandProcess(
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
     const ownershipContext = getExecutionOwnershipContext();
     const executionSignal = options.signal ?? ownershipContext?.signal;
-    if (executionSignal?.aborted) {
-        return Promise.reject(executionSignal.reason instanceof Error
-            ? executionSignal.reason
-            : new ExecutionAbortedError());
-    }
+    const initialAbortError = getExecutionAbortError(executionSignal);
+    if (initialAbortError) return Promise.reject(initialAbortError);
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false } = options;
         const executionArgs = resolveExecutionArgs(command, args, taskId, ownershipContext?.attemptGeneration);
@@ -355,14 +337,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData);
 
         let stdout = '', stderr = '';
-        const state = {
-            timedOut: false,
-            aborted: { value: false },
-            sessionIdDetected: false,
-            containerIdDetected: false,
-            containerId: { value: null as string | null },
-            teardownPromise: null as Promise<void> | null,
-        };
+        const state = createDockerExecutionState();
         const messageTimestamps = new Map<string, string>();
         const abortForExecutionSignal = (): void => {
             void abortSpawnedExecution(
@@ -437,9 +412,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 return;
             }
             if (state.aborted.value) {
-                reject(executionSignal?.aborted && executionSignal.reason instanceof Error
-                    ? executionSignal.reason
-                    : new ExecutionAbortedError());
+                reject(getExecutionAbortError(executionSignal) ?? new ExecutionAbortedError());
                 return;
             }
             resolve({ exitCode, stdout, stderr, messageTimestamps });

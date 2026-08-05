@@ -21,6 +21,8 @@ import {
     DEFAULT_TASK_RECONCILIATION_CONCURRENCY,
     DEFAULT_TASK_RECONCILIATION_STALE_MS,
     DEFAULT_TASK_RECONCILIATION_TIME_BUDGET_MS,
+    taskMatchesExpectation,
+    throwIfAborted,
 } from './taskStateReconciler.types.js';
 import type {
     ReconciliationContext,
@@ -64,10 +66,6 @@ function taskAgeMs(task: TaskStateData, now: number, futureSkewAllowanceMs: numb
         return Number.POSITIVE_INFINITY;
     }
     return Math.max(0, now - updatedAt);
-}
-
-function throwIfAborted(signal?: AbortSignal): void {
-    signal?.throwIfAborted();
 }
 
 function completedResultMatchesAttempt(task: TaskStateData, result: unknown): boolean {
@@ -157,15 +155,6 @@ async function hasMatchingPRLease(
         task.prProcessingLockToken,
     );
     return Number(currentAttempt) === 1;
-}
-
-function taskMatchesExpectation(current: TaskStateData | null, scanned: TaskStateData): boolean {
-    if (!current) return false;
-    const expectation = taskStateExpectation(scanned);
-    return current.state === expectation.state
-        && current.updatedAt === expectation.updatedAt
-        && current.version === expectation.version
-        && current.prProcessingLockToken === expectation.prProcessingLockToken;
 }
 
 async function findGenerationSpecificContainer(

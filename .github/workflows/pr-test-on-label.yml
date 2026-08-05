@@ -109,10 +109,11 @@ jobs:
         run: ./scripts/ci-redis.sh stop
 
   comment:
-    name: Report Full Test Status
+    name: Report Full Test Failure
     needs: test
     if: >-
       ${{ always() && github.event_name == 'pull_request' &&
+          needs.test.result == 'failure' &&
           github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
     permissions:
@@ -121,7 +122,6 @@ jobs:
 
     steps:
       - name: Download test output
-        if: needs.test.result == 'failure'
         continue-on-error: true
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
@@ -142,7 +142,6 @@ jobs:
           script: |
             const fs = require('fs');
             const succeeded = process.env.TEST_JOB_RESULT === 'success' && process.env.TEST_STEP_RESULT === 'success';
-            if (!succeeded && process.env.TEST_JOB_RESULT !== 'failure') return;
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const outcomes = {
               'Dependency install': process.env.INSTALL_RESULT,
@@ -163,15 +162,6 @@ jobs:
             try { output = fs.readFileSync('test_output.sanitized.txt', 'utf8'); } catch {}
             if (output.length > 60000) output = output.substring(0, 60000) + '\n\n...(truncated)';
             const marker = '<!-- propr-full-test-results -->';
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const existing = [...comments].reverse().find(comment =>
-              comment.user?.login === 'github-actions[bot]' && comment.body?.includes(marker)
-            );
-            if (succeeded && !existing) return;
             const body = [
               marker,
               '### Full Test Suite Results',
@@ -192,18 +182,9 @@ jobs:
               '',
               `**[View Workflow](${runUrl})**`,
             ].join('\n');
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

@@ -1,4 +1,5 @@
 import type {
+    TaskStateData,
     findRunningDockerContainerForTask,
     inspectLegacyDockerContainerLivenessForTask,
     stopDockerContainer,
@@ -81,4 +82,19 @@ export function createTaskReconciliationSummary(): TaskReconciliationSummary {
         locksCleared: 0,
         errors: 0,
     };
+}
+
+export function throwIfAborted(signal?: AbortSignal): void {
+    signal?.throwIfAborted();
+}
+
+export function taskMatchesExpectation(
+    current: TaskStateData | null,
+    scanned: TaskStateData,
+): boolean {
+    if (!current) return false;
+    return current.state === scanned.state
+        && current.updatedAt === scanned.updatedAt
+        && current.version === scanned.version
+        && current.prProcessingLockToken === scanned.prProcessingLockToken;
 }

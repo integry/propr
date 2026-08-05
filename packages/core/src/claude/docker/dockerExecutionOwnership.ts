@@ -8,10 +8,39 @@ interface ExecutionOwnershipContext {
     attemptGeneration?: string;
 }
 
-interface SpawnedExecutionState {
+export interface SpawnedExecutionState {
     aborted: { value: boolean };
     containerId: { value: string | null };
     teardownPromise: Promise<void> | null;
+}
+
+export interface DockerExecutionState extends SpawnedExecutionState {
+    timedOut: boolean;
+    sessionIdDetected: boolean;
+    containerIdDetected: boolean;
+}
+
+export class ExecutionAbortedError extends Error {
+    constructor(message: string = 'Execution aborted by user request') {
+        super(message);
+        this.name = 'ExecutionAbortedError';
+    }
+}
+
+export function createDockerExecutionState(): DockerExecutionState {
+    return {
+        timedOut: false,
+        aborted: { value: false },
+        sessionIdDetected: false,
+        containerIdDetected: false,
+        containerId: { value: null },
+        teardownPromise: null,
+    };
+}
+
+export function getExecutionAbortError(signal?: AbortSignal): Error | null {
+    if (!signal?.aborted) return null;
+    return signal.reason instanceof Error ? signal.reason : new ExecutionAbortedError();
 }
 
 interface AbortSpawnedExecutionOptions {
@@ -78,4 +107,9 @@ export function resolveExecutionArgs(
     return command === 'docker'
         ? addTaskAttemptLabelsToDockerArgs(args, taskId, attemptGeneration)
         : args;
+}
+
+export function getDockerRunContainerName(args: string[]): string | null {
+    const nameIndex = args.indexOf('--name');
+    return nameIndex >= 0 && args[nameIndex + 1] ? args[nameIndex + 1] : null;
 }

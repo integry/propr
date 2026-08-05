@@ -10,7 +10,7 @@ import { ensureGitRepository } from '@propr/core';
 import { createLogFiles } from '@propr/core';
 import { UsageLimitError } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
-import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
+import { type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
 import { loadPrimaryProcessingLabels } from '@propr/core';
 import {
@@ -27,7 +27,7 @@ import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPe
 import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { gatherUnprocessedReviewComments } from './reviewCommentGatherer.js';
-import type { AIReviewComment } from './reviewCommentGatherer.js';
+import { formatReviewCommentsSection } from './prCommentReviewFormatting.js';
 import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
 import { handlePostExecution } from './prCommentPostExecution.js';
 import {
@@ -41,7 +41,6 @@ import {
 import type { GitHubToken } from './githubTypes.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import {
-    acquirePRProcessingLock,
     assertPRProcessingLock,
     createPRProcessingLockToken,
     PRProcessingLeaseLostError,
@@ -50,12 +49,16 @@ import {
 } from './prProcessingLock.js';
 import { finalizePRCommentTaskResultBestEffort } from './prCommentTaskFinalizer.js';
 import type {
-    LockParams,
     PRData,
     PRJobContext,
     ProcessingState,
     ValidationResult,
 } from './prCommentProcessingTypes.js';
+import {
+    acquirePRCommentProcessingLock,
+    clearRetainedPRProcessingLockToken,
+    requeuePRCommentJobWithoutLease,
+} from './prCommentProcessingLease.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -99,34 +102,6 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
     return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess };
 }
 
-async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
-    const { lockKey, lockToken, correlatedLogger, job } = lockParams;
-
-    if (await acquirePRProcessingLock(redisClient, lockKey, lockToken)) {
-        correlatedLogger.debug({ lockKey }, 'PR lock acquired');
-        return true;
-    }
-
-    correlatedLogger.info({ lockKey }, 'PR is currently being processed by another execution. Rescheduling...');
-    const requeuedData = { ...job.data };
-    delete requeuedData.prProcessingLockToken;
-    await issueQueue.add(job.name, requeuedData, { delay: 10000 });
-    return false;
-}
-
-async function clearRetainedPRProcessingLockToken(
-    job: Job<CommentJobData>,
-    taskId: string,
-    correlatedLogger: Logger,
-): Promise<void> {
-    delete job.data.prProcessingLockToken;
-    try {
-        await job.updateData({ ...job.data });
-    } catch (error) {
-        correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Could not remove the completed PR lease token from retained job data');
-    }
-}
-
 async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }): Promise<ValidationResult> {
     const { commentsToProcess, pullRequestNumber, repoOwner, repoName, primaryProcessingLabels, correlatedLogger, llm: initialLlm } = context;
     const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
@@ -154,17 +129,6 @@ interface ExecuteProcessingParams {
     stateManager: WorkerStateManager; state: ProcessingState;
     lockToken: string; assertLease: () => Promise<void>;
     signal: AbortSignal;
-}
-
-function formatReviewCommentsSection(reviewComments: AIReviewComment[]): string {
-    if (reviewComments.length === 0) return '';
-
-    let section = `**AI Review Comments (unprocessed — please address these findings):**\n\n`;
-    for (const comment of reviewComments) {
-        section += `---\n**Review by:** @${comment.author} (Comment ID: ${comment.id})\n`;
-        section += `${comment.body}\n---\n\n`;
-    }
-    return section;
 }
 
 function checkTerminalStateAfterExecution(
@@ -386,7 +350,10 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         }
     };
 
-    const lockAcquired = await acquirePRLock({ lockKey, lockToken, correlatedLogger, job });
+    const lockAcquired = await acquirePRCommentProcessingLock(
+        redisClient,
+        { lockKey, lockToken, correlatedLogger, job },
+    );
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
     const stopLockHeartbeat = startPRProcessingLockHeartbeat({
         redisClient, lockKey, lockToken,
@@ -412,9 +379,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     }
     if (!abandonedContainerStopped) {
         try {
-            const requeuedData = { ...job.data };
-            delete requeuedData.prProcessingLockToken;
-            await issueQueue.add(job.name, requeuedData, { delay: 60000 });
+            await requeuePRCommentJobWithoutLease(job, 60000);
         } finally {
             await stopLockHeartbeat();
             await releasePRProcessingLock(redisClient, lockKey, lockToken);
