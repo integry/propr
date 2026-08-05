@@ -65,6 +65,13 @@ export interface TaskStateData {
     prResult?: PRResult;
 }
 
+export interface TaskStateExpectation {
+    state: TaskState;
+    createdAt: string;
+    updatedAt: string;
+    correlationId: string;
+}
+
 export interface CancellationMetadata {
     cancelledBy?: 'user' | 'system';
     cancelledAt?: string;

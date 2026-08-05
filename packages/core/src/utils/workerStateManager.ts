@@ -4,9 +4,15 @@ import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
-    type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions
+    type TaskResult, type ResumableTaskInfo, type TaskStateExpectation,
+    type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
+import {
+    buildTaskStateTransition,
+    compareAndSetTaskState,
+    publishTaskStateTransition,
+} from './workerStateTransition.js';
 
 export { TaskStates, type TaskState, type IssueRef };
 
@@ -101,65 +107,33 @@ export class WorkerStateManager {
         const stateJson = await this.redis.get(key);
         if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-        const state: TaskStateData = JSON.parse(stateJson);
-        const previousState = state.state;
-        state.state = newState;
-        state.updatedAt = new Date().toISOString();
-        state.attempts = metadata.isRetry ? (state.attempts + 1) : state.attempts;
+        const current = JSON.parse(stateJson) as TaskStateData;
+        const transition = buildTaskStateTransition(current, newState, metadata);
+        await this.redis.setex(key, this.stateExpiry, JSON.stringify(transition.state));
+        await publishTaskStateTransition(taskId, transition, metadata);
+        return transition.state;
+    }
 
-        if (metadata.error) {
-            state.lastError = { message: metadata.error.message, category: metadata.error.category ?? 'unknown', timestamp: new Date().toISOString() };
-        }
-        if (metadata.worktreeInfo) state.worktreeInfo = metadata.worktreeInfo;
-        if (metadata.claudeResult) {
-            state.claudeResult = { success: metadata.claudeResult.success, sessionId: metadata.claudeResult.sessionId, executionTime: metadata.claudeResult.executionTime };
-        }
-        if (metadata.prResult) state.prResult = metadata.prResult;
-
-        state.history.push({
-            state: newState, timestamp: new Date().toISOString(),
-            reason: metadata.reason ?? `State changed from ${previousState}`,
-            metadata: metadata.historyMetadata ?? {}
+    /**
+     * Updates task state only if it has not changed since it was read.
+     * @returns Updated state, or null when the expectation no longer matches
+     */
+    async updateTaskStateIfCurrent(
+        taskId: string,
+        expectation: TaskStateExpectation,
+        newState: TaskState,
+        metadata: UpdateMetadata = {},
+    ): Promise<TaskStateData | null> {
+        const transition = await compareAndSetTaskState(this.redis, {
+            key: this.getTaskKey(taskId),
+            stateExpiry: this.stateExpiry,
+            expectation,
+            newState,
+            metadata,
         });
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
-
-        const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-        correlatedLogger.info({
-            taskId, issueNumber: state.issueRef.number,
-            repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-            previousState, newState, attempts: state.attempts
-        }, 'Task state updated');
-
-        try {
-            const historyData = {
-                task_id: taskId, state: newState, timestamp: new Date().toISOString(),
-                reason: metadata.reason ?? `State changed from ${previousState}`,
-                metadata: JSON.stringify({
-                    ...(metadata.historyMetadata ?? {}), previousState, attempts: state.attempts,
-                    error: metadata.error, worktreeInfo: metadata.worktreeInfo,
-                    claudeResult: metadata.claudeResult, prResult: metadata.prResult, commitHash: metadata.commitHash
-                    })
-                };
-                await db('task_history').insert(historyData);
-            correlatedLogger.debug({ taskId, newState }, 'Task state update persisted to database');
-
-            // Publish real-time event for task state change
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
-                taskId,
-                state: newState,
-                previousState,
-                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                issueNumber: state.issueRef.number,
-                metadata: {
-                    attempts: state.attempts,
-                    reason: metadata.reason
-                }
-            });
-        } catch (error) {
-            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state update to database');
-        }
-        return state;
+        if (!transition) return null;
+        await publishTaskStateTransition(taskId, transition, metadata);
+        return transition.state;
     }
 
     /**

@@ -5,6 +5,7 @@ import assert from 'node:assert';
 const mockRedisInstance = {
     setex: mock.fn(async () => 'OK'),
     get: mock.fn(async () => null),
+    eval: mock.fn(async () => 1),
     on: mock.fn(),
     quit: mock.fn(async () => {}),
     keys: mock.fn(async () => []),
@@ -2742,6 +2743,91 @@ test('cleanupOldTasks handles task at exactly maxAge boundary', async () => {
     // The result depends on exact timing, but should not throw
     assert.ok(cleanedCount >= 0, 'Should return valid count');
 
+    await stateManager.close();
+});
+
+test('updateTaskStateIfCurrent atomically updates a matching task snapshot', async () => {
+    const current = {
+        taskId: 'task-conditional-update',
+        issueRef: { number: 625, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-conditional-update',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-05T10:00:00.000Z',
+        updatedAt: '2026-08-05T10:01:00.000Z',
+        attempts: 0,
+        history: [{
+            state: TaskStates.PROCESSING,
+            timestamp: '2026-08-05T10:01:00.000Z',
+            reason: 'Processing',
+        }],
+    } satisfies TaskStateData;
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(current));
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
+    mockRedisInstance.setex.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+    const updated = await stateManager.updateTaskStateIfCurrent(
+        current.taskId,
+        {
+            state: current.state,
+            createdAt: current.createdAt,
+            updatedAt: current.updatedAt,
+            correlationId: current.correlationId,
+        },
+        TaskStates.COMPLETED,
+        { reason: 'Finalized by worker event' },
+    );
+
+    assert.equal(updated?.state, TaskStates.COMPLETED);
+    assert.equal(mockRedisInstance.eval.mock.calls.length, 1);
+    assert.equal(mockRedisInstance.eval.mock.calls[0].arguments[2], `${TEST_KEY_PREFIX}${current.taskId}`);
+    assert.equal(mockRedisInstance.eval.mock.calls[0].arguments[3], JSON.stringify(current));
+    assert.equal(mockRedisInstance.setex.mock.calls.length, 0);
+    await stateManager.close();
+});
+
+test('updateTaskStateIfCurrent does not publish a lost compare-and-set race', async () => {
+    const current = {
+        taskId: 'task-conditional-conflict',
+        issueRef: { number: 626, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-conditional-conflict',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-05T10:00:00.000Z',
+        updatedAt: '2026-08-05T10:01:00.000Z',
+        attempts: 0,
+        history: [{
+            state: TaskStates.PROCESSING,
+            timestamp: '2026-08-05T10:01:00.000Z',
+            reason: 'Processing',
+        }],
+    } satisfies TaskStateData;
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(current));
+    mockRedisInstance.eval.mock.mockImplementation(async () => 0);
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+    const updated = await stateManager.updateTaskStateIfCurrent(
+        current.taskId,
+        {
+            state: current.state,
+            createdAt: current.createdAt,
+            updatedAt: current.updatedAt,
+            correlationId: current.correlationId,
+        },
+        TaskStates.FAILED,
+    );
+
+    assert.equal(updated, null);
+    assert.equal(mockDbHistoryInsert.mock.calls.length, 0);
+    assert.equal(mockPublishTaskUpdate.mock.calls.length, 0);
     await stateManager.close();
 });
 

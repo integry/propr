@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from '@propr/core';
+import { GITHUB_ISSUE_QUEUE_NAME, createWorker, getStateManager } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
@@ -24,6 +24,7 @@ import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 import { createConfiguredMainWorker } from './workerFactory.js';
 import type { MainWorker } from './workerFactory.js';
+import { attachPRCommentTaskStateFinalizers } from './jobs/prCommentTaskStateFinalizers.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -316,6 +317,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             processMergeConflictJob,
         },
     });
+    const taskStateFinalizers = attachPRCommentTaskStateFinalizers(worker, getStateManager());
 
     const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
         AGENT_RUNTIME_BUILD_QUEUE_NAME,
@@ -347,12 +349,13 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
 
     const close = async (): Promise<void> => {
-        await heartbeatRedis.srem('system:status:workers', workerId);
         clearInterval(heartbeatInterval);
+        await worker.close();
+        await taskStateFinalizers.close();
+        await runtimeBuildWorker.close();
+        await heartbeatRedis.srem('system:status:workers', workerId);
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
-        await worker.close();
-        await runtimeBuildWorker.close();
     };
 
     process.on('SIGINT', async () => {
