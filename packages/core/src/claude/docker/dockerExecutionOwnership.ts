@@ -1,7 +1,6 @@
 import type { ChildProcess } from 'node:child_process';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import logger from '../../utils/logger.js';
-import { stopDockerContainer } from './dockerContainerControl.js';
+import { teardownDockerExecution } from './dockerContainerControl.js';
 
 interface ExecutionOwnershipContext {
     signal: AbortSignal;
@@ -12,6 +11,14 @@ interface ExecutionOwnershipContext {
 interface SpawnedExecutionState {
     aborted: { value: boolean };
     containerId: { value: string | null };
+    teardownPromise: Promise<void> | null;
+}
+
+interface AbortSpawnedExecutionOptions {
+    namedContainer: string | null;
+    scheduleForceKill: (child: ChildProcess) => void;
+    taskId?: string;
+    attemptGeneration?: string;
 }
 
 const executionOwnershipContext = new AsyncLocalStorage<ExecutionOwnershipContext>();
@@ -31,21 +38,19 @@ export function getExecutionOwnershipContext(): ExecutionOwnershipContext | unde
 export function abortSpawnedExecution(
     child: ChildProcess,
     state: SpawnedExecutionState,
-    namedContainer: string | null,
-    scheduleForceKill: (child: ChildProcess) => void,
-): void {
-    if (state.aborted.value || child.killed) return;
+    options: AbortSpawnedExecutionOptions,
+): Promise<void> {
+    if (state.aborted.value) return state.teardownPromise ?? Promise.resolve();
     state.aborted.value = true;
-    const containerToStop = state.containerId.value || namedContainer;
-    if (containerToStop) {
-        void stopDockerContainer(containerToStop, 10).then(stopResult => {
-            if (!stopResult.success) {
-                logger.warn({ containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container after execution ownership loss');
-            }
-        });
-    }
     child.kill('SIGTERM');
-    scheduleForceKill(child);
+    options.scheduleForceKill(child);
+    state.teardownPromise = teardownDockerExecution({
+        taskId: options.taskId,
+        attemptGeneration: options.attemptGeneration,
+        containerId: state.containerId.value,
+        containerName: options.namedContainer,
+    });
+    return state.teardownPromise;
 }
 
 export function addTaskAttemptLabelsToDockerArgs(

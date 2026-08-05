@@ -15,7 +15,7 @@ if redis.call('get', KEYS[1]) ~= ARGV[1] then
     return {0, 0}
 end
 local current = cjson.decode(ARGV[1])
-local next = cjson.decode(ARGV[4])
+local next = cjson.decode(ARGV[3])
 local durable_version = tonumber(redis.call('get', KEYS[2])) or 0
 local current_version = tonumber(current.version) or 0
 local next_version = tonumber(next.version) or (current_version + 1)
@@ -26,7 +26,7 @@ if next_version <= durable_version then
     next_version = durable_version + 1
 end
 next.version = next_version
-redis.call('setex', KEYS[2], ARGV[3], next_version)
+redis.call('set', KEYS[2], next_version)
 redis.call('setex', KEYS[1], ARGV[2], cjson.encode(next))
 return {1, next_version}
 `;
@@ -41,8 +41,8 @@ if current then
     end
 end
 version = version + 1
-redis.call('setex', KEYS[2], ARGV[2], version)
-local next = cjson.decode(ARGV[3])
+redis.call('set', KEYS[2], version)
+local next = cjson.decode(ARGV[2])
 next.version = version
 redis.call('setex', KEYS[1], ARGV[1], cjson.encode(next))
 return version
@@ -61,8 +61,8 @@ if current then
     end
 end
 version = version + 1
-redis.call('setex', KEYS[3], ARGV[3], version)
-local next = cjson.decode(ARGV[4])
+redis.call('set', KEYS[3], version)
+local next = cjson.decode(ARGV[3])
 next.version = version
 redis.call('setex', KEYS[1], ARGV[2], cjson.encode(next))
 return version
@@ -93,7 +93,6 @@ interface CreateTaskStateRecordOptions {
     stateKey: string;
     revisionKey: string;
     stateExpiry: number;
-    revisionExpiry: number;
     state: TaskStateData;
     prProcessingLockToken?: string;
     prProcessingLockKey?: string;
@@ -103,17 +102,17 @@ export async function createTaskStateRecord(
     redis: Pick<InstanceType<typeof Redis>, 'eval'>,
     options: CreateTaskStateRecordOptions,
 ): Promise<number> {
-    const { stateKey, revisionKey, stateExpiry, revisionExpiry, state } = options;
+    const { stateKey, revisionKey, stateExpiry, state } = options;
     if (options.prProcessingLockToken && options.prProcessingLockKey) {
         return Number(await redis.eval(
             CREATE_FENCED_TASK_STATE_SCRIPT, 3,
             stateKey, options.prProcessingLockKey, revisionKey,
-            options.prProcessingLockToken, stateExpiry, revisionExpiry, JSON.stringify(state),
+            options.prProcessingLockToken, stateExpiry, JSON.stringify(state),
         ));
     }
     return Number(await redis.eval(
         CREATE_TASK_STATE_SCRIPT, 2,
-        stateKey, revisionKey, stateExpiry, revisionExpiry, JSON.stringify(state),
+        stateKey, revisionKey, stateExpiry, JSON.stringify(state),
     ));
 }
 
@@ -121,7 +120,6 @@ interface CompareAndSetTaskStateRecordOptions {
     stateKey: string;
     revisionKey: string;
     stateExpiry: number;
-    revisionExpiry: number;
     expectedJson: string;
     state: TaskStateData;
 }
@@ -138,7 +136,6 @@ export async function compareAndSetTaskStateRecord(
         options.revisionKey,
         options.expectedJson,
         options.stateExpiry,
-        options.revisionExpiry,
         JSON.stringify(options.state),
     );
     // Numeric results keep lightweight Redis mocks backwards compatible.

@@ -108,8 +108,23 @@ async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
     }
 
     correlatedLogger.info({ lockKey }, 'PR is currently being processed by another execution. Rescheduling...');
-    await issueQueue.add(job.name, job.data, { delay: 10000 });
+    const requeuedData = { ...job.data };
+    delete requeuedData.prProcessingLockToken;
+    await issueQueue.add(job.name, requeuedData, { delay: 10000 });
     return false;
+}
+
+async function clearRetainedPRProcessingLockToken(
+    job: Job<CommentJobData>,
+    taskId: string,
+    correlatedLogger: Logger,
+): Promise<void> {
+    delete job.data.prProcessingLockToken;
+    try {
+        await job.updateData({ ...job.data });
+    } catch (error) {
+        correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Could not remove the completed PR lease token from retained job data');
+    }
 }
 
 async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }): Promise<ValidationResult> {
@@ -241,7 +256,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
         body: buildStartingWorkCommentBody(state.authorsText, state.unprocessedComments, taskUrl),
+        request: { signal },
     });
+    await assertLease();
 
     const githubToken = await state.octokit.auth({ type: "installation" }) as GitHubToken;
     const repoUrl = getRepoUrl({ repoOwner, repoName });
@@ -395,11 +412,14 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     }
     if (!abandonedContainerStopped) {
         try {
-            await issueQueue.add(job.name, job.data, { delay: 60000 });
+            const requeuedData = { ...job.data };
+            delete requeuedData.prProcessingLockToken;
+            await issueQueue.add(job.name, requeuedData, { delay: 60000 });
         } finally {
             await stopLockHeartbeat();
             await releasePRProcessingLock(redisClient, lockKey, lockToken);
         }
+        await clearRetainedPRProcessingLockToken(job, taskId, correlatedLogger);
         return { status: 'rescheduled', reason: 'orphan_container_stop_failed', prProcessingAttemptGeneration: attemptGeneration };
     }
 
@@ -437,7 +457,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
             correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Stopped superseded PR processing attempt before further side effects');
             throw error;
         }
-        await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, prProcessingLockToken: lockToken, assertLease });
+        await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal });
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
         if (isUserCancelled) {
@@ -446,6 +466,12 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         if (!(error instanceof UsageLimitError)) throw error;
         preserveJobOutcome = true; return { status: 'requeued', reason: 'usage_limit', prProcessingAttemptGeneration: attemptGeneration };
     } finally {
-        await cleanupJobBeforeStoppingHeartbeat({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient }, stopLockHeartbeat, preserveJobOutcome);
+        try {
+            await cleanupJobBeforeStoppingHeartbeat({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient }, stopLockHeartbeat, preserveJobOutcome);
+        } finally {
+            if (preserveJobOutcome) {
+                await clearRetainedPRProcessingLockToken(job, taskId, correlatedLogger);
+            }
+        }
     }
 }

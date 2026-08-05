@@ -4,6 +4,8 @@ import logger from '../../utils/logger.js';
 const DOCKER_PATH = '/usr/bin/docker';
 const CONTAINER_IDENTIFIER_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 const MAX_STOP_TIMEOUT_SECONDS = 300;
+const DEFAULT_CREATION_RACE_ATTEMPTS = 10;
+const DEFAULT_CREATION_RACE_RETRY_MS = 250;
 
 function validateStopRequest(containerId: string, timeoutSeconds: number): string | undefined {
     if (!containerId) return 'No container ID provided';
@@ -32,6 +34,72 @@ function runDocker(args: string[], timeout: number): Promise<string> {
             },
         );
     });
+}
+
+function waitForRetry(delayMs: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
+export interface DockerExecutionTeardownOptions {
+    taskId?: string;
+    attemptGeneration?: string;
+    containerId?: string | null;
+    containerName?: string | null;
+    attempts?: number;
+    retryDelayMs?: number;
+}
+
+/**
+ * Removes every container belonging to an aborted execution, retrying long
+ * enough to cover the window in which `docker run` has reached the daemon but
+ * the container has not appeared in `docker ps` yet.
+ */
+export async function teardownDockerExecution(
+    options: DockerExecutionTeardownOptions,
+): Promise<void> {
+    const attempts = Math.max(1, Math.min(20, options.attempts ?? DEFAULT_CREATION_RACE_ATTEMPTS));
+    const retryDelayMs = Math.max(0, Math.min(1000, options.retryDelayMs ?? DEFAULT_CREATION_RACE_RETRY_MS));
+    const hasGenerationFence = Boolean(options.taskId && options.attemptGeneration);
+    if (!hasGenerationFence && !options.containerId && !options.containerName) return;
+
+    for (let attempt = 0; attempt < attempts; attempt++) {
+        const containers = new Set<string>();
+        if (hasGenerationFence) {
+            try {
+                const output = await runDocker([
+                    'ps', '-aq',
+                    '--filter', `label=propr.task.id=${options.taskId}`,
+                    '--filter', `label=propr.task.attempt-generation=${options.attemptGeneration}`,
+                ], 5000);
+                for (const id of output.split('\n').map(value => value.trim()).filter(Boolean)) {
+                    containers.add(id);
+                }
+            } catch (error) {
+                logger.debug({
+                    taskId: options.taskId,
+                    attemptGeneration: options.attemptGeneration,
+                    error: (error as Error).message,
+                }, 'Could not inspect Docker containers while closing an aborted execution');
+            }
+        } else {
+            if (options.containerId) containers.add(options.containerId);
+            if (options.containerName) containers.add(options.containerName);
+        }
+
+        for (const container of containers) {
+            if (!CONTAINER_IDENTIFIER_PATTERN.test(container)) continue;
+            try {
+                await runDocker(['rm', '-f', container], 10000);
+            } catch (error) {
+                const message = (error as Error).message;
+                if (!message.includes('No such container') && !message.includes('No such object')) {
+                    logger.warn({ containerId: container, error: message }, 'Failed to remove Docker container after execution ownership loss');
+                }
+            }
+        }
+
+        if (attempt + 1 < attempts && retryDelayMs > 0) await waitForRetry(retryDelayMs);
+    }
 }
 
 /** Gracefully stops a Docker container, then force-kills it when necessary. */

@@ -36,4 +36,21 @@ describe('SocketService task update ordering', () => {
     assert.equal(shouldBroadcastTaskUpdate(revision, 21), false);
     assert.equal(shouldBroadcastTaskUpdate(revision, 22), true);
   });
+
+  test('uses the configured worker-state key namespaces', async () => {
+    const requestedKeys: string[] = [];
+    const revision = await loadDurableTaskRevision(async key => {
+      requestedKeys.push(key);
+      return key.startsWith('durable:') ? '9' : JSON.stringify({ version: 8 });
+    }, 'task-custom', {
+      keyPrefix: 'custom:state:',
+      revisionKeyPrefix: 'durable:',
+    });
+
+    assert.deepEqual(requestedKeys, [
+      'durable:task-custom',
+      'custom:state:task-custom',
+    ]);
+    assert.equal(revision, 9);
+  });
 });

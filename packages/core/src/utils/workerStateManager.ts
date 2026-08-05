@@ -4,7 +4,8 @@ import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
     type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions,
-    type CreateTaskStateOptions, type NonTerminalTaskFilter, type TaskStateExpectation
+    type CreateTaskStateOptions, type NonTerminalTaskFilter, type NonTerminalTaskPage,
+    type TaskStateExpectation
 } from './workerStateManager.types.js';
 import {
     cleanupOldTaskStates,
@@ -41,6 +42,20 @@ export {
     type IssueRef,
 };
 
+export const DEFAULT_WORKER_STATE_KEY_PREFIX = 'worker:state:';
+
+export function getWorkerStateRedisKeys(
+    taskId: string,
+    options: Pick<WorkerStateManagerOptions, 'keyPrefix' | 'revisionKeyPrefix'> = {},
+): { stateKey: string; revisionKey: string } {
+    const keyPrefix = options.keyPrefix ?? DEFAULT_WORKER_STATE_KEY_PREFIX;
+    const revisionKeyPrefix = options.revisionKeyPrefix ?? `revision:${keyPrefix}`;
+    return {
+        stateKey: `${keyPrefix}${taskId}`,
+        revisionKey: `${revisionKeyPrefix}${taskId}`,
+    };
+}
+
 /**
  * Worker state manager for persistent task state tracking
  */
@@ -49,7 +64,6 @@ export class WorkerStateManager {
     private keyPrefix: string;
     private revisionKeyPrefix: string;
     private stateExpiry: number;
-    private revisionExpiry: number;
     private nonTerminalScanPositions = new Map<string, { cursor: string; pendingKeys: string[] }>();
     private persistenceTails = new Map<string, Promise<void>>();
 
@@ -61,10 +75,9 @@ export class WorkerStateManager {
             enableReadyCheck: false,
             ...options.redis
         });
-        this.keyPrefix = options.keyPrefix ?? 'worker:state:';
+        this.keyPrefix = options.keyPrefix ?? DEFAULT_WORKER_STATE_KEY_PREFIX;
         this.revisionKeyPrefix = options.revisionKeyPrefix ?? `revision:${this.keyPrefix}`;
         this.stateExpiry = options.stateExpiry ?? 7 * 24 * 3600;
-        this.revisionExpiry = options.revisionExpiry ?? this.stateExpiry * 2;
         this.redis.on('error', (error: Error) => {
             logger.error({ error: error.message }, 'Redis error in WorkerStateManager');
         });
@@ -99,7 +112,7 @@ export class WorkerStateManager {
         const revisionKey = `${this.revisionKeyPrefix}${taskId}`;
         const createdVersion = await createTaskStateRecord(this.redis, {
             stateKey: key, revisionKey, stateExpiry: this.stateExpiry,
-            revisionExpiry: this.revisionExpiry, state,
+            state,
             ...options,
         });
         if (options.prProcessingLockToken && createdVersion < 1) {
@@ -165,7 +178,6 @@ export class WorkerStateManager {
                 stateKey: key,
                 revisionKey: `${this.revisionKeyPrefix}${taskId}`,
                 stateExpiry: this.stateExpiry,
-                revisionExpiry: this.revisionExpiry,
                 expectedJson: stateJson,
                 state,
             });
@@ -214,7 +226,6 @@ export class WorkerStateManager {
             stateKey: key,
             revisionKey: `${this.revisionKeyPrefix}${taskId}`,
             stateExpiry: this.stateExpiry,
-            revisionExpiry: this.revisionExpiry,
             expectedJson: stateJson,
             state,
         });
@@ -277,7 +288,6 @@ export class WorkerStateManager {
                 stateKey: key,
                 revisionKey: `${this.revisionKeyPrefix}${taskId}`,
                 stateExpiry: this.stateExpiry,
-                revisionExpiry: this.revisionExpiry,
                 expectedJson: stateJson,
                 state,
             });
@@ -355,7 +365,6 @@ export class WorkerStateManager {
                 stateKey: key,
                 revisionKey: `${this.revisionKeyPrefix}${taskId}`,
                 stateExpiry: this.stateExpiry,
-                revisionExpiry: this.revisionExpiry,
                 expectedJson: stateJson,
                 state,
             });
@@ -441,7 +450,7 @@ export class WorkerStateManager {
      * Gets all tasks that have not reached a terminal state. Used by the worker
      * reconciler to repair state after an unclean restart.
      */
-    async getNonTerminalTasks(filter: NonTerminalTaskFilter = {}): Promise<TaskStateData[]> {
+    async getNonTerminalTaskPage(filter: NonTerminalTaskFilter = {}): Promise<NonTerminalTaskPage> {
         const cursorKey = filter.taskTypes?.length
             ? [...filter.taskTypes].sort().join(',')
             : '*';
@@ -456,7 +465,14 @@ export class WorkerStateManager {
             cursor: result.nextCursor,
             pendingKeys: result.pendingKeys,
         });
-        return result.tasks;
+        return {
+            tasks: result.tasks,
+            scanComplete: result.nextCursor === '0' && result.pendingKeys.length === 0,
+        };
+    }
+
+    async getNonTerminalTasks(filter: NonTerminalTaskFilter = {}): Promise<TaskStateData[]> {
+        return (await this.getNonTerminalTaskPage(filter)).tasks;
     }
 
     /**

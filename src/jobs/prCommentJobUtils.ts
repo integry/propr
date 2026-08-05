@@ -171,6 +171,7 @@ export interface JobErrorOptions {
     correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string;
     prProcessingLockToken?: string;
     assertLease: () => Promise<void>;
+    signal: AbortSignal;
 }
 
 export class UsageLimitError extends Error {
@@ -188,18 +189,26 @@ interface CancellationCommentParams {
     repoName: string;
     commentId: number;
     correlatedLogger: Logger;
+    assertLease: () => Promise<void>;
+    signal: AbortSignal;
 }
 
 async function postCancellationComment(params: CancellationCommentParams): Promise<void> {
-    const { octokit, repoOwner, repoName, commentId, correlatedLogger } = params;
+    const { octokit, repoOwner, repoName, commentId, correlatedLogger, assertLease, signal } = params;
+    await assertLease();
     try {
         await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
             owner: repoOwner, repo: repoName, comment_id: commentId,
             body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can post a new comment to restart processing.`,
+            request: { signal },
         });
     } catch (commentError) {
+        signal.throwIfAborted();
+        await assertLease();
         correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post cancellation comment');
+        return;
     }
+    await assertLease();
 }
 
 async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
@@ -220,15 +229,21 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
             await options.assertLease();
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`
+                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`,
+                request: { signal: options.signal },
             });
         } catch (commentError) {
+            options.signal.throwIfAborted();
+            await options.assertLease();
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to PR.');
         }
+        await options.assertLease();
     }
 
     await options.assertLease();
-    await issueQueue.add(job.name, job.data, { jobId: requeueJobId, delay: Math.max(0, delay) });
+    const requeuedData = { ...job.data };
+    delete requeuedData.prProcessingLockToken;
+    await issueQueue.add(job.name, requeuedData, { jobId: requeueJobId, delay: Math.max(0, delay) });
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
@@ -238,7 +253,15 @@ async function handleUserCancellation(options: JobErrorOptions, errorMessage: st
     correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
     if (octokit && startingWorkComment) {
         await options.assertLease();
-        await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
+        await postCancellationComment({
+            octokit,
+            repoOwner,
+            repoName,
+            commentId: startingWorkComment.data.id,
+            correlatedLogger,
+            assertLease: options.assertLease,
+            signal: options.signal,
+        });
     }
 }
 
@@ -264,10 +287,14 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
                 body: `❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.${failedEvidence ? `\n${failedEvidence}` : ''}`,
+                request: { signal: options.signal },
             });
         } catch (commentError) {
+            options.signal.throwIfAborted();
+            await options.assertLease();
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');
         }
+        await options.assertLease();
     }
 }
 
@@ -294,7 +321,15 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
         correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping error handler state update');
         if (currentState.state === TaskStates.CANCELLED && octokit && startingWorkComment) {
             await options.assertLease();
-            await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
+            await postCancellationComment({
+                octokit,
+                repoOwner,
+                repoName,
+                commentId: startingWorkComment.data.id,
+                correlatedLogger,
+                assertLease: options.assertLease,
+                signal: options.signal,
+            });
             correlatedLogger.info({ taskId, commentId: startingWorkComment.data.id }, 'Updated GitHub comment for cancelled task');
         }
         return;

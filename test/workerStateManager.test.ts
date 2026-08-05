@@ -304,6 +304,37 @@ test('getNonTerminalTasks caps empty SCAN pages and resumes from the saved curso
     await stateManager.close();
 });
 
+test('getNonTerminalTaskPage reports whether the rotating SCAN cycle is complete', async () => {
+    const terminal: TaskStateData = {
+        taskId: 'terminal-page-task',
+        issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        correlationId: 'terminal-page',
+        state: TaskStates.COMPLETED,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    const processing = { ...terminal, taskId: 'processing-page-task', state: TaskStates.PROCESSING };
+    mockRedisInstance.scan.mock.resetCalls();
+    mockRedisInstance.scan.mock.mockImplementation(async (cursor: string) => cursor === '0'
+        ? ['17', [`${TEST_KEY_PREFIX}${terminal.taskId}`]]
+        : ['0', [`${TEST_KEY_PREFIX}${processing.taskId}`]]);
+    mockRedisInstance.get.mock.resetCalls();
+    mockRedisInstance.get.mock.mockImplementation(async key => JSON.stringify(
+        key.endsWith(terminal.taskId) ? terminal : processing,
+    ));
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const first = await stateManager.getNonTerminalTaskPage({ taskTypes: ['pr_comment'], limit: 1 });
+    const second = await stateManager.getNonTerminalTaskPage({ taskTypes: ['pr_comment'], limit: 1 });
+
+    assert.deepStrictEqual(first, { tasks: [], scanComplete: false });
+    assert.deepStrictEqual(second.tasks.map(task => task.taskId), [processing.taskId]);
+    assert.strictEqual(second.scanComplete, true);
+    await stateManager.close();
+});
+
 test('createTaskState creates state with correct structure', async () => {
     // Reset mocks
     mockRedisInstance.setex.mock.resetCalls();
@@ -346,7 +377,7 @@ test('createTaskState creates state with correct structure', async () => {
     await stateManager.close();
 });
 
-test('createTaskState stores state in Redis with TTL', async () => {
+test('createTaskState stores expiring state with a durable revision', async () => {
     // Reset mocks
     mockRedisInstance.eval.mock.resetCalls();
     mockRedisInstance.eval.mock.mockImplementation(async () => 1);
@@ -365,17 +396,17 @@ test('createTaskState stores state in Redis with TTL', async () => {
 
     await stateManager.createTaskState(taskId, issueRef);
 
-    // Verify the atomic creation script received a bounded revision key and TTL.
+    // Verify the atomic creation script received a separate durable revision key.
     assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
     const createCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(createCall.arguments[2], `${TEST_KEY_PREFIX}${taskId}`);
     assert.strictEqual(createCall.arguments[3], `revision:${TEST_KEY_PREFIX}${taskId}`);
     assert.strictEqual(createCall.arguments[4], TEST_STATE_EXPIRY);
-    assert.strictEqual(createCall.arguments[5], TEST_STATE_EXPIRY * 2);
-    assert.match(createCall.arguments[0] as string, /setex.*KEYS\[2\].*ARGV\[2\]/s);
+    assert.strictEqual(createCall.arguments.length, 6);
+    assert.match(createCall.arguments[0] as string, /redis\.call\('set', KEYS\[2\], version\)/);
 
     // Verify the stored state is valid JSON with correct structure
-    const storedState = JSON.parse(createCall.arguments[6] as string) as TaskStateData;
+    const storedState = JSON.parse(createCall.arguments[5] as string) as TaskStateData;
     assert.strictEqual(storedState.taskId, taskId);
     assert.strictEqual(storedState.state, TaskStates.PENDING);
     assert.strictEqual(storedState.issueRef.number, 100);
@@ -659,7 +690,7 @@ test('createTaskState stores valid JSON in Redis', async () => {
     await stateManager.createTaskState(taskId, issueRef);
 
     const createCall = mockRedisInstance.eval.mock.calls[0];
-    const storedJson = createCall.arguments[6] as string;
+    const storedJson = createCall.arguments[5] as string;
 
     // Should not throw when parsing
     let parsed: TaskStateData | undefined;
@@ -1097,10 +1128,10 @@ test('updateTaskState persists to Redis with TTL renewal', async () => {
     const evalCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-redis-persist`);
     assert.strictEqual(evalCall.arguments[5], TEST_STATE_EXPIRY);
-    assert.strictEqual(evalCall.arguments[6], TEST_STATE_EXPIRY * 2);
+    assert.strictEqual(evalCall.arguments.length, 7);
 
     // Verify state was stored correctly
-    const storedState = JSON.parse(evalCall.arguments[7] as string) as TaskStateData;
+    const storedState = JSON.parse(evalCall.arguments[6] as string) as TaskStateData;
     assert.strictEqual(storedState.state, TaskStates.PROCESSING);
     assert.strictEqual(storedState.history.length, 2);
 
@@ -1651,10 +1682,10 @@ test('markTaskFailed persists failure to Redis atomically', async () => {
     const evalCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-fail-redis`);
     assert.strictEqual(evalCall.arguments[5], TEST_STATE_EXPIRY);
-    assert.strictEqual(evalCall.arguments[6], TEST_STATE_EXPIRY * 2);
+    assert.strictEqual(evalCall.arguments.length, 7);
 
     // Verify stored state has FAILED status
-    const storedState = JSON.parse(evalCall.arguments[7] as string) as TaskStateData;
+    const storedState = JSON.parse(evalCall.arguments[6] as string) as TaskStateData;
     assert.strictEqual(storedState.state, TaskStates.FAILED);
     assert.ok(storedState.lastError);
     assert.strictEqual(storedState.lastError.message, 'System failure');
@@ -3128,7 +3159,6 @@ test('updateIssueRef applies its patch to a concurrent terminal state without re
         _revisionKey: string,
         expectedJson: string,
         _expiry: number,
-        _revisionExpiry: number,
         updatedJson: string,
     ) => {
         if (!cancellationCommitted) {
@@ -3179,7 +3209,6 @@ test('updateHistoryMetadata merges into a concurrent completed state without res
         _revisionKey: string,
         expectedJson: string,
         _expiry: number,
-        _revisionExpiry: number,
         updatedJson: string,
     ) => {
         if (!completionCommitted) {

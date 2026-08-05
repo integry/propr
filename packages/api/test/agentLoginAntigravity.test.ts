@@ -37,6 +37,13 @@ function fakeChild(): ChildProcessWithoutNullStreams {
   return child;
 }
 
+function antigravityCredential(token: string): string {
+  return JSON.stringify({
+    access_token: token,
+    expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+  });
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -71,6 +78,8 @@ describe('Antigravity agent login', () => {
     assert.ok(dropPrivileges > loginDefaults);
     assert.match(entrypoint, /settings\.enableTelemetry = false/);
     assert.match(entrypoint, /trustedWorkspaces\.push\('\/home\/node\/workspace'\)/);
+    assert.match(entrypoint, /fs\.renameSync\(settingsPath, backupPath\)/);
+    assert.match(entrypoint, /invalid Antigravity settings were backed up/);
   });
 
   test('recognizes only known, non-empty, unexpired authentication after onboarding is saved', async () => {
@@ -84,6 +93,9 @@ describe('Antigravity agent login', () => {
       assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
 
       fs.writeFileSync(onboardingPath, JSON.stringify({ onboardingComplete: true }));
+      assert.equal(await isAgentLoginComplete('antigravity', credentialPath), false);
+
+      fs.writeFileSync(tokenPath, antigravityCredential('complete-token'));
       assert.equal(await isAgentLoginComplete('antigravity', credentialPath), true);
 
       fs.writeFileSync(tokenPath, '');
@@ -167,7 +179,7 @@ describe('Antigravity agent login', () => {
 
       const cliPath = path.join(credentialPath, 'antigravity-cli');
       fs.mkdirSync(path.join(cliPath, 'cache'), { recursive: true });
-      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), 'token');
+      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), antigravityCredential('saved-token'));
       fs.writeFileSync(
         path.join(cliPath, 'cache', 'onboarding.json'),
         JSON.stringify({ onboardingComplete: true }),
@@ -205,7 +217,7 @@ describe('Antigravity agent login', () => {
 
     try {
       fs.mkdirSync(path.join(cliPath, 'cache'), { recursive: true });
-      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), 'token');
+      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), antigravityCredential('existing-token'));
       fs.writeFileSync(
         path.join(cliPath, 'cache', 'onboarding.json'),
         JSON.stringify({ onboardingComplete: true }),
@@ -226,10 +238,10 @@ describe('Antigravity agent login', () => {
       assert.deepEqual(dockerCalls[2], ['start', '-a', '-i', 'propr-agent-login-antigravity-existing-session']);
 
       fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), 'transient-token-fragment');
-      await new Promise(resolve => setTimeout(resolve, 25));
+      await new Promise(resolve => setTimeout(resolve, 100));
       assert.equal(manager.get(started.id, 'owner').status, 'running');
 
-      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), 'refreshed-token');
+      fs.writeFileSync(path.join(cliPath, 'antigravity-oauth-token'), antigravityCredential('refreshed-token'));
       await waitFor(() => manager.get(started.id, 'owner').status === 'succeeded');
       assert.match(manager.get(started.id, 'owner').output, /Authentication saved/);
     } finally {

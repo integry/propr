@@ -1,4 +1,7 @@
 import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { after, describe, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import {
@@ -76,6 +79,27 @@ describe('partial agent execution', () => {
         setTimeout(() => controller.abort(leaseError), 50);
 
         await assert.rejects(execution, error => error === leaseError);
+    });
+
+    test('does not spawn a command after protected execution ownership is already lost', async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-pre-aborted-execution-'));
+        const sentinel = path.join(tempDir, 'spawned');
+        const controller = new AbortController();
+        const leaseError = new Error('lease already superseded');
+        controller.abort(leaseError);
+
+        try {
+            await assert.rejects(
+                runWithExecutionAbortSignal(controller.signal, () => executeDockerCommand(
+                    process.execPath,
+                    ['-e', `require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'spawned')`],
+                )),
+                error => error === leaseError,
+            );
+            assert.equal(fs.existsSync(sentinel), false);
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
     });
 
     test('retains Claude max-turn metadata and the latest assistant update', () => {

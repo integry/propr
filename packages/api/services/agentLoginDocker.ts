@@ -195,12 +195,9 @@ export async function inspectAgentLoginCompletion(
       .digest('hex');
     const token = tokenFile.text.trim();
     if (!token) return { complete: false, fingerprint };
-    let credentialValid = true;
-    if (token.startsWith('{') || token.startsWith('[')) {
-      const payload = JSON.parse(token) as unknown;
-      credentialValid = Boolean(payload && typeof payload === 'object' && !Array.isArray(payload)
-        && hasValidCredential(payload as Record<string, unknown>));
-    }
+    const payload = JSON.parse(token) as unknown;
+    const credentialValid = Boolean(payload && typeof payload === 'object' && !Array.isArray(payload)
+      && hasValidCredential(payload as Record<string, unknown>));
     const onboarding = JSON.parse(onboardingFile.text) as unknown;
     const onboardingComplete = Boolean(onboarding
       && typeof onboarding === 'object'

@@ -134,7 +134,6 @@ test('fenced task revisions remain monotonic after the expiring state is recreat
             revisionKey,
             lockToken,
             60,
-            120,
             JSON.stringify(initial),
         );
 
@@ -163,7 +162,6 @@ test('fenced task revisions remain monotonic after the expiring state is recreat
                 revisionKey,
                 currentJson,
                 60,
-                120,
                 JSON.stringify(next),
             ) as [number, number];
             assert.equal(Number(result[0]), 1);
@@ -179,7 +177,6 @@ test('fenced task revisions remain monotonic after the expiring state is recreat
             revisionKey,
             lockToken,
             60,
-            120,
             JSON.stringify(initial),
         );
 
@@ -188,7 +185,7 @@ test('fenced task revisions remain monotonic after the expiring state is recreat
         const recreated = JSON.parse((await redis.get(stateKey))!) as TaskStateData;
         assert.equal(recreated.version, Number(recreatedVersion));
         const revisionTtl = await redis.ttl(revisionKey);
-        assert.ok(revisionTtl > 0 && revisionTtl <= 120);
+        assert.equal(revisionTtl, -1);
     } finally {
         await redis.del(stateKey, revisionKey, lockKey);
         await redis.quit();

@@ -196,21 +196,27 @@ async function stopAbandonedTaskContainer(
     context: ReconciliationContext,
 ): Promise<void> {
     const { options, summary, stopContainer } = context;
-    throwIfAborted(options.signal);
-    const container = await findGenerationSpecificContainer(task, context);
-    if (!container) return;
-    throwIfAborted(options.signal);
-    // The label prevents a successor's container from matching, while this
-    // final read closes the window in which the scanned Redis state itself was
-    // replaced before the destructive operation.
-    const current = await options.stateManager.getTaskState(task.taskId);
-    if (!taskMatchesExpectation(current, task)) return;
-    throwIfAborted(options.signal);
-    const result = await stopContainer(container.id, 10);
-    if (!result.success) {
-        throw new Error(`Could not stop abandoned agent container ${container.id}: ${result.error ?? 'unknown error'}`);
+    const stoppedContainerIds = new Set<string>();
+    while (true) {
+        throwIfAborted(options.signal);
+        const container = await findGenerationSpecificContainer(task, context);
+        if (!container) return;
+        if (stoppedContainerIds.has(container.id)) {
+            throw new Error(`Abandoned agent container ${container.id} remained live after a successful stop`);
+        }
+        throwIfAborted(options.signal);
+        // The generation label prevents a successor's container from matching,
+        // while this read closes the replacement window before every stop.
+        const current = await options.stateManager.getTaskState(task.taskId);
+        if (!taskMatchesExpectation(current, task)) return;
+        throwIfAborted(options.signal);
+        const result = await stopContainer(container.id, 10);
+        if (!result.success) {
+            throw new Error(`Could not stop abandoned agent container ${container.id}: ${result.error ?? 'unknown error'}`);
+        }
+        stoppedContainerIds.add(container.id);
+        summary.containersStopped++;
     }
-    summary.containersStopped++;
 }
 
 async function finalizeCompletedJob(
@@ -417,24 +423,28 @@ export async function reconcileStaleTaskStates(
     };
     while (Date.now() < deadline) {
         throwIfAborted(options.signal);
-        const scannedTasks = (await options.stateManager.getNonTerminalTasks({
+        const scanPage = await options.stateManager.getNonTerminalTaskPage({
             taskTypes: ['pr_comment'],
             limit: batchSize,
-        })).filter(isPRCommentTaskState);
+        });
+        const scannedTasks = scanPage.tasks.filter(isPRCommentTaskState);
         throwIfAborted(options.signal);
         const tasks = scannedTasks.filter(task => {
             if (seenTaskIds.has(task.taskId)) return false;
             seenTaskIds.add(task.taskId);
             return true;
         });
-        if (tasks.length === 0) break;
+        if (tasks.length === 0) {
+            if (scanPage.scanComplete) break;
+            continue;
+        }
         summary.scanned += tasks.length;
 
         for (let index = 0; index < tasks.length; index += concurrency) {
             throwIfAborted(options.signal);
             await Promise.all(tasks.slice(index, index + concurrency).map(reconcileOne));
         }
-        if (scannedTasks.length < batchSize) break;
+        if (scanPage.scanComplete) break;
     }
 
     return summary;

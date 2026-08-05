@@ -253,15 +253,17 @@ test('preserves a committed job outcome when cleanup ownership checks remain una
 });
 
 test('preserves a committed job outcome when stopping the heartbeat fails', async () => {
+    let attempts = 0;
     const stopHeartbeat = mock.fn(async () => {
-        throw new Error('heartbeat shutdown failed');
+        attempts++;
+        if (attempts === 1) throw new Error('heartbeat shutdown failed');
     });
     const options = cleanupOptions();
 
     await cleanupJobBeforeStoppingHeartbeat(options, stopHeartbeat, true);
 
     assert.equal(releaseLease.mock.calls.length, 0);
-    assert.equal(stopHeartbeat.mock.calls.length, 1);
+    assert.equal(stopHeartbeat.mock.calls.length, 2);
     assert.equal((options.correlatedLogger.warn as ReturnType<typeof mock.fn>).mock.calls.length, 1);
 });
 
@@ -291,10 +293,52 @@ test('performs no generic error side effects after the live lease is lost', asyn
             taskId: 'task-1748',
             prProcessingLockToken: 'attempt-token',
             assertLease: async () => { throw new Error('lease lost'); },
+            signal: new AbortController().signal,
         }),
         /lease lost/,
     );
 
     assert.equal(updateTaskState.mock.calls.length, 0);
     assert.equal(request.mock.calls.length, 0);
+});
+
+test('aborts and rechecks ownership after a generic-error GitHub mutation', async () => {
+    const controller = new AbortController();
+    const leaseError = new Error('lease lost during GitHub request');
+    const updateTaskState = mock.fn(async () => {});
+    const request = mock.fn(async (_route: string, parameters: { request?: { signal?: AbortSignal } }) => {
+        assert.equal(parameters.request?.signal, controller.signal);
+        controller.abort(leaseError);
+        return {};
+    });
+
+    await assert.rejects(
+        handleJobError(new Error('agent failed'), { name: 'processPullRequestComment', data: {} } as never, {
+            pullRequestNumber: 1748,
+            repoOwner: 'owner',
+            repoName: 'repo',
+            authorsText: '@owner',
+            unprocessedComments: [],
+            octokit: { request } as never,
+            startingWorkComment: { data: { id: 1 } },
+            claudeResult: null,
+            correlationId: 'correlation',
+            correlatedLogger: cleanupOptions().correlatedLogger,
+            stateManager: {
+                getTaskState: async () => ({
+                    state: 'processing',
+                    prProcessingLockToken: 'attempt-token',
+                }),
+                updateTaskState,
+            } as never,
+            taskId: 'task-1748',
+            prProcessingLockToken: 'attempt-token',
+            assertLease: async () => controller.signal.throwIfAborted(),
+            signal: controller.signal,
+        }),
+        error => error === leaseError,
+    );
+
+    assert.equal(updateTaskState.mock.calls.length, 1);
+    assert.equal(request.mock.calls.length, 1);
 });

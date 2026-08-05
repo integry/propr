@@ -96,7 +96,16 @@ try {
     }
     settings = parsed;
 } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
+    if (error.code !== 'ENOENT') {
+        const backupPath = `${settingsPath}.invalid-${Date.now()}`;
+        try {
+            fs.renameSync(settingsPath, backupPath);
+            console.error(`Warning: invalid Antigravity settings were backed up to ${backupPath}; recreating safe defaults`);
+        } catch (backupError) {
+            console.error(`Warning: invalid Antigravity settings could not be backed up (${backupError.message}); recreating safe defaults in place`);
+        }
+        settings = {};
+    }
 }
 settings.enableTelemetry = false;
 if (typeof settings.colorScheme !== 'string') settings.colorScheme = 'terminal';

@@ -23,7 +23,7 @@ export interface ReconciliationRedis {
 
 export type ReconciliationStateManager = Pick<
     WorkerStateManager,
-    'getNonTerminalTasks' | 'getTaskState' | 'updateTaskStateIfCurrent'
+    'getNonTerminalTaskPage' | 'getTaskState' | 'updateTaskStateIfCurrent'
 >;
 
 export interface TaskReconciliationSummary {

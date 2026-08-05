@@ -25,7 +25,7 @@ function stateManager(tasks: TaskStateData[]) {
     return {
         states,
         updates,
-        getNonTerminalTasks: async () => [...states.values()],
+        getNonTerminalTaskPage: async () => ({ tasks: [...states.values()], scanComplete: true }),
         getTaskState: async (taskId: string) => states.get(taskId) ?? null,
         updateTaskStateIfCurrent: async (
             taskId: string,
@@ -76,9 +76,11 @@ describe('task state reconciliation', () => {
         const second = task('pr-comments-batch-second', TaskStates.PROCESSING);
         const manager = stateManager([first, second]);
         let page = 0;
-        manager.getNonTerminalTasks = async () => {
+        manager.getNonTerminalTaskPage = async () => {
             page++;
-            return page === 1 ? [first] : page === 2 ? [second] : [first];
+            return page === 1
+                ? { tasks: [first], scanComplete: false }
+                : { tasks: [second], scanComplete: true };
         };
 
         const summary = await reconcileStaleTaskStates({
@@ -94,7 +96,33 @@ describe('task state reconciliation', () => {
 
         assert.equal(summary.scanned, 2);
         assert.equal(summary.interrupted, 2);
-        assert.equal(page, 3);
+        assert.equal(page, 2);
+    });
+
+    test('continues after a scan page contains no matching non-terminal PR tasks', async () => {
+        const recoverable = task('pr-comments-after-mixed-page', TaskStates.PROCESSING);
+        const manager = stateManager([recoverable]);
+        let page = 0;
+        manager.getNonTerminalTaskPage = async () => {
+            page++;
+            return page === 1
+                ? { tasks: [], scanComplete: false }
+                : { tasks: [recoverable], scanComplete: true };
+        };
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => null,
+            batchSize: 1,
+        });
+
+        assert.equal(page, 2);
+        assert.equal(summary.scanned, 1);
+        assert.equal(summary.interrupted, 1);
     });
 
     test('repairs completed, superseded, interrupted, queued, and live tasks safely', async () => {
@@ -152,6 +180,7 @@ describe('task state reconciliation', () => {
     test('stops an orphan container before terminalizing a task with no live BullMQ attempt', async () => {
         const manager = stateManager([task('pr-comments-container-live', TaskStates.CLAUDE_EXECUTION)]);
         const stopContainer = mock.fn(async () => ({ success: true }));
+        let containerLookup = 0;
 
         const summary = await reconcileStaleTaskStates({
             stateManager: manager as never,
@@ -159,7 +188,9 @@ describe('task state reconciliation', () => {
             redis: { eval: async () => 0, pttl: async () => -2 },
             staleAfterMs: 1000,
             now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
-            findRunningContainer: async () => ({ id: 'container-1', name: 'agent-task' }),
+            findRunningContainer: async () => (
+                containerLookup++ === 0 ? { id: 'container-1', name: 'agent-task' } : null
+            ),
             stopContainer,
         });
 
@@ -167,6 +198,33 @@ describe('task state reconciliation', () => {
         assert.equal(manager.states.get('pr-comments-container-live')?.state, TaskStates.FAILED);
         assert.equal(summary.containersStopped, 1);
         assert.equal(summary.interrupted, 1);
+    });
+
+    test('stops every generation-specific orphan before terminalizing the task', async () => {
+        const abandoned = task('pr-comments-multiple-containers', TaskStates.CLAUDE_EXECUTION);
+        const manager = stateManager([abandoned]);
+        const containers = [
+            { id: 'container-1', name: 'agent-task-1' },
+            { id: 'container-2', name: 'agent-task-2' },
+        ];
+        const stopContainer = mock.fn(async () => ({ success: true }));
+
+        const summary = await reconcileStaleTaskStates({
+            stateManager: manager as never,
+            queue: queue({}),
+            redis: { eval: async () => 0, pttl: async () => -2 },
+            staleAfterMs: 1000,
+            now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
+            findRunningContainer: async () => containers.shift() ?? null,
+            stopContainer,
+        });
+
+        assert.deepEqual(
+            stopContainer.mock.calls.map(call => call.arguments[0]),
+            ['container-1', 'container-2'],
+        );
+        assert.equal(summary.containersStopped, 2);
+        assert.equal(manager.states.get(abandoned.taskId)?.state, TaskStates.FAILED);
     });
 
     test('finalizes success when an active job completes while its lock is checked', async () => {
@@ -288,6 +346,7 @@ describe('task state reconciliation', () => {
     test('stops a detached container left by a completed reschedule outcome', async () => {
         const manager = stateManager([task('pr-comments-rescheduled-live', TaskStates.CLAUDE_EXECUTION)]);
         const stopContainer = mock.fn(async () => ({ success: true }));
+        let containerLookup = 0;
 
         const summary = await reconcileStaleTaskStates({
             stateManager: manager as never,
@@ -300,7 +359,9 @@ describe('task state reconciliation', () => {
             redis: { eval: async () => 0, pttl: async () => -2 },
             staleAfterMs: 1000,
             now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
-            findRunningContainer: async () => ({ id: 'container-1', name: 'agent-task' }),
+            findRunningContainer: async () => (
+                containerLookup++ === 0 ? { id: 'container-1', name: 'agent-task' } : null
+            ),
             stopContainer,
         });
 
@@ -669,6 +730,7 @@ describe('task state reconciliation', () => {
         const manager = stateManager([abandoned]);
         let leaseOwner: string | null = abandoned.prProcessingLockToken;
         const stopContainer = mock.fn(async () => ({ success: true }));
+        let containerLookup = 0;
 
         const summary = await reconcileStaleTaskStates({
             stateManager: manager as never,
@@ -683,7 +745,9 @@ describe('task state reconciliation', () => {
             },
             staleAfterMs: 1000,
             now: () => new Date('2026-08-04T00:10:00.000Z').getTime(),
-            findRunningContainer: async () => ({ id: 'orphan-container', name: 'agent-task' }),
+            findRunningContainer: async () => (
+                containerLookup++ === 0 ? { id: 'orphan-container', name: 'agent-task' } : null
+            ),
             stopContainer,
         });
 

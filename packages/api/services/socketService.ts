@@ -4,6 +4,7 @@ import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
+import { getWorkerStateRedisKeys, type WorkerStateManagerOptions } from '@propr/core';
 import {
   REDIS_CHANNELS,
   TASK_UPDATE,
@@ -30,6 +31,7 @@ export interface QueueDependencies {
   taskQueue: Queue;
   redisClient: RedisClientType;
   db: Knex;
+  workerStateOptions?: Pick<WorkerStateManagerOptions, 'keyPrefix' | 'revisionKeyPrefix'>;
 }
 
 export function shouldBroadcastTaskUpdate(
@@ -46,10 +48,12 @@ export function shouldBroadcastTaskUpdate(
 export async function loadDurableTaskRevision(
   get: (key: string) => Promise<string | null>,
   taskId: string,
+  options: Pick<WorkerStateManagerOptions, 'keyPrefix' | 'revisionKeyPrefix'> = {},
 ): Promise<number | undefined> {
+  const { revisionKey, stateKey } = getWorkerStateRedisKeys(taskId, options);
   const [revisionValue, stateValue] = await Promise.all([
-    get(`revision:worker:state:${taskId}`),
-    get(`worker:state:${taskId}`),
+    get(revisionKey),
+    get(stateKey),
   ]);
   const revision = revisionValue === null ? Number.NaN : Number(revisionValue);
   let stateRevision = Number.NaN;
@@ -305,6 +309,7 @@ export class SocketService {
         latestVersion = await loadDurableTaskRevision(
           key => this.queueDeps!.redisClient.get(key),
           payload.taskId,
+          this.queueDeps.workerStateOptions,
         );
         allowSeededEquality = latestVersion !== undefined;
       } catch (error) {

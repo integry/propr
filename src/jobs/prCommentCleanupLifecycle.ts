@@ -8,10 +8,15 @@ export async function runJobCleanupLifecycle(
     preserveJobOutcome: boolean,
 ): Promise<void> {
     let heartbeatStopped = false;
+    let heartbeatStopPromise: Promise<void> | null = null;
     const stopHeartbeatOnce = async (): Promise<void> => {
         if (heartbeatStopped) return;
-        heartbeatStopped = true;
-        await stopHeartbeat();
+        heartbeatStopPromise ??= stopHeartbeat()
+            .then(() => { heartbeatStopped = true; })
+            .finally(() => {
+                if (!heartbeatStopped) heartbeatStopPromise = null;
+            });
+        await heartbeatStopPromise;
     };
     let failure: unknown;
     try { await cleanup(stopHeartbeatOnce); }

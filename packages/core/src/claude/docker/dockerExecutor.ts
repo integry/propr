@@ -3,7 +3,6 @@ import fs from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
-import { stopDockerContainer } from './dockerContainerControl.js';
 import {
     abortSpawnedExecution,
     getExecutionOwnershipContext,
@@ -44,10 +43,14 @@ interface JsonLineMessage { type?: string; message?: { id?: string; model?: stri
 interface AbortCheckerOptions {
     taskId: string;
     plannerAbortKey: string;
-    abortedRef: { value: boolean };
     child: ChildProcess;
-    containerIdRef: { value: string | null };
+    state: {
+        aborted: { value: boolean };
+        containerId: { value: string | null };
+        teardownPromise: Promise<void> | null;
+    };
     namedContainer: string | null;
+    attemptGeneration?: string;
 }
 
 interface AbortCheckerHandle {
@@ -203,24 +206,20 @@ export function shouldTerminateAfterAbortLookupFailure(plannerAbortKey: string, 
     return plannerAbortKey.includes(':run:') && consecutiveFailures >= PLANNER_ABORT_LOOKUP_FAILURE_LIMIT;
 }
 
-function setupAbortChecker({ taskId, plannerAbortKey, abortedRef, child, containerIdRef, namedContainer }: AbortCheckerOptions): AbortCheckerHandle {
+function setupAbortChecker({ taskId, plannerAbortKey, child, state, namedContainer, attemptGeneration }: AbortCheckerOptions): AbortCheckerHandle {
     const redis = createAbortRedis();
     let pollInFlight = false;
     let active = true;
     let consecutiveLookupFailures = 0;
     let closePromise: Promise<void> | null = null;
     const terminateExecution = async (message: string): Promise<void> => {
-        if (abortedRef.value || child.killed) return;
-        abortedRef.value = true;
-        const containerToStop = containerIdRef.value || namedContainer;
-        logger.info({ taskId, containerId: containerToStop }, message);
-        if (containerToStop) {
-            const stopResult = await stopDockerContainer(containerToStop, 10);
-            if (stopResult.success) logger.info({ taskId, containerId: containerToStop }, 'Docker container stopped successfully on abort');
-            else logger.warn({ taskId, containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container on abort');
-        }
-        child.kill('SIGTERM');
-        scheduleForceKill(child);
+        if (state.aborted.value) return;
+        logger.info({ taskId, containerId: state.containerId.value || namedContainer }, message);
+        await abortSpawnedExecution(
+            child,
+            state,
+            { namedContainer, scheduleForceKill, taskId, attemptGeneration },
+        );
         // Clearing the worker marker is cleanup, so never delay termination on
         // a Redis connection that may be the reason this execution failed closed.
         await clearWorkerAbortSignalWithClient(taskId, redis);
@@ -341,37 +340,57 @@ function spawnCommandProcess(
 }
 
 export function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
+    const ownershipContext = getExecutionOwnershipContext();
+    const executionSignal = options.signal ?? ownershipContext?.signal;
+    if (executionSignal?.aborted) {
+        return Promise.reject(executionSignal.reason instanceof Error
+            ? executionSignal.reason
+            : new ExecutionAbortedError());
+    }
     return new Promise((resolve, reject) => {
         const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false } = options;
-        const ownershipContext = getExecutionOwnershipContext();
-        const executionSignal = options.signal ?? ownershipContext?.signal;
         const executionArgs = resolveExecutionArgs(command, args, taskId, ownershipContext?.attemptGeneration);
         const executablePath = resolveDockerPath(command);
         const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
         const child = spawnCommandProcess(executablePath, executionArgs, cwd, stdinData);
 
         let stdout = '', stderr = '';
-        const state = { timedOut: false, aborted: { value: false }, sessionIdDetected: false, containerIdDetected: false, containerId: { value: null as string | null } };
+        const state = {
+            timedOut: false,
+            aborted: { value: false },
+            sessionIdDetected: false,
+            containerIdDetected: false,
+            containerId: { value: null as string | null },
+            teardownPromise: null as Promise<void> | null,
+        };
         const messageTimestamps = new Map<string, string>();
-        const abortForExecutionSignal = (): void => abortSpawnedExecution(child, state, namedContainer, scheduleForceKill);
+        const abortForExecutionSignal = (): void => {
+            void abortSpawnedExecution(
+                child,
+                state,
+                {
+                    namedContainer,
+                    scheduleForceKill,
+                    taskId,
+                    attemptGeneration: ownershipContext?.attemptGeneration,
+                },
+            );
+        };
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
-        if (executionSignal?.aborted) abortForExecutionSignal();
         const timeoutHandle = setTimeout(() => {
             state.timedOut = true;
-            const containerToStop = state.containerId.value || namedContainer;
-            if (containerToStop) {
-                void stopDockerContainer(containerToStop, 10).then((stopResult) => {
-                    if (!stopResult.success) {
-                        logger.warn({ containerId: containerToStop, error: stopResult.error }, 'Failed to stop Docker container after timeout');
-                    }
-                });
-            }
-            child.kill('SIGTERM');
-            scheduleForceKill(child);
+            abortForExecutionSignal();
         }, timeout);
         const plannerAbortKey = taskId ? plannerAbortSignalKeyForTask(taskId) : null;
         const abortChecker = taskId && plannerAbortKey
-            ? setupAbortChecker({ taskId, plannerAbortKey, abortedRef: state.aborted, child, containerIdRef: state.containerId, namedContainer })
+            ? setupAbortChecker({
+                taskId,
+                plannerAbortKey,
+                child,
+                state,
+                namedContainer,
+                attemptGeneration: ownershipContext?.attemptGeneration,
+            })
             : null;
 
         const getRedisOutput = () => {
@@ -405,6 +424,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             clearTimeout(timeoutHandle);
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
             if (abortChecker) await abortChecker.close();
+            if (state.teardownPromise) await state.teardownPromise;
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, getRedisOutput());
             if (state.timedOut) {
                 const timeoutMessage = `Command timed out after ${timeout}ms`;
@@ -428,6 +448,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
             clearTimeout(timeoutHandle);
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
             if (abortChecker) await abortChecker.close();
+            if (state.teardownPromise) await state.teardownPromise;
             if (redisState.interval) clearInterval(redisState.interval);
             if (redisState.client) redisState.client.quit().catch(() => {});
             reject(error);

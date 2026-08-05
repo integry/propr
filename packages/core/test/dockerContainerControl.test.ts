@@ -30,7 +30,7 @@ await mock.module('../src/utils/logger.js', {
     },
 });
 
-const { stopDockerContainer } = await import('../src/claude/docker/dockerContainerControl.js');
+const { stopDockerContainer, teardownDockerExecution } = await import('../src/claude/docker/dockerContainerControl.js');
 
 beforeEach(() => {
     dockerCalls.length = 0;
@@ -111,4 +111,31 @@ test('inspects and stops an exact container name when no container ID is availab
         'inspect', '--type', 'container', '--format', '{{.State.Status}}', 'propr-agent-task-name',
     ]);
     assert.deepEqual(dockerCalls[1]?.args, ['stop', '-t', '10', 'propr-agent-task-name']);
+});
+
+test('retries generation-labeled teardown across the Docker creation race', async () => {
+    responses.push(
+        { error: null, stdout: '', stderr: '' },
+        { error: null, stdout: 'container-one\ncontainer-two\n', stderr: '' },
+        { error: null, stdout: 'container-one\n', stderr: '' },
+        { error: null, stdout: 'container-two\n', stderr: '' },
+        { error: null, stdout: '', stderr: '' },
+    );
+
+    await teardownDockerExecution({
+        taskId: 'task-1748',
+        attemptGeneration: 'generation-hash',
+        attempts: 3,
+        retryDelayMs: 0,
+    });
+
+    assert.deepEqual(dockerCalls[0]?.args, [
+        'ps', '-aq',
+        '--filter', 'label=propr.task.id=task-1748',
+        '--filter', 'label=propr.task.attempt-generation=generation-hash',
+    ]);
+    assert.deepEqual(dockerCalls[1]?.args, ['ps', '-aq', '--filter', 'label=propr.task.id=task-1748', '--filter', 'label=propr.task.attempt-generation=generation-hash']);
+    assert.deepEqual(dockerCalls[2]?.args, ['rm', '-f', 'container-one']);
+    assert.deepEqual(dockerCalls[3]?.args, ['rm', '-f', 'container-two']);
+    assert.deepEqual(dockerCalls[4]?.args, ['ps', '-aq', '--filter', 'label=propr.task.id=task-1748', '--filter', 'label=propr.task.attempt-generation=generation-hash']);
 });

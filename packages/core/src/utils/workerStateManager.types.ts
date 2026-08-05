@@ -81,6 +81,12 @@ export interface NonTerminalTaskFilter {
     limit?: number;
 }
 
+export interface NonTerminalTaskPage {
+    tasks: TaskStateData[];
+    /** True after every key in the current Redis SCAN cycle was inspected. */
+    scanComplete: boolean;
+}
+
 export interface TaskStateExpectation {
     state: TaskState;
     updatedAt?: string;
@@ -130,6 +136,6 @@ export interface WorkerStateManagerOptions {
     /** Namespace for durable task revisions; kept outside state scans. */
     revisionKeyPrefix?: string;
     stateExpiry?: number;
-    /** @deprecated Revision keys are durable so reused task IDs remain monotonic. */
+    /** @deprecated Durable revision keys no longer expire; this option is ignored. */
     revisionExpiry?: number;
 }
