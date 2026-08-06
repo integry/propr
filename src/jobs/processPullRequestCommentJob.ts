@@ -202,6 +202,16 @@ function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: 
     return `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${plural} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${evidenceMarker ? `\n${evidenceMarker}` : ''}`;
 }
 
+async function handleUltrafixNoAuthorizedFindings(params: ExecuteProcessingParams): Promise<void> {
+    const { job, taskId, stateManager, state, context: { repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId } } = params;
+    if (!job.data.ultrafixMeta) return;
+    const body = '⚠️ **Ultrafix could not apply this fix because no unprocessed actionable review findings remain.** The queued review may have been removed, consumed, or become invalid. Ultrafix will request a fresh review, or stop for manual review if its retry limit has been reached.';
+    await state.octokit!.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body }).catch(commentError =>
+        correlatedLogger.warn({ error: (commentError as Error).message, pullRequestNumber }, 'Failed to post Ultrafix no-findings retry comment'));
+    await stateManager.updateTaskState(taskId, TaskStates.COMPLETED, { reason: 'Ultrafix fix skipped because no authorized review findings remained', historyMetadata: { commandMode: 'fix', ultrafixCycle: true, ultrafixNoAuthorizedFindings: true } });
+    await handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
+}
+
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
     const { job, context, taskId, stateManager, state } = params;
     let { llm } = params;
@@ -250,6 +260,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             { pullRequestNumber },
             'Skipping fix processing because no actionable findings or explicitly authorized suggestions were selected',
         );
+        await handleUltrafixNoAuthorizedFindings(params);
         return { status: 'skipped', reason: 'no_authorized_review_findings', pullRequestNumber };
     }
 

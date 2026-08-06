@@ -203,6 +203,13 @@ describe('structured review finding extraction', () => {
             /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
             'No actionable findings.',
         );
+        const structurallyValidError = [
+            'Review generation failed with the following message:',
+            clean,
+            '<!-- propr:ai-review model="newer" error="true" -->',
+        ].join('\n');
+        assert.strictEqual(parseStructuredReview(structurallyValidError).status, 'invalid');
+
         const state = await getStructuredPendingReviewState([
             {
                 id: 48,
@@ -212,7 +219,7 @@ describe('structured review finding extraction', () => {
             },
             {
                 id: 49,
-                body: 'Review generation failed.\n<!-- propr:ai-review model="newer" error="true" -->',
+                body: structurallyValidError,
                 user: { login: 'propr-bot', type: 'Bot' },
                 created_at: new Date(now).toISOString(),
             },

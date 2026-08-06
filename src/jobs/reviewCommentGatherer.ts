@@ -98,6 +98,9 @@ const DEFAULT_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
  */
 const SCORE_RE = /Score:\s*(\d{1,2})\s*\/\s*10/;
 
+/** Error reviews are diagnostic comments and must never satisfy the review contract. */
+const ERROR_REVIEW_MARKER_RE = /<!--\s*propr:ai-review\b[^>]*\berror\s*=\s*["']true["'][^>]*-->/i;
+
 function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -210,6 +213,11 @@ function parseSuggestionRecords(section: string): ReviewSuggestion[] | null {
  * sentinel from the review prompt.
  */
 export function parseStructuredReview(body: string): StructuredReviewResult {
+    // Inspect the marker before removing boilerplate. Error messages can quote
+    // otherwise valid-looking review output and must always fail closed.
+    if (ERROR_REVIEW_MARKER_RE.test(body)) {
+        return { status: 'invalid', actionableFindings: [], suggestions: [], score: null };
+    }
     const cleaned = stripReviewBoilerplate(body);
     const requiredSections = [
         'Overall Evaluation',
@@ -362,8 +370,7 @@ export async function gatherUnprocessedReviewComments(
             correlatedLogger.debug({ pullRequestNumber, commentId: comment.id }, 'AI review comment too old, skipping');
             continue;
         }
-        const cleanedBody = stripReviewBoilerplate(comment.body!);
-        const parsedReview = parseStructuredReview(cleanedBody);
+        const parsedReview = parseStructuredReview(comment.body!);
         const actionableFindings = parsedReview.actionableFindings.filter(finding =>
             !processedFindings.has(findingConsumptionKey(comment.id, 'F', finding.id)),
         );
