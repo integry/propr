@@ -7,6 +7,7 @@
  */
 
 import type { Redis } from 'ioredis';
+import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 
 // --- Interfaces ---
 
@@ -180,22 +181,12 @@ export function determineInitialAction(hasPendingReviews: boolean): UltrafixActi
 export function determineNextAction(
     state: UltrafixLoopState,
     currentScore: number | null,
-    hasActionableFindings = true,
+    reviewStatus: ReviewOutputStatus = 'invalid',
 ): NextActionDecision {
     const { reviewCount, fixCount } = getActionCounts(state);
 
     if (!state.active) {
         return { action: null, reason: 'Loop is inactive' };
-    }
-
-    // Check if goal is met
-    if (currentScore !== null && currentScore >= state.goal) {
-        return { action: null, reason: `Goal met: score ${currentScore} >= ${state.goal}` };
-    }
-
-    // A review containing suggestions only must never trigger an automatic fix.
-    if (state.lastAction === 'review' && !hasActionableFindings) {
-        return { action: null, reason: 'No actionable findings remain' };
     }
 
     // Determine next action based on last action
@@ -204,10 +195,20 @@ export function determineNextAction(
     }
 
     if (state.lastAction === 'review') {
+        if (reviewStatus === 'valid_clean') {
+            const scoreDetail = currentScore === null ? '' : ` (score ${currentScore}/10)`;
+            return { action: null, reason: `Valid review reports no actionable findings${scoreDetail}` };
+        }
+        if (reviewStatus === 'invalid') {
+            if (reviewCount >= state.maxCycles) {
+                return { action: null, reason: `Invalid review output and max review attempts reached (${state.maxCycles})` };
+            }
+            return { action: 'review', reason: 'Review output is invalid, retrying review' };
+        }
         if (fixCount >= state.maxCycles) {
             return { action: null, reason: `Max cycles reached: ${fixCount} ${fixCount === 1 ? 'fix step has' : 'fix steps have'} completed (limit ${state.maxCycles})` };
         }
-        return { action: 'fix', reason: 'Last action was review, next is fix' };
+        return { action: 'fix', reason: 'Actionable review findings remain, next is fix' };
     }
 
     // lastAction === 'fix'

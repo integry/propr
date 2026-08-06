@@ -24,6 +24,16 @@ export interface AIReviewComment {
     actionableFindings: ActionableFinding[];
     suggestions: ReviewSuggestion[];
     score: number | null;
+    reviewStatus: ReviewOutputStatus;
+}
+
+export type ReviewOutputStatus = 'valid_with_blockers' | 'valid_clean' | 'invalid';
+
+export interface StructuredReviewResult {
+    status: ReviewOutputStatus;
+    actionableFindings: ActionableFinding[];
+    suggestions: ReviewSuggestion[];
+    score: number | null;
 }
 
 export interface ActionableFinding {
@@ -51,6 +61,8 @@ export interface PendingReviewState {
     latestScore: number | null;
     /** Whether any unprocessed actionable findings exist. */
     hasPendingReview: boolean;
+    /** Structured-output state of the newest unprocessed review. */
+    reviewStatus: ReviewOutputStatus;
 }
 
 interface PRComment {
@@ -78,12 +90,6 @@ const DEFAULT_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
  * Accepts optional whitespace and the integer 1–10.
  */
 const SCORE_RE = /Score:\s*(\d{1,2})\s*\/\s*10/;
-
-/**
- * RegExp matching the error variant of the AI review marker.
- * Uses the structured marker format rather than a brittle substring check.
- */
-const ERROR_MARKER_RE = /<!-- propr:ai-review [^>]*error="true"[^>]* -->/;
 
 function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -132,15 +138,25 @@ function extractMarkdownRecords(section: string, prefix: 'F' | 'S'): MarkdownRec
     }));
 }
 
-/**
- * Parse only blocker records that satisfy the complete review-to-fix contract.
- * Incomplete or non-affirmative records are deliberately excluded from
- * automation even if they appeared under the actionable heading.
- */
-export function extractActionableFindings(body: string): ActionableFinding[] {
-    const section = extractMarkdownSection(body, 'Actionable Findings');
+function hasExactlyOneSection(body: string, heading: string): boolean {
+    const headingRe = new RegExp(`^##[ \\t]+${escapeRegExp(heading)}[ \\t]*$`, 'gim');
+    return [...body.matchAll(headingRe)].length === 1;
+}
+
+function hasSequentialRecordHeadings(section: string, records: MarkdownRecord[], prefix: 'F' | 'S'): boolean {
+    const allRecordHeadings = [
+        ...section.matchAll(new RegExp(`^###[ \\t]+${prefix}\\d+\\b.*$`, 'gim')),
+    ];
+    return allRecordHeadings.length === records.length
+        && records.every((record, index) => record.id === `${prefix}${index + 1}`);
+}
+
+function parseActionableRecords(section: string): ActionableFinding[] | null {
+    const records = extractMarkdownRecords(section, 'F');
+    if (records.length === 0 || !hasSequentialRecordHeadings(section, records, 'F')) return null;
+
     const findings: ActionableFinding[] = [];
-    for (const record of extractMarkdownRecords(section, 'F')) {
+    for (const record of records) {
         const fields = extractRecordFields(record.body);
         const violatedRequirement = fields.get('violatedrequirement') ?? '';
         const evidence = fields.get('evidence') ?? '';
@@ -148,8 +164,8 @@ export function extractActionableFindings(body: string): ActionableFinding[] {
         const requiredForMerge = fields.get('requiredformerge') ?? '';
         const minimumCorrection = fields.get('minimumcorrection') ?? '';
         const introducedByPRExplanation = introducedByPR.replace(/^true\b\s*(?:[-—:]\s*)?/i, '').trim();
-        if (!violatedRequirement || !evidence || !introducedByPRExplanation || !minimumCorrection) continue;
-        if (!/^true\b/i.test(introducedByPR) || !/^true\b/i.test(requiredForMerge)) continue;
+        if (!violatedRequirement || !evidence || !introducedByPRExplanation || !minimumCorrection) return null;
+        if (!/^true\b/i.test(introducedByPR) || !/^true\b/i.test(requiredForMerge)) return null;
         findings.push({
             id: record.id,
             title: record.title,
@@ -162,6 +178,84 @@ export function extractActionableFindings(body: string): ActionableFinding[] {
         });
     }
     return findings;
+}
+
+function parseSuggestionRecords(section: string): ReviewSuggestion[] | null {
+    if (section.trim() === 'No suggestions.') return [];
+
+    const records = extractMarkdownRecords(section, 'S');
+    if (records.length === 0 || !hasSequentialRecordHeadings(section, records, 'S')) return null;
+    const suggestions: ReviewSuggestion[] = [];
+    for (const record of records) {
+        const fields = extractRecordFields(record.body);
+        const summary = fields.get('summary') ?? '';
+        const autoFix = fields.get('autofix') ?? '';
+        if (!summary || !/^false\b/i.test(autoFix)) return null;
+        suggestions.push({ id: record.id, title: record.title, summary, autoFix: false });
+    }
+    return suggestions;
+}
+
+/**
+ * Parse the review output contract without conflating malformed output with an
+ * explicit clean review. All four required sections must be present in order,
+ * every record must be complete, and a clean result requires the exact clean
+ * sentinel from the review prompt.
+ */
+export function parseStructuredReview(body: string): StructuredReviewResult {
+    const cleaned = stripReviewBoilerplate(body);
+    const requiredSections = [
+        'Overall Evaluation',
+        'Actionable Findings',
+        'Suggestions and Follow-ups',
+        'Score',
+    ];
+    const sectionMatches = requiredSections.map(heading => {
+        const headingRe = new RegExp(`^##[ \\t]+${escapeRegExp(heading)}[ \\t]*$`, 'im');
+        return headingRe.exec(cleaned);
+    });
+    const contractStart = sectionMatches[0]?.index ?? Number.POSITIVE_INFINITY;
+    const contractHeadings = [...cleaned.matchAll(/^##[ \t]+(.+?)[ \t]*$/gm)]
+        .filter(match => (match.index ?? 0) >= contractStart)
+        .map(match => match[1].trim());
+    const sectionsAreValid = sectionMatches.every((match): match is RegExpExecArray => match !== null)
+        && sectionMatches.every((match, index) => index === 0 || match!.index > sectionMatches[index - 1]!.index)
+        && requiredSections.every(heading => hasExactlyOneSection(cleaned, heading))
+        && contractHeadings.length === requiredSections.length
+        && contractHeadings.every((heading, index) => heading === requiredSections[index]);
+    if (!sectionsAreValid) {
+        return { status: 'invalid', actionableFindings: [], suggestions: [], score: null };
+    }
+
+    const overallSection = extractMarkdownSection(cleaned, 'Overall Evaluation');
+    const actionableSection = extractMarkdownSection(cleaned, 'Actionable Findings');
+    const suggestionSection = extractMarkdownSection(cleaned, 'Suggestions and Follow-ups');
+    const scoreSection = extractMarkdownSection(cleaned, 'Score');
+    const scoreMatches = [...scoreSection.matchAll(/^Score:[ \t]*(\d{1,2})[ \t]*\/[ \t]*10[ \t]*$/gm)];
+    const score = scoreMatches.length === 1 ? Number.parseInt(scoreMatches[0][1], 10) : null;
+    const suggestions = parseSuggestionRecords(suggestionSection);
+    if (!overallSection || suggestions === null || score === null || score < 1 || score > 10) {
+        return { status: 'invalid', actionableFindings: [], suggestions: [], score: null };
+    }
+
+    if (actionableSection.trim() === 'No actionable findings.') {
+        return { status: 'valid_clean', actionableFindings: [], suggestions, score };
+    }
+
+    const actionableFindings = parseActionableRecords(actionableSection);
+    if (actionableFindings === null) {
+        return { status: 'invalid', actionableFindings: [], suggestions: [], score: null };
+    }
+    return { status: 'valid_with_blockers', actionableFindings, suggestions, score };
+}
+
+/**
+ * Parse only blocker records that satisfy the complete review-to-fix contract.
+ * Incomplete or non-affirmative records are deliberately excluded from
+ * automation even if they appeared under the actionable heading.
+ */
+export function extractActionableFindings(body: string): ActionableFinding[] {
+    return parseActionableRecords(extractMarkdownSection(body, 'Actionable Findings')) ?? [];
 }
 
 /** Parse public suggestion records while forcing their automation policy off. */
@@ -256,20 +350,17 @@ export async function gatherUnprocessedReviewComments(
             correlatedLogger.debug({ pullRequestNumber, commentId: comment.id }, 'AI review comment already processed, skipping');
             continue;
         }
-        // Skip error review comments using the structured marker regex
-        if (ERROR_MARKER_RE.test(comment.body!)) {
-            continue;
-        }
         // Skip comments older than the recency cutoff
         if (new Date(comment.created_at).getTime() < cutoff) {
             correlatedLogger.debug({ pullRequestNumber, commentId: comment.id }, 'AI review comment too old, skipping');
             continue;
         }
         const cleanedBody = stripReviewBoilerplate(comment.body!);
-        const actionableFindings = extractActionableFindings(cleanedBody).filter(finding =>
+        const parsedReview = parseStructuredReview(cleanedBody);
+        const actionableFindings = parsedReview.actionableFindings.filter(finding =>
             !processedFindings.has(findingConsumptionKey(comment.id, 'F', finding.id)),
         );
-        const suggestions = extractReviewSuggestions(cleanedBody).filter(suggestion =>
+        const suggestions = parsedReview.suggestions.filter(suggestion =>
             !processedFindings.has(findingConsumptionKey(comment.id, 'S', suggestion.id)),
         );
         unprocessed.push({
@@ -279,7 +370,8 @@ export async function gatherUnprocessedReviewComments(
             created_at: comment.created_at,
             actionableFindings,
             suggestions,
-            score: extractReviewScore(cleanedBody),
+            score: parsedReview.score,
+            reviewStatus: parsedReview.status,
         });
     }
 
@@ -318,23 +410,18 @@ export async function getPendingReviewState(
 ): Promise<PendingReviewState> {
     const unprocessedComments = await gatherUnprocessedReviewComments(allComments, options);
 
-    // Walk comments newest-first to find the most recent valid score.
-    let latestScore: number | null = null;
+    // The newest review is authoritative for orchestration. This prevents an
+    // older valid score from masking malformed output in the completed review.
     const sorted = [...unprocessedComments].sort(
-        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id - a.id,
     );
-    for (const comment of sorted) {
-        const score = comment.score;
-        if (score !== null) {
-            latestScore = score;
-            break;
-        }
-    }
+    const latestReview = sorted[0];
 
     return {
         unprocessedComments,
-        latestScore,
+        latestScore: latestReview?.reviewStatus === 'invalid' ? null : latestReview?.score ?? null,
         hasPendingReview: unprocessedComments.some(comment => comment.actionableFindings.length > 0),
+        reviewStatus: latestReview?.reviewStatus ?? 'invalid',
     };
 }
 

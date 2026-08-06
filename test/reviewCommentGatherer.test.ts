@@ -12,6 +12,7 @@ import { closeConnection } from '@propr/core';
 const {
     extractActionableFindings: extractStructuredActionableFindings,
     extractReviewSuggestions: extractStructuredReviewSuggestions,
+    parseStructuredReview,
     gatherUnprocessedReviewComments: gatherStructuredReviewComments,
     getPendingReviewState: getStructuredPendingReviewState,
     markReviewFindingsProcessed: markStructuredReviewFindingsProcessed,
@@ -91,6 +92,22 @@ describe('structured review finding extraction', () => {
             '',
         );
         assert.deepStrictEqual(extractStructuredActionableFindings(incomplete), []);
+        assert.strictEqual(parseStructuredReview(incomplete).status, 'invalid');
+    });
+
+    test('distinguishes blocker, explicitly clean, and malformed review output', () => {
+        const clean = STRUCTURED_REVIEW.replace(
+            /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+            'No actionable findings.',
+        );
+        const malformed = STRUCTURED_REVIEW.replace(
+            '- **evidence:** src/worker.ts:128 — new bypass accepts the transition\n',
+            '',
+        );
+
+        assert.strictEqual(parseStructuredReview(STRUCTURED_REVIEW).status, 'valid_with_blockers');
+        assert.strictEqual(parseStructuredReview(clean).status, 'valid_clean');
+        assert.strictEqual(parseStructuredReview(malformed).status, 'invalid');
     });
 
     test('never promotes suggestion prose into actionable findings', () => {
@@ -145,8 +162,67 @@ describe('structured review finding extraction', () => {
             correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
         });
         assert.strictEqual(state.hasPendingReview, false);
+        assert.strictEqual(state.reviewStatus, 'valid_clean');
         assert.strictEqual(state.latestScore, 7);
         assert.strictEqual(state.unprocessedComments[0].suggestions.length, 1);
+    });
+
+    test('newest malformed review stays invalid instead of borrowing an older score', async () => {
+        const now = Date.now();
+        const malformed = STRUCTURED_REVIEW.replace(
+            '- **minimumCorrection:** reject transitions from terminal states\n',
+            '',
+        );
+        const state = await getStructuredPendingReviewState([
+            {
+                id: 46,
+                body: `${STRUCTURED_REVIEW}\n<!-- propr:ai-review model="older" -->`,
+                user: { login: 'propr-bot', type: 'Bot' },
+                created_at: new Date(now - 1_000).toISOString(),
+            },
+            {
+                id: 47,
+                body: `${malformed}\n<!-- propr:ai-review model="newer" -->`,
+                user: { login: 'propr-bot', type: 'Bot' },
+                created_at: new Date(now).toISOString(),
+            },
+        ], {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+        });
+
+        assert.strictEqual(state.reviewStatus, 'invalid');
+        assert.strictEqual(state.latestScore, null);
+    });
+
+    test('a newest error review is retained as invalid for orchestration', async () => {
+        const now = Date.now();
+        const clean = STRUCTURED_REVIEW.replace(
+            /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+            'No actionable findings.',
+        );
+        const state = await getStructuredPendingReviewState([
+            {
+                id: 48,
+                body: `${clean}\n<!-- propr:ai-review model="older" -->`,
+                user: { login: 'propr-bot', type: 'Bot' },
+                created_at: new Date(now - 1_000).toISOString(),
+            },
+            {
+                id: 49,
+                body: 'Review generation failed.\n<!-- propr:ai-review model="newer" error="true" -->',
+                user: { login: 'propr-bot', type: 'Bot' },
+                created_at: new Date(now).toISOString(),
+            },
+        ], {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+        });
+
+        assert.strictEqual(state.reviewStatus, 'invalid');
+        assert.strictEqual(state.latestScore, null);
     });
 
     test('record-level consumption preserves unselected blockers from the same review', async () => {
@@ -204,14 +280,18 @@ describe('structured review finding extraction', () => {
 });
 
 describe('/fix structured finding selection', () => {
-    const reviewComment = () => ({
-        id: 45,
+    const reviewComment = (overrides: { id?: number; created_at?: string; findingTitle?: string } = {}) => ({
+        id: overrides.id ?? 45,
         body: '',
         author: 'propr-bot',
-        created_at: new Date().toISOString(),
-        actionableFindings: extractStructuredActionableFindings(STRUCTURED_REVIEW),
+        created_at: overrides.created_at ?? new Date().toISOString(),
+        actionableFindings: extractStructuredActionableFindings(STRUCTURED_REVIEW).map(finding => ({
+            ...finding,
+            title: overrides.findingTitle ?? finding.title,
+        })),
         suggestions: extractStructuredReviewSuggestions(STRUCTURED_REVIEW),
         score: 7,
+        reviewStatus: 'valid_with_blockers' as const,
     });
 
     test('bare /fix selects blockers and keeps suggestion prose out of the prompt', () => {
@@ -234,6 +314,26 @@ describe('/fix structured finding selection', () => {
         const section = formatSelectedReviewRecords(selectReviewFeedback(all, selection), all);
         assert.match(section, /Explicitly Authorized Suggestions/);
         assert.match(section, /Consider a durable publication outbox/);
+    });
+
+    test('scopes explicit IDs to the newest review comment when models reuse F1', () => {
+        const older = reviewComment({
+            id: 45,
+            created_at: '2026-08-06T09:00:00.000Z',
+            findingTitle: 'Older model finding',
+        });
+        const newer = reviewComment({
+            id: 46,
+            created_at: '2026-08-06T09:01:00.000Z',
+            findingTitle: 'Newest model finding',
+        });
+
+        const selected = selectReviewFeedback([older, newer], parseFixFindingSelection('F1'));
+        assert.deepStrictEqual(selected.map(comment => comment.id), [46]);
+        assert.strictEqual(selected[0].actionableFindings[0].title, 'Newest model finding');
+
+        const bareSelection = selectReviewFeedback([older, newer], parseFixFindingSelection(''));
+        assert.deepStrictEqual(bareSelection.map(comment => comment.id), [45, 46]);
     });
 });
 

@@ -38,7 +38,15 @@ export function selectReviewFeedback(
     comments: AIReviewComment[],
     selection: FixFindingSelection,
 ): AIReviewComment[] {
-    return comments.map(comment => {
+    const hasExplicitSelector = selection.actionableIds !== null || selection.includedSuggestionIds.size > 0;
+    const candidateComments = hasExplicitSelector && comments.length > 0
+        ? [comments.reduce((latest, comment) => {
+            const timeDifference = new Date(comment.created_at).getTime() - new Date(latest.created_at).getTime();
+            return timeDifference > 0 || (timeDifference === 0 && comment.id > latest.id) ? comment : latest;
+        })]
+        : comments;
+
+    return candidateComments.map(comment => {
         const actionableFindings = selection.actionableIds
             ? comment.actionableFindings.filter(finding => selection.actionableIds!.has(finding.id))
             : comment.actionableFindings;

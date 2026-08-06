@@ -112,16 +112,20 @@ describe('determineNextAction', () => {
         assert.ok(decision.reason.includes('inactive'));
     });
 
-    test('stops when goal is met', () => {
-        const decision = determineNextAction(makeState({ goal: 7 }), 8);
+    test('stops when a review is explicitly clean', () => {
+        const decision = determineNextAction(makeState({ goal: 7, lastAction: 'review' }), 8, 'valid_clean');
         assert.strictEqual(decision.action, null);
-        assert.ok(decision.reason.includes('Goal met'));
+        assert.ok(decision.reason.includes('no actionable findings'));
     });
 
-    test('stops when score exactly meets goal', () => {
-        const decision = determineNextAction(makeState({ goal: 7 }), 7);
-        assert.strictEqual(decision.action, null);
-        assert.ok(decision.reason.includes('Goal met'));
+    test('a passing score does not override actionable findings', () => {
+        const decision = determineNextAction(
+            makeState({ goal: 7, lastAction: 'review' }),
+            8,
+            'valid_with_blockers',
+        );
+        assert.strictEqual(decision.action, 'fix');
+        assert.ok(decision.reason.includes('Actionable'));
     });
 
     test('stops when max cycles reached', () => {
@@ -137,7 +141,7 @@ describe('determineNextAction', () => {
             reviewCount: 5,
             fixCount: 4,
             lastAction: 'review',
-        }), 4);
+        }), 4, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
@@ -158,7 +162,7 @@ describe('determineNextAction', () => {
     });
 
     test('returns fix after review', () => {
-        const decision = determineNextAction(makeState({ lastAction: 'review' }), 5);
+        const decision = determineNextAction(makeState({ lastAction: 'review' }), 5, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
@@ -168,19 +172,39 @@ describe('determineNextAction', () => {
     });
 
     test('continues when score is below goal', () => {
-        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 8 }), 6);
+        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 8 }), 6, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
     test('continues when score is null (no score yet)', () => {
-        const decision = determineNextAction(makeState({ lastAction: 'review' }), null);
+        const decision = determineNextAction(makeState({ lastAction: 'review' }), null, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
     test('does not schedule a fix when a review has suggestions only', () => {
-        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 10 }), 8, false);
+        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 10 }), 8, 'valid_clean');
         assert.strictEqual(decision.action, null);
-        assert.match(decision.reason, /No actionable findings/);
+        assert.match(decision.reason, /no actionable findings/i);
+    });
+
+    test('retries an invalid review instead of treating it as clean', () => {
+        const decision = determineNextAction(
+            makeState({ lastAction: 'review', reviewCount: 1, maxCycles: 3 }),
+            null,
+            'invalid',
+        );
+        assert.strictEqual(decision.action, 'review');
+        assert.match(decision.reason, /invalid/i);
+    });
+
+    test('stops invalid review retries for manual intervention at the review limit', () => {
+        const decision = determineNextAction(
+            makeState({ lastAction: 'review', reviewCount: 3, maxCycles: 3 }),
+            null,
+            'invalid',
+        );
+        assert.strictEqual(decision.action, null);
+        assert.match(decision.reason, /Invalid review output/);
     });
 });
 
@@ -345,7 +369,7 @@ describe('mode transitions', () => {
 
         // After review → fix
         state.lastAction = 'review';
-        decision = determineNextAction(state, 5);
+        decision = determineNextAction(state, 5, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
 
         // After fix → review
@@ -356,7 +380,7 @@ describe('mode transitions', () => {
 
         // After review again → fix
         state.lastAction = 'review';
-        decision = determineNextAction(state, 6);
+        decision = determineNextAction(state, 6, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
@@ -364,15 +388,15 @@ describe('mode transitions', () => {
         const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1, goal: 9 });
         state.lastAction = 'fix';
         state.cycleCount = 1;
-        const decision = determineNextAction(state, 4);
+        const decision = determineNextAction(state, 4, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'review', 'After fix, next must be review');
     });
 
-    test('review never follows review (when score is below goal)', () => {
+    test('a blocker review is followed by a fix', () => {
         const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1, goal: 9 });
         state.lastAction = 'review';
-        const decision = determineNextAction(state, 4);
-        assert.strictEqual(decision.action, 'fix', 'After review with low score, next must be fix');
+        const decision = determineNextAction(state, 4, 'valid_with_blockers');
+        assert.strictEqual(decision.action, 'fix', 'After a blocker review, next must be fix');
     });
 });
 
