@@ -61,9 +61,7 @@ const STRUCTURED_REVIEW = [
     '- **minimumCorrection:** reject transitions from terminal states',
     '',
     '## Suggestions and Follow-ups',
-    '### S1: Durable publication',
-    '- **summary:** Consider a durable publication outbox',
-    '- **autoFix:** false',
+    '### S1: Consider a durable publication outbox',
     '',
     '## Score',
     'Score: 7/10',
@@ -81,9 +79,7 @@ describe('structured review finding extraction', () => {
         assert.strictEqual(suggestions.length, 1);
         assert.deepStrictEqual(suggestions[0], {
             id: 'S1',
-            title: 'Durable publication',
-            summary: 'Consider a durable publication outbox',
-            autoFix: false,
+            title: 'Consider a durable publication outbox',
         });
     });
 
@@ -94,6 +90,14 @@ describe('structured review finding extraction', () => {
         );
         assert.deepStrictEqual(extractStructuredActionableFindings(incomplete), []);
         assert.strictEqual(parseStructuredReview(incomplete).status, 'invalid');
+    });
+
+    test('rejects suggestion metadata outside the concise heading contract', () => {
+        const cluttered = STRUCTURED_REVIEW.replace(
+            '### S1: Consider a durable publication outbox\n',
+            '### S1: Consider a durable publication outbox\n- **autoFix:** false\n',
+        );
+        assert.strictEqual(parseStructuredReview(cluttered).status, 'invalid');
     });
 
     test('distinguishes blocker, explicitly clean, and malformed review output', () => {
@@ -132,19 +136,17 @@ describe('structured review finding extraction', () => {
         assert.strictEqual(parseStructuredReview(malformed).status, 'invalid');
     });
 
-    test('never promotes suggestion prose into actionable findings', () => {
+    test('never promotes suggestions into actionable findings', () => {
         const suggestionOnly = [
             '## Actionable Findings',
             'No actionable findings.',
             '## Suggestions and Follow-ups',
-            '### S1: Add an outbox',
-            '- **summary:** Optional architecture hardening',
-            '- **autoFix:** true',
+            '### S1: Add an outbox as optional architecture hardening',
             '## Score',
             'Score: 9/10',
         ].join('\n');
         assert.deepStrictEqual(extractStructuredActionableFindings(suggestionOnly), []);
-        assert.strictEqual(extractStructuredReviewSuggestions(suggestionOnly)[0].autoFix, false);
+        assert.strictEqual(extractStructuredReviewSuggestions(suggestionOnly)[0].id, 'S1');
     });
 
     test('gatherer exposes actionable-only body while retaining typed suggestions for the public review', async () => {
@@ -163,7 +165,7 @@ describe('structured review finding extraction', () => {
         });
         assert.strictEqual(gathered.length, 1);
         assert.match(gathered[0].body, /F1: Preserve terminal state/);
-        assert.ok(!gathered[0].body.includes('Durable publication'));
+        assert.ok(!gathered[0].body.includes('durable publication outbox'));
         assert.strictEqual(gathered[0].actionableFindings.length, 1);
         assert.strictEqual(gathered[0].suggestions.length, 1);
     });

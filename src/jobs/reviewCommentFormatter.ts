@@ -48,8 +48,8 @@ function formatDuration(ms: number): string {
     return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
-/** Ensure every public S# record visibly carries the non-automation policy. */
-export function markSuggestionsNonAutomatic(response: string): string {
+/** Remove legacy suggestion fields that duplicate the S# heading or internal policy. */
+function removeSuggestionMetadata(response: string): string {
     const sectionMatch = /^##[ \t]+Suggestions and Follow-ups(?:[ \t]+.*)?$/im.exec(response);
     if (!sectionMatch) return response;
 
@@ -57,23 +57,9 @@ export function markSuggestionsNonAutomatic(response: string): string {
     const afterStart = response.slice(sectionStart);
     const nextSection = /^##\s+/m.exec(afterStart);
     const sectionEnd = sectionStart + (nextSection?.index ?? afterStart.length);
-    let section = response.slice(sectionStart, sectionEnd);
-
-    const recordHeading = /^###[ \t]+S\d+[ \t]*(?::|[-—])[ \t]*.+$/gim;
-    const matches = [...section.matchAll(recordHeading)];
-    for (let index = matches.length - 1; index >= 0; index--) {
-        const match = matches[index];
-        const bodyStart = (match.index ?? 0) + match[0].length;
-        const bodyEnd = matches[index + 1]?.index ?? section.length;
-        const body = section.slice(bodyStart, bodyEnd);
-        const autoFixLine = /^[-*]\s+\*\*auto[- ]?fix:?\*\*\s*:?.*$/im;
-        if (autoFixLine.test(body)) {
-            const normalizedBody = body.replace(autoFixLine, '- **autoFix:** false');
-            section = section.slice(0, bodyStart) + normalizedBody + section.slice(bodyEnd);
-        } else {
-            section = section.slice(0, bodyStart) + '\n- **autoFix:** false' + section.slice(bodyStart);
-        }
-    }
+    const section = response.slice(sectionStart, sectionEnd)
+        .replace(/^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?summary:?(?:\*\*)?[ \t]*:?.*(?:\r?\n|$)/gim, '')
+        .replace(/^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?auto[- ]?fix:?(?:\*\*)?[ \t]*:?.*(?:\r?\n|$)/gim, '');
 
     return response.slice(0, sectionStart) + section + response.slice(sectionEnd);
 }
@@ -101,7 +87,7 @@ export function buildReviewComment(
     const modelDisplayName = getModelName(effectiveModel);
 
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
-    comment += markSuggestionsNonAutomatic(response);
+    comment += removeSuggestionMetadata(response);
 
     // --- Review Details ---
     comment += `\n\n---\n### 🤖 Review Details\n\n`;
@@ -130,7 +116,7 @@ export function buildReviewComment(
     // --- /fix instructions ---
     comment += `\n\n---\n`;
     comment += `> 💡 **Next step:** Comment \`/fix\` to address actionable F# blockers only.\n`;
-    comment += `> Explicit IDs such as \`/fix F1 F3\` refer to the newest review. Suggestions are \`autoFix: false\` and require a separate ordinary follow-up request.\n`;
+    comment += `> Explicit IDs such as \`/fix F1 F3\` refer to the newest review. Suggestions require a separate ordinary follow-up request.\n`;
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;

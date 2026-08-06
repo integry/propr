@@ -116,7 +116,9 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.ok(prompt.includes('**introducedByPR:** true'));
         assert.ok(prompt.includes('**requiredForMerge:** true'));
         assert.ok(prompt.includes('**minimumCorrection:**'));
-        assert.ok(prompt.includes('**autoFix:** false'));
+        assert.ok(prompt.includes('### S1: Concise description of the optional follow-up'));
+        assert.ok(!prompt.includes('**summary:**'));
+        assert.ok(!prompt.includes('**autoFix:**'));
         assert.ok(!prompt.includes('List **ALL** issues'));
         assert.ok(!prompt.includes('Be exhaustive'));
         assert.ok(!prompt.includes('Include every finding'));

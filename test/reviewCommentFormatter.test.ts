@@ -1,7 +1,7 @@
 import { after, test, describe } from 'node:test';
 import assert from 'node:assert';
 
-const { buildReviewComment, markSuggestionsNonAutomatic } = await import('../src/jobs/reviewCommentFormatter.js');
+const { buildReviewComment } = await import('../src/jobs/reviewCommentFormatter.js');
 const { closeConnection } = await import('@propr/core');
 
 after(async () => {
@@ -25,7 +25,7 @@ describe('buildReviewComment', () => {
         assert.ok(!comment.includes('/fix include S'));
     });
 
-    test('publishes suggestions while forcing autoFix false', () => {
+    test('publishes concise suggestion headings without legacy metadata', () => {
         const response = [
             '## Overall Evaluation',
             'Ready.',
@@ -41,11 +41,19 @@ describe('buildReviewComment', () => {
             'Score: 9/10',
         ].join('\n');
 
-        const formatted = markSuggestionsNonAutomatic(response);
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            {
+                response,
+                modelUsed: 'claude-sonnet',
+                executionTimeMs: 1000,
+                success: true,
+            },
+        );
         assert.ok(formatted.includes('### S1: Add an outbox'));
         assert.ok(formatted.includes('### S2: Add a benchmark'));
-        assert.strictEqual((formatted.match(/- \*\*autoFix:\*\* false/g) ?? []).length, 2);
-        assert.ok(!formatted.includes('autoFix:** true'));
+        assert.ok(!formatted.includes('summary:'));
+        assert.ok(!formatted.includes('autoFix:'));
     });
 
     test('includes files omitted from the review diff', () => {

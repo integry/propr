@@ -94,7 +94,7 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
 Your response MUST contain exactly four markdown sections, in this order:
 1. \`## Overall Evaluation\`
 2. \`## Actionable Findings\` — structured merge blockers with IDs F1, F2, ...
-3. \`## Suggestions and Follow-ups\` — non-blocking items with IDs S1, S2, ... and \`autoFix: false\`
+3. \`## Suggestions and Follow-ups\` — non-blocking items with IDs S1, S2, ...
 4. \`## Score\` — ending with the exact line \`Score: N/10\`
 Do not omit any section; the **Score** section is mandatory. The detailed instructions for each section appear at the very end of this prompt — follow them exactly. (This format is restated here because the diff below can be long.)
 
@@ -133,11 +133,9 @@ Every field is mandatory. If you cannot truthfully supply every field, the item 
 ## Suggestions and Follow-ups
 Put hardening, cleanup, broader architecture, pre-existing issues, optional tests, performance ideas, and alternative designs here. These items are public information but are not merge blockers and must never be presented as required work.
 
-Use sequential IDs and this exact record shape:
+Use sequential IDs and put the complete suggestion in a single heading with no additional record fields:
 
-### S1: Short title
-- **summary:** concise explanation of the optional follow-up
-- **autoFix:** false
+### S1: Concise description of the optional follow-up
 
 If there are no suggestions, write \`No suggestions.\` Positive observations may be included in the Overall Evaluation instead of being assigned finding IDs.
 

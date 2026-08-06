@@ -50,8 +50,6 @@ export interface ActionableFinding {
 export interface ReviewSuggestion {
     id: string;
     title: string;
-    summary: string;
-    autoFix: false;
 }
 
 export interface PendingReviewState {
@@ -197,16 +195,12 @@ function parseSuggestionRecords(section: string): ReviewSuggestion[] | null {
     if (section.trim() === 'No suggestions.') return [];
 
     const records = extractMarkdownRecords(section, 'S');
-    if (records.length === 0 || !hasSequentialRecordHeadings(section, records, 'S')) return null;
-    const suggestions: ReviewSuggestion[] = [];
-    for (const record of records) {
-        const fields = extractRecordFields(record.body);
-        const summary = fields.get('summary') ?? '';
-        const autoFix = fields.get('autofix') ?? '';
-        if (!summary || !/^false\b/i.test(autoFix)) return null;
-        suggestions.push({ id: record.id, title: record.title, summary, autoFix: false });
-    }
-    return suggestions;
+    if (
+        records.length === 0
+        || !hasSequentialRecordHeadings(section, records, 'S')
+        || records.some(record => record.body !== '')
+    ) return null;
+    return records.map(record => ({ id: record.id, title: record.title }));
 }
 
 /**
@@ -274,18 +268,13 @@ export function extractActionableFindings(body: string): ActionableFinding[] {
     return parseActionableRecords(extractMarkdownSection(body, 'Actionable Findings')) ?? [];
 }
 
-/** Parse public suggestion records while forcing their automation policy off. */
+/** Parse public suggestion records; selection policy keeps them out of /fix. */
 export function extractReviewSuggestions(body: string): ReviewSuggestion[] {
     const section = extractMarkdownSection(body, 'Suggestions and Follow-ups');
-    return extractMarkdownRecords(section, 'S').map(record => {
-        const fields = extractRecordFields(record.body);
-        return {
-            id: record.id,
-            title: record.title,
-            summary: fields.get('summary') || record.title,
-            autoFix: false,
-        };
-    });
+    return extractMarkdownRecords(section, 'S').map(record => ({
+        id: record.id,
+        title: record.title,
+    }));
 }
 
 export function formatActionableFindings(findings: ActionableFinding[]): string {
