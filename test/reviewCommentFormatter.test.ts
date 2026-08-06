@@ -21,6 +21,8 @@ describe('buildReviewComment', () => {
         );
 
         assert.ok(comment.includes('Explicit IDs such as `/fix F1 F3` refer to the newest review.'));
+        assert.ok(comment.includes('require a separate ordinary follow-up request.'));
+        assert.ok(!comment.includes('/fix include S'));
     });
 
     test('publishes suggestions while forcing autoFix false', () => {

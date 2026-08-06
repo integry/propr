@@ -147,7 +147,7 @@ describe('structured review finding extraction', () => {
         assert.strictEqual(extractStructuredReviewSuggestions(suggestionOnly)[0].autoFix, false);
     });
 
-    test('gatherer exposes actionable-only body while retaining typed suggestions for explicit selection', async () => {
+    test('gatherer exposes actionable-only body while retaining typed suggestions for the public review', async () => {
         const redis = { smembers: async () => [] };
         const correlatedLogger = { debug() {}, info() {}, warn() {} };
         const comments = [{
@@ -422,29 +422,32 @@ describe('/fix structured finding selection', () => {
     test('bare /fix selects blockers and keeps suggestion prose out of the prompt', () => {
         const all = [reviewComment()];
         const selected = selectReviewFeedback(all, parseFixFindingSelection(''));
-        const section = formatSelectedReviewRecords(selected, all);
+        const section = formatSelectedReviewRecords(selected);
         assert.match(section, /Address actionable finding F1 only/);
-        assert.match(section, /Informational suggestion IDs \(autoFix: false\): S1/);
+        assert.doesNotMatch(section, /S1/);
         assert.ok(!section.includes('Consider a durable publication outbox'));
         assert.ok(!section.includes('Score: 7/10'));
     });
 
-    test('supports selected blocker IDs and explicit suggestion authorization', () => {
+    test('rejects suggestion selection syntax even after a blocker ID', () => {
         const selection = parseFixFindingSelection('F1 include S1\nKeep the correction localized.');
-        assert.deepStrictEqual([...selection.actionableIds ?? []], ['F1']);
-        assert.deepStrictEqual([...selection.includedSuggestionIds], ['S1']);
-        assert.strictEqual(selection.remainingInstructions, 'Keep the correction localized.');
+        assert.deepStrictEqual([...selection.actionableIds ?? []], []);
+        assert.strictEqual(selection.remainingInstructions, 'include S1\nKeep the correction localized.');
 
         const all = [reviewComment()];
-        const section = formatSelectedReviewRecords(selectReviewFeedback(all, selection), all);
-        assert.match(section, /Explicitly Authorized Suggestions/);
-        assert.match(section, /Consider a durable publication outbox/);
+        const selected = selectReviewFeedback(all, selection);
+        assert.deepStrictEqual(selected, []);
+        const section = formatSelectedReviewRecords(selected);
+        assert.doesNotMatch(section, /Explicitly Authorized Suggestions/);
+        assert.doesNotMatch(section, /Consider a durable publication outbox/);
+
+        const bareSuggestionId = parseFixFindingSelection('F1 S1');
+        assert.deepStrictEqual([...bareSuggestionId.actionableIds ?? []], []);
     });
 
     test('only extracts IDs from the dedicated leading selector clause', () => {
         const selection = parseFixFindingSelection('F1; do not touch F2');
         assert.deepStrictEqual([...selection.actionableIds ?? []], ['F1']);
-        assert.deepStrictEqual([...selection.includedSuggestionIds], []);
         assert.strictEqual(selection.remainingInstructions, 'do not touch F2');
 
         const proseOnly = parseFixFindingSelection('Do not touch F2 while addressing the regression.');
@@ -456,6 +459,10 @@ describe('/fix structured finding selection', () => {
         const selection = parseFixFindingSelection('F1 please keep the change localized');
         assert.deepStrictEqual([...selection.actionableIds ?? []], ['F1']);
         assert.strictEqual(selection.remainingInstructions, 'please keep the change localized');
+
+        const includeInstruction = parseFixFindingSelection('F1 include a regression test');
+        assert.deepStrictEqual([...includeInstruction.actionableIds ?? []], ['F1']);
+        assert.strictEqual(includeInstruction.remainingInstructions, 'include a regression test');
 
         const comment = reviewComment();
         comment.actionableFindings.push({
@@ -493,11 +500,12 @@ describe('/fix structured finding selection', () => {
         assert.deepStrictEqual(bareSelection, []);
         assert.strictEqual(hasAuthorizedFixFeedback(bareSelection), false);
 
-        const authorizedSuggestion = selectReviewFeedback(
+        const rejectedSuggestion = selectReviewFeedback(
             [suggestionOnlyReview],
             parseFixFindingSelection('include S1'),
         );
-        assert.strictEqual(hasAuthorizedFixFeedback(authorizedSuggestion), true);
+        assert.deepStrictEqual(rejectedSuggestion, []);
+        assert.strictEqual(hasAuthorizedFixFeedback(rejectedSuggestion), false);
     });
 
     test('scopes explicit IDs to the newest review comment when models reuse F1', () => {

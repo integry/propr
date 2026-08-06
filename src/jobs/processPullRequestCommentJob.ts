@@ -249,7 +249,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     if (isFixMode && !hasAuthorizedFixFeedback(selectedReviewComments)) {
         correlatedLogger.info(
             { pullRequestNumber },
-            'Skipping fix processing because no actionable findings or explicitly authorized suggestions were selected',
+            'Skipping fix processing because no actionable findings were selected',
         );
         await handleNoAuthorizedFindings({
             job,

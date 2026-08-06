@@ -3,16 +3,15 @@ import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import type { CommentJobData } from '@propr/core';
 import { formatActionableFindings, gatherUnprocessedReviewComments } from './reviewCommentGatherer.js';
-import type { AIReviewComment, ActionableFinding, ReviewSuggestion } from './reviewCommentGatherer.js';
+import type { AIReviewComment, ActionableFinding } from './reviewCommentGatherer.js';
 
 export interface FixFindingSelection {
     actionableIds: Set<string> | null;
-    includedSuggestionIds: Set<string>;
     remainingInstructions: string;
 }
 
 /**
- * Parse `/fix F1 F3` and `/fix include S2` selectors from a leading clause.
+ * Parse `/fix F1 F3` selectors from a leading clause.
  * Extra instructions can follow the selector directly, on a new line, or after
  * a semicolon. Finding-like tokens in ordinary instruction prose are left
  * untouched.
@@ -28,9 +27,9 @@ export function parseFixFindingSelection(instructions: string): FixFindingSelect
         start: match.index,
     }));
     const selectedIds = new Set<string>();
-    const includedSuggestionIds = new Set<string>();
     let recognizedSelector = false;
     let attemptedSelector = false;
+    let invalidSelector = false;
     let instructionsStart: number | null = null;
 
     for (let index = 0; index < selectorTokens.length;) {
@@ -42,21 +41,20 @@ export function parseFixFindingSelection(instructions: string): FixFindingSelect
             index += 1;
             continue;
         }
+        const isSuggestionSelector = /^S\d+$/i.test(token)
+            || (/^include$/i.test(token) && /^S\d+$/i.test(selectorTokens[index + 1]?.value ?? ''));
+        if (isSuggestionSelector) {
+            // Suggestion selectors are invalid for `/fix`; fail the entire
+            // selector closed even if an actionable ID preceded one.
+            attemptedSelector = true;
+            invalidSelector = true;
+            instructionsStart = selectorTokens[index].start;
+            break;
+        }
         if (/^include$/i.test(token)) {
             attemptedSelector = true;
-            const suggestionStart = index + 1;
-            let suggestionEnd = suggestionStart;
-            while (suggestionEnd < selectorTokens.length && /^S\d+$/i.test(selectorTokens[suggestionEnd].value)) {
-                includedSuggestionIds.add(selectorTokens[suggestionEnd].value.toUpperCase());
-                suggestionEnd += 1;
-            }
-            if (suggestionEnd === suggestionStart) {
-                instructionsStart = selectorTokens[index].start;
-                break;
-            }
-            recognizedSelector = true;
-            index = suggestionEnd;
-            continue;
+            instructionsStart = selectorTokens[index].start;
+            break;
         }
         attemptedSelector ||= /^(?:F|S)\d/i.test(token);
         instructionsStart = selectorTokens[index].start;
@@ -68,11 +66,14 @@ export function parseFixFindingSelection(instructions: string): FixFindingSelect
             ? (clauseEnd === -1 ? '' : trimmedInstructions.slice(clauseEnd + 1).trim())
             : trimmedInstructions.slice(instructionsStart).trim())
         : trimmedInstructions;
+    let actionableIds: Set<string> | null = null;
+    if (invalidSelector || (attemptedSelector && !recognizedSelector)) {
+        actionableIds = new Set<string>();
+    } else if (selectedIds.size > 0) {
+        actionableIds = selectedIds;
+    }
     return {
-        actionableIds: selectedIds.size > 0
-            ? selectedIds
-            : (attemptedSelector && !recognizedSelector ? new Set<string>() : null),
-        includedSuggestionIds,
+        actionableIds,
         remainingInstructions,
     };
 }
@@ -81,7 +82,7 @@ export function selectReviewFeedback(
     comments: AIReviewComment[],
     selection: FixFindingSelection,
 ): AIReviewComment[] {
-    const hasExplicitSelector = selection.actionableIds !== null || selection.includedSuggestionIds.size > 0;
+    const hasExplicitSelector = selection.actionableIds !== null;
     const candidateComments = hasExplicitSelector && comments.length > 0
         ? [comments.reduce((latest, comment) => {
             const timeDifference = new Date(comment.created_at).getTime() - new Date(latest.created_at).getTime();
@@ -93,25 +94,22 @@ export function selectReviewFeedback(
         const actionableFindings = selection.actionableIds
             ? comment.actionableFindings.filter(finding => selection.actionableIds!.has(finding.id))
             : comment.actionableFindings;
-        const suggestions = comment.suggestions.filter(suggestion => selection.includedSuggestionIds.has(suggestion.id));
         return {
             ...comment,
             body: formatActionableFindings(actionableFindings),
             actionableFindings,
-            suggestions,
+            suggestions: [],
         };
-    }).filter(comment => comment.actionableFindings.length > 0 || comment.suggestions.length > 0);
+    }).filter(comment => comment.actionableFindings.length > 0);
 }
 
 /**
  * Selected comments are the authorization boundary for `/fix`: actionable
- * findings are authorized by default or by F# selector, while suggestions are
- * present only when explicitly included with an S# selector.
+ * findings are authorized by default or by F# selector. Suggestions never
+ * enter the automatic fix scope.
  */
 export function hasAuthorizedFixFeedback(selectedComments: AIReviewComment[]): boolean {
-    return selectedComments.some(comment =>
-        comment.actionableFindings.length > 0 || comment.suggestions.length > 0,
-    );
+    return selectedComments.some(comment => comment.actionableFindings.length > 0);
 }
 
 export async function prepareFixReviewFeedback(params: {
@@ -129,7 +127,7 @@ export async function prepareFixReviewFeedback(params: {
     reviewCommentsSection: string;
 }> {
     const { job, allComments, repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger } = params;
-    const emptySelection = { actionableIds: null, includedSuggestionIds: new Set<string>(), remainingInstructions: '' };
+    const emptySelection: FixFindingSelection = { actionableIds: null, remainingInstructions: '' };
     if (job.data.commandMode !== 'fix') {
         return { isFixMode: false, fixSelection: emptySelection, selectedReviewComments: [], reviewCommentsSection: '' };
     }
@@ -146,7 +144,7 @@ export async function prepareFixReviewFeedback(params: {
         isFixMode: true,
         fixSelection,
         selectedReviewComments,
-        reviewCommentsSection: formatReviewCommentsSection(selectedReviewComments, unprocessedReviewComments),
+        reviewCommentsSection: formatReviewCommentsSection(selectedReviewComments),
     };
 }
 
@@ -161,28 +159,12 @@ function formatActionableRecord(finding: ActionableFinding, commentId: number): 
     ].join('\n');
 }
 
-function formatAuthorizedSuggestion(suggestion: ReviewSuggestion, commentId: number): string {
-    return [
-        `### ${suggestion.id}: ${suggestion.title}`,
-        `- **Source review comment:** ${commentId}`,
-        `- **Explicitly authorized summary:** ${suggestion.summary}`,
-    ].join('\n');
-}
-
 export function formatReviewCommentsSection(
     selectedComments: AIReviewComment[],
-    allComments: AIReviewComment[] = selectedComments,
 ): string {
     const actionable = selectedComments.flatMap(comment =>
         comment.actionableFindings.map(finding => formatActionableRecord(finding, comment.id)),
     );
-    const authorizedSuggestions = selectedComments.flatMap(comment =>
-        comment.suggestions.map(suggestion => formatAuthorizedSuggestion(suggestion, comment.id)),
-    );
-    const allSuggestionIds = [...new Set(allComments.flatMap(comment => comment.suggestions.map(suggestion => suggestion.id)))];
-    const selectedSuggestionIds = new Set(selectedComments.flatMap(comment => comment.suggestions.map(suggestion => suggestion.id)));
-    const informationalIds = allSuggestionIds.filter(id => !selectedSuggestionIds.has(id));
-
     const lines = ['**Selected Review Finding Records:**', ''];
     if (actionable.length > 0) {
         const ids = selectedComments.flatMap(comment => comment.actionableFindings.map(finding => finding.id));
@@ -190,12 +172,6 @@ export function formatReviewCommentsSection(
     } else {
         lines.push('No actionable findings were selected.');
     }
-    if (authorizedSuggestions.length > 0) {
-        lines.push('', '**Explicitly Authorized Suggestions:**', '', ...authorizedSuggestions);
-    }
-    lines.push('', 'Do not implement any suggestion that is not explicitly authorized above.');
-    if (informationalIds.length > 0) {
-        lines.push(`Informational suggestion IDs (autoFix: false): ${informationalIds.join(', ')}.`);
-    }
+    lines.push('', 'Do not implement suggestions through `/fix`; they require a separate ordinary follow-up request.');
     return lines.join('\n');
 }

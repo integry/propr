@@ -55,7 +55,7 @@ export async function handleNoAuthorizedFindings(params: NoAuthorizedFindingsPar
     const commentIdsSuffix = commentIds.length > 0
         ? `\n\n---\n_Processing comment ID${commentIds.length > 1 ? 's' : ''}: ${commentIds.map(id => `${id}✓`).join(', ')}_`
         : '';
-    const body = `ℹ️ **No authorized review findings were selected.**\n\nNo files were changed because this \`/fix\` command did not select an actionable F# finding or explicitly authorize a suggestion.\n\n[View Task Execution](${taskUrl})${commentIdsSuffix}${completedEvidence ? `\n${completedEvidence}` : ''}`;
+    const body = `ℹ️ **No authorized review findings were selected.**\n\nNo files were changed because this \`/fix\` command did not select an actionable F# finding. Suggestions require a separate ordinary follow-up request.\n\n[View Task Execution](${taskUrl})${commentIdsSuffix}${completedEvidence ? `\n${completedEvidence}` : ''}`;
     const completionComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body,
     }) as { data: { html_url: string; body?: string } };
