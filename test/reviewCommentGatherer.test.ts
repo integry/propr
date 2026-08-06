@@ -111,6 +111,27 @@ describe('structured review finding extraction', () => {
         assert.strictEqual(parseStructuredReview(malformed).status, 'invalid');
     });
 
+    test('strips the formatter title but rejects an extra findings heading before the contract', () => {
+        const clean = STRUCTURED_REVIEW.replace(
+            /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+            'No actionable findings.',
+        );
+        const formatterTitle = '## 🔍 AI Code Review — Test Model';
+        const malformed = [
+            formatterTitle,
+            '',
+            '## Findings',
+            '### F1: Hidden blocker',
+            'A blocker outside the structured contract.',
+            '',
+            clean,
+            '<!-- propr:ai-review model="test" -->',
+        ].join('\n');
+
+        assert.strictEqual(parseStructuredReview(`${formatterTitle}\n\n${clean}`).status, 'valid_clean');
+        assert.strictEqual(parseStructuredReview(malformed).status, 'invalid');
+    });
+
     test('never promotes suggestion prose into actionable findings', () => {
         const suggestionOnly = [
             '## Actionable Findings',

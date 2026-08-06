@@ -101,6 +101,9 @@ const SCORE_RE = /Score:\s*(\d{1,2})\s*\/\s*10/;
 /** Error reviews are diagnostic comments and must never satisfy the review contract. */
 const ERROR_REVIEW_MARKER_RE = /<!--\s*propr:ai-review\b[^>]*\berror\s*=\s*["']true["'][^>]*-->/i;
 
+/** The only level-two heading added outside the model's review response. */
+const REVIEW_TITLE_WRAPPER_RE = /^##[ \t]+🔍[ \t]+AI Code Review[ \t]+—[ \t]+[^\r\n]+[ \t]*\r?\n(?:\r?\n)?/;
+
 function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -218,7 +221,7 @@ export function parseStructuredReview(body: string): StructuredReviewResult {
     if (ERROR_REVIEW_MARKER_RE.test(body)) {
         return { status: 'invalid', actionableFindings: [], suggestions: [], score: null };
     }
-    const cleaned = stripReviewBoilerplate(body);
+    const cleaned = stripReviewBoilerplate(body).replace(REVIEW_TITLE_WRAPPER_RE, '');
     const requiredSections = [
         'Overall Evaluation',
         'Actionable Findings',
@@ -229,9 +232,7 @@ export function parseStructuredReview(body: string): StructuredReviewResult {
         const headingRe = new RegExp(`^##[ \\t]+${escapeRegExp(heading)}[ \\t]*$`, 'im');
         return headingRe.exec(cleaned);
     });
-    const contractStart = sectionMatches[0]?.index ?? Number.POSITIVE_INFINITY;
     const contractHeadings = [...cleaned.matchAll(/^##[ \t]+(.+?)[ \t]*$/gm)]
-        .filter(match => (match.index ?? 0) >= contractStart)
         .map(match => match[1].trim());
     const sectionsAreValid = sectionMatches.every((match): match is RegExpExecArray => match !== null)
         && sectionMatches.every((match, index) => index === 0 || match!.index > sectionMatches[index - 1]!.index)
