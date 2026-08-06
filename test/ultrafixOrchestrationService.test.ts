@@ -67,6 +67,7 @@ describe('createDefaultState', () => {
         assert.strictEqual(state.lastAction, null);
         assert.strictEqual(state.lastActionTimestamp, null);
         assert.strictEqual(state.active, true);
+        assert.strictEqual(state.originalScopeCaptured, false);
     });
 
     test('respects overrides', () => {
@@ -218,6 +219,36 @@ describe('immutable scope and finding lifecycle', () => {
         await saveState(redis as any, createDefaultState({ owner: 'o', repo: 'r', pr: 1 }));
         assert.strictEqual(await retainOriginalScope(redis as any, { owner: 'o', repo: 'r', pr: 1, scope: 'Original objective' }), 'Original objective');
         assert.strictEqual(await retainOriginalScope(redis as any, { owner: 'o', repo: 'r', pr: 1, scope: 'Expanded review prose' }), 'Original objective');
+    });
+
+    test('retains an initially empty scope instead of adopting later text', async () => {
+        const redis = createMockRedis();
+        await saveState(redis as any, createDefaultState({ owner: 'o', repo: 'r', pr: 3 }));
+
+        assert.strictEqual(await retainOriginalScope(redis as any, {
+            owner: 'o', repo: 'r', pr: 3, scope: '',
+        }), '');
+        assert.strictEqual(await retainOriginalScope(redis as any, {
+            owner: 'o', repo: 'r', pr: 3, scope: 'Objective added later',
+        }), '');
+
+        const state = await loadState(redis as any, 'o', 'r', 3);
+        assert.strictEqual(state?.originalScope, '');
+        assert.strictEqual(state?.originalScopeCaptured, true);
+    });
+
+    test('preserves a legacy captured scope when the initialization flag is absent', async () => {
+        const redis = createMockRedis();
+        const legacyState = createDefaultState({ owner: 'o', repo: 'r', pr: 4 });
+        legacyState.originalScope = 'Legacy objective';
+        delete legacyState.originalScopeCaptured;
+        await saveState(redis as any, legacyState);
+
+        assert.strictEqual(await retainOriginalScope(redis as any, {
+            owner: 'o', repo: 'r', pr: 4, scope: 'Replacement objective',
+        }), 'Legacy objective');
+        const state = await loadState(redis as any, 'o', 'r', 4);
+        assert.strictEqual(state?.originalScopeCaptured, true);
     });
 
     test('tracks selected blockers through fix and resolves them on the next review', async () => {

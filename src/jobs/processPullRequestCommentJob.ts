@@ -28,7 +28,7 @@ import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPe
 import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
-import { prepareFixReviewFeedback } from './reviewFindingSelector.js';
+import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
 import { markFindingsSelected, retainOriginalScope } from './ultrafixOrchestrationService.js';
 import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
 import { handlePostExecution } from './prCommentPostExecution.js';
@@ -244,6 +244,14 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     } = await prepareFixReviewFeedback({
         job, allComments, repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient,
     });
+
+    if (isFixMode && !hasAuthorizedFixFeedback(selectedReviewComments)) {
+        correlatedLogger.info(
+            { pullRequestNumber },
+            'Skipping fix processing because no actionable findings or explicitly authorized suggestions were selected',
+        );
+        return { status: 'skipped', reason: 'no_authorized_review_findings', pullRequestNumber };
+    }
 
     if (job.data.ultrafixMeta && selectedReviewComments.length > 0) {
         await markFindingsSelected(redisClient, {

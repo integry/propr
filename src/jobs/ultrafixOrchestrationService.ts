@@ -50,6 +50,8 @@ export interface UltrafixLoopState {
     completedAt: string | null;
     /** Original PR/issue objective captured once and reused unchanged. */
     originalScope?: string;
+    /** Whether originalScope has been captured, including when it was empty. */
+    originalScopeCaptured?: boolean;
     /** Per-review actionable finding lifecycle, keyed by comment ID and F# ID. */
     findingLifecycle?: Record<string, UltrafixFindingLifecycle>;
 }
@@ -142,7 +144,7 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         completionReason: null,
         finalScore: null,
         completedAt: null,
-        originalScope: '',
+        originalScopeCaptured: false,
         findingLifecycle: {},
     };
 }
@@ -304,11 +306,12 @@ export async function retainOriginalScope(
 ): Promise<string> {
     const state = await loadState(redis, params.owner, params.repo, params.pr);
     if (!state) return params.scope;
-    if (!state.originalScope && params.scope.trim()) {
-        state.originalScope = params.scope;
-        await saveState(redis, state);
-    }
-    return state.originalScope || params.scope;
+
+    if (state.originalScopeCaptured === true) return state.originalScope ?? '';
+    // Preserve populated legacy state; an empty legacy placeholder was not captured.
+    state.originalScope ||= params.scope;
+    await saveState(redis, { ...state, originalScopeCaptured: true });
+    return state.originalScope ?? '';
 }
 
 /** Record the blockers emitted by a review and resolve addressed predecessors. */

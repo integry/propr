@@ -103,6 +103,17 @@ export function selectReviewFeedback(
     }).filter(comment => comment.actionableFindings.length > 0 || comment.suggestions.length > 0);
 }
 
+/**
+ * Selected comments are the authorization boundary for `/fix`: actionable
+ * findings are authorized by default or by F# selector, while suggestions are
+ * present only when explicitly included with an S# selector.
+ */
+export function hasAuthorizedFixFeedback(selectedComments: AIReviewComment[]): boolean {
+    return selectedComments.some(comment =>
+        comment.actionableFindings.length > 0 || comment.suggestions.length > 0,
+    );
+}
+
 export async function prepareFixReviewFeedback(params: {
     job: Job<CommentJobData>;
     allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>;

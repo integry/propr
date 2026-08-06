@@ -19,6 +19,7 @@ const {
 } = await import('../src/jobs/reviewCommentGatherer.js');
 const {
     formatReviewCommentsSection: formatSelectedReviewRecords,
+    hasAuthorizedFixFeedback,
     parseFixFindingSelection,
     selectReviewFeedback,
 } = await import('../src/jobs/reviewFindingSelector.js');
@@ -442,7 +443,33 @@ describe('/fix structured finding selection', () => {
         const selection = parseFixFindingSelection('include please keep the change localized');
         assert.notStrictEqual(selection.actionableIds, null);
         assert.deepStrictEqual([...selection.actionableIds!], []);
-        assert.deepStrictEqual(selectReviewFeedback([reviewComment()], selection), []);
+        const selected = selectReviewFeedback([reviewComment()], selection);
+        assert.deepStrictEqual(selected, []);
+        assert.strictEqual(hasAuthorizedFixFeedback(selected), false);
+    });
+
+    test('does not authorize execution for unknown IDs or a bare fix with no blockers', () => {
+        const unknownSelection = selectReviewFeedback(
+            [reviewComment()],
+            parseFixFindingSelection('F999'),
+        );
+        assert.deepStrictEqual(unknownSelection, []);
+        assert.strictEqual(hasAuthorizedFixFeedback(unknownSelection), false);
+
+        const suggestionOnlyReview = reviewComment();
+        suggestionOnlyReview.actionableFindings = [];
+        const bareSelection = selectReviewFeedback(
+            [suggestionOnlyReview],
+            parseFixFindingSelection(''),
+        );
+        assert.deepStrictEqual(bareSelection, []);
+        assert.strictEqual(hasAuthorizedFixFeedback(bareSelection), false);
+
+        const authorizedSuggestion = selectReviewFeedback(
+            [suggestionOnlyReview],
+            parseFixFindingSelection('include S1'),
+        );
+        assert.strictEqual(hasAuthorizedFixFeedback(authorizedSuggestion), true);
     });
 
     test('scopes explicit IDs to the newest review comment when models reuse F1', () => {
