@@ -5,8 +5,9 @@
  *   - Are still present on the PR (not deleted).
  *   - Have not already been consumed by a prior successful /fix run.
  *
- * Consumed comment IDs are tracked in a Redis set keyed per-PR so that a later
- * /fix does not repeatedly reapply the same review feedback.
+ * New structured reviews are consumed per F#/S# record so selecting F1 does
+ * not discard F2 from the same comment. The legacy whole-comment Redis set is
+ * still honored for reviews processed before record-level tracking existed.
  */
 
 import type { Logger } from 'pino';
@@ -27,18 +28,50 @@ return 1
 
 export interface AIReviewComment {
     id: number;
+    /** Actionable-only rendering retained for backwards-compatible callers. */
     body: string;
     author: string;
     created_at: string;
+    actionableFindings: ActionableFinding[];
+    suggestions: ReviewSuggestion[];
+    score: number | null;
+    reviewStatus: ReviewOutputStatus;
+}
+
+export type ReviewOutputStatus = 'valid_with_blockers' | 'valid_clean' | 'invalid';
+
+export interface StructuredReviewResult {
+    status: ReviewOutputStatus;
+    actionableFindings: ActionableFinding[];
+    suggestions: ReviewSuggestion[];
+    score: number | null;
+}
+
+export interface ActionableFinding {
+    id: string;
+    title: string;
+    violatedRequirement: string;
+    evidence: string;
+    introducedByPR: true;
+    introducedByPRExplanation: string;
+    requiredForMerge: true;
+    minimumCorrection: string;
+}
+
+export interface ReviewSuggestion {
+    id: string;
+    title: string;
 }
 
 export interface PendingReviewState {
     /** Unprocessed AI review comments (boilerplate already stripped). */
     unprocessedComments: AIReviewComment[];
-    /** The most recent valid review score (1–10), or null if none found. */
+    /** Score from the newest member of a wholly valid review result set, or null. */
     latestScore: number | null;
-    /** Whether any unprocessed review comments exist. */
+    /** Whether any unprocessed actionable findings exist. */
     hasPendingReview: boolean;
+    /** Structured-output state of the newest unprocessed review. */
+    reviewStatus: ReviewOutputStatus;
 }
 
 interface PRComment {
@@ -58,6 +91,13 @@ export interface GatherOptions {
     maxAgeMs?: number;
 }
 
+export interface PendingReviewOptions extends GatherOptions {
+    /** Restrict orchestration to the review comments posted by the completed job. */
+    currentReviewCommentIds?: readonly number[];
+    /** Number of review outputs the completed job attempted to publish. */
+    currentReviewResultCount?: number;
+}
+
 /** Default max age: 7 days */
 const DEFAULT_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
@@ -67,11 +107,197 @@ const DEFAULT_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
  */
 const SCORE_RE = /Score:\s*(\d{1,2})\s*\/\s*10/;
 
+/** Error reviews are diagnostic comments and must never satisfy the review contract. */
+const ERROR_REVIEW_MARKER_RE = /<!--\s*propr:ai-review\b[^>]*\berror\s*=\s*["']true["'][^>]*-->/i;
+
+/** The only level-two heading added outside the model's review response. */
+const REVIEW_TITLE_WRAPPER_RE = /^##[ \t]+🔍[ \t]+AI Code Review[ \t]+—[ \t]+[^\r\n]+[ \t]*\r?\n(?:\r?\n)?/;
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractMarkdownSection(body: string, heading: string): string {
+    const headingRe = new RegExp(`^##[ \\t]+${escapeRegExp(heading)}(?:[ \\t]+.*)?$`, 'im');
+    const match = headingRe.exec(body);
+    if (!match) return '';
+    const contentStart = match.index + match[0].length;
+    const rest = body.slice(contentStart);
+    const nextHeading = /^##\s+/m.exec(rest);
+    return (nextHeading ? rest.slice(0, nextHeading.index) : rest).trim();
+}
+
+function extractRecordFields(block: string): Map<string, string> {
+    const fields = new Map<string, string>();
+    for (const line of block.split('\n')) {
+        const bold = line.match(/^[-*]\s+\*\*([^*]+)\*\*\s*(.*)$/);
+        const plain = line.match(/^[-*]\s+([A-Za-z][A-Za-z0-9 -]*):\s*(.*)$/);
+        const rawKey = bold?.[1] ?? plain?.[1];
+        if (!rawKey) continue;
+        const key = rawKey.replace(/:$/, '').replace(/[\s-]/g, '').toLowerCase();
+        const value = (bold?.[2] ?? plain?.[2] ?? '').replace(/^:\s*/, '').trim();
+        fields.set(key, value);
+    }
+    return fields;
+}
+
+interface MarkdownRecord {
+    id: string;
+    title: string;
+    body: string;
+}
+
+function extractMarkdownRecords(section: string, prefix: 'F' | 'S'): MarkdownRecord[] {
+    const headingRe = new RegExp(`^###[ \\t]+(${prefix}\\d+)[ \\t]*(?::|[-—])[ \\t]*(.+)$`, 'gim');
+    const matches = [...section.matchAll(headingRe)];
+    return matches.map((match, index) => ({
+        id: match[1].toUpperCase(),
+        title: match[2].trim(),
+        body: section.slice(
+            (match.index ?? 0) + match[0].length,
+            matches[index + 1]?.index ?? section.length,
+        ).trim(),
+    }));
+}
+
+function hasExactlyOneSection(body: string, heading: string): boolean {
+    const headingRe = new RegExp(`^##[ \\t]+${escapeRegExp(heading)}[ \\t]*$`, 'gim');
+    return [...body.matchAll(headingRe)].length === 1;
+}
+
+function hasSequentialRecordHeadings(section: string, records: MarkdownRecord[], prefix: 'F' | 'S'): boolean {
+    const allRecordHeadings = [
+        ...section.matchAll(new RegExp(`^###[ \\t]+${prefix}\\d+\\b.*$`, 'gim')),
+    ];
+    return allRecordHeadings.length === records.length
+        && records.every((record, index) => record.id === `${prefix}${index + 1}`);
+}
+
+function parseActionableRecords(section: string): ActionableFinding[] | null {
+    const records = extractMarkdownRecords(section, 'F');
+    if (records.length === 0 || !hasSequentialRecordHeadings(section, records, 'F')) return null;
+
+    const findings: ActionableFinding[] = [];
+    for (const record of records) {
+        const fields = extractRecordFields(record.body);
+        const violatedRequirement = fields.get('violatedrequirement') ?? '';
+        const evidence = fields.get('evidence') ?? '';
+        const introducedByPR = fields.get('introducedbypr') ?? '';
+        const requiredForMerge = fields.get('requiredformerge') ?? '';
+        const minimumCorrection = fields.get('minimumcorrection') ?? '';
+        const introducedByPRExplanation = introducedByPR.replace(/^true\b\s*(?:[-—:]\s*)?/i, '').trim();
+        if (!violatedRequirement || !evidence || !introducedByPRExplanation || !minimumCorrection) return null;
+        if (!/^true\b/i.test(introducedByPR) || !/^true\b/i.test(requiredForMerge)) return null;
+        findings.push({
+            id: record.id,
+            title: record.title,
+            violatedRequirement,
+            evidence,
+            introducedByPR: true,
+            introducedByPRExplanation,
+            requiredForMerge: true,
+            minimumCorrection,
+        });
+    }
+    return findings;
+}
+
+function parseSuggestionRecords(section: string): ReviewSuggestion[] | null {
+    if (section.trim() === 'No suggestions.') return [];
+
+    const records = extractMarkdownRecords(section, 'S');
+    if (
+        records.length === 0
+        || !hasSequentialRecordHeadings(section, records, 'S')
+        || records.some(record => record.body !== '')
+    ) return null;
+    return records.map(record => ({ id: record.id, title: record.title }));
+}
+
 /**
- * RegExp matching the error variant of the AI review marker.
- * Uses the structured marker format rather than a brittle substring check.
+ * Parse the review output contract without conflating malformed output with an
+ * explicit clean review. All four required sections must be present in order,
+ * every record must be complete, and a clean result requires the exact clean
+ * sentinel from the review prompt.
  */
-const ERROR_MARKER_RE = /<!-- propr:ai-review [^>]*error="true"[^>]* -->/;
+export function parseStructuredReview(body: string): StructuredReviewResult {
+    // Inspect the marker before removing boilerplate. Error messages can quote
+    // otherwise valid-looking review output and must always fail closed.
+    if (ERROR_REVIEW_MARKER_RE.test(body)) {
+        return { status: 'invalid', actionableFindings: [], suggestions: [], score: null };
+    }
+    const cleaned = stripReviewBoilerplate(body).replace(REVIEW_TITLE_WRAPPER_RE, '');
+    const requiredSections = [
+        'Overall Evaluation',
+        'Actionable Findings',
+        'Suggestions and Follow-ups',
+        'Score',
+    ];
+    const sectionMatches = requiredSections.map(heading => {
+        const headingRe = new RegExp(`^##[ \\t]+${escapeRegExp(heading)}[ \\t]*$`, 'im');
+        return headingRe.exec(cleaned);
+    });
+    const contractHeadings = [...cleaned.matchAll(/^##[ \t]+(.+?)[ \t]*$/gm)]
+        .map(match => match[1].trim());
+    const sectionsAreValid = sectionMatches.every((match): match is RegExpExecArray => match !== null)
+        && sectionMatches.every((match, index) => index === 0 || match!.index > sectionMatches[index - 1]!.index)
+        && requiredSections.every(heading => hasExactlyOneSection(cleaned, heading))
+        && contractHeadings.length === requiredSections.length
+        && contractHeadings.every((heading, index) => heading === requiredSections[index]);
+    if (!sectionsAreValid) {
+        return { status: 'invalid', actionableFindings: [], suggestions: [], score: null };
+    }
+
+    const overallSection = extractMarkdownSection(cleaned, 'Overall Evaluation');
+    const actionableSection = extractMarkdownSection(cleaned, 'Actionable Findings');
+    const suggestionSection = extractMarkdownSection(cleaned, 'Suggestions and Follow-ups');
+    const scoreSection = extractMarkdownSection(cleaned, 'Score');
+    const scoreMatches = [...scoreSection.matchAll(/^Score:[ \t]*(\d{1,2})[ \t]*\/[ \t]*10[ \t]*$/gm)];
+    const score = scoreMatches.length === 1 ? Number.parseInt(scoreMatches[0][1], 10) : null;
+    const suggestions = parseSuggestionRecords(suggestionSection);
+    if (!overallSection || suggestions === null || score === null || score < 1 || score > 10) {
+        return { status: 'invalid', actionableFindings: [], suggestions: [], score: null };
+    }
+
+    if (actionableSection.trim() === 'No actionable findings.') {
+        return { status: 'valid_clean', actionableFindings: [], suggestions, score };
+    }
+
+    const actionableFindings = parseActionableRecords(actionableSection);
+    if (actionableFindings === null) {
+        return { status: 'invalid', actionableFindings: [], suggestions: [], score: null };
+    }
+    return { status: 'valid_with_blockers', actionableFindings, suggestions, score };
+}
+
+/**
+ * Parse only blocker records that satisfy the complete review-to-fix contract.
+ * Incomplete or non-affirmative records are deliberately excluded from
+ * automation even if they appeared under the actionable heading.
+ */
+export function extractActionableFindings(body: string): ActionableFinding[] {
+    return parseActionableRecords(extractMarkdownSection(body, 'Actionable Findings')) ?? [];
+}
+
+/** Parse public suggestion records; selection policy keeps them out of /fix. */
+export function extractReviewSuggestions(body: string): ReviewSuggestion[] {
+    const section = extractMarkdownSection(body, 'Suggestions and Follow-ups');
+    return extractMarkdownRecords(section, 'S').map(record => ({
+        id: record.id,
+        title: record.title,
+    }));
+}
+
+export function formatActionableFindings(findings: ActionableFinding[]): string {
+    return findings.map(finding => [
+        `### ${finding.id}: ${finding.title}`,
+        `- **violatedRequirement:** ${finding.violatedRequirement}`,
+        `- **evidence:** ${finding.evidence}`,
+        `- **introducedByPR:** true — ${finding.introducedByPRExplanation}`,
+        `- **requiredForMerge:** true`,
+        `- **minimumCorrection:** ${finding.minimumCorrection}`,
+    ].join('\n')).join('\n\n');
+}
 
 /**
  * Strip machine-readable markers and the /fix instruction tip from a review
@@ -81,8 +307,16 @@ export function stripReviewBoilerplate(body: string): string {
     // Remove the HTML marker comment
     let cleaned = body.replace(/\n?<!-- propr:ai-review [^>]* -->/g, '');
     // Remove the /fix tip blockquote section
-    cleaned = cleaned.replace(/\n?---\n> 💡 \*\*Tip:\*\* Comment `\/fix`[^\n]*(?:\n[^\n]*`\/fix[^\n]*)*/g, '');
+    cleaned = cleaned.replace(/\n?---\n> 💡 \*\*(?:Tip|Next step):\*\* Comment `\/fix`[^\n]*(?:\n>[^\n]*)*/g, '');
     return cleaned.trimEnd();
+}
+
+function getProcessedReviewFindingsKey(repoOwner: string, repoName: string, pullRequestNumber: number): string {
+    return `${getProcessedReviewCommentsKey(repoOwner, repoName, pullRequestNumber)}:findings`;
+}
+
+function findingConsumptionKey(commentId: number, kind: 'F' | 'S', findingId: string): string {
+    return `${commentId}:${kind}:${findingId.toUpperCase()}`;
 }
 
 /**
@@ -111,12 +345,18 @@ export async function gatherUnprocessedReviewComments(
     // 2. Load the set of already-processed review comment IDs from Redis.
     const redisKey = getProcessedReviewCommentsKey(repoOwner, repoName, pullRequestNumber);
     let processedIds: Set<string>;
+    let processedFindings: Set<string>;
     try {
-        const members = await redisClient.smembers(redisKey);
+        const [members, findingMembers] = await Promise.all([
+            redisClient.smembers(redisKey),
+            redisClient.smembers(getProcessedReviewFindingsKey(repoOwner, repoName, pullRequestNumber)),
+        ]);
         processedIds = new Set(members);
+        processedFindings = new Set(findingMembers);
     } catch (err) {
-        correlatedLogger.warn({ error: (err as Error).message }, 'Failed to load processed review comment IDs from Redis, treating all as unprocessed');
+        correlatedLogger.warn({ error: (err as Error).message }, 'Failed to load processed review findings from Redis, treating all as unprocessed');
         processedIds = new Set();
+        processedFindings = new Set();
     }
 
     // 3. Return only recent comments not yet processed.
@@ -126,20 +366,27 @@ export async function gatherUnprocessedReviewComments(
             correlatedLogger.debug({ pullRequestNumber, commentId: comment.id }, 'AI review comment already processed, skipping');
             continue;
         }
-        // Skip error review comments using the structured marker regex
-        if (ERROR_MARKER_RE.test(comment.body!)) {
-            continue;
-        }
         // Skip comments older than the recency cutoff
         if (new Date(comment.created_at).getTime() < cutoff) {
             correlatedLogger.debug({ pullRequestNumber, commentId: comment.id }, 'AI review comment too old, skipping');
             continue;
         }
+        const parsedReview = parseStructuredReview(comment.body!);
+        const actionableFindings = parsedReview.actionableFindings.filter(finding =>
+            !processedFindings.has(findingConsumptionKey(comment.id, 'F', finding.id)),
+        );
+        const suggestions = parsedReview.suggestions.filter(suggestion =>
+            !processedFindings.has(findingConsumptionKey(comment.id, 'S', suggestion.id)),
+        );
         unprocessed.push({
             id: comment.id,
-            body: stripReviewBoilerplate(comment.body!),
+            body: formatActionableFindings(actionableFindings),
             author: comment.user.login,
             created_at: comment.created_at,
+            actionableFindings,
+            suggestions,
+            score: parsedReview.score,
+            reviewStatus: parsedReview.status,
         });
     }
 
@@ -169,33 +416,77 @@ export function extractReviewScore(body: string): number | null {
  * Return the pending review state for orchestration (e.g. /ultrafix).
  *
  * This is a convenience wrapper around `gatherUnprocessedReviewComments` that
- * also extracts the latest usable review score from the unprocessed comments.
- * The most recent comment (by `created_at`) with a valid score wins.
+ * also validates the completed job's entire result set when comment IDs are
+ * supplied. The newest member supplies the score only after every expected
+ * result is present and valid; blockers from any member remain authoritative.
  */
 export async function getPendingReviewState(
     allComments: PRComment[],
-    options: GatherOptions,
+    options: PendingReviewOptions,
 ): Promise<PendingReviewState> {
-    const unprocessedComments = await gatherUnprocessedReviewComments(allComments, options);
+    const expectedIds = options.currentReviewCommentIds === undefined
+        ? null
+        : new Set(options.currentReviewCommentIds);
+    const scopedComments = expectedIds === null
+        ? allComments
+        : allComments.filter(comment => expectedIds.has(comment.id));
+    const unprocessedComments = await gatherUnprocessedReviewComments(scopedComments, options);
 
-    // Walk comments newest-first to find the most recent valid score.
-    let latestScore: number | null = null;
+    // Every output produced by a multi-model job is authoritative. Missing or
+    // malformed output invalidates the result set, and any blocker takes
+    // precedence over otherwise-clean reviews.
     const sorted = [...unprocessedComments].sort(
-        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id - a.id,
     );
-    for (const comment of sorted) {
-        const score = extractReviewScore(comment.body);
-        if (score !== null) {
-            latestScore = score;
-            break;
-        }
-    }
+    const latestReview = sorted[0];
+    const gatheredIds = new Set(unprocessedComments.map(comment => comment.id));
+    const expectedResultCount = options.currentReviewResultCount ?? expectedIds?.size;
+    const hasCompleteCurrentResultSet = expectedIds === null || (
+        expectedIds.size > 0
+        && expectedIds.size === expectedResultCount
+        && expectedIds.size === gatheredIds.size
+        && [...expectedIds].every(id => gatheredIds.has(id))
+    );
+    const reviewStatus: ReviewOutputStatus = !hasCompleteCurrentResultSet
+        || unprocessedComments.length === 0
+        || unprocessedComments.some(comment => comment.reviewStatus === 'invalid')
+        ? 'invalid'
+        : unprocessedComments.some(comment => comment.reviewStatus === 'valid_with_blockers')
+            ? 'valid_with_blockers'
+            : 'valid_clean';
 
     return {
         unprocessedComments,
-        latestScore,
-        hasPendingReview: unprocessedComments.length > 0,
+        latestScore: reviewStatus === 'invalid' ? null : latestReview?.score ?? null,
+        hasPendingReview: unprocessedComments.some(comment => comment.actionableFindings.length > 0),
+        reviewStatus,
     };
+}
+
+/**
+ * Mark individual selected records as consumed. This preserves unselected F#
+ * blockers in the same review for a later `/fix F#` invocation.
+ */
+export async function markReviewFindingsProcessed(
+    comments: AIReviewComment[],
+    options: Pick<GatherOptions, 'repoOwner' | 'repoName' | 'pullRequestNumber' | 'redisClient' | 'correlatedLogger'>,
+): Promise<void> {
+    const keys = comments.flatMap(comment => [
+        ...comment.actionableFindings.map(finding => findingConsumptionKey(comment.id, 'F', finding.id)),
+        ...comment.suggestions.map(suggestion => findingConsumptionKey(comment.id, 'S', suggestion.id)),
+    ]);
+    if (keys.length === 0) return;
+
+    const { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger } = options;
+    const redisKey = getProcessedReviewFindingsKey(repoOwner, repoName, pullRequestNumber);
+    const TTL_SECONDS = 30 * 24 * 3600;
+    try {
+        await redisClient.sadd(redisKey, ...keys);
+        await redisClient.expire(redisKey, TTL_SECONDS);
+        correlatedLogger.info({ pullRequestNumber, findingCount: keys.length }, 'Marked selected AI review findings as processed');
+    } catch (err) {
+        correlatedLogger.warn({ error: (err as Error).message }, 'Failed to mark selected review findings as processed in Redis');
+    }
 }
 
 /**

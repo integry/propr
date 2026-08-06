@@ -4,8 +4,8 @@
  * These tests pin down the prompt contract that the /fix gatherer and the
  * /ultrafix score extraction depend on: regardless of whether an operator has
  * configured a `pr_review_prompt` override, the rendered prompt MUST still
- * instruct the model to emit the mandatory `## Overall Evaluation`,
- * `## Findings`, and `## Score` (ending in `Score: N/10`) sections.
+ * instruct the model to emit separate `## Actionable Findings` and
+ * `## Suggestions and Follow-ups` sections alongside evaluation and score.
  *
  * `reviewPromptBuilder.ts` only depends on `@propr/shared` (for the default
  * review guidance), which CI builds before running the test suite, so it can be
@@ -30,7 +30,12 @@ function baseOptions(overrides: Record<string, unknown> = {}) {
 }
 
 // The mandatory output contract the downstream pipeline parses.
-const MANDATORY_SECTIONS = ['## Overall Evaluation', '## Findings', '## Score'];
+const MANDATORY_SECTIONS = [
+    '## Overall Evaluation',
+    '## Actionable Findings',
+    '## Suggestions and Follow-ups',
+    '## Score',
+];
 
 describe('buildReviewPrompt — mandatory output contract', () => {
     test('default prompt (no override) contains all mandatory sections', () => {
@@ -44,7 +49,7 @@ describe('buildReviewPrompt — mandatory output contract', () => {
     test('default guidance is used when override is undefined', () => {
         const prompt = buildReviewPrompt(baseOptions());
         assert.ok(
-            prompt.includes('Perform a thorough code review of this pull request'),
+            prompt.includes('Review only behavior added or changed by this pull request'),
             'default guidance sentence should be present when no override is set',
         );
     });
@@ -53,7 +58,7 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         for (const value of ['', '   ', '\n\t  \n']) {
             const prompt = buildReviewPrompt(baseOptions({ reviewPromptOverride: value }));
             assert.ok(
-                prompt.includes('Perform a thorough code review of this pull request'),
+                prompt.includes('Review only behavior added or changed by this pull request'),
                 `override="${JSON.stringify(value)}" should fall back to default guidance`,
             );
             for (const section of MANDATORY_SECTIONS) {
@@ -70,7 +75,7 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.ok(prompt.includes(override), 'override text should be present in the prompt');
         // ...but the default guidance is replaced.
         assert.ok(
-            !prompt.includes('Perform a thorough code review of this pull request'),
+            !prompt.includes('Review only behavior added or changed by this pull request'),
             'default guidance should be replaced when an override is active',
         );
         // ...and the mandatory contract is still appended.
@@ -102,5 +107,26 @@ describe('buildReviewPrompt — mandatory output contract', () => {
             !prompt.includes('Regardless of the guidance above'),
             'default prompt should not include the override transition',
         );
+    });
+
+    test('enforces the semantic blocker boundary and structured records', () => {
+        const prompt = buildReviewPrompt(baseOptions());
+        assert.ok(prompt.includes('introduced or exposed by this PR'));
+        assert.ok(prompt.includes('**violatedRequirement:**'));
+        assert.ok(prompt.includes('**introducedByPR:** true'));
+        assert.ok(prompt.includes('**requiredForMerge:** true'));
+        assert.ok(prompt.includes('**minimumCorrection:**'));
+        assert.ok(prompt.includes('### S1: Concise description of the optional follow-up'));
+        assert.ok(!prompt.includes('**summary:**'));
+        assert.ok(!prompt.includes('**autoFix:**'));
+        assert.ok(!prompt.includes('List **ALL** issues'));
+        assert.ok(!prompt.includes('Be exhaustive'));
+        assert.ok(!prompt.includes('Include every finding'));
+    });
+
+    test('labels the original objective immutable and keeps suggestions out of scoring pressure', () => {
+        const prompt = buildReviewPrompt(baseOptions());
+        assert.ok(prompt.includes('IMMUTABLE ORIGINAL PR OBJECTIVE'));
+        assert.ok(prompt.includes('Suggestions and follow-ups do not reduce the score'));
     });
 });

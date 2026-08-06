@@ -21,6 +21,8 @@ import {
     clearStateWithLease,
     completeLoop,
     determineNextAction,
+    hasReviewReachedGoal,
+    recordReviewFindings,
     saveDeferredContinuation,
     clearDeferredContinuationWithLease,
 } from './ultrafixOrchestrationService.js';
@@ -28,6 +30,7 @@ import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import type { UltrafixMutationLease } from './ultrafixLeaseTransitions.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
+import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import {
     enqueueNextStep,
     evaluateReadiness,
@@ -53,6 +56,10 @@ export interface UltrafixContinuationParams {
     /** Live PR lease used to atomically fence the completed-action transition. */
     mutationLease?: UltrafixMutationLease;
     assertLease?: () => Promise<void>;
+    /** Review comment IDs posted by the current job. Empty means the current review produced no usable output. */
+    currentReviewCommentIds?: number[];
+    /** Number of review results the current job attempted to post. */
+    currentReviewResultCount?: number;
 }
 
 // --- Dependency injection for check_run status ---
@@ -142,6 +149,7 @@ export async function continueUltrafixLoop(
 
     // 4. Get the latest review score
     let latestScore: number | null = null;
+    let reviewStatus: ReviewOutputStatus = 'invalid';
     if (completedAction === 'review') {
         try {
             const octokit = await withRetry(
@@ -152,22 +160,39 @@ export async function continueUltrafixLoop(
             const allComments = await fetchAllComments(octokit, owner, repo, pullRequestNumber);
             const pendingState = await getPendingReviewState(allComments, {
                 repoOwner: owner, repoName: repo, pullRequestNumber, redisClient, correlatedLogger,
+                currentReviewCommentIds: params.currentReviewCommentIds ?? [],
+                currentReviewResultCount: params.currentReviewResultCount ?? 0,
             });
             latestScore = pendingState.latestScore;
+            reviewStatus = pendingState.reviewStatus;
+            if (reviewStatus !== 'invalid') {
+                await recordReviewFindings(redisClient, {
+                    owner,
+                    repo,
+                    pr: pullRequestNumber,
+                    findings: pendingState.unprocessedComments.flatMap(comment =>
+                        comment.actionableFindings.map(finding => ({
+                            id: finding.id,
+                            sourceCommentId: comment.id,
+                            title: finding.title,
+                        })),
+                    ),
+                });
+            }
             correlatedLogger.info(
-                { pullRequestNumber, latestScore, goal: updatedState.goal },
-                'Ultrafix loop: fetched latest review score',
+                { pullRequestNumber, latestScore, reviewStatus, goal: updatedState.goal },
+                'Ultrafix loop: parsed latest review output',
             );
         } catch (err) {
             correlatedLogger.warn(
                 { error: (err as Error).message, pullRequestNumber },
-                'Ultrafix loop: failed to fetch review score, continuing with null',
+                'Ultrafix loop: failed to parse review output, scheduling a review retry',
             );
         }
     }
 
     // 5. Determine next action
-    const decision = determineNextAction(updatedState, latestScore);
+    const decision = determineNextAction(updatedState, latestScore, reviewStatus);
     correlatedLogger.info(
         { pullRequestNumber, nextAction: decision.action, reason: decision.reason, latestScore },
         'Ultrafix loop: next action decision',
@@ -175,7 +200,8 @@ export async function continueUltrafixLoop(
 
     // 6. If loop should stop, clean up
     if (decision.action === null) {
-        const goalReached = latestScore !== null && latestScore >= updatedState.goal;
+        const goalReached = completedAction === 'review'
+            && hasReviewReachedGoal(reviewStatus, latestScore, updatedState.goal);
         await completeLoop(redisClient, {
             owner,
             repo,
@@ -194,11 +220,16 @@ export async function continueUltrafixLoop(
             await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
         } else {
             await assertContinuationLease(params);
+            const stoppedBecauseCleanReviewMissedGoal = completedAction === 'review'
+                && reviewStatus === 'valid_clean';
+            const manualReason = stoppedBecauseCleanReviewMissedGoal
+                ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
+                : 'Max cycles were exhausted, so manual review and merge are now required.';
             await postPrComment({
                 owner,
                 repo,
                 pullRequestNumber,
-                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${updatedState.goal}/10. Last score: ${latestScore ?? 'unknown'}. Max cycles were exhausted, so manual review and merge are now required.`,
+                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${updatedState.goal}/10. Last score: ${latestScore ?? 'unknown'}. ${manualReason}`,
                 correlatedLogger,
             });
         }

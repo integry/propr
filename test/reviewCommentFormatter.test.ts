@@ -9,6 +9,53 @@ after(async () => {
 });
 
 describe('buildReviewComment', () => {
+    test('explains that explicit finding IDs refer to the newest review', () => {
+        const comment = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            {
+                response: '## Actionable Findings\nNo actionable findings.\n\n## Score\nScore: 10/10',
+                modelUsed: 'claude-sonnet',
+                executionTimeMs: 1000,
+                success: true,
+            },
+        );
+
+        assert.ok(comment.includes('Explicit IDs such as `/fix F1 F3` refer to the newest review.'));
+        assert.ok(comment.includes('require a separate ordinary follow-up request.'));
+        assert.ok(!comment.includes('/fix include S'));
+    });
+
+    test('publishes concise suggestion headings without legacy metadata', () => {
+        const response = [
+            '## Overall Evaluation',
+            'Ready.',
+            '## Actionable Findings',
+            'No actionable findings.',
+            '## Suggestions and Follow-ups',
+            '### S1: Add an outbox',
+            '- **summary:** Optional hardening',
+            '- **autoFix:** true',
+            '### S2: Add a benchmark',
+            '- **summary:** Optional performance coverage',
+            '## Score',
+            'Score: 9/10',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            {
+                response,
+                modelUsed: 'claude-sonnet',
+                executionTimeMs: 1000,
+                success: true,
+            },
+        );
+        assert.ok(formatted.includes('### S1: Add an outbox'));
+        assert.ok(formatted.includes('### S2: Add a benchmark'));
+        assert.ok(!formatted.includes('summary:'));
+        assert.ok(!formatted.includes('autoFix:'));
+    });
+
     test('includes files omitted from the review diff', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },

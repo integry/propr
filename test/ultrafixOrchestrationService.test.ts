@@ -6,6 +6,7 @@ import {
     createDefaultState,
     determineInitialAction,
     determineNextAction,
+    hasReviewReachedGoal,
     saveState,
     loadState,
     clearState,
@@ -15,6 +16,9 @@ import {
     startLoop,
     recordAction,
     saveDeferredContinuation,
+    retainOriginalScope,
+    recordReviewFindings,
+    markFindingsSelected,
     stopLoop,
     type UltrafixLoopState,
     type StartLoopOptions,
@@ -68,6 +72,7 @@ describe('createDefaultState', () => {
         assert.strictEqual(state.lastAction, null);
         assert.strictEqual(state.lastActionTimestamp, null);
         assert.strictEqual(state.active, true);
+        assert.strictEqual(state.originalScopeCaptured, false);
     });
 
     test('respects overrides', () => {
@@ -114,16 +119,20 @@ describe('determineNextAction', () => {
         assert.ok(decision.reason.includes('inactive'));
     });
 
-    test('stops when goal is met', () => {
-        const decision = determineNextAction(makeState({ goal: 7 }), 8);
+    test('stops when a review is explicitly clean', () => {
+        const decision = determineNextAction(makeState({ goal: 7, lastAction: 'review' }), 8, 'valid_clean');
         assert.strictEqual(decision.action, null);
-        assert.ok(decision.reason.includes('Goal met'));
+        assert.ok(decision.reason.includes('no actionable findings'));
     });
 
-    test('stops when score exactly meets goal', () => {
-        const decision = determineNextAction(makeState({ goal: 7 }), 7);
-        assert.strictEqual(decision.action, null);
-        assert.ok(decision.reason.includes('Goal met'));
+    test('a passing score does not override actionable findings', () => {
+        const decision = determineNextAction(
+            makeState({ goal: 7, lastAction: 'review' }),
+            8,
+            'valid_with_blockers',
+        );
+        assert.strictEqual(decision.action, 'fix');
+        assert.ok(decision.reason.includes('Actionable'));
     });
 
     test('stops when max cycles reached', () => {
@@ -139,7 +148,7 @@ describe('determineNextAction', () => {
             reviewCount: 5,
             fixCount: 4,
             lastAction: 'review',
-        }), 4);
+        }), 4, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
@@ -160,7 +169,7 @@ describe('determineNextAction', () => {
     });
 
     test('returns fix after review', () => {
-        const decision = determineNextAction(makeState({ lastAction: 'review' }), 5);
+        const decision = determineNextAction(makeState({ lastAction: 'review' }), 5, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
@@ -170,13 +179,99 @@ describe('determineNextAction', () => {
     });
 
     test('continues when score is below goal', () => {
-        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 8 }), 6);
+        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 8 }), 6, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
     test('continues when score is null (no score yet)', () => {
-        const decision = determineNextAction(makeState({ lastAction: 'review' }), null);
+        const decision = determineNextAction(makeState({ lastAction: 'review' }), null, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
+    });
+
+    test('does not schedule a fix when a review has suggestions only', () => {
+        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 10 }), 8, 'valid_clean');
+        assert.strictEqual(decision.action, null);
+        assert.match(decision.reason, /no actionable findings/i);
+        assert.match(decision.reason, /below goal 10\/10/i);
+        assert.match(decision.reason, /manual review/i);
+        assert.strictEqual(hasReviewReachedGoal('valid_clean', 8, 10), false);
+    });
+
+    test('retries an invalid review instead of treating it as clean', () => {
+        const decision = determineNextAction(
+            makeState({ lastAction: 'review', reviewCount: 1, maxCycles: 3 }),
+            null,
+            'invalid',
+        );
+        assert.strictEqual(decision.action, 'review');
+        assert.match(decision.reason, /invalid/i);
+    });
+
+    test('stops invalid review retries for manual intervention at the review limit', () => {
+        const decision = determineNextAction(
+            makeState({ lastAction: 'review', reviewCount: 3, maxCycles: 3 }),
+            null,
+            'invalid',
+        );
+        assert.strictEqual(decision.action, null);
+        assert.match(decision.reason, /Invalid review output/);
+    });
+});
+
+describe('immutable scope and finding lifecycle', () => {
+    test('captures original scope once and ignores later expansion', async () => {
+        const redis = createMockRedis();
+        await saveState(redis as any, createDefaultState({ owner: 'o', repo: 'r', pr: 1 }));
+        assert.strictEqual(await retainOriginalScope(redis as any, { owner: 'o', repo: 'r', pr: 1, scope: 'Original objective' }), 'Original objective');
+        assert.strictEqual(await retainOriginalScope(redis as any, { owner: 'o', repo: 'r', pr: 1, scope: 'Expanded review prose' }), 'Original objective');
+    });
+
+    test('retains an initially empty scope instead of adopting later text', async () => {
+        const redis = createMockRedis();
+        await saveState(redis as any, createDefaultState({ owner: 'o', repo: 'r', pr: 3 }));
+
+        assert.strictEqual(await retainOriginalScope(redis as any, {
+            owner: 'o', repo: 'r', pr: 3, scope: '',
+        }), '');
+        assert.strictEqual(await retainOriginalScope(redis as any, {
+            owner: 'o', repo: 'r', pr: 3, scope: 'Objective added later',
+        }), '');
+
+        const state = await loadState(redis as any, 'o', 'r', 3);
+        assert.strictEqual(state?.originalScope, '');
+        assert.strictEqual(state?.originalScopeCaptured, true);
+    });
+
+    test('preserves a legacy captured scope when the initialization flag is absent', async () => {
+        const redis = createMockRedis();
+        const legacyState = createDefaultState({ owner: 'o', repo: 'r', pr: 4 });
+        legacyState.originalScope = 'Legacy objective';
+        delete legacyState.originalScopeCaptured;
+        await saveState(redis as any, legacyState);
+
+        assert.strictEqual(await retainOriginalScope(redis as any, {
+            owner: 'o', repo: 'r', pr: 4, scope: 'Replacement objective',
+        }), 'Legacy objective');
+        const state = await loadState(redis as any, 'o', 'r', 4);
+        assert.strictEqual(state?.originalScopeCaptured, true);
+    });
+
+    test('tracks selected blockers through fix and resolves them on the next review', async () => {
+        const redis = createMockRedis();
+        await saveState(redis as any, createDefaultState({ owner: 'o', repo: 'r', pr: 2 }));
+        const finding = { id: 'F1', sourceCommentId: 10, title: 'Terminal resurrection' };
+        await recordReviewFindings(redis as any, { owner: 'o', repo: 'r', pr: 2, findings: [finding] });
+        await markFindingsSelected(redis as any, { owner: 'o', repo: 'r', pr: 2, findings: [finding] });
+        let state = await loadState(redis as any, 'o', 'r', 2);
+        assert.strictEqual(state?.findingLifecycle?.['10:F1'].status, 'selected');
+
+        await recordAction(redis as any, { owner: 'o', repo: 'r', pr: 2, action: 'fix' });
+        state = await loadState(redis as any, 'o', 'r', 2);
+        assert.strictEqual(state?.findingLifecycle?.['10:F1'].status, 'addressed');
+
+        await recordReviewFindings(redis as any, { owner: 'o', repo: 'r', pr: 2, findings: [] });
+        state = await loadState(redis as any, 'o', 'r', 2);
+        assert.strictEqual(state?.findingLifecycle?.['10:F1'].status, 'resolved');
     });
 });
 
@@ -421,7 +516,7 @@ describe('mode transitions', () => {
 
         // After review → fix
         state.lastAction = 'review';
-        decision = determineNextAction(state, 5);
+        decision = determineNextAction(state, 5, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
 
         // After fix → review
@@ -432,7 +527,7 @@ describe('mode transitions', () => {
 
         // After review again → fix
         state.lastAction = 'review';
-        decision = determineNextAction(state, 6);
+        decision = determineNextAction(state, 6, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'fix');
     });
 
@@ -440,15 +535,15 @@ describe('mode transitions', () => {
         const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1, goal: 9 });
         state.lastAction = 'fix';
         state.cycleCount = 1;
-        const decision = determineNextAction(state, 4);
+        const decision = determineNextAction(state, 4, 'valid_with_blockers');
         assert.strictEqual(decision.action, 'review', 'After fix, next must be review');
     });
 
-    test('review never follows review (when score is below goal)', () => {
+    test('a blocker review is followed by a fix', () => {
         const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1, goal: 9 });
         state.lastAction = 'review';
-        const decision = determineNextAction(state, 4);
-        assert.strictEqual(decision.action, 'fix', 'After review with low score, next must be fix');
+        const decision = determineNextAction(state, 4, 'valid_with_blockers');
+        assert.strictEqual(decision.action, 'fix', 'After a blocker review, next must be fix');
     });
 });
 
