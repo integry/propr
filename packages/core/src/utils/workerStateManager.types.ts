@@ -57,7 +57,7 @@ export interface TaskStateData {
     state: TaskState;
     createdAt: string;
     updatedAt: string;
-    /** Monotonically increasing revision used to order concurrent updates and events. */
+    /** Monotonically increasing revision used for compare-and-set updates. */
     version?: number;
     attempts: number;
     history: HistoryEntry[];

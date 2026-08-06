@@ -9,7 +9,7 @@ import {
 } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
 
-const MAX_FINALIZATION_ATTEMPTS = 5;
+const MAX_FINALIZATION_RETRY_DELAY_MS = 1_000;
 const TERMINAL_STATES = new Set<TaskState>([
     TaskStates.COMPLETED,
     TaskStates.FAILED,
@@ -34,13 +34,6 @@ export interface PRCommentTaskFinalizationResult {
     publication?: TaskStatePublicationResult;
 }
 
-export class PRCommentTaskFinalizationConflictError extends Error {
-    constructor(taskId: string) {
-        super(`PR comment task finalization conflicted ${MAX_FINALIZATION_ATTEMPTS} times for task ${taskId}`);
-        this.name = 'PRCommentTaskFinalizationConflictError';
-    }
-}
-
 interface FinalTransition {
     state: TaskState;
     metadata: UpdateMetadata;
@@ -57,7 +50,7 @@ function publicationSucceeded(publication: TaskStatePublicationResult): boolean 
 }
 
 async function waitForFinalizationRetry(attempt: number): Promise<void> {
-    const delayMs = 10 * (2 ** attempt);
+    const delayMs = Math.min(10 * (2 ** attempt), MAX_FINALIZATION_RETRY_DELAY_MS);
     await new Promise(resolve => setTimeout(resolve, delayMs));
 }
 
@@ -123,7 +116,7 @@ async function applyFinalTransition(
     transition: FinalTransition,
     stateManager: TaskStateStore,
 ): Promise<PRCommentTaskFinalizationResult> {
-    for (let attempt = 0; attempt < MAX_FINALIZATION_ATTEMPTS; attempt++) {
+    for (let attempt = 0; ; attempt++) {
         const current = await stateManager.getTaskState(taskId);
         if (!current) return { outcome: 'task_missing', stateChanged: false };
         if (TERMINAL_STATES.has(current.state)) {
@@ -144,11 +137,8 @@ async function applyFinalTransition(
                 publication: updated.publication,
             };
         }
-        if (attempt < MAX_FINALIZATION_ATTEMPTS - 1) {
-            await waitForFinalizationRetry(attempt);
-        }
+        await waitForFinalizationRetry(attempt);
     }
-    throw new PRCommentTaskFinalizationConflictError(taskId);
 }
 
 export async function finalizeCompletedPRCommentTask(

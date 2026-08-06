@@ -136,22 +136,30 @@ test('failed hook retries a transient job-state lookup error', async () => {
     assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1);
 });
 
-test('close stops waiting after the configured finalizer drain deadline', async () => {
+test('close waits for pending finalizers to drain', async (t) => {
     const originalImplementation = finalizeCompletedPRCommentTask.mock.mockImplementation;
-    finalizeCompletedPRCommentTask.mock.mockImplementation(async () => new Promise(() => {}));
-    logError.mock.resetCalls();
+    t.after(() => finalizeCompletedPRCommentTask.mock.mockImplementation(originalImplementation));
+    let releaseFinalizer: (() => void) | undefined;
+    let signalFinalizerStarted: (() => void) | undefined;
+    const finalizerStarted = new Promise<void>(resolve => { signalFinalizerStarted = resolve; });
+    finalizeCompletedPRCommentTask.mock.mockImplementation(async () => {
+        signalFinalizerStarted?.();
+        return new Promise<typeof finalizedResult>(resolve => {
+            releaseFinalizer = () => resolve(finalizedResult);
+        });
+    });
     const harness = createWorkerHarness();
-    const finalizers = attachPRCommentTaskStateFinalizers(
-        harness.worker,
-        {} as WorkerStateManager,
-        { drainTimeoutMs: 20 },
-    );
+    const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, {} as WorkerStateManager);
 
     harness.emit('completed', makeJob(async () => 'completed'), { status: 'complete' });
-    const startedAt = Date.now();
-    await finalizers.close();
+    await finalizerStarted;
+    let closeSettled = false;
+    const closePromise = finalizers.close().then(() => { closeSettled = true; });
 
-    assert.ok(Date.now() - startedAt < 500);
-    assert.ok(logError.mock.calls.some(call => call.arguments[1]?.toString().includes('Timed out draining')));
-    finalizeCompletedPRCommentTask.mock.mockImplementation(originalImplementation);
+    await Promise.resolve();
+    assert.equal(closeSettled, false);
+
+    releaseFinalizer?.();
+    await closePromise;
+    assert.equal(closeSettled, true);
 });

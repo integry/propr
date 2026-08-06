@@ -602,13 +602,13 @@ test('updateTaskState increments attempts on retry', async () => {
         taskId: 'task-retry',
         issueRef: { number: 50, repoOwner: 'retry-owner', repoName: 'retry-repo' },
         correlationId: 'corr-retry',
-        state: TaskStates.FAILED,
+        state: TaskStates.PROCESSING,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         attempts: 1,
         history: [
             { state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' },
-            { state: TaskStates.FAILED, timestamp: new Date().toISOString(), reason: 'First failure' }
+            { state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Retry started' }
         ]
     };
 
@@ -622,7 +622,7 @@ test('updateTaskState increments attempts on retry', async () => {
         stateExpiry: TEST_STATE_EXPIRY
     });
 
-    const result = await stateManager.updateTaskState('task-retry', TaskStates.PROCESSING, {
+    const result = await stateManager.updateTaskState('task-retry', TaskStates.CLAUDE_EXECUTION, {
         isRetry: true,
         reason: 'Retrying task'
     });
@@ -2929,5 +2929,69 @@ test('ordinary state writers cannot move a terminal task back to processing', as
     assert.equal(result.state, TaskStates.CANCELLED);
     assert.equal(result.version, 4);
     assert.equal(mockRedisInstance.eval.mock.calls.length, 0);
+    await stateManager.close();
+});
+
+test('a retry writer that loses to cancellation cannot resurrect the task', async () => {
+    const processing = {
+        taskId: 'task-retry-cancellation-race',
+        issueRef: { number: 629, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-retry-cancellation-race',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-05T10:00:00.000Z',
+        updatedAt: '2026-08-05T10:01:00.000Z',
+        version: 2,
+        attempts: 0,
+        history: [{
+            state: TaskStates.PROCESSING,
+            timestamp: '2026-08-05T10:01:00.000Z',
+            reason: 'Processing',
+        }],
+    } satisfies TaskStateData;
+    let storedJson = JSON.stringify(processing);
+    let releaseRetryWriter: (() => void) | undefined;
+    let signalRetryWriterStarted: (() => void) | undefined;
+    const retryWriterStarted = new Promise<void>(resolve => { signalRetryWriterStarted = resolve; });
+    const retryWriterGate = new Promise<void>(resolve => { releaseRetryWriter = resolve; });
+    let pauseNextEval = true;
+
+    mockRedisInstance.get.mock.mockImplementation(async () => storedJson);
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async (...args: unknown[]) => {
+        const expectedJson = args[3] as string;
+        const nextJson = args[5] as string;
+        if (pauseNextEval) {
+            pauseNextEval = false;
+            signalRetryWriterStarted?.();
+            await retryWriterGate;
+        }
+        if (storedJson !== expectedJson) return 0;
+        storedJson = nextJson;
+        return 1;
+    });
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+    const retryUpdate = stateManager.updateTaskState(
+        processing.taskId,
+        TaskStates.CLAUDE_EXECUTION,
+        { isRetry: true, reason: 'Retrying task' },
+    );
+    await retryWriterStarted;
+
+    const cancellation = await stateManager.updateTaskState(
+        processing.taskId,
+        TaskStates.CANCELLED,
+        { reason: 'Cancelled concurrently' },
+    );
+    releaseRetryWriter?.();
+    const retryResult = await retryUpdate;
+
+    assert.equal(cancellation.state, TaskStates.CANCELLED);
+    assert.equal(retryResult.state, TaskStates.CANCELLED);
+    assert.equal((JSON.parse(storedJson) as TaskStateData).state, TaskStates.CANCELLED);
+    assert.equal(mockRedisInstance.eval.mock.calls.length, 2);
     await stateManager.close();
 });

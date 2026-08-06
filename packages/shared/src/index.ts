@@ -28,7 +28,6 @@ export {
   TASK_LIVE_UPDATE,
   QUEUE_STATS_UPDATE,
   REDIS_CHANNELS,
-  isNewerTaskUpdate,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
   type PlanStepUpdatePayload,

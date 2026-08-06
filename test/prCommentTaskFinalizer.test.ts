@@ -154,15 +154,14 @@ test('finalization retries a compare-and-set conflict with fresh state', async (
     assert.equal(store.updateTaskStateIfCurrentDetailed.mock.calls.length, 2);
 });
 
-test('finalization reports persistent compare-and-set contention', async () => {
-    const store = createStore(makeTask(), Number.POSITIVE_INFINITY);
+test('finalization keeps retrying after five compare-and-set conflicts', async () => {
+    const store = createStore(makeTask(), 5);
 
-    await assert.rejects(
-        finalizeCompletedPRCommentTask('task-123', { status: 'complete' }, store),
-        /finalization conflicted 5 times/,
-    );
-    assert.equal(store.updateTaskStateIfCurrentDetailed.mock.calls.length, 5);
-    assert.equal(store.current().state, TaskStates.PROCESSING);
+    const result = await finalizeCompletedPRCommentTask('task-123', { status: 'complete' }, store);
+
+    assert.equal(result.outcome, 'finalized');
+    assert.equal(store.updateTaskStateIfCurrentDetailed.mock.calls.length, 6);
+    assert.equal(store.current().state, TaskStates.COMPLETED);
 });
 
 test('processor reasons are sanitized and bounded before persistence', async () => {

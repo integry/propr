@@ -105,7 +105,6 @@ export class WorkerStateManager {
                 repository,
                 issueNumber: issueRef.number,
                 timestamp: state.updatedAt,
-                version: state.version,
             });
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
@@ -128,8 +127,7 @@ export class WorkerStateManager {
 
             const current = JSON.parse(stateJson) as TaskStateData;
             if (TERMINAL_TASK_STATES.has(current.state)
-                && current.state !== newState
-                && !metadata.isRetry) {
+                && current.state !== newState) {
                 logger.warn({ taskId, currentState: current.state, requestedState: newState },
                     'Ignored state transition from a terminal task');
                 return current;
@@ -246,7 +244,6 @@ export class WorkerStateManager {
                     repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                     issueNumber: state.issueRef.number,
                     timestamp: state.updatedAt,
-                    version: state.version,
                     metadata: {
                         issueRefUpdated: true,
                         updatedFields: Object.keys(issueRefPatch)
@@ -334,7 +331,6 @@ export class WorkerStateManager {
                     repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                     issueNumber: state.issueRef.number,
                     timestamp: state.updatedAt,
-                    version: state.version,
                     metadata: {
                         metadataUpdate: true,
                         updatedFields: Object.keys(metadata)

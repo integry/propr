@@ -11,7 +11,6 @@ import {
   INDEXING_UPDATE,
   TASK_LIVE_UPDATE,
   QUEUE_STATS_UPDATE,
-  isNewerTaskUpdate,
   type EventPayload,
   type TaskUpdatePayload,
   type DraftUpdatePayload,
@@ -49,7 +48,6 @@ export class SocketService {
   private queueBroadcaster: QueueBroadcaster | null = null;
   private taskWatcherManager: TaskWatcherManager;
   private queueDeps: QueueDependencies | null = null;
-  private latestTaskUpdates = new Map<string, TaskUpdatePayload>();
 
   constructor(httpServer: HttpServer, corsOrigins: string | string[] | CorsOriginFunction) {
     // Initialize Socket.IO server with CORS configuration
@@ -252,12 +250,6 @@ export class SocketService {
   }
 
   private handleTaskUpdate(payload: TaskUpdatePayload): void {
-    const latest = this.latestTaskUpdates.get(payload.taskId);
-    if (!isNewerTaskUpdate(latest, payload)) {
-      console.warn(`[SocketService] Ignored stale ${TASK_UPDATE} for task ${payload.taskId}`);
-      return;
-    }
-    this.latestTaskUpdates.set(payload.taskId, payload);
     this.io.to(`task:${payload.taskId}`).emit(TASK_UPDATE, payload);
     this.io.emit(TASK_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${TASK_UPDATE} for task ${payload.taskId}`);
@@ -333,7 +325,6 @@ export class SocketService {
         this.isSubscribed = false;
       }
       await this.subscriber.quit();
-      this.latestTaskUpdates.clear();
       await this.io.close();
       console.log('[SocketService] Closed all connections');
     } catch (error) {

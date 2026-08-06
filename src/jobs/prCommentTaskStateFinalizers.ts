@@ -11,15 +11,10 @@ import {
     type PRCommentTaskFinalizationResult,
 } from './prCommentTaskFinalizer.js';
 
-const DEFAULT_DRAIN_TIMEOUT_MS = 5_000;
 const FAILURE_STATE_ATTEMPTS = 3;
 
 export interface PRCommentTaskStateFinalizers {
     close(): Promise<void>;
-}
-
-interface PRCommentTaskStateFinalizerOptions {
-    drainTimeoutMs?: number;
 }
 
 async function waitForFailureStateRetry(attempt: number): Promise<void> {
@@ -47,10 +42,8 @@ async function isFailureExhausted(job: Job<MainJobData>): Promise<boolean> {
 export function attachPRCommentTaskStateFinalizers(
     worker: MainWorker,
     stateManager: WorkerStateManager,
-    options: PRCommentTaskStateFinalizerOptions = {},
 ): PRCommentTaskStateFinalizers {
     const pending = new Set<Promise<void>>();
-    const drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
     let closed = false;
 
     const track = (operation: Promise<PRCommentTaskFinalizationResult>, taskId: string): void => {
@@ -103,18 +96,7 @@ export function attachPRCommentTaskStateFinalizers(
             worker.off('completed', onCompleted);
             worker.off('failed', onFailed);
             if (pending.size === 0) return;
-
-            let timeout: ReturnType<typeof setTimeout> | undefined;
-            const drained = Promise.allSettled([...pending]).then(() => true);
-            const timedOut = new Promise<false>(resolve => {
-                timeout = setTimeout(() => resolve(false), drainTimeoutMs);
-            });
-            const completed = await Promise.race([drained, timedOut]);
-            if (timeout) clearTimeout(timeout);
-            if (!completed) {
-                logger.error({ pendingFinalizers: pending.size, drainTimeoutMs },
-                    'Timed out draining PR comment task finalizers during shutdown');
-            }
+            await Promise.allSettled([...pending]);
         },
     };
 }
