@@ -2,6 +2,7 @@ import { after, test, describe } from 'node:test';
 import assert from 'node:assert';
 
 const { buildReviewComment } = await import('../src/jobs/reviewCommentFormatter.js');
+const { parseStructuredReview } = await import('../src/jobs/reviewOutputParser.js');
 const { closeConnection } = await import('@propr/core');
 
 after(async () => {
@@ -54,6 +55,54 @@ describe('buildReviewComment', () => {
         assert.ok(formatted.includes('### S2: Add a benchmark'));
         assert.ok(!formatted.includes('summary:'));
         assert.ok(!formatted.includes('autoFix:'));
+    });
+
+    test('publishes validated blockers with reader-facing sections and labels', () => {
+        const response = [
+            '## Overall Evaluation',
+            'Cancellation needs one correction before merge.',
+            '',
+            '## Actionable Findings',
+            '### F1: Retry transitions can overwrite cancellation',
+            '- **violatedRequirement:** Cancellation must not be overwritten by another state writer.',
+            '- **evidence:** workerStateManager.ts:130 — retry metadata bypasses terminal-state protection.',
+            '- **introducedByPR:** true — this PR added the retry exception.',
+            '- **requiredForMerge:** true',
+            '- **minimumCorrection:** Keep cancelled tasks immutable and add a cancellation-versus-retry test.',
+            '',
+            '## Suggestions and Follow-ups',
+            'No suggestions.',
+            '',
+            '## Score',
+            'Score: 6/10',
+            'The cancellation race blocks merging.',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            {
+                response,
+                modelUsed: 'claude-sonnet',
+                executionTimeMs: 1000,
+                success: true,
+            },
+        );
+
+        assert.ok(formatted.includes('## Merge blockers'));
+        assert.ok(formatted.includes('Every finding below was introduced by this PR and must be resolved before merging.'));
+        assert.ok(formatted.includes('- **Required behavior:** Cancellation must not be overwritten'));
+        assert.ok(formatted.includes('- **Evidence:** workerStateManager.ts:130'));
+        assert.ok(formatted.includes('- **Minimum fix:** Keep cancelled tasks immutable'));
+        assert.ok(formatted.includes('## Suggestions\n\nThese are optional follow-ups and are not sent to `/fix`.'));
+        assert.ok(!formatted.includes('## Actionable Findings'));
+        assert.ok(!formatted.includes('Suggestions and Follow-ups'));
+        assert.doesNotMatch(formatted, /violatedRequirement|introducedByPR|requiredForMerge|minimumCorrection/);
+
+        const reparsed = parseStructuredReview(formatted);
+        assert.strictEqual(reparsed.status, 'valid_with_blockers');
+        assert.strictEqual(reparsed.actionableFindings[0].id, 'F1');
+        assert.strictEqual(reparsed.actionableFindings[0].introducedByPR, true);
+        assert.strictEqual(reparsed.actionableFindings[0].requiredForMerge, true);
     });
 
     test('includes files omitted from the review diff', () => {
