@@ -423,6 +423,28 @@ describe('/fix structured finding selection', () => {
         assert.strictEqual(proseOnly.remainingInstructions, 'Do not touch F2 while addressing the regression.');
     });
 
+    test('preserves a leading selector when instructions follow without a delimiter', () => {
+        const selection = parseFixFindingSelection('F1 please keep the change localized');
+        assert.deepStrictEqual([...selection.actionableIds ?? []], ['F1']);
+        assert.strictEqual(selection.remainingInstructions, 'please keep the change localized');
+
+        const comment = reviewComment();
+        comment.actionableFindings.push({
+            ...comment.actionableFindings[0],
+            id: 'F2',
+            title: 'Unselected finding',
+        });
+        const selected = selectReviewFeedback([comment], selection);
+        assert.deepStrictEqual(selected[0].actionableFindings.map(finding => finding.id), ['F1']);
+    });
+
+    test('fails closed when a leading selector is attempted but malformed', () => {
+        const selection = parseFixFindingSelection('include please keep the change localized');
+        assert.notStrictEqual(selection.actionableIds, null);
+        assert.deepStrictEqual([...selection.actionableIds!], []);
+        assert.deepStrictEqual(selectReviewFeedback([reviewComment()], selection), []);
+    });
+
     test('scopes explicit IDs to the newest review comment when models reuse F1', () => {
         const older = reviewComment({
             id: 45,

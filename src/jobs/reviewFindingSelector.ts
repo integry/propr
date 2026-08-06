@@ -12,9 +12,10 @@ export interface FixFindingSelection {
 }
 
 /**
- * Parse `/fix F1 F3` and `/fix include S2` selectors from a dedicated leading
- * clause. Extra instructions can follow on a new line or after a semicolon.
- * Finding-like tokens in ordinary instruction prose are left untouched.
+ * Parse `/fix F1 F3` and `/fix include S2` selectors from a leading clause.
+ * Extra instructions can follow the selector directly, on a new line, or after
+ * a semicolon. Finding-like tokens in ordinary instruction prose are left
+ * untouched.
  */
 export function parseFixFindingSelection(instructions: string): FixFindingSelection {
     const trimmedInstructions = instructions.trim();
@@ -22,41 +23,55 @@ export function parseFixFindingSelection(instructions: string): FixFindingSelect
     const selectorClause = (clauseEnd === -1
         ? trimmedInstructions
         : trimmedInstructions.slice(0, clauseEnd)).trim();
-    const selectorTokens = selectorClause.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+    const selectorTokens = [...selectorClause.matchAll(/[^,\s]+/g)].map(match => ({
+        value: match[0],
+        start: match.index,
+    }));
     const selectedIds = new Set<string>();
     const includedSuggestionIds = new Set<string>();
-    let validSelectorClause = selectorTokens.length > 0;
+    let recognizedSelector = false;
+    let attemptedSelector = false;
+    let instructionsStart: number | null = null;
 
-    for (let index = 0; validSelectorClause && index < selectorTokens.length;) {
-        const token = selectorTokens[index];
+    for (let index = 0; index < selectorTokens.length;) {
+        const token = selectorTokens[index].value;
         if (/^F\d+$/i.test(token)) {
+            attemptedSelector = true;
+            recognizedSelector = true;
             selectedIds.add(token.toUpperCase());
             index += 1;
             continue;
         }
         if (/^include$/i.test(token)) {
-            index += 1;
-            const suggestionStart = index;
-            while (index < selectorTokens.length && /^S\d+$/i.test(selectorTokens[index])) {
-                includedSuggestionIds.add(selectorTokens[index].toUpperCase());
-                index += 1;
+            attemptedSelector = true;
+            const suggestionStart = index + 1;
+            let suggestionEnd = suggestionStart;
+            while (suggestionEnd < selectorTokens.length && /^S\d+$/i.test(selectorTokens[suggestionEnd].value)) {
+                includedSuggestionIds.add(selectorTokens[suggestionEnd].value.toUpperCase());
+                suggestionEnd += 1;
             }
-            validSelectorClause = index > suggestionStart;
+            if (suggestionEnd === suggestionStart) {
+                instructionsStart = selectorTokens[index].start;
+                break;
+            }
+            recognizedSelector = true;
+            index = suggestionEnd;
             continue;
         }
-        validSelectorClause = false;
+        attemptedSelector ||= /^(?:F|S)\d/i.test(token);
+        instructionsStart = selectorTokens[index].start;
+        break;
     }
 
-    if (!validSelectorClause) {
-        selectedIds.clear();
-        includedSuggestionIds.clear();
-    }
-
-    const remainingInstructions = validSelectorClause
-        ? (clauseEnd === -1 ? '' : trimmedInstructions.slice(clauseEnd + 1).trim())
+    const remainingInstructions = recognizedSelector
+        ? (instructionsStart === null
+            ? (clauseEnd === -1 ? '' : trimmedInstructions.slice(clauseEnd + 1).trim())
+            : trimmedInstructions.slice(instructionsStart).trim())
         : trimmedInstructions;
     return {
-        actionableIds: selectedIds.size > 0 ? selectedIds : null,
+        actionableIds: selectedIds.size > 0
+            ? selectedIds
+            : (attemptedSelector && !recognizedSelector ? new Set<string>() : null),
         includedSuggestionIds,
         remainingInstructions,
     };
