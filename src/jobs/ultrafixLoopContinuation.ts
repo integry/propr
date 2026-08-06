@@ -21,6 +21,7 @@ import {
     clearState,
     completeLoop,
     determineNextAction,
+    hasReviewReachedGoal,
     recordReviewFindings,
     saveDeferredContinuation,
     clearDeferredContinuation,
@@ -177,7 +178,8 @@ export async function continueUltrafixLoop(
 
     // 6. If loop should stop, clean up
     if (decision.action === null) {
-        const goalReached = completedAction === 'review' && reviewStatus === 'valid_clean';
+        const goalReached = completedAction === 'review'
+            && hasReviewReachedGoal(reviewStatus, latestScore, updatedState.goal);
         await completeLoop(redisClient, {
             owner,
             repo,
@@ -192,11 +194,16 @@ export async function continueUltrafixLoop(
             await clearState(redisClient, owner, repo, pullRequestNumber);
             await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
         } else {
+            const stoppedBecauseCleanReviewMissedGoal = completedAction === 'review'
+                && reviewStatus === 'valid_clean';
+            const manualReason = stoppedBecauseCleanReviewMissedGoal
+                ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
+                : 'Max cycles were exhausted, so manual review and merge are now required.';
             await postPrComment({
                 owner,
                 repo,
                 pullRequestNumber,
-                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${updatedState.goal}/10. Last score: ${latestScore ?? 'unknown'}. Max cycles were exhausted, so manual review and merge are now required.`,
+                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${updatedState.goal}/10. Last score: ${latestScore ?? 'unknown'}. ${manualReason}`,
                 correlatedLogger,
             });
         }

@@ -7,6 +7,8 @@ import {
     loadState,
     clearState,
     completeLoop,
+    determineNextAction,
+    hasReviewReachedGoal,
     type UltrafixLoopState,
 } from '../src/jobs/ultrafixOrchestrationService.js';
 
@@ -112,6 +114,31 @@ describe('Ultrafix loop continuation logic', () => {
     });
 
     describe('review-success-continue: score below goal', () => {
+        test('clean review below goal stops without a fix and persists an unsuccessful completion', async () => {
+            const state = makeState({ lastAction: 'review', goal: 10 });
+            await saveState(redis as any, state);
+
+            const decision = determineNextAction(state, 8, 'valid_clean');
+            assert.strictEqual(decision.action, null);
+
+            const goalReached = hasReviewReachedGoal('valid_clean', 8, state.goal);
+            await completeLoop(redis as any, {
+                owner: 'acme',
+                repo: 'web',
+                pr: 42,
+                completionStatus: goalReached ? 'succeeded' : 'failed',
+                completionReason: decision.reason,
+                finalScore: 8,
+            });
+
+            const loaded = await loadState(redis as any, 'acme', 'web', 42);
+            assert.ok(loaded);
+            assert.strictEqual(loaded.active, false);
+            assert.strictEqual(loaded.completionStatus, 'failed');
+            assert.strictEqual(loaded.finalScore, 8);
+            assert.match(loaded.completionReason!, /manual review/i);
+        });
+
         test('determineNextAction returns fix when score is below goal', async () => {
             const { determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
             const state = makeState({ lastAction: 'review', goal: 8 });

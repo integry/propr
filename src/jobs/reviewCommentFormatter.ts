@@ -130,7 +130,7 @@ export function buildReviewComment(
     // --- /fix instructions ---
     comment += `\n\n---\n`;
     comment += `> 💡 **Next step:** Comment \`/fix\` to address actionable F# blockers only.\n`;
-    comment += `> Select blockers with \`/fix F1 F3\`. Suggestions are \`autoFix: false\` and are never applied unless explicitly authorized with syntax such as \`/fix include S2\`.\n`;
+    comment += `> Explicit IDs such as \`/fix F1 F3\` refer to the newest review. Suggestions are \`autoFix: false\` and are never applied unless explicitly authorized with syntax such as \`/fix include S2\`.\n`;
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;

@@ -176,6 +176,14 @@ export function determineInitialAction(hasPendingReviews: boolean): UltrafixActi
 }
 
 /**
+ * A review only reaches the requested Ultrafix goal when it is both clean and
+ * has an explicit score at or above the configured target.
+ */
+export function hasReviewReachedGoal(reviewStatus: ReviewOutputStatus, currentScore: number | null, goal: number): boolean {
+    return reviewStatus === 'valid_clean' && currentScore !== null && currentScore >= goal;
+}
+
+/**
  * Determine whether the loop should continue and what action to take next.
  */
 export function determineNextAction(
@@ -196,8 +204,19 @@ export function determineNextAction(
 
     if (state.lastAction === 'review') {
         if (reviewStatus === 'valid_clean') {
-            const scoreDetail = currentScore === null ? '' : ` (score ${currentScore}/10)`;
-            return { action: null, reason: `Valid review reports no actionable findings${scoreDetail}` };
+            if (hasReviewReachedGoal(reviewStatus, currentScore, state.goal)) {
+                return {
+                    action: null,
+                    reason: `Valid review reports no actionable findings and score ${currentScore}/10 reaches goal ${state.goal}/10`,
+                };
+            }
+            const scoreDetail = currentScore === null
+                ? 'no score was reported'
+                : `score ${currentScore}/10 is below goal ${state.goal}/10`;
+            return {
+                action: null,
+                reason: `Valid review reports no actionable findings, but ${scoreDetail}; stopping for manual review`,
+            };
         }
         if (reviewStatus === 'invalid') {
             if (reviewCount >= state.maxCycles) {

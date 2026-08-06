@@ -6,6 +6,7 @@ import {
     createDefaultState,
     determineInitialAction,
     determineNextAction,
+    hasReviewReachedGoal,
     saveState,
     loadState,
     clearState,
@@ -185,6 +186,9 @@ describe('determineNextAction', () => {
         const decision = determineNextAction(makeState({ lastAction: 'review', goal: 10 }), 8, 'valid_clean');
         assert.strictEqual(decision.action, null);
         assert.match(decision.reason, /no actionable findings/i);
+        assert.match(decision.reason, /below goal 10\/10/i);
+        assert.match(decision.reason, /manual review/i);
+        assert.strictEqual(hasReviewReachedGoal('valid_clean', 8, 10), false);
     });
 
     test('retries an invalid review instead of treating it as clean', () => {

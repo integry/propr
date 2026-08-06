@@ -9,6 +9,20 @@ after(async () => {
 });
 
 describe('buildReviewComment', () => {
+    test('explains that explicit finding IDs refer to the newest review', () => {
+        const comment = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            {
+                response: '## Actionable Findings\nNo actionable findings.\n\n## Score\nScore: 10/10',
+                modelUsed: 'claude-sonnet',
+                executionTimeMs: 1000,
+                success: true,
+            },
+        );
+
+        assert.ok(comment.includes('Explicit IDs such as `/fix F1 F3` refer to the newest review.'));
+    });
+
     test('publishes suggestions while forcing autoFix false', () => {
         const response = [
             '## Overall Evaluation',
