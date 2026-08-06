@@ -198,6 +198,7 @@ export interface AiMetrics {
 
 export interface WorkerCreateOptions {
     concurrency?: number;
+    autorun?: boolean;
 }
 
 export interface ActivityLog {

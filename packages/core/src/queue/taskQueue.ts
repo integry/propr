@@ -240,7 +240,7 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
     const workerOptions: WorkerOptions = {
         connection: redisConnection!,
         concurrency: concurrency,
-        autorun: true,
+        autorun: options.autorun ?? true,
     };
 
     const worker = new Worker<T, R>(queueName, processorFunction, workerOptions);
@@ -312,8 +312,9 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
 
     logger.info({
         queue: queueName,
-        concurrency: worker.opts.concurrency
-    }, 'Worker started and listening to queue');
+        concurrency: worker.opts.concurrency,
+        autorun: worker.opts.autorun,
+    }, worker.opts.autorun ? 'Worker started and listening to queue' : 'Worker configured with autorun disabled');
 
     return worker;
 }
