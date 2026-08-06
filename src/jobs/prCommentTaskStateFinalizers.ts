@@ -22,15 +22,9 @@ async function waitForFailureStateRetry(attempt: number): Promise<void> {
 }
 
 async function isFailureExhausted(job: Job<MainJobData>): Promise<boolean> {
-    const configuredAttempts = Math.max(1, job.opts.attempts ?? 1);
-    if (job.attemptsMade >= configuredAttempts) return true;
-
     for (let attempt = 0; attempt < FAILURE_STATE_ATTEMPTS; attempt++) {
         try {
-            const state = await job.getState();
-            if (state === 'failed') return true;
-            if (state === 'unknown' && job.opts.removeOnFail) return true;
-            return false;
+            return await job.getState() === 'failed';
         } catch (error) {
             if (attempt === FAILURE_STATE_ATTEMPTS - 1) throw error;
             await waitForFailureStateRetry(attempt);

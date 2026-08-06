@@ -91,20 +91,20 @@ test('failed hook ignores retryable attempts and finalizes exhausted jobs', asyn
     assert.equal(finalizeFailedPRCommentTask.mock.calls[0].arguments[1].message, 'exhausted');
 });
 
-test('failed hook finalizes an exhausted job from retry metadata without a state lookup', async () => {
+test('failed hook does not finalize from retry metadata without a failed state', async () => {
     finalizeFailedPRCommentTask.mock.resetCalls();
     const harness = createWorkerHarness();
     const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, {} as WorkerStateManager);
-    const getState = mock.fn(async () => { throw new Error('job was removed'); });
+    const getState = mock.fn(async () => 'waiting');
 
     harness.emit('failed', makeJob(getState, 'processPullRequestComment', { attempts: 3 }, 3), new Error('exhausted'));
     await finalizers.close();
 
-    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1);
-    assert.equal(getState.mock.calls.length, 0);
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
+    assert.equal(getState.mock.calls.length, 1);
 });
 
-test('failed hook handles jobs removed immediately on failure', async () => {
+test('failed hook does not finalize a job with an unknown state', async () => {
     finalizeFailedPRCommentTask.mock.resetCalls();
     const harness = createWorkerHarness();
     const finalizers = attachPRCommentTaskStateFinalizers(harness.worker, {} as WorkerStateManager);
@@ -116,7 +116,7 @@ test('failed hook handles jobs removed immediately on failure', async () => {
     );
     await finalizers.close();
 
-    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1);
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
 });
 
 test('failed hook retries a transient job-state lookup error', async () => {
