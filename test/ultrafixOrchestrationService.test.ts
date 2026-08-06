@@ -11,6 +11,9 @@ import {
     clearState,
     startLoop,
     recordAction,
+    retainOriginalScope,
+    recordReviewFindings,
+    markFindingsSelected,
     stopLoop,
     type UltrafixLoopState,
     type StartLoopOptions,
@@ -172,6 +175,39 @@ describe('determineNextAction', () => {
     test('continues when score is null (no score yet)', () => {
         const decision = determineNextAction(makeState({ lastAction: 'review' }), null);
         assert.strictEqual(decision.action, 'fix');
+    });
+
+    test('does not schedule a fix when a review has suggestions only', () => {
+        const decision = determineNextAction(makeState({ lastAction: 'review', goal: 10 }), 8, false);
+        assert.strictEqual(decision.action, null);
+        assert.match(decision.reason, /No actionable findings/);
+    });
+});
+
+describe('immutable scope and finding lifecycle', () => {
+    test('captures original scope once and ignores later expansion', async () => {
+        const redis = createMockRedis();
+        await saveState(redis as any, createDefaultState({ owner: 'o', repo: 'r', pr: 1 }));
+        assert.strictEqual(await retainOriginalScope(redis as any, { owner: 'o', repo: 'r', pr: 1, scope: 'Original objective' }), 'Original objective');
+        assert.strictEqual(await retainOriginalScope(redis as any, { owner: 'o', repo: 'r', pr: 1, scope: 'Expanded review prose' }), 'Original objective');
+    });
+
+    test('tracks selected blockers through fix and resolves them on the next review', async () => {
+        const redis = createMockRedis();
+        await saveState(redis as any, createDefaultState({ owner: 'o', repo: 'r', pr: 2 }));
+        const finding = { id: 'F1', sourceCommentId: 10, title: 'Terminal resurrection' };
+        await recordReviewFindings(redis as any, { owner: 'o', repo: 'r', pr: 2, findings: [finding] });
+        await markFindingsSelected(redis as any, { owner: 'o', repo: 'r', pr: 2, findings: [finding] });
+        let state = await loadState(redis as any, 'o', 'r', 2);
+        assert.strictEqual(state?.findingLifecycle?.['10:F1'].status, 'selected');
+
+        await recordAction(redis as any, { owner: 'o', repo: 'r', pr: 2, action: 'fix' });
+        state = await loadState(redis as any, 'o', 'r', 2);
+        assert.strictEqual(state?.findingLifecycle?.['10:F1'].status, 'addressed');
+
+        await recordReviewFindings(redis as any, { owner: 'o', repo: 'r', pr: 2, findings: [] });
+        state = await loadState(redis as any, 'o', 'r', 2);
+        assert.strictEqual(state?.findingLifecycle?.['10:F1'].status, 'resolved');
     });
 });
 

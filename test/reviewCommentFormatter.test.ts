@@ -1,7 +1,7 @@
 import { after, test, describe } from 'node:test';
 import assert from 'node:assert';
 
-const { buildReviewComment } = await import('../src/jobs/reviewCommentFormatter.js');
+const { buildReviewComment, markSuggestionsNonAutomatic } = await import('../src/jobs/reviewCommentFormatter.js');
 const { closeConnection } = await import('@propr/core');
 
 after(async () => {
@@ -9,6 +9,29 @@ after(async () => {
 });
 
 describe('buildReviewComment', () => {
+    test('publishes suggestions while forcing autoFix false', () => {
+        const response = [
+            '## Overall Evaluation',
+            'Ready.',
+            '## Actionable Findings',
+            'No actionable findings.',
+            '## Suggestions and Follow-ups',
+            '### S1: Add an outbox',
+            '- **summary:** Optional hardening',
+            '- **autoFix:** true',
+            '### S2: Add a benchmark',
+            '- **summary:** Optional performance coverage',
+            '## Score',
+            'Score: 9/10',
+        ].join('\n');
+
+        const formatted = markSuggestionsNonAutomatic(response);
+        assert.ok(formatted.includes('### S1: Add an outbox'));
+        assert.ok(formatted.includes('### S2: Add a benchmark'));
+        assert.strictEqual((formatted.match(/- \*\*autoFix:\*\* false/g) ?? []).length, 2);
+        assert.ok(!formatted.includes('autoFix:** true'));
+    });
+
     test('includes files omitted from the review diff', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },

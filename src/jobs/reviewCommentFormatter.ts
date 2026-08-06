@@ -3,7 +3,7 @@
  *
  * Formats the LLM review output into a GitHub comment that:
  *   - Identifies the reviewing model.
- *   - Contains findings, evaluation, and a score section.
+ *   - Contains actionable findings, non-automatic suggestions, evaluation, and a score.
  *   - Ends with a short /fix instruction for the user.
  *   - Includes a machine-detectable HTML marker so the /fix pipeline can
  *     distinguish AI review comments from ordinary human comments and
@@ -48,6 +48,36 @@ function formatDuration(ms: number): string {
     return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
+/** Ensure every public S# record visibly carries the non-automation policy. */
+export function markSuggestionsNonAutomatic(response: string): string {
+    const sectionMatch = /^##[ \t]+Suggestions and Follow-ups(?:[ \t]+.*)?$/im.exec(response);
+    if (!sectionMatch) return response;
+
+    const sectionStart = sectionMatch.index + sectionMatch[0].length;
+    const afterStart = response.slice(sectionStart);
+    const nextSection = /^##\s+/m.exec(afterStart);
+    const sectionEnd = sectionStart + (nextSection?.index ?? afterStart.length);
+    let section = response.slice(sectionStart, sectionEnd);
+
+    const recordHeading = /^###[ \t]+S\d+[ \t]*(?::|[-—])[ \t]*.+$/gim;
+    const matches = [...section.matchAll(recordHeading)];
+    for (let index = matches.length - 1; index >= 0; index--) {
+        const match = matches[index];
+        const bodyStart = (match.index ?? 0) + match[0].length;
+        const bodyEnd = matches[index + 1]?.index ?? section.length;
+        const body = section.slice(bodyStart, bodyEnd);
+        const autoFixLine = /^[-*]\s+\*\*auto[- ]?fix:?\*\*\s*:?.*$/im;
+        if (autoFixLine.test(body)) {
+            const normalizedBody = body.replace(autoFixLine, '- **autoFix:** false');
+            section = section.slice(0, bodyStart) + normalizedBody + section.slice(bodyEnd);
+        } else {
+            section = section.slice(0, bodyStart) + '\n- **autoFix:** false' + section.slice(bodyStart);
+        }
+    }
+
+    return response.slice(0, sectionStart) + section + response.slice(sectionEnd);
+}
+
 /**
  * Build the GitHub comment body for a successful review.
  *
@@ -71,7 +101,7 @@ export function buildReviewComment(
     const modelDisplayName = getModelName(effectiveModel);
 
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
-    comment += response;
+    comment += markSuggestionsNonAutomatic(response);
 
     // --- Review Details ---
     comment += `\n\n---\n### 🤖 Review Details\n\n`;
@@ -99,10 +129,8 @@ export function buildReviewComment(
 
     // --- /fix instructions ---
     comment += `\n\n---\n`;
-    comment += `> 💡 **Next step:** Comment \`/fix\` on this PR to have the AI automatically implement the suggestions above.\n`;
-    comment += `> The \`/fix\` command gathers all unprocessed AI review comments and applies fixes in a single pass.\n`;
-    comment += `> You can edit or delete review comments before running \`/fix\` to control which suggestions are applied.\n`;
-    comment += `> Add extra instructions if needed, e.g. \`/fix only address the critical findings\`.\n`;
+    comment += `> 💡 **Next step:** Comment \`/fix\` to address actionable F# blockers only.\n`;
+    comment += `> Select blockers with \`/fix F1 F3\`. Suggestions are \`autoFix: false\` and are never applied unless explicitly authorized with syntax such as \`/fix include S2\`.\n`;
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;

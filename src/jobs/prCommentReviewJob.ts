@@ -17,7 +17,7 @@ import { buildReviewComment, buildReviewErrorComment } from './reviewCommentForm
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
-import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import { loadState as loadUltrafixState, retainOriginalScope, type UltrafixAction } from './ultrafixOrchestrationService.js';
 import {
     buildDeterministicPrTaskSubtitle,
     buildPrTaskTitle,
@@ -396,10 +396,22 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         correlatedLogger.warn({ error: (err as Error).message }, 'Failed to load pr_review_prompt setting, using default review prompt');
     }
 
+    let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
+    if (job.data.ultrafixMeta) {
+        originalTaskSpec = await retainOriginalScope(redisClient, {
+            owner: repoOwner,
+            repo: repoName,
+            pr: pullRequestNumber,
+            scope: originalTaskSpec,
+        });
+    }
+
     const reviewCtx: RunReviewsContext = {
         registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
-        taskId, taskUrl, combinedCommentBody, commentHistory,
-        originalTaskSpec: linkedIssueResult.context || '',
+        taskId, taskUrl, combinedCommentBody,
+        // Prior review prose must never become an expanded Ultrafix objective.
+        commentHistory: job.data.ultrafixMeta ? '' : commentHistory,
+        originalTaskSpec,
         commandInstructions: job.data.commandInstructions,
         prDiff,
         omittedDiffFiles,

@@ -21,6 +21,7 @@ import {
     clearState,
     completeLoop,
     determineNextAction,
+    recordReviewFindings,
     saveDeferredContinuation,
     clearDeferredContinuation,
 } from './ultrafixOrchestrationService.js';
@@ -126,6 +127,7 @@ export async function continueUltrafixLoop(
 
     // 4. Get the latest review score
     let latestScore: number | null = null;
+    let hasActionableFindings = true;
     if (completedAction === 'review') {
         try {
             const octokit = await withRetry(
@@ -138,8 +140,21 @@ export async function continueUltrafixLoop(
                 repoOwner: owner, repoName: repo, pullRequestNumber, redisClient, correlatedLogger,
             });
             latestScore = pendingState.latestScore;
+            hasActionableFindings = pendingState.hasPendingReview;
+            await recordReviewFindings(redisClient, {
+                owner,
+                repo,
+                pr: pullRequestNumber,
+                findings: pendingState.unprocessedComments.flatMap(comment =>
+                    comment.actionableFindings.map(finding => ({
+                        id: finding.id,
+                        sourceCommentId: comment.id,
+                        title: finding.title,
+                    })),
+                ),
+            });
             correlatedLogger.info(
-                { pullRequestNumber, latestScore, goal: updatedState.goal },
+                { pullRequestNumber, latestScore, hasActionableFindings, goal: updatedState.goal },
                 'Ultrafix loop: fetched latest review score',
             );
         } catch (err) {
@@ -151,7 +166,7 @@ export async function continueUltrafixLoop(
     }
 
     // 5. Determine next action
-    const decision = determineNextAction(updatedState, latestScore);
+    const decision = determineNextAction(updatedState, latestScore, hasActionableFindings);
     correlatedLogger.info(
         { pullRequestNumber, nextAction: decision.action, reason: decision.reason, latestScore },
         'Ultrafix loop: next action decision',
@@ -159,7 +174,8 @@ export async function continueUltrafixLoop(
 
     // 6. If loop should stop, clean up
     if (decision.action === null) {
-        const goalReached = latestScore !== null && latestScore >= updatedState.goal;
+        const goalReached = (latestScore !== null && latestScore >= updatedState.goal)
+            || (completedAction === 'review' && !hasActionableFindings);
         await completeLoop(redisClient, {
             owner,
             repo,

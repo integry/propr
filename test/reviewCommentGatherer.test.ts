@@ -5,8 +5,26 @@
  * workspace build), these tests exercise the exported pure functions by
  * re-implementing the key helpers inline so the test file stays self-contained.
  */
-import { test, describe } from 'node:test';
+import { after, test, describe } from 'node:test';
 import assert from 'node:assert';
+import { closeConnection } from '@propr/core';
+
+const {
+    extractActionableFindings: extractStructuredActionableFindings,
+    extractReviewSuggestions: extractStructuredReviewSuggestions,
+    gatherUnprocessedReviewComments: gatherStructuredReviewComments,
+    getPendingReviewState: getStructuredPendingReviewState,
+    markReviewFindingsProcessed: markStructuredReviewFindingsProcessed,
+} = await import('../src/jobs/reviewCommentGatherer.js');
+const {
+    formatReviewCommentsSection: formatSelectedReviewRecords,
+    parseFixFindingSelection,
+    selectReviewFeedback,
+} = await import('../src/jobs/reviewFindingSelector.js');
+
+after(async () => {
+    await closeConnection();
+});
 
 // ---------------------------------------------------------------------------
 // Inline copies of the pure helpers under test — kept in sync with the source
@@ -27,6 +45,197 @@ function stripReviewBoilerplate(body: string): string {
     cleaned = cleaned.replace(/\n?---\n> 💡 \*\*Tip:\*\* Comment `\/fix`[^\n]*(?:\n[^\n]*`\/fix[^\n]*)*/g, '');
     return cleaned.trimEnd();
 }
+
+const STRUCTURED_REVIEW = [
+    '## Overall Evaluation',
+    'One blocker and one optional follow-up.',
+    '',
+    '## Actionable Findings',
+    '### F1: Preserve terminal state',
+    '- **violatedRequirement:** Terminal states cannot be resurrected',
+    '- **evidence:** src/worker.ts:128 — new bypass accepts the transition',
+    '- **introducedByPR:** true — the changed transition handler added the bypass',
+    '- **requiredForMerge:** true',
+    '- **minimumCorrection:** reject transitions from terminal states',
+    '',
+    '## Suggestions and Follow-ups',
+    '### S1: Durable publication',
+    '- **summary:** Consider a durable publication outbox',
+    '- **autoFix:** false',
+    '',
+    '## Score',
+    'Score: 7/10',
+].join('\n');
+
+describe('structured review finding extraction', () => {
+    test('extracts complete F# blocker records and S# suggestions separately', () => {
+        const findings = extractStructuredActionableFindings(STRUCTURED_REVIEW);
+        const suggestions = extractStructuredReviewSuggestions(STRUCTURED_REVIEW);
+
+        assert.strictEqual(findings.length, 1);
+        assert.strictEqual(findings[0].id, 'F1');
+        assert.strictEqual(findings[0].introducedByPR, true);
+        assert.match(findings[0].introducedByPRExplanation, /changed transition handler/);
+        assert.strictEqual(suggestions.length, 1);
+        assert.deepStrictEqual(suggestions[0], {
+            id: 'S1',
+            title: 'Durable publication',
+            summary: 'Consider a durable publication outbox',
+            autoFix: false,
+        });
+    });
+
+    test('rejects an actionable record that cannot supply every required proof', () => {
+        const incomplete = STRUCTURED_REVIEW.replace(
+            '- **minimumCorrection:** reject transitions from terminal states\n',
+            '',
+        );
+        assert.deepStrictEqual(extractStructuredActionableFindings(incomplete), []);
+    });
+
+    test('never promotes suggestion prose into actionable findings', () => {
+        const suggestionOnly = [
+            '## Actionable Findings',
+            'No actionable findings.',
+            '## Suggestions and Follow-ups',
+            '### S1: Add an outbox',
+            '- **summary:** Optional architecture hardening',
+            '- **autoFix:** true',
+            '## Score',
+            'Score: 9/10',
+        ].join('\n');
+        assert.deepStrictEqual(extractStructuredActionableFindings(suggestionOnly), []);
+        assert.strictEqual(extractStructuredReviewSuggestions(suggestionOnly)[0].autoFix, false);
+    });
+
+    test('gatherer exposes actionable-only body while retaining typed suggestions for explicit selection', async () => {
+        const redis = { smembers: async () => [] };
+        const correlatedLogger = { debug() {}, info() {}, warn() {} };
+        const comments = [{
+            id: 42,
+            body: `${STRUCTURED_REVIEW}\n<!-- propr:ai-review model="test" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }];
+        const gathered = await gatherStructuredReviewComments(comments, {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: redis as any,
+            correlatedLogger: correlatedLogger as any,
+        });
+        assert.strictEqual(gathered.length, 1);
+        assert.match(gathered[0].body, /F1: Preserve terminal state/);
+        assert.ok(!gathered[0].body.includes('Durable publication'));
+        assert.strictEqual(gathered[0].actionableFindings.length, 1);
+        assert.strictEqual(gathered[0].suggestions.length, 1);
+    });
+
+    test('suggestion-only reviews do not count as pending automated fixes', async () => {
+        const body = STRUCTURED_REVIEW.replace(
+            /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+            'No actionable findings.',
+        );
+        const state = await getStructuredPendingReviewState([{
+            id: 43,
+            body: `${body}\n<!-- propr:ai-review model="test" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }], {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+        });
+        assert.strictEqual(state.hasPendingReview, false);
+        assert.strictEqual(state.latestScore, 7);
+        assert.strictEqual(state.unprocessedComments[0].suggestions.length, 1);
+    });
+
+    test('record-level consumption preserves unselected blockers from the same review', async () => {
+        const reviewWithTwoFindings = STRUCTURED_REVIEW.replace(
+            '\n## Suggestions and Follow-ups',
+            [
+                '',
+                '### F2: Preserve concurrency',
+                '- **violatedRequirement:** Concurrent updates cannot corrupt state',
+                '- **evidence:** src/worker.ts:144 — changed write is not serialized',
+                '- **introducedByPR:** true — the PR added the unsynchronized write',
+                '- **requiredForMerge:** true',
+                '- **minimumCorrection:** serialize the changed state update',
+                '',
+                '## Suggestions and Follow-ups',
+            ].join('\n'),
+        );
+        const sets = new Map<string, Set<string>>();
+        const redis = {
+            async smembers(key: string) { return [...(sets.get(key) ?? [])]; },
+            async sadd(key: string, ...members: string[]) {
+                const values = sets.get(key) ?? new Set<string>();
+                members.forEach(member => values.add(member));
+                sets.set(key, values);
+                return members.length;
+            },
+            async expire() { return 1; },
+        };
+        const correlatedLogger = { debug() {}, info() {}, warn() {} };
+        const comments = [{
+            id: 44,
+            body: `${reviewWithTwoFindings}\n<!-- propr:ai-review model="test" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }];
+        const options = {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: redis as any,
+            correlatedLogger: correlatedLogger as any,
+        };
+        const first = await gatherStructuredReviewComments(comments, options);
+        assert.deepStrictEqual(first[0].actionableFindings.map(finding => finding.id), ['F1', 'F2']);
+
+        await markStructuredReviewFindingsProcessed([{
+            ...first[0],
+            body: '',
+            actionableFindings: [first[0].actionableFindings[0]],
+            suggestions: [],
+        }], options);
+
+        const second = await gatherStructuredReviewComments(comments, options);
+        assert.deepStrictEqual(second[0].actionableFindings.map(finding => finding.id), ['F2']);
+        assert.strictEqual(second[0].suggestions.length, 1, 'unselected suggestion remains informational');
+    });
+});
+
+describe('/fix structured finding selection', () => {
+    const reviewComment = () => ({
+        id: 45,
+        body: '',
+        author: 'propr-bot',
+        created_at: new Date().toISOString(),
+        actionableFindings: extractStructuredActionableFindings(STRUCTURED_REVIEW),
+        suggestions: extractStructuredReviewSuggestions(STRUCTURED_REVIEW),
+        score: 7,
+    });
+
+    test('bare /fix selects blockers and keeps suggestion prose out of the prompt', () => {
+        const all = [reviewComment()];
+        const selected = selectReviewFeedback(all, parseFixFindingSelection(''));
+        const section = formatSelectedReviewRecords(selected, all);
+        assert.match(section, /Address actionable finding F1 only/);
+        assert.match(section, /Informational suggestion IDs \(autoFix: false\): S1/);
+        assert.ok(!section.includes('Consider a durable publication outbox'));
+        assert.ok(!section.includes('Score: 7/10'));
+    });
+
+    test('supports selected blocker IDs and explicit suggestion authorization', () => {
+        const selection = parseFixFindingSelection('F1 include S1\nKeep the correction localized.');
+        assert.deepStrictEqual([...selection.actionableIds ?? []], ['F1']);
+        assert.deepStrictEqual([...selection.includedSuggestionIds], ['S1']);
+        assert.strictEqual(selection.remainingInstructions, 'Keep the correction localized.');
+
+        const all = [reviewComment()];
+        const section = formatSelectedReviewRecords(selectReviewFeedback(all, selection), all);
+        assert.match(section, /Explicitly Authorized Suggestions/);
+        assert.match(section, /Consider a durable publication outbox/);
+    });
+});
 
 // ---------------------------------------------------------------------------
 // stripReviewBoilerplate

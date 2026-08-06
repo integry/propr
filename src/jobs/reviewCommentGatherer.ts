@@ -5,8 +5,9 @@
  *   - Are still present on the PR (not deleted).
  *   - Have not already been consumed by a prior successful /fix run.
  *
- * Consumed comment IDs are tracked in a Redis set keyed per-PR so that a later
- * /fix does not repeatedly reapply the same review feedback.
+ * New structured reviews are consumed per F#/S# record so selecting F1 does
+ * not discard F2 from the same comment. The legacy whole-comment Redis set is
+ * still honored for reviews processed before record-level tracking existed.
  */
 
 import type { Logger } from 'pino';
@@ -16,9 +17,31 @@ import { isReviewComment } from './reviewCommentFormatter.js';
 
 export interface AIReviewComment {
     id: number;
+    /** Actionable-only rendering retained for backwards-compatible callers. */
     body: string;
     author: string;
     created_at: string;
+    actionableFindings: ActionableFinding[];
+    suggestions: ReviewSuggestion[];
+    score: number | null;
+}
+
+export interface ActionableFinding {
+    id: string;
+    title: string;
+    violatedRequirement: string;
+    evidence: string;
+    introducedByPR: true;
+    introducedByPRExplanation: string;
+    requiredForMerge: true;
+    minimumCorrection: string;
+}
+
+export interface ReviewSuggestion {
+    id: string;
+    title: string;
+    summary: string;
+    autoFix: false;
 }
 
 export interface PendingReviewState {
@@ -26,7 +49,7 @@ export interface PendingReviewState {
     unprocessedComments: AIReviewComment[];
     /** The most recent valid review score (1–10), or null if none found. */
     latestScore: number | null;
-    /** Whether any unprocessed review comments exist. */
+    /** Whether any unprocessed actionable findings exist. */
     hasPendingReview: boolean;
 }
 
@@ -62,6 +85,110 @@ const SCORE_RE = /Score:\s*(\d{1,2})\s*\/\s*10/;
  */
 const ERROR_MARKER_RE = /<!-- propr:ai-review [^>]*error="true"[^>]* -->/;
 
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractMarkdownSection(body: string, heading: string): string {
+    const headingRe = new RegExp(`^##[ \\t]+${escapeRegExp(heading)}(?:[ \\t]+.*)?$`, 'im');
+    const match = headingRe.exec(body);
+    if (!match) return '';
+    const contentStart = match.index + match[0].length;
+    const rest = body.slice(contentStart);
+    const nextHeading = /^##\s+/m.exec(rest);
+    return (nextHeading ? rest.slice(0, nextHeading.index) : rest).trim();
+}
+
+function extractRecordFields(block: string): Map<string, string> {
+    const fields = new Map<string, string>();
+    for (const line of block.split('\n')) {
+        const bold = line.match(/^[-*]\s+\*\*([^*]+)\*\*\s*(.*)$/);
+        const plain = line.match(/^[-*]\s+([A-Za-z][A-Za-z0-9 -]*):\s*(.*)$/);
+        const rawKey = bold?.[1] ?? plain?.[1];
+        if (!rawKey) continue;
+        const key = rawKey.replace(/:$/, '').replace(/[\s-]/g, '').toLowerCase();
+        const value = (bold?.[2] ?? plain?.[2] ?? '').replace(/^:\s*/, '').trim();
+        fields.set(key, value);
+    }
+    return fields;
+}
+
+interface MarkdownRecord {
+    id: string;
+    title: string;
+    body: string;
+}
+
+function extractMarkdownRecords(section: string, prefix: 'F' | 'S'): MarkdownRecord[] {
+    const headingRe = new RegExp(`^###[ \\t]+(${prefix}\\d+)[ \\t]*(?::|[-—])[ \\t]*(.+)$`, 'gim');
+    const matches = [...section.matchAll(headingRe)];
+    return matches.map((match, index) => ({
+        id: match[1].toUpperCase(),
+        title: match[2].trim(),
+        body: section.slice(
+            (match.index ?? 0) + match[0].length,
+            matches[index + 1]?.index ?? section.length,
+        ).trim(),
+    }));
+}
+
+/**
+ * Parse only blocker records that satisfy the complete review-to-fix contract.
+ * Incomplete or non-affirmative records are deliberately excluded from
+ * automation even if they appeared under the actionable heading.
+ */
+export function extractActionableFindings(body: string): ActionableFinding[] {
+    const section = extractMarkdownSection(body, 'Actionable Findings');
+    const findings: ActionableFinding[] = [];
+    for (const record of extractMarkdownRecords(section, 'F')) {
+        const fields = extractRecordFields(record.body);
+        const violatedRequirement = fields.get('violatedrequirement') ?? '';
+        const evidence = fields.get('evidence') ?? '';
+        const introducedByPR = fields.get('introducedbypr') ?? '';
+        const requiredForMerge = fields.get('requiredformerge') ?? '';
+        const minimumCorrection = fields.get('minimumcorrection') ?? '';
+        const introducedByPRExplanation = introducedByPR.replace(/^true\b\s*(?:[-—:]\s*)?/i, '').trim();
+        if (!violatedRequirement || !evidence || !introducedByPRExplanation || !minimumCorrection) continue;
+        if (!/^true\b/i.test(introducedByPR) || !/^true\b/i.test(requiredForMerge)) continue;
+        findings.push({
+            id: record.id,
+            title: record.title,
+            violatedRequirement,
+            evidence,
+            introducedByPR: true,
+            introducedByPRExplanation,
+            requiredForMerge: true,
+            minimumCorrection,
+        });
+    }
+    return findings;
+}
+
+/** Parse public suggestion records while forcing their automation policy off. */
+export function extractReviewSuggestions(body: string): ReviewSuggestion[] {
+    const section = extractMarkdownSection(body, 'Suggestions and Follow-ups');
+    return extractMarkdownRecords(section, 'S').map(record => {
+        const fields = extractRecordFields(record.body);
+        return {
+            id: record.id,
+            title: record.title,
+            summary: fields.get('summary') || record.title,
+            autoFix: false,
+        };
+    });
+}
+
+export function formatActionableFindings(findings: ActionableFinding[]): string {
+    return findings.map(finding => [
+        `### ${finding.id}: ${finding.title}`,
+        `- **violatedRequirement:** ${finding.violatedRequirement}`,
+        `- **evidence:** ${finding.evidence}`,
+        `- **introducedByPR:** true — ${finding.introducedByPRExplanation}`,
+        `- **requiredForMerge:** true`,
+        `- **minimumCorrection:** ${finding.minimumCorrection}`,
+    ].join('\n')).join('\n\n');
+}
+
 /**
  * Strip machine-readable markers and the /fix instruction tip from a review
  * comment body so the implementation prompt only contains actionable content.
@@ -70,8 +197,16 @@ export function stripReviewBoilerplate(body: string): string {
     // Remove the HTML marker comment
     let cleaned = body.replace(/\n?<!-- propr:ai-review [^>]* -->/g, '');
     // Remove the /fix tip blockquote section
-    cleaned = cleaned.replace(/\n?---\n> 💡 \*\*Tip:\*\* Comment `\/fix`[^\n]*(?:\n[^\n]*`\/fix[^\n]*)*/g, '');
+    cleaned = cleaned.replace(/\n?---\n> 💡 \*\*(?:Tip|Next step):\*\* Comment `\/fix`[^\n]*(?:\n>[^\n]*)*/g, '');
     return cleaned.trimEnd();
+}
+
+function getProcessedReviewFindingsKey(repoOwner: string, repoName: string, pullRequestNumber: number): string {
+    return `${getProcessedReviewCommentsKey(repoOwner, repoName, pullRequestNumber)}:findings`;
+}
+
+function findingConsumptionKey(commentId: number, kind: 'F' | 'S', findingId: string): string {
+    return `${commentId}:${kind}:${findingId.toUpperCase()}`;
 }
 
 /**
@@ -100,12 +235,18 @@ export async function gatherUnprocessedReviewComments(
     // 2. Load the set of already-processed review comment IDs from Redis.
     const redisKey = getProcessedReviewCommentsKey(repoOwner, repoName, pullRequestNumber);
     let processedIds: Set<string>;
+    let processedFindings: Set<string>;
     try {
-        const members = await redisClient.smembers(redisKey);
+        const [members, findingMembers] = await Promise.all([
+            redisClient.smembers(redisKey),
+            redisClient.smembers(getProcessedReviewFindingsKey(repoOwner, repoName, pullRequestNumber)),
+        ]);
         processedIds = new Set(members);
+        processedFindings = new Set(findingMembers);
     } catch (err) {
-        correlatedLogger.warn({ error: (err as Error).message }, 'Failed to load processed review comment IDs from Redis, treating all as unprocessed');
+        correlatedLogger.warn({ error: (err as Error).message }, 'Failed to load processed review findings from Redis, treating all as unprocessed');
         processedIds = new Set();
+        processedFindings = new Set();
     }
 
     // 3. Return only recent comments not yet processed.
@@ -124,11 +265,21 @@ export async function gatherUnprocessedReviewComments(
             correlatedLogger.debug({ pullRequestNumber, commentId: comment.id }, 'AI review comment too old, skipping');
             continue;
         }
+        const cleanedBody = stripReviewBoilerplate(comment.body!);
+        const actionableFindings = extractActionableFindings(cleanedBody).filter(finding =>
+            !processedFindings.has(findingConsumptionKey(comment.id, 'F', finding.id)),
+        );
+        const suggestions = extractReviewSuggestions(cleanedBody).filter(suggestion =>
+            !processedFindings.has(findingConsumptionKey(comment.id, 'S', suggestion.id)),
+        );
         unprocessed.push({
             id: comment.id,
-            body: stripReviewBoilerplate(comment.body!),
+            body: formatActionableFindings(actionableFindings),
             author: comment.user.login,
             created_at: comment.created_at,
+            actionableFindings,
+            suggestions,
+            score: extractReviewScore(cleanedBody),
         });
     }
 
@@ -173,7 +324,7 @@ export async function getPendingReviewState(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
     );
     for (const comment of sorted) {
-        const score = extractReviewScore(comment.body);
+        const score = comment.score;
         if (score !== null) {
             latestScore = score;
             break;
@@ -183,8 +334,34 @@ export async function getPendingReviewState(
     return {
         unprocessedComments,
         latestScore,
-        hasPendingReview: unprocessedComments.length > 0,
+        hasPendingReview: unprocessedComments.some(comment => comment.actionableFindings.length > 0),
     };
+}
+
+/**
+ * Mark individual selected records as consumed. This preserves unselected F#
+ * blockers in the same review for a later `/fix F#` invocation.
+ */
+export async function markReviewFindingsProcessed(
+    comments: AIReviewComment[],
+    options: Pick<GatherOptions, 'repoOwner' | 'repoName' | 'pullRequestNumber' | 'redisClient' | 'correlatedLogger'>,
+): Promise<void> {
+    const keys = comments.flatMap(comment => [
+        ...comment.actionableFindings.map(finding => findingConsumptionKey(comment.id, 'F', finding.id)),
+        ...comment.suggestions.map(suggestion => findingConsumptionKey(comment.id, 'S', suggestion.id)),
+    ]);
+    if (keys.length === 0) return;
+
+    const { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger } = options;
+    const redisKey = getProcessedReviewFindingsKey(repoOwner, repoName, pullRequestNumber);
+    const TTL_SECONDS = 30 * 24 * 3600;
+    try {
+        await redisClient.sadd(redisKey, ...keys);
+        await redisClient.expire(redisKey, TTL_SECONDS);
+        correlatedLogger.info({ pullRequestNumber, findingCount: keys.length }, 'Marked selected AI review findings as processed');
+    } catch (err) {
+        correlatedLogger.warn({ error: (err as Error).message }, 'Failed to mark selected review findings as processed in Redis');
+    }
 }
 
 /**

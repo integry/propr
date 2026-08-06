@@ -47,6 +47,19 @@ export interface UltrafixLoopState {
     finalScore: number | null;
     /** ISO timestamp when the loop reached a terminal state. */
     completedAt: string | null;
+    /** Original PR/issue objective captured once and reused unchanged. */
+    originalScope?: string;
+    /** Per-review actionable finding lifecycle, keyed by comment ID and F# ID. */
+    findingLifecycle?: Record<string, UltrafixFindingLifecycle>;
+}
+
+export interface UltrafixFindingLifecycle {
+    id: string;
+    sourceCommentId: number;
+    title: string;
+    status: 'open' | 'selected' | 'addressed' | 'resolved';
+    firstSeenCycle: number;
+    lastSeenCycle: number;
 }
 
 export interface NextActionDecision {
@@ -128,6 +141,8 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         completionReason: null,
         finalScore: null,
         completedAt: null,
+        originalScope: '',
+        findingLifecycle: {},
     };
 }
 
@@ -162,7 +177,11 @@ export function determineInitialAction(hasPendingReviews: boolean): UltrafixActi
 /**
  * Determine whether the loop should continue and what action to take next.
  */
-export function determineNextAction(state: UltrafixLoopState, currentScore: number | null): NextActionDecision {
+export function determineNextAction(
+    state: UltrafixLoopState,
+    currentScore: number | null,
+    hasActionableFindings = true,
+): NextActionDecision {
     const { reviewCount, fixCount } = getActionCounts(state);
 
     if (!state.active) {
@@ -172,6 +191,11 @@ export function determineNextAction(state: UltrafixLoopState, currentScore: numb
     // Check if goal is met
     if (currentScore !== null && currentScore >= state.goal) {
         return { action: null, reason: `Goal met: score ${currentScore} >= ${state.goal}` };
+    }
+
+    // A review containing suggestions only must never trigger an automatic fix.
+    if (state.lastAction === 'review' && !hasActionableFindings) {
+        return { action: null, reason: 'No actionable findings remain' };
     }
 
     // Determine next action based on last action
@@ -243,6 +267,87 @@ export async function recordAction(redis: Redis, params: { owner: string; repo: 
     state.fixCount = fixCount + (action === 'fix' ? 1 : 0);
     state.cycleCount = Math.min(state.reviewCount, state.fixCount);
 
+    if (action === 'fix' && state.findingLifecycle) {
+        for (const finding of Object.values(state.findingLifecycle)) {
+            if (finding.status === 'selected') finding.status = 'addressed';
+        }
+    }
+
+    await saveState(redis, state);
+    return state;
+}
+
+/** Capture the original objective once; later cycles always receive this value. */
+export async function retainOriginalScope(
+    redis: Redis,
+    params: { owner: string; repo: string; pr: number; scope: string },
+): Promise<string> {
+    const state = await loadState(redis, params.owner, params.repo, params.pr);
+    if (!state) return params.scope;
+    if (!state.originalScope && params.scope.trim()) {
+        state.originalScope = params.scope;
+        await saveState(redis, state);
+    }
+    return state.originalScope || params.scope;
+}
+
+/** Record the blockers emitted by a review and resolve addressed predecessors. */
+export async function recordReviewFindings(
+    redis: Redis,
+    params: {
+        owner: string;
+        repo: string;
+        pr: number;
+        findings: Array<{ id: string; sourceCommentId: number; title: string }>;
+    },
+): Promise<UltrafixLoopState | null> {
+    const state = await loadState(redis, params.owner, params.repo, params.pr);
+    if (!state) return null;
+    const lifecycle = state.findingLifecycle ?? {};
+    for (const finding of Object.values(lifecycle)) {
+        if (finding.status === 'addressed') finding.status = 'resolved';
+    }
+    for (const finding of params.findings) {
+        const key = `${finding.sourceCommentId}:${finding.id.toUpperCase()}`;
+        lifecycle[key] = lifecycle[key] ?? {
+            id: finding.id.toUpperCase(),
+            sourceCommentId: finding.sourceCommentId,
+            title: finding.title,
+            status: 'open',
+            firstSeenCycle: state.cycleCount,
+            lastSeenCycle: state.cycleCount,
+        };
+        lifecycle[key].title = finding.title;
+        lifecycle[key].status = 'open';
+        lifecycle[key].lastSeenCycle = state.cycleCount;
+    }
+    state.findingLifecycle = lifecycle;
+    await saveState(redis, state);
+    return state;
+}
+
+/** Mark exactly the finding records selected for the next automatic fix. */
+export async function markFindingsSelected(
+    redis: Redis,
+    params: { owner: string; repo: string; pr: number; findings: Array<{ id: string; sourceCommentId: number; title: string }> },
+): Promise<UltrafixLoopState | null> {
+    const state = await loadState(redis, params.owner, params.repo, params.pr);
+    if (!state) return null;
+    const lifecycle = state.findingLifecycle ?? {};
+    for (const selected of params.findings) {
+        const key = `${selected.sourceCommentId}:${selected.id.toUpperCase()}`;
+        lifecycle[key] = lifecycle[key] ?? {
+            id: selected.id.toUpperCase(),
+            sourceCommentId: selected.sourceCommentId,
+            title: selected.title,
+            status: 'open',
+            firstSeenCycle: state.cycleCount,
+            lastSeenCycle: state.cycleCount,
+        };
+        lifecycle[key].status = 'selected';
+        lifecycle[key].lastSeenCycle = state.cycleCount;
+    }
+    state.findingLifecycle = lifecycle;
     await saveState(redis, state);
     return state;
 }
