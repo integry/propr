@@ -126,8 +126,12 @@ export class WorkerStateManager {
             if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
             const current = JSON.parse(stateJson) as TaskStateData;
+            const isExplicitFailedRetry = current.state === TaskStates.FAILED
+                && newState === TaskStates.PROCESSING
+                && metadata.isRetry === true;
             if (TERMINAL_TASK_STATES.has(current.state)
-                && current.state !== newState) {
+                && current.state !== newState
+                && !isExplicitFailedRetry) {
                 logger.warn({ taskId, currentState: current.state, requestedState: newState },
                     'Ignored state transition from a terminal task');
                 return current;

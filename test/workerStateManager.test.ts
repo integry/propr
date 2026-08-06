@@ -602,13 +602,13 @@ test('updateTaskState increments attempts on retry', async () => {
         taskId: 'task-retry',
         issueRef: { number: 50, repoOwner: 'retry-owner', repoName: 'retry-repo' },
         correlationId: 'corr-retry',
-        state: TaskStates.PROCESSING,
+        state: TaskStates.FAILED,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         attempts: 1,
         history: [
             { state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' },
-            { state: TaskStates.PROCESSING, timestamp: new Date().toISOString(), reason: 'Retry started' }
+            { state: TaskStates.FAILED, timestamp: new Date().toISOString(), reason: 'First failure' }
         ]
     };
 
@@ -622,12 +622,13 @@ test('updateTaskState increments attempts on retry', async () => {
         stateExpiry: TEST_STATE_EXPIRY
     });
 
-    const result = await stateManager.updateTaskState('task-retry', TaskStates.CLAUDE_EXECUTION, {
+    const result = await stateManager.updateTaskState('task-retry', TaskStates.PROCESSING, {
         isRetry: true,
         reason: 'Retrying task'
     });
 
-    // Verify attempts was incremented
+    // Verify the failed task resumes processing and attempts was incremented
+    assert.strictEqual(result.state, TaskStates.PROCESSING);
     assert.strictEqual(result.attempts, 2);
 
     await stateManager.close();
