@@ -3,7 +3,7 @@
  *
  * Formats the LLM review output into a GitHub comment that:
  *   - Identifies the reviewing model.
- *   - Contains findings, evaluation, and a score section.
+ *   - Contains actionable findings, non-automatic suggestions, evaluation, and a score.
  *   - Ends with a short /fix instruction for the user.
  *   - Includes a machine-detectable HTML marker so the /fix pipeline can
  *     distinguish AI review comments from ordinary human comments and
@@ -48,6 +48,22 @@ function formatDuration(ms: number): string {
     return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
+/** Remove legacy suggestion fields that duplicate the S# heading or internal policy. */
+function removeSuggestionMetadata(response: string): string {
+    const sectionMatch = /^##[ \t]+Suggestions and Follow-ups(?:[ \t]+.*)?$/im.exec(response);
+    if (!sectionMatch) return response;
+
+    const sectionStart = sectionMatch.index + sectionMatch[0].length;
+    const afterStart = response.slice(sectionStart);
+    const nextSection = /^##\s+/m.exec(afterStart);
+    const sectionEnd = sectionStart + (nextSection?.index ?? afterStart.length);
+    const section = response.slice(sectionStart, sectionEnd)
+        .replace(/^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?summary:?(?:\*\*)?[ \t]*:?.*(?:\r?\n|$)/gim, '')
+        .replace(/^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?auto[- ]?fix:?(?:\*\*)?[ \t]*:?.*(?:\r?\n|$)/gim, '');
+
+    return response.slice(0, sectionStart) + section + response.slice(sectionEnd);
+}
+
 /**
  * Build the GitHub comment body for a successful review.
  *
@@ -71,7 +87,7 @@ export function buildReviewComment(
     const modelDisplayName = getModelName(effectiveModel);
 
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
-    comment += response;
+    comment += removeSuggestionMetadata(response);
 
     // --- Review Details ---
     comment += `\n\n---\n### 🤖 Review Details\n\n`;
@@ -99,10 +115,8 @@ export function buildReviewComment(
 
     // --- /fix instructions ---
     comment += `\n\n---\n`;
-    comment += `> 💡 **Next step:** Comment \`/fix\` on this PR to have the AI automatically implement the suggestions above.\n`;
-    comment += `> The \`/fix\` command gathers all unprocessed AI review comments and applies fixes in a single pass.\n`;
-    comment += `> You can edit or delete review comments before running \`/fix\` to control which suggestions are applied.\n`;
-    comment += `> Add extra instructions if needed, e.g. \`/fix only address the critical findings\`.\n`;
+    comment += `> 💡 **Next step:** Comment \`/fix\` to address actionable F# blockers only.\n`;
+    comment += `> Explicit IDs such as \`/fix F1 F3\` refer to the newest review. Suggestions require a separate ordinary follow-up request.\n`;
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;

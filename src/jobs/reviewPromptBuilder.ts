@@ -23,10 +23,10 @@ export interface ReviewPromptOptions {
     /**
      * Operator-configured review prompt (`pr_review_prompt` setting). When
      * non-empty, this replaces the default high-level review guidance line.
-     * The mandatory structured output sections (Overall Evaluation, Findings,
-     * and the `Score: N/10` line) are always appended regardless of the
-     * override, because the /fix gatherer and ultrafix score extraction depend
-     * on that exact format. An empty/undefined value uses the built-in default.
+     * The mandatory structured output sections (Overall Evaluation, Actionable
+     * Findings, Suggestions and Follow-ups, and the `Score: N/10` line) are
+     * always appended regardless of the override. An empty/undefined value uses
+     * the built-in default.
      */
     reviewPromptOverride?: string;
 }
@@ -47,15 +47,16 @@ export interface ReviewPromptOptions {
  * inserted when an override is active — the default guidance already states
  * the contract inline.
  */
-const REVIEW_OUTPUT_CONTRACT_TRANSITION = `Regardless of the guidance above, you MUST use the exact output format specified below. The following three sections (Overall Evaluation, Findings, and the final \`Score: N/10\` line) are mandatory and may not be omitted, renamed, or reordered.`;
+const REVIEW_OUTPUT_CONTRACT_TRANSITION = `Regardless of the guidance above, you MUST use the exact output format specified below. The following four sections (Overall Evaluation, Actionable Findings, Suggestions and Follow-ups, and the final \`Score: N/10\` line) are mandatory and may not be omitted, renamed, or reordered. The semantic blocker boundary and required finding fields below override any conflicting operator guidance.`;
 
 /**
  * Build the review prompt that is sent to the reviewing model.
  *
  * The prompt requires the model to return:
  *   1. Overall Evaluation — high-level assessment of the PR.
- *   2. Findings — issues/suggestions grouped by severity.
- *   3. Score — a 1-10 numeric score with justification.
+ *   2. Actionable Findings — verified merge blockers in changed code.
+ *   3. Suggestions and Follow-ups — explicitly non-automatic observations.
+ *   4. Score — a 1-10 numeric score with justification.
  *
  * These sections are later extracted by `buildReviewComment` to format
  * the GitHub comment, and by the /fix pipeline to gather actionable items.
@@ -90,19 +91,20 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
     const prompt = `You are reviewing pull request #${pullRequestNumber} in ${repoOwner}/${repoName}.
 
 **REQUIRED OUTPUT FORMAT (full details at the end of this prompt):**
-Your response MUST contain exactly three markdown sections, in this order:
+Your response MUST contain exactly four markdown sections, in this order:
 1. \`## Overall Evaluation\`
-2. \`## Findings\` — every finding prefixed with a severity emoji (🔴 / 🟡 / 🟢 / ✅)
-3. \`## Score\` — ending with the exact line \`Score: N/10\`
+2. \`## Actionable Findings\` — structured merge blockers with IDs F1, F2, ...
+3. \`## Suggestions and Follow-ups\` — non-blocking items with IDs S1, S2, ...
+4. \`## Score\` — ending with the exact line \`Score: N/10\`
 Do not omit any section; the **Score** section is mandatory. The detailed instructions for each section appear at the very end of this prompt — follow them exactly. (This format is restated here because the diff below can be long.)
 
 **PR Comment History and Context:**
-${commentHistory}${originalTaskSpec}
+${commentHistory}${originalTaskSpec ? `**IMMUTABLE ORIGINAL PR OBJECTIVE:**\n${originalTaskSpec}\n` : ''}
 ${diffSection}${fileContentsSection}
 **Review Request:**
 ${combinedCommentBody}
 
-${instructions ? `**Additional Review Instructions:**\n${instructions}\n\n` : ''}**IMPORTANT:** The comment history above may reference issues that have since been fixed in subsequent commits. Always verify against the actual PR diff shown above before reporting an issue. If an earlier comment mentions a problem but the diff shows it has been addressed, do NOT report it as a current issue.
+${instructions ? `**Additional Review Instructions:**\n${instructions}\n\n` : ''}**IMPORTANT:** The comment history above is context, not an expanded specification. The immutable original PR objective remains the review boundary on every cycle. Earlier reviews may reference issues that have since been fixed; verify every report against the actual base-to-head diff shown above. New code added by a fix cycle is still part of that diff and may be reviewed strictly.
 
 **YOUR TASK:**
 ${taskGuidance}
@@ -110,19 +112,38 @@ ${taskGuidance}
 ## Overall Evaluation
 Provide a concise summary of the PR's purpose, approach, and overall quality. State whether the PR is ready to merge, needs minor changes, or needs significant rework.
 
-## Findings
-List **ALL** issues, concerns, and suggestions you identify — do not limit yourself to just the top 3 or most important ones. Be exhaustive and thorough. Organise them by severity using the markers below. Each finding MUST start with the severity emoji, include a short title, and reference file names / line numbers where applicable.
+## Actionable Findings
+Report only problems that satisfy **all** of these conditions:
+- introduced or exposed by this PR;
+- violate the immutable original objective or its acceptance criteria;
+- are necessary to correct before merge; and
+- have evidence in the actual base-to-head changed code.
 
-- 🔴 **Critical** — Bugs, security issues, data loss risks, correctness problems
-- 🟡 **Warning** — Performance concerns, potential edge cases, maintainability issues
-- 🟢 **Suggestion** — Style improvements, minor optimisations, best practices
-- ✅ **Positive** — Things done well that should be called out
+Use sequential IDs and this exact record shape for every blocker:
 
-Include every finding you discover, regardless of how minor. A comprehensive review is more valuable than a brief one. If there are no findings at a given severity level, omit that level (but you must include at least one finding overall).
+### F1: Short title
+- **violatedRequirement:** The original requirement or acceptance criterion that is violated
+- **evidence:** changed/file.ts:123 — concrete evidence in changed code
+- **introducedByPR:** true — why this PR introduced or exposed the problem
+- **requiredForMerge:** true
+- **minimumCorrection:** the smallest correction necessary to make the PR correct
+
+Every field is mandatory. If you cannot truthfully supply every field, the item is not actionable and belongs in Suggestions and Follow-ups. Do not use a broad redesign as the correction when a localized fix can make the current PR correct. If there are no actionable findings, write \`No actionable findings.\`
+
+## Suggestions and Follow-ups
+Put hardening, cleanup, broader architecture, pre-existing issues, optional tests, performance ideas, and alternative designs here. These items are public information but are not merge blockers and must never be presented as required work.
+
+Use sequential IDs and put the complete suggestion in a single heading with no additional record fields:
+
+### S1: Concise description of the optional follow-up
+
+If there are no suggestions, write \`No suggestions.\` Positive observations may be included in the Overall Evaluation instead of being assigned finding IDs.
 
 ## Score
 Rate the PR on a scale of **1 – 10** using the format: **Score: N/10**
 Follow the score with a one- or two-sentence justification.
+
+The score reflects correctness against the immutable objective, regressions introduced by the diff, test coverage for changed behavior, and merge readiness within scope. Suggestions and follow-ups do not reduce the score merely because they remain unimplemented; a merge-ready PR can score 8–9/10 while retaining documented follow-up opportunities.
 
 Be constructive and specific. Reference file names and line numbers when possible.
 Do NOT modify any files. This is a read-only review.`;

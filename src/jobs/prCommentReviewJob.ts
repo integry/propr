@@ -17,7 +17,7 @@ import { buildReviewComment, buildReviewErrorComment } from './reviewCommentForm
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
-import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import { loadState as loadUltrafixState, retainOriginalScope, type UltrafixAction } from './ultrafixOrchestrationService.js';
 import {
     buildDeterministicPrTaskSubtitle,
     buildPrTaskTitle,
@@ -39,6 +39,7 @@ export interface ReviewAssignment {
 export interface ReviewResult {
     assignment: ReviewAssignment;
     analysisResult: AnalysisResult;
+    commentId?: number;
     commentUrl?: string;
     error?: string;
     prompt?: string;
@@ -207,13 +208,14 @@ async function runSingleReview(
             owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
         });
 
-        return { assignment, analysisResult, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt };
+        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt };
     } catch (reviewError) {
         const errorMsg = (reviewError as Error).message;
         correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');
 
+        let errorComment: { data: { id: number; html_url: string } } | undefined;
         try {
-            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            errorComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
                 body: buildReviewErrorComment(label, model, errorMsg),
             });
@@ -221,7 +223,7 @@ async function runSingleReview(
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post review error comment');
         }
 
-        return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg, prompt: reviewPrompt };
+        return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, commentId: errorComment?.data.id, commentUrl: errorComment?.data.html_url, error: errorMsg, prompt: reviewPrompt };
     }
 }
 
@@ -287,7 +289,7 @@ function getWebUiTaskUrl(taskId: string): string {
 
 async function handleUltrafixContinuation(
     action: UltrafixAction,
-    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
+    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string; currentReviewCommentIds: number[]; currentReviewResultCount: number }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;
     const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId } = params;
@@ -296,6 +298,7 @@ async function handleUltrafixContinuation(
             owner: repoOwner, repo: repoName, pullRequestNumber, completedAction: action,
             ultrafixMeta: job.data.ultrafixMeta!, redisClient, correlatedLogger, correlationId,
             currentJobId: job.id,
+            currentReviewCommentIds: params.currentReviewCommentIds, currentReviewResultCount: params.currentReviewResultCount,
         });
         correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
         await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), correlatedLogger);
@@ -396,10 +399,22 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         correlatedLogger.warn({ error: (err as Error).message }, 'Failed to load pr_review_prompt setting, using default review prompt');
     }
 
+    let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
+    if (job.data.ultrafixMeta) {
+        originalTaskSpec = await retainOriginalScope(redisClient, {
+            owner: repoOwner,
+            repo: repoName,
+            pr: pullRequestNumber,
+            scope: originalTaskSpec,
+        });
+    }
+
     const reviewCtx: RunReviewsContext = {
         registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
-        taskId, taskUrl, combinedCommentBody, commentHistory,
-        originalTaskSpec: linkedIssueResult.context || '',
+        taskId, taskUrl, combinedCommentBody,
+        // Prior review prose must never become an expanded Ultrafix objective.
+        commentHistory: job.data.ultrafixMeta ? '' : commentHistory,
+        originalTaskSpec,
         commandInstructions: job.data.commandInstructions,
         prDiff,
         omittedDiffFiles,
@@ -428,14 +443,15 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             commandMode: 'review',
             reviewResults: reviewResults.map(r => ({
                 model: r.assignment.model, label: r.assignment.label,
-                success: r.analysisResult.success, commentUrl: r.commentUrl, error: r.error,
+                success: r.analysisResult.success, commentId: r.commentId, commentUrl: r.commentUrl, error: r.error,
             })),
             ...ultrafixHistoryMeta,
         },
     });
 
     correlatedLogger.info({ pullRequestNumber, successCount, failCount, totalReviews: assignments.length }, 'Review processing completed');
-    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
+    const currentReviewCommentIds = reviewResults.flatMap(result => result.commentId === undefined ? [] : [result.commentId]);
+    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, currentReviewCommentIds, currentReviewResultCount: reviewResults.length });
 
     return { status: 'complete', pullRequestNumber, reviewsPosted: successCount, reviewsFailed: failCount };
 }
