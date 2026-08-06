@@ -90,7 +90,7 @@ export function buildReviewComment(
     const sanitizedResponse = removeSuggestionMetadata(response);
     const publicResponse = renderPublicReview(sanitizedResponse);
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
-    comment += publicResponse ?? sanitizedResponse;
+    comment += publicResponse ?? '⚠️ **Review output was invalid and could not be displayed safely.**';
 
     // --- Review Details ---
     comment += `\n\n---\n### 🤖 Review Details\n\n`;

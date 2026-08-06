@@ -105,6 +105,40 @@ describe('buildReviewComment', () => {
         assert.strictEqual(reparsed.actionableFindings[0].requiredForMerge, true);
     });
 
+    test('does not publish internal blocker metadata from an invalid review', () => {
+        const response = [
+            '## Overall Evaluation',
+            'Cancellation needs one correction before merge.',
+            '',
+            '## Actionable Findings',
+            '### F1: Retry transitions can overwrite cancellation',
+            '- **violatedRequirement:** Cancellation must not be overwritten by another state writer.',
+            '- **introducedByPR:** true — this PR added the retry exception.',
+            '- **requiredForMerge:** true',
+            '- **minimumCorrection:** Keep cancelled tasks immutable.',
+            '',
+            '## Suggestions and Follow-ups',
+            'No suggestions.',
+            '',
+            '## Score',
+            'Score: 6/10',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            {
+                response,
+                modelUsed: 'claude-sonnet',
+                executionTimeMs: 1000,
+                success: true,
+            },
+        );
+
+        assert.ok(formatted.includes('Review output was invalid and could not be displayed safely.'));
+        assert.doesNotMatch(formatted, /violatedRequirement|introducedByPR|requiredForMerge|minimumCorrection/);
+        assert.strictEqual(parseStructuredReview(formatted).status, 'invalid');
+    });
+
     test('includes files omitted from the review diff', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
