@@ -11,22 +11,50 @@ export interface FixFindingSelection {
     remainingInstructions: string;
 }
 
-/** Parse `/fix F1 F3` and `/fix include S2` selectors from command text. */
+/**
+ * Parse `/fix F1 F3` and `/fix include S2` selectors from a dedicated leading
+ * clause. Extra instructions can follow on a new line or after a semicolon.
+ * Finding-like tokens in ordinary instruction prose are left untouched.
+ */
 export function parseFixFindingSelection(instructions: string): FixFindingSelection {
+    const trimmedInstructions = instructions.trim();
+    const clauseEnd = trimmedInstructions.search(/[;\r\n]/);
+    const selectorClause = (clauseEnd === -1
+        ? trimmedInstructions
+        : trimmedInstructions.slice(0, clauseEnd)).trim();
+    const selectorTokens = selectorClause.replace(/,/g, ' ').split(/\s+/).filter(Boolean);
+    const selectedIds = new Set<string>();
     const includedSuggestionIds = new Set<string>();
-    let remainingInstructions = instructions.replace(
-        /\binclude\s+((?:S\d+[\s,]*)+)/gi,
-        (_full, ids: string) => {
-            for (const id of ids.match(/S\d+/gi) ?? []) includedSuggestionIds.add(id.toUpperCase());
-            return '';
-        },
-    );
-    const selectedIds = new Set((remainingInstructions.match(/\bF\d+\b/gi) ?? []).map(id => id.toUpperCase()));
-    remainingInstructions = remainingInstructions
-        .replace(/\bF\d+\b/gi, '')
-        .replace(/[ \t]+\n/g, '\n')
-        .replace(/[ \t]{2,}/g, ' ')
-        .trim();
+    let validSelectorClause = selectorTokens.length > 0;
+
+    for (let index = 0; validSelectorClause && index < selectorTokens.length;) {
+        const token = selectorTokens[index];
+        if (/^F\d+$/i.test(token)) {
+            selectedIds.add(token.toUpperCase());
+            index += 1;
+            continue;
+        }
+        if (/^include$/i.test(token)) {
+            index += 1;
+            const suggestionStart = index;
+            while (index < selectorTokens.length && /^S\d+$/i.test(selectorTokens[index])) {
+                includedSuggestionIds.add(selectorTokens[index].toUpperCase());
+                index += 1;
+            }
+            validSelectorClause = index > suggestionStart;
+            continue;
+        }
+        validSelectorClause = false;
+    }
+
+    if (!validSelectorClause) {
+        selectedIds.clear();
+        includedSuggestionIds.clear();
+    }
+
+    const remainingInstructions = validSelectorClause
+        ? (clauseEnd === -1 ? '' : trimmedInstructions.slice(clauseEnd + 1).trim())
+        : trimmedInstructions;
     return {
         actionableIds: selectedIds.size > 0 ? selectedIds : null,
         includedSuggestionIds,

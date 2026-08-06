@@ -225,6 +225,102 @@ describe('structured review finding extraction', () => {
         assert.strictEqual(state.latestScore, null);
     });
 
+    test('an empty current review result set cannot reuse a stale clean review', async () => {
+        const clean = STRUCTURED_REVIEW.replace(
+            /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+            'No actionable findings.',
+        );
+        const state = await getStructuredPendingReviewState([{
+            id: 50,
+            body: `${clean}\n<!-- propr:ai-review model="stale" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }], {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+            currentReviewCommentIds: [],
+        });
+
+        assert.strictEqual(state.reviewStatus, 'invalid');
+        assert.strictEqual(state.latestScore, null);
+        assert.deepStrictEqual(state.unprocessedComments, []);
+    });
+
+    test('a missing current review comment cannot reuse a different clean review', async () => {
+        const clean = STRUCTURED_REVIEW.replace(
+            /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+            'No actionable findings.',
+        );
+        const state = await getStructuredPendingReviewState([{
+            id: 51,
+            body: `${clean}\n<!-- propr:ai-review model="stale" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }], {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+            currentReviewCommentIds: [52],
+        });
+
+        assert.strictEqual(state.reviewStatus, 'invalid');
+        assert.strictEqual(state.latestScore, null);
+    });
+
+    test('a partially posted multi-model result set is invalid', async () => {
+        const clean = STRUCTURED_REVIEW.replace(
+            /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+            'No actionable findings.',
+        );
+        const state = await getStructuredPendingReviewState([{
+            id: 52,
+            body: `${clean}\n<!-- propr:ai-review model="posted" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }], {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+            currentReviewCommentIds: [52],
+            currentReviewResultCount: 2,
+        });
+
+        assert.strictEqual(state.reviewStatus, 'invalid');
+        assert.strictEqual(state.latestScore, null);
+    });
+
+    test('a blocker in any current multi-model review overrides a newer clean review', async () => {
+        const now = Date.now();
+        const clean = STRUCTURED_REVIEW.replace(
+            /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+            'No actionable findings.',
+        );
+        const state = await getStructuredPendingReviewState([
+            {
+                id: 53,
+                body: `${STRUCTURED_REVIEW}\n<!-- propr:ai-review model="blocker" -->`,
+                user: { login: 'propr-bot', type: 'Bot' },
+                created_at: new Date(now - 1_000).toISOString(),
+            },
+            {
+                id: 54,
+                body: `${clean}\n<!-- propr:ai-review model="clean" -->`,
+                user: { login: 'propr-bot', type: 'Bot' },
+                created_at: new Date(now).toISOString(),
+            },
+        ], {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+            currentReviewCommentIds: [53, 54],
+        });
+
+        assert.strictEqual(state.reviewStatus, 'valid_with_blockers');
+        assert.strictEqual(state.hasPendingReview, true);
+        assert.deepStrictEqual(state.unprocessedComments.map(comment => comment.id), [53, 54]);
+    });
+
     test('record-level consumption preserves unselected blockers from the same review', async () => {
         const reviewWithTwoFindings = STRUCTURED_REVIEW.replace(
             '\n## Suggestions and Follow-ups',
@@ -314,6 +410,17 @@ describe('/fix structured finding selection', () => {
         const section = formatSelectedReviewRecords(selectReviewFeedback(all, selection), all);
         assert.match(section, /Explicitly Authorized Suggestions/);
         assert.match(section, /Consider a durable publication outbox/);
+    });
+
+    test('only extracts IDs from the dedicated leading selector clause', () => {
+        const selection = parseFixFindingSelection('F1; do not touch F2');
+        assert.deepStrictEqual([...selection.actionableIds ?? []], ['F1']);
+        assert.deepStrictEqual([...selection.includedSuggestionIds], []);
+        assert.strictEqual(selection.remainingInstructions, 'do not touch F2');
+
+        const proseOnly = parseFixFindingSelection('Do not touch F2 while addressing the regression.');
+        assert.strictEqual(proseOnly.actionableIds, null);
+        assert.strictEqual(proseOnly.remainingInstructions, 'Do not touch F2 while addressing the regression.');
     });
 
     test('scopes explicit IDs to the newest review comment when models reuse F1', () => {

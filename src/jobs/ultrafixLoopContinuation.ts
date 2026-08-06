@@ -50,6 +50,10 @@ export interface UltrafixContinuationParams {
     correlationId: string;
     /** The ID of the current job running this continuation, to exclude from queue checks */
     currentJobId?: string;
+    /** Review comment IDs posted by the current job. Empty means the current review produced no usable output. */
+    currentReviewCommentIds?: number[];
+    /** Number of review results the current job attempted to post. */
+    currentReviewResultCount?: number;
 }
 
 // --- Dependency injection for check_run status ---
@@ -140,6 +144,8 @@ export async function continueUltrafixLoop(
             const allComments = await fetchAllComments(octokit, owner, repo, pullRequestNumber);
             const pendingState = await getPendingReviewState(allComments, {
                 repoOwner: owner, repoName: repo, pullRequestNumber, redisClient, correlatedLogger,
+                currentReviewCommentIds: params.currentReviewCommentIds ?? [],
+                currentReviewResultCount: params.currentReviewResultCount ?? 0,
             });
             latestScore = pendingState.latestScore;
             reviewStatus = pendingState.reviewStatus;

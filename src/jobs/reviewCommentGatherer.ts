@@ -57,7 +57,7 @@ export interface ReviewSuggestion {
 export interface PendingReviewState {
     /** Unprocessed AI review comments (boilerplate already stripped). */
     unprocessedComments: AIReviewComment[];
-    /** The most recent valid review score (1–10), or null if none found. */
+    /** Score from the newest member of a wholly valid review result set, or null. */
     latestScore: number | null;
     /** Whether any unprocessed actionable findings exist. */
     hasPendingReview: boolean;
@@ -80,6 +80,13 @@ export interface GatherOptions {
     correlatedLogger: Logger;
     /** Maximum age of review comments to include, in milliseconds. Defaults to 7 days. */
     maxAgeMs?: number;
+}
+
+export interface PendingReviewOptions extends GatherOptions {
+    /** Restrict orchestration to the review comments posted by the completed job. */
+    currentReviewCommentIds?: readonly number[];
+    /** Number of review outputs the completed job attempted to publish. */
+    currentReviewResultCount?: number;
 }
 
 /** Default max age: 7 days */
@@ -401,27 +408,50 @@ export function extractReviewScore(body: string): number | null {
  * Return the pending review state for orchestration (e.g. /ultrafix).
  *
  * This is a convenience wrapper around `gatherUnprocessedReviewComments` that
- * also extracts the latest usable review score from the unprocessed comments.
- * The most recent comment (by `created_at`) with a valid score wins.
+ * also validates the completed job's entire result set when comment IDs are
+ * supplied. The newest member supplies the score only after every expected
+ * result is present and valid; blockers from any member remain authoritative.
  */
 export async function getPendingReviewState(
     allComments: PRComment[],
-    options: GatherOptions,
+    options: PendingReviewOptions,
 ): Promise<PendingReviewState> {
-    const unprocessedComments = await gatherUnprocessedReviewComments(allComments, options);
+    const expectedIds = options.currentReviewCommentIds === undefined
+        ? null
+        : new Set(options.currentReviewCommentIds);
+    const scopedComments = expectedIds === null
+        ? allComments
+        : allComments.filter(comment => expectedIds.has(comment.id));
+    const unprocessedComments = await gatherUnprocessedReviewComments(scopedComments, options);
 
-    // The newest review is authoritative for orchestration. This prevents an
-    // older valid score from masking malformed output in the completed review.
+    // Every output produced by a multi-model job is authoritative. Missing or
+    // malformed output invalidates the result set, and any blocker takes
+    // precedence over otherwise-clean reviews.
     const sorted = [...unprocessedComments].sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id - a.id,
     );
     const latestReview = sorted[0];
+    const gatheredIds = new Set(unprocessedComments.map(comment => comment.id));
+    const expectedResultCount = options.currentReviewResultCount ?? expectedIds?.size;
+    const hasCompleteCurrentResultSet = expectedIds === null || (
+        expectedIds.size > 0
+        && expectedIds.size === expectedResultCount
+        && expectedIds.size === gatheredIds.size
+        && [...expectedIds].every(id => gatheredIds.has(id))
+    );
+    const reviewStatus: ReviewOutputStatus = !hasCompleteCurrentResultSet
+        || unprocessedComments.length === 0
+        || unprocessedComments.some(comment => comment.reviewStatus === 'invalid')
+        ? 'invalid'
+        : unprocessedComments.some(comment => comment.reviewStatus === 'valid_with_blockers')
+            ? 'valid_with_blockers'
+            : 'valid_clean';
 
     return {
         unprocessedComments,
-        latestScore: latestReview?.reviewStatus === 'invalid' ? null : latestReview?.score ?? null,
+        latestScore: reviewStatus === 'invalid' ? null : latestReview?.score ?? null,
         hasPendingReview: unprocessedComments.some(comment => comment.actionableFindings.length > 0),
-        reviewStatus: latestReview?.reviewStatus ?? 'invalid',
+        reviewStatus,
     };
 }
 
