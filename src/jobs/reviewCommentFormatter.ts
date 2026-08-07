@@ -11,7 +11,7 @@
  */
 
 import { getModelName, type AnalysisResult } from '@propr/core';
-import type { ReviewAssignment } from './prCommentReviewJob.js';
+import type { ReviewAssignment } from './prReviewRunner.js';
 import { parseStructuredReview, renderPublicReview } from './reviewOutputParser.js';
 
 /** HTML comment marker prefix used to identify AI review comments. */

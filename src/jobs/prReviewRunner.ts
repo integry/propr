@@ -2,9 +2,11 @@ import type { Logger } from 'pino';
 import { buildAnalysisSafetySuffix, getAuthenticatedOctokit } from '@propr/core';
 import type { AgentRegistry, AnalysisResult } from '@propr/core';
 import type { ReasoningLevel } from '@propr/shared';
+import type { Redis } from 'ioredis';
 import { calculateReviewCost } from './reviewContextHelpers.js';
 import { buildReviewPromptWithinBudget } from './reviewPromptBuilder.js';
-import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
+import { buildReviewErrorComment } from './reviewCommentFormatter.js';
+import { buildReviewCommentWithReservedFindingRange } from './reviewFindingNumberAllocator.js';
 
 const REVIEW_TIMEOUT_MS = 30 * 60 * 1000;
 const REVIEW_ANALYSIS_SAFETY_SUFFIX = buildAnalysisSafetySuffix('text', false, undefined);
@@ -21,6 +23,7 @@ export interface ReviewResult {
     commentUrl?: string;
     error?: string;
     prompt?: string;
+    findingCount?: number;
 }
 
 export interface RunReviewsContext {
@@ -37,6 +40,9 @@ export interface RunReviewsContext {
     commandInstructions?: string;
     prDiff: string;
     omittedDiffFiles: string[];
+    changedFilePaths: string[];
+    findingStartNumber: number;
+    redisClient: Redis;
     fileContents: string;
     relatedContext: string;
     checkSummary: string;
@@ -96,20 +102,23 @@ export async function runSingleReview(
         }, 'Review analysis completed');
 
         const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
-        const reviewCommentBody = analysisResult.success
-            ? buildReviewComment(assignment, analysisResult, taskUrl, {
+        const { reviewCommentBody, findingCount } = await buildReviewCommentWithReservedFindingRange(
+            assignment, analysisResult, taskUrl, {
                 omittedDiffFiles: ctx.omittedDiffFiles,
                 prDiffTruncated: promptResult.prDiffTruncated,
                 costUsd,
                 hasCurrentCheckFailure: ctx.hasCurrentCheckFailure,
-            })
-            : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
+                changedFilePaths: ctx.changedFilePaths,
+                redisClient: ctx.redisClient, issueRef: { repoOwner, repoName, pullRequestNumber },
+                observedNextFindingNumber: ctx.findingStartNumber,
+            },
+        );
 
         const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
         });
 
-        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt };
+        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt, findingCount };
     } catch (reviewError) {
         const errorMsg = (reviewError as Error).message;
         correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');
