@@ -228,7 +228,7 @@ test('Antigravity output parser rejects protocol and transcript events with malf
         { type: 'result', status: 'success', stats: { inputTokens: 'twelve' }, timestamp: '2026-06-06T09:40:25Z' },
         { type: 'error', message: 'bad timestamp', timestamp: 123 },
         { source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 42 },
-    ].map(JSON.stringify);
+    ].map(value => JSON.stringify(value));
     const parsed = parseAntigravityJsonl(malformedLines.join('\n'));
 
     assert.equal(parsed.summary, malformedLines.join('\n'));
