@@ -54,6 +54,11 @@ const MIN_CONFIGURED_REVIEW_DIFF_MAX_CHARS = 10000;
 const MAX_REVIEW_DIFF_MAX_CHARS = 1200000;
 const REVIEW_DIFF_CHARS_PER_TOKEN_ESTIMATE = 2;
 const REVIEW_DIFF_CONTEXT_RATIO = 0.7;
+// Keep this bounded headroom unavailable to review input so the agent runtime
+// can add its own context and still produce a complete structured review.
+const REVIEW_OUTPUT_TOKEN_RESERVE = 16000;
+const REVIEW_RUNTIME_CONTEXT_TOKEN_RESERVE = 8000;
+export const REVIEW_CONTEXT_TOKEN_RESERVE = REVIEW_OUTPUT_TOKEN_RESERVE + REVIEW_RUNTIME_CONTEXT_TOKEN_RESERVE;
 
 function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
@@ -68,7 +73,8 @@ export function resolveReviewContextTokenBudget(models: string[], configuredMaxT
         ? models.map(model => getModelHardLimit(model))
         : [getModelHardLimit(undefined)];
     const smallestHardLimit = Math.min(...hardLimits);
-    return configuredMaxTokens > 0 ? Math.min(configuredMaxTokens, smallestHardLimit) : smallestHardLimit;
+    const safeInputLimit = Math.max(0, smallestHardLimit - REVIEW_CONTEXT_TOKEN_RESERVE);
+    return configuredMaxTokens > 0 ? Math.min(configuredMaxTokens, safeInputLimit) : safeInputLimit;
 }
 
 export function resolveReviewDiffMaxCharsForBudget(models: string[], configuredMaxTokens = 0): number {
