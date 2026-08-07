@@ -127,7 +127,8 @@ const ANTIGRAVITY_EVENT_VALIDATORS: Record<string, (candidate: Record<string, un
 
 function isAntigravityEvent(event: unknown, contextual = false): event is AntigravityEvent {
     if (!isRecord(event) || typeof event.type !== 'string') return false;
-    return ANTIGRAVITY_EVENT_VALIDATORS[event.type]?.(event, contextual) ?? false;
+    if (!Object.hasOwn(ANTIGRAVITY_EVENT_VALIDATORS, event.type)) return false;
+    return ANTIGRAVITY_EVENT_VALIDATORS[event.type](event, contextual);
 }
 
 function isAntigravityOutputEvent(event: unknown, contextual = false): event is AntigravityOutputEvent {

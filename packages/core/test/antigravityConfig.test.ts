@@ -158,6 +158,16 @@ test('Antigravity output parser preserves plain responses that are valid JSON va
     assert.deepEqual(commonMessage.conversationLog, []);
 });
 
+test('Antigravity output parser treats prototype keys as plain fallback JSON', () => {
+    for (const type of ['__proto__', 'constructor', 'toString']) {
+        const line = JSON.stringify({ type });
+        const parsed = parseAntigravityJsonl(line);
+
+        assert.equal(parsed.summary, line);
+        assert.deepEqual(parsed.conversationLog, []);
+    }
+});
+
 test('Antigravity output parser requires framing for ambiguous standalone protocol shapes', () => {
     for (const value of [
         { type: 'result', status: 'success' },
