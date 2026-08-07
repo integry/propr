@@ -23,6 +23,7 @@ export interface ActionableFinding {
 export interface ReviewSuggestion {
     id: string;
     title: string;
+    description: string;
 }
 
 export interface StructuredReviewResult {
@@ -164,8 +165,11 @@ function parseMachineActionableRecords(section: string): ActionableFinding[] | n
 }
 
 function parsePublicActionableRecords(section: string): ActionableFinding[] | null {
+    if (section.trim() === 'No merge blockers.') return [];
     if (!section.startsWith(`${MERGE_BLOCKERS_INTRODUCTION}\n`)) return null;
     const recordsSection = section.slice(MERGE_BLOCKERS_INTRODUCTION.length).trim();
+    // Continue accepting comments published before clean reviews stopped
+    // including the merge-blocker policy preamble.
     if (recordsSection === 'No merge blockers.') return [];
     if (!/^### F1\b/.test(recordsSection)) return null;
 
@@ -193,23 +197,34 @@ function parsePublicActionableRecords(section: string): ActionableFinding[] | nu
     return findings;
 }
 
-function parseSuggestionRecords(section: string): ReviewSuggestion[] | null {
+function parseSuggestionRecords(
+    section: string,
+    options: { requireDescription: boolean },
+): ReviewSuggestion[] | null {
     if (section.trim() === 'No suggestions.') return [];
 
     const records = extractMarkdownRecords(section, 'S');
     if (
         records.length === 0
         || !hasSequentialRecordHeadings(section, records, 'S')
-        || records.some(record => record.body !== '')
+        || records.some(record => options.requireDescription && record.body === '')
+        || records.some(record => extractRecordFields(record.body).size > 0)
+        || records.some(record => /^#{1,6}[ \t]+/m.test(record.body))
     ) return null;
-    return records.map(record => ({ id: record.id, title: record.title }));
+    return records.map(record => ({
+        id: record.id,
+        title: record.title,
+        description: record.body,
+    }));
 }
 
 function parsePublicSuggestionRecords(section: string): ReviewSuggestion[] | null {
     if (!section.startsWith(`${SUGGESTIONS_INTRODUCTION}\n`)) return null;
     const recordsSection = section.slice(SUGGESTIONS_INTRODUCTION.length).trim();
     if (recordsSection !== 'No suggestions.' && !/^### S1\b/.test(recordsSection)) return null;
-    return parseSuggestionRecords(recordsSection);
+    // Description-less S# headings were used by older public comments. Keep
+    // them parseable even though new machine output requires an explanation.
+    return parseSuggestionRecords(recordsSection, { requireDescription: false });
 }
 
 interface ReviewContract {
@@ -223,7 +238,7 @@ const MACHINE_CONTRACT: ReviewContract = {
     headings: MACHINE_SECTION_HEADINGS,
     cleanSentinel: 'No actionable findings.',
     parseFindings: parseMachineActionableRecords,
-    parseSuggestions: parseSuggestionRecords,
+    parseSuggestions: section => parseSuggestionRecords(section, { requireDescription: true }),
 };
 
 const PUBLIC_CONTRACT: ReviewContract = {
@@ -295,6 +310,7 @@ export function extractReviewSuggestions(body: string): ReviewSuggestion[] {
     return extractMarkdownRecords(section, 'S').map(record => ({
         id: record.id,
         title: record.title,
+        description: record.body,
     }));
 }
 
@@ -310,7 +326,10 @@ function formatPublicFindings(findings: ActionableFinding[]): string {
 
 function formatPublicSuggestions(suggestions: ReviewSuggestion[]): string {
     if (suggestions.length === 0) return 'No suggestions.';
-    return suggestions.map(suggestion => `### ${suggestion.id}: ${suggestion.title}`).join('\n\n');
+    return suggestions.map(suggestion => [
+        `### ${suggestion.id}: ${suggestion.title}`,
+        suggestion.description,
+    ].filter(Boolean).join('\n\n')).join('\n\n');
 }
 
 /**
@@ -340,12 +359,14 @@ export function renderPublicReview(
             ? `Score capped at ${publishedScore} because merge blockers remain.`
             : scoreCap?.reason}_`
         : '';
+    const mergeBlockersSection = parsed.actionableFindings.length === 0
+        ? 'No merge blockers.'
+        : `${MERGE_BLOCKERS_INTRODUCTION}\n\n${formatPublicFindings(parsed.actionableFindings)}`;
     return [
         '## Overall Evaluation',
         overallSection,
         '## Merge blockers',
-        MERGE_BLOCKERS_INTRODUCTION,
-        formatPublicFindings(parsed.actionableFindings),
+        mergeBlockersSection,
         '## Suggestions',
         SUGGESTIONS_INTRODUCTION,
         formatPublicSuggestions(parsed.suggestions),

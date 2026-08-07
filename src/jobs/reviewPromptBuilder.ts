@@ -148,9 +148,12 @@ Every field is mandatory. If you cannot truthfully supply every field, the item 
 ## Suggestions and Follow-ups
 Put hardening, cleanup, broader architecture, pre-existing issues, optional tests, performance ideas, and alternative designs here. These items are public information but are not merge blockers and must never be presented as required work.
 
-Use sequential IDs and put the complete suggestion in a single heading with no additional record fields:
+Use sequential IDs and this exact shape for every suggestion. Keep the title short (ideally 3–8 words), then explain the reasoning in a concise paragraph:
 
-### S1: Concise description of the optional follow-up
+### S1: Short title
+Explain why the follow-up would help, what evidence in or around the changed code motivates it, and why it is optional rather than required for merge.
+
+The description is mandatory. Do not add structured fields such as \`summary\` or \`autoFix\`, and do not put the full explanation in the heading.
 
 If there are no suggestions, write \`No suggestions.\` Positive observations may be included in the Overall Evaluation instead of being assigned finding IDs.
 

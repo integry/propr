@@ -26,7 +26,7 @@ describe('buildReviewComment', () => {
         assert.ok(!comment.includes('/fix include S'));
     });
 
-    test('publishes concise suggestion headings without legacy metadata', () => {
+    test('publishes short suggestion headings with reasoning and normalizes legacy metadata', () => {
         const response = [
             '## Overall Evaluation',
             'Ready.',
@@ -53,8 +53,13 @@ describe('buildReviewComment', () => {
         );
         assert.ok(formatted.includes('### S1: Add an outbox'));
         assert.ok(formatted.includes('### S2: Add a benchmark'));
+        assert.ok(formatted.includes('Optional hardening'));
+        assert.ok(formatted.includes('Optional performance coverage'));
         assert.ok(!formatted.includes('summary:'));
         assert.ok(!formatted.includes('autoFix:'));
+        const reparsed = parseStructuredReview(formatted);
+        assert.strictEqual(reparsed.status, 'valid_clean');
+        assert.strictEqual(reparsed.suggestions[0].description, 'Optional hardening');
     });
 
     test('publishes validated blockers with reader-facing sections and labels', () => {
@@ -153,9 +158,33 @@ describe('buildReviewComment', () => {
         );
 
         assert.ok(formatted.includes('No merge blockers.'));
+        assert.ok(!formatted.includes('Every finding below was introduced by this PR'));
         assert.ok(formatted.includes('Score: 7/10'));
         assert.ok(formatted.includes('Score capped at 7 because a current-head check is failing.'));
         assert.equal(parseStructuredReview(formatted).status, 'valid_clean');
+    });
+
+    test('publishes suggestion titles separately from their reasoning', () => {
+        const response = [
+            '## Overall Evaluation',
+            'Ready to merge.',
+            '## Actionable Findings',
+            'No actionable findings.',
+            '## Suggestions and Follow-ups',
+            '### S1: Cover pagination fallbacks',
+            'Integration coverage would verify pagination, head-SHA selection, and API-failure fallback through the real GitHub boundary; this is optional because the changed behavior is already unit-tested.',
+            '## Score',
+            'Score: 9/10',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            { response, modelUsed: 'claude-sonnet', executionTimeMs: 1000, success: true },
+        );
+
+        assert.ok(formatted.includes('## Merge blockers\n\nNo merge blockers.'));
+        assert.ok(formatted.includes('### S1: Cover pagination fallbacks\n\nIntegration coverage would verify'));
+        assert.strictEqual(parseStructuredReview(formatted).suggestions[0].description.startsWith('Integration coverage'), true);
     });
 
     test('does not publish internal blocker metadata from an invalid review', () => {
