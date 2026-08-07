@@ -51,8 +51,8 @@ describe('buildReviewComment', () => {
                 success: true,
             },
         );
-        assert.ok(formatted.includes('### S1: Add an outbox'));
-        assert.ok(formatted.includes('### S2: Add a benchmark'));
+        assert.ok(formatted.includes('### S1: 🟢 Add an outbox'));
+        assert.ok(formatted.includes('### S2: 🟢 Add a benchmark'));
         assert.ok(formatted.includes('Optional hardening'));
         assert.ok(formatted.includes('Optional performance coverage'));
         assert.ok(!formatted.includes('summary:'));
@@ -94,6 +94,7 @@ describe('buildReviewComment', () => {
         );
 
         assert.ok(formatted.includes('## Merge blockers'));
+        assert.ok(formatted.includes('### F1: 🔴 Retry transitions can overwrite cancellation'));
         assert.ok(formatted.includes('Every finding below was introduced by this PR and must be resolved before merging.'));
         assert.ok(formatted.includes('- **Required behavior:** Cancellation must not be overwritten'));
         assert.ok(formatted.includes('- **Evidence:** workerStateManager.ts:130'));
@@ -167,7 +168,7 @@ describe('buildReviewComment', () => {
     test('publishes suggestion titles separately from their reasoning', () => {
         const response = [
             '## Overall Evaluation',
-            'Ready to merge.',
+            'Ready to merge.\n\n✅ **Focused implementation** — The change stays within the review-context boundary.',
             '## Actionable Findings',
             'No actionable findings.',
             '## Suggestions and Follow-ups',
@@ -183,7 +184,8 @@ describe('buildReviewComment', () => {
         );
 
         assert.ok(formatted.includes('## Merge blockers\n\nNo merge blockers.'));
-        assert.ok(formatted.includes('### S1: Cover pagination fallbacks\n\nIntegration coverage would verify'));
+        assert.ok(formatted.includes('✅ **Focused implementation**'));
+        assert.ok(formatted.includes('### S1: 🟢 Cover pagination fallbacks\n\nIntegration coverage would verify'));
         assert.strictEqual(parseStructuredReview(formatted).suggestions[0].description.startsWith('Integration coverage'), true);
     });
 

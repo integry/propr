@@ -125,7 +125,11 @@ Before writing the response, silently perform a PR-scoped validation pass:
 Do not print this validation pass or turn it into a generic checklist. Report only verified results in the four required sections.
 
 ## Overall Evaluation
-Provide a concise summary of the PR's purpose, approach, and overall quality. State whether the PR is ready to merge, needs minor changes, or needs significant rework.
+Provide a concise summary of the PR's purpose, approach, and overall quality. State whether the PR is ready to merge, needs minor changes, or needs significant rework. Explicitly acknowledge verified strengths in the changed implementation using one to three observations in this shape:
+
+✅ **Short title** — Specific evidence of what the PR implements correctly or especially well.
+
+These positive observations are informational and must not receive F# or S# IDs. Do not invent praise. If no positive observation can be verified, state that plainly instead.
 
 ## Actionable Findings
 Report only problems that satisfy **all** of these conditions:

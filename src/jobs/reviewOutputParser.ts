@@ -185,7 +185,7 @@ function parsePublicActionableRecords(section: string): ActionableFinding[] | nu
         if (fields.size !== 3 || !violatedRequirement || !evidence || !minimumCorrection) return null;
         findings.push({
             id: record.id,
-            title: record.title,
+            title: record.title.replace(/^🔴[ \t]+/, ''),
             violatedRequirement,
             evidence,
             introducedByPR: true,
@@ -224,7 +224,11 @@ function parsePublicSuggestionRecords(section: string): ReviewSuggestion[] | nul
     if (recordsSection !== 'No suggestions.' && !/^### S1\b/.test(recordsSection)) return null;
     // Description-less S# headings were used by older public comments. Keep
     // them parseable even though new machine output requires an explanation.
-    return parseSuggestionRecords(recordsSection, { requireDescription: false });
+    const suggestions = parseSuggestionRecords(recordsSection, { requireDescription: false });
+    return suggestions?.map(suggestion => ({
+        ...suggestion,
+        title: suggestion.title.replace(/^🟢[ \t]+/, ''),
+    })) ?? null;
 }
 
 interface ReviewContract {
@@ -309,7 +313,7 @@ export function extractReviewSuggestions(body: string): ReviewSuggestion[] {
         : extractMarkdownSection(body, 'Suggestions').slice(SUGGESTIONS_INTRODUCTION.length).trim();
     return extractMarkdownRecords(section, 'S').map(record => ({
         id: record.id,
-        title: record.title,
+        title: machineSection ? record.title : record.title.replace(/^🟢[ \t]+/, ''),
         description: record.body,
     }));
 }
@@ -317,7 +321,7 @@ export function extractReviewSuggestions(body: string): ReviewSuggestion[] {
 function formatPublicFindings(findings: ActionableFinding[]): string {
     if (findings.length === 0) return 'No merge blockers.';
     return findings.map(finding => [
-        `### ${finding.id}: ${finding.title}`,
+        `### ${finding.id}: 🔴 ${finding.title}`,
         `- **Required behavior:** ${finding.violatedRequirement}`,
         `- **Evidence:** ${finding.evidence}`,
         `- **Minimum fix:** ${finding.minimumCorrection}`,
@@ -327,7 +331,7 @@ function formatPublicFindings(findings: ActionableFinding[]): string {
 function formatPublicSuggestions(suggestions: ReviewSuggestion[]): string {
     if (suggestions.length === 0) return 'No suggestions.';
     return suggestions.map(suggestion => [
-        `### ${suggestion.id}: ${suggestion.title}`,
+        `### ${suggestion.id}: 🟢 ${suggestion.title}`,
         suggestion.description,
     ].filter(Boolean).join('\n\n')).join('\n\n');
 }
