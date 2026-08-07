@@ -20,6 +20,7 @@ export type { PRValidationResult, PRInfo, ValidatePRCreationOptions, CurrentIssu
 export { IdempotentGitHubOps, IdempotentGitOps } from './utils/idempotentOps.js';
 export { estimateTokens, countTokens, getUsageStats, getDetailedUsageStats, getCachePricingMultipliers, calculateCostWithCachePricing } from './utils/tokenCalculation.js';
 export type { DetailedUsageStats, CachePricingMultipliers } from './utils/tokenCalculation.js';
+export { buildAnalysisSafetySuffix } from './agents/impl/utils/analysisPromptSafety.js';
 export { formatResetTime, addModelSpecificDelay, parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes, formatRetryTime, hoursUntil } from './utils/scheduling.js';
 export { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from './utils/commentFilters.js';
 export { ensureGitRepository } from './utils/git/gitValidation.js';
@@ -77,6 +78,7 @@ export { db, closeConnection, createKnexConfigForMigrations, runMigrations } fro
 
 export { getRepoConfigKey, detectDefaultBranch, listRepositoryBranchConfigurations } from './git/branchConfig.js';
 export type { BranchConfiguration } from './git/branchConfig.js';
+export { createHooklessGit, DISABLED_GIT_HOOKS_PATH } from './git/hooklessGit.js';
 export { AI_COMMIT_AUTHOR, commitChanges } from './git/commitOperations.js';
 export type { CommitResult } from './git/commitOperations.js';
 export { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch } from './git/repoBranching.js';
@@ -154,7 +156,7 @@ export { getExecutionAnalysis } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';
 export { getWorktreeChanges, storeFileChanges, getStoredFileChanges, clearFileChanges, updateFileChangesFromWorktree, getCommitChanges, isValidCommitHash } from './services/worktreeMonitorService.js';
 export type { FileChange, FileChangesData } from './services/worktreeMonitorService.js';
-export { generateContext, generateAdditionalContext, SecurityException } from './services/context/index.js';
+export { generateContext, generateAdditionalContext, ContextTokenLimitError, SecurityException } from './services/context/index.js';
 export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile, AdditionalContextOptions, AdditionalContextResult } from './services/context/index.js';
 export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';

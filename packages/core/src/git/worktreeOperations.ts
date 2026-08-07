@@ -1,8 +1,9 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
+import { createHooklessGit } from './hooklessGit.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
@@ -54,7 +55,7 @@ export async function cleanupWorktree(localRepoPath: string, worktreePath: strin
         await createRetentionMarker(worktreePath, retentionHours);
     }
 
-    const git: SimpleGit = simpleGit(localRepoPath);
+    const git: SimpleGit = createHooklessGit(localRepoPath);
 
     try {
         await git.raw(['worktree', 'remove', worktreePath, '--force']);

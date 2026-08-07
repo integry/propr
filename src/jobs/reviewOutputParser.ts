@@ -127,17 +127,26 @@ function hasExpectedSections(body: string, headings: readonly string[]): boolean
         && actualHeadings.every((heading, index) => heading === headings[index]);
 }
 
-function hasSequentialRecordHeadings(section: string, records: MarkdownRecord[], prefix: 'F' | 'S'): boolean {
+function hasSequentialRecordHeadings(
+    section: string,
+    records: MarkdownRecord[],
+    prefix: 'F' | 'S',
+    options: { requireFirstId?: number } = {},
+): boolean {
     const allRecordHeadings = [
         ...section.matchAll(new RegExp(`^###[ \\t]+${prefix}\\d+\\b.*$`, 'gim')),
     ];
+    const firstNumber = Number.parseInt(records[0]?.id.slice(1) ?? '', 10);
     return allRecordHeadings.length === records.length
-        && records.every((record, index) => record.id === `${prefix}${index + 1}`);
+        && Number.isInteger(firstNumber)
+        && firstNumber >= 1
+        && (options.requireFirstId === undefined || firstNumber === options.requireFirstId)
+        && records.every((record, index) => record.id === `${prefix}${firstNumber + index}`);
 }
 
 function parseMachineActionableRecords(section: string): ActionableFinding[] | null {
     const records = extractMarkdownRecords(section, 'F');
-    if (records.length === 0 || !hasSequentialRecordHeadings(section, records, 'F')) return null;
+    if (records.length === 0 || !hasSequentialRecordHeadings(section, records, 'F', { requireFirstId: 1 })) return null;
 
     const findings: ActionableFinding[] = [];
     for (const record of records) {
@@ -171,7 +180,7 @@ function parsePublicActionableRecords(section: string): ActionableFinding[] | nu
     // Continue accepting comments published before clean reviews stopped
     // including the merge-blocker policy preamble.
     if (recordsSection === 'No merge blockers.') return [];
-    if (!/^### F1\b/.test(recordsSection)) return null;
+    if (!/^### F\d+\b/.test(recordsSection)) return null;
 
     const records = extractMarkdownRecords(recordsSection, 'F');
     if (records.length === 0 || !hasSequentialRecordHeadings(recordsSection, records, 'F')) return null;
@@ -206,7 +215,7 @@ function parseSuggestionRecords(
     const records = extractMarkdownRecords(section, 'S');
     if (
         records.length === 0
-        || !hasSequentialRecordHeadings(section, records, 'S')
+        || !hasSequentialRecordHeadings(section, records, 'S', { requireFirstId: 1 })
         || records.some(record => options.requireDescription && record.body === '')
         || records.some(record => extractRecordFields(record.body).size > 0)
         || records.some(record => /^#{1,6}[ \t]+/m.test(record.body))
@@ -328,6 +337,45 @@ function formatPublicFindings(findings: ActionableFinding[]): string {
     ].join('\n')).join('\n\n');
 }
 
+function renumberActionableFindings(
+    findings: ActionableFinding[],
+    firstFindingNumber: number,
+): ActionableFinding[] {
+    return findings.map((finding, index) => ({
+        ...finding,
+        id: `F${firstFindingNumber + index}`,
+    }));
+}
+
+function evidenceReferencesChangedFile(evidence: string, changedFilePaths: readonly string[]): boolean {
+    const normalizedEvidence = evidence.replace(/\\/g, '/');
+    return changedFilePaths.some(rawPath => {
+        const path = rawPath.replace(/\\/g, '/');
+        const escapedPath = escapeRegExp(path);
+        return new RegExp(`(?:^|[\\s\`'"(\\[])${escapedPath}(?=[:#\\s\`'",)\\]])`).test(normalizedEvidence);
+    });
+}
+
+export function getNextActionableFindingNumber(reviewBodies: readonly (string | null | undefined)[]): number {
+    let highest = 0;
+    for (const body of reviewBodies) {
+        if (!body) continue;
+        const parsed = parseStructuredReview(body);
+        for (const finding of parsed.actionableFindings) {
+            const number = Number.parseInt(finding.id.slice(1), 10);
+            if (Number.isInteger(number)) highest = Math.max(highest, number);
+        }
+    }
+    return highest + 1;
+}
+
+export interface PublicReviewRenderOptions {
+    /** First PR-wide public F# identifier assigned to this review comment. */
+    firstFindingNumber?: number;
+    /** Base-to-head changed paths that every blocker must cite in its evidence. */
+    changedFilePaths?: readonly string[];
+}
+
 function formatPublicSuggestions(suggestions: ReviewSuggestion[]): string {
     if (suggestions.length === 0) return 'No suggestions.';
     return suggestions.map(suggestion => [
@@ -344,11 +392,23 @@ function formatPublicSuggestions(suggestions: ReviewSuggestion[]): string {
 export function renderPublicReview(
     body: string,
     scoreCap?: { maximum: number; reason: string },
+    options: PublicReviewRenderOptions = {},
 ): string | null {
     if (ERROR_REVIEW_MARKER_RE.test(body)) return null;
     const cleaned = prepareReviewBody(body);
     const parsed = parseContract(cleaned, MACHINE_CONTRACT);
     if (parsed.status === 'invalid') return null;
+    if (
+        options.changedFilePaths
+        && parsed.actionableFindings.some(finding =>
+            !evidenceReferencesChangedFile(finding.evidence, options.changedFilePaths!),
+        )
+    ) return null;
+
+    const publicFindings = renumberActionableFindings(
+        parsed.actionableFindings,
+        Math.max(1, options.firstFindingNumber ?? 1),
+    );
 
     const overallSection = extractMarkdownSection(cleaned, 'Overall Evaluation');
     const originalScoreSection = extractMarkdownSection(cleaned, 'Score');
@@ -365,7 +425,7 @@ export function renderPublicReview(
         : '';
     const mergeBlockersSection = parsed.actionableFindings.length === 0
         ? 'No merge blockers.'
-        : `${MERGE_BLOCKERS_INTRODUCTION}\n\n${formatPublicFindings(parsed.actionableFindings)}`;
+        : `${MERGE_BLOCKERS_INTRODUCTION}\n\n${formatPublicFindings(publicFindings)}`;
     return [
         '## Overall Evaluation',
         overallSection,

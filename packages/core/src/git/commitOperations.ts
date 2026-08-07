@@ -3,6 +3,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
+import { DISABLED_GIT_HOOKS_PATH } from './hooklessGit.js';
 
 interface Author {
     name: string;
@@ -111,7 +112,12 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
         throw validationError;
     }
 
-    const git: SimpleGit = simpleGit({ baseDir: worktreePath, abort: signal });
+    const git: SimpleGit = simpleGit({
+        baseDir: worktreePath,
+        abort: signal,
+        config: [`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`],
+        unsafe: { allowUnsafeHooksPath: true },
+    });
     logger.debug({ worktreePath, issueNumber }, 'Initializing git operations in worktree');
 
     try {

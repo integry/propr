@@ -134,6 +134,18 @@ export interface AnalyzeOptions {
     useConfiguredReasoningLevel?: boolean;
     /** Skip the low-level agent LLM log when a caller persists a higher-level authoritative log. */
     suppressLlmLog?: boolean;
+    /**
+     * Optional repository workspace exposed to the analysis agent as a read-only
+     * bind mount. Omitted analyses continue to use their isolated empty
+     * workspace.
+     */
+    readOnlyWorkspacePath?: string;
+    /**
+     * Request runtime-enforced repository file read/search tools inside
+     * readOnlyWorkspacePath. This never authorizes a general-purpose shell.
+     * Scout callers must skip agents without a granular file-tool allowlist.
+     */
+    allowReadOnlyCommands?: boolean;
 }
 
 export interface AgentExecutionResult {

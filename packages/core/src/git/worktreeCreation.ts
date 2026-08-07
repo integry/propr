@@ -1,4 +1,4 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
@@ -11,6 +11,7 @@ import {
     setupWorktreeRemote,
     getWorktreePath
 } from './worktreeOperations.js';
+import { createHooklessGit } from './hooklessGit.js';
 
 async function removeWorktreeForBranch(git: SimpleGit, worktreeLines: string[], branchName: string): Promise<void> {
     for (let i = 0; i < worktreeLines.length; i++) {
@@ -202,7 +203,7 @@ export async function createWorktreeFromExistingBranch(localRepoPath: string, br
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
 
     try {
-        const git: SimpleGit = simpleGit(localRepoPath);
+        const git: SimpleGit = createHooklessGit(localRepoPath);
 
         if (await fs.pathExists(worktreePath)) {
             await handleExistingWorktreePath(worktreePath, localRepoPath, branchName);
@@ -224,7 +225,7 @@ export async function createWorktreeFromExistingBranch(localRepoPath: string, br
         await setupWorktreePermissions(worktreePath, branchName, null);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId: null });
 
-        const worktreeGit: SimpleGit = simpleGit({ baseDir: worktreePath });
+        const worktreeGit: SimpleGit = createHooklessGit(worktreePath);
         await setupWorktreeRemote(worktreeGit, git, worktreePath);
 
         await verifyFinalWorktreeSetup(worktreeGit, worktreePath, branchName);

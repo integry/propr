@@ -34,6 +34,8 @@ export {
     type PersistLogsParams
 } from './claudeOutputHelpers.js';
 
+export { buildAnalysisSafetySuffix } from './analysisPromptSafety.js';
+
 export {
     parseAntigravityJsonl,
     aggregateDeltaMessages,

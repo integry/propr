@@ -2,14 +2,16 @@ import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
 import { getAuthenticatedOctokit, retryConfigs, SupersededTaskAttemptError, TaskStates, withRetry } from '@propr/core';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
-import { AgentRegistry } from '@propr/core';
+import { AgentRegistry, buildAnalysisSafetySuffix } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { loadSettings } from '@propr/core';
 import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prCommentJobHelpers.js';
 import { buildCombinedComment } from './prCommentJobUtils.js';
-import { calculateReviewCost, fetchReviewContext, type PRData } from './reviewContextHelpers.js';
-import { buildReviewPrompt } from './reviewPromptBuilder.js';
-import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
+import { calculateReviewCost, fetchReviewContext, resolveReviewContextTokenBudget, type PRData } from './reviewContextHelpers.js';
+import { buildReviewPromptWithinBudget } from './reviewPromptBuilder.js';
+import { buildReviewErrorComment, getNextAuthenticatedActionableFindingNumber } from './reviewCommentFormatter.js';
+import { buildReviewCommentWithReservedFindingRange } from './reviewFindingNumberAllocator.js';
+import { prepareRelatedReviewContext } from './reviewContextScout.js';
+import { loadReviewRuntimeSettings } from './reviewRuntimeSettings.js';
 import { generateSummaryTitle } from './prCommentAgentUtils.js';
 import { resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
@@ -43,6 +45,7 @@ import { resolveReviewAssignments } from './prCommentReviewAssignments.js';
 
 export interface ReviewResult extends RecoveredReviewResult {
     commentId?: number;
+    findingCount?: number;
 }
 
 export interface PRJobContext {
@@ -65,7 +68,7 @@ interface ProcessingState {
     claudeResult: unknown;
     authorsText: string;
     unprocessedComments: UnprocessedComment[];
-    startingWorkComment: { data: { id: number; html_url: string } } | null;
+    startingWorkComment: { data: { id: number; html_url: string; user?: { login: string } | null } } | null;
 }
 
 export interface ExecuteReviewParams {
@@ -117,16 +120,24 @@ interface RunReviewsContext {
     commandInstructions?: string;
     prDiff: string;
     omittedDiffFiles: string[];
+    changedFilePaths: string[];
+    findingStartNumber: number;
+    redisClient: Redis;
     fileContents: string;
+    relatedContext: string;
     checkSummary: string;
     hasCurrentCheckFailure: boolean;
     reviewPromptOverride: string;
+    reviewMaxContextTokens: number;
     reasoningLevel?: ReasoningLevel;
     correlatedLogger: Logger;
     assertLease: () => Promise<void>;
     signal: AbortSignal;
     assignmentIndex: number;
 }
+
+const REVIEW_TIMEOUT_MS = 30 * 60 * 1000;
+const REVIEW_ANALYSIS_SAFETY_SUFFIX = buildAnalysisSafetySuffix('text', false, undefined);
 
 async function runSingleReview(
     assignment: ReviewAssignment,
@@ -143,15 +154,35 @@ async function runSingleReview(
         return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg };
     }
 
-    const reviewPrompt = buildReviewPrompt({
+    const promptResult = buildReviewPromptWithinBudget({
         pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
         originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
-        prDiff: ctx.prDiff, fileContents: ctx.fileContents, checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
-    });
+        prDiff: ctx.prDiff, fileContents: ctx.fileContents, relatedContext: ctx.relatedContext,
+        checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
+    }, ctx.reviewMaxContextTokens, REVIEW_ANALYSIS_SAFETY_SUFFIX);
+    const reviewPrompt = promptResult.prompt;
+    if (promptResult.truncatedSections.length > 0) {
+        correlatedLogger.warn({
+            pullRequestNumber,
+            model,
+            maxContextTokens: ctx.reviewMaxContextTokens,
+            estimatedTokens: promptResult.estimatedTokens,
+            truncatedSections: promptResult.truncatedSections,
+        }, 'Trimmed PR review context to fit token budget');
+    }
 
     try {
         await assertLease();
-        const analysisResult = await agent.analyze(reviewPrompt, { model, taskId, prNumber: pullRequestNumber, repository: `${repoOwner}/${repoName}`, executionType: 'pr-review', reasoningLevel: ctx.reasoningLevel });
+        const analysisResult = await agent.analyze(reviewPrompt, {
+            model,
+            taskId,
+            prNumber: pullRequestNumber,
+            repository: `${repoOwner}/${repoName}`,
+            executionType: 'pr-review',
+            responseFormat: 'text',
+            reasoningLevel: ctx.reasoningLevel,
+            timeoutMs: REVIEW_TIMEOUT_MS,
+        });
         await assertLease();
         correlatedLogger.info({
             pullRequestNumber, model: analysisResult.modelUsed, success: analysisResult.success,
@@ -159,9 +190,22 @@ async function runSingleReview(
         }, 'Review analysis completed');
 
         const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
-        const reviewCommentBody = analysisResult.success
-            ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles, costUsd, hasCurrentCheckFailure: ctx.hasCurrentCheckFailure })
-            : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
+        await assertLease();
+        const { reviewCommentBody, findingCount } = await buildReviewCommentWithReservedFindingRange(
+            assignment,
+            analysisResult,
+            taskUrl,
+            {
+                omittedDiffFiles: ctx.omittedDiffFiles,
+                prDiffTruncated: promptResult.prDiffTruncated,
+                costUsd,
+                hasCurrentCheckFailure: ctx.hasCurrentCheckFailure,
+                changedFilePaths: ctx.changedFilePaths,
+                redisClient: ctx.redisClient,
+                issueRef: { repoOwner, repoName, pullRequestNumber },
+                observedNextFindingNumber: ctx.findingStartNumber,
+            },
+        );
         const publicationStatus = analysisResult.success ? 'success' : 'error';
 
         await assertLease();
@@ -173,7 +217,7 @@ async function runSingleReview(
             request: { signal },
         });
 
-        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt };
+        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt, findingCount };
     } catch (reviewError) {
         await assertLease();
         const errorMsg = (reviewError as Error).message;
@@ -190,7 +234,7 @@ async function runSingleReview(
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post review error comment');
         }
 
-        return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, commentId: errorComment?.data.id, commentUrl: errorComment?.data.html_url, error: errorMsg, prompt: reviewPrompt };
+        return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, commentId: errorComment?.data.id, commentUrl: errorComment?.data.html_url, error: errorMsg, prompt: reviewPrompt, findingCount: 0 };
     }
 }
 
@@ -323,8 +367,24 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const assignments = await resolveReviewAssignments(job.data.requestedModels, llm, correlatedLogger);
     correlatedLogger.info({ pullRequestNumber, assignmentCount: assignments.length, models: assignments.map(a => a.model) }, 'Resolved review assignments');
 
-    const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents, checkSummary, hasCurrentCheckFailure } = await fetchReviewContext(
-        state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, models: assignments.map(a => a.model), correlationId, correlatedLogger }
+    const {
+        reviewPromptOverride,
+        reviewContextEnabled,
+        reviewContextModel,
+        fastAnalysisModel,
+        configuredReviewMaxContextTokens,
+    } = await loadReviewRuntimeSettings(correlatedLogger);
+    const reviewBudgetModels = assignments.map(assignment => `${assignment.agentAlias}:${assignment.model}`);
+    const reviewMaxContextTokens = resolveReviewContextTokenBudget(
+        reviewBudgetModels,
+        configuredReviewMaxContextTokens,
+    );
+
+    const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, changedFilePaths, fileContents, checkSummary, hasCurrentCheckFailure } = await fetchReviewContext(
+        state.octokit, prData!, {
+            repoOwner, repoName, pullRequestNumber, models: reviewBudgetModels,
+            maxContextTokens: reviewMaxContextTokens, correlationId, correlatedLogger,
+        }
     );
     job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
         repoOwner,
@@ -388,19 +448,6 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
-    // Load the operator-configured review prompt override once per job. A
-    // settings load failure must NOT block the review - fall back to default.
-    let reviewPromptOverride = '';
-    try {
-        const loadedSettings = await loadSettings();
-        const configured = (loadedSettings as Record<string, unknown>).pr_review_prompt;
-        if (typeof configured === 'string') {
-            reviewPromptOverride = configured;
-        }
-    } catch (err) {
-        correlatedLogger.warn({ error: (err as Error).message }, 'Failed to load pr_review_prompt setting, using default review prompt');
-    }
-
     let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
     if (job.data.ultrafixMeta) {
         originalTaskSpec = await retainOriginalScope(redisClient, {
@@ -409,6 +456,37 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             pr: pullRequestNumber,
             scope: originalTaskSpec,
         });
+    }
+
+    let relatedContext = '';
+    if (reviewContextEnabled) {
+        try {
+            relatedContext = await prepareRelatedReviewContext({
+                registry,
+                fallbackAssignment: assignments[0],
+                configuredModel: reviewContextModel,
+                fastAnalysisModel,
+                state,
+                githubToken: githubToken.token,
+                branchName: context.jobBranchName || prData!.data.head.ref,
+                prDiff,
+                changedFiles: changedFilePaths,
+                originalTaskSpec,
+                pullRequestNumber,
+                repoOwner,
+                repoName,
+                taskId,
+                correlationId,
+                correlatedLogger,
+            });
+        } catch (scoutError) {
+            correlatedLogger.warn({
+                pullRequestNumber,
+                error: (scoutError as Error).message,
+            }, 'PR review context scout failed; continuing with deterministic review context');
+        }
+    } else {
+        correlatedLogger.info({ pullRequestNumber }, 'PR review context scout disabled by settings');
     }
 
     const reviewCtx: RunReviewsContext = {
@@ -420,8 +498,12 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         commandInstructions: job.data.commandInstructions,
         prDiff,
         omittedDiffFiles,
-        fileContents, checkSummary, hasCurrentCheckFailure,
+        changedFilePaths,
+        findingStartNumber: 1,
+        redisClient,
+        fileContents, relatedContext, checkSummary, hasCurrentCheckFailure,
         reviewPromptOverride,
+        reviewMaxContextTokens,
         reasoningLevel: job.data.reasoningLevel,
         correlatedLogger,
         assertLease,
@@ -430,6 +512,10 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     };
 
     const reviewResults: ReviewResult[] = [];
+    let nextFindingNumber = getNextAuthenticatedActionableFindingNumber(
+        allComments,
+        state.startingWorkComment.data.user?.login,
+    );
     for (const [assignmentIndex, assignment] of assignments.entries()) {
         const recoveredReview = recoverPublishedReview(
             allComments,
@@ -452,10 +538,13 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             reviewResults.push({ ...recoveredReview, commentId: recoveredCommentId });
             continue;
         }
-        reviewResults.push(await runSingleReview(assignment, {
+        const reviewResult = await runSingleReview(assignment, {
             ...reviewCtx,
             assignmentIndex,
-        }));
+            findingStartNumber: nextFindingNumber,
+        });
+        reviewResults.push(reviewResult);
+        nextFindingNumber += reviewResult.findingCount ?? 0;
     }
 
     await assertLease();

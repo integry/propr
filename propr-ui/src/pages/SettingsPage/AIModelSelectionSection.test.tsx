@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import AIModelSelectionSection from './AIModelSelectionSection';
 
@@ -13,13 +13,19 @@ describe('AIModelSelectionSection', () => {
           default_agent_alias: '',
           model_reasoning_level: '',
           pr_review_model: '',
-          pr_review_prompt: ''
+          pr_review_prompt: '',
+          pr_review_context_enabled: true,
+          pr_review_context_model: '',
+          pr_review_max_context_tokens: 0
         }}
         summarizationSettings={{ enabled: true, agent_alias: '' }}
         agents={[]}
         onSettingChange={vi.fn()}
         onReviewPromptChange={vi.fn()}
         onReviewPromptBlur={vi.fn()}
+        onReviewContextEnabledChange={vi.fn()}
+        onReviewMaxContextTokensChange={vi.fn()}
+        onReviewMaxContextTokensBlur={vi.fn()}
         onSummarizationModelChange={vi.fn()}
         onSummarizationFallbackModelChange={vi.fn()}
         onDefaultAgentChange={vi.fn()}
@@ -41,5 +47,31 @@ describe('AIModelSelectionSection', () => {
       'Ultracode (Claude only) — GitHub: level-ultracode',
       'Auto (Claude only) — GitHub: level-auto'
     ]);
+  });
+
+  it('can disable related-code context gathering', () => {
+    const onEnabledChange = vi.fn();
+    render(
+      <AIModelSelectionSection
+        settings={{
+          analysis_model_fast: '', planner_context_model: '', planner_generation_model: '',
+          default_agent_alias: '', model_reasoning_level: '', pr_review_model: '', pr_review_prompt: '',
+          pr_review_context_enabled: true, pr_review_context_model: '', pr_review_max_context_tokens: 0
+        }}
+        summarizationSettings={{ enabled: true, agent_alias: '' }}
+        agents={[]}
+        onSettingChange={vi.fn()}
+        onReviewPromptChange={vi.fn()}
+        onReviewPromptBlur={vi.fn()}
+        onReviewContextEnabledChange={onEnabledChange}
+        onReviewMaxContextTokensChange={vi.fn()}
+        onReviewMaxContextTokensBlur={vi.fn()}
+        onSummarizationModelChange={vi.fn()}
+        onSummarizationFallbackModelChange={vi.fn()}
+        onDefaultAgentChange={vi.fn()}
+      />
+    );
+    fireEvent.click(screen.getByLabelText('Gather related unchanged code'));
+    expect(onEnabledChange).toHaveBeenCalledWith(false);
   });
 });
