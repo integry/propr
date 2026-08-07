@@ -14,7 +14,6 @@ import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../co
 import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
 
-const READ_ONLY_REPOSITORY_TOOLS = 'Read,Grep,Glob';
 const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 
@@ -88,11 +87,11 @@ export function buildDockerArgs(
 ): string[] {
     const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment, taskId, executionType, reasoningLevel, readOnlyWorkspace = false } = params;
     const configPath = resolveConfigPath(config.configPath);
-    // The provider client still needs bridge networking, so exclude every
-    // model-controlled subprocess surface instead of exposing Bash to the scout.
-    const effectiveTools = readOnlyWorkspace
-        ? (tools === '' ? '' : READ_ONLY_REPOSITORY_TOOLS)
-        : tools;
+    // Claude's native file tools cannot be confined to the workspace while its
+    // provider configuration is mounted. Disable every model-controlled tool in
+    // read-only workspace mode; callers that need repository inspection must
+    // treat this runtime as unsupported until a root-confined tool layer exists.
+    const effectiveTools = readOnlyWorkspace ? '' : tools;
 
     // Build environment variable arguments
     const envVars = buildEnvironmentVariableArgs([config.envVars, environment], readOnlyWorkspace);

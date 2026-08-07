@@ -14,9 +14,16 @@ const MAX_REFERENCES = 12;
 const SCOUT_TIMEOUT_MS = 30 * 60 * 1000;
 
 function supportsRuntimeEnforcedRepositoryInspection(agent: Agent): boolean {
-    // Claude is the only current runtime with a granular allowlist for file
-    // reads/searches that excludes its general-purpose shell tool.
-    return agent.config.type === 'claude';
+    switch (agent.config.type) {
+        case 'claude':
+            // Claude's native Read/Grep/Glob tools can open absolute paths outside
+            // the workspace, including its mounted provider configuration.
+            return false;
+        default:
+            // Other current runtimes expose a shell or an equivalently broad file
+            // surface in analysis mode, so none can host the scout safely yet.
+            return false;
+    }
 }
 
 export interface GatherReviewContextOptions {
@@ -43,6 +50,7 @@ interface PrepareRelatedReviewContextOptions {
     registry: AgentRegistry;
     fallbackAssignment: ScoutAssignment;
     configuredModel: string;
+    fastAnalysisModel: string;
     state: { localRepoPath: string | undefined; worktreeInfo: WorktreeInfo | undefined };
     githubToken: string;
     branchName: string;
@@ -55,6 +63,87 @@ interface PrepareRelatedReviewContextOptions {
     taskId: string;
     correlationId: string;
     correlatedLogger: Logger;
+}
+
+type ScoutCandidateSource = 'dedicated context model' | 'fast analysis model' | 'reviewer model';
+
+interface ScoutCandidate {
+    source: ScoutCandidateSource;
+    assignment: ScoutAssignment;
+}
+
+async function resolveConfiguredCandidate(
+    model: string,
+    source: Exclude<ScoutCandidateSource, 'reviewer model'>,
+    correlatedLogger: Logger,
+): Promise<ScoutCandidate | null> {
+    if (!model.trim()) return null;
+    try {
+        const resolution = await resolveLlmLabel(model);
+        return {
+            source,
+            assignment: { agentAlias: resolution.agentAlias, model: resolution.model },
+        };
+    } catch (error) {
+        correlatedLogger.warn({
+            model,
+            source,
+            error: (error as Error).message,
+        }, 'Could not resolve context scout model candidate');
+        return null;
+    }
+}
+
+function getRepositoryConfinedAgent(options: PrepareRelatedReviewContextOptions, candidate: ScoutCandidate): Agent | null {
+    const agent = options.registry.getAgentByAlias(candidate.assignment.agentAlias);
+    if (!agent) {
+        options.correlatedLogger.warn({
+            source: candidate.source,
+            agentAlias: candidate.assignment.agentAlias,
+        }, 'Context scout model candidate is unavailable; trying the next candidate');
+        return null;
+    }
+    if (!supportsRuntimeEnforcedRepositoryInspection(agent)) {
+        options.correlatedLogger.info({
+            source: candidate.source,
+            agentAlias: candidate.assignment.agentAlias,
+            agentType: agent.config.type,
+        }, 'Context scout model candidate cannot enforce repository-only inspection; trying the next candidate');
+        return null;
+    }
+    return agent;
+}
+
+async function selectScoutCandidate(options: PrepareRelatedReviewContextOptions): Promise<{ candidate: ScoutCandidate; agent: Agent } | null> {
+    const consideredCandidates: ScoutCandidate[] = [];
+    const configuredCandidates: Array<{ model: string; source: Exclude<ScoutCandidateSource, 'reviewer model'> }> = [
+        { model: options.configuredModel, source: 'dedicated context model' },
+        { model: options.fastAnalysisModel, source: 'fast analysis model' },
+    ];
+    for (const configuredCandidate of configuredCandidates) {
+        const candidate = await resolveConfiguredCandidate(
+            configuredCandidate.model,
+            configuredCandidate.source,
+            options.correlatedLogger,
+        );
+        if (!candidate) continue;
+        consideredCandidates.push(candidate);
+        const agent = getRepositoryConfinedAgent(options, candidate);
+        if (agent) return { candidate, agent };
+    }
+    const reviewerCandidate: ScoutCandidate = { source: 'reviewer model', assignment: options.fallbackAssignment };
+    consideredCandidates.push(reviewerCandidate);
+    const reviewerAgent = getRepositoryConfinedAgent(options, reviewerCandidate);
+    if (reviewerAgent) return { candidate: reviewerCandidate, agent: reviewerAgent };
+
+    options.correlatedLogger.info({
+        candidates: consideredCandidates.map(candidate => ({
+            source: candidate.source,
+            agentAlias: candidate.assignment.agentAlias,
+            model: candidate.assignment.model,
+        })),
+    }, 'No context scout candidate can enforce repository-only inspection; using deterministic review context');
+    return null;
 }
 
 function buildScoutPrompt(options: Pick<GatherReviewContextOptions, 'prDiff' | 'originalTaskSpec' | 'pullRequestNumber' | 'repoOwner' | 'repoName'>): string {
@@ -106,31 +195,10 @@ export async function gatherReviewContext(options: GatherReviewContextOptions): 
 }
 
 export async function prepareRelatedReviewContext(options: PrepareRelatedReviewContextOptions): Promise<string> {
-    let assignment = options.fallbackAssignment;
-    if (options.configuredModel) {
-        try {
-            const resolution = await resolveLlmLabel(options.configuredModel);
-            if (options.registry.getAgentByAlias(resolution.agentAlias)) {
-                assignment = { agentAlias: resolution.agentAlias, model: resolution.model };
-            } else {
-                options.correlatedLogger.warn({ configuredModel: options.configuredModel }, 'Configured context scout agent is unavailable; using the review model');
-            }
-        } catch (error) {
-            options.correlatedLogger.warn({
-                configuredModel: options.configuredModel,
-                error: (error as Error).message,
-            }, 'Could not resolve configured context scout model; using the review model');
-        }
-    }
-    const agent = options.registry.getAgentByAlias(assignment.agentAlias);
-    if (!agent) throw new Error(`Context scout agent not found: ${assignment.agentAlias}`);
-    if (!supportsRuntimeEnforcedRepositoryInspection(agent)) {
-        options.correlatedLogger.info({
-            agentAlias: assignment.agentAlias,
-            agentType: agent.config.type,
-        }, 'Context scout agent cannot enforce repository-only inspection; using deterministic review context');
-        return '';
-    }
+    const selection = await selectScoutCandidate(options);
+    if (!selection) return '';
+    const { assignment } = selection.candidate;
+    const { agent } = selection;
 
     await ensureGitRepository(options.correlatedLogger);
     const repoUrl = getRepoUrl({ repoOwner: options.repoOwner, repoName: options.repoName });

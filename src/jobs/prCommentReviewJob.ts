@@ -253,6 +253,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         reviewPromptOverride,
         reviewContextEnabled,
         reviewContextModel,
+        fastAnalysisModel,
         configuredReviewMaxContextTokens,
     } = await loadReviewRuntimeSettings(correlatedLogger);
     const reviewBudgetModels = assignments.map(assignment => `${assignment.agentAlias}:${assignment.model}`);
@@ -326,6 +327,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 registry,
                 fallbackAssignment: assignments[0],
                 configuredModel: reviewContextModel,
+                fastAnalysisModel,
                 state,
                 githubToken: githubToken.token,
                 branchName: context.jobBranchName || prData!.data.head.ref,

@@ -4,96 +4,108 @@ import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.js';
-import { buildAnalysisSafetySuffix } from '../packages/core/src/agents/impl/utils/analysisPromptSafety.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 
 after(async () => closeConnection());
 
 const ensureGitRepositoryMock = mock.fn();
+let loadedSettings: Record<string, unknown> = {};
+const loadSettingsMock = mock.fn(async () => loadedSettings);
+const resolveLlmLabelMock = mock.fn(async (label: string) => {
+    const [agentAlias, model] = label.split(':');
+    return { agentAlias, model: model || label };
+});
 await mock.module('@propr/core', {
     namedExports: {
         createWorktreeFromExistingBranch: mock.fn(),
         ensureGitRepository: ensureGitRepositoryMock,
         ensureRepoCloned: mock.fn(),
         getRepoUrl: mock.fn(),
-        resolveLlmLabel: mock.fn(),
+        loadSettings: loadSettingsMock,
+        resolveLlmLabel: resolveLlmLabelMock,
     },
 });
 const { gatherReviewContext, prepareRelatedReviewContext } = await import('../src/jobs/reviewContextScout.js');
+const { loadReviewRuntimeSettings } = await import('../src/jobs/reviewRuntimeSettings.js');
 
-test('context scout uses a read-only workspace with a 30 minute timeout', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'propr-review-scout-runtime-'));
-    let receivedOptions: Record<string, unknown> | undefined;
-    const agent = {
-        config: { type: 'claude', alias: 'claude-scout' },
-        analyze: mock.fn(async (_prompt: string, options: Record<string, unknown>) => {
-            receivedOptions = options;
-            return {
-                success: true,
-                response: '{"references":[]}',
-                modelUsed: 'fast-model',
-                executionTimeMs: 1,
-            };
-        }),
+test('review settings preserve dedicated and fast scout candidates separately', async () => {
+    loadedSettings = {
+        pr_review_context_model: '',
+        analysis_model_fast: 'fast:analysis-model',
     };
     const logger = { info: mock.fn(), warn: mock.fn(), error: mock.fn(), debug: mock.fn() };
 
-    const result = await gatherReviewContext({
-        agent: agent as never,
-        model: 'fast-model',
-        worktreePath: root,
-        prDiff: '## src/changed.ts\n+changed',
-        changedFiles: ['src/changed.ts'],
-        originalTaskSpec: 'Keep review scope focused',
-        pullRequestNumber: 1761,
-        repoOwner: 'integry',
-        repoName: 'propr',
-        taskId: 'task-1',
-        correlationId: 'correlation-1',
-        correlatedLogger: logger as never,
-    });
+    const settings = await loadReviewRuntimeSettings(logger as never);
 
-    assert.equal(result.context, '');
-    assert.equal(receivedOptions?.timeoutMs, 30 * 60 * 1000);
-    assert.equal(receivedOptions?.readOnlyWorkspacePath, root);
-    assert.equal(receivedOptions?.allowReadOnlyCommands, true);
-    assert.equal(receivedOptions?.responseFormat, 'json');
+    assert.equal(settings.reviewContextModel, '');
+    assert.equal(settings.fastAnalysisModel, 'fast:analysis-model');
 });
 
-test('context scout skips agent runtimes without an enforceable file-tool allowlist', async () => {
+test('context scout rejects every current runtime before model-controlled tools can run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-review-scout-runtime-'));
     const logger = { info: mock.fn(), warn: mock.fn(), error: mock.fn(), debug: mock.fn() };
-    const initialEnsureGitCalls = ensureGitRepositoryMock.mock.callCount();
 
-    for (const type of ['codex', 'opencode', 'antigravity', 'vibe'] as const) {
+    for (const type of ['claude', 'codex', 'opencode', 'antigravity', 'vibe'] as const) {
         const analyze = mock.fn();
-        const agent = { config: { type, alias: `${type}-scout` }, analyze };
-        const result = await prepareRelatedReviewContext({
-            registry: { getAgentByAlias: mock.fn(() => agent) } as never,
-            fallbackAssignment: { agentAlias: `${type}-scout`, model: `${type}-model` },
-            configuredModel: '',
-            state: { localRepoPath: undefined, worktreeInfo: undefined },
-            githubToken: 'github-secret',
-            branchName: 'feature',
-            prDiff: 'diff',
+        await assert.rejects(gatherReviewContext({
+            agent: { config: { type, alias: `${type}-scout` }, analyze } as never,
+            model: `${type}-model`,
+            worktreePath: root,
+            prDiff: '## src/changed.ts\n+changed',
             changedFiles: ['src/changed.ts'],
-            originalTaskSpec: 'objective',
+            originalTaskSpec: 'Keep review scope focused',
             pullRequestNumber: 1762,
             repoOwner: 'integry',
             repoName: 'propr',
-            taskId: 'task-unsupported',
-            correlationId: 'correlation-unsupported',
+            taskId: 'task-1',
+            correlationId: 'correlation-1',
             correlatedLogger: logger as never,
-        });
-
-        assert.equal(result, '');
+        }), new RegExp(`unavailable for agent type: ${type}`));
         assert.equal(analyze.mock.callCount(), 0);
     }
+});
 
+test('context scout considers dedicated, fast, and reviewer candidates before deterministic fallback', async () => {
+    const logger = { info: mock.fn(), warn: mock.fn(), error: mock.fn(), debug: mock.fn() };
+    const initialEnsureGitCalls = ensureGitRepositoryMock.mock.callCount();
+    const initialResolveCalls = resolveLlmLabelMock.mock.callCount();
+    const agents = new Map([
+        ['dedicated', { config: { type: 'codex', alias: 'dedicated' }, analyze: mock.fn() }],
+        ['fast', { config: { type: 'opencode', alias: 'fast' }, analyze: mock.fn() }],
+        ['reviewer', { config: { type: 'claude', alias: 'reviewer' }, analyze: mock.fn() }],
+    ]);
+    const getAgentByAlias = mock.fn((alias: string) => agents.get(alias));
+    const result = await prepareRelatedReviewContext({
+        registry: { getAgentByAlias } as never,
+        fallbackAssignment: { agentAlias: 'reviewer', model: 'reviewer-model' },
+        configuredModel: 'dedicated:context-model',
+        fastAnalysisModel: 'fast:analysis-model',
+        state: { localRepoPath: undefined, worktreeInfo: undefined },
+        githubToken: 'github-secret',
+        branchName: 'feature',
+        prDiff: 'diff',
+        changedFiles: ['src/changed.ts'],
+        originalTaskSpec: 'objective',
+        pullRequestNumber: 1762,
+        repoOwner: 'integry',
+        repoName: 'propr',
+        taskId: 'task-unsupported',
+        correlationId: 'correlation-unsupported',
+        correlatedLogger: logger as never,
+    });
+
+    assert.equal(result, '');
+    assert.deepEqual(
+        resolveLlmLabelMock.mock.calls.slice(initialResolveCalls).map(call => call.arguments[0]),
+        ['dedicated:context-model', 'fast:analysis-model'],
+    );
+    assert.deepEqual(getAgentByAlias.mock.calls.map(call => call.arguments[0]), ['dedicated', 'fast', 'reviewer']);
+    for (const agent of agents.values()) assert.equal(agent.analyze.mock.callCount(), 0);
     assert.equal(ensureGitRepositoryMock.mock.callCount(), initialEnsureGitCalls);
 });
 
-test('Claude scout Docker args enforce file tools and omit GitHub credentials', () => {
+test('Claude read-only Docker args disable model-controlled tools and omit GitHub credentials', () => {
     const config: AgentConfig = {
         id: 'claude-scout',
         type: 'claude',
@@ -120,7 +132,7 @@ test('Claude scout Docker args enforce file tools and omit GitHub credentials', 
         readOnlyWorkspace: true,
     });
 
-    assert.equal(args[args.indexOf('--tools') + 1], 'Read,Grep,Glob');
+    assert.equal(args[args.indexOf('--tools') + 1], '');
     assert.ok(args.includes('/tmp/scout-worktree:/home/node/workspace:ro'));
     assert.ok(!args.some(arg => arg.startsWith('/tmp/git-processor:/tmp/git-processor:')));
     assert.ok(!args.some(arg => /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)=/.test(arg)));
@@ -137,10 +149,5 @@ test('Claude scout Docker args enforce file tools and omit GitHub credentials', 
         issueNumber: 0,
         readOnlyWorkspace: true,
     });
-    assert.equal(argsWithoutCallerTools[argsWithoutCallerTools.indexOf('--tools') + 1], 'Read,Grep,Glob');
-
-    const safetySuffix = buildAnalysisSafetySuffix('json', true, '/tmp/scout-worktree');
-    assert.match(safetySuffix, /file read, glob, and text search tools/);
-    assert.match(safetySuffix, /Do not run shell commands/);
-    assert.match(safetySuffix, /access the network/);
+    assert.equal(argsWithoutCallerTools[argsWithoutCallerTools.indexOf('--tools') + 1], '');
 });
