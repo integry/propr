@@ -122,6 +122,11 @@ export interface ResumableTaskInfo extends TaskStateData {
     staleDuration?: number;
 }
 
+export interface NonTerminalTaskScanResult {
+    tasks: TaskStateData[];
+    nextCursor: string;
+}
+
 export interface WorkerStateManagerOptions {
     redis?: Record<string, unknown>;
     keyPrefix?: string;
