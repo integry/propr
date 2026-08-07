@@ -176,6 +176,8 @@ interface ExecuteProcessingParams {
     taskId: string;
     stateManager: WorkerStateManager;
     state: ProcessingState;
+    lockKey: string;
+    lockToken: string;
 }
 
 function checkTerminalStateAfterExecution(currentState: { state: string } | null, taskId: string, correlatedLogger: Logger): void {
@@ -204,7 +206,7 @@ function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: 
 }
 
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
-    const { job, context, taskId, stateManager, state } = params;
+    const { job, context, taskId, stateManager, state, lockKey, lockToken } = params;
     let { llm } = params;
     const { pullRequestNumber, jobBranchName, repoOwner, repoName, correlationId, correlatedLogger } = context;
 
@@ -384,7 +386,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
 
     const postResult = await handlePostExecution(
-        { state, job, taskId, stateManager, context, unprocessedReviewComments: selectedReviewComments, llm, redisClient },
+        { state, job, taskId, stateManager, context, unprocessedReviewComments: selectedReviewComments, llm, redisClient, prProcessingLockKey: lockKey, prProcessingLockToken: lockToken },
         taskUrl,
     );
 
@@ -437,7 +439,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         if (job.data.commandMode === 'review') {
             return await executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments });
         }
-        return await executeProcessing({ job, context, llm, taskId, stateManager, state });
+        return await executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken });
     } catch (error) {
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });
         // Don't re-throw for user cancellations (not an error, just cancelled)

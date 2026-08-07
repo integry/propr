@@ -57,6 +57,8 @@ interface PostExecutionParams {
     unprocessedReviewComments: AIReviewComment[];
     llm: string | null | undefined;
     redisClient: Redis;
+    prProcessingLockKey: string;
+    prProcessingLockToken: string;
 }
 
 interface UndoContextParams {
@@ -125,7 +127,18 @@ export function getPostExecutionDisposition(result: ClaudeCodeResponse): 'comple
 }
 
 export async function handlePostExecution(params: PostExecutionParams, taskUrl: string): Promise<{ commitHash?: string; partial: boolean }> {
-    const { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient } = params;
+    const {
+        state,
+        job,
+        taskId,
+        stateManager,
+        context,
+        unprocessedReviewComments,
+        llm,
+        redisClient,
+        prProcessingLockKey,
+        prProcessingLockToken,
+    } = params;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = context;
 
     requirePostExecutionState(state);
@@ -149,7 +162,15 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
 
     if (unprocessedReviewComments.length > 0) {
-        await markReviewFindingsProcessed(unprocessedReviewComments, { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger });
+        await markReviewFindingsProcessed(unprocessedReviewComments, {
+            repoOwner,
+            repoName,
+            pullRequestNumber,
+            redisClient,
+            correlatedLogger,
+            prProcessingLockKey,
+            prProcessingLockToken,
+        });
     }
 
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);

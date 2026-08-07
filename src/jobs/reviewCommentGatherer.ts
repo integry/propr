@@ -14,6 +14,7 @@ import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
 import { getProcessedReviewCommentsKey } from '@propr/core';
 import { isReviewComment } from './reviewCommentFormatter.js';
+import { PRProcessingLeaseLostError } from './prProcessingLock.js';
 import {
     extractActionableFindings,
     extractReviewSuggestions,
@@ -38,6 +39,17 @@ export type {
     ReviewSuggestion,
     StructuredReviewResult,
 } from './reviewOutputParser.js';
+
+export const MARK_REVIEW_FINDINGS_PROCESSED_SCRIPT = `
+if redis.call('get', KEYS[1]) ~= ARGV[1] then
+    return 0
+end
+for index = 3, #ARGV do
+    redis.call('sadd', KEYS[2], ARGV[index])
+end
+redis.call('expire', KEYS[2], ARGV[2])
+return 1
+`;
 
 export interface AIReviewComment {
     id: number;
@@ -264,7 +276,10 @@ export async function getPendingReviewState(
  */
 export async function markReviewFindingsProcessed(
     comments: AIReviewComment[],
-    options: Pick<GatherOptions, 'repoOwner' | 'repoName' | 'pullRequestNumber' | 'redisClient' | 'correlatedLogger'>,
+    options: Pick<GatherOptions, 'repoOwner' | 'repoName' | 'pullRequestNumber' | 'redisClient' | 'correlatedLogger'> & {
+        prProcessingLockKey: string;
+        prProcessingLockToken: string;
+    },
 ): Promise<void> {
     const keys = comments.flatMap(comment => [
         ...comment.actionableFindings.map(finding => findingConsumptionKey(comment.id, 'F', finding.id)),
@@ -272,14 +287,33 @@ export async function markReviewFindingsProcessed(
     ]);
     if (keys.length === 0) return;
 
-    const { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger } = options;
+    const {
+        repoOwner,
+        repoName,
+        pullRequestNumber,
+        redisClient,
+        correlatedLogger,
+        prProcessingLockKey,
+        prProcessingLockToken,
+    } = options;
     const redisKey = getProcessedReviewFindingsKey(repoOwner, repoName, pullRequestNumber);
     const TTL_SECONDS = 30 * 24 * 3600;
     try {
-        await redisClient.sadd(redisKey, ...keys);
-        await redisClient.expire(redisKey, TTL_SECONDS);
+        const marked = await redisClient.eval(
+            MARK_REVIEW_FINDINGS_PROCESSED_SCRIPT,
+            2,
+            prProcessingLockKey,
+            redisKey,
+            prProcessingLockToken,
+            TTL_SECONDS,
+            ...keys,
+        );
+        if (Number(marked) !== 1) {
+            throw new PRProcessingLeaseLostError('PR processing lock changed before review feedback was consumed');
+        }
         correlatedLogger.info({ pullRequestNumber, findingCount: keys.length }, 'Marked selected AI review findings as processed');
     } catch (err) {
+        if (err instanceof PRProcessingLeaseLostError) throw err;
         correlatedLogger.warn({ error: (err as Error).message }, 'Failed to mark selected review findings as processed in Redis');
     }
 }
