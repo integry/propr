@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import { getAuthenticatedOctokit } from '@propr/core';
+import { buildAnalysisSafetySuffix, getAuthenticatedOctokit } from '@propr/core';
 import type { AgentRegistry, AnalysisResult } from '@propr/core';
 import type { ReasoningLevel } from '@propr/shared';
 import { calculateReviewCost } from './reviewContextHelpers.js';
@@ -7,6 +7,7 @@ import { buildReviewPromptWithinBudget } from './reviewPromptBuilder.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
 
 const REVIEW_TIMEOUT_MS = 30 * 60 * 1000;
+const REVIEW_ANALYSIS_SAFETY_SUFFIX = buildAnalysisSafetySuffix('text', false, undefined);
 
 export interface ReviewAssignment {
     agentAlias: string;
@@ -66,7 +67,7 @@ export async function runSingleReview(
         originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
         prDiff: ctx.prDiff, fileContents: ctx.fileContents, relatedContext: ctx.relatedContext,
         checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
-    }, ctx.reviewMaxContextTokens);
+    }, ctx.reviewMaxContextTokens, REVIEW_ANALYSIS_SAFETY_SUFFIX);
     const reviewPrompt = promptResult.prompt;
     if (promptResult.truncatedSections.length > 0) {
         correlatedLogger.warn({
@@ -85,6 +86,7 @@ export async function runSingleReview(
             prNumber: pullRequestNumber,
             repository: `${repoOwner}/${repoName}`,
             executionType: 'pr-review',
+            responseFormat: 'text',
             reasoningLevel: ctx.reasoningLevel,
             timeoutMs: REVIEW_TIMEOUT_MS,
         });

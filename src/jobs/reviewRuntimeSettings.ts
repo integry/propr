@@ -10,11 +10,12 @@ export interface ReviewRuntimeSettings {
 }
 
 export async function loadReviewRuntimeSettings(correlatedLogger: Logger): Promise<ReviewRuntimeSettings> {
+    const fastAnalysisModelDefault = process.env.ANALYSIS_MODEL_FAST || '';
     const defaults: ReviewRuntimeSettings = {
         reviewPromptOverride: '',
         reviewContextEnabled: true,
         reviewContextModel: '',
-        fastAnalysisModel: '',
+        fastAnalysisModel: fastAnalysisModelDefault,
         configuredReviewMaxContextTokens: 0,
     };
     try {
@@ -23,7 +24,9 @@ export async function loadReviewRuntimeSettings(correlatedLogger: Logger): Promi
             reviewPromptOverride: typeof configured.pr_review_prompt === 'string' ? configured.pr_review_prompt : '',
             reviewContextEnabled: typeof configured.pr_review_context_enabled === 'boolean' ? configured.pr_review_context_enabled : true,
             reviewContextModel: typeof configured.pr_review_context_model === 'string' ? configured.pr_review_context_model : '',
-            fastAnalysisModel: typeof configured.analysis_model_fast === 'string' ? configured.analysis_model_fast : '',
+            fastAnalysisModel: typeof configured.analysis_model_fast === 'string'
+                ? configured.analysis_model_fast
+                : fastAnalysisModelDefault,
             configuredReviewMaxContextTokens: typeof configured.pr_review_max_context_tokens === 'number' && Number.isInteger(configured.pr_review_max_context_tokens)
                 ? configured.pr_review_max_context_tokens
                 : 0,

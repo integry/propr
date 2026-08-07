@@ -69,6 +69,22 @@ test('review settings preserve dedicated and fast scout candidates separately', 
     assert.equal(settings.fastAnalysisModel, 'fast:analysis-model');
 });
 
+test('review settings use the environment fast model when no persisted value exists', async () => {
+    const previousFastModel = process.env.ANALYSIS_MODEL_FAST;
+    loadedSettings = {};
+    process.env.ANALYSIS_MODEL_FAST = 'env-fast:analysis-model';
+    const logger = { info: mock.fn(), warn: mock.fn(), error: mock.fn(), debug: mock.fn() };
+
+    try {
+        const settings = await loadReviewRuntimeSettings(logger as never);
+
+        assert.equal(settings.fastAnalysisModel, 'env-fast:analysis-model');
+    } finally {
+        if (previousFastModel === undefined) delete process.env.ANALYSIS_MODEL_FAST;
+        else process.env.ANALYSIS_MODEL_FAST = previousFastModel;
+    }
+});
+
 test('context scout runs Claude with repository-confined inspection options', async () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-review-scout-runtime-'));
     let receivedOptions: Record<string, unknown> | undefined;

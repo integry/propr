@@ -195,14 +195,16 @@ function estimateReviewPromptTokens(prompt: string): number {
 }
 
 /**
- * Fit the complete review request within the configured input ceiling. The
- * output contract is always preserved. Optional scout excerpts are reduced
- * first, then historical comments, changed-file copies, and the diff. Scope
- * and request text are protected until those bulk context sections are gone.
+ * Fit the complete review request within the configured input ceiling,
+ * including any suffix appended by the analysis runtime. The output contract
+ * is always preserved. Optional scout excerpts are reduced first, then
+ * historical comments, changed-file copies, and the diff. Scope and request
+ * text are protected until those bulk context sections are gone.
  */
 export function buildReviewPromptWithinBudget(
     options: ReviewPromptOptions,
-    maxContextTokens: number
+    maxContextTokens: number,
+    analysisPromptSuffix = '',
 ): { prompt: string; estimatedTokens: number; truncatedSections: string[]; prDiffTruncated: boolean } {
     const mutable: ReviewPromptOptions = { ...options };
     const truncatedSections: string[] = [];
@@ -220,11 +222,11 @@ export function buildReviewPromptWithinBudget(
         ['reviewPromptOverride', 'review prompt override'],
     ] as const) {
         const current = mutable[key];
-        if (!current || estimateReviewPromptTokens(prompt) <= maxContextTokens) continue;
+        if (!current || estimateReviewPromptTokens(`${prompt}${analysisPromptSuffix}`) <= maxContextTokens) continue;
 
         const truncationMarker = key === 'prDiff' ? PR_DIFF_TRUNCATION_MARKER : TRUNCATION_MARKER;
         const fixedPrompt = buildReviewPrompt({ ...mutable, [key]: '' });
-        const fixedTokens = estimateReviewPromptTokens(fixedPrompt);
+        const fixedTokens = estimateReviewPromptTokens(`${fixedPrompt}${analysisPromptSuffix}`);
         if (fixedTokens >= maxContextTokens) {
             mutable[key] = key === 'prDiff' ? truncationMarker : '';
         } else {
@@ -234,7 +236,7 @@ export function buildReviewPromptWithinBudget(
                 const midpoint = Math.ceil((low + high) / 2);
                 const candidate = `${current.slice(0, midpoint)}${truncationMarker}`;
                 const candidatePrompt = buildReviewPrompt({ ...mutable, [key]: candidate });
-                if (estimateReviewPromptTokens(candidatePrompt) <= maxContextTokens) low = midpoint;
+                if (estimateReviewPromptTokens(`${candidatePrompt}${analysisPromptSuffix}`) <= maxContextTokens) low = midpoint;
                 else high = midpoint - 1;
             }
             mutable[key] = low > 0
@@ -246,5 +248,10 @@ export function buildReviewPromptWithinBudget(
         prompt = buildReviewPrompt(mutable);
     }
 
-    return { prompt, estimatedTokens: estimateReviewPromptTokens(prompt), truncatedSections, prDiffTruncated };
+    return {
+        prompt,
+        estimatedTokens: estimateReviewPromptTokens(`${prompt}${analysisPromptSuffix}`),
+        truncatedSections,
+        prDiffTruncated,
+    };
 }

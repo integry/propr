@@ -13,6 +13,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import { buildAnalysisSafetySuffix } from '../packages/core/src/agents/impl/utils/analysisPromptSafety.js';
 
 const { buildReviewPrompt, buildReviewPromptWithinBudget } = await import('../src/jobs/reviewPromptBuilder.js');
 
@@ -193,6 +194,18 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.deepEqual(result.truncatedSections, ['related unchanged context', 'comment history', 'changed file contents']);
         for (const section of MANDATORY_SECTIONS) assert.ok(result.prompt.includes(section));
         assert.ok(result.prompt.includes('original spec'));
+    });
+
+    test('fits the fully composed analysis request to the configured token ceiling', () => {
+        const large = 'const value = callChangedApi();\n'.repeat(20_000);
+        const analysisSafetySuffix = buildAnalysisSafetySuffix('text', false, undefined);
+        const result = buildReviewPromptWithinBudget(baseOptions({ relatedContext: large }), 10_000, analysisSafetySuffix);
+        const fullyComposedRequest = `${result.prompt}${analysisSafetySuffix}`;
+        const estimatedFullyComposedTokens = Math.ceil((fullyComposedRequest.length / 3.2) * 1.36);
+
+        assert.equal(result.estimatedTokens, estimatedFullyComposedTokens);
+        assert.ok(estimatedFullyComposedTokens <= 10_000);
+        assert.ok(Math.ceil((result.prompt.length / 3.2) * 1.36) < result.estimatedTokens);
     });
 
     test('discloses when the PR diff itself is truncated by the review budget', () => {
