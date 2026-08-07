@@ -293,7 +293,7 @@ describe('buildReviewComment', () => {
         assert.strictEqual(parseStructuredReview(formatted).status, 'invalid');
     });
 
-    test('includes files omitted from the review diff', () => {
+    test('marks review partial when initial diff formatting omits files', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
             {
@@ -309,6 +309,26 @@ describe('buildReviewComment', () => {
         assert.ok(comment.includes('<summary>Files omitted from review diff</summary>'));
         assert.ok(comment.includes('`package-lock.json`'));
         assert.ok(comment.includes('`assets/logo.png`'));
+        assert.ok(comment.includes('**Review scope:** Partial'));
+        assert.ok(comment.includes('<!-- propr:ai-review model="claude-sonnet" partial="true" -->'));
+    });
+
+    test('marks review metadata partial when the prompt budget truncates the PR diff', () => {
+        const comment = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            {
+                response: '## Overall Evaluation\nPartial review.\n\n## Actionable Findings\nNo actionable findings.\n\n## Suggestions and Follow-ups\nNo suggestions.\n\n## Score\nScore: 7/10',
+                modelUsed: 'claude-sonnet',
+                executionTimeMs: 1200,
+                success: true,
+            },
+            undefined,
+            { prDiffTruncated: true },
+        );
+
+        assert.ok(comment.includes('**Review scope:** Partial'));
+        assert.ok(comment.includes('PR diff files or ranges were omitted'));
+        assert.ok(comment.includes('<!-- propr:ai-review model="claude-sonnet" partial="true" -->'));
     });
 
     test('counts cache tokens as input tokens and includes cost', () => {

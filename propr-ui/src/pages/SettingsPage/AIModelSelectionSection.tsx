@@ -12,6 +12,7 @@ import {
   buildImplementationAgentOptions
 } from './modelSelectionHelpers';
 import { buildReasoningLevelSelectOptions, formatReasoningLevelOption } from './reasoningLevelOptions';
+import ReviewContextSettings from './ReviewContextSettings';
 
 interface AIModelSelectionSettings {
   analysis_model_fast: string;
@@ -21,6 +22,9 @@ interface AIModelSelectionSettings {
   model_reasoning_level: string;
   pr_review_model: string;
   pr_review_prompt: string;
+  pr_review_context_enabled: boolean;
+  pr_review_context_model: string;
+  pr_review_max_context_tokens: number;
 }
 
 interface AIModelSelectionSectionProps {
@@ -30,6 +34,9 @@ interface AIModelSelectionSectionProps {
   onSettingChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   onReviewPromptChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onReviewPromptBlur: () => void;
+  onReviewContextEnabledChange: (enabled: boolean) => void;
+  onReviewMaxContextTokensChange: (value: number) => void;
+  onReviewMaxContextTokensBlur: () => void;
   onSummarizationModelChange: (agentAlias: string) => void;
   onSummarizationFallbackModelChange: (agentAlias: string) => void;
   onDefaultAgentChange: (agentAlias: string) => void;
@@ -75,6 +82,9 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   onSettingChange,
   onReviewPromptChange,
   onReviewPromptBlur,
+  onReviewContextEnabledChange,
+  onReviewMaxContextTokensChange,
+  onReviewMaxContextTokensBlur,
   onSummarizationModelChange,
   onSummarizationFallbackModelChange,
   onDefaultAgentChange,
@@ -303,6 +313,15 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                 <NoAgentsMessage label="enabled agents" />
               )}
             </SettingRow>
+
+            <ReviewContextSettings
+              settings={settings}
+              agents={agents}
+              onSettingChange={onSettingChange}
+              onEnabledChange={onReviewContextEnabledChange}
+              onMaxContextTokensChange={onReviewMaxContextTokensChange}
+              onMaxContextTokensBlur={onReviewMaxContextTokensBlur}
+            />
 
             <SettingRow
               label="Review Prompt"

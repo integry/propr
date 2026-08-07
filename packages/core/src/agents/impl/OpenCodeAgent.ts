@@ -7,7 +7,7 @@ import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
-import { executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import { buildOpenCodeDockerArgs, buildOpenCodePrompt, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
@@ -15,6 +15,25 @@ import { isManagedAgentConfigPath } from '@propr/shared';
 import { resolveAgentTerminationReason } from '../termination.js';
 
 export { UsageLimitError };
+
+interface OpenCodeAnalysisWorkspace {
+    path: string;
+    cleanup: () => void;
+}
+
+function resolveOpenCodeAnalysisWorkspace(
+    readOnlyWorkspacePath: string | undefined,
+    createWorkspace: () => string,
+    cleanupWorkspace: (workspacePath: string) => void
+): OpenCodeAnalysisWorkspace {
+    if (readOnlyWorkspacePath) return { path: readOnlyWorkspacePath, cleanup: () => undefined };
+    const path = createWorkspace();
+    return { path, cleanup: () => cleanupWorkspace(path) };
+}
+
+function resolveAnalysisTimeout(timeoutMs: number | undefined): number {
+    return timeoutMs ?? 1800000;
+}
 
 const DEFAULT_OPENCODE_ANALYSIS_ROOT = '/tmp/git-processor/opencode-analysis';
 
@@ -118,20 +137,24 @@ export class OpenCodeAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands, responseFormat = 'text', timeoutMs } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
-        const suffix = '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands === true, readOnlyWorkspacePath);
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
-        const analysisWorkspace = this.ensureAnalysisWorkspace();
+        const analysisWorkspace = resolveOpenCodeAnalysisWorkspace(
+            readOnlyWorkspacePath,
+            () => this.ensureAnalysisWorkspace(),
+            workspacePath => this.cleanupAnalysisWorkspace(workspacePath)
+        );
         const analysisConfigPath = this.createAnalysisConfigSnapshot();
         const analysisDataPath = this.resolveAnalysisDataPath();
 
         try {
-            const dockerArgs = await this.buildDockerArgs({ worktreePath: analysisWorkspace, githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, configPath: analysisConfigPath, dataPath: analysisDataPath });
+            const dockerArgs = await this.buildDockerArgs({ worktreePath: analysisWorkspace.path, githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel === 'unknown' ? undefined : effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: true, configPath: analysisConfigPath, dataPath: analysisDataPath });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
-                async () => executeDockerCommand('docker', dockerArgs, { timeout: 1800000, stdinData: analysisPrompt, taskId })
+                async () => executeDockerCommand('docker', dockerArgs, { timeout: resolveAnalysisTimeout(timeoutMs), stdinData: analysisPrompt, taskId })
             );
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
@@ -156,7 +179,7 @@ export class OpenCodeAgent implements Agent {
             }
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message };
         } finally {
-            this.cleanupAnalysisWorkspace(analysisWorkspace);
+            analysisWorkspace.cleanup();
             this.cleanupAnalysisConfigSnapshot(analysisConfigPath);
         }
     }

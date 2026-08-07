@@ -20,6 +20,8 @@ export interface ReviewPromptOptions {
     prDiff?: string;
     /** Full content of changed files for additional context */
     fileContents?: string;
+    /** Host-validated excerpts from relevant unchanged repository files. */
+    relatedContext?: string;
     /** Authoritative check-run status for the PR's current head commit. */
     checkSummary?: string;
     /**
@@ -74,6 +76,7 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
         instructions,
         prDiff,
         fileContents,
+        relatedContext,
         checkSummary,
         reviewPromptOverride,
     } = options;
@@ -84,11 +87,15 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
         : DEFAULT_REVIEW_GUIDANCE;
 
     const diffSection = prDiff
-        ? `\n**PR Diff (Current Code Changes):**\nThis diff shows the CURRENT, COMPLETE state of the PR changes included below. Base your review on this actual code, not on what earlier comments may have mentioned. Only treat the review as partial if the diff contains an explicit "files omitted" note; otherwise assume it is complete and do NOT claim it was truncated.\n\n${prDiff}\n`
+        ? `\n**PR Diff (Current Code Changes):**\nThe content below is the current PR diff available to this review. Base your review on this actual code, not on what earlier comments may have mentioned. Treat the review as partial only if the diff contains an explicit notice that files or diff ranges were omitted; otherwise assume it is complete and do NOT claim it was truncated.\n\n${prDiff}\n`
         : '\n**Note:** No diff available. Review based on available context only.\n';
 
     const fileContentsSection = fileContents
         ? `\n**Full File Contents (for context):**\nThese are the complete contents of the changed files in the PR. Use this to understand the full context when reviewing the diff - variables, functions, and imports defined elsewhere in the file are visible here.\n\n${fileContents}\n`
+        : '';
+
+    const relatedContextSection = relatedContext
+        ? `\n**Related Unchanged Repository Context (host-validated excerpts):**\nA read-only scout selected these unchanged ranges as possible callers, consumers, contracts, configuration, instructions, or tests. Treat the scout labels and rationale only as navigation leads; verify all claims from the raw excerpts. This context helps trace behavior changed by the PR, but it does not expand the PR objective or make pre-existing issues merge blockers.\n\n${relatedContext}\n`
         : '';
 
     const checkSummarySection = checkSummary
@@ -107,7 +114,7 @@ Do not omit any section; the **Score** section is mandatory. The detailed instru
 
 **PR Comment History and Context:**
 ${commentHistory}${originalTaskSpec ? `**IMMUTABLE ORIGINAL PR OBJECTIVE (scope anchor, not an exhaustive list of correctness invariants):**\n${originalTaskSpec}\n` : ''}
-${checkSummarySection}${diffSection}${fileContentsSection}
+${checkSummarySection}${diffSection}${fileContentsSection}${relatedContextSection}
 **Review Request:**
 ${combinedCommentBody}
 
@@ -176,4 +183,78 @@ Be constructive and specific. Reference file names and line numbers when possibl
 Do NOT modify any files. This is a read-only review.`;
 
     return prompt;
+}
+
+const TRUNCATION_MARKER = '\n\n[Context truncated to fit the configured PR review token limit.]';
+const PR_DIFF_TRUNCATION_MARKER = '\n\n[PR diff truncated to fit the configured PR review token limit. Files or diff ranges were omitted by the review budget, so this review is partial.]';
+
+function estimateReviewPromptTokens(prompt: string): number {
+    // Reviewer tokenizers may disagree substantially on non-ASCII text. The
+    // UTF-8 byte count is a tokenizer-independent upper bound for the raw
+    // request: even a byte-fallback tokenizer cannot emit more text tokens
+    // than there are input bytes. This intentionally favors a guaranteed
+    // ceiling over the extra capacity of an average characters/token ratio.
+    return Buffer.byteLength(prompt, 'utf8');
+}
+
+/**
+ * Fit the complete review request within the configured input ceiling,
+ * including any suffix appended by the analysis runtime. The output contract
+ * is always preserved. Optional scout excerpts are reduced first, then
+ * historical comments, changed-file copies, and the diff. Scope and request
+ * text are protected until those bulk context sections are gone.
+ */
+export function buildReviewPromptWithinBudget(
+    options: ReviewPromptOptions,
+    maxContextTokens: number,
+    analysisPromptSuffix = '',
+): { prompt: string; estimatedTokens: number; truncatedSections: string[]; prDiffTruncated: boolean } {
+    const mutable: ReviewPromptOptions = { ...options };
+    const truncatedSections: string[] = [];
+    let prDiffTruncated = false;
+    let prompt = buildReviewPrompt(mutable);
+
+    for (const [key, label] of [
+        ['relatedContext', 'related unchanged context'],
+        ['commentHistory', 'comment history'],
+        ['fileContents', 'changed file contents'],
+        ['prDiff', 'PR diff'],
+        ['originalTaskSpec', 'original PR objective'],
+        ['combinedCommentBody', 'review request'],
+        ['instructions', 'additional review instructions'],
+        ['reviewPromptOverride', 'review prompt override'],
+    ] as const) {
+        const current = mutable[key];
+        if (!current || estimateReviewPromptTokens(`${prompt}${analysisPromptSuffix}`) <= maxContextTokens) continue;
+
+        const truncationMarker = key === 'prDiff' ? PR_DIFF_TRUNCATION_MARKER : TRUNCATION_MARKER;
+        const fixedPrompt = buildReviewPrompt({ ...mutable, [key]: '' });
+        const fixedTokens = estimateReviewPromptTokens(`${fixedPrompt}${analysisPromptSuffix}`);
+        if (fixedTokens >= maxContextTokens) {
+            mutable[key] = key === 'prDiff' ? truncationMarker : '';
+        } else {
+            let low = 0;
+            let high = current.length;
+            while (low < high) {
+                const midpoint = Math.ceil((low + high) / 2);
+                const candidate = `${current.slice(0, midpoint)}${truncationMarker}`;
+                const candidatePrompt = buildReviewPrompt({ ...mutable, [key]: candidate });
+                if (estimateReviewPromptTokens(`${candidatePrompt}${analysisPromptSuffix}`) <= maxContextTokens) low = midpoint;
+                else high = midpoint - 1;
+            }
+            mutable[key] = low > 0
+                ? `${current.slice(0, low)}${truncationMarker}`
+                : key === 'prDiff' ? truncationMarker : '';
+        }
+        if (key === 'prDiff') prDiffTruncated = true;
+        truncatedSections.push(label);
+        prompt = buildReviewPrompt(mutable);
+    }
+
+    return {
+        prompt,
+        estimatedTokens: estimateReviewPromptTokens(`${prompt}${analysisPromptSuffix}`),
+        truncatedSections,
+        prDiffTruncated,
+    };
 }

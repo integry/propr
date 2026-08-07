@@ -1,6 +1,6 @@
 import type { AnalysisResult } from '@propr/core';
 import type { Redis } from 'ioredis';
-import type { ReviewAssignment } from './prCommentReviewJob.js';
+import type { ReviewAssignment } from './prReviewRunner.js';
 import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
 import { parseStructuredReview } from './reviewOutputParser.js';
 
