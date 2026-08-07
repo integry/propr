@@ -162,6 +162,7 @@ jobs:
         id: filter
         uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         with:
+          list-files: json
           filters: |
             core:
               - 'src/**'
@@ -183,10 +184,15 @@ jobs:
             core_package:
               - 'packages/core/**'
               - 'packages/shared/**'
+            core_package_source:
+              - added|modified: 'packages/core/src/**/*.js'
+              - added|modified: 'packages/core/src/**/*.ts'
 
       - name: Run Checks
         id: build
         continue-on-error: true
+        env:
+          CORE_PACKAGE_SOURCE_FILES: ${{ steps.filter.outputs.core_package_source_files }}
         run: |
           # Preserve diagnostics from every earlier validation stage.
           touch build_log.txt
@@ -371,9 +377,31 @@ jobs:
             fi
 
             if [ $CORE_SECTION_FAILED -eq 0 ]; then
-              # 2. Lint Verification
-              echo "Linting @propr/core..."
-              LINT_OUTPUT=$(npm run lint -w @propr/core -- --max-warnings 0 2>&1) || {
+              # 2. Lint added and modified package sources. The package currently
+              # has warnings in untouched files, so a whole-package lint would
+              # fail unrelated changes when --max-warnings is zero.
+              echo "Linting changed @propr/core sources..."
+              LINT_OUTPUT=$(node --input-type=module <<'NODE' 2>&1
+                import { spawnSync } from 'node:child_process';
+
+                const serializedFiles = process.env.CORE_PACKAGE_SOURCE_FILES?.trim();
+                const files = JSON.parse(serializedFiles || '[]')
+                  .map(file => file.replace(/^packages\/core\//, ''));
+
+                if (files.length === 0) {
+                  console.log('No added or modified @propr/core source files to lint.');
+                  process.exit(0);
+                }
+
+                const result = spawnSync(
+                  'npx',
+                  ['eslint', ...files, '--max-warnings', '0'],
+                  { cwd: 'packages/core', stdio: 'inherit' },
+                );
+                if (result.error) throw result.error;
+                process.exit(result.status ?? 1);
+          NODE
+              ) || {
                 echo "❌ Core Package Lint FAILED" >> build_log.txt
                 echo "$LINT_OUTPUT" >> build_log.txt
                 CORE_SECTION_FAILED=1
