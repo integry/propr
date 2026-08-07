@@ -168,6 +168,17 @@ test('normalizes explicit paths to Repomix target-relative paths', () => {
   );
 });
 
+test('preserves exact case-distinct safe paths when case-insensitive fallback is enabled', () => {
+  assert.deepEqual(
+    filterExplicitFilesBySafePaths(
+      ['src/A.ts', 'src/a.ts'],
+      ['src/a.ts', 'src/A.ts'],
+      true,
+    ),
+    ['src/A.ts', 'src/a.ts'],
+  );
+});
+
 test('handles an explicit filename containing glob metacharacters', async t => {
   const temporaryRoot = await createOutputRoot();
   const repoPath = await createRepository({

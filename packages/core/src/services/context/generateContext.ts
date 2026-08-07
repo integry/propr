@@ -5,7 +5,7 @@
 import type { Logger } from 'pino';
 import type { PackResult } from 'repomix';
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import logger from '../../utils/logger.js';
@@ -120,24 +120,81 @@ function normalizeTargetRelativePath(filePath: string, caseInsensitive: boolean)
   return caseInsensitive ? normalizedPath.toLocaleLowerCase('en-US') : normalizedPath;
 }
 
+async function isFileSystemCaseInsensitive(filePath: string): Promise<boolean> {
+  const resolvedPath = await realpath(filePath);
+  const fileName = path.basename(resolvedPath);
+  const letterIndex = fileName.search(/[a-z]/i);
+  if (letterIndex === -1) {
+    return false;
+  }
+
+  const letter = fileName[letterIndex];
+  const toggledLetter = letter === letter.toLocaleLowerCase('en-US')
+    ? letter.toLocaleUpperCase('en-US')
+    : letter.toLocaleLowerCase('en-US');
+  const alternatePath = path.join(
+    path.dirname(resolvedPath),
+    `${fileName.slice(0, letterIndex)}${toggledLetter}${fileName.slice(letterIndex + 1)}`,
+  );
+
+  try {
+    const [originalStats, alternateStats] = await Promise.all([
+      lstat(resolvedPath),
+      lstat(alternatePath),
+    ]);
+    return originalStats.dev === alternateStats.dev && originalStats.ino === alternateStats.ino;
+  } catch {
+    return false;
+  }
+}
+
 export function filterExplicitFilesBySafePaths(
   filesToInclude: string[],
   safeFilePaths: string[],
-  caseInsensitive = process.platform === 'win32' || process.platform === 'darwin',
+  caseInsensitive = false,
 ): string[] {
-  const safePathsByNormalizedPath = new Map(
-    safeFilePaths.map(safePath => [normalizeTargetRelativePath(safePath, caseInsensitive), safePath]),
-  );
+  const safePathsByExactPath = new Map<string, string>();
+  const safePathsByFoldedPath = new Map<string, string[]>();
+  for (const safePath of safeFilePaths) {
+    const exactPath = normalizeTargetRelativePath(safePath, false);
+    safePathsByExactPath.set(exactPath, safePath);
+
+    if (caseInsensitive) {
+      const foldedPath = normalizeTargetRelativePath(safePath, true);
+      const pathsForFoldedPath = safePathsByFoldedPath.get(foldedPath) || [];
+      pathsForFoldedPath.push(safePath);
+      safePathsByFoldedPath.set(foldedPath, pathsForFoldedPath);
+    }
+  }
   const matchedSafePaths = new Set<string>();
 
   return filesToInclude.flatMap(filePath => {
-    const safePath = safePathsByNormalizedPath.get(normalizeTargetRelativePath(filePath, caseInsensitive));
+    const exactPath = normalizeTargetRelativePath(filePath, false);
+    let safePath = safePathsByExactPath.get(exactPath);
+    if (!safePath && caseInsensitive) {
+      safePath = safePathsByFoldedPath
+        .get(normalizeTargetRelativePath(filePath, true))
+        ?.find(candidate => !matchedSafePaths.has(candidate));
+    }
     if (!safePath || matchedSafePaths.has(safePath)) {
       return [];
     }
     matchedSafePaths.add(safePath);
     return [safePath];
   });
+}
+
+async function filterExplicitFilesBySafePathsOnFileSystem(
+  filesToInclude: string[] | undefined,
+  safeFilePaths: string[],
+  repoPath: string,
+): Promise<string[] | undefined> {
+  if (!filesToInclude || filesToInclude.length === 0) {
+    return undefined;
+  }
+
+  const caseInsensitive = await isFileSystemCaseInsensitive(repoPath);
+  return filterExplicitFilesBySafePaths(filesToInclude, safeFilePaths, caseInsensitive);
 }
 
 function getSuspiciousFilesFromError(error: unknown): SuspiciousFile[] {
@@ -272,10 +329,13 @@ export async function generateContext(options: ContextGenerationOptions): Promis
 
     // Check if result exceeds token limit and needs truncation
     if (result.totalTokens > tiktokenLimit) {
+      const explicitSafeFiles = await filterExplicitFilesBySafePathsOnFileSystem(
+        filesToInclude,
+        effectiveConfig.include,
+        repoPath,
+      );
       const filesForOptimization = getFilesForOptimization(
-        filesToInclude && filesToInclude.length > 0
-          ? filterExplicitFilesBySafePaths(filesToInclude, effectiveConfig.include)
-          : undefined,
+        explicitSafeFiles,
         priorityFiles,
         result.fileTokenCounts,
       );
