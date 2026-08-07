@@ -3,6 +3,7 @@ import path from 'path';
 import { parseVibeOutput } from './vibeOutputParser.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 const MAX_LLM_LOG_METADATA_TEXT_CHARS = 20000;
 const MISTRAL_API_KEY_SETTING_KEYS = ['mistral_api_key', 'MISTRAL_API_KEY', 'mistralApiKey', 'vibe_mistral_api_key'];
 
@@ -112,7 +113,7 @@ export function sanitizeDockerNamePart(value: string | undefined, fallback: stri
     return sanitized || fallback;
 }
 
-export function getForwardedVibeEnvVars(envVars: Record<string, string> | undefined): {
+export function getForwardedVibeEnvVars(envVars: Record<string, string> | undefined, omitGitHubCredentials = false): {
     dockerArgs: string[];
     skipped: string[];
 } {
@@ -120,6 +121,10 @@ export function getForwardedVibeEnvVars(envVars: Record<string, string> | undefi
     const skipped: string[] = [];
     for (const [key, value] of Object.entries(envVars || {})) {
         if (key === 'MISTRAL_API_KEY' || key === 'VIBE_CLI_ARGS') {
+            continue;
+        }
+        if (omitGitHubCredentials && GITHUB_CREDENTIAL_ENV_PATTERN.test(key.toUpperCase())) {
+            skipped.push(key);
             continue;
         }
         if (!VALID_ENV_VAR_NAME.test(key) || /[\0\r\n]/.test(value)) {

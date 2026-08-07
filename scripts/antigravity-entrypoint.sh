@@ -39,6 +39,17 @@ if [ "$antigravity_ephemeral" = "1" ]; then
         done
     fi
 
+    if [ "${PROPR_REPOSITORY_INSPECTION:-0}" = "1" ]; then
+        if [ -z "${PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG:-}" ] || [ -z "${PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_PERMISSIONS:-}" ]; then
+            echo "Repository scout Antigravity configuration is missing" >&2
+            exit 2
+        fi
+        mkdir -p "$antigravity_config_dir/config" "$antigravity_config_dir/antigravity-cli"
+        printf '%s\n' "$PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG" > "$antigravity_config_dir/config/mcp_config.json"
+        printf '%s\n' "$PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_PERMISSIONS" > "$antigravity_config_dir/antigravity-cli/settings.json"
+        echo "Configured confined repository scout MCP permissions" >&2
+    fi
+
     if [ "$(id -u)" = "0" ]; then
         chown -R node:node "$antigravity_runtime_home" 2>/dev/null || true
     fi
@@ -122,7 +133,7 @@ if [ $# -gt 0 ]; then
         command_status=$?
         set -e
 
-        if [ -n "$antigravity_source_config" ] && [ -d "$antigravity_source_config" ]; then
+        if [ "${PROPR_REPOSITORY_INSPECTION:-0}" != "1" ] && [ -n "$antigravity_source_config" ] && [ -d "$antigravity_source_config" ]; then
             for relative_path in "${antigravity_state_files[@]}"; do
                 runtime_path="$antigravity_config_dir/$relative_path"
                 source_path="$antigravity_source_config/$relative_path"

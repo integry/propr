@@ -5,6 +5,19 @@ import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildDockerArgs } from '../packages/core/src/agents/impl/utils/dockerArgsBuilder.js';
+import { buildOpenCodeDockerArgs } from '../packages/core/src/agents/impl/openCodeUtils.js';
+import { CodexAgent } from '../packages/core/src/agents/impl/CodexAgent.js';
+import { VibeAgent } from '../packages/core/src/agents/impl/VibeAgent.js';
+import { AntigravityAgent } from '../packages/core/src/agents/impl/AntigravityAgent.js';
+import {
+    buildAntigravityRepositoryScoutMcpConfig,
+    buildAntigravityRepositoryScoutPermissions,
+    buildCodexRepositoryScoutArgs,
+    buildOpenCodeRepositoryScoutConfig,
+    buildVibeRepositoryScoutConfig,
+    REPOSITORY_SCOUT_CONTAINER_ROOT,
+    REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS,
+} from '../packages/core/src/agents/impl/utils/repositoryScoutMcpServer.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 
@@ -85,50 +98,22 @@ test('review settings use the environment fast model when no persisted value exi
     }
 });
 
-test('context scout runs Claude with repository-confined inspection options', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'propr-review-scout-runtime-'));
-    let receivedOptions: Record<string, unknown> | undefined;
-    const analyze = mock.fn(async (_prompt: string, options: Record<string, unknown>) => {
-        receivedOptions = options;
-        return {
-            success: true,
-            response: '{"references":[]}',
-            modelUsed: 'claude-model',
-            executionTimeMs: 1,
-        };
-    });
-    const logger = { info: mock.fn(), warn: mock.fn(), error: mock.fn(), debug: mock.fn() };
-
-    const result = await gatherReviewContext({
-        agent: { config: { type: 'claude', alias: 'claude-scout' }, analyze } as never,
-        model: 'claude-model',
-        worktreePath: root,
-        prDiff: '## src/changed.ts\n+changed',
-        changedFiles: ['src/changed.ts'],
-        originalTaskSpec: 'Keep review scope focused',
-        pullRequestNumber: 1762,
-        repoOwner: 'integry',
-        repoName: 'propr',
-        taskId: 'task-1',
-        correlationId: 'correlation-1',
-        correlatedLogger: logger as never,
-    });
-
-    assert.equal(result.context, '');
-    assert.equal(analyze.mock.callCount(), 1);
-    assert.equal(receivedOptions?.timeoutMs, 30 * 60 * 1000);
-    assert.equal(receivedOptions?.readOnlyWorkspacePath, root);
-    assert.equal(receivedOptions?.allowReadOnlyCommands, true);
-    assert.equal(receivedOptions?.responseFormat, 'json');
-});
-
-test('context scout rejects runtimes without repository-confined tools', async () => {
+test('context scout runs every supported agent with repository-confined inspection options', async () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-review-scout-runtime-'));
     const logger = { info: mock.fn(), warn: mock.fn(), error: mock.fn(), debug: mock.fn() };
 
-    for (const type of ['codex', 'opencode', 'antigravity', 'vibe'] as const) {
-        const analyze = mock.fn();
-        await assert.rejects(gatherReviewContext({
+    for (const type of ['claude', 'codex', 'opencode', 'antigravity', 'vibe'] as const) {
+        let receivedOptions: Record<string, unknown> | undefined;
+        const analyze = mock.fn(async (_prompt: string, options: Record<string, unknown>) => {
+            receivedOptions = options;
+            return {
+                success: true,
+                response: '{"references":[]}',
+                modelUsed: `${type}-model`,
+                executionTimeMs: 1,
+            };
+        });
+        const result = await gatherReviewContext({
             agent: { config: { type, alias: `${type}-scout` }, analyze } as never,
             model: `${type}-model`,
             worktreePath: root,
@@ -141,8 +126,14 @@ test('context scout rejects runtimes without repository-confined tools', async (
             taskId: 'task-1',
             correlationId: 'correlation-1',
             correlatedLogger: logger as never,
-        }), new RegExp(`unavailable for agent type: ${type}`));
-        assert.equal(analyze.mock.callCount(), 0);
+        });
+
+        assert.equal(result.context, '');
+        assert.equal(analyze.mock.callCount(), 1);
+        assert.equal(receivedOptions?.timeoutMs, 30 * 60 * 1000);
+        assert.equal(receivedOptions?.readOnlyWorkspacePath, root);
+        assert.equal(receivedOptions?.allowReadOnlyCommands, true);
+        assert.equal(receivedOptions?.responseFormat, 'json');
     }
 });
 
@@ -151,9 +142,9 @@ test('context scout considers dedicated, fast, and reviewer candidates before de
     const initialEnsureGitCalls = ensureGitRepositoryMock.mock.callCount();
     const initialResolveCalls = resolveLlmLabelMock.mock.callCount();
     const agents = new Map([
-        ['dedicated', { config: { type: 'codex', alias: 'dedicated' }, analyze: mock.fn() }],
-        ['fast', { config: { type: 'opencode', alias: 'fast' }, analyze: mock.fn() }],
-        ['reviewer', { config: { type: 'vibe', alias: 'reviewer' }, analyze: mock.fn() }],
+        ['dedicated', { config: { type: 'future-agent', alias: 'dedicated' }, analyze: mock.fn() }],
+        ['fast', { config: { type: 'future-agent', alias: 'fast' }, analyze: mock.fn() }],
+        ['reviewer', { config: { type: 'future-agent', alias: 'reviewer' }, analyze: mock.fn() }],
     ]);
     const getAgentByAlias = mock.fn((alias: string) => agents.get(alias));
     const result = await prepareRelatedReviewContext({
@@ -225,7 +216,7 @@ test('Claude scout Docker args expose only the confined repository MCP tools', (
             'mcp__propr_repository__search_repository_text',
         ].join(','),
     );
-    assert.ok(args.includes('/tmp/scout-worktree:/home/node/workspace:ro'));
+    assert.ok(args.includes(`/tmp/scout-worktree:${REPOSITORY_SCOUT_CONTAINER_ROOT}:ro`));
     assert.ok(!args.some(arg => arg.startsWith('/tmp/git-processor:/tmp/git-processor:')));
     assert.ok(!args.some(arg => /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)=/.test(arg)));
     assert.ok(!args.some(arg => arg.includes('direct-secret')));
@@ -245,7 +236,144 @@ test('Claude scout Docker args expose only the confined repository MCP tools', (
     assert.equal(argsWithoutCallerTools.includes('--mcp-config'), false);
 });
 
-test('Claude scout MCP tools reject traversal and escaping symlinks', async () => {
+test('non-Claude scout configs deny native tools and expose only repository MCP tools', () => {
+    const codexArgs = buildCodexRepositoryScoutArgs();
+    assert.ok(codexArgs.includes('--ignore-user-config'));
+    assert.ok(codexArgs.includes('--ignore-rules'));
+    assert.ok(codexArgs.includes('features.shell_tool=false'));
+    assert.ok(codexArgs.includes('approval_policy="never"'));
+    assert.ok(codexArgs.some(arg => arg.includes(`PROPR_SCOUT_REPOSITORY_ROOT=${JSON.stringify(REPOSITORY_SCOUT_CONTAINER_ROOT)}`)));
+
+    const openCodeConfig = JSON.parse(buildOpenCodeRepositoryScoutConfig()) as {
+        permission: Record<string, string>;
+        tools: Record<string, boolean>;
+        mcp: Record<string, { environment: Record<string, string> }>;
+    };
+    assert.equal(openCodeConfig.permission['*'], 'deny');
+    assert.equal(openCodeConfig.permission['propr_repository_*'], 'allow');
+    assert.equal(openCodeConfig.tools['*'], false);
+    assert.equal(openCodeConfig.tools['propr_repository_*'], true);
+    assert.equal(openCodeConfig.mcp.propr_repository.environment.PROPR_SCOUT_REPOSITORY_ROOT, REPOSITORY_SCOUT_CONTAINER_ROOT);
+
+    const vibeConfig = buildVibeRepositoryScoutConfig();
+    for (const tool of REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS) assert.match(vibeConfig, new RegExp(tool.split('_').slice(2).join('_')));
+    assert.match(vibeConfig, /transport = "stdio"/);
+
+    const antigravityMcp = JSON.parse(buildAntigravityRepositoryScoutMcpConfig()) as {
+        mcpServers: Record<string, { env: Record<string, string> }>;
+    };
+    assert.equal(antigravityMcp.mcpServers.propr_repository.env.PROPR_SCOUT_REPOSITORY_ROOT, REPOSITORY_SCOUT_CONTAINER_ROOT);
+    const antigravityPermissions = JSON.parse(buildAntigravityRepositoryScoutPermissions()) as {
+        permissions: { allow: string[]; deny: string[] };
+    };
+    assert.deepEqual(antigravityPermissions.permissions.allow, ['mcp(propr_repository/*)']);
+    assert.ok(antigravityPermissions.permissions.deny.includes('command(*)'));
+    assert.ok(antigravityPermissions.permissions.deny.includes('read_file(*)'));
+});
+
+test('OpenCode scout Docker args use the inline deny-first config and isolated repository mount', () => {
+    const config: AgentConfig = {
+        id: 'opencode-scout', type: 'opencode', alias: 'opencode-scout', enabled: true,
+        dockerImage: 'propr/agent:latest', configPath: '/tmp/opencode-scout-config', supportedModels: [],
+        envVars: { GITHUB_TOKEN: 'config-secret', SAFE_VALUE: 'kept' },
+    };
+    const args = buildOpenCodeDockerArgs({
+        config,
+        worktreePath: '/tmp/scout-worktree',
+        githubToken: 'direct-secret',
+        issueNumber: 0,
+        readOnlyWorkspace: true,
+        repositoryInspection: true,
+        configPath: '/tmp/opencode-scout-config',
+        ensureConfigPath: () => undefined,
+    });
+
+    assert.ok(args.includes(`/tmp/scout-worktree:${REPOSITORY_SCOUT_CONTAINER_ROOT}:ro`));
+    assert.ok(args.includes('--pure'));
+    assert.ok(args.includes('--auto'));
+    assert.ok(!args.includes('--dangerously-skip-permissions'));
+    assert.ok(!args.some(arg => arg.includes('direct-secret') || arg.includes('config-secret')));
+    assert.ok(!args.some(arg => arg.startsWith('/tmp/git-processor:/tmp/git-processor:')));
+    const inlineConfigArg = args.find(arg => arg.startsWith('OPENCODE_CONFIG_CONTENT='));
+    assert.ok(inlineConfigArg);
+    const inlineConfig = JSON.parse(inlineConfigArg.slice('OPENCODE_CONFIG_CONTENT='.length)) as { permission: Record<string, string> };
+    assert.equal(inlineConfig.permission['*'], 'deny');
+    assert.equal(inlineConfig.permission['propr_repository_*'], 'allow');
+});
+
+test('Codex scout Docker args disable shell access and omit review credentials', () => {
+    const config: AgentConfig = {
+        id: 'codex-scout', type: 'codex', alias: 'codex-scout', enabled: true,
+        dockerImage: 'propr/agent:latest', configPath: '/tmp/codex-scout-config', supportedModels: [],
+        envVars: { GITHUB_TOKEN: 'config-secret', SAFE_VALUE: 'kept' },
+    };
+    const agent = new CodexAgent(config);
+    const build = (agent as unknown as {
+        buildDockerArgs: (params: Record<string, unknown>) => string[];
+    }).buildDockerArgs.bind(agent);
+    const args = build({
+        worktreePath: '/tmp/scout-worktree', githubToken: 'direct-secret', issueNumber: 0,
+        readOnlyWorkspace: true, repositoryInspection: true,
+    });
+
+    assert.ok(args.includes(`/tmp/scout-worktree:${REPOSITORY_SCOUT_CONTAINER_ROOT}:ro`));
+    assert.ok(args.includes('features.shell_tool=false'));
+    assert.ok(args.includes('--ignore-user-config'));
+    assert.ok(!args.includes('--dangerously-bypass-approvals-and-sandbox'));
+    assert.ok(!args.some(arg => arg.includes('direct-secret') || arg.includes('config-secret')));
+    assert.ok(!args.some(arg => arg.startsWith('/tmp/git-processor:/tmp/git-processor:')));
+});
+
+test('Vibe scout Docker args allowlist only the prefixed repository MCP tools', () => {
+    const config: AgentConfig = {
+        id: 'vibe-scout', type: 'vibe', alias: 'vibe-scout', enabled: true,
+        dockerImage: 'propr/agent:latest', configPath: '/tmp/vibe-scout-config', supportedModels: [],
+        envVars: { MISTRAL_API_KEY: 'mistral-secret', GITHUB_TOKEN: 'config-secret', SAFE_VALUE: 'kept' },
+    };
+    const agent = new VibeAgent(config);
+    const build = (agent as unknown as {
+        buildDockerArgs: (params: Record<string, unknown>) => string[];
+    }).buildDockerArgs.bind(agent);
+    const args = build({
+        worktreePath: '/tmp/scout-worktree', githubToken: 'direct-secret', mistralApiKey: 'mistral-secret',
+        issueNumber: 0, mode: 'analysis', repositoryInspection: true,
+    });
+
+    assert.ok(args.includes(`/tmp/scout-worktree:${REPOSITORY_SCOUT_CONTAINER_ROOT}:ro`));
+    for (const tool of REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS) {
+        const index = args.indexOf('--enabled-tools');
+        assert.ok(args.includes(tool));
+        assert.ok(index >= 0);
+    }
+    assert.ok(args.some(arg => arg.startsWith('PROPR_REPOSITORY_SCOUT_VIBE_CONFIG=')));
+    assert.ok(!args.some(arg => arg.includes('direct-secret') || arg.includes('config-secret')));
+});
+
+test('Antigravity scout Docker args install deny-first permissions without bypass mode', () => {
+    const config: AgentConfig = {
+        id: 'antigravity-scout', type: 'antigravity', alias: 'antigravity-scout', enabled: true,
+        dockerImage: 'propr/agent:latest', configPath: '/tmp/antigravity-scout-config', supportedModels: [],
+        envVars: { GITHUB_TOKEN: 'config-secret', SAFE_VALUE: 'kept' },
+    };
+    const agent = new AntigravityAgent(config);
+    const build = (agent as unknown as {
+        buildDockerArgs: (params: Record<string, unknown>) => string[];
+    }).buildDockerArgs.bind(agent);
+    const args = build({
+        worktreePath: '/tmp/scout-worktree', githubToken: 'direct-secret', issueNumber: 0,
+        readOnlyWorkspace: true, repositoryInspection: true,
+    });
+
+    assert.ok(args.includes(`/tmp/scout-worktree:${REPOSITORY_SCOUT_CONTAINER_ROOT}:ro`));
+    assert.ok(args.some(arg => arg.includes('agy --sandbox --disable-slash-commands --print')));
+    assert.ok(!args.some(arg => arg.includes('--dangerously-skip-permissions')));
+    assert.ok(args.some(arg => arg.startsWith('PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_PERMISSIONS=')));
+    assert.ok(args.some(arg => arg.startsWith('PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG=')));
+    assert.ok(!args.some(arg => arg.includes('direct-secret') || arg.includes('config-secret')));
+    assert.ok(!args.some(arg => arg.startsWith('/tmp/git-processor:/tmp/git-processor:')));
+});
+
+test('repository scout MCP tools are read-only and reject traversal and escaping symlinks', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'propr-review-scout-mcp-'));
     const repositoryRoot = join(tempRoot, 'repository');
     const outsideRoot = join(tempRoot, 'outside');
@@ -286,12 +414,28 @@ test('Claude scout MCP tools reject traversal and escaping symlinks', async () =
     const resultFor = (id: number) => byId.get(id)?.result as {
         content?: Array<{ text: string }>;
         isError?: boolean;
-        tools?: Array<{ name: string }>;
+        tools?: Array<{
+            name: string;
+            annotations?: {
+                readOnlyHint?: boolean;
+                destructiveHint?: boolean;
+                idempotentHint?: boolean;
+                openWorldHint?: boolean;
+            };
+        }>;
     };
 
     assert.deepEqual(resultFor(2).tools?.map(tool => tool.name), [
         'read_repository_file', 'glob_repository_paths', 'search_repository_text',
     ]);
+    for (const tool of resultFor(2).tools || []) {
+        assert.deepEqual(tool.annotations, {
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false,
+        });
+    }
     assert.match(resultFor(3).content?.[0].text || '', /needle call/);
     assert.equal(resultFor(4).isError, true);
     assert.match(resultFor(4).content?.[0].text || '', /outside the repository/);

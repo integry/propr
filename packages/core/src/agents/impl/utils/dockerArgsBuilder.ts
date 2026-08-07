@@ -13,7 +13,11 @@ import { AgentConfig } from '../../types.js';
 import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
-import { buildRepositoryScoutMcpConfig, REPOSITORY_SCOUT_MCP_TOOLS } from './repositoryScoutMcpServer.js';
+import {
+    buildRepositoryScoutMcpConfig,
+    REPOSITORY_SCOUT_CONTAINER_ROOT,
+    REPOSITORY_SCOUT_MCP_TOOLS,
+} from './repositoryScoutMcpServer.js';
 
 const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
@@ -109,6 +113,9 @@ export function buildDockerArgs(
             '--disable-slash-commands',
         ]
         : [];
+    const workspaceMountTarget = repositoryInspection
+        ? REPOSITORY_SCOUT_CONTAINER_ROOT
+        : '/home/node/workspace';
 
     // Build environment variable arguments
     const envVars = buildEnvironmentVariableArgs([config.envVars, environment], readOnlyWorkspace);
@@ -134,7 +141,7 @@ export function buildDockerArgs(
         '--network', 'bridge',
         '--user', '0:0',
         // Volume mounts
-        '-v', `${worktreePath}:/home/node/workspace:${readOnlyWorkspace ? 'ro' : 'rw'}`,
+        '-v', `${worktreePath}:${workspaceMountTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
         ...(readOnlyWorkspace ? [] : ['-v', '/tmp/git-processor:/tmp/git-processor:rw']),
         '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
         '-v', `${configPath}:/home/node/.claude:rw`,

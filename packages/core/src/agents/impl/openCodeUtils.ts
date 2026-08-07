@@ -6,6 +6,10 @@ import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWra
 import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../claude/prompts/promptGenerator.js';
 import type { AgentConfig } from '../types.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
+import {
+    buildOpenCodeRepositoryScoutConfig,
+    REPOSITORY_SCOUT_CONTAINER_ROOT,
+} from './utils/repositoryScoutMcpServer.js';
 export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from './openCodeModelIds.js';
 export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from './openCodeParsing.js';
 export type { NormalizedOpenCodeUsage, OpenCodeEvent, OpenCodeUsage, ParsedOpenCodeOutput } from './openCodeParsing.js';
@@ -23,6 +27,7 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const BLOCKED_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
 const RESERVED_ENV_NAMES = new Set([
     'OPENCODE_CONFIG_DIR',
+    'OPENCODE_CONFIG_CONTENT',
     'PROPR_MANAGED_CREDENTIALS',
     'XDG_CONFIG_HOME',
     'XDG_DATA_HOME'
@@ -34,6 +39,7 @@ export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: I
 export interface OpenCodeDockerArgsParams {
     config: AgentConfig; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number;
     taskId?: string; executionType?: string; readOnlyWorkspace?: boolean; configPath?: string;
+    repositoryInspection?: boolean;
     dataPath?: string;
     ensureConfigPath?: (configPath: string) => void;
 }
@@ -66,7 +72,10 @@ export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string
 }
 
 export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
-    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, dataPath, ensureConfigPath = ensureDirectory } = params;
+    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, repositoryInspection = false, dataPath, ensureConfigPath = ensureDirectory } = params;
+    if (repositoryInspection && !readOnlyWorkspace) {
+        throw new Error('Repository inspection requires a read-only workspace');
+    }
     const configPath = params.configPath || resolveConfigPath(config.configPath);
     const managedCredentials = isManagedAgentConfigPath(config.configPath);
     ensureConfigPath(configPath);
@@ -79,17 +88,21 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     const configMode = 'rw';
     // Single execution path for every OpenCode run (task and analysis alike):
     // the prompt always arrives over stdin and is attached via the opencode-run
-    // wrapper. Permissions are always skipped — like the other agents, OpenCode
-    // runs non-interactively in an isolated container, so permission prompts
-    // would only auto-reject. Analysis uses a read-only throwaway workspace by
-    // default, with a prompt instruction as an additional behavioral guard.
+    // wrapper. Normal runs skip permissions inside the task container. Scout
+    // runs instead use an inline, highest-precedence deny-first policy and auto
+    // mode, which still enforces explicit denies.
     const title = issueNumber === 0 ? 'ProPR analysis' : 'ProPR task';
-    const commandArgs = ['opencode-run', '--format', 'json', '--title', title, '--dangerously-skip-permissions'];
+    const commandArgs = repositoryInspection
+        ? ['opencode-run', '--format', 'json', '--title', title, '--pure', '--auto']
+        : ['opencode-run', '--format', 'json', '--title', title, '--dangerously-skip-permissions'];
     const dockerArgs = [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
-        '-v', `${worktreePath}:/home/node/workspace:${workspaceMode}`, '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`,
+        '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMode}`,
+        ...(repositoryInspection ? [] : ['-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`]),
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
-        '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
+        ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
+        '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
+        ...(repositoryInspection ? ['-e', `OPENCODE_CONFIG_CONTENT=${buildOpenCodeRepositoryScoutConfig()}`] : []),
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', `XDG_DATA_HOME=${CONTAINER_RUNTIME_DATA_HOME}`,
         '-e', 'PROPR_EPHEMERAL_STATE=1',

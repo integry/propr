@@ -18,6 +18,10 @@ import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/ind
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
+import {
+    buildCodexRepositoryScoutArgs,
+    REPOSITORY_SCOUT_CONTAINER_ROOT,
+} from './utils/repositoryScoutMcpServer.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -27,6 +31,14 @@ const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_
 
 // Container path for Codex config
 const CONTAINER_CONFIG_PATH = '/home/node/.codex';
+const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
+const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
+
+function isGitHubCredentialEnvironmentVariable(name: string): boolean {
+    const normalizedName = name.toUpperCase();
+    return GITHUB_CREDENTIAL_ENV_NAMES.has(normalizedName)
+        || GITHUB_CREDENTIAL_ENV_PATTERN.test(normalizedName);
+}
 
 type CodexExecutionOutput = Awaited<ReturnType<typeof executeDockerCommand>>;
 type CodexParsedOutput = ReturnType<typeof parseCodexStreamOutput>;
@@ -227,6 +239,7 @@ export class CodexAgent implements Agent {
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
                 issueNumber: 0, jsonOutput: true, taskId, executionType, reasoningLevel: effectiveReasoningLevel,
                 readOnlyWorkspace: !!readOnlyWorkspacePath,
+                repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands,
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -371,6 +384,7 @@ export class CodexAgent implements Agent {
         taskId?: string; executionType?: string;
         reasoningLevel?: CodexRuntimeReasoningLevel | '';
         readOnlyWorkspace?: boolean;
+        repositoryInspection?: boolean;
     }): string[] {
         const {
             worktreePath,
@@ -382,8 +396,13 @@ export class CodexAgent implements Agent {
             taskId,
             executionType,
             reasoningLevel,
-            readOnlyWorkspace = false
+            readOnlyWorkspace = false,
+            repositoryInspection = false,
         } = params;
+
+        if (repositoryInspection && !readOnlyWorkspace) {
+            throw new Error('Repository inspection requires a read-only workspace');
+        }
 
         const dockerImage = this.config.dockerImage;
         const configPath = resolveConfigPath(this.config.configPath);
@@ -392,11 +411,13 @@ export class CodexAgent implements Agent {
         const envVars: string[] = [];
         if (this.config.envVars) {
             for (const [key, value] of Object.entries(this.config.envVars)) {
+                if (repositoryInspection && isGitHubCredentialEnvironmentVariable(key)) continue;
                 envVars.push('-e', `${key}=${value}`);
             }
         }
         if (environment) {
             for (const [key, value] of Object.entries(environment)) {
+                if (repositoryInspection && isGitHubCredentialEnvironmentVariable(key)) continue;
                 envVars.push('-e', `${key}=${value}`);
             }
         }
@@ -423,11 +444,10 @@ export class CodexAgent implements Agent {
             '--cap-add', 'CHOWN',
             '--network', 'bridge',
             '--user', '0:0', // Start as root; entrypoint drops to node after permission fixes
-            '-v', `${worktreePath}:/home/node/workspace:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-            '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`,
+            '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
+            ...(repositoryInspection ? [] : ['-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`]),
             '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-            '-e', `GH_TOKEN=${githubToken}`,
-            '-e', `GITHUB_TOKEN=${githubToken}`,
+            ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
             ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
             ...envVars,
             '-w', '/home/node/workspace',
@@ -436,8 +456,12 @@ export class CodexAgent implements Agent {
             'codex', 'exec',
             '--ephemeral', // ProPR persists run output itself; do not pollute the user's resumable Codex sessions
             ...(jsonOutput ? ['--json'] : []), // Output NDJSON events (for task execution) or plain text (for analysis)
-            '--dangerously-bypass-approvals-and-sandbox', // Docker is the outer isolation boundary on this host
-            '--config', 'features.multi_agent=false', // Nested Codex subagents fail under Docker on this host
+            ...(repositoryInspection
+                ? buildCodexRepositoryScoutArgs()
+                : [
+                    '--dangerously-bypass-approvals-and-sandbox', // Docker is the outer isolation boundary on this host
+                    '--config', 'features.multi_agent=false', // Nested Codex subagents fail under Docker on this host
+                ]),
             ...(reasoningLevel ? ['--config', `model_reasoning_effort="${reasoningLevel}"`] : []),
             '--skip-git-repo-check',     // Allow running outside git repos (for analysis workspace)
             '--cd', '/home/node/workspace', // Set working directory

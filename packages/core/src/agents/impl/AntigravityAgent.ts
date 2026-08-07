@@ -25,6 +25,11 @@ import fs from 'fs';
 import path from 'path';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
+import {
+    buildAntigravityRepositoryScoutMcpConfig,
+    buildAntigravityRepositoryScoutPermissions,
+    REPOSITORY_SCOUT_CONTAINER_ROOT,
+} from './utils/repositoryScoutMcpServer.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -33,6 +38,7 @@ const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_
 
 const ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH = '/home/node/.gemini-source';
 const DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT = '/tmp/git-processor/propr-cache/transcripts/antigravity';
+const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
 
 function getAntigravityTranscriptRoot(): string {
     return process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT || DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT;
@@ -304,7 +310,7 @@ export class AntigravityAgent implements Agent {
         const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands, readOnlyWorkspacePath);
         const fullPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
         try {
-            const dockerArgs = this.buildDockerArgs({ worktreePath: readOnlyWorkspacePath || '/tmp/antigravity-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: !!readOnlyWorkspacePath });
+            const dockerArgs = this.buildDockerArgs({ worktreePath: readOnlyWorkspacePath || '/tmp/antigravity-analysis', githubToken: process.env.GITHUB_TOKEN || '', modelName: effectiveModel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: !!readOnlyWorkspacePath, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 this.getRuntimeName(),
@@ -359,34 +365,58 @@ export class AntigravityAgent implements Agent {
         }
     }
 
-    private buildAntigravityShellCommand(): string {
+    private buildAntigravityShellCommand(repositoryInspection = false): string {
         // `--print -` makes agy read the prompt from STDIN (the `-` convention).
         // This is required because the prompt is passed via stdin (see executeTask
         // / analyze): repo-context prompts routinely exceed Linux's 128 KiB
         // per-argument limit (MAX_ARG_STRLEN), so passing it as an argv element
         // fails with spawn E2BIG. `"$@"` carries only the `--model` flag.
-        return ['set -e', `exec ${this.getCliCommand()} --dangerously-skip-permissions --print - "$@"`].join('\n');
+        const safetyArgs = repositoryInspection
+            ? '--sandbox --disable-slash-commands'
+            : '--dangerously-skip-permissions';
+        return ['set -e', `exec ${this.getCliCommand()} ${safetyArgs} --print - "$@"`].join('\n');
     }
 
-    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean }): string[] {
-        const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false } = params;
+    private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean }): string[] {
+        const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false } = params;
+        if (repositoryInspection && !readOnlyWorkspace) {
+            throw new Error('Repository inspection requires a read-only workspace');
+        }
         const configPath = this.getHostConfigPath();
         const envVars: string[] = [];
-        if (this.config.envVars) { for (const [key, value] of Object.entries(this.config.envVars)) envVars.push('-e', `${key}=${value}`); }
-        if (environment) { for (const [key, value] of Object.entries(environment)) envVars.push('-e', `${key}=${value}`); }
+        if (this.config.envVars) {
+            for (const [key, value] of Object.entries(this.config.envVars)) {
+                if (repositoryInspection && GITHUB_CREDENTIAL_ENV_PATTERN.test(key.toUpperCase())) continue;
+                envVars.push('-e', `${key}=${value}`);
+            }
+        }
+        if (environment) {
+            for (const [key, value] of Object.entries(environment)) {
+                if (repositoryInspection && GITHUB_CREDENTIAL_ENV_PATTERN.test(key.toUpperCase())) continue;
+                envVars.push('-e', `${key}=${value}`);
+            }
+        }
         const shortTaskId = createContainerExecutionId(taskId);
         const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
         const runtimeName = this.getRuntimeName();
         const containerName = this.buildContainerName(this.config.alias || runtimeName, taskType, shortTaskId, modelName);
         const dockerArgs: string[] = [
             'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
-            '-v', `${worktreePath}:/home/node/workspace:${readOnlyWorkspace ? 'ro' : 'rw'}`, '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`, '-v', `${configPath}:${this.getContainerConfigPath()}:rw`,
-            '-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`, '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true',
+            '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
+            ...(repositoryInspection ? [] : ['-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`]),
+            '-v', `${configPath}:${this.getContainerConfigPath()}:rw`,
+            ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
+            '-e', 'ANTIGRAVITY_CLI=1', '-e', 'ANTIGRAVITY_CLI_TRUST_WORKSPACE=true',
             ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
             '-e', 'PROPR_EPHEMERAL_STATE=1', '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${this.getContainerConfigPath()}`,
+            ...(repositoryInspection ? [
+                '-e', 'PROPR_REPOSITORY_INSPECTION=1',
+                '-e', `PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG=${buildAntigravityRepositoryScoutMcpConfig()}`,
+                '-e', `PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_PERMISSIONS=${buildAntigravityRepositoryScoutPermissions()}`,
+            ] : []),
             ...(transcriptPath ? ['-e', `PROPR_ANTIGRAVITY_TRANSCRIPT_PATH=${transcriptPath}`] : []),
             ...envVars, '-w', '/home/node/workspace',
-            this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(), 'propr-antigravity'
+            this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(repositoryInspection), 'propr-antigravity'
         ];
         // Note: the prompt is delivered via STDIN (`--print -`), NOT as an argv
         // element, to avoid spawn E2BIG on large repo-context prompts. Only the

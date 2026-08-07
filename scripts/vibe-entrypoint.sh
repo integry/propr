@@ -24,8 +24,24 @@ copy_vibe_home() {
         fi
     fi
     normalize_vibe_config_paths
+    configure_repository_scout
     configure_tool_permissions
     ensure_runtime_dirs
+}
+
+configure_repository_scout() {
+    if [ "${PROPR_REPOSITORY_INSPECTION:-0}" != "1" ]; then
+        return
+    fi
+    if [ -z "${PROPR_REPOSITORY_SCOUT_VIBE_CONFIG:-}" ]; then
+        echo "Repository scout Vibe config is missing" >&2
+        exit 2
+    fi
+
+    mkdir -p "$RUNTIME_VIBE_HOME"
+    touch "$RUNTIME_VIBE_HOME/config.toml"
+    printf '\n%s\n' "$PROPR_REPOSITORY_SCOUT_VIBE_CONFIG" >> "$RUNTIME_VIBE_HOME/config.toml"
+    echo "Configured confined repository scout MCP tools" >&2
 }
 
 normalize_vibe_config_paths() {
@@ -138,6 +154,12 @@ load_vibe_env_file() {
         if ! printf '%s\n' "$key" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$'; then
             echo "Skipping invalid Vibe .env key: $key" >&2
             continue
+        fi
+        if [ "${PROPR_REPOSITORY_INSPECTION:-0}" = "1" ]; then
+            normalized_key="${key^^}"
+            case "$normalized_key" in
+                GH_*|GITHUB_*) continue ;;
+            esac
         fi
         if [ -n "${!key:-}" ]; then
             continue

@@ -16,12 +16,14 @@ const SCOUT_TIMEOUT_MS = 30 * 60 * 1000;
 function supportsRuntimeEnforcedRepositoryInspection(agent: Agent): boolean {
     switch (agent.config.type) {
         case 'claude':
-            // Claude scout analysis disables every built-in tool and exposes only
-            // the path-validating repository MCP server from its runtime adapter.
+        case 'codex':
+        case 'opencode':
+        case 'vibe':
+        case 'antigravity':
+            // Scout analysis disables every built-in tool and exposes only the
+            // path-validating repository MCP server from the runtime adapter.
             return true;
         default:
-            // Other current runtimes expose a shell or an equivalently broad file
-            // surface in analysis mode, so none can host the scout safely yet.
             return false;
     }
 }

@@ -1,4 +1,11 @@
-const REPOSITORY_SCOUT_SERVER_NAME = 'propr_repository';
+export const REPOSITORY_SCOUT_SERVER_NAME = 'propr_repository';
+export const REPOSITORY_SCOUT_CONTAINER_ROOT = '/home/node/repository';
+
+export const REPOSITORY_SCOUT_TOOL_NAMES = [
+    'read_repository_file',
+    'glob_repository_paths',
+    'search_repository_text',
+] as const;
 
 export const REPOSITORY_SCOUT_MCP_TOOLS = [
     `mcp__${REPOSITORY_SCOUT_SERVER_NAME}__read_repository_file`,
@@ -6,10 +13,18 @@ export const REPOSITORY_SCOUT_MCP_TOOLS = [
     `mcp__${REPOSITORY_SCOUT_SERVER_NAME}__search_repository_text`,
 ] as const;
 
+// OpenCode and Vibe expose MCP tools as `{server_name}_{tool_name}`.
+export const REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS = [
+    `${REPOSITORY_SCOUT_SERVER_NAME}_read_repository_file`,
+    `${REPOSITORY_SCOUT_SERVER_NAME}_glob_repository_paths`,
+    `${REPOSITORY_SCOUT_SERVER_NAME}_search_repository_text`,
+] as const;
+
 /**
- * A dependency-free MCP server executed inside the Claude container. Claude's
- * built-in tools stay disabled; this server is the only model-controlled file
- * surface and resolves every requested path against the read-only repository.
+ * A dependency-free MCP server executed inside an agent container. Each
+ * runtime's built-in tools stay disabled; this server is the only
+ * model-controlled file surface and resolves every requested path against the
+ * read-only repository.
  */
 export const REPOSITORY_SCOUT_MCP_SERVER_SOURCE = String.raw`
 'use strict';
@@ -168,6 +183,12 @@ const tools = [
     {
         name: 'read_repository_file',
         description: 'Read a line range from a file inside the mounted repository.',
+        annotations: {
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false,
+        },
         inputSchema: {
             type: 'object',
             properties: {
@@ -182,6 +203,12 @@ const tools = [
     {
         name: 'glob_repository_paths',
         description: 'Find file paths by glob inside the mounted repository.',
+        annotations: {
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false,
+        },
         inputSchema: {
             type: 'object',
             properties: {
@@ -196,6 +223,12 @@ const tools = [
     {
         name: 'search_repository_text',
         description: 'Search for literal text inside repository files without shell access.',
+        annotations: {
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false,
+        },
         inputSchema: {
             type: 'object',
             properties: {
@@ -272,8 +305,106 @@ export function buildRepositoryScoutMcpConfig(): string {
                 type: 'stdio',
                 command: 'node',
                 args: ['-e', REPOSITORY_SCOUT_MCP_SERVER_SOURCE],
-                env: { PROPR_SCOUT_REPOSITORY_ROOT: '/home/node/workspace' },
+                env: { PROPR_SCOUT_REPOSITORY_ROOT: REPOSITORY_SCOUT_CONTAINER_ROOT },
             },
         },
     });
+}
+
+/** Inline config has the highest normal OpenCode precedence. */
+export function buildOpenCodeRepositoryScoutConfig(): string {
+    return JSON.stringify({
+        permission: {
+            '*': 'deny',
+            [`${REPOSITORY_SCOUT_SERVER_NAME}_*`]: 'allow',
+        },
+        tools: {
+            '*': false,
+            [`${REPOSITORY_SCOUT_SERVER_NAME}_*`]: true,
+        },
+        mcp: {
+            [REPOSITORY_SCOUT_SERVER_NAME]: {
+                type: 'local',
+                command: ['node', '-e', REPOSITORY_SCOUT_MCP_SERVER_SOURCE],
+                environment: { PROPR_SCOUT_REPOSITORY_ROOT: REPOSITORY_SCOUT_CONTAINER_ROOT },
+                enabled: true,
+            },
+        },
+        plugin: [],
+        instructions: [],
+        share: 'disabled',
+        snapshot: false,
+        autoupdate: false,
+        subagent_depth: 0,
+    });
+}
+
+/** TOML appended to Vibe's disposable analysis config. */
+export function buildVibeRepositoryScoutConfig(): string {
+    return [
+        '[[mcp_servers]]',
+        `name = ${JSON.stringify(REPOSITORY_SCOUT_SERVER_NAME)}`,
+        'transport = "stdio"',
+        'command = "node"',
+        `args = ["-e", ${JSON.stringify(REPOSITORY_SCOUT_MCP_SERVER_SOURCE)}]`,
+        `env = { PROPR_SCOUT_REPOSITORY_ROOT = ${JSON.stringify(REPOSITORY_SCOUT_CONTAINER_ROOT)} }`,
+        'startup_timeout_sec = 10',
+        'tool_timeout_sec = 60',
+    ].join('\n');
+}
+
+/** Antigravity uses the standard mcp_config.json stdio shape. */
+export function buildAntigravityRepositoryScoutMcpConfig(): string {
+    return JSON.stringify({
+        mcpServers: {
+            [REPOSITORY_SCOUT_SERVER_NAME]: {
+                command: 'node',
+                args: ['-e', REPOSITORY_SCOUT_MCP_SERVER_SOURCE],
+                env: { PROPR_SCOUT_REPOSITORY_ROOT: REPOSITORY_SCOUT_CONTAINER_ROOT },
+                enabledTools: [...REPOSITORY_SCOUT_TOOL_NAMES],
+            },
+        },
+    });
+}
+
+/**
+ * Antigravity evaluates deny before allow, so native capabilities are denied
+ * by action namespace while only the repository MCP server is allowlisted.
+ */
+export function buildAntigravityRepositoryScoutPermissions(): string {
+    return JSON.stringify({
+        permissions: {
+            allow: [`mcp(${REPOSITORY_SCOUT_SERVER_NAME}/*)`],
+            deny: [
+                'read_file(*)',
+                'write_file(*)',
+                'read_url(*)',
+                'execute_url(*)',
+                'command(*)',
+                'unsandboxed(*)',
+            ],
+            ask: [],
+        },
+    });
+}
+
+/** Codex CLI overrides for a shell-free, MCP-only scout session. */
+export function buildCodexRepositoryScoutArgs(): string[] {
+    const tomlString = (value: string): string => JSON.stringify(value);
+    const tomlArray = (values: readonly string[]): string => `[${values.map(tomlString).join(',')}]`;
+    return [
+        '--ignore-user-config',
+        '--ignore-rules',
+        '--sandbox', 'read-only',
+        '--config', 'approval_policy="never"',
+        '--config', 'features.shell_tool=false',
+        '--config', 'features.multi_agent=false',
+        '--config', 'web_search="disabled"',
+        '--config', 'tools.view_image=false',
+        '--config', `mcp_servers.${REPOSITORY_SCOUT_SERVER_NAME}.command="node"`,
+        '--config', `mcp_servers.${REPOSITORY_SCOUT_SERVER_NAME}.args=${tomlArray(['-e', REPOSITORY_SCOUT_MCP_SERVER_SOURCE])}`,
+        '--config', `mcp_servers.${REPOSITORY_SCOUT_SERVER_NAME}.env.PROPR_SCOUT_REPOSITORY_ROOT=${tomlString(REPOSITORY_SCOUT_CONTAINER_ROOT)}`,
+        '--config', `mcp_servers.${REPOSITORY_SCOUT_SERVER_NAME}.enabled_tools=${tomlArray(REPOSITORY_SCOUT_TOOL_NAMES)}`,
+        '--config', `mcp_servers.${REPOSITORY_SCOUT_SERVER_NAME}.required=true`,
+    ];
 }

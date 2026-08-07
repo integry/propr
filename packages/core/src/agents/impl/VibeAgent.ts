@@ -13,6 +13,11 @@ import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 import { resolveAgentTerminationReason } from '../termination.js';
+import {
+    buildVibeRepositoryScoutConfig,
+    REPOSITORY_SCOUT_CONTAINER_ROOT,
+    REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS,
+} from './utils/repositoryScoutMcpServer.js';
 
 export { UsageLimitError };
 export { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
@@ -38,6 +43,7 @@ interface VibeDockerArgsParams {
     promptFilePath?: string;
     envFilePath?: string;
     runtimeHomePath?: string;
+    repositoryInspection?: boolean;
 }
 
 export class VibeAgent implements Agent {
@@ -192,7 +198,11 @@ export class VibeAgent implements Agent {
             analysisWorkspace = readOnlyWorkspacePath || ensureAnalysisWorkspace();
             promptFilePath = writeVibePromptFile(analysisPrompt);
             const mistralApiKey = await this.getMistralApiKey();
-            envFilePath = writeVibeSecretEnvFile({ mistralApiKey, githubToken: process.env.GITHUB_TOKEN });
+            const repositoryInspection = !!readOnlyWorkspacePath && allowReadOnlyCommands;
+            envFilePath = writeVibeSecretEnvFile({
+                mistralApiKey,
+                githubToken: repositoryInspection ? undefined : process.env.GITHUB_TOKEN,
+            });
             runtimeHomePath = prepareRuntimeHome(taskId);
             const dockerArgs = this.buildDockerArgs({
                 worktreePath: analysisWorkspace,
@@ -206,7 +216,8 @@ export class VibeAgent implements Agent {
                 mode: 'analysis',
                 promptFilePath,
                 envFilePath,
-                runtimeHomePath
+                runtimeHomePath,
+                repositoryInspection,
             });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'vibe',
@@ -345,9 +356,9 @@ export class VibeAgent implements Agent {
         return args;
     }
 
-    private buildDockerEnvVars(params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number; runtimeHomePath?: string }): string[] {
-        const { cleanModelName, mode, maxTurns, runtimeHomePath } = params;
-        const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars);
+    private buildDockerEnvVars(params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number; runtimeHomePath?: string; repositoryInspection?: boolean }): string[] {
+        const { cleanModelName, mode, maxTurns, runtimeHomePath, repositoryInspection = false } = params;
+        const forwardedEnvVars = getForwardedVibeEnvVars(this.config.envVars, repositoryInspection);
         for (const envVar of forwardedEnvVars.skipped) logger.warn({ agentAlias: this.config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
         const envVars = forwardedEnvVars.dockerArgs;
         envVars.push('-e', 'PROPR_AGENT_TYPE=vibe');
@@ -357,6 +368,10 @@ export class VibeAgent implements Agent {
         if (mode === 'analysis') {
             const analysisDirs = ['VIBE_READ_ONLY_CONFIG=1', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config', 'XDG_DATA_HOME=/tmp/propr-vibe-data', 'UV_CACHE_DIR=/tmp/propr-uv-cache', 'HOME=/tmp/propr-vibe-home', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home', 'XDG_STATE_HOME=/tmp/propr-vibe-state', 'PIP_CACHE_DIR=/tmp/propr-pip-cache', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache'];
             for (const dir of analysisDirs) envVars.push('-e', dir);
+        }
+        if (repositoryInspection) {
+            envVars.push('-e', 'PROPR_REPOSITORY_INSPECTION=1');
+            envVars.push('-e', `PROPR_REPOSITORY_SCOUT_VIBE_CONFIG=${buildVibeRepositoryScoutConfig()}`);
         }
         envVars.push('-e', `VIBE_MAX_TURNS=${maxTurns}`);
         return envVars;
@@ -379,21 +394,29 @@ export class VibeAgent implements Agent {
     }
 
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
-        const { worktreePath, modelName, mistralApiKey, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath, runtimeHomePath } = params;
+        const { worktreePath, modelName, mistralApiKey, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath, runtimeHomePath, repositoryInspection = false } = params;
+        if (repositoryInspection && mode !== 'analysis') {
+            throw new Error('Repository inspection requires analysis mode');
+        }
         const { configPath, hasUsableConfig, configMountArgs } = this.resolveCredentialsAndConfig(mistralApiKey);
         const cleanModelName = modelName?.includes(':') ? modelName.split(':').pop()! : modelName;
         const mistralEnvFileArgs = envFilePath ? ['--env-file', envFilePath] : [];
-        const envVars = this.buildDockerEnvVars({ cleanModelName, mode, maxTurns, runtimeHomePath });
+        const envVars = this.buildDockerEnvVars({ cleanModelName, mode, maxTurns, runtimeHomePath, repositoryInspection });
 
         const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
         const cliArgs = this.getCliArgs();
+        if (repositoryInspection) {
+            for (const tool of REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS) {
+                cliArgs.push('--enabled-tools', tool);
+            }
+        }
         const promptMountArgs = this.buildPromptMountArgs(promptFilePath, cliArgs);
         const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${resolveHostBindPath(runtimeHomePath)}:/tmp/propr-vibe-home:rw`] : [];
         const dockerArgs: string[] = [
             'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...getAnalysisSandboxArgs(mode),
-            '-v', `${worktreePath}:/home/node/workspace:${workspaceMountMode}`,
+            '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMountMode}`,
             ...configMountArgs, ...promptMountArgs, ...runtimeHomeMountArgs, ...mistralEnvFileArgs,
             ...envVars, '-w', '/home/node/workspace', this.config.dockerImage, ...cliArgs
         ];
