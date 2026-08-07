@@ -14,6 +14,31 @@ import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../co
 import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
 
+const READ_ONLY_REPOSITORY_TOOLS = 'Read,Grep,Glob';
+const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
+const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
+
+function isGitHubCredentialEnvironmentVariable(name: string): boolean {
+    const normalizedName = name.toUpperCase();
+    return GITHUB_CREDENTIAL_ENV_NAMES.has(normalizedName)
+        || GITHUB_CREDENTIAL_ENV_PATTERN.test(normalizedName);
+}
+
+function buildEnvironmentVariableArgs(
+    sources: Array<Record<string, string> | undefined>,
+    omitGitHubCredentials: boolean
+): string[] {
+    const args: string[] = [];
+    for (const source of sources) {
+        if (!source) continue;
+        for (const [key, value] of Object.entries(source)) {
+            if (omitGitHubCredentials && isGitHubCredentialEnvironmentVariable(key)) continue;
+            args.push('-e', `${key}=${value}`);
+        }
+    }
+    return args;
+}
+
 /**
  * Parameters for building Docker arguments.
  */
@@ -63,19 +88,14 @@ export function buildDockerArgs(
 ): string[] {
     const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment, taskId, executionType, reasoningLevel, readOnlyWorkspace = false } = params;
     const configPath = resolveConfigPath(config.configPath);
+    // The provider client still needs bridge networking, so exclude every
+    // model-controlled subprocess surface instead of exposing Bash to the scout.
+    const effectiveTools = readOnlyWorkspace
+        ? (tools === '' ? '' : READ_ONLY_REPOSITORY_TOOLS)
+        : tools;
 
     // Build environment variable arguments
-    const envVars: string[] = [];
-    if (config.envVars) {
-        for (const [key, value] of Object.entries(config.envVars)) {
-            envVars.push('-e', `${key}=${value}`);
-        }
-    }
-    if (environment) {
-        for (const [key, value] of Object.entries(environment)) {
-            envVars.push('-e', `${key}=${value}`);
-        }
-    }
+    const envVars = buildEnvironmentVariableArgs([config.envVars, environment], readOnlyWorkspace);
 
     // Check if .claude.json exists in home directory
     const claudeJsonPath = path.join(os.homedir(), '.claude.json');
@@ -99,12 +119,12 @@ export function buildDockerArgs(
         '--user', '0:0',
         // Volume mounts
         '-v', `${worktreePath}:/home/node/workspace:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-        '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`,
+        ...(readOnlyWorkspace ? [] : ['-v', '/tmp/git-processor:/tmp/git-processor:rw']),
         '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
         '-v', `${configPath}:/home/node/.claude:rw`,
         ...claudeJsonMount,
         // Environment variables
-        '-e', `GH_TOKEN=${githubToken}`,
+        ...(readOnlyWorkspace ? [] : ['-e', `GH_TOKEN=${githubToken}`]),
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         ...envVars,
         // Working directory
@@ -150,11 +170,11 @@ export function buildDockerArgs(
     }
 
     // Add optional tools configuration
-    if (tools !== undefined) {
-        dockerArgs.push('--tools', tools);
+    if (effectiveTools !== undefined) {
+        dockerArgs.push('--tools', effectiveTools);
         logger.info({
             issueNumber,
-            tools,
+            tools: effectiveTools,
             agentAlias: config.alias
         }, 'Using custom tools configuration');
     }
@@ -162,7 +182,7 @@ export function buildDockerArgs(
     logger.info({
         issueNumber,
         hasSystemPrompt: systemPrompt !== undefined,
-        hasTools: tools !== undefined,
+        hasTools: effectiveTools !== undefined,
         hasReasoningLevel: !!reasoningLevel,
         agentAlias: config.alias
     }, 'Docker args built for Claude agent');

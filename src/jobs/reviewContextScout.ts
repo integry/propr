@@ -13,6 +13,12 @@ const MAX_SCOUT_DIFF_CHARS = 120_000;
 const MAX_REFERENCES = 12;
 const SCOUT_TIMEOUT_MS = 30 * 60 * 1000;
 
+function supportsRuntimeEnforcedRepositoryInspection(agent: Agent): boolean {
+    // Claude is the only current runtime with a granular allowlist for file
+    // reads/searches that excludes its general-purpose shell tool.
+    return agent.config.type === 'claude';
+}
+
 export interface GatherReviewContextOptions {
     agent: Agent;
     model: string;
@@ -72,6 +78,9 @@ ${diff || '(not available)'}`;
 }
 
 export async function gatherReviewContext(options: GatherReviewContextOptions): Promise<{ context: string; analysisResult: AnalysisResult }> {
+    if (!supportsRuntimeEnforcedRepositoryInspection(options.agent)) {
+        throw new Error(`Context scouting is unavailable for agent type: ${options.agent.config.type}`);
+    }
     const analysisResult = await options.agent.analyze(buildScoutPrompt(options), {
         model: options.model,
         taskId: options.taskId,
@@ -115,6 +124,13 @@ export async function prepareRelatedReviewContext(options: PrepareRelatedReviewC
     }
     const agent = options.registry.getAgentByAlias(assignment.agentAlias);
     if (!agent) throw new Error(`Context scout agent not found: ${assignment.agentAlias}`);
+    if (!supportsRuntimeEnforcedRepositoryInspection(agent)) {
+        options.correlatedLogger.info({
+            agentAlias: assignment.agentAlias,
+            agentType: agent.config.type,
+        }, 'Context scout agent cannot enforce repository-only inspection; using deterministic review context');
+        return '';
+    }
 
     await ensureGitRepository(options.correlatedLogger);
     const repoUrl = getRepoUrl({ repoOwner: options.repoOwner, repoName: options.repoName });

@@ -140,7 +140,11 @@ export interface AnalyzeOptions {
      * workspace.
      */
     readOnlyWorkspacePath?: string;
-    /** Allow read-only search and inspection commands inside readOnlyWorkspacePath. */
+    /**
+     * Request runtime-enforced repository file read/search tools inside
+     * readOnlyWorkspacePath. This never authorizes a general-purpose shell.
+     * Scout callers must skip agents without a granular file-tool allowlist.
+     */
     allowReadOnlyCommands?: boolean;
 }
 

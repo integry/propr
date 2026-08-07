@@ -44,7 +44,7 @@ function resolveClaudeAnalysisWorkspace(
     if (!readOnlyWorkspacePath) return { path: '/tmp/claude-analysis', tools: '', readOnly: false };
     return {
         path: readOnlyWorkspacePath,
-        tools: allowReadOnlyCommands ? 'Read,Grep,Glob,Bash' : '',
+        tools: allowReadOnlyCommands ? 'Read,Grep,Glob' : '',
         readOnly: true,
     };
 }
