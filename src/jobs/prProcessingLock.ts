@@ -6,6 +6,13 @@ export const PR_PROCESSING_LOCK_RENEW_INTERVAL_MS = 30 * 1000;
 
 export type PRProcessingLockRedisClient = Pick<Redis, 'set' | 'eval'>;
 
+export class PRProcessingLeaseLostError extends Error {
+    constructor(message = 'PR processing attempt lost its lock') {
+        super(message);
+        this.name = 'PRProcessingLeaseLostError';
+    }
+}
+
 interface LockHeartbeatOptions {
     redisClient: PRProcessingLockRedisClient;
     lockKey: string;

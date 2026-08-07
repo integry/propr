@@ -411,6 +411,12 @@ describe('structured review finding extraction', () => {
                 return members.length;
             },
             async expire() { return 1; },
+            async eval(_script: string, _keyCount: number, _lockKey: string, processedKey: string, _token: string, _ttl: number, ...members: string[]) {
+                const values = sets.get(processedKey) ?? new Set<string>();
+                members.forEach(member => values.add(member));
+                sets.set(processedKey, values);
+                return 1;
+            },
         };
         const correlatedLogger = { debug() {}, info() {}, warn() {} };
         const comments = [{
@@ -423,6 +429,8 @@ describe('structured review finding extraction', () => {
             repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
             redisClient: redis as any,
             correlatedLogger: correlatedLogger as any,
+            prProcessingLockKey: 'lock:pr:o:r:1',
+            prProcessingLockToken: 'attempt-token',
         };
         const first = await gatherStructuredReviewComments(comments, options);
         assert.deepStrictEqual(first[0].actionableFindings.map(finding => finding.id), ['F1', 'F2']);
