@@ -37,13 +37,14 @@ const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharC
 
 function stripAnsiCodes(text: string): string { return text.replace(ANSI_REGEX, ''); }
 
-function extractAntigravityResult(cleanedOutput: string): string | undefined {
+function extractAntigravityResult(lines: Array<{ line: string; isJson: boolean }>): string | undefined {
     const resultLines: string[] = [];
     let inResponse = false;
-    for (const line of cleanedOutput.split('\n')) {
+    for (const { line: rawLine, isJson } of lines) {
+        const line = stripAnsiCodes(rawLine);
         const t = line.trim();
         if (!inResponse && !t) continue;
-        if (t.startsWith('>') || t === '/quit' || t.startsWith('Antigravity') || t.includes('Press') || t.includes('Ctrl+')) continue;
+        if (t.startsWith('>') || t === '/quit' || t.startsWith('Antigravity') || (!isJson && (t.includes('Press') || t.includes('Ctrl+')))) continue;
         inResponse = true;
         resultLines.push(line);
     }
@@ -209,10 +210,10 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
         }
     }
     const hasProtocolContext = parsedLines.some(({ value }) => isAntigravityFramingEvent(value));
-    const plainLines: string[] = [];
+    const plainLines: Array<{ line: string; isJson: boolean }> = [];
     for (const { line, value } of parsedLines) {
         if (!isAntigravityOutputEvent(value, hasProtocolContext)) {
-            plainLines.push(line);
+            plainLines.push({ line, isJson: value !== undefined });
             continue;
         }
         events.push(value);
@@ -225,7 +226,7 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
         }
     }
     if (state.currentAssistantMessage) state.lastCompleteAssistantMessage = state.currentAssistantMessage;
-    const plainTextSummary = extractAntigravityResult(stripAnsiCodes(plainLines.join('\n')));
+    const plainTextSummary = extractAntigravityResult(plainLines);
     return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: state.lastCompleteAssistantMessage || plainTextSummary || undefined, conversationLog: events, tokenUsage: state.tokenUsage };
 }
 

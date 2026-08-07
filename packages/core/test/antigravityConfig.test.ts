@@ -158,6 +158,14 @@ test('Antigravity output parser preserves plain responses that are valid JSON va
     assert.deepEqual(commonMessage.conversationLog, []);
 });
 
+test('Antigravity output parser does not filter TUI substrings from fallback JSON', () => {
+    const line = '{"answer":"Press Enter"}';
+    const parsed = parseAntigravityJsonl(line);
+
+    assert.equal(parsed.summary, line);
+    assert.deepEqual(parsed.conversationLog, []);
+});
+
 test('Antigravity output parser treats prototype keys as plain fallback JSON', () => {
     for (const type of ['__proto__', 'constructor', 'toString']) {
         const line = JSON.stringify({ type });
