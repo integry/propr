@@ -10,8 +10,7 @@ import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prComme
 import { buildCombinedComment } from './prCommentJobUtils.js';
 import { calculateReviewCost, fetchReviewContext, type PRData } from './reviewContextHelpers.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
-import { buildReviewErrorComment, isReviewComment } from './reviewCommentFormatter.js';
-import { getNextActionableFindingNumber } from './reviewOutputParser.js';
+import { buildReviewErrorComment, getNextAuthenticatedActionableFindingNumber } from './reviewCommentFormatter.js';
 import { buildReviewCommentWithReservedFindingRange } from './reviewFindingNumberAllocator.js';
 import { recordReviewMetrics } from './reviewResultMetrics.js';
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
@@ -66,7 +65,7 @@ interface ProcessingState {
     claudeResult: unknown;
     authorsText: string;
     unprocessedComments: UnprocessedComment[];
-    startingWorkComment: { data: { id: number; html_url: string } } | null;
+    startingWorkComment: { data: { id: number; html_url: string; user?: { login: string } | null } } | null;
 }
 
 export interface ExecuteReviewParams {
@@ -414,8 +413,9 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     };
 
     const reviewResults: ReviewResult[] = [];
-    let nextFindingNumber = getNextActionableFindingNumber(
-        allComments.filter(comment => comment.body && isReviewComment(comment.body)).map(comment => comment.body),
+    let nextFindingNumber = getNextAuthenticatedActionableFindingNumber(
+        allComments,
+        state.startingWorkComment.data.user?.login,
     );
     for (const assignment of assignments) {
         const result = await runSingleReview(assignment, {

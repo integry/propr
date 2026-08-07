@@ -12,7 +12,7 @@
 
 import { getModelName, type AnalysisResult } from '@propr/core';
 import type { ReviewAssignment } from './prCommentReviewJob.js';
-import { renderPublicReview } from './reviewOutputParser.js';
+import { parseStructuredReview, renderPublicReview } from './reviewOutputParser.js';
 
 /** HTML comment marker prefix used to identify AI review comments. */
 export const REVIEW_COMMENT_MARKER_PREFIX = '<!-- propr:ai-review';
@@ -31,6 +31,44 @@ export const REVIEW_COMMENT_MARKER_RE = /<!-- propr:ai-review model="([^"]+)"(?:
  */
 export function isReviewComment(body: string): boolean {
     return body.includes(REVIEW_COMMENT_MARKER_PREFIX);
+}
+
+interface AuthoredReviewComment {
+    body: string | null;
+    user: { login: string };
+}
+
+/**
+ * Find the next PR-wide F# using only comments authored by the identity from
+ * ProPR's authenticated GitHub response. Unsafe IDs cannot seed the allocator.
+ */
+export function getNextAuthenticatedActionableFindingNumber(
+    comments: readonly AuthoredReviewComment[],
+    authenticatedProprLogin: string | undefined,
+): number {
+    const normalizedProprLogin = authenticatedProprLogin?.trim().toLowerCase();
+    if (!normalizedProprLogin) return 1;
+
+    let highest = 0;
+    for (const comment of comments) {
+        if (
+            !comment.body
+            || comment.user.login.toLowerCase() !== normalizedProprLogin
+            || !isReviewComment(comment.body)
+        ) continue;
+
+        for (const finding of parseStructuredReview(comment.body).actionableFindings) {
+            const findingNumber = Number(finding.id.slice(1));
+            const nextFindingNumber = findingNumber + 1;
+            if (
+                !Number.isSafeInteger(findingNumber)
+                || findingNumber < 1
+                || !Number.isSafeInteger(nextFindingNumber)
+            ) continue;
+            highest = Math.max(highest, findingNumber);
+        }
+    }
+    return highest + 1;
 }
 
 /**
