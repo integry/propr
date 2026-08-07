@@ -67,7 +67,47 @@ await mock.module('@propr/core', {
 
 // Import AFTER mocking
 const { resolveReviewAssignments } = await import('../src/jobs/prCommentReviewJob.ts');
+const { reserveActionableFindingRange } = await import('../src/jobs/reviewFindingNumberAllocator.ts');
 const { applyPendingCommentCommandContext } = await import('../src/jobs/prPendingComments.ts');
+
+test('reserveActionableFindingRange atomically assigns non-overlapping PR-wide ranges', async () => {
+    const sequences = new Map<string, number>();
+    const evalCalls: Array<{ key: string; observedHighest: number; rangeSize: number }> = [];
+    const redisClient = {
+        eval: mock.fn(async (
+            _script: string,
+            _keyCount: number,
+            key: string,
+            observedHighest: number,
+            rangeSize: number,
+        ) => {
+            evalCalls.push({ key, observedHighest, rangeSize });
+            const reservedHighest = Math.max(sequences.get(key) ?? 0, observedHighest);
+            sequences.set(key, reservedHighest + rangeSize);
+            return reservedHighest + 1;
+        }),
+    };
+    const issueRef = { repoOwner: 'Integry', repoName: 'ProPR', pullRequestNumber: 1763 };
+
+    const [firstRangeStart, secondRangeStart] = await Promise.all([
+        reserveActionableFindingRange(redisClient as any, issueRef, 4, 2),
+        reserveActionableFindingRange(redisClient as any, issueRef, 4, 3),
+    ]);
+    const reconciledRangeStart = await reserveActionableFindingRange(
+        redisClient as any,
+        { ...issueRef, repoOwner: 'INTEGRY', repoName: 'propr' },
+        12,
+        1,
+    );
+
+    assert.deepStrictEqual([firstRangeStart, secondRangeStart], [4, 6]);
+    assert.strictEqual(reconciledRangeStart, 12);
+    assert.deepStrictEqual(evalCalls, [
+        { key: 'review-finding-sequence:integry:propr:1763', observedHighest: 3, rangeSize: 2 },
+        { key: 'review-finding-sequence:integry:propr:1763', observedHighest: 3, rangeSize: 3 },
+        { key: 'review-finding-sequence:integry:propr:1763', observedHighest: 11, rangeSize: 1 },
+    ]);
+});
 
 test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
 

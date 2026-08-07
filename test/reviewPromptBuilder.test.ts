@@ -13,8 +13,10 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import { getEncoding } from 'js-tiktoken';
+import { buildAnalysisSafetySuffix } from '../packages/core/src/agents/impl/utils/analysisPromptSafety.js';
 
-const { buildReviewPrompt } = await import('../src/jobs/reviewPromptBuilder.js');
+const { buildReviewPrompt, buildReviewPromptWithinBudget } = await import('../src/jobs/reviewPromptBuilder.js');
 
 function baseOptions(overrides: Record<string, unknown> = {}) {
     return {
@@ -149,6 +151,8 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.ok(prompt.includes('Trace the changed control and data paths through their relevant callers and consumers'));
         assert.ok(prompt.includes('empty, singleton, and limit cases when those cases apply'));
         assert.ok(prompt.includes('Keep pre-existing problems, optional hardening, and adjacent redesigns as S# suggestions'));
+        assert.ok(prompt.includes('must cite an exact changed-file path from the supplied PR diff'));
+        assert.ok(prompt.includes('findings supported only by unchanged or adjacent files are rejected'));
         assert.ok(prompt.includes('Do not print this validation pass or turn it into a generic checklist'));
     });
 
@@ -171,6 +175,70 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.ok(prompt.includes(checkSummary));
         assert.ok(prompt.includes('Check failures mentioned solely in comment history may be stale'));
         assert.ok(prompt.includes('it is an F# finding only when you can trace it to PR-changed code'));
+    });
+
+    test('labels scout excerpts as unchanged navigation leads without expanding scope', () => {
+        const prompt = buildReviewPrompt(baseOptions({
+            relatedContext: '### src/consumer.ts:10-20\n```\n10: callChangedApi()\n```',
+        }));
+        assert.ok(prompt.includes('Related Unchanged Repository Context'));
+        assert.ok(prompt.includes('Treat the scout labels and rationale only as navigation leads'));
+        assert.ok(prompt.includes('does not expand the PR objective'));
+        assert.ok(prompt.includes('src/consumer.ts:10-20'));
+    });
+
+    test('fits optional context to the configured review token ceiling', () => {
+        const large = 'const value = callChangedApi();\n'.repeat(20_000);
+        const result = buildReviewPromptWithinBudget(baseOptions({
+            relatedContext: large,
+            fileContents: large,
+        }), 10_000);
+        assert.ok(result.estimatedTokens <= 10_000);
+        assert.deepEqual(result.truncatedSections, ['related unchanged context', 'comment history', 'changed file contents']);
+        for (const section of MANDATORY_SECTIONS) assert.ok(result.prompt.includes(section));
+        assert.ok(result.prompt.includes('original spec'));
+    });
+
+    test('fits the fully composed analysis request to the configured token ceiling', () => {
+        const large = 'const value = callChangedApi();\n'.repeat(20_000);
+        const analysisSafetySuffix = buildAnalysisSafetySuffix('text', false, undefined);
+        const result = buildReviewPromptWithinBudget(baseOptions({ relatedContext: large }), 10_000, analysisSafetySuffix);
+        const fullyComposedRequest = `${result.prompt}${analysisSafetySuffix}`;
+        const conservativeFullyComposedTokens = Buffer.byteLength(fullyComposedRequest, 'utf8');
+
+        assert.equal(result.estimatedTokens, conservativeFullyComposedTokens);
+        assert.ok(conservativeFullyComposedTokens <= 10_000);
+        assert.ok(Buffer.byteLength(result.prompt, 'utf8') < result.estimatedTokens);
+    });
+
+    test('conservatively caps token-dense Unicode review input', () => {
+        const tokenDenseContext = '漢字🙂🚀'.repeat(20_000);
+        const analysisSafetySuffix = buildAnalysisSafetySuffix('text', false, undefined);
+        const result = buildReviewPromptWithinBudget(baseOptions({
+            relatedContext: tokenDenseContext,
+        }), 10_000, analysisSafetySuffix);
+        const fullyComposedRequest = `${result.prompt}${analysisSafetySuffix}`;
+        const tokenizer = getEncoding('cl100k_base');
+        const tokenizedRequestLength = tokenizer.encode(fullyComposedRequest).length;
+
+        assert.ok(result.truncatedSections.includes('related unchanged context'));
+        assert.ok(result.estimatedTokens <= 10_000);
+        assert.ok(tokenizedRequestLength <= result.estimatedTokens);
+        assert.ok(tokenizedRequestLength <= 10_000);
+    });
+
+    test('discloses when the PR diff itself is truncated by the review budget', () => {
+        const largeDiff = 'diff --git a/src/large.ts b/src/large.ts\n+const changed = true;\n'.repeat(20_000);
+        const result = buildReviewPromptWithinBudget(baseOptions({ prDiff: largeDiff }), 10_000);
+
+        assert.equal(result.prDiffTruncated, true);
+        assert.ok(result.truncatedSections.includes('PR diff'));
+        assert.ok(result.prompt.includes('Files or diff ranges were omitted by the review budget'));
+        assert.ok(result.prompt.includes(
+            'Treat the review as partial only if the diff contains an explicit notice that files or diff ranges were omitted',
+        ));
+        assert.ok(!result.prompt.includes('CURRENT, COMPLETE'));
+        assert.ok(result.estimatedTokens <= 10_000);
     });
 
     test('omits the current-head check section when no summary is available', () => {

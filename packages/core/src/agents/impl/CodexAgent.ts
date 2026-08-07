@@ -14,7 +14,7 @@ import {
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef } from '../../utils/llmLogger.js';
-import { executeWithUsageTracking } from './utils/index.js';
+import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
@@ -206,7 +206,7 @@ export class CodexAgent implements Agent {
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands = false } = options || {};
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel || 'unknown';
 
@@ -215,11 +215,9 @@ export class CodexAgent implements Agent {
             hasContext: !!context, requestedModel: model, taskId, executionType
         }, 'Running lightweight analysis via Codex agent...');
 
-        const suffix = responseFormat === 'json'
-            ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
-            : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands, readOnlyWorkspacePath);
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
-        const analysisWorkspace = this.ensureAnalysisWorkspace();
+        const analysisWorkspace = readOnlyWorkspacePath || this.ensureAnalysisWorkspace();
 
         try {
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel);
@@ -227,7 +225,8 @@ export class CodexAgent implements Agent {
                 worktreePath: analysisWorkspace,
                 githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel === 'unknown' ? undefined : effectiveModel,
-                issueNumber: 0, jsonOutput: true, taskId, executionType, reasoningLevel: effectiveReasoningLevel
+                issueNumber: 0, jsonOutput: true, taskId, executionType, reasoningLevel: effectiveReasoningLevel,
+                readOnlyWorkspace: !!readOnlyWorkspacePath,
             });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
@@ -371,6 +370,7 @@ export class CodexAgent implements Agent {
         issueNumber: number; jsonOutput?: boolean; environment?: Record<string, string>;
         taskId?: string; executionType?: string;
         reasoningLevel?: CodexRuntimeReasoningLevel | '';
+        readOnlyWorkspace?: boolean;
     }): string[] {
         const {
             worktreePath,
@@ -381,7 +381,8 @@ export class CodexAgent implements Agent {
             environment,
             taskId,
             executionType,
-            reasoningLevel
+            reasoningLevel,
+            readOnlyWorkspace = false
         } = params;
 
         const dockerImage = this.config.dockerImage;
@@ -422,11 +423,12 @@ export class CodexAgent implements Agent {
             '--cap-add', 'CHOWN',
             '--network', 'bridge',
             '--user', '0:0', // Start as root; entrypoint drops to node after permission fixes
-            '-v', `${worktreePath}:/home/node/workspace:rw`,
-            '-v', '/tmp/git-processor:/tmp/git-processor:rw',
+            '-v', `${worktreePath}:/home/node/workspace:${readOnlyWorkspace ? 'ro' : 'rw'}`,
+            '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`,
             '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
             '-e', `GH_TOKEN=${githubToken}`,
             '-e', `GITHUB_TOKEN=${githubToken}`,
+            ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
             ...envVars,
             '-w', '/home/node/workspace',
             dockerImage,

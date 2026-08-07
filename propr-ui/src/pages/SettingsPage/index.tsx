@@ -42,6 +42,7 @@ const SettingsPage: React.FC = () => {
     setNewIgnoreKeyword,
     triggerSettingsSave,
     handleModelSelectionChange,
+    handleReviewContextEnabledChange,
     addWhitelistItem,
     removeWhitelistItem,
     addPrimaryLabel,
@@ -97,13 +98,19 @@ const SettingsPage: React.FC = () => {
                 default_agent_alias: settings.default_agent_alias,
                 model_reasoning_level: settings.model_reasoning_level,
                 pr_review_model: settings.pr_review_model,
-                pr_review_prompt: settings.pr_review_prompt
+                pr_review_prompt: settings.pr_review_prompt,
+                pr_review_context_enabled: settings.pr_review_context_enabled,
+                pr_review_context_model: settings.pr_review_context_model,
+                pr_review_max_context_tokens: settings.pr_review_max_context_tokens
               }}
               summarizationSettings={summarizationSettings}
               agents={agents}
               onSettingChange={handleModelSelectionChange}
               onReviewPromptChange={(e) => setSettings(prev => ({ ...prev, pr_review_prompt: e.target.value }))}
               onReviewPromptBlur={triggerSettingsSave}
+              onReviewContextEnabledChange={handleReviewContextEnabledChange}
+              onReviewMaxContextTokensChange={(value) => setSettings(prev => ({ ...prev, pr_review_max_context_tokens: value }))}
+              onReviewMaxContextTokensBlur={triggerSettingsSave}
               onSummarizationModelChange={handleSummarizationModelChange}
               onSummarizationFallbackModelChange={handleSummarizationFallbackModelChange}
               onDefaultAgentChange={handleDefaultAgentChange}
