@@ -79,7 +79,11 @@ export function buildReviewComment(
     assignment: ReviewAssignment,
     analysisResult: AnalysisResult,
     taskUrl?: string,
-    options: { omittedDiffFiles?: string[]; costUsd?: number | null } = {},
+    options: {
+        omittedDiffFiles?: string[];
+        costUsd?: number | null;
+        hasCurrentCheckFailure?: boolean;
+    } = {},
 ): string {
     const { model, label } = assignment;
     const { response, executionTimeMs, tokenUsage, modelUsed } = analysisResult;
@@ -88,7 +92,10 @@ export function buildReviewComment(
     const modelDisplayName = getModelName(effectiveModel);
 
     const sanitizedResponse = removeSuggestionMetadata(response);
-    const publicResponse = renderPublicReview(sanitizedResponse);
+    const currentCheckScoreCap = options.hasCurrentCheckFailure
+        ? { maximum: 7, reason: 'Score capped at 7 because a current-head check is failing.' }
+        : undefined;
+    const publicResponse = renderPublicReview(sanitizedResponse, currentCheckScoreCap);
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
     comment += publicResponse ?? '⚠️ **Review output was invalid and could not be displayed safely.**';
 

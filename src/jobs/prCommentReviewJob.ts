@@ -1,8 +1,6 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { getAuthenticatedOctokit } from '@propr/core';
-import { withRetry, retryConfigs } from '@propr/core';
-import { TaskStates } from '@propr/core';
+import { getAuthenticatedOctokit, retryConfigs, TaskStates, withRetry } from '@propr/core';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
 import { AgentRegistry, resolveLlmLabel } from '@propr/core';
 import type { AnalysisResult } from '@propr/core';
@@ -166,6 +164,8 @@ interface RunReviewsContext {
     prDiff: string;
     omittedDiffFiles: string[];
     fileContents: string;
+    checkSummary: string;
+    hasCurrentCheckFailure: boolean;
     reviewPromptOverride: string;
     reasoningLevel?: ReasoningLevel;
     correlatedLogger: Logger;
@@ -189,7 +189,7 @@ async function runSingleReview(
     const reviewPrompt = buildReviewPrompt({
         pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
         originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
-        prDiff: ctx.prDiff, fileContents: ctx.fileContents, reviewPromptOverride: ctx.reviewPromptOverride,
+        prDiff: ctx.prDiff, fileContents: ctx.fileContents, checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
     });
 
     try {
@@ -201,7 +201,7 @@ async function runSingleReview(
 
         const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
         const reviewCommentBody = analysisResult.success
-            ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles, costUsd })
+            ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles, costUsd, hasCurrentCheckFailure: ctx.hasCurrentCheckFailure })
             : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
 
         const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -341,7 +341,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const assignments = await resolveReviewAssignments(job.data.requestedModels, llm, correlatedLogger);
     correlatedLogger.info({ pullRequestNumber, assignmentCount: assignments.length, models: assignments.map(a => a.model) }, 'Resolved review assignments');
 
-    const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents } = await fetchReviewContext(
+    const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents, checkSummary, hasCurrentCheckFailure } = await fetchReviewContext(
         state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, models: assignments.map(a => a.model), correlationId, correlatedLogger }
     );
     job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
@@ -418,7 +418,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         commandInstructions: job.data.commandInstructions,
         prDiff,
         omittedDiffFiles,
-        fileContents,
+        fileContents, checkSummary, hasCurrentCheckFailure,
         reviewPromptOverride,
         reasoningLevel: job.data.reasoningLevel,
         correlatedLogger,

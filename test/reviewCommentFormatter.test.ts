@@ -105,6 +105,59 @@ describe('buildReviewComment', () => {
         assert.strictEqual(reparsed.actionableFindings[0].requiredForMerge, true);
     });
 
+    test('caps an inconsistent blocker score at the merge-blocker ceiling', () => {
+        const response = [
+            '## Overall Evaluation',
+            'One correctness regression blocks merge.',
+            '## Actionable Findings',
+            '### F1: Singleton input is rejected',
+            '- **violatedRequirement:** Changed selection behavior must preserve a valid singleton.',
+            '- **evidence:** optimizer.ts:42 — all candidates are removed before measurement.',
+            '- **introducedByPR:** true — the new truncation planner added this removal path.',
+            '- **requiredForMerge:** true',
+            '- **minimumCorrection:** Measure the highest-priority singleton before rejecting it.',
+            '## Suggestions and Follow-ups',
+            'No suggestions.',
+            '## Score',
+            'The implementation is otherwise strong.',
+            'Score: 9/10',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            { response, modelUsed: 'claude-sonnet', executionTimeMs: 1000, success: true },
+        );
+
+        assert.ok(formatted.includes('Score: 6/10'));
+        assert.ok(formatted.includes('Score capped at 6 because merge blockers remain.'));
+        assert.equal(parseStructuredReview(formatted).score, 6);
+    });
+
+    test('caps a clean review when a current-head check is failing without creating a fix finding', () => {
+        const response = [
+            '## Overall Evaluation',
+            'The changed code is correct, but CI must be resolved before merge.',
+            '## Actionable Findings',
+            'No actionable findings.',
+            '## Suggestions and Follow-ups',
+            'No suggestions.',
+            '## Score',
+            'Score: 9/10',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            { response, modelUsed: 'claude-sonnet', executionTimeMs: 1000, success: true },
+            undefined,
+            { hasCurrentCheckFailure: true },
+        );
+
+        assert.ok(formatted.includes('No merge blockers.'));
+        assert.ok(formatted.includes('Score: 7/10'));
+        assert.ok(formatted.includes('Score capped at 7 because a current-head check is failing.'));
+        assert.equal(parseStructuredReview(formatted).status, 'valid_clean');
+    });
+
     test('does not publish internal blocker metadata from an invalid review', () => {
         const response = [
             '## Overall Evaluation',

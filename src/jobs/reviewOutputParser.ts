@@ -258,7 +258,7 @@ function parseContract(body: string, contract: ReviewContract): StructuredReview
         status: actionableFindings.length === 0 ? 'valid_clean' : 'valid_with_blockers',
         actionableFindings,
         suggestions,
-        score,
+        score: actionableFindings.length > 0 ? Math.min(score, 6) : score,
     };
 }
 
@@ -318,14 +318,28 @@ function formatPublicSuggestions(suggestions: ReviewSuggestion[]): string {
  * Markdown that is safe to publish. Invalid responses return null so callers
  * can preserve the original diagnostic output and fail closed downstream.
  */
-export function renderPublicReview(body: string): string | null {
+export function renderPublicReview(
+    body: string,
+    scoreCap?: { maximum: number; reason: string },
+): string | null {
     if (ERROR_REVIEW_MARKER_RE.test(body)) return null;
     const cleaned = prepareReviewBody(body);
     const parsed = parseContract(cleaned, MACHINE_CONTRACT);
     if (parsed.status === 'invalid') return null;
 
     const overallSection = extractMarkdownSection(cleaned, 'Overall Evaluation');
-    const scoreSection = extractMarkdownSection(cleaned, 'Score');
+    const originalScoreSection = extractMarkdownSection(cleaned, 'Score');
+    const publishedScore = Math.min(parsed.score ?? 10, scoreCap?.maximum ?? 10);
+    const scoreSection = originalScoreSection.replace(
+        /^Score:[ \t]*\d{1,2}[ \t]*\/[ \t]*10[ \t]*$/m,
+        `Score: ${publishedScore}/10`,
+    );
+    const originalScore = Number.parseInt(originalScoreSection.match(/^Score:[ \t]*(\d{1,2})[ \t]*\/[ \t]*10[ \t]*$/m)?.[1] ?? '', 10);
+    const scoreCapNote = originalScore > publishedScore
+        ? `\n\n_${parsed.actionableFindings.length > 0
+            ? `Score capped at ${publishedScore} because merge blockers remain.`
+            : scoreCap?.reason}_`
+        : '';
     return [
         '## Overall Evaluation',
         overallSection,
@@ -336,7 +350,7 @@ export function renderPublicReview(body: string): string | null {
         SUGGESTIONS_INTRODUCTION,
         formatPublicSuggestions(parsed.suggestions),
         '## Score',
-        scoreSection,
+        `${scoreSection}${scoreCapNote}`,
     ].join('\n\n');
 }
 

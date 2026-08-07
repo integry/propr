@@ -57,7 +57,7 @@ const redisClient = new Redis({
     enableReadyCheck: false,
 });
 
-interface PRData { data: { head: { ref: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
+interface PRData { data: { head: { ref: string; sha?: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
 interface PRComment { id: number; body: string; body_html?: string; user: { login: string; type?: string }; created_at: string; pull_request_review_id?: number }
 
 interface PRJobContext {
