@@ -143,7 +143,7 @@ Report only problems that satisfy **all** of these conditions:
 - introduced or exposed by this PR;
 - violate the immutable original objective or its acceptance criteria, **or** make behavior changed by the PR incorrect, unsafe, or internally inconsistent;
 - are necessary to correct before merge; and
-- have evidence in the actual base-to-head changed code.
+- have evidence in the actual base-to-head changed code. The evidence field must cite an exact changed-file path from the supplied PR diff; findings supported only by unchanged or adjacent files are rejected by the publisher.
 
 Use sequential IDs and this exact record shape for every blocker:
 

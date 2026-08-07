@@ -155,8 +155,8 @@ export async function fetchReviewContext(
         commentHistory,
         linkedIssueResult,
         prDiff,
-        changedFiles: prFiles.map(file => file.filename),
         omittedDiffFiles,
+        changedFilePaths: prFiles.map(file => file.filename),
         fileContents,
         ...checkContext,
     };

@@ -83,16 +83,27 @@ export function selectReviewFeedback(
     selection: FixFindingSelection,
 ): AIReviewComment[] {
     const hasExplicitSelector = selection.actionableIds !== null;
-    const candidateComments = hasExplicitSelector && comments.length > 0
-        ? [comments.reduce((latest, comment) => {
-            const timeDifference = new Date(comment.created_at).getTime() - new Date(latest.created_at).getTime();
-            return timeDifference > 0 || (timeDifference === 0 && comment.id > latest.id) ? comment : latest;
-        })]
-        : comments;
+    const selectedCommentByFindingId = new Map<string, number>();
+    if (hasExplicitSelector) {
+        const newestFirst = [...comments].sort((left, right) =>
+            new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
+            || right.id - left.id,
+        );
+        for (const comment of newestFirst) {
+            for (const finding of comment.actionableFindings) {
+                const id = finding.id.toUpperCase();
+                if (selection.actionableIds!.has(id) && !selectedCommentByFindingId.has(id)) {
+                    selectedCommentByFindingId.set(id, comment.id);
+                }
+            }
+        }
+    }
 
-    return candidateComments.map(comment => {
+    return comments.map(comment => {
         const actionableFindings = selection.actionableIds
-            ? comment.actionableFindings.filter(finding => selection.actionableIds!.has(finding.id))
+            ? comment.actionableFindings.filter(finding =>
+                selectedCommentByFindingId.get(finding.id.toUpperCase()) === comment.id,
+            )
             : comment.actionableFindings;
         return {
             ...comment,

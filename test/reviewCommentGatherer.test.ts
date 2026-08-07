@@ -544,7 +544,7 @@ describe('/fix structured finding selection', () => {
         assert.strictEqual(hasAuthorizedFixFeedback(rejectedSuggestion), false);
     });
 
-    test('scopes explicit IDs to the newest review comment when models reuse F1', () => {
+    test('selects permanent IDs across comments and resolves legacy duplicate IDs to the newest review', () => {
         const older = reviewComment({
             id: 45,
             created_at: '2026-08-06T09:00:00.000Z',
@@ -562,6 +562,18 @@ describe('/fix structured finding selection', () => {
 
         const bareSelection = selectReviewFeedback([older, newer], parseFixFindingSelection(''));
         assert.deepStrictEqual(bareSelection.map(comment => comment.id), [45, 46]);
+
+        older.actionableFindings[0].id = 'F3';
+        newer.actionableFindings[0].id = 'F4';
+        const permanentSelection = selectReviewFeedback(
+            [older, newer],
+            parseFixFindingSelection('F3 F4'),
+        );
+        assert.deepStrictEqual(permanentSelection.map(comment => comment.id), [45, 46]);
+        assert.deepStrictEqual(
+            permanentSelection.flatMap(comment => comment.actionableFindings.map(finding => finding.id)),
+            ['F3', 'F4'],
+        );
     });
 });
 

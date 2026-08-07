@@ -2,16 +2,19 @@ import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
 import { getAuthenticatedOctokit, retryConfigs, TaskStates, withRetry } from '@propr/core';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
-import { AgentRegistry, resolveLlmLabel } from '@propr/core';
-import { recordLLMMetrics } from '@propr/core';
+import { AgentRegistry, buildAnalysisSafetySuffix, resolveLlmLabel } from '@propr/core';
+import type { AnalysisResult } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import { loadPrReviewModel } from '@propr/core';
 import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prCommentJobHelpers.js';
 import { buildCombinedComment } from './prCommentJobUtils.js';
-import { fetchReviewContext, resolveReviewContextTokenBudget, type PRData } from './reviewContextHelpers.js';
+import { calculateReviewCost, fetchReviewContext, resolveReviewContextTokenBudget, type PRData } from './reviewContextHelpers.js';
 import { prepareRelatedReviewContext } from './reviewContextScout.js';
 import { loadReviewRuntimeSettings } from './reviewRuntimeSettings.js';
-import { runSingleReview, type ReviewAssignment, type ReviewResult, type RunReviewsContext } from './prReviewRunner.js';
+import { buildReviewPromptWithinBudget } from './reviewPromptBuilder.js';
+import { buildReviewErrorComment, getNextAuthenticatedActionableFindingNumber } from './reviewCommentFormatter.js';
+import { buildReviewCommentWithReservedFindingRange } from './reviewFindingNumberAllocator.js';
+import { recordReviewMetrics } from './reviewResultMetrics.js';
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
@@ -26,8 +29,26 @@ import {
 } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
+import type { ReasoningLevel } from '@propr/shared';
 
-export type { ReviewAssignment, ReviewResult } from './prReviewRunner.js';
+export interface ReviewAssignment {
+    agentAlias: string;
+    model: string;
+    label: string;
+}
+
+export interface ReviewResult {
+    assignment: ReviewAssignment;
+    analysisResult: AnalysisResult;
+    commentId?: number;
+    commentUrl?: string;
+    error?: string;
+    prompt?: string;
+    findingCount?: number;
+}
+
+const REVIEW_TIMEOUT_MS = 30 * 60 * 1000;
+const REVIEW_ANALYSIS_SAFETY_SUFFIX = buildAnalysisSafetySuffix('text', false, undefined);
 
 export interface PRJobContext {
     pullRequestNumber: number;
@@ -49,7 +70,7 @@ interface ProcessingState {
     claudeResult: unknown;
     authorsText: string;
     unprocessedComments: UnprocessedComment[];
-    startingWorkComment: { data: { id: number; html_url: string } } | null;
+    startingWorkComment: { data: { id: number; html_url: string; user?: { login: string } | null } } | null;
 }
 
 export interface ExecuteReviewParams {
@@ -135,28 +156,114 @@ export async function resolveReviewAssignments(
     return assignments;
 }
 
-async function recordReviewMetrics(
-    reviewResults: ReviewResult[],
-    issueRef: { pullRequestNumber: number; repoOwner: string; repoName: string; correlationId: string; taskId: string }
-): Promise<void> {
-    const { pullRequestNumber, repoOwner, repoName, correlationId, taskId } = issueRef;
-    for (const result of reviewResults) {
-        const timestamp = new Date().toISOString();
-        const conversationLog = [
-            { type: 'user', timestamp, message: { content: [{ type: 'text', text: result.prompt || 'Review prompt not captured' }] } },
-            { type: 'assistant', timestamp, message: { content: [{ type: 'text', text: result.analysisResult.response || result.error || 'No response' }] } },
-        ];
+interface RunReviewsContext {
+    registry: AgentRegistry;
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
+    pullRequestNumber: number;
+    repoOwner: string;
+    repoName: string;
+    taskId: string;
+    taskUrl: string;
+    combinedCommentBody: string;
+    commentHistory: string;
+    originalTaskSpec: string;
+    commandInstructions?: string;
+    prDiff: string;
+    omittedDiffFiles: string[];
+    changedFilePaths: string[];
+    findingStartNumber: number;
+    redisClient: Redis;
+    fileContents: string;
+    relatedContext: string;
+    checkSummary: string;
+    hasCurrentCheckFailure: boolean;
+    reviewPromptOverride: string;
+    reviewMaxContextTokens: number;
+    reasoningLevel?: ReasoningLevel;
+    correlatedLogger: Logger;
+}
 
-        const metricsResult: Parameters<typeof recordLLMMetrics>[0] = {
-            success: result.analysisResult.success,
-            model: result.analysisResult.modelUsed || result.assignment.model,
-            executionTime: result.analysisResult.executionTimeMs,
-            sessionId: result.analysisResult.sessionId || null,
-            tokenUsage: result.analysisResult.tokenUsage,
-            conversationLog,
-            ...(result.analysisResult.success ? {} : { error: result.analysisResult.error || result.error }),
-        };
-        await recordLLMMetrics(metricsResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_review', correlationId, taskId, executionType: 'pr-review' });
+async function runSingleReview(
+    assignment: ReviewAssignment,
+    ctx: RunReviewsContext
+): Promise<ReviewResult> {
+    const { registry, octokit, pullRequestNumber, repoOwner, repoName, taskId, taskUrl, correlatedLogger } = ctx;
+    const { agentAlias, model, label } = assignment;
+    correlatedLogger.info({ pullRequestNumber, agentAlias, model, label }, 'Starting review analysis');
+
+    const agent = registry.getAgentByAlias(agentAlias);
+    if (!agent) {
+        const errorMsg = `Agent not found for alias: ${agentAlias}`;
+        correlatedLogger.error({ agentAlias }, errorMsg);
+        return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg };
+    }
+
+    const promptResult = buildReviewPromptWithinBudget({
+        pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
+        originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
+        prDiff: ctx.prDiff, fileContents: ctx.fileContents, relatedContext: ctx.relatedContext,
+        checkSummary: ctx.checkSummary, reviewPromptOverride: ctx.reviewPromptOverride,
+    }, ctx.reviewMaxContextTokens, REVIEW_ANALYSIS_SAFETY_SUFFIX);
+    const reviewPrompt = promptResult.prompt;
+    if (promptResult.truncatedSections.length > 0) {
+        correlatedLogger.warn({
+            pullRequestNumber,
+            model,
+            maxContextTokens: ctx.reviewMaxContextTokens,
+            estimatedTokens: promptResult.estimatedTokens,
+            truncatedSections: promptResult.truncatedSections,
+        }, 'Trimmed PR review context to fit token budget');
+    }
+
+    try {
+        const analysisResult = await agent.analyze(reviewPrompt, {
+            model,
+            taskId,
+            prNumber: pullRequestNumber,
+            repository: `${repoOwner}/${repoName}`,
+            executionType: 'pr-review',
+            responseFormat: 'text',
+            reasoningLevel: ctx.reasoningLevel,
+            timeoutMs: REVIEW_TIMEOUT_MS,
+        });
+        correlatedLogger.info({
+            pullRequestNumber, model: analysisResult.modelUsed, success: analysisResult.success,
+            executionTimeMs: analysisResult.executionTimeMs, responseLength: analysisResult.response.length,
+        }, 'Review analysis completed');
+
+        const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
+        const { reviewCommentBody, findingCount } = await buildReviewCommentWithReservedFindingRange(
+            assignment, analysisResult, taskUrl, {
+                omittedDiffFiles: ctx.omittedDiffFiles,
+                prDiffTruncated: promptResult.prDiffTruncated,
+                costUsd,
+                hasCurrentCheckFailure: ctx.hasCurrentCheckFailure,
+                changedFilePaths: ctx.changedFilePaths,
+                redisClient: ctx.redisClient, issueRef: { repoOwner, repoName, pullRequestNumber },
+                observedNextFindingNumber: ctx.findingStartNumber,
+            },
+        );
+
+        const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
+        });
+
+        return { assignment, analysisResult, commentId: reviewComment.data.id, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt, findingCount };
+    } catch (reviewError) {
+        const errorMsg = (reviewError as Error).message;
+        correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');
+
+        let errorComment: { data: { id: number; html_url: string } } | undefined;
+        try {
+            errorComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
+                body: buildReviewErrorComment(label, model, errorMsg),
+            });
+        } catch (commentError) {
+            correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post review error comment');
+        }
+
+        return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, commentId: errorComment?.data.id, commentUrl: errorComment?.data.html_url, error: errorMsg, prompt: reviewPrompt };
     }
 }
 
@@ -262,7 +369,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         configuredReviewMaxContextTokens,
     );
 
-    const { allComments, commentHistory, linkedIssueResult, prDiff, changedFiles, omittedDiffFiles, fileContents, checkSummary, hasCurrentCheckFailure } = await fetchReviewContext(
+    const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, changedFilePaths, fileContents, checkSummary, hasCurrentCheckFailure } = await fetchReviewContext(
         state.octokit, prData!, {
             repoOwner, repoName, pullRequestNumber, models: reviewBudgetModels,
             maxContextTokens: reviewMaxContextTokens, correlationId, correlatedLogger,
@@ -332,7 +439,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
                 githubToken: githubToken.token,
                 branchName: context.jobBranchName || prData!.data.head.ref,
                 prDiff,
-                changedFiles,
+                changedFiles: changedFilePaths,
                 originalTaskSpec,
                 pullRequestNumber,
                 repoOwner,
@@ -360,6 +467,9 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         commandInstructions: job.data.commandInstructions,
         prDiff,
         omittedDiffFiles,
+        changedFilePaths,
+        findingStartNumber: 1,
+        redisClient,
         fileContents, relatedContext, checkSummary, hasCurrentCheckFailure,
         reviewPromptOverride,
         reviewMaxContextTokens,
@@ -368,8 +478,17 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     };
 
     const reviewResults: ReviewResult[] = [];
+    let nextFindingNumber = getNextAuthenticatedActionableFindingNumber(
+        allComments,
+        state.startingWorkComment.data.user?.login,
+    );
     for (const assignment of assignments) {
-        reviewResults.push(await runSingleReview(assignment, reviewCtx));
+        const result = await runSingleReview(assignment, {
+            ...reviewCtx,
+            findingStartNumber: nextFindingNumber,
+        });
+        reviewResults.push(result);
+        nextFindingNumber += result.findingCount ?? 0;
     }
 
     await recordReviewMetrics(reviewResults, { pullRequestNumber, repoOwner, repoName, correlationId, taskId });

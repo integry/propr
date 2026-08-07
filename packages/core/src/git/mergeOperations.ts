@@ -1,6 +1,7 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import logger from '../utils/logger.js';
 import { AI_COMMIT_AUTHOR } from './commitOperations.js';
+import { createHooklessGit } from './hooklessGit.js';
 
 export type MergeOutcome = 'clean' | 'conflicts' | 'failed';
 
@@ -18,7 +19,7 @@ export async function mergeBaseIntoBranch(
     worktreePath: string,
     baseBranch: string,
 ): Promise<MergeResult> {
-    const git: SimpleGit = simpleGit({ baseDir: worktreePath });
+    const git: SimpleGit = createHooklessGit(worktreePath);
 
     try {
         // Fetch the latest base branch
