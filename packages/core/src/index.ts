@@ -151,7 +151,7 @@ export { getExecutionAnalysis } from './services/analysisService.js';
 export { getModelPricing } from './services/pricingService.js';
 export { getWorktreeChanges, storeFileChanges, getStoredFileChanges, clearFileChanges, updateFileChangesFromWorktree, getCommitChanges, isValidCommitHash } from './services/worktreeMonitorService.js';
 export type { FileChange, FileChangesData } from './services/worktreeMonitorService.js';
-export { generateContext, generateAdditionalContext, SecurityException } from './services/context/index.js';
+export { generateContext, generateAdditionalContext, ContextTokenLimitError, SecurityException } from './services/context/index.js';
 export type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile, AdditionalContextOptions, AdditionalContextResult } from './services/context/index.js';
 export { findRelevantFiles } from './services/relevanceService.js';
 export type { RelevantFile, RelevanceResult, RelevanceOptions } from './services/relevanceService.js';

@@ -2,12 +2,80 @@
  * Main context generation using repomix.
  */
 
-import { pack } from 'repomix';
+import type { Logger } from 'pino';
+import type { PackResult } from 'repomix';
+import { randomUUID } from 'node:crypto';
+import { chmod, lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import logger from '../../utils/logger.js';
 import { TIKTOKEN_TO_CLAUDE_RATIO } from '../../config/modelLimits.js';
-import { filterExplicitFilesByPackedPaths, generateOptimizedContext } from './optimizedContext.js';
-import type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile } from './types.js';
-import { SecurityException } from './types.js';
+import {
+  filterExplicitFilesByPackedPaths,
+  generateOptimizedContext,
+  packWithSecurityExclusions,
+} from './optimizedContext.js';
+import type { ContextGenerationOptions, ContextGenerationResult, RepomixPackConfig, SuspiciousFile } from './types.js';
+import { ContextTokenLimitError, SecurityException } from './types.js';
+
+const TEMP_OUTPUT_PREFIX = 'propr-repomix-';
+const OWNERSHIP_MARKER_NAME = '.owner.json';
+
+interface OutputDirectoryOwner {
+  pid: number;
+  requestId: string;
+  createdAt: string;
+  state: 'active' | 'completed';
+  completedAt?: string;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function finalizeOutputDirectory(
+  outputDirectory: string,
+  owner: OutputDirectoryOwner,
+  contextLogger: Pick<Logger, 'error' | 'warn'>,
+): Promise<void> {
+  const completedAt = new Date().toISOString();
+  try {
+    await writeFile(path.join(outputDirectory, OWNERSHIP_MARKER_NAME), JSON.stringify({
+      ...owner,
+      state: 'completed',
+      completedAt,
+    } satisfies OutputDirectoryOwner), { mode: 0o600 });
+  } catch (markerError) {
+    contextLogger.warn(
+      { outputDirectory, error: getErrorMessage(markerError) },
+      'Failed to mark Repomix output directory as completed before cleanup',
+    );
+  }
+
+  try {
+    await rm(outputDirectory, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 50,
+    });
+  } catch (cleanupError) {
+    contextLogger.error(
+      { outputDirectory, error: getErrorMessage(cleanupError) },
+      'Failed to securely clean up Repomix output directory after retries',
+    );
+    throw new Error(`Failed to securely clean up Repomix output directory: ${outputDirectory}`, {
+      cause: cleanupError,
+    });
+  }
+}
+
+function requireGeneratedContext(result: ContextGenerationResult | undefined): ContextGenerationResult {
+  if (!result) {
+    throw new Error('Context generation completed without producing a result');
+  }
+  return result;
+}
 
 /**
  * Get the token ratio for converting between tiktoken and actual model tokens.
@@ -47,8 +115,121 @@ function getFilesForOptimization(
   return allPackedFiles;
 }
 
+function normalizeTargetRelativePath(filePath: string, caseInsensitive: boolean): string {
+  const normalizedPath = path.posix.normalize(filePath.replaceAll('\\', '/'));
+  return caseInsensitive ? normalizedPath.toLocaleLowerCase('en-US') : normalizedPath;
+}
+
+async function isFileSystemCaseInsensitive(filePath: string): Promise<boolean> {
+  const resolvedPath = await realpath(filePath);
+  const fileName = path.basename(resolvedPath);
+  const letterIndex = fileName.search(/[a-z]/i);
+  if (letterIndex === -1) {
+    return false;
+  }
+
+  const letter = fileName[letterIndex];
+  const toggledLetter = letter === letter.toLocaleLowerCase('en-US')
+    ? letter.toLocaleUpperCase('en-US')
+    : letter.toLocaleLowerCase('en-US');
+  const alternatePath = path.join(
+    path.dirname(resolvedPath),
+    `${fileName.slice(0, letterIndex)}${toggledLetter}${fileName.slice(letterIndex + 1)}`,
+  );
+
+  try {
+    const [originalStats, alternateStats] = await Promise.all([
+      lstat(resolvedPath),
+      lstat(alternatePath),
+    ]);
+    return originalStats.dev === alternateStats.dev && originalStats.ino === alternateStats.ino;
+  } catch {
+    return false;
+  }
+}
+
+export function filterExplicitFilesBySafePaths(
+  filesToInclude: string[],
+  safeFilePaths: string[],
+  caseInsensitive = false,
+): string[] {
+  const safePathsByExactPath = new Map<string, string>();
+  const safePathsByFoldedPath = new Map<string, string[]>();
+  for (const safePath of safeFilePaths) {
+    const exactPath = normalizeTargetRelativePath(safePath, false);
+    safePathsByExactPath.set(exactPath, safePath);
+
+    if (caseInsensitive) {
+      const foldedPath = normalizeTargetRelativePath(safePath, true);
+      const pathsForFoldedPath = safePathsByFoldedPath.get(foldedPath) || [];
+      pathsForFoldedPath.push(safePath);
+      safePathsByFoldedPath.set(foldedPath, pathsForFoldedPath);
+    }
+  }
+  const matchedSafePaths = new Set<string>();
+
+  return filesToInclude.flatMap(filePath => {
+    const exactPath = normalizeTargetRelativePath(filePath, false);
+    let safePath = safePathsByExactPath.get(exactPath);
+    if (!safePath && caseInsensitive) {
+      safePath = safePathsByFoldedPath
+        .get(normalizeTargetRelativePath(filePath, true))
+        ?.find(candidate => !matchedSafePaths.has(candidate));
+    }
+    if (!safePath || matchedSafePaths.has(safePath)) {
+      return [];
+    }
+    matchedSafePaths.add(safePath);
+    return [safePath];
+  });
+}
+
+async function filterExplicitFilesBySafePathsOnFileSystem(
+  filesToInclude: string[] | undefined,
+  safeFilePaths: string[],
+  repoPath: string,
+): Promise<string[] | undefined> {
+  if (!filesToInclude || filesToInclude.length === 0) {
+    return undefined;
+  }
+
+  const caseInsensitive = await isFileSystemCaseInsensitive(repoPath);
+  return filterExplicitFilesBySafePaths(filesToInclude, safeFilePaths, caseInsensitive);
+}
+
+function getSuspiciousFilesFromError(error: unknown): SuspiciousFile[] {
+  if (typeof error !== 'object' || error === null || !('suspiciousFilesResults' in error)) {
+    return [];
+  }
+
+  const results = (error as { suspiciousFilesResults?: unknown }).suspiciousFilesResults;
+  if (!Array.isArray(results)) {
+    return [];
+  }
+
+  return results.flatMap((file): SuspiciousFile[] => {
+    if (typeof file !== 'object' || file === null || !('filePath' in file) || typeof file.filePath !== 'string') {
+      return [];
+    }
+    const messages = 'messages' in file && Array.isArray(file.messages)
+      ? file.messages.filter((message: unknown): message is string => typeof message === 'string')
+      : [];
+    return [{ filePath: file.filePath, messages }];
+  });
+}
+
 export async function generateContext(options: ContextGenerationOptions): Promise<ContextGenerationResult> {
-  const { repoPath, filesToInclude, priorityFiles, tokenLimit, correlationId, includeFullDirectoryStructure = true, compress = false, modelId } = options;
+  const {
+    repoPath,
+    filesToInclude,
+    priorityFiles,
+    tokenLimit,
+    correlationId,
+    includeFullDirectoryStructure = true,
+    compress = false,
+    modelId,
+    temporaryRoot = tmpdir(),
+  } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   // Convert model token limit to tiktoken limit based on model type
@@ -57,14 +238,27 @@ export async function generateContext(options: ContextGenerationOptions): Promis
 
   correlatedLogger.info({ repoPath, filesToInclude, tokenLimit, tiktokenLimit, compress }, 'Starting context generation with repomix');
 
-  const config = {
+  // mkdtemp creates the request-owned directory atomically. In particular, it
+  // avoids trusting or chmodding a predictable service path that another local
+  // user could pre-create as a symlink.
+  const outputDirectory = await mkdtemp(path.join(temporaryRoot, TEMP_OUTPUT_PREFIX));
+  const outputFilePath = path.join(outputDirectory, 'repomix-output.xml');
+  const owner: OutputDirectoryOwner = {
+    pid: process.pid,
+    requestId: correlationId || randomUUID(),
+    createdAt: new Date().toISOString(),
+    state: 'active',
+  };
+
+  const config: RepomixPackConfig = {
     cwd: repoPath,
     input: {
       maxFileSize: 10 * 1024 * 1024, // 10MB
     },
     output: {
-      filePath: 'repomix-output.xml',
+      filePath: outputFilePath,
       style: 'xml' as const,
+      filePathStyle: 'target-relative' as const,
       parsableStyle: true,
       fileSummary: true,
       directoryStructure: true,
@@ -102,78 +296,49 @@ export async function generateContext(options: ContextGenerationOptions): Promis
     },
   };
 
-  let capturedOutput = '';
-
-  const captureWriteOutput = async (output: string): Promise<undefined> => {
-    capturedOutput = output;
-    return undefined;
-  };
-
-  const noopCopyToClipboard = async (): Promise<void> => {
-    return;
-  };
-
-  let skippedSecurityFiles: SuspiciousFile[] | undefined;
-
-  try {
-    // repomix v1.9+ expects rootDirs as first argument (array of directories)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let result = await (pack as any)([repoPath], config, () => {}, {
-      writeOutputToDisk: captureWriteOutput,
-      copyToClipboardIfEnabled: noopCopyToClipboard,
-    });
-
-    // Check if we got a security exception and need to retry without problematic files
-    if (result.suspiciousFilesResults && result.suspiciousFilesResults.length > 0) {
-      const suspiciousFiles: SuspiciousFile[] = result.suspiciousFilesResults.map(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (file: any) => ({
-          filePath: file.filePath,
-          messages: file.messages || [],
-        })
-      );
-
-      correlatedLogger.warn(
-        { suspiciousFilesCount: suspiciousFiles.length, files: suspiciousFiles.slice(0, 5).map(f => f.filePath) },
-        'Suspicious files detected during context generation - excluding them'
-      );
-
-      // Store skipped files for reporting
-      skippedSecurityFiles = suspiciousFiles;
-
-      // Create a new config that excludes the suspicious files
-      const suspiciousFilePaths = suspiciousFiles.map(f => f.filePath);
-
-      // If we have specific files to include, filter out suspicious ones
-      // Otherwise, add suspicious files to the ignore list
-      const updatedConfig = {
-        ...config,
-        include: filesToInclude
-          ? filesToInclude.filter(f => !suspiciousFilePaths.includes(f))
-          : [],
-        ignore: {
-          ...config.ignore,
-          customPatterns: [
-            ...config.ignore.customPatterns,
-            ...suspiciousFilePaths.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-          ],
-        },
-        security: {
-          enableSecurityCheck: false,  // Disable security check on retry since we've already filtered
-        },
-      };
-
-      // Retry without suspicious files
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      result = await (pack as any)([repoPath], updatedConfig, () => {}, {
-        writeOutputToDisk: captureWriteOutput,
-        copyToClipboardIfEnabled: noopCopyToClipboard,
-      });
+  const skippedSecurityFiles = new Map<string, SuspiciousFile>();
+  const recordSuspiciousFiles = (files: SuspiciousFile[]): void => {
+    const newlySkippedFiles = files.filter(file => !skippedSecurityFiles.has(file.filePath));
+    for (const file of files) {
+      skippedSecurityFiles.set(file.filePath, file);
     }
+    if (newlySkippedFiles.length === 0) {
+      return;
+    }
+
+    correlatedLogger.warn(
+      {
+        suspiciousFilesCount: newlySkippedFiles.length,
+        files: newlySkippedFiles.slice(0, 5).map(file => file.filePath),
+      },
+      'Suspicious files detected during context generation - excluding them',
+    );
+  };
+
+  let generatedContext: ContextGenerationResult | undefined;
+  let operationError: unknown;
+  let operationFailed = false;
+  try {
+    // Restrict repository content even on hosts with a permissive process umask.
+    await chmod(outputDirectory, 0o700);
+    await writeFile(path.join(outputDirectory, OWNERSHIP_MARKER_NAME), JSON.stringify(owner), { mode: 0o600 });
+
+    const initialPack = await packWithSecurityExclusions(repoPath, config, recordSuspiciousFiles);
+    let result: PackResult = initialPack.result;
+    const effectiveConfig = initialPack.effectiveConfig;
 
     // Check if result exceeds token limit and needs truncation
     if (result.totalTokens > tiktokenLimit) {
-      const filesForOptimization = getFilesForOptimization(filesToInclude, priorityFiles, result.fileTokenCounts);
+      const explicitSafeFiles = await filterExplicitFilesBySafePathsOnFileSystem(
+        filesToInclude,
+        effectiveConfig.include,
+        repoPath,
+      );
+      const filesForOptimization = getFilesForOptimization(
+        explicitSafeFiles,
+        priorityFiles,
+        result.fileTokenCounts,
+      );
 
       if (filesForOptimization.length > 0) {
         correlatedLogger.info(
@@ -185,11 +350,12 @@ export async function generateContext(options: ContextGenerationOptions): Promis
         const optimizedResult = await generateOptimizedContext({
           repoPath,
           initialFiles: filesForOptimization,
-          baseConfig: config,
+          baseConfig: effectiveConfig,
           tiktokenLimit,
+          requestedTokenLimit: tokenLimit,
+          modelId,
           contextLogger: correlatedLogger,
-          writeOutput: captureWriteOutput,
-          noopClipboard: noopCopyToClipboard,
+          onSuspiciousFiles: recordSuspiciousFiles,
         });
 
         result = optimizedResult.result;
@@ -206,12 +372,20 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       }
     }
 
+    if (result.totalTokens > tiktokenLimit) {
+      throw new ContextTokenLimitError(result.totalTokens, tokenLimit, tiktokenLimit, modelId);
+    }
+
+    // Read only the final successful pack so the returned output and metrics
+    // always describe the same attempt.
+    const capturedOutput = await readFile(outputFilePath, 'utf8');
+
     correlatedLogger.info(
       { totalFiles: result.totalFiles, totalCharacters: result.totalCharacters, totalTokens: result.totalTokens },
       'Repomix context generation completed'
     );
 
-    return {
+    generatedContext = {
       context: capturedOutput,
       totalFiles: result.totalFiles,
       totalCharacters: result.totalCharacters,
@@ -219,31 +393,43 @@ export async function generateContext(options: ContextGenerationOptions): Promis
       fileCharCounts: result.fileCharCounts,
       fileTokenCounts: result.fileTokenCounts,
       includedFiles: Object.keys(result.fileTokenCounts || {}),
-      skippedSecurityFiles,
+      skippedSecurityFiles: skippedSecurityFiles.size > 0
+        ? [...skippedSecurityFiles.values()]
+        : undefined,
     };
   } catch (error) {
     // Check if repomix threw a security exception
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const err = error as any;
-    if (err.suspiciousFilesResults && Array.isArray(err.suspiciousFilesResults) && err.suspiciousFilesResults.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const suspiciousFiles: SuspiciousFile[] = err.suspiciousFilesResults.map((file: any) => ({
-        filePath: file.filePath,
-        messages: file.messages || [],
-      }));
-
+    const suspiciousFiles = getSuspiciousFilesFromError(error);
+    if (suspiciousFiles.length > 0) {
       correlatedLogger.error(
         { suspiciousFilesCount: suspiciousFiles.length, files: suspiciousFiles.map(f => f.filePath) },
         'Security check failed: suspicious files detected'
       );
 
-      throw new SecurityException(
+      operationError = new SecurityException(
         `Security check failed: ${suspiciousFiles.length} file(s) contain potential secrets`,
         suspiciousFiles
       );
+    } else {
+      correlatedLogger.error({ error: getErrorMessage(error) }, 'Failed to generate context with repomix');
+      operationError = error;
     }
-
-    correlatedLogger.error({ error: (error as Error).message }, 'Failed to generate context with repomix');
-    throw error;
+    operationFailed = true;
   }
+
+  try {
+    await finalizeOutputDirectory(outputDirectory, owner, correlatedLogger);
+  } catch (cleanupFailure) {
+    if (operationFailed) {
+      throw new AggregateError(
+        [operationError, cleanupFailure],
+        'Context generation failed and its Repomix output directory could not be cleaned up',
+      );
+    }
+    throw cleanupFailure;
+  }
+  if (operationFailed) {
+    throw operationError;
+  }
+  return requireGeneratedContext(generatedContext);
 }
