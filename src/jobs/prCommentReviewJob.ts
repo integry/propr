@@ -10,8 +10,9 @@ import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prComme
 import { buildCombinedComment } from './prCommentJobUtils.js';
 import { calculateReviewCost, fetchReviewContext, type PRData } from './reviewContextHelpers.js';
 import { buildReviewPrompt } from './reviewPromptBuilder.js';
-import { buildReviewComment, buildReviewErrorComment, isReviewComment } from './reviewCommentFormatter.js';
-import { getNextActionableFindingNumber, parseStructuredReview } from './reviewOutputParser.js';
+import { buildReviewErrorComment, isReviewComment } from './reviewCommentFormatter.js';
+import { getNextActionableFindingNumber } from './reviewOutputParser.js';
+import { buildReviewCommentWithReservedFindingRange } from './reviewFindingNumberAllocator.js';
 import { recordReviewMetrics } from './reviewResultMetrics.js';
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
@@ -167,6 +168,7 @@ interface RunReviewsContext {
     omittedDiffFiles: string[];
     changedFilePaths: string[];
     findingStartNumber: number;
+    redisClient: Redis;
     fileContents: string;
     checkSummary: string;
     hasCurrentCheckFailure: boolean;
@@ -204,16 +206,14 @@ async function runSingleReview(
         }, 'Review analysis completed');
 
         const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
-        const reviewCommentBody = analysisResult.success
-            ? buildReviewComment(assignment, analysisResult, taskUrl, {
-                omittedDiffFiles: ctx.omittedDiffFiles,
-                costUsd,
-                hasCurrentCheckFailure: ctx.hasCurrentCheckFailure,
-                firstFindingNumber: ctx.findingStartNumber,
+        const { reviewCommentBody, findingCount } = await buildReviewCommentWithReservedFindingRange(
+            assignment, analysisResult, taskUrl, {
+                omittedDiffFiles: ctx.omittedDiffFiles, costUsd, hasCurrentCheckFailure: ctx.hasCurrentCheckFailure,
                 changedFilePaths: ctx.changedFilePaths,
-            })
-            : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
-        const findingCount = parseStructuredReview(reviewCommentBody).actionableFindings.length;
+                redisClient: ctx.redisClient, issueRef: { repoOwner, repoName, pullRequestNumber },
+                observedNextFindingNumber: ctx.findingStartNumber,
+            },
+        );
 
         const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
             owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
@@ -406,6 +406,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         omittedDiffFiles,
         changedFilePaths,
         findingStartNumber: 1,
+        redisClient,
         fileContents, checkSummary, hasCurrentCheckFailure,
         reviewPromptOverride,
         reasoningLevel: job.data.reasoningLevel,
