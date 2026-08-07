@@ -23,6 +23,7 @@ export interface ActionableFinding {
 export interface ReviewSuggestion {
     id: string;
     title: string;
+    description: string;
 }
 
 export interface StructuredReviewResult {
@@ -164,8 +165,11 @@ function parseMachineActionableRecords(section: string): ActionableFinding[] | n
 }
 
 function parsePublicActionableRecords(section: string): ActionableFinding[] | null {
+    if (section.trim() === 'No merge blockers.') return [];
     if (!section.startsWith(`${MERGE_BLOCKERS_INTRODUCTION}\n`)) return null;
     const recordsSection = section.slice(MERGE_BLOCKERS_INTRODUCTION.length).trim();
+    // Continue accepting comments published before clean reviews stopped
+    // including the merge-blocker policy preamble.
     if (recordsSection === 'No merge blockers.') return [];
     if (!/^### F1\b/.test(recordsSection)) return null;
 
@@ -181,7 +185,7 @@ function parsePublicActionableRecords(section: string): ActionableFinding[] | nu
         if (fields.size !== 3 || !violatedRequirement || !evidence || !minimumCorrection) return null;
         findings.push({
             id: record.id,
-            title: record.title,
+            title: record.title.replace(/^🔴[ \t]+/, ''),
             violatedRequirement,
             evidence,
             introducedByPR: true,
@@ -193,23 +197,38 @@ function parsePublicActionableRecords(section: string): ActionableFinding[] | nu
     return findings;
 }
 
-function parseSuggestionRecords(section: string): ReviewSuggestion[] | null {
+function parseSuggestionRecords(
+    section: string,
+    options: { requireDescription: boolean },
+): ReviewSuggestion[] | null {
     if (section.trim() === 'No suggestions.') return [];
 
     const records = extractMarkdownRecords(section, 'S');
     if (
         records.length === 0
         || !hasSequentialRecordHeadings(section, records, 'S')
-        || records.some(record => record.body !== '')
+        || records.some(record => options.requireDescription && record.body === '')
+        || records.some(record => extractRecordFields(record.body).size > 0)
+        || records.some(record => /^#{1,6}[ \t]+/m.test(record.body))
     ) return null;
-    return records.map(record => ({ id: record.id, title: record.title }));
+    return records.map(record => ({
+        id: record.id,
+        title: record.title,
+        description: record.body,
+    }));
 }
 
 function parsePublicSuggestionRecords(section: string): ReviewSuggestion[] | null {
     if (!section.startsWith(`${SUGGESTIONS_INTRODUCTION}\n`)) return null;
     const recordsSection = section.slice(SUGGESTIONS_INTRODUCTION.length).trim();
     if (recordsSection !== 'No suggestions.' && !/^### S1\b/.test(recordsSection)) return null;
-    return parseSuggestionRecords(recordsSection);
+    // Description-less S# headings were used by older public comments. Keep
+    // them parseable even though new machine output requires an explanation.
+    const suggestions = parseSuggestionRecords(recordsSection, { requireDescription: false });
+    return suggestions?.map(suggestion => ({
+        ...suggestion,
+        title: suggestion.title.replace(/^🟢[ \t]+/, ''),
+    })) ?? null;
 }
 
 interface ReviewContract {
@@ -223,7 +242,7 @@ const MACHINE_CONTRACT: ReviewContract = {
     headings: MACHINE_SECTION_HEADINGS,
     cleanSentinel: 'No actionable findings.',
     parseFindings: parseMachineActionableRecords,
-    parseSuggestions: parseSuggestionRecords,
+    parseSuggestions: section => parseSuggestionRecords(section, { requireDescription: true }),
 };
 
 const PUBLIC_CONTRACT: ReviewContract = {
@@ -258,7 +277,7 @@ function parseContract(body: string, contract: ReviewContract): StructuredReview
         status: actionableFindings.length === 0 ? 'valid_clean' : 'valid_with_blockers',
         actionableFindings,
         suggestions,
-        score,
+        score: actionableFindings.length > 0 ? Math.min(score, 6) : score,
     };
 }
 
@@ -294,14 +313,15 @@ export function extractReviewSuggestions(body: string): ReviewSuggestion[] {
         : extractMarkdownSection(body, 'Suggestions').slice(SUGGESTIONS_INTRODUCTION.length).trim();
     return extractMarkdownRecords(section, 'S').map(record => ({
         id: record.id,
-        title: record.title,
+        title: machineSection ? record.title : record.title.replace(/^🟢[ \t]+/, ''),
+        description: record.body,
     }));
 }
 
 function formatPublicFindings(findings: ActionableFinding[]): string {
     if (findings.length === 0) return 'No merge blockers.';
     return findings.map(finding => [
-        `### ${finding.id}: ${finding.title}`,
+        `### ${finding.id}: 🔴 ${finding.title}`,
         `- **Required behavior:** ${finding.violatedRequirement}`,
         `- **Evidence:** ${finding.evidence}`,
         `- **Minimum fix:** ${finding.minimumCorrection}`,
@@ -310,7 +330,10 @@ function formatPublicFindings(findings: ActionableFinding[]): string {
 
 function formatPublicSuggestions(suggestions: ReviewSuggestion[]): string {
     if (suggestions.length === 0) return 'No suggestions.';
-    return suggestions.map(suggestion => `### ${suggestion.id}: ${suggestion.title}`).join('\n\n');
+    return suggestions.map(suggestion => [
+        `### ${suggestion.id}: 🟢 ${suggestion.title}`,
+        suggestion.description,
+    ].filter(Boolean).join('\n\n')).join('\n\n');
 }
 
 /**
@@ -318,25 +341,41 @@ function formatPublicSuggestions(suggestions: ReviewSuggestion[]): string {
  * Markdown that is safe to publish. Invalid responses return null so callers
  * can preserve the original diagnostic output and fail closed downstream.
  */
-export function renderPublicReview(body: string): string | null {
+export function renderPublicReview(
+    body: string,
+    scoreCap?: { maximum: number; reason: string },
+): string | null {
     if (ERROR_REVIEW_MARKER_RE.test(body)) return null;
     const cleaned = prepareReviewBody(body);
     const parsed = parseContract(cleaned, MACHINE_CONTRACT);
     if (parsed.status === 'invalid') return null;
 
     const overallSection = extractMarkdownSection(cleaned, 'Overall Evaluation');
-    const scoreSection = extractMarkdownSection(cleaned, 'Score');
+    const originalScoreSection = extractMarkdownSection(cleaned, 'Score');
+    const publishedScore = Math.min(parsed.score ?? 10, scoreCap?.maximum ?? 10);
+    const scoreSection = originalScoreSection.replace(
+        /^Score:[ \t]*\d{1,2}[ \t]*\/[ \t]*10[ \t]*$/m,
+        `Score: ${publishedScore}/10`,
+    );
+    const originalScore = Number.parseInt(originalScoreSection.match(/^Score:[ \t]*(\d{1,2})[ \t]*\/[ \t]*10[ \t]*$/m)?.[1] ?? '', 10);
+    const scoreCapNote = originalScore > publishedScore
+        ? `\n\n_${parsed.actionableFindings.length > 0
+            ? `Score capped at ${publishedScore} because merge blockers remain.`
+            : scoreCap?.reason}_`
+        : '';
+    const mergeBlockersSection = parsed.actionableFindings.length === 0
+        ? 'No merge blockers.'
+        : `${MERGE_BLOCKERS_INTRODUCTION}\n\n${formatPublicFindings(parsed.actionableFindings)}`;
     return [
         '## Overall Evaluation',
         overallSection,
         '## Merge blockers',
-        MERGE_BLOCKERS_INTRODUCTION,
-        formatPublicFindings(parsed.actionableFindings),
+        mergeBlockersSection,
         '## Suggestions',
         SUGGESTIONS_INTRODUCTION,
         formatPublicSuggestions(parsed.suggestions),
         '## Score',
-        scoreSection,
+        `${scoreSection}${scoreCapNote}`,
     ].join('\n\n');
 }
 

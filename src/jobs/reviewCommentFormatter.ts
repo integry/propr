@@ -49,8 +49,8 @@ function formatDuration(ms: number): string {
     return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
-/** Remove legacy suggestion fields that duplicate the S# heading or internal policy. */
-function removeSuggestionMetadata(response: string): string {
+/** Convert legacy suggestion metadata into the current title-and-reasoning shape. */
+function normalizeSuggestionMetadata(response: string): string {
     const sectionMatch = /^##[ \t]+Suggestions and Follow-ups(?:[ \t]+.*)?$/im.exec(response);
     if (!sectionMatch) return response;
 
@@ -59,7 +59,10 @@ function removeSuggestionMetadata(response: string): string {
     const nextSection = /^##\s+/m.exec(afterStart);
     const sectionEnd = sectionStart + (nextSection?.index ?? afterStart.length);
     const section = response.slice(sectionStart, sectionEnd)
-        .replace(/^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?summary:?(?:\*\*)?[ \t]*:?.*(?:\r?\n|$)/gim, '')
+        .replace(
+            /^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?summary:?(?:\*\*)?[ \t]*:?\s*(.*?)[ \t]*(?:\r?\n|$)/gim,
+            '$1\n',
+        )
         .replace(/^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?auto[- ]?fix:?(?:\*\*)?[ \t]*:?.*(?:\r?\n|$)/gim, '');
 
     return response.slice(0, sectionStart) + section + response.slice(sectionEnd);
@@ -79,7 +82,11 @@ export function buildReviewComment(
     assignment: ReviewAssignment,
     analysisResult: AnalysisResult,
     taskUrl?: string,
-    options: { omittedDiffFiles?: string[]; costUsd?: number | null } = {},
+    options: {
+        omittedDiffFiles?: string[];
+        costUsd?: number | null;
+        hasCurrentCheckFailure?: boolean;
+    } = {},
 ): string {
     const { model, label } = assignment;
     const { response, executionTimeMs, tokenUsage, modelUsed } = analysisResult;
@@ -87,8 +94,11 @@ export function buildReviewComment(
     const effectiveModel = modelUsed || model;
     const modelDisplayName = getModelName(effectiveModel);
 
-    const sanitizedResponse = removeSuggestionMetadata(response);
-    const publicResponse = renderPublicReview(sanitizedResponse);
+    const sanitizedResponse = normalizeSuggestionMetadata(response);
+    const currentCheckScoreCap = options.hasCurrentCheckFailure
+        ? { maximum: 7, reason: 'Score capped at 7 because a current-head check is failing.' }
+        : undefined;
+    const publicResponse = renderPublicReview(sanitizedResponse, currentCheckScoreCap);
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
     comment += publicResponse ?? '⚠️ **Review output was invalid and could not be displayed safely.**';
 

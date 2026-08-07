@@ -10,8 +10,44 @@ import {
 import type { AnalysisResult } from '@propr/core';
 import { fetchLinkedIssueContext, buildCommentHistory } from './prCommentJobHelpers.js';
 import { fetchAllComments, fetchPRFiles, fetchPRFileContents, formatPRDiffWithMetadata, formatFileContents } from './prCommentJobUtils.js';
+import {
+    currentHeadChecksHaveFailures,
+    formatCurrentHeadCheckSummary,
+    type ReviewCheckRun,
+} from './reviewCheckSummary.js';
 
-export interface PRData { data: { head: { ref: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
+export interface PRData { data: { head: { ref: string; sha?: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
+
+async function fetchCurrentHeadCheckSummary(
+    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
+    prData: PRData,
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger },
+): Promise<{ checkSummary: string; hasCurrentCheckFailure: boolean }> {
+    const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = params;
+    const ref = prData.data.head.sha || prData.data.head.ref;
+    try {
+        const checkRuns = await octokit.paginate('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+            owner: repoOwner,
+            repo: repoName,
+            ref,
+            filter: 'latest',
+            per_page: 100,
+        }) as unknown as ReviewCheckRun[];
+        return {
+            checkSummary: formatCurrentHeadCheckSummary(checkRuns),
+            hasCurrentCheckFailure: currentHeadChecksHaveFailures(checkRuns),
+        };
+    } catch (error) {
+        correlatedLogger.warn(
+            { pullRequestNumber, error: error instanceof Error ? error.message : String(error) },
+            'Failed to fetch current-head check runs for review',
+        );
+        return {
+            checkSummary: 'Current-head check status is unavailable; do not infer it from historical comments.',
+            hasCurrentCheckFailure: false,
+        };
+    }
+}
 
 const MIN_REVIEW_DIFF_MAX_CHARS = 100000;
 const MAX_REVIEW_DIFF_MAX_CHARS = 1200000;
@@ -66,6 +102,12 @@ export async function fetchReviewContext(
     params: { repoOwner: string; repoName: string; pullRequestNumber: number; models: string[]; correlationId: string; correlatedLogger: Logger }
 ) {
     const { repoOwner, repoName, pullRequestNumber, models, correlationId, correlatedLogger } = params;
+    const checkSummaryPromise = fetchCurrentHeadCheckSummary(octokit, prData, {
+        repoOwner,
+        repoName,
+        pullRequestNumber,
+        correlatedLogger,
+    });
     const allComments = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
     const commentsByTime = [...allComments].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
@@ -87,5 +129,7 @@ export async function fetchReviewContext(
     const fileContents = formatFileContents(fileContentsMap);
     correlatedLogger.info({ pullRequestNumber, filesWithContent: fileContentsMap.size, contentLength: fileContents.length }, 'Fetched full file contents');
 
-    return { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents };
+    const checkContext = await checkSummaryPromise;
+
+    return { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents, ...checkContext };
 }

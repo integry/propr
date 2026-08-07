@@ -62,6 +62,7 @@ const STRUCTURED_REVIEW = [
     '',
     '## Suggestions and Follow-ups',
     '### S1: Consider a durable publication outbox',
+    'A durable outbox would make publication recovery more robust, but it is optional architecture hardening outside this PR.',
     '',
     '## Score',
     'Score: 7/10',
@@ -80,6 +81,7 @@ describe('structured review finding extraction', () => {
         assert.deepStrictEqual(suggestions[0], {
             id: 'S1',
             title: 'Consider a durable publication outbox',
+            description: 'A durable outbox would make publication recovery more robust, but it is optional architecture hardening outside this PR.',
         });
     });
 
@@ -98,6 +100,37 @@ describe('structured review finding extraction', () => {
             '### S1: Consider a durable publication outbox\n- **autoFix:** false\n',
         );
         assert.strictEqual(parseStructuredReview(cluttered).status, 'invalid');
+    });
+
+    test('requires reasoning beneath each new suggestion heading', () => {
+        const headingOnly = STRUCTURED_REVIEW.replace(
+            'A durable outbox would make publication recovery more robust, but it is optional architecture hardening outside this PR.\n',
+            '',
+        );
+        assert.strictEqual(parseStructuredReview(headingOnly).status, 'invalid');
+    });
+
+    test('keeps older public clean reviews with heading-only suggestions parseable', () => {
+        const legacyPublicReview = [
+            '## Overall Evaluation',
+            'Ready.',
+            '## Merge blockers',
+            'Every finding below was introduced by this PR and must be resolved before merging.',
+            'No merge blockers.',
+            '## Suggestions',
+            'These are optional follow-ups and are not sent to `/fix`.',
+            '### S1: Consider an outbox',
+            '## Score',
+            'Score: 9/10',
+        ].join('\n');
+
+        const parsed = parseStructuredReview(legacyPublicReview);
+        assert.strictEqual(parsed.status, 'valid_clean');
+        assert.deepStrictEqual(parsed.suggestions[0], {
+            id: 'S1',
+            title: 'Consider an outbox',
+            description: '',
+        });
     });
 
     test('distinguishes blocker, explicitly clean, and malformed review output', () => {
@@ -141,7 +174,8 @@ describe('structured review finding extraction', () => {
             '## Actionable Findings',
             'No actionable findings.',
             '## Suggestions and Follow-ups',
-            '### S1: Add an outbox as optional architecture hardening',
+            '### S1: Add an outbox',
+            'An outbox could strengthen delivery guarantees, but that broader architecture change is not required for this PR.',
             '## Score',
             'Score: 9/10',
         ].join('\n');
