@@ -222,6 +222,35 @@ test('Antigravity output parser accepts optional protocol fields and mixed plain
     assert.equal(parsed.conversationLog.length, 3);
 });
 
+test('Antigravity output parser rejects protocol and transcript events with malformed optional fields', () => {
+    const malformedLines = [
+        { type: 'message', role: 'assistant', content: 'bad delta', delta: 'yes', timestamp: '2026-06-06T09:40:25Z' },
+        { type: 'result', status: 'success', stats: { inputTokens: 'twelve' }, timestamp: '2026-06-06T09:40:25Z' },
+        { type: 'error', message: 'bad timestamp', timestamp: 123 },
+        { source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 42 },
+    ].map(JSON.stringify);
+    const parsed = parseAntigravityJsonl(malformedLines.join('\n'));
+
+    assert.equal(parsed.summary, malformedLines.join('\n'));
+    assert.deepEqual(parsed.conversationLog, []);
+    assert.deepEqual(parsed.tokenUsage, {});
+});
+
+test('Antigravity output parser preserves internal blank lines in plain and mixed output', () => {
+    const plain = parseAntigravityJsonl('first paragraph\n\nsecond paragraph');
+    const mixed = parseAntigravityJsonl([
+        JSON.stringify({ type: 'init', session_id: 'session-1', model: 'provider-model' }),
+        'first paragraph',
+        '',
+        'second paragraph',
+        JSON.stringify({ type: 'result', status: 'success' }),
+    ].join('\n'));
+
+    assert.equal(plain.summary, 'first paragraph\n\nsecond paragraph');
+    assert.equal(mixed.summary, 'first paragraph\n\nsecond paragraph');
+    assert.equal(mixed.conversationLog.length, 2);
+});
+
 test('Antigravity output parser accepts lower-case transcript identifiers without optional metadata', () => {
     const parsed = parseAntigravityJsonl(JSON.stringify({
         source: ' model ',

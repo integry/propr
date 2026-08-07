@@ -58,17 +58,18 @@ function normalizeTranscriptIdentifier(value: string): string {
 }
 
 function isTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent {
-    if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
-    const candidate = event as Partial<AntigravityTranscriptEvent>;
+    if (!isRecord(event)) return false;
+    const candidate = event;
     return typeof candidate.source === 'string'
         && ANTIGRAVITY_TRANSCRIPT_SOURCES.has(normalizeTranscriptIdentifier(candidate.source))
         && typeof candidate.type === 'string'
         && candidate.type.trim().length > 0
         && !['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(candidate.type.trim().toLowerCase())
-        && (Number.isInteger(candidate.step_index)
-            || typeof candidate.status === 'string'
-            || typeof candidate.created_at === 'string'
-            || typeof candidate.content === 'string');
+        && (candidate.step_index === undefined || Number.isInteger(candidate.step_index))
+        && (candidate.status === undefined || typeof candidate.status === 'string')
+        && (candidate.created_at === undefined || typeof candidate.created_at === 'string')
+        && (candidate.content === undefined || typeof candidate.content === 'string')
+        && ['step_index', 'status', 'created_at', 'content'].some(key => candidate[key] !== undefined);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -83,18 +84,45 @@ function hasProtocolTimestamp(candidate: Record<string, unknown>): boolean {
     return typeof candidate.timestamp === 'string' && candidate.timestamp.trim().length > 0;
 }
 
+function hasValidOptionalTimestamp(candidate: Record<string, unknown>): boolean {
+    return candidate.timestamp === undefined || typeof candidate.timestamp === 'string';
+}
+
+const ANTIGRAVITY_RESULT_STAT_KEYS = [
+    'total_tokens',
+    'input_tokens',
+    'output_tokens',
+    'inputTokens',
+    'outputTokens',
+    'duration_ms',
+    'tool_calls',
+] as const;
+
+function hasValidResultStats(stats: unknown): boolean {
+    if (stats === undefined) return true;
+    return isRecord(stats)
+        && ANTIGRAVITY_RESULT_STAT_KEYS.every(key => stats[key] === undefined || typeof stats[key] === 'number');
+}
+
 const ANTIGRAVITY_EVENT_VALIDATORS: Record<string, (candidate: Record<string, unknown>, contextual: boolean) => boolean> = {
-    init: candidate => typeof candidate.session_id === 'string' && typeof candidate.model === 'string',
+    init: candidate => hasValidOptionalTimestamp(candidate)
+        && typeof candidate.session_id === 'string' && typeof candidate.model === 'string',
     message: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && hasValidOptionalTimestamp(candidate)
         && (candidate.role === 'user' || candidate.role === 'assistant')
-        && typeof candidate.content === 'string',
+        && typeof candidate.content === 'string'
+        && (candidate.delta === undefined || typeof candidate.delta === 'boolean'),
     tool_use: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && hasValidOptionalTimestamp(candidate)
         && typeof candidate.tool_name === 'string' && typeof candidate.tool_id === 'string' && isRecord(candidate.parameters),
     tool_result: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && hasValidOptionalTimestamp(candidate)
         && typeof candidate.tool_id === 'string' && hasProtocolStatus(candidate) && typeof candidate.output === 'string',
     result: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
-        && hasProtocolStatus(candidate) && (candidate.stats === undefined || isRecord(candidate.stats)),
-    error: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual) && typeof candidate.message === 'string',
+        && hasValidOptionalTimestamp(candidate)
+        && hasProtocolStatus(candidate) && hasValidResultStats(candidate.stats),
+    error: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && hasValidOptionalTimestamp(candidate) && typeof candidate.message === 'string',
 };
 
 function isAntigravityEvent(event: unknown, contextual = false): event is AntigravityEvent {
@@ -167,7 +195,10 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
     const state = { sessionId: undefined as string | undefined, modelUsed: undefined as string | undefined, tokenUsage: {} as { input_tokens?: number; output_tokens?: number }, currentAssistantMessage: '', lastCompleteAssistantMessage: '' };
     const parsedLines: Array<{ line: string; value?: unknown }> = [];
     for (const line of output.split('\n')) {
-        if (!line.trim()) continue;
+        if (!line.trim()) {
+            parsedLines.push({ line });
+            continue;
+        }
         try {
             parsedLines.push({ line, value: JSON.parse(line) as unknown });
         }
