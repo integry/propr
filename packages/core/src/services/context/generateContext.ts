@@ -5,7 +5,7 @@
 import { pack } from 'repomix';
 import logger from '../../utils/logger.js';
 import { TIKTOKEN_TO_CLAUDE_RATIO } from '../../config/modelLimits.js';
-import { generateOptimizedContext } from './optimizedContext.js';
+import { filterExplicitFilesByPackedPaths, generateOptimizedContext } from './optimizedContext.js';
 import type { ContextGenerationOptions, ContextGenerationResult, SuspiciousFile } from './types.js';
 import { SecurityException } from './types.js';
 
@@ -35,7 +35,7 @@ function getFilesForOptimization(
   fileTokenCounts: Record<string, number> | undefined,
 ): string[] {
   if (filesToInclude && filesToInclude.length > 0) {
-    return filesToInclude;
+    return filterExplicitFilesByPackedPaths(filesToInclude, fileTokenCounts);
   }
   const allPackedFiles = Object.keys(fileTokenCounts || {});
   if (priorityFiles && priorityFiles.length > 0) {
