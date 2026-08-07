@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { after, describe, test } from 'node:test';
 import { closeConnection } from '@propr/core';
+import { TASK_UPDATE, type TaskUpdatePayload } from '@propr/shared';
 import {
   loadDurableTaskRevision,
   readCachedTaskRevision,
   shouldBroadcastTaskUpdate,
+  SocketService,
 } from '../services/socketService.js';
 
 after(async () => { await closeConnection(); });
@@ -14,6 +16,54 @@ describe('SocketService task update ordering', () => {
     assert.equal(shouldBroadcastTaskUpdate(undefined, undefined), true);
     assert.equal(shouldBroadcastTaskUpdate(undefined, 1), true);
     assert.equal(shouldBroadcastTaskUpdate(5, undefined), false);
+  });
+
+  test('accepts a legacy event without seeding from durable versioned state', async () => {
+    let durableReads = 0;
+    const broadcasts: Array<{ room?: string; payload: TaskUpdatePayload }> = [];
+    const service = Object.create(SocketService.prototype) as SocketService;
+    const internals = service as unknown as {
+      io: {
+        to: (room: string) => {
+          emit: (event: string, payload: TaskUpdatePayload) => void;
+        };
+        emit: (event: string, payload: TaskUpdatePayload) => void;
+      };
+      queueDeps: {
+        redisClient: { get: (key: string) => Promise<string | null> };
+      };
+      taskRevisions: Map<string, { version: number; expiresAt: number }>;
+      handleTaskUpdate: (payload: TaskUpdatePayload) => Promise<void>;
+    };
+    internals.io = {
+      to: room => ({
+        emit: (_event, payload) => { broadcasts.push({ room, payload }); },
+      }),
+      emit: (_event, payload) => { broadcasts.push({ payload }); },
+    };
+    internals.queueDeps = {
+      redisClient: {
+        get: async () => {
+          durableReads += 1;
+          return JSON.stringify({ version: 20 });
+        },
+      },
+    };
+    internals.taskRevisions = new Map();
+    const payload: TaskUpdatePayload = {
+      eventType: TASK_UPDATE,
+      taskId: 'legacy-task',
+      state: 'processing',
+      timestamp: new Date(0).toISOString(),
+    };
+
+    await internals.handleTaskUpdate(payload);
+
+    assert.equal(durableReads, 0);
+    assert.deepEqual(broadcasts, [
+      { room: 'task:legacy-task', payload },
+      { payload },
+    ]);
   });
 
   test('rejects malformed incoming revisions before they can poison the cache', () => {

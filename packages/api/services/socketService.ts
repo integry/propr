@@ -322,7 +322,7 @@ export class SocketService {
     let latestVersion = readCachedTaskRevision(cachedRevision, now);
     if (cachedRevision && latestVersion === undefined) this.taskRevisions.delete(payload.taskId);
     let allowSeededEquality = false;
-    if (latestVersion === undefined && this.queueDeps) {
+    if (latestVersion === undefined && payload.version !== undefined && this.queueDeps) {
       try {
         latestVersion = await loadDurableTaskRevision(
           key => this.queueDeps!.redisClient.get(key),
