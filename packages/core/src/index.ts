@@ -12,8 +12,9 @@ export { ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE, WorkerStateManager, getStateManag
 export { DEFAULT_WORKER_STATE_KEY_PREFIX, getWorkerStateRedisKeys } from './utils/workerStateKeys.js';
 export { hashTaskAttemptToken } from './utils/taskAttemptGeneration.js';
 export { isPRCommentTaskState } from './utils/workerStateEnumeration.js';
+export { taskStateExpectation } from './utils/workerStateTransition.js';
 export { getEventPublisher, closeEventPublisher, EventPublisher } from './utils/eventPublisher.js';
-export type { TaskState, IssueRef, HistoryEntry, LastError, ClaudeResultSummary, PRResult, TaskStateData, UpdateMetadata, TaskResult, ResumableTaskInfo, WorkerStateManagerOptions, CreateTaskStateOptions, NonTerminalTaskFilter, NonTerminalTaskPage, TaskStateExpectation } from './utils/workerStateManager.types.js';
+export type { TaskState, IssueRef, HistoryEntry, LastError, ClaudeResultSummary, PRResult, TaskStateData, UpdateMetadata, TaskResult, ResumableTaskInfo, WorkerStateManagerOptions, CreateTaskStateOptions, NonTerminalTaskFilter, NonTerminalTaskPage, TaskStateExpectation, TaskStatePublicationResult, TaskStateUpdateResult } from './utils/workerStateManager.types.js';
 export { validatePRCreation, generateEnhancedClaudePrompt, validateRepositoryInfo } from './utils/prValidation.js';
 export type { PRValidationResult, PRInfo, ValidatePRCreationOptions, CurrentIssueData, GenerateEnhancedClaudePromptOptions, RepoData, RepoValidationResult } from './utils/prValidation.js';
 export { IdempotentGitHubOps, IdempotentGitOps } from './utils/idempotentOps.js';

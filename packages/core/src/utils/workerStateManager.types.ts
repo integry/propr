@@ -89,9 +89,22 @@ export interface NonTerminalTaskPage {
 
 export interface TaskStateExpectation {
     state: TaskState;
+    createdAt?: string;
     updatedAt?: string;
+    correlationId?: string;
     version?: number;
     prProcessingLockToken?: string;
+}
+
+export interface TaskStatePublicationResult {
+    historyPersisted: boolean;
+    eventPublished: boolean;
+    errors: string[];
+}
+
+export interface TaskStateUpdateResult {
+    state: TaskStateData;
+    publication: TaskStatePublicationResult;
 }
 
 export interface CancellationMetadata {

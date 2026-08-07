@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from '@propr/core';
+import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
@@ -166,7 +166,10 @@ async function rollbackWorkerStartup(options: {
     if (options.runtimeBuildWorker) cleanupTasks.push(options.runtimeBuildWorker.close());
     if (options.taskStateRecovery) cleanupTasks.push(options.taskStateRecovery.close());
     cleanupResults.push(...await Promise.allSettled(cleanupTasks));
-    cleanupResults.push(...await Promise.allSettled([options.heartbeatRedis.quit()]));
+    cleanupResults.push(...await Promise.allSettled([
+        closeStateManager(),
+        options.heartbeatRedis.quit(),
+    ]));
     for (const result of cleanupResults) {
         if (result.status === 'rejected') {
             logger.warn({ error: (result.reason as Error).message }, 'Worker startup cleanup failed');
@@ -396,7 +399,10 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             subscriberRedis.quit(),
             runtimeBuildWorker.close(),
         ]);
-        cleanupResults.push(...await Promise.allSettled([heartbeatRedis.quit()]));
+        cleanupResults.push(...await Promise.allSettled([
+            closeStateManager(),
+            heartbeatRedis.quit(),
+        ]));
         const shutdownErrors: unknown[] = [];
         for (const result of [...workerClose, ...cleanupResults]) {
             if (result.status === 'rejected') {

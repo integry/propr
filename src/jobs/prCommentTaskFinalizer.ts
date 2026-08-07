@@ -3,6 +3,7 @@ import type {
     TaskState,
     TaskStateData,
     TaskStateExpectation,
+    TaskStatePublicationResult,
     UpdateMetadata,
     WorkerStateManager,
 } from '@propr/core';
@@ -21,7 +22,7 @@ export function isTerminalTaskState(state: TaskState): boolean {
     return TERMINAL_STATES.has(state);
 }
 
-export type KnownPRCommentResultStatus = 'cancelled' | 'rescheduled' | 'requeued' | 'failed' | 'complete' | 'partial' | 'skipped';
+export type KnownPRCommentResultStatus = 'cancelled' | 'rescheduled' | 'requeued' | 'failed' | 'complete' | 'completed' | 'partial' | 'skipped';
 
 const KNOWN_RESULT_STATUSES: ReadonlySet<string> = new Set([
     'cancelled',
@@ -29,6 +30,7 @@ const KNOWN_RESULT_STATUSES: ReadonlySet<string> = new Set([
     'requeued',
     'failed',
     'complete',
+    'completed',
     'partial',
     'skipped',
 ]);
@@ -128,6 +130,7 @@ function knownResultTransition(
             };
         }
         case 'complete':
+        case 'completed':
         case 'partial':
         case 'skipped':
             return {
@@ -154,7 +157,9 @@ export interface PRCommentTaskFinalizationOptions {
 export function taskStateExpectation(task: TaskStateData): TaskStateExpectation {
     return {
         state: task.state,
+        createdAt: task.createdAt,
         updatedAt: task.updatedAt,
+        correlationId: task.correlationId,
         version: task.version,
         prProcessingLockToken: task.prProcessingLockToken,
     };
@@ -281,4 +286,62 @@ export async function finalizePRCommentTaskFailure(
             historyMetadata: { outcome: 'failed' },
         },
     ));
+}
+
+export type PRCommentTaskFinalizationOutcome =
+    | 'finalized'
+    | 'partial_publication'
+    | 'already_terminal'
+    | 'retry_pending'
+    | 'task_missing';
+
+export interface PRCommentTaskFinalizationResult {
+    outcome: PRCommentTaskFinalizationOutcome;
+    stateChanged: boolean;
+    publication?: TaskStatePublicationResult;
+}
+
+async function compatibilityFinalizationResult(
+    taskId: string,
+    stateManager: TaskStateStore,
+    finalize: () => Promise<boolean>,
+): Promise<PRCommentTaskFinalizationResult> {
+    const before = await stateManager.getTaskState(taskId);
+    if (!before) return { outcome: 'task_missing', stateChanged: false };
+    if (isTerminalTaskState(before.state)) {
+        return { outcome: 'already_terminal', stateChanged: false };
+    }
+    const changed = await finalize();
+    if (changed) return { outcome: 'finalized', stateChanged: true };
+    const after = await stateManager.getTaskState(taskId);
+    return {
+        outcome: after && isTerminalTaskState(after.state) ? 'already_terminal' : 'retry_pending',
+        stateChanged: false,
+    };
+}
+
+/** Compatibility API for the BullMQ finalizer hooks introduced on main. */
+export async function finalizeCompletedPRCommentTask(
+    taskId: string,
+    result: JobResult | undefined,
+    stateManager: TaskStateStore,
+): Promise<PRCommentTaskFinalizationResult> {
+    return compatibilityFinalizationResult(
+        taskId,
+        stateManager,
+        () => finalizePRCommentTaskResult(taskId, stateManager, result),
+    );
+}
+
+/** Compatibility API for the BullMQ failure hook introduced on main. */
+export async function finalizeFailedPRCommentTask(
+    taskId: string,
+    error: Error,
+    stateManager: TaskStateStore,
+): Promise<PRCommentTaskFinalizationResult> {
+    return compatibilityFinalizationResult(
+        taskId,
+        stateManager,
+        () => finalizePRCommentTaskFailure(taskId, stateManager, error),
+    );
 }

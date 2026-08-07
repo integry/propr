@@ -90,11 +90,12 @@ export class WorkerStateManager {
         if (Boolean(options.prProcessingLockToken) !== Boolean(options.prProcessingLockKey)) {
             throw new Error('PR task state creation requires both a processing lock token and key');
         }
+        const timestamp = new Date().toISOString();
         const state: TaskStateData = {
             taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
-            state: TaskStates.PENDING, createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(), version: 1, attempts: 0,
-            history: [{ state: TaskStates.PENDING, timestamp: new Date().toISOString(), reason: 'Task created' }],
+            state: TaskStates.PENDING, createdAt: timestamp,
+            updatedAt: timestamp, version: 1, attempts: 0,
+            history: [{ state: TaskStates.PENDING, timestamp, reason: 'Task created' }],
             ...(options.prProcessingLockToken
                 ? { prProcessingLockToken: options.prProcessingLockToken }
                 : {}),
@@ -207,7 +208,9 @@ export class WorkerStateManager {
 
         const state: TaskStateData = JSON.parse(stateJson);
         if (state.state !== expectation.state) return null;
+        if (expectation.createdAt && state.createdAt !== expectation.createdAt) return null;
         if (expectation.updatedAt && state.updatedAt !== expectation.updatedAt) return null;
+        if (expectation.correlationId && state.correlationId !== expectation.correlationId) return null;
         if (expectation.version !== undefined && (state.version ?? 0) !== expectation.version) return null;
         if (expectation.prProcessingLockToken !== undefined
             && state.prProcessingLockToken !== expectation.prProcessingLockToken) return null;

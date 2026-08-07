@@ -12,6 +12,7 @@
 
 import { getModelName, type AnalysisResult } from '@propr/core';
 import type { ReviewAssignment } from './prCommentReviewJob.js';
+import { renderPublicReview } from './reviewOutputParser.js';
 
 /** HTML comment marker prefix used to identify AI review comments. */
 export const REVIEW_COMMENT_MARKER_PREFIX = '<!-- propr:ai-review';
@@ -48,8 +49,8 @@ function formatDuration(ms: number): string {
     return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
-/** Remove legacy suggestion fields that duplicate the S# heading or internal policy. */
-function removeSuggestionMetadata(response: string): string {
+/** Convert legacy suggestion metadata into the current title-and-reasoning shape. */
+function normalizeSuggestionMetadata(response: string): string {
     const sectionMatch = /^##[ \t]+Suggestions and Follow-ups(?:[ \t]+.*)?$/im.exec(response);
     if (!sectionMatch) return response;
 
@@ -58,7 +59,10 @@ function removeSuggestionMetadata(response: string): string {
     const nextSection = /^##\s+/m.exec(afterStart);
     const sectionEnd = sectionStart + (nextSection?.index ?? afterStart.length);
     const section = response.slice(sectionStart, sectionEnd)
-        .replace(/^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?summary:?(?:\*\*)?[ \t]*:?.*(?:\r?\n|$)/gim, '')
+        .replace(
+            /^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?summary:?(?:\*\*)?[ \t]*:?\s*(.*?)[ \t]*(?:\r?\n|$)/gim,
+            '$1\n',
+        )
         .replace(/^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?auto[- ]?fix:?(?:\*\*)?[ \t]*:?.*(?:\r?\n|$)/gim, '');
 
     return response.slice(0, sectionStart) + section + response.slice(sectionEnd);
@@ -69,7 +73,7 @@ function removeSuggestionMetadata(response: string): string {
  *
  * Structure:
  *   1. Header with model label.
- *   2. The LLM response (which contains Overall Evaluation, Findings, Score).
+ *   2. The validated response rendered with public review sections and labels.
  *   3. Review Details metadata block (model, time, tokens).
  *   4. A short instruction telling the user about /fix.
  *   5. A hidden HTML marker for machine detection.
@@ -78,7 +82,11 @@ export function buildReviewComment(
     assignment: ReviewAssignment,
     analysisResult: AnalysisResult,
     taskUrl?: string,
-    options: { omittedDiffFiles?: string[]; costUsd?: number | null } = {},
+    options: {
+        omittedDiffFiles?: string[];
+        costUsd?: number | null;
+        hasCurrentCheckFailure?: boolean;
+    } = {},
 ): string {
     const { model, label } = assignment;
     const { response, executionTimeMs, tokenUsage, modelUsed } = analysisResult;
@@ -86,8 +94,13 @@ export function buildReviewComment(
     const effectiveModel = modelUsed || model;
     const modelDisplayName = getModelName(effectiveModel);
 
+    const sanitizedResponse = normalizeSuggestionMetadata(response);
+    const currentCheckScoreCap = options.hasCurrentCheckFailure
+        ? { maximum: 7, reason: 'Score capped at 7 because a current-head check is failing.' }
+        : undefined;
+    const publicResponse = renderPublicReview(sanitizedResponse, currentCheckScoreCap);
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
-    comment += removeSuggestionMetadata(response);
+    comment += publicResponse ?? '⚠️ **Review output was invalid and could not be displayed safely.**';
 
     // --- Review Details ---
     comment += `\n\n---\n### 🤖 Review Details\n\n`;
@@ -115,7 +128,7 @@ export function buildReviewComment(
 
     // --- /fix instructions ---
     comment += `\n\n---\n`;
-    comment += `> 💡 **Next step:** Comment \`/fix\` to address actionable F# blockers only.\n`;
+    comment += `> 💡 **Next step:** Comment \`/fix\` to address F# merge blockers only.\n`;
     comment += `> Explicit IDs such as \`/fix F1 F3\` refer to the newest review. Suggestions require a separate ordinary follow-up request.\n`;
 
     // --- Machine-readable marker ---
