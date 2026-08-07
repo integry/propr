@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { open } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -13,12 +15,243 @@ import {
 import type { AgentConfig } from '@propr/core';
 
 const CONTAINER_WORKSPACE = '/home/node/workspace';
+const ANTIGRAVITY_TOKEN_PATH = 'antigravity-cli/antigravity-oauth-token';
+const ANTIGRAVITY_ONBOARDING_PATH = 'antigravity-cli/cache/onboarding.json';
+const MAX_ANTIGRAVITY_TOKEN_LENGTH = 1024 * 1024;
+const MAX_ANTIGRAVITY_ONBOARDING_LENGTH = 64 * 1024;
+const MAX_CREDENTIAL_JSON_DEPTH = 16;
+const MAX_CREDENTIAL_JSON_NODES = 2048;
+
+export const AGENT_LOGIN_TERMINAL = {
+  rows: 30,
+  columns: 120,
+  type: 'xterm-256color',
+} as const;
 
 export class AgentLoginInputError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AgentLoginInputError';
   }
+}
+
+interface BoundedFile {
+  text: string;
+  fingerprintPart: string;
+  contentFingerprintPart: string;
+}
+
+async function readBoundedFile(filePath: string, maxLength: number): Promise<BoundedFile | undefined> {
+  let handle;
+  try {
+    handle = await open(filePath, 'r');
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maxLength) return undefined;
+    const buffer = Buffer.alloc(Math.min(maxLength + 1, stat.size + 1));
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > maxLength) return undefined;
+    const contentFingerprintPart = `${stat.size}:${createHash('sha256').update(buffer.subarray(0, offset)).digest('hex')}`;
+    return {
+      text: buffer.subarray(0, offset).toString('utf8'),
+      fingerprintPart: `${stat.mtimeMs}:${contentFingerprintPart}`,
+      contentFingerprintPart,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+const CREDENTIAL_FIELD_NAMES = new Set([
+  'token',
+  'oauthtoken',
+  'accesstoken',
+  'refreshtoken',
+  'idtoken',
+]);
+const REFRESH_CREDENTIAL_FIELD_NAMES = new Set(['refreshtoken']);
+const EXPIRATION_FIELD_NAMES = new Set([
+  'expiresat',
+  'expires',
+  'expiry',
+  'expiration',
+  'expirydate',
+]);
+const REFRESH_EXPIRATION_FIELD_NAMES = new Set([
+  'refreshexpires',
+  'refreshexpiresat',
+  'refreshexpiry',
+  'refreshexpiration',
+  'refreshtokenexpires',
+  'refreshtokenexpiresat',
+  'refreshtokenexpiry',
+  'refreshtokenexpiration',
+]);
+
+function normalizedCredentialKey(value: string): string {
+  return value.replace(/[^a-zA-Z]/g, '').toLowerCase();
+}
+
+function parseExpiration(value: unknown): number | undefined {
+  let parsed: number;
+  if (typeof value === 'number') {
+    parsed = value;
+  } else if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    parsed = /^\d+(?:\.\d+)?$/.test(trimmed) ? Number(trimmed) : Date.parse(trimmed);
+  } else {
+    return undefined;
+  }
+  if (!Number.isFinite(parsed)) return undefined;
+  return parsed < 10_000_000_000 ? parsed * 1000 : parsed;
+}
+
+interface CredentialTraversalBudget { visited: number }
+
+interface CredentialRecordScan {
+  localExpiration?: unknown;
+  localRefreshExpiration?: unknown;
+  credentials: Array<[string, unknown]>;
+  children: unknown[];
+}
+
+function consumeCredentialBudget(budget: CredentialTraversalBudget): boolean {
+  budget.visited += 1;
+  return budget.visited <= MAX_CREDENTIAL_JSON_NODES;
+}
+
+function scanCredentialRecord(
+  record: Record<string, unknown>,
+  budget: CredentialTraversalBudget,
+): CredentialRecordScan | null {
+  const scan: CredentialRecordScan = { credentials: [], children: [] };
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    if (!consumeCredentialBudget(budget)) return null;
+    const normalizedKey = normalizedCredentialKey(key);
+    const credential = record[key];
+    if (EXPIRATION_FIELD_NAMES.has(normalizedKey)) scan.localExpiration = credential;
+    if (REFRESH_EXPIRATION_FIELD_NAMES.has(normalizedKey)) scan.localRefreshExpiration = credential;
+    if (CREDENTIAL_FIELD_NAMES.has(normalizedKey)) scan.credentials.push([normalizedKey, credential]);
+    if (credential && typeof credential === 'object') scan.children.push(credential);
+  }
+  return scan;
+}
+
+function containsUsableCredential(
+  credentials: Array<[string, unknown]>,
+  expiration: unknown,
+  refreshExpiration: unknown,
+  now: number,
+): boolean {
+  for (const [normalizedKey, credential] of credentials) {
+    if (typeof credential !== 'string' || !credential.trim()) continue;
+    const credentialExpiration = REFRESH_CREDENTIAL_FIELD_NAMES.has(normalizedKey)
+      ? refreshExpiration
+      : expiration;
+    if (credentialExpiration === undefined) return true;
+    const parsedExpiration = parseExpiration(credentialExpiration);
+    if (parsedExpiration !== undefined && parsedExpiration > now) return true;
+  }
+  return false;
+}
+
+function hasValidCredential(payload: Record<string, unknown>, now = Date.now()): boolean {
+  const budget: CredentialTraversalBudget = { visited: 0 };
+  const visit = (
+    value: unknown,
+    depth: number,
+    inheritedExpiration?: unknown,
+    inheritedRefreshExpiration?: unknown,
+  ): boolean => {
+    if (!consumeCredentialBudget(budget)) return false;
+    if (!value || typeof value !== 'object' || depth > MAX_CREDENTIAL_JSON_DEPTH) return false;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (budget.visited >= MAX_CREDENTIAL_JSON_NODES) return false;
+        if (visit(item, depth + 1, inheritedExpiration, inheritedRefreshExpiration)) return true;
+      }
+      return false;
+    }
+
+    const scan = scanCredentialRecord(value as Record<string, unknown>, budget);
+    if (!scan) return false;
+    const effectiveExpiration = scan.localExpiration ?? inheritedExpiration;
+    const effectiveRefreshExpiration = scan.localRefreshExpiration ?? inheritedRefreshExpiration;
+    if (containsUsableCredential(scan.credentials, effectiveExpiration, effectiveRefreshExpiration, now)) return true;
+    for (const child of scan.children) {
+      if (budget.visited >= MAX_CREDENTIAL_JSON_NODES) return false;
+      if (visit(child, depth + 1, effectiveExpiration, effectiveRefreshExpiration)) return true;
+    }
+    return false;
+  };
+  return visit(payload, 0);
+}
+
+export interface AgentLoginCompletion {
+  complete: boolean;
+  fingerprint?: string;
+  contentFingerprint?: string;
+}
+
+export async function inspectAgentLoginCompletion(
+  type: AgentType,
+  credentialPath: string,
+): Promise<AgentLoginCompletion> {
+  if (type !== 'antigravity') return { complete: false };
+  try {
+    const tokenPath = path.join(credentialPath, ANTIGRAVITY_TOKEN_PATH);
+    const onboardingPath = path.join(credentialPath, ANTIGRAVITY_ONBOARDING_PATH);
+    const tokenFile = await readBoundedFile(tokenPath, MAX_ANTIGRAVITY_TOKEN_LENGTH);
+    const onboardingFile = await readBoundedFile(onboardingPath, MAX_ANTIGRAVITY_ONBOARDING_LENGTH);
+    if (!tokenFile || !onboardingFile) return { complete: false };
+    // Providers write these files independently. Re-read both serially and
+    // reject a snapshot if either changed while it was being inspected; the
+    // session manager additionally requires the resulting fingerprint to stay
+    // stable across multiple polls before terminating the provider process.
+    const verifiedTokenFile = await readBoundedFile(tokenPath, MAX_ANTIGRAVITY_TOKEN_LENGTH);
+    const verifiedOnboardingFile = await readBoundedFile(onboardingPath, MAX_ANTIGRAVITY_ONBOARDING_LENGTH);
+    if (!verifiedTokenFile || !verifiedOnboardingFile
+      || verifiedTokenFile.fingerprintPart !== tokenFile.fingerprintPart
+      || verifiedOnboardingFile.fingerprintPart !== onboardingFile.fingerprintPart) {
+      return { complete: false };
+    }
+    const fingerprint = createHash('sha256')
+      .update(tokenFile.fingerprintPart)
+      .update('\0')
+      .update(onboardingFile.fingerprintPart)
+      .digest('hex');
+    const contentFingerprint = createHash('sha256')
+      .update(tokenFile.contentFingerprintPart)
+      .update('\0')
+      .update(onboardingFile.contentFingerprintPart)
+      .digest('hex');
+    const token = tokenFile.text.trim();
+    if (!token) return { complete: false, fingerprint, contentFingerprint };
+    const payload = JSON.parse(token) as unknown;
+    const credentialValid = Boolean(payload && typeof payload === 'object' && !Array.isArray(payload)
+      && hasValidCredential(payload as Record<string, unknown>));
+    const onboarding = JSON.parse(onboardingFile.text) as unknown;
+    const onboardingComplete = Boolean(onboarding
+      && typeof onboarding === 'object'
+      && !Array.isArray(onboarding)
+      && (onboarding as Record<string, unknown>).onboardingComplete === true);
+    return { complete: credentialValid && onboardingComplete, fingerprint, contentFingerprint };
+  } catch {
+    return { complete: false };
+  }
+}
+
+export async function isAgentLoginComplete(type: AgentType, credentialPath: string): Promise<boolean> {
+  return (await inspectAgentLoginCompletion(type, credentialPath)).complete;
 }
 
 function envConfigPath(type: AgentType): string | undefined {
@@ -164,6 +397,10 @@ export function buildAgentLoginCreateArgs(
     '-v', `${credentialPath}:${descriptor.containerConfigPath}:rw`,
     ...additionalMounts,
     '-e', `PROPR_AGENT_TYPE=${agent.type}`,
+    ...(agent.type === 'antigravity' ? ['-e', 'PROPR_AGENT_LOGIN=1'] : []),
+    '-e', `TERM=${AGENT_LOGIN_TERMINAL.type}`,
+    '-e', `COLUMNS=${AGENT_LOGIN_TERMINAL.columns}`,
+    '-e', `LINES=${AGENT_LOGIN_TERMINAL.rows}`,
     ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []),
     ...environment,
     '-w', CONTAINER_WORKSPACE,

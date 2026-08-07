@@ -2,7 +2,7 @@ import type { Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { execSync } from 'child_process';
-import { stopDockerContainer, getStateManager, getIssueQueue } from '@propr/core';
+import { ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE, stopDockerContainer, getStateManager, getIssueQueue } from '@propr/core';
 import type { IssueRef } from '@propr/core';
 import { validateTaskId, validateTailParam } from './validation.js';
 
@@ -234,7 +234,7 @@ async function markTaskCancelledSafely(taskId: string, historyMetadata: Record<s
   try {
     const mark = options.markCancelled
       ?? ((id: string, by: string, metadata: { reason?: string; historyMetadata?: Record<string, unknown> }) =>
-        getStateManager().markTaskCancelled(id, by, metadata));
+        getStateManager().markTaskCancelled(id, by, metadata, ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE));
     await mark(taskId, options.requestedBy ?? 'user', {
       ...(options.reason ? { reason: options.reason } : {}),
       historyMetadata: {

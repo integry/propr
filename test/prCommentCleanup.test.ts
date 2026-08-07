@@ -1,0 +1,395 @@
+import assert from 'node:assert/strict';
+import { beforeEach, mock, test } from 'node:test';
+
+const cleanupWorktree = mock.fn(async () => {});
+const assertLease = mock.fn(async () => {});
+const releaseLease = mock.fn(async () => true);
+const findTaskContainer = mock.fn(async () => null as { id: string; name: string } | null);
+const inspectLegacyDockerContainerLivenessForTask = mock.fn(async () => 'not_found' as 'running' | 'not_found' | 'unavailable');
+const stopDockerContainer = mock.fn(async () => ({ success: true }));
+const issueQueueAdd = mock.fn(async () => ({}));
+
+class PRProcessingLeaseLostError extends Error {}
+
+await mock.module('@propr/core', {
+    namedExports: {
+        cleanupWorktree,
+        describeAgentTermination: () => '',
+        formatResetTime: () => '',
+        findTaskContainer,
+        generateCorrelationId: () => 'correlation',
+        getAuthenticatedOctokit: async () => ({}),
+        getDefaultModel: () => null,
+        getPendingPrCommentsKey: () => 'pending-comments',
+        handleError: () => {},
+        hashTaskAttemptToken: () => '0123456789abcdef0123456789abcdef',
+        issueQueue: { add: issueQueueAdd },
+        inspectLegacyDockerContainerLivenessForTask,
+        recordLLMMetrics: async () => {},
+        resolveModelAlias: (value: string) => value,
+        resolveAgentTerminationReason: () => undefined,
+        stopDockerContainer,
+        TaskStates: {
+            COMPLETED: 'completed',
+            FAILED: 'failed',
+            CANCELLED: 'cancelled',
+        },
+    },
+});
+
+await mock.module('../src/jobs/prProcessingLock.js', {
+    namedExports: {
+        assertPRProcessingLock: assertLease,
+        PRProcessingLeaseLostError,
+        releasePRProcessingLock: releaseLease,
+    },
+});
+
+await mock.module('../src/jobs/prCommentMetrics.js', {
+    namedExports: { buildMetricsSection: () => '' },
+});
+
+await mock.module('../src/jobs/prCompletionComment.js', {
+    namedExports: { buildCompletionComment: () => '' },
+});
+
+await mock.module('../src/jobs/prFileUtils.js', {
+    namedExports: {
+        fetchPRFiles: async () => [],
+        fetchPRFileContents: async () => [],
+        formatPRDiff: () => '',
+        formatPRDiffWithMetadata: () => '',
+        formatFileContents: () => '',
+        agentResultToClaudeResponse: (value: unknown) => value,
+    },
+});
+
+await mock.module('../src/jobs/prCommentCommandContext.js', {
+    namedExports: { applyPendingCommentCommandContext: () => {} },
+});
+
+const {
+    buildPRCommentWorktreeDirName,
+    cleanupJob,
+    cleanupJobBeforeStoppingHeartbeat,
+    handleJobError,
+    schedulePRCommentCleanupRecovery,
+    stopAbandonedPRTaskContainer,
+} = await import('../src/jobs/prCommentJobUtils.js');
+
+function cleanupOptions() {
+    return {
+        stateManager: {} as never,
+        lockKey: 'lock:pr:owner:repo:1748',
+        lockToken: 'attempt-token',
+        localRepoPath: '/repo',
+        worktreeInfo: { worktreePath: '/repo-attempt', branchName: 'branch' },
+        repoOwner: 'owner',
+        repoName: 'repo',
+        pullRequestNumber: 1748,
+        jobBranchName: 'branch',
+        jobLlm: null,
+        correlatedLogger: {
+            debug: mock.fn(),
+            error: mock.fn(),
+            info: mock.fn(),
+            warn: mock.fn(),
+        } as never,
+        redisClient: { llen: async () => 0 } as never,
+    };
+}
+
+beforeEach(() => {
+    cleanupWorktree.mock.resetCalls();
+    assertLease.mock.resetCalls();
+    assertLease.mock.mockImplementation(async () => {});
+    releaseLease.mock.resetCalls();
+    releaseLease.mock.mockImplementation(async () => true);
+    findTaskContainer.mock.resetCalls();
+    findTaskContainer.mock.mockImplementation(async () => null);
+    inspectLegacyDockerContainerLivenessForTask.mock.resetCalls();
+    inspectLegacyDockerContainerLivenessForTask.mock.mockImplementation(async () => 'not_found');
+    stopDockerContainer.mock.resetCalls();
+    stopDockerContainer.mock.mockImplementation(async () => ({ success: true }));
+    issueQueueAdd.mock.resetCalls();
+    issueQueueAdd.mock.mockImplementation(async () => ({}));
+});
+
+test('uses only a one-way attempt generation in worktree names', () => {
+    const lockToken = 'correlation-visible:raw-secret-uuid';
+    const worktreeName = buildPRCommentWorktreeDirName(1748, lockToken);
+
+    assert.match(worktreeName, /^pr-1748-followup-/);
+    assert.doesNotMatch(worktreeName, /raw-secret-uuid|correlation-visible/);
+});
+
+test('uses a deterministic cleanup-recovery job ID for one attempt generation', async () => {
+    await schedulePRCommentCleanupRecovery({
+        repoOwner: 'integry',
+        repoName: 'propr',
+        pullRequestNumber: 1748,
+        jobBranchName: 'feature',
+        jobLlm: null,
+        attemptGeneration: 'generation-hash',
+        correlatedLogger: cleanupOptions().correlatedLogger,
+    });
+
+    assert.equal(
+        issueQueueAdd.mock.calls[0].arguments[2].jobId,
+        'pr-comments-cleanup-recovery-integry-propr-1748-generation-hash',
+    );
+});
+
+test('stops an abandoned task container before allowing a successor attempt', async () => {
+    findTaskContainer.mock.mockImplementationOnce(async () => ({
+        id: 'container-1748',
+        name: 'propr-task-1748',
+    }));
+
+    const canProceed = await stopAbandonedPRTaskContainer(
+        'task-1748',
+        cleanupOptions().correlatedLogger,
+        assertLease,
+    );
+
+    assert.equal(canProceed, true);
+    assert.equal(assertLease.mock.calls.length, 3);
+    assert.deepEqual(stopDockerContainer.mock.calls[0].arguments, ['container-1748', 10]);
+});
+
+test('reschedules startup while a pre-label container may still be running', async () => {
+    inspectLegacyDockerContainerLivenessForTask.mock.mockImplementationOnce(async () => 'running');
+
+    const canProceed = await stopAbandonedPRTaskContainer(
+        'pr-comments-integry-propr-1748-12345678',
+        cleanupOptions().correlatedLogger,
+        assertLease,
+    );
+
+    assert.equal(canProceed, false);
+    assert.equal(inspectLegacyDockerContainerLivenessForTask.mock.calls.length, 1);
+    assert.equal(stopDockerContainer.mock.calls.length, 0);
+    assert.equal(assertLease.mock.calls.length, 2);
+});
+
+test('reschedules startup when legacy container liveness cannot be verified', async () => {
+    inspectLegacyDockerContainerLivenessForTask.mock.mockImplementationOnce(async () => 'unavailable');
+
+    const canProceed = await stopAbandonedPRTaskContainer(
+        'pr-comments-integry-propr-1748-12345678',
+        cleanupOptions().correlatedLogger,
+        assertLease,
+    );
+
+    assert.equal(canProceed, false);
+    assert.equal(stopDockerContainer.mock.calls.length, 0);
+});
+
+test('does not stop an abandoned container after startup lease ownership is lost', async () => {
+    findTaskContainer.mock.mockImplementationOnce(async () => ({
+        id: 'container-1748',
+        name: 'propr-task-1748',
+    }));
+    assertLease.mock.mockImplementationOnce(async () => {
+        throw new PRProcessingLeaseLostError('lease expired before stop');
+    });
+
+    await assert.rejects(
+        stopAbandonedPRTaskContainer('task-1748', cleanupOptions().correlatedLogger, assertLease),
+        /lease expired before stop/,
+    );
+
+    assert.equal(stopDockerContainer.mock.calls.length, 0);
+});
+
+test('removes its generation-specific worktree after lease ownership has been lost', async () => {
+    assertLease.mock.mockImplementationOnce(async () => {
+        throw new PRProcessingLeaseLostError('lease lost');
+    });
+
+    await cleanupJob(cleanupOptions());
+
+    assert.equal(cleanupWorktree.mock.calls.length, 1);
+    assert.equal(releaseLease.mock.calls.length, 0);
+});
+
+test('retries a transient Redis ownership check before releasing and queuing pending work', async () => {
+    assertLease.mock.mockImplementationOnce(async () => {
+        throw new Error('Redis temporarily unavailable');
+    });
+
+    await cleanupJob(cleanupOptions());
+
+    assert.equal(assertLease.mock.calls.length, 2);
+    assert.equal(releaseLease.mock.calls.length, 1);
+});
+
+test('fails cleanup durably after repeated Redis ownership-check errors', async () => {
+    assertLease.mock.mockImplementation(async () => {
+        throw new Error('Redis unavailable');
+    });
+
+    await assert.rejects(cleanupJob(cleanupOptions()), /Redis unavailable/);
+
+    assert.equal(assertLease.mock.calls.length, 3);
+    assert.equal(cleanupWorktree.mock.calls.length, 1);
+    assert.equal(releaseLease.mock.calls.length, 0);
+});
+
+test('finishes attempt worktree cleanup before releasing the PR lease', async () => {
+    let finishCleanup: (() => void) | undefined;
+    cleanupWorktree.mock.mockImplementationOnce(() => new Promise<void>(resolve => {
+        finishCleanup = resolve;
+    }));
+
+    const cleaning = cleanupJob(cleanupOptions());
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(cleanupWorktree.mock.calls.length, 1);
+    assert.equal(releaseLease.mock.calls.length, 0);
+
+    finishCleanup?.();
+    await cleaning;
+
+    assert.equal(releaseLease.mock.calls.length, 1);
+});
+
+test('stops the heartbeat immediately before intentionally releasing the PR lease', async () => {
+    const order: string[] = [];
+    cleanupWorktree.mock.mockImplementationOnce(async () => { order.push('worktree'); });
+    releaseLease.mock.mockImplementationOnce(async () => {
+        order.push('release');
+        return true;
+    });
+    const stopHeartbeat = mock.fn(async () => { order.push('heartbeat'); });
+
+    await cleanupJobBeforeStoppingHeartbeat(cleanupOptions(), stopHeartbeat);
+
+    assert.deepEqual(order, ['worktree', 'heartbeat', 'release']);
+    assert.equal(stopHeartbeat.mock.calls.length, 1);
+});
+
+test('queues durable recovery before preserving a committed outcome after ownership checks fail', async () => {
+    assertLease.mock.mockImplementation(async () => {
+        throw new Error('Redis unavailable');
+    });
+    const options = cleanupOptions();
+    const stopHeartbeat = mock.fn(async () => {});
+
+    await cleanupJobBeforeStoppingHeartbeat(options, stopHeartbeat, true);
+
+    assert.equal(assertLease.mock.calls.length, 3);
+    assert.equal(releaseLease.mock.calls.length, 0);
+    assert.equal(stopHeartbeat.mock.calls.length, 1);
+    assert.equal((options.correlatedLogger.warn as ReturnType<typeof mock.fn>).mock.calls.length, 2);
+    assert.equal(issueQueueAdd.mock.calls.length, 1);
+    assert.equal(issueQueueAdd.mock.calls[0].arguments[0], 'processPullRequestComment');
+    assert.deepEqual((issueQueueAdd.mock.calls[0].arguments[1] as { comments: unknown[] }).comments, []);
+    assert.match(issueQueueAdd.mock.calls[0].arguments[2].jobId, /cleanup-recovery/);
+});
+
+test('preserves a committed job outcome when stopping the heartbeat fails', async () => {
+    let attempts = 0;
+    const stopHeartbeat = mock.fn(async () => {
+        attempts++;
+        if (attempts === 1) throw new Error('heartbeat shutdown failed');
+    });
+    const options = cleanupOptions();
+
+    await cleanupJobBeforeStoppingHeartbeat(options, stopHeartbeat, true);
+
+    assert.equal(releaseLease.mock.calls.length, 0);
+    assert.equal(stopHeartbeat.mock.calls.length, 2);
+    assert.equal((options.correlatedLogger.warn as ReturnType<typeof mock.fn>).mock.calls.length, 1);
+    assert.equal(issueQueueAdd.mock.calls.length, 1);
+});
+
+test('fails a committed job when durable cleanup recovery cannot be queued', async () => {
+    assertLease.mock.mockImplementation(async () => {
+        throw new Error('Redis unavailable');
+    });
+    issueQueueAdd.mock.mockImplementationOnce(async () => {
+        throw new Error('queue unavailable');
+    });
+
+    await assert.rejects(
+        cleanupJobBeforeStoppingHeartbeat(cleanupOptions(), async () => {}, true),
+        /durable recovery job/,
+    );
+});
+
+test('performs no generic error side effects after the live lease is lost', async () => {
+    const updateTaskState = mock.fn(async () => {});
+    const request = mock.fn(async () => ({}));
+
+    await assert.rejects(
+        handleJobError(new Error('agent failed'), { name: 'processPullRequestComment', data: {} } as never, {
+            pullRequestNumber: 1748,
+            repoOwner: 'owner',
+            repoName: 'repo',
+            authorsText: '@owner',
+            unprocessedComments: [],
+            octokit: { request } as never,
+            startingWorkComment: { data: { id: 1 } },
+            claudeResult: null,
+            correlationId: 'correlation',
+            correlatedLogger: cleanupOptions().correlatedLogger,
+            stateManager: {
+                getTaskState: async () => ({
+                    state: 'processing',
+                    prProcessingLockToken: 'attempt-token',
+                }),
+                updateTaskState,
+            } as never,
+            taskId: 'task-1748',
+            prProcessingLockToken: 'attempt-token',
+            assertLease: async () => { throw new Error('lease lost'); },
+            signal: new AbortController().signal,
+        }),
+        /lease lost/,
+    );
+
+    assert.equal(updateTaskState.mock.calls.length, 0);
+    assert.equal(request.mock.calls.length, 0);
+});
+
+test('aborts and rechecks ownership after a generic-error GitHub mutation', async () => {
+    const controller = new AbortController();
+    const leaseError = new Error('lease lost during GitHub request');
+    const updateTaskState = mock.fn(async () => {});
+    const request = mock.fn(async (_route: string, parameters: { request?: { signal?: AbortSignal } }) => {
+        assert.equal(parameters.request?.signal, controller.signal);
+        controller.abort(leaseError);
+        return {};
+    });
+
+    await assert.rejects(
+        handleJobError(new Error('agent failed'), { name: 'processPullRequestComment', data: {} } as never, {
+            pullRequestNumber: 1748,
+            repoOwner: 'owner',
+            repoName: 'repo',
+            authorsText: '@owner',
+            unprocessedComments: [],
+            octokit: { request } as never,
+            startingWorkComment: { data: { id: 1 } },
+            claudeResult: null,
+            correlationId: 'correlation',
+            correlatedLogger: cleanupOptions().correlatedLogger,
+            stateManager: {
+                getTaskState: async () => ({
+                    state: 'processing',
+                    prProcessingLockToken: 'attempt-token',
+                }),
+                updateTaskState,
+            } as never,
+            taskId: 'task-1748',
+            prProcessingLockToken: 'attempt-token',
+            assertLease: async () => controller.signal.throwIfAborted(),
+            signal: controller.signal,
+        }),
+        error => error === leaseError,
+    );
+
+    assert.equal(updateTaskState.mock.calls.length, 1);
+    assert.equal(request.mock.calls.length, 1);
+});

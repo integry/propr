@@ -1,10 +1,36 @@
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
+import { readBoundedIntegerEnv } from '../config/numericEnv.js';
 
-export const PR_PROCESSING_LOCK_TTL_SECONDS = 60 * 60;
 export const PR_PROCESSING_LOCK_RENEW_INTERVAL_MS = 30 * 1000;
+export const DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS = 2 * 60;
+export const MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS = Math.ceil(
+    (PR_PROCESSING_LOCK_RENEW_INTERVAL_MS * 3) / 1000,
+);
+export const MAXIMUM_PR_PROCESSING_LOCK_TTL_SECONDS = 24 * 60 * 60;
+
+function readLockTtlSeconds(): number {
+    return readBoundedIntegerEnv('PR_PROCESSING_LOCK_TTL_SECONDS', {
+        fallback: DEFAULT_PR_PROCESSING_LOCK_TTL_SECONDS,
+        min: MINIMUM_PR_PROCESSING_LOCK_TTL_SECONDS,
+        max: MAXIMUM_PR_PROCESSING_LOCK_TTL_SECONDS,
+    });
+}
+
+/**
+ * A short renewable lease. If a worker disappears, another attempt can make
+ * progress within minutes instead of waiting for the previous one-hour TTL.
+ */
+export const PR_PROCESSING_LOCK_TTL_SECONDS = readLockTtlSeconds();
 
 export type PRProcessingLockRedisClient = Pick<Redis, 'set' | 'eval'>;
+
+export class PRProcessingLeaseLostError extends Error {
+    constructor(message: string = 'PR processing attempt lost its renewable lease', options?: ErrorOptions) {
+        super(message, options);
+        this.name = 'PRProcessingLeaseLostError';
+    }
+}
 
 interface LockHeartbeatOptions {
     redisClient: PRProcessingLockRedisClient;
@@ -28,6 +54,10 @@ if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
 end
 return 0
+`;
+
+const ASSERT_LOCK_SCRIPT = `
+return redis.call('get', KEYS[1]) == ARGV[1] and 1 or 0
 `;
 
 export function createPRProcessingLockToken(correlationId: string): string {
@@ -61,6 +91,15 @@ export async function releasePRProcessingLock(
 ): Promise<boolean> {
     const result = await redisClient.eval(RELEASE_LOCK_SCRIPT, 1, lockKey, lockToken);
     return Number(result) === 1;
+}
+
+export async function assertPRProcessingLock(
+    redisClient: PRProcessingLockRedisClient,
+    lockKey: string,
+    lockToken: string,
+): Promise<void> {
+    const result = await redisClient.eval(ASSERT_LOCK_SCRIPT, 1, lockKey, lockToken);
+    if (Number(result) !== 1) throw new PRProcessingLeaseLostError();
 }
 
 export function startPRProcessingLockHeartbeat(options: LockHeartbeatOptions): () => Promise<void> {

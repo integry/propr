@@ -1,35 +1,49 @@
 import { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from './logger.js';
-import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
-    type TaskResult, type ResumableTaskInfo, type TaskStateExpectation,
-    type TaskStateUpdateResult,
-    type WorkerStateManagerOptions
+    type TaskResult, type ResumableTaskInfo, type WorkerStateManagerOptions,
+    type CreateTaskStateOptions, type NonTerminalTaskFilter, type NonTerminalTaskPage,
+    type TaskStateExpectation
 } from './workerStateManager.types.js';
-import { getEventPublisher } from './eventPublisher.js';
 import {
-    buildTaskStateTransition,
-    buildTaskStateMutation,
-    compareAndSetTaskStateData,
-    compareAndSetTaskState,
-    publishTaskStateTransition,
-} from './workerStateTransition.js';
+    cleanupOldTaskStates,
+    getProcessingTaskStates,
+    scanNonTerminalTaskStates,
+} from './workerStateEnumeration.js';
+import {
+    publishHistoryMetadataUpdate,
+    publishIssueRefUpdate,
+} from './workerStateNotifications.js';
+import {
+    ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE,
+    assertTaskAttemptOwnership,
+    SupersededTaskAttemptError,
+    type TaskAttemptMutationAuthority,
+} from './taskAttemptGeneration.js';
+import {
+    applyTaskStateUpdate,
+    canTransitionTaskState,
+    compareAndSetTaskStateRecord,
+    createTaskStateRecord,
+    deleteTaskStateIfAttempt,
+    loadPersistedTaskStateRevision, MAX_CAS_ATTEMPTS,
+    persistTaskStateCreation,
+    persistTaskStateUpdate,
+    waitForCASRetry,
+} from './workerStatePersistence.js';
+import { DEFAULT_WORKER_STATE_KEY_PREFIX } from './workerStateKeys.js';
 
-const MAX_ATOMIC_UPDATE_ATTEMPTS = 8;
-const TERMINAL_TASK_STATES = new Set<TaskState>([
-    TaskStates.COMPLETED,
-    TaskStates.FAILED,
-    TaskStates.CANCELLED,
-]);
+export { DEFAULT_WORKER_STATE_KEY_PREFIX, getWorkerStateRedisKeys } from './workerStateKeys.js';
 
-async function waitForAtomicUpdateRetry(attempt: number): Promise<void> {
-    const delayMs = Math.min(5 * (2 ** attempt), 100);
-    await new Promise(resolve => setTimeout(resolve, delayMs));
-}
-
-export { TaskStates, type TaskState, type IssueRef };
+export {
+    ADMINISTRATIVE_TASK_ATTEMPT_OVERRIDE,
+    TaskStates,
+    SupersededTaskAttemptError,
+    type TaskState,
+    type IssueRef,
+};
 
 /**
  * Worker state manager for persistent task state tracking
@@ -37,7 +51,11 @@ export { TaskStates, type TaskState, type IssueRef };
 export class WorkerStateManager {
     private redis: InstanceType<typeof Redis>;
     private keyPrefix: string;
+    private revisionKeyPrefix: string;
     private stateExpiry: number;
+    private revisionExpiry: number;
+    private nonTerminalScanPositions = new Map<string, { cursor: string; pendingKeys: string[] }>();
+    private persistenceTails = new Map<string, Promise<void>>();
 
     constructor(options: WorkerStateManagerOptions = {}) {
         this.redis = new Redis({
@@ -47,8 +65,10 @@ export class WorkerStateManager {
             enableReadyCheck: false,
             ...options.redis
         });
-        this.keyPrefix = options.keyPrefix ?? 'worker:state:';
+        this.keyPrefix = options.keyPrefix ?? DEFAULT_WORKER_STATE_KEY_PREFIX;
+        this.revisionKeyPrefix = options.revisionKeyPrefix ?? `revision:${this.keyPrefix}`;
         this.stateExpiry = options.stateExpiry ?? 7 * 24 * 3600;
+        this.revisionExpiry = options.revisionExpiry ?? 30 * 24 * 3600;
         this.redis.on('error', (error: Error) => {
             logger.error({ error: error.message }, 'Redis error in WorkerStateManager');
         });
@@ -61,16 +81,39 @@ export class WorkerStateManager {
      * @param correlationId - Correlation ID for tracking
      * @returns Task state data
      */
-    async createTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData> {
+    async createTaskState(
+        taskId: string,
+        issueRef: IssueRef,
+        correlationId: string | null = null,
+        options: CreateTaskStateOptions = {},
+    ): Promise<TaskStateData> {
+        if (Boolean(options.prProcessingLockToken) !== Boolean(options.prProcessingLockKey)) {
+            throw new Error('PR task state creation requires both a processing lock token and key');
+        }
         const timestamp = new Date().toISOString();
         const state: TaskStateData = {
             taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
             state: TaskStates.PENDING, createdAt: timestamp,
             updatedAt: timestamp, version: 1, attempts: 0,
-            history: [{ state: TaskStates.PENDING, timestamp, reason: 'Task created' }]
+            history: [{ state: TaskStates.PENDING, timestamp, reason: 'Task created' }],
+            ...(options.prProcessingLockToken
+                ? { prProcessingLockToken: options.prProcessingLockToken }
+                : {}),
         };
         const key = this.getTaskKey(taskId);
-        await this.redis.setex(key, this.stateExpiry, JSON.stringify(state));
+        const revisionKey = `${this.revisionKeyPrefix}${taskId}`;
+        const minimumVersion = options.prProcessingLockToken ? await loadPersistedTaskStateRevision(taskId) : undefined;
+        const createdVersion = await createTaskStateRecord(this.redis, {
+            stateKey: key, revisionKey, stateExpiry: this.stateExpiry,
+            revisionExpiry: this.revisionExpiry,
+            state,
+            minimumVersion,
+            ...options,
+        });
+        if (options.prProcessingLockToken && createdVersion < 1) {
+            throw new Error(`PR processing attempt no longer owns its lease for taskId: ${taskId}`);
+        }
+        state.version = createdVersion;
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId, issueNumber: issueRef.number,
@@ -78,36 +121,24 @@ export class WorkerStateManager {
         }, 'Task state created');
 
         try {
-            // Validate repository name components before storing
-            const repoOwner = issueRef.repoOwner ?? 'unknown';
-            const repoName = issueRef.repoName ?? 'unknown';
-            const repository = `${repoOwner}/${repoName}`;
-            const taskData = {
-                task_id: taskId, job_id: null, correlation_id: state.correlationId,
-                repository,
-                issue_number: issueRef.number, task_type: issueRef.type ?? 'issue',
-                model_name: issueRef.modelName ?? null, created_at: state.createdAt,
-                initial_job_data: JSON.stringify(issueRef)
-            };
-            await db('tasks').insert(taskData).onConflict('task_id').ignore();
-            const historyData = {
-                task_id: taskId, state: TaskStates.PENDING,
-                timestamp: state.createdAt, reason: 'Task created', metadata: JSON.stringify({})
-            };
-            await db('task_history').insert(historyData);
-            correlatedLogger.debug({ taskId }, 'Task state persisted to database');
-
-            // Publish real-time event for task creation
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
-                taskId,
-                state: TaskStates.PENDING,
-                repository,
-                issueNumber: issueRef.number,
-                timestamp: state.updatedAt,
-            });
+            await persistTaskStateCreation(state, { requireDatabase: options.prProcessingLockToken !== undefined });
         } catch (error) {
-            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
+            if (options.prProcessingLockToken) {
+                try {
+                    await deleteTaskStateIfAttempt(
+                        this.redis,
+                        key,
+                        options.prProcessingLockToken,
+                        state.version,
+                    );
+                } catch (cleanupError) {
+                    correlatedLogger.warn({
+                        taskId,
+                        error: (cleanupError as Error).message,
+                    }, 'Failed to compensate fenced task state after SQL persistence failure');
+                }
+            }
+            throw error;
         }
         return state;
     }
@@ -119,43 +150,51 @@ export class WorkerStateManager {
      * @param metadata - Additional metadata
      * @returns Updated state
      */
-    async updateTaskState(taskId: string, newState: TaskState, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
+    async updateTaskState(
+        taskId: string,
+        newState: TaskState,
+        metadata: UpdateMetadata = {},
+        expectedPrProcessingLockToken?: TaskAttemptMutationAuthority,
+    ): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+        for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
             const stateJson = await this.redis.get(key);
             if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-            const current = JSON.parse(stateJson) as TaskStateData;
-            const isExplicitFailedRetry = current.state === TaskStates.FAILED
-                && newState === TaskStates.PROCESSING
-                && metadata.isRetry === true;
-            if (TERMINAL_TASK_STATES.has(current.state)
-                && current.state !== newState
-                && !isExplicitFailedRetry) {
-                logger.warn({ taskId, currentState: current.state, requestedState: newState },
-                    'Ignored state transition from a terminal task');
-                return current;
-            }
+            const state: TaskStateData = JSON.parse(stateJson);
+            assertTaskAttemptOwnership(taskId, state.prProcessingLockToken, expectedPrProcessingLockToken);
+            // Terminal state is monotonic. A retry is the sole intentional path
+            // back into processing and must opt in explicitly.
+            if (!canTransitionTaskState(state.state, newState, metadata)) return state;
 
-            const transition = buildTaskStateTransition(current, newState, metadata);
-            const updated = await compareAndSetTaskStateData(this.redis, {
-                key,
+            const previousState = state.state;
+            applyTaskStateUpdate(state, newState, metadata);
+            const updatedVersion = await compareAndSetTaskStateRecord(this.redis, {
+                stateKey: key,
+                revisionKey: `${this.revisionKeyPrefix}${taskId}`,
                 stateExpiry: this.stateExpiry,
-                currentJson: stateJson,
-                state: transition.state,
+                revisionExpiry: this.revisionExpiry,
+                expectedJson: stateJson,
+                state,
             });
-            if (updated) {
-                await publishTaskStateTransition(taskId, transition, metadata);
-                return transition.state;
+            if (updatedVersion === null) {
+                await waitForCASRetry(attempt);
+                continue;
             }
-            await waitForAtomicUpdateRetry(attempt);
+            state.version = updatedVersion;
+
+            await this.enqueueTaskStatePersistence(
+                taskId,
+                () => persistTaskStateUpdate(taskId, state, { previousState, newState, metadata }),
+            );
+            return state;
         }
-        throw new Error(`Task state update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+        throw new Error(`Task state update contention exceeded ${MAX_CAS_ATTEMPTS} attempts for taskId: ${taskId}`);
     }
 
     /**
-     * Updates task state only if it has not changed since it was read.
-     * @returns Updated state, or null when the expectation no longer matches
+     * Atomically updates a task only while it remains in the expected state.
+     * A concurrent cancellation or processor transition makes this a no-op.
      */
     async updateTaskStateIfCurrent(
         taskId: string,
@@ -163,34 +202,51 @@ export class WorkerStateManager {
         newState: TaskState,
         metadata: UpdateMetadata = {},
     ): Promise<TaskStateData | null> {
-        const result = await this.updateTaskStateIfCurrentDetailed(
+        const key = this.getTaskKey(taskId);
+        const stateJson = await this.redis.get(key);
+        if (!stateJson) return null;
+
+        const state: TaskStateData = JSON.parse(stateJson);
+        if (state.state !== expectation.state) return null;
+        if (expectation.createdAt && state.createdAt !== expectation.createdAt) return null;
+        if (expectation.updatedAt && state.updatedAt !== expectation.updatedAt) return null;
+        if (expectation.correlationId && state.correlationId !== expectation.correlationId) return null;
+        if (expectation.version !== undefined && (state.version ?? 0) !== expectation.version) return null;
+        if (expectation.prProcessingLockToken !== undefined
+            && state.prProcessingLockToken !== expectation.prProcessingLockToken) return null;
+        if (state.prProcessingLockToken !== undefined
+            && expectation.prProcessingLockToken === undefined) return null;
+        if (!canTransitionTaskState(state.state, newState, metadata)) return null;
+
+        const previousState = state.state;
+        applyTaskStateUpdate(state, newState, metadata);
+        const updatedVersion = await compareAndSetTaskStateRecord(this.redis, {
+            stateKey: key,
+            revisionKey: `${this.revisionKeyPrefix}${taskId}`,
+            stateExpiry: this.stateExpiry,
+            revisionExpiry: this.revisionExpiry,
+            expectedJson: stateJson,
+            state,
+        });
+        if (updatedVersion === null) return null;
+        state.version = updatedVersion;
+
+        await this.enqueueTaskStatePersistence(
             taskId,
-            expectation,
-            newState,
-            metadata,
+            () => persistTaskStateUpdate(taskId, state, { previousState, newState, metadata }),
         );
-        return result?.state ?? null;
+        return state;
     }
 
-    /**
-     * Conditional state update with explicit database/event publication status.
-     */
-    async updateTaskStateIfCurrentDetailed(
-        taskId: string,
-        expectation: TaskStateExpectation,
-        newState: TaskState,
-        metadata: UpdateMetadata = {},
-    ): Promise<TaskStateUpdateResult | null> {
-        const transition = await compareAndSetTaskState(this.redis, {
-            key: this.getTaskKey(taskId),
-            stateExpiry: this.stateExpiry,
-            expectation,
-            newState,
-            metadata,
-        });
-        if (!transition) return null;
-        const publication = await publishTaskStateTransition(taskId, transition, metadata);
-        return { state: transition.state, publication };
+    private async enqueueTaskStatePersistence(taskId: string, operation: () => Promise<void>): Promise<void> {
+        const previous = this.persistenceTails.get(taskId) ?? Promise.resolve();
+        const current = previous.catch(() => undefined).then(operation);
+        this.persistenceTails.set(taskId, current);
+        try {
+            await current;
+        } finally {
+            if (this.persistenceTails.get(taskId) === current) this.persistenceTails.delete(taskId);
+        }
     }
 
     /**
@@ -211,54 +267,43 @@ export class WorkerStateManager {
      * @param issueRefPatch - Issue reference fields to merge
      * @returns Updated state, or null if no state exists
      */
-    async updateIssueRef(taskId: string, issueRefPatch: Partial<IssueRef>): Promise<TaskStateData | null> {
+    async updateIssueRef(
+        taskId: string,
+        issueRefPatch: Partial<IssueRef>,
+        expectedPrProcessingLockToken?: TaskAttemptMutationAuthority,
+    ): Promise<TaskStateData | null> {
         const key = this.getTaskKey(taskId);
-        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+        let state: TaskStateData | null = null;
+        for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
             const stateJson = await this.redis.get(key);
             if (!stateJson) return null;
 
-            const current = JSON.parse(stateJson) as TaskStateData;
-            const state = buildTaskStateMutation(current, next => {
-                next.issueRef = { ...next.issueRef, ...issueRefPatch };
-            });
-            const updated = await compareAndSetTaskStateData(this.redis, {
-                key,
+            state = JSON.parse(stateJson) as TaskStateData;
+            assertTaskAttemptOwnership(taskId, state.prProcessingLockToken, expectedPrProcessingLockToken);
+            state.issueRef = { ...state.issueRef, ...issueRefPatch };
+            state.updatedAt = new Date().toISOString();
+            state.version = (state.version ?? 0) + 1;
+            const updatedVersion = await compareAndSetTaskStateRecord(this.redis, {
+                stateKey: key,
+                revisionKey: `${this.revisionKeyPrefix}${taskId}`,
                 stateExpiry: this.stateExpiry,
-                currentJson: stateJson,
+                revisionExpiry: this.revisionExpiry,
+                expectedJson: stateJson,
                 state,
             });
-            if (!updated) {
-                await waitForAtomicUpdateRetry(attempt);
-                continue;
+            if (updatedVersion !== null) {
+                state.version = updatedVersion;
+                break;
             }
-
-            const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-            correlatedLogger.info({
-                taskId,
-                issueNumber: state.issueRef.number,
-                repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                updatedFields: Object.keys(issueRefPatch),
-                version: state.version,
-            }, 'Task issue reference updated');
-
-            try {
-                await getEventPublisher().publishTaskUpdate({
-                    taskId,
-                    state: state.state,
-                    repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                    issueNumber: state.issueRef.number,
-                    timestamp: state.updatedAt,
-                    metadata: {
-                        issueRefUpdated: true,
-                        updatedFields: Object.keys(issueRefPatch)
-                    }
-                });
-            } catch (error) {
-                correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish issue reference update event');
-            }
-            return state;
+            state = null;
+            await waitForCASRetry(attempt);
         }
-        throw new Error(`Task issue reference update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+        if (!state) {
+            throw new Error(`Task issue reference update contention exceeded ${MAX_CAS_ATTEMPTS} attempts for taskId: ${taskId}`);
+        }
+
+        await publishIssueRefUpdate(state, issueRefPatch);
+        return state;
     }
 
     /**
@@ -294,58 +339,45 @@ export class WorkerStateManager {
      * @param metadata - Metadata to merge
      * @returns Updated state
      */
-    async updateHistoryMetadata(taskId: string, historyState: TaskState, metadata: Record<string, unknown> = {}): Promise<TaskStateData> {
+    async updateHistoryMetadata(
+        taskId: string,
+        historyState: TaskState,
+        metadata: Record<string, unknown> = {},
+        expectedPrProcessingLockToken?: TaskAttemptMutationAuthority,
+    ): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+        for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
             const stateJson = await this.redis.get(key);
             if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-            const current = JSON.parse(stateJson) as TaskStateData;
-            const historyIndex = current.history.findLastIndex(h => h.state === historyState);
+            const state: TaskStateData = JSON.parse(stateJson);
+            assertTaskAttemptOwnership(taskId, state.prProcessingLockToken, expectedPrProcessingLockToken);
+            const historyIndex = state.history.findLastIndex(h => h.state === historyState);
+
             if (historyIndex < 0) {
                 logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
-                return current;
+                return state;
             }
-
-            const state = buildTaskStateMutation(current, next => {
-                next.history[historyIndex].metadata = {
-                    ...next.history[historyIndex].metadata,
-                    ...metadata,
-                };
-            });
-            const updated = await compareAndSetTaskStateData(this.redis, {
-                key,
+            state.history[historyIndex].metadata = { ...state.history[historyIndex].metadata, ...metadata };
+            state.updatedAt = new Date().toISOString();
+            state.version = (state.version ?? 0) + 1;
+            const updatedVersion = await compareAndSetTaskStateRecord(this.redis, {
+                stateKey: key,
+                revisionKey: `${this.revisionKeyPrefix}${taskId}`,
                 stateExpiry: this.stateExpiry,
-                currentJson: stateJson,
+                revisionExpiry: this.revisionExpiry,
+                expectedJson: stateJson,
                 state,
             });
-            if (!updated) {
-                await waitForAtomicUpdateRetry(attempt);
+            if (updatedVersion === null) {
+                await waitForCASRetry(attempt);
                 continue;
             }
-
-            const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-            correlatedLogger.debug({ taskId, historyState, metadata, version: state.version }, 'Updated history metadata');
-
-            // Publish real-time event for metadata update so UI can refresh
-            try {
-                await getEventPublisher().publishTaskUpdate({
-                    taskId,
-                    state: state.state,
-                    repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                    issueNumber: state.issueRef.number,
-                    timestamp: state.updatedAt,
-                    metadata: {
-                        metadataUpdate: true,
-                        updatedFields: Object.keys(metadata)
-                    }
-                });
-            } catch (error) {
-                correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish metadata update event');
-            }
+            state.version = updatedVersion;
+            await publishHistoryMetadataUpdate(state, historyState, metadata);
             return state;
         }
-        throw new Error(`Task history metadata update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+        throw new Error(`Task history metadata update contention exceeded ${MAX_CAS_ATTEMPTS} attempts for taskId: ${taskId}`);
     }
 
     /**
@@ -355,13 +387,18 @@ export class WorkerStateManager {
      * @param metadata - Additional metadata
      * @returns Updated state
      */
-    async markTaskFailed(taskId: string, error: Error, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
+    async markTaskFailed(
+        taskId: string,
+        error: Error,
+        metadata: UpdateMetadata = {},
+        authority?: TaskAttemptMutationAuthority,
+    ): Promise<TaskStateData> {
         const errorMetadata: UpdateMetadata = {
             ...metadata,
             error: { message: error.message, category: metadata.errorCategory ?? 'unknown' },
             reason: `Task failed: ${error.message}`
         };
-        return await this.updateTaskState(taskId, TaskStates.FAILED, errorMetadata);
+        return await this.updateTaskState(taskId, TaskStates.FAILED, errorMetadata, authority);
     }
 
     /**
@@ -371,7 +408,12 @@ export class WorkerStateManager {
      * @param metadata - Additional metadata
      * @returns Updated state
      */
-    async markTaskCancelled(taskId: string, cancelledBy: string = 'user', metadata: UpdateMetadata = {}): Promise<TaskStateData> {
+    async markTaskCancelled(
+        taskId: string,
+        cancelledBy: string = 'user',
+        metadata: UpdateMetadata = {},
+        authority?: TaskAttemptMutationAuthority,
+    ): Promise<TaskStateData> {
         const cancelMetadata: UpdateMetadata = {
             ...metadata,
             reason: metadata.reason ?? `Task cancelled by ${cancelledBy}`,
@@ -381,7 +423,7 @@ export class WorkerStateManager {
                 cancelledAt: new Date().toISOString()
             }
         };
-        return await this.updateTaskState(taskId, TaskStates.CANCELLED, cancelMetadata);
+        return await this.updateTaskState(taskId, TaskStates.CANCELLED, cancelMetadata, authority);
     }
 
     /**
@@ -390,7 +432,11 @@ export class WorkerStateManager {
      * @param result - Task result
      * @returns Updated state
      */
-    async markTaskCompleted(taskId: string, result: TaskResult = {}): Promise<TaskStateData> {
+    async markTaskCompleted(
+        taskId: string,
+        result: TaskResult = {},
+        authority?: TaskAttemptMutationAuthority,
+    ): Promise<TaskStateData> {
         const metadata: UpdateMetadata = {
             prResult: result, reason: 'Task completed successfully',
             historyMetadata: {
@@ -398,7 +444,36 @@ export class WorkerStateManager {
                 commitResult: result.commitResult ?? null
             }
         };
-        return await this.updateTaskState(taskId, TaskStates.COMPLETED, metadata);
+        return await this.updateTaskState(taskId, TaskStates.COMPLETED, metadata, authority);
+    }
+
+    /**
+     * Gets all tasks that have not reached a terminal state. Used by the worker
+     * reconciler to repair state after an unclean restart.
+     */
+    async getNonTerminalTaskPage(filter: NonTerminalTaskFilter = {}): Promise<NonTerminalTaskPage> {
+        const cursorKey = filter.taskTypes?.length
+            ? [...filter.taskTypes].sort().join(',')
+            : '*';
+        const position = this.nonTerminalScanPositions.get(cursorKey);
+        const result = await scanNonTerminalTaskStates(
+            this.redis,
+            this.keyPrefix,
+            filter,
+            position,
+        );
+        this.nonTerminalScanPositions.set(cursorKey, {
+            cursor: result.nextCursor,
+            pendingKeys: result.pendingKeys,
+        });
+        return {
+            tasks: result.tasks,
+            scanComplete: result.nextCursor === '0' && result.pendingKeys.length === 0,
+        };
+    }
+
+    async getNonTerminalTasks(filter: NonTerminalTaskFilter = {}): Promise<TaskStateData[]> {
+        return (await this.getNonTerminalTaskPage(filter)).tasks;
     }
 
     /**
@@ -406,22 +481,7 @@ export class WorkerStateManager {
      * @returns Array of processing tasks
      */
     async getProcessingTasks(): Promise<TaskStateData[]> {
-        const pattern = `${this.keyPrefix}*`;
-        const keys = await this.redis.keys(pattern);
-        const processingTasks: TaskStateData[] = [];
-
-        for (const key of keys) {
-            try {
-                const stateJson = await this.redis.get(key);
-                if (!stateJson) continue;
-                const state: TaskStateData = JSON.parse(stateJson);
-                const processingStates: TaskState[] = [TaskStates.PROCESSING, TaskStates.CLAUDE_EXECUTION, TaskStates.POST_PROCESSING];
-                if (processingStates.includes(state.state)) processingTasks.push(state);
-            } catch (error) {
-                logger.warn({ key, error: (error as Error).message }, 'Failed to parse task state during recovery scan');
-            }
-        }
-        return processingTasks;
+        return await getProcessingTaskStates(this.redis, this.keyPrefix);
     }
 
     /**
@@ -430,31 +490,12 @@ export class WorkerStateManager {
      * @returns Number of tasks cleaned up
      */
     async cleanupOldTasks(maxAge: number = 24 * 3600): Promise<number> {
-        const pattern = `${this.keyPrefix}*`;
-        const keys = await this.redis.keys(pattern);
-        let cleanedCount = 0;
-        const cutoffTime = Date.now() - (maxAge * 1000);
-
-        for (const key of keys) {
-            try {
-                const stateJson = await this.redis.get(key);
-                if (!stateJson) continue;
-                const state: TaskStateData = JSON.parse(stateJson);
-                const cleanupStates: TaskState[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
-                if (cleanupStates.includes(state.state)) {
-                    const updatedAt = new Date(state.updatedAt).getTime();
-                    if (updatedAt < cutoffTime) {
-                        await this.redis.del(key);
-                        cleanedCount++;
-                        logger.debug({ taskId: state.taskId, state: state.state, age: Date.now() - updatedAt }, 'Cleaned up old task state');
-                    }
-                }
-            } catch (error) {
-                logger.warn({ key, error: (error as Error).message }, 'Failed to cleanup task state');
-            }
-        }
-        logger.info({ cleanedCount, totalKeys: keys.length, maxAge }, 'Task state cleanup completed');
-        return cleanedCount;
+        return await cleanupOldTaskStates(
+            this.redis,
+            this.keyPrefix,
+            this.revisionKeyPrefix,
+            maxAge,
+        );
     }
 
     /**
@@ -469,9 +510,7 @@ export class WorkerStateManager {
     /**
      * Closes Redis connection
      */
-    async close(): Promise<void> {
-        this.redis.disconnect();
-    }
+    async close(): Promise<void> { await this.redis.quit(); }
 }
 
 /**

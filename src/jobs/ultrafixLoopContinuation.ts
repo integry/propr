@@ -18,15 +18,16 @@ import {
     loadState,
     claimDeferredContinuation,
     recordAction,
-    clearState,
+    clearStateWithLease,
     completeLoop,
     determineNextAction,
     hasReviewReachedGoal,
     recordReviewFindings,
     saveDeferredContinuation,
-    clearDeferredContinuation,
+    clearDeferredContinuationWithLease,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
+import type { UltrafixMutationLease } from './ultrafixLeaseTransitions.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
@@ -50,6 +51,11 @@ export interface UltrafixContinuationParams {
     correlationId: string;
     /** The ID of the current job running this continuation, to exclude from queue checks */
     currentJobId?: string;
+    /** Stable publication task identifier used to make continuation recovery idempotent. */
+    continuationId?: string;
+    /** Live PR lease used to atomically fence the completed-action transition. */
+    mutationLease?: UltrafixMutationLease;
+    assertLease?: () => Promise<void>;
     /** Review comment IDs posted by the current job. Empty means the current review produced no usable output. */
     currentReviewCommentIds?: number[];
     /** Number of review results the current job attempted to post. */
@@ -85,6 +91,10 @@ export interface ContinuationResult {
     deferred?: boolean;
 }
 
+async function assertContinuationLease(params: UltrafixContinuationParams): Promise<void> {
+    if (params.assertLease) await params.assertLease();
+}
+
 /**
  * Main continuation entry point. Call after a review or fix step completes
  * to decide whether to continue the ultrafix loop.
@@ -108,11 +118,16 @@ export async function continueUltrafixLoop(
         );
         return { continued: false, reason: 'no_active_loop' };
     }
+    if (!params.mutationLease) {
+        throw new Error('Ultrafix continuation mutations require a live PR lease');
+    }
+    const mutationLease = params.mutationLease;
 
     // 2. Record the completed action
     const updatedState = await recordAction(redisClient, {
         owner, repo, pr: pullRequestNumber, action: completedAction,
-    });
+        continuationId: params.continuationId,
+    }, mutationLease);
     if (!updatedState) {
         return { continued: false, reason: 'state_lost_after_record' };
     }
@@ -126,8 +141,9 @@ export async function continueUltrafixLoop(
     const labelPresent = await hasUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
     if (!labelPresent) {
         correlatedLogger.info({ pullRequestNumber }, 'Ultrafix loop: label removed, stopping loop');
-        await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
-        await clearState(redisClient, owner, repo, pullRequestNumber);
+        const prId = { owner, repo, pr: pullRequestNumber };
+        await clearDeferredContinuationWithLease(redisClient, prId, mutationLease);
+        await clearStateWithLease(redisClient, prId, mutationLease);
         return { continued: false, reason: 'label_removed', cycleCount: updatedState.cycleCount };
     }
 
@@ -193,13 +209,17 @@ export async function continueUltrafixLoop(
             completionStatus: goalReached ? 'succeeded' : 'failed',
             completionReason: decision.reason,
             finalScore: latestScore,
-        });
+        }, mutationLease);
         if (goalReached) {
+            await assertContinuationLease(params);
             await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
-            await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
-            await clearState(redisClient, owner, repo, pullRequestNumber);
+            const prId = { owner, repo, pr: pullRequestNumber };
+            await clearDeferredContinuationWithLease(redisClient, prId, mutationLease);
+            await clearStateWithLease(redisClient, prId, mutationLease);
+            await assertContinuationLease(params);
             await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
         } else {
+            await assertContinuationLease(params);
             const stoppedBecauseCleanReviewMissedGoal = completedAction === 'review'
                 && reviewStatus === 'valid_clean';
             const manualReason = stoppedBecauseCleanReviewMissedGoal
@@ -245,8 +265,9 @@ export async function continueUltrafixLoop(
             nextAction: decision.action,
             savedAt: new Date().toISOString(),
             reason: readiness.reasons.join(', '),
+            continuationId: params.continuationId,
             ultrafixMeta: params.ultrafixMeta,
-        });
+        }, mutationLease);
         correlatedLogger.info(
             { pullRequestNumber, nextAction: decision.action, blockingReasons: readiness.reasons },
             'Ultrafix loop: deferred continuation — waiting for readiness',
@@ -262,7 +283,11 @@ export async function continueUltrafixLoop(
     }
 
     // Clear any stale deferred record before proceeding
-    await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
+    await clearDeferredContinuationWithLease(
+        redisClient,
+        { owner, repo, pr: pullRequestNumber },
+        mutationLease,
+    );
 
     // 8. Enqueue the next step with configured pause
     const delayMs = (updatedState.pauseSeconds || 60) * 1000;
@@ -320,6 +345,7 @@ export async function resumeDeferredContinuation(
         redisClient,
         correlatedLogger,
         correlationId,
+        continuationId: deferred.continuationId ?? `deferred-${deferred.savedAt}`,
     };
 
     const readiness = await evaluateReadiness(params, {

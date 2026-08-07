@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager } from '@propr/core';
+import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
 import { db } from '@propr/core';
@@ -24,10 +24,7 @@ import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 import { createConfiguredMainWorker } from './workerFactory.js';
 import type { MainWorker } from './workerFactory.js';
-import {
-    attachPRCommentTaskStateFinalizers,
-    type PRCommentTaskStateFinalizers,
-} from './jobs/prCommentTaskStateFinalizers.js';
+import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -148,6 +145,36 @@ export interface StartedWorker {
     runtimeBuildWorker: Worker<AgentRuntimeBuildJobData>;
     /** Closes both BullMQ workers and the worker's Redis connections. */
     close(): Promise<void>;
+}
+
+async function rollbackWorkerStartup(options: {
+    worker: MainWorker;
+    runtimeBuildWorker?: Worker<AgentRuntimeBuildJobData>;
+    taskStateRecovery?: Awaited<ReturnType<typeof startWorkerTaskStateRecovery>>;
+    heartbeatRedis: Redis;
+    subscriberRedis: Redis;
+    workerId: string;
+}): Promise<void> {
+    // Keep terminal-state finalizers attached until active jobs have drained.
+    const cleanupResults: PromiseSettledResult<unknown>[] = [
+        ...await Promise.allSettled([options.worker.close()]),
+    ];
+    const cleanupTasks: Array<Promise<unknown>> = [
+        options.heartbeatRedis.srem('system:status:workers', options.workerId),
+        options.subscriberRedis.quit(),
+    ];
+    if (options.runtimeBuildWorker) cleanupTasks.push(options.runtimeBuildWorker.close());
+    if (options.taskStateRecovery) cleanupTasks.push(options.taskStateRecovery.close());
+    cleanupResults.push(...await Promise.allSettled(cleanupTasks));
+    cleanupResults.push(...await Promise.allSettled([
+        closeStateManager(),
+        options.heartbeatRedis.quit(),
+    ]));
+    for (const result of cleanupResults) {
+        if (result.status === 'rejected') {
+            logger.warn({ error: (result.reason as Error).message }, 'Worker startup cleanup failed');
+        }
+    }
 }
 
 async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> {
@@ -308,8 +335,6 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         }
     });
 
-    let taskStateFinalizers: PRCommentTaskStateFinalizers | undefined;
-    const stateManager = getStateManager();
     const worker = await createConfiguredMainWorker({
         queueName: GITHUB_ISSUE_QUEUE_NAME,
         concurrency: workerConcurrency,
@@ -321,51 +346,73 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             processSystemTaskJob,
             processMergeConflictJob,
         },
-        beforeRun: configuredWorker => {
-            taskStateFinalizers = attachPRCommentTaskStateFinalizers(configuredWorker, stateManager);
-        },
     });
-    if (!taskStateFinalizers) throw new Error('PR comment task state finalizers were not attached');
-    const attachedTaskStateFinalizers = taskStateFinalizers;
 
-    const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
-        AGENT_RUNTIME_BUILD_QUEUE_NAME,
-        async (job) => {
-            logger.info({ buildId: job.data.buildId, packages: job.data.packages }, 'Building agent runtime package profile');
-            await job.updateProgress(5);
-            const state = await buildAgentRuntimePackageProfile(job.data);
-            if (state.buildId !== job.data.buildId) {
-                logger.info({ buildId: job.data.buildId, currentBuildId: state.buildId }, 'Agent runtime build was superseded');
+    let taskStateRecovery!: Awaited<ReturnType<typeof startWorkerTaskStateRecovery>>;
+    let runtimeBuildWorker!: Worker<AgentRuntimeBuildJobData>;
+    try {
+        taskStateRecovery = await startWorkerTaskStateRecovery(worker);
+        runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
+            AGENT_RUNTIME_BUILD_QUEUE_NAME,
+            async (job) => {
+                logger.info({ buildId: job.data.buildId, packages: job.data.packages }, 'Building agent runtime package profile');
+                await job.updateProgress(5);
+                const state = await buildAgentRuntimePackageProfile(job.data);
+                if (state.buildId !== job.data.buildId) {
+                    logger.info({ buildId: job.data.buildId, currentBuildId: state.buildId }, 'Agent runtime build was superseded');
+                    return state;
+                }
+                await job.updateProgress(90);
+                await AgentRegistry.getInstance().refresh();
+                await job.updateProgress(100);
+                logger.info({ buildId: job.data.buildId, imageCount: Object.keys(state.images).length }, 'Agent runtime package profile activated');
                 return state;
-            }
-            await job.updateProgress(90);
-            await AgentRegistry.getInstance().refresh();
-            await job.updateProgress(100);
-            logger.info({ buildId: job.data.buildId, imageCount: Object.keys(state.images).length }, 'Agent runtime package profile activated');
-            return state;
-        },
-        {
-            connection: {
-                host: process.env.REDIS_HOST || 'localhost',
-                port: parseInt(process.env.REDIS_PORT || '6379', 10),
-                maxRetriesPerRequest: null
             },
-            concurrency: 1
-        }
-    );
-    runtimeBuildWorker.on('failed', (job, error) => {
-        logger.error({ buildId: job?.data.buildId, error: error.message }, 'Agent runtime package build failed');
-    });
+            {
+                connection: {
+                    host: process.env.REDIS_HOST || 'localhost',
+                    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+                    maxRetriesPerRequest: null
+                },
+                concurrency: 1
+            }
+        );
+        runtimeBuildWorker.on('failed', (job, error) => {
+            logger.error({ buildId: job?.data.buildId, error: error.message }, 'Agent runtime package build failed');
+        });
+    } catch (error) {
+        clearInterval(heartbeatInterval);
+        await rollbackWorkerStartup({
+            worker, runtimeBuildWorker, taskStateRecovery,
+            heartbeatRedis, subscriberRedis, workerId,
+        });
+        throw error;
+    }
 
     const close = async (): Promise<void> => {
         clearInterval(heartbeatInterval);
-        await worker.close();
-        await attachedTaskStateFinalizers.close();
-        await closeStateManager();
-        await runtimeBuildWorker.close();
-        await heartbeatRedis.srem('system:status:workers', workerId);
-        await subscriberRedis.quit();
-        await heartbeatRedis.quit();
+        // Keep finalizers attached while BullMQ drains active jobs.
+        const workerClose = await Promise.allSettled([worker.close()]);
+        const cleanupResults = await Promise.allSettled([
+            taskStateRecovery.close(),
+            heartbeatRedis.srem('system:status:workers', workerId),
+            subscriberRedis.quit(),
+            runtimeBuildWorker.close(),
+        ]);
+        cleanupResults.push(...await Promise.allSettled([
+            closeStateManager(),
+            heartbeatRedis.quit(),
+        ]));
+        const shutdownErrors: unknown[] = [];
+        for (const result of [...workerClose, ...cleanupResults]) {
+            if (result.status === 'rejected') {
+                shutdownErrors.push(result.reason);
+                logger.warn({ error: (result.reason as Error).message }, 'Worker shutdown cleanup failed');
+            }
+        }
+        if (shutdownErrors.length > 0) {
+            throw new AggregateError(shutdownErrors, 'Worker shutdown did not complete cleanly');
+        }
     };
 
     process.on('SIGINT', async () => {

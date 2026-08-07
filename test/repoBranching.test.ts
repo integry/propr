@@ -55,7 +55,11 @@ test('pushBranch rebases and retries when remote branch advanced', async () => {
         await git(firstClone, ['commit', '-m', 'local follow-up']);
         const originalLocalCommit = await git(firstClone, ['rev-parse', 'HEAD']);
 
-        const result = await pushBranch(firstClone, 'feature', { rebaseOnNonFastForward: true });
+        const checkpointedCommits: string[] = [];
+        const result = await pushBranch(firstClone, 'feature', {
+            rebaseOnNonFastForward: true,
+            beforePush: async commitHash => { checkpointedCommits.push(commitHash); },
+        });
         const finalLocalCommit = await git(firstClone, ['rev-parse', 'HEAD']);
         const finalRemoteCommit = await git(firstClone, ['ls-remote', 'origin', 'refs/heads/feature']);
         const remoteLog = await git(firstClone, ['log', '--format=%s', 'origin/feature', '-3']);
@@ -63,6 +67,7 @@ test('pushBranch rebases and retries when remote branch advanced', async () => {
         assert.strictEqual(result.rebased, true);
         assert.strictEqual(result.commitHash, finalLocalCommit);
         assert.notStrictEqual(finalLocalCommit, originalLocalCommit);
+        assert.deepStrictEqual(checkpointedCommits, [finalLocalCommit]);
         assert.ok(finalRemoteCommit.startsWith(finalLocalCommit));
         assert.match(remoteLog, /local follow-up/);
         assert.match(remoteLog, /remote advance/);

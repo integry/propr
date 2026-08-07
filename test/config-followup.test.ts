@@ -64,7 +64,7 @@ test('saveSettingsWithRollback returns a specific failure without partial-commit
       database: testDb,
       settings: {
         planner_context_model: 'gpt-5',
-        pr_review_model: 'claude-sonnet-4-6'
+        pr_review_model: ''
       },
       publishConfigUpdate: async () => {
         published += 1;

@@ -1,20 +1,7 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { findRunningDockerContainerForTask, logger } from '@propr/core';
-import { getAuthenticatedOctokit } from '@propr/core';
-import { withRetry, retryConfigs } from '@propr/core';
-import { getStateManager, TaskStates } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
-import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '@propr/core';
-import type { WorktreeInfo } from '@propr/core';
-import { ensureGitRepository } from '@propr/core';
-import { createLogFiles } from '@propr/core';
-import { UsageLimitError } from '@propr/core';
-import type { ClaudeCodeResponse } from '@propr/core';
-import { recordLLMMetrics } from '@propr/core';
-import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
+import { createLogFiles, createWorktreeFromExistingBranch, ensureGitRepository, ensureRepoCloned, getAuthenticatedOctokit, getRepoUrl, getStateManager, hashTaskAttemptToken, loadPrimaryProcessingLabels, logger, recordLLMMetrics, retryConfigs, runWithExecutionAbortSignal, SupersededTaskAttemptError, TaskStates, UsageLimitError, withRetry, type CommentJobData, type IssueRef, type JobResult, type UnprocessedComment, type WorkerStateManager } from '@propr/core';
 import { Redis } from 'ioredis';
-import { loadPrimaryProcessingLabels } from '@propr/core';
 import {
     validateAndFilterComments, filterUnprocessedComments, fetchLinkedIssueContext,
     buildCommentHistory, updateTaskTitleForPR, resolvePrReasoningLevelOverride
@@ -22,7 +9,8 @@ import {
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildPrompt,
-    handleJobError, cleanupJob, toClaudeResult
+    handleJobError, cleanupJobBeforeStoppingHeartbeat, buildPRCommentWorktreeDirName,
+    stopAbandonedPRTaskContainer, toClaudeResult
 } from './prCommentJobUtils.js';
 import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
@@ -33,6 +21,7 @@ import { markFindingsSelected, retainOriginalScope } from './ultrafixOrchestrati
 import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
 import { handleNoAuthorizedFindings } from './prCommentNoAuthorizedFindings.js';
 import { handlePostExecution } from './prCommentPostExecution.js';
+import { resolvePRCommentJobContext, resumePRCommentPublicationJob } from './prCommentPublicationJobRecovery.js';
 import {
     buildDeterministicPrTaskSubtitle,
     buildPrTaskTitle,
@@ -44,11 +33,26 @@ import {
 import type { GitHubToken } from './githubTypes.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import {
-    acquirePRProcessingLock,
+    assertPRProcessingLock,
     createPRProcessingLockToken,
+    PRProcessingLeaseLostError,
     releasePRProcessingLock,
     startPRProcessingLockHeartbeat,
 } from './prProcessingLock.js';
+import { finalizePRCommentTaskResultBestEffort } from './prCommentTaskFinalizer.js';
+import type {
+    PRData,
+    PRJobContext,
+    ProcessingState,
+    ValidationResult,
+} from './prCommentProcessingTypes.js';
+import {
+    acquirePRCommentProcessingLock,
+    clearRetainedPRProcessingLockToken,
+    requeuePRCommentJobWithoutLease,
+} from './prCommentProcessingLease.js';
+import { recoverPRCommentRemoteOutcome } from './prCommentRemoteOutcomeRecovery.js';
+import { loadPRCommentPublicationCheckpoint } from './prCommentRemoteOutcome.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
@@ -56,49 +60,6 @@ const redisClient = new Redis({
     maxRetriesPerRequest: null,
     enableReadyCheck: false,
 });
-
-interface PRData { data: { head: { ref: string; sha?: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
-interface PRComment { id: number; body: string; body_html?: string; user: { login: string; type?: string }; created_at: string; pull_request_review_id?: number }
-
-interface PRJobContext {
-    pullRequestNumber: number;
-    jobBranchName: string | undefined;
-    repoOwner: string;
-    repoName: string;
-    llm: string | null | undefined;
-    correlationId: string;
-    correlatedLogger: Logger;
-    primaryProcessingLabels: string[];
-    isBatchJob: boolean;
-    commentsToProcess: UnprocessedComment[];
-}
-
-interface ValidationResult {
-    skip: boolean;
-    reason?: string;
-    prData?: PRData;
-    validatedComments?: UnprocessedComment[];
-    unprocessedComments?: UnprocessedComment[];
-    llm?: string | null;
-    prCommentsForValidation?: PRComment[];
-}
-
-interface LockParams {
-    lockKey: string;
-    lockToken: string;
-    correlatedLogger: Logger;
-    job: Job<CommentJobData>;
-}
-
-interface ProcessingState {
-    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
-    localRepoPath: string | undefined;
-    worktreeInfo: WorktreeInfo | undefined;
-    claudeResult: ClaudeCodeResponse | null;
-    authorsText: string;
-    unprocessedComments: UnprocessedComment[];
-    startingWorkComment: { data: { id: number; html_url: string } } | null;
-}
 
 async function getPrimaryLabels(): Promise<string[]> {
     try {
@@ -135,19 +96,6 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
     return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess };
 }
 
-async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
-    const { lockKey, lockToken, correlatedLogger, job } = lockParams;
-
-    if (await acquirePRProcessingLock(redisClient, lockKey, lockToken)) {
-        correlatedLogger.debug({ lockKey }, 'PR lock acquired');
-        return true;
-    }
-
-    correlatedLogger.info({ lockKey }, 'PR is currently being processed by another execution. Rescheduling...');
-    await issueQueue.add(job.name, job.data, { delay: 10000 });
-    return false;
-}
-
 async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>, context: PRJobContext & { llm: string | null | undefined }): Promise<ValidationResult> {
     const { commentsToProcess, pullRequestNumber, repoOwner, repoName, primaryProcessingLabels, correlatedLogger, llm: initialLlm } = context;
     const prData = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
@@ -170,15 +118,19 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
 }
 
 interface ExecuteProcessingParams {
-    job: Job<CommentJobData>;
-    context: PRJobContext;
-    llm: string | null | undefined;
-    taskId: string;
-    stateManager: WorkerStateManager;
-    state: ProcessingState;
+    job: Job<CommentJobData>; context: PRJobContext;
+    llm: string | null | undefined; taskId: string;
+    stateManager: WorkerStateManager; state: ProcessingState;
+    lockToken: string; assertLease: () => Promise<void>;
+    signal: AbortSignal;
 }
 
-function checkTerminalStateAfterExecution(currentState: { state: string } | null, taskId: string, correlatedLogger: Logger): void {
+function checkTerminalStateAfterExecution(
+    currentState: { state: string; prProcessingLockToken?: string } | null,
+    taskId: string,
+    expectedLockToken: string,
+    correlatedLogger: Logger,
+): void {
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     if (currentState && TERMINAL_STATES.includes(currentState.state)) {
         correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state after agent execution, skipping state update');
@@ -186,6 +138,9 @@ function checkTerminalStateAfterExecution(currentState: { state: string } | null
             throw new Error('Execution aborted by user request');
         }
         throw new Error(`Task already in terminal state: ${currentState.state}`);
+    }
+    if (currentState?.prProcessingLockToken !== expectedLockToken) {
+        throw new SupersededTaskAttemptError(taskId);
     }
 }
 
@@ -204,15 +159,26 @@ function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: 
 }
 
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
-    const { job, context, taskId, stateManager, state } = params;
+    const { job, context, taskId, stateManager, state, lockToken, assertLease, signal } = params;
     let { llm } = params;
     const { pullRequestNumber, jobBranchName, repoOwner, repoName, correlationId, correlatedLogger } = context;
 
     state.octokit = await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
     const validation = await validatePRAndComments(state.octokit, { ...context, llm });
     if (validation.skip) {
+        await assertLease();
         correlatedLogger.info({ pullRequestNumber, reason: validation.reason }, 'Skipping PR comment processing');
-        return { status: 'skipped', reason: validation.reason, pullRequestNumber };
+        const result = { status: 'skipped', reason: validation.reason, pullRequestNumber };
+        await finalizePRCommentTaskResultBestEffort(
+            taskId,
+            stateManager,
+            result,
+            {
+                prProcessingLockToken: lockToken,
+                onError: error => correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Deferred skipped-task finalization to worker recovery'),
+            },
+        );
+        return result;
     }
 
     const { prData, unprocessedComments: validUnprocessed, llm: resolvedLlm } = validation;
@@ -283,23 +249,26 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         });
     }
 
+    await assertLease();
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
         body: buildStartingWorkCommentBody(state.authorsText, state.unprocessedComments, taskUrl),
+        request: { signal },
     });
+    await assertLease();
 
     const githubToken = await state.octokit.auth({ type: "installation" }) as GitHubToken;
     const repoUrl = getRepoUrl({ repoOwner, repoName });
 
+    await assertLease();
     await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
         reason: 'Starting PR comment processing',
         historyMetadata: { commandMode: job.data.commandMode || 'default' }
-    });
+    }, lockToken);
     await ensureGitRepository(correlatedLogger);
     state.localRepoPath = await ensureRepoCloned({ repoUrl, owner: repoOwner, repoName, authToken: githubToken.token });
 
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-    state.worktreeInfo = await createWorktreeFromExistingBranch(state.localRepoPath, branchName, { worktreeDirName: `pr-${pullRequestNumber}-followup-${timestamp}`, owner: repoOwner, repoName });
+    state.worktreeInfo = await createWorktreeFromExistingBranch(state.localRepoPath, branchName, { worktreeDirName: buildPRCommentWorktreeDirName(pullRequestNumber, lockToken), owner: repoOwner, repoName });
     correlatedLogger.info({ worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName }, 'Created worktree from existing PR branch');
 
     const requestBody = isFixMode
@@ -354,21 +323,25 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
     job.data.title = buildPrTaskTitle({ workflow, pullRequestNumber, prTitle: prData!.data.title });
     job.data.subtitle = summaryTitle;
-    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, redisClient, linkedIssueNumber: linkedIssueResult.linkedIssueNumber });
+    await assertLease();
+    await updateTaskTitleForPR({ taskId, jobData: job.data, stateManager, correlatedLogger, linkedIssueNumber: linkedIssueResult.linkedIssueNumber, prProcessingLockToken: lockToken });
     await stateManager.updateHistoryMetadata(taskId, TaskStates.PROCESSING, {
         titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
-    });
+    }, lockToken);
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection });
 
+    await assertLease();
     const { claudeResult, agentType } = await resolveAndExecuteAgent({
         llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
         pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
         reasoningLevel: job.data.reasoningLevel,
+        prProcessingLockToken: lockToken,
     });
     state.claudeResult = claudeResult;
 
-    checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, correlatedLogger);
+    await assertLease();
+    checkTerminalStateAfterExecution(await stateManager.getTaskState(taskId), taskId, lockToken, correlatedLogger);
 
     await recordLLMMetrics(toClaudeResult(state.claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
     await createLogFiles(state.claudeResult as unknown, { number: pullRequestNumber, repoOwner, repoName });
@@ -381,74 +354,147 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             model: state.claudeResult.model,
             tokenUsage: state.claudeResult.tokenUsage
         }
-    });
+    }, lockToken);
 
     const postResult = await handlePostExecution(
-        { state, job, taskId, stateManager, context, unprocessedReviewComments: selectedReviewComments, llm, redisClient },
+        {
+            state, job, taskId, stateManager, context, unprocessedReviewComments: selectedReviewComments, llm,
+            redisClient, prProcessingLockToken: lockToken, assertLease,
+            signal,
+            beforeCompletion: () => handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, prProcessingLockToken: lockToken, assertLease }),
+        },
         taskUrl,
     );
-
-    await handleUltrafixContinuation('fix', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
 
     return { status: postResult.partial ? 'partial' : 'complete', commit: postResult.commitHash, pullRequestNumber, claudeResult: { success: state.claudeResult.success } };
 }
 
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
-    const context = await initializePRJobContext(job);
+    const taskId = job.id || `pr-comment-${job.data.pullRequestNumber}-${Date.now()}`;
+    const recoveredOutcome = await recoverPRCommentRemoteOutcome(redisClient, job, taskId);
+    if (recoveredOutcome) return recoveredOutcome;
+    const publicationCheckpoint = await loadPRCommentPublicationCheckpoint(redisClient, taskId);
+    const context = await resolvePRCommentJobContext(job, publicationCheckpoint, initializePRJobContext);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
 
     const modelName = await resolvePRCommentModelName(llm, correlatedLogger);
 
-    const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
     const lockToken = createPRProcessingLockToken(correlationId);
+    const attemptGeneration = hashTaskAttemptToken(lockToken);
+    const leaseController = new AbortController();
+    const loseLease = (error: PRProcessingLeaseLostError): void => {
+        if (!leaseController.signal.aborted) leaseController.abort(error);
+    };
+    const assertLease = async (): Promise<void> => {
+        leaseController.signal.throwIfAborted();
+        try {
+            await assertPRProcessingLock(redisClient, lockKey, lockToken);
+        } catch (error) {
+            const leaseError = error instanceof PRProcessingLeaseLostError
+                ? error
+                : new PRProcessingLeaseLostError('Could not verify PR processing lease ownership', { cause: error });
+            loseLease(leaseError);
+            throw leaseError;
+        }
+    };
 
-    const lockAcquired = await acquirePRLock({ lockKey, lockToken, correlatedLogger, job });
+    const lockAcquired = await acquirePRCommentProcessingLock(
+        redisClient,
+        { lockKey, lockToken, correlatedLogger, job },
+    );
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
-
-    const runningContainer = await findRunningDockerContainerForTask(taskId);
-    if (runningContainer) {
-        correlatedLogger.warn({ taskId, containerId: runningContainer.id, containerName: runningContainer.name }, 'Agent execution for this task is already running. Rescheduling without starting another attempt.');
-        await issueQueue.add(job.name, job.data, { delay: 60000 });
+    const stopLockHeartbeat = startPRProcessingLockHeartbeat({
+        redisClient, lockKey, lockToken,
+        onLockLost: () => { correlatedLogger.error({ lockKey }, 'Lost PR processing lock; aborting superseded execution'); loseLease(new PRProcessingLeaseLostError()); },
+        onError: error => { correlatedLogger.error({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock; aborting execution fail closed'); loseLease(new PRProcessingLeaseLostError('Failed to renew PR processing lease', { cause: error })); },
+    });
+    job.data.prProcessingLockToken = lockToken;
+    try {
+        await job.updateData({ ...job.data });
+    } catch (error) {
+        await stopLockHeartbeat();
         await releasePRProcessingLock(redisClient, lockKey, lockToken);
-        return { status: 'rescheduled', reason: 'agent_container_already_running' };
+        correlatedLogger.error({ taskId, error: (error as Error).message }, 'Failed to persist PR attempt generation to BullMQ job data');
+        throw error;
     }
 
-    const stopLockHeartbeat = startPRProcessingLockHeartbeat({
-        redisClient,
-        lockKey,
-        lockToken,
-        onLockLost: () => correlatedLogger.error({ lockKey }, 'Lost PR processing lock while execution is still running'),
-        onError: error => correlatedLogger.warn({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock'),
-    });
-
+    let abandonedContainerStopped: boolean;
     try {
-        await stateManager.createTaskState(taskId, { number: pullRequestNumber, repoOwner, repoName, comments: job.data.comments, modelName } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
+        abandonedContainerStopped = await stopAbandonedPRTaskContainer(taskId, correlatedLogger, assertLease);
+    } catch (error) {
+        await stopLockHeartbeat(); await releasePRProcessingLock(redisClient, lockKey, lockToken);
+        throw error;
+    }
+    if (!abandonedContainerStopped) {
+        try {
+            await requeuePRCommentJobWithoutLease(job, 60000);
+        } finally {
+            await stopLockHeartbeat();
+            await releasePRProcessingLock(redisClient, lockKey, lockToken);
+        }
+        await clearRetainedPRProcessingLockToken(job, taskId, correlatedLogger);
+        return { status: 'rescheduled', reason: 'orphan_container_stop_failed', prProcessingAttemptGeneration: attemptGeneration };
+    }
+
+    const issueRef: IssueRef = { number: pullRequestNumber, repoOwner, repoName, type: 'pr_comment', comments: job.data.comments, modelName };
+    try {
+        await stateManager.createTaskState(
+            taskId,
+            issueRef,
+            correlationId,
+            { prProcessingLockToken: lockToken, prProcessingLockKey: lockKey },
+        );
     } catch (stateError) {
-        correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state, continuing anyway');
+        await stopLockHeartbeat();
+        await releasePRProcessingLock(redisClient, lockKey, lockToken);
+        correlatedLogger.error({ taskId, error: (stateError as Error).message }, 'Failed to create fenced initial task state');
+        throw stateError;
     }
 
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
+    let preserveJobOutcome = false;
 
     try {
+        const resumedPublication = await resumePRCommentPublicationJob(publicationCheckpoint, { job, taskId, stateManager, context, llm, redisClient, correlationId, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal });
+        if (resumedPublication) { preserveJobOutcome = true; return resumedPublication; }
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
-            return await executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments });
+            const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal }), attemptGeneration);
+            preserveJobOutcome = true; return { ...result, prProcessingAttemptGeneration: attemptGeneration };
         }
-        return await executeProcessing({ job, context, llm, taskId, stateManager, state });
+        const result = await runWithExecutionAbortSignal(leaseController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockToken, assertLease, signal: leaseController.signal }), attemptGeneration);
+        preserveJobOutcome = true; return { ...result, prProcessingAttemptGeneration: attemptGeneration };
     } catch (error) {
-        await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });
+        if (error instanceof PRProcessingLeaseLostError || error instanceof SupersededTaskAttemptError) {
+            if (error instanceof SupersededTaskAttemptError) {
+                loseLease(new PRProcessingLeaseLostError(error.message, { cause: error }));
+            }
+            correlatedLogger.warn({ taskId, error: (error as Error).message }, 'Stopped superseded PR processing attempt before further side effects');
+            throw error;
+        }
+        const stagedPublication = await loadPRCommentPublicationCheckpoint(redisClient, taskId).catch(() => null);
+        if (stagedPublication) {
+            correlatedLogger.warn({ taskId, stage: stagedPublication.stage }, 'Preserving staged remote publication for BullMQ recovery');
+            throw error;
+        }
+        await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, prProcessingLockToken: lockToken, assertLease, signal: leaseController.signal });
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
         if (isUserCancelled) {
-            return { status: 'cancelled', reason: 'user_cancelled' };
+            preserveJobOutcome = true; return { status: 'cancelled', reason: 'user_cancelled', prProcessingAttemptGeneration: attemptGeneration };
         }
         if (!(error instanceof UsageLimitError)) throw error;
-        return { status: 'requeued', reason: 'usage_limit' };
+        preserveJobOutcome = true; return { status: 'requeued', reason: 'usage_limit', prProcessingAttemptGeneration: attemptGeneration };
     } finally {
-        await stopLockHeartbeat();
-        await cleanupJob({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
+        try {
+            await cleanupJobBeforeStoppingHeartbeat({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient }, stopLockHeartbeat, preserveJobOutcome);
+        } finally {
+            if (preserveJobOutcome) {
+                await clearRetainedPRProcessingLockToken(job, taskId, correlatedLogger);
+            }
+        }
     }
 }

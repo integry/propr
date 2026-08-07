@@ -124,6 +124,26 @@ test('resolveReviewAssignments - pr_review_model fallback', async (t) => {
         assert.strictEqual(mockLoadPrReviewModel.mock.callCount(), 0);
     });
 
+    await t.test('deduplicates resolved agent and model pairs while preserving order', async () => {
+        const assignments = await resolveReviewAssignments([
+            'claude-opus-4-6',
+            'antigravity-gemini-2.5-pro',
+            'claude-opus-4-6',
+        ], null, mockLogger as any);
+
+        assert.deepStrictEqual(assignments.map(assignment => assignment.model), [
+            'claude-opus-4-6',
+            'antigravity-gemini-2.5-pro',
+        ]);
+    });
+
+    await t.test('fails instead of substituting a default when every explicit model is invalid', async () => {
+        await assert.rejects(
+            resolveReviewAssignments(['unknown-model'], null, mockLogger as any),
+            /None of the explicitly requested review models could be resolved: unknown-model/,
+        );
+    });
+
     await t.test('uses pr_review_model when no requestedModels, ignoring the llm parameter', async () => {
         mockPrReviewModel = 'antigravity-gemini-2.5-pro';
         mockLoadPrReviewModel.mock.resetCalls();

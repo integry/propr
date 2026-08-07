@@ -1,195 +1,254 @@
-import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { after, describe, test } from 'node:test';
+import { closeConnection, hashTaskAttemptToken, TaskStates, type TaskStateData, type TaskStateExpectation, type UpdateMetadata } from '@propr/core';
 import {
-    TaskStates,
-    type TaskState,
-    type TaskStateData,
-    type TaskStateExpectation,
-    type UpdateMetadata,
-} from '../packages/core/src/utils/workerStateManager.types.js';
+    finalizePRCommentTaskFailure,
+    finalizePRCommentTaskResult,
+    finalizePRCommentTaskResultBestEffort,
+} from '../src/jobs/prCommentTaskFinalizer.js';
 
-await mock.module('@propr/core', {
-    namedExports: {
-        TaskStates,
-        taskStateExpectation: (task: TaskStateData): TaskStateExpectation => ({
-            state: task.state,
-            createdAt: task.createdAt,
-            updatedAt: task.updatedAt,
-            correlationId: task.correlationId,
-        }),
-    },
-});
+after(async () => { await closeConnection(); });
 
-const {
-    finalizeCompletedPRCommentTask,
-    finalizeFailedPRCommentTask,
-} = await import('../src/jobs/prCommentTaskFinalizer.js');
-
-function makeTask(state: TaskState = TaskStates.PROCESSING): TaskStateData {
-    const timestamp = '2026-08-05T12:00:00.000Z';
+function task(state: TaskStateData['state']): TaskStateData {
     return {
-        taskId: 'task-123',
-        issueRef: { number: 1748, repoOwner: 'integry', repoName: 'propr' },
-        correlationId: 'correlation-123',
+        taskId: 'task-1',
+        issueRef: { number: 42, repoOwner: 'integry', repoName: 'propr' },
+        correlationId: 'correlation-1',
         state,
-        createdAt: timestamp,
-        updatedAt: timestamp,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
         attempts: 0,
-        history: [{ state, timestamp, reason: 'Test state' }],
+        history: [{ state, timestamp: '2026-08-04T00:00:00.000Z', reason: 'test' }],
     };
 }
 
-function createStore(
-    initialState: TaskStateData,
-    failedCasAttempts = 0,
-    publication = { historyPersisted: true, eventPublished: true, errors: [] as string[] },
-) {
-    let current = structuredClone(initialState);
-    let remainingFailedCasAttempts = failedCasAttempts;
-    const getTaskState = mock.fn(async () => structuredClone(current));
-    const updateTaskStateIfCurrentDetailed = mock.fn(async (
-        _taskId: string,
-        expectation: TaskStateExpectation,
-        newState: TaskState,
-        metadata: UpdateMetadata,
-    ) => {
-        if (remainingFailedCasAttempts > 0) {
-            remainingFailedCasAttempts--;
-            current.updatedAt = new Date(Date.parse(current.updatedAt) + 1).toISOString();
-            return null;
-        }
-        if (expectation.updatedAt !== current.updatedAt || expectation.state !== current.state) return null;
-        current.state = newState;
-        current.updatedAt = new Date(Date.parse(current.updatedAt) + 1).toISOString();
-        current.history.push({
-            state: newState,
-            timestamp: current.updatedAt,
-            reason: metadata.reason ?? 'Finalized',
-            metadata: metadata.historyMetadata,
-        });
-        if (metadata.error) {
-            current.lastError = {
-                message: metadata.error.message,
-                category: metadata.error.category ?? 'unknown',
-                timestamp: current.updatedAt,
-            };
-        }
-        return {
-            state: structuredClone(current),
-            publication,
-        };
-    });
-    return { getTaskState, updateTaskStateIfCurrentDetailed, current: () => current };
+function stateManager(initialState: TaskStateData) {
+    let current = initialState;
+    const updates: Array<{ state: TaskStateData['state']; metadata: UpdateMetadata }> = [];
+    return {
+        updates,
+        getTaskState: async () => current,
+        updateTaskStateIfCurrent: async (
+            _taskId: string,
+            expectation: TaskStateExpectation,
+            state: TaskStateData['state'],
+            metadata: UpdateMetadata = {},
+        ) => {
+            if (current.state !== expectation.state) return null;
+            if (expectation.updatedAt && current.updatedAt !== expectation.updatedAt) return null;
+            if (expectation.prProcessingLockToken !== undefined
+                && current.prProcessingLockToken !== expectation.prProcessingLockToken) return null;
+            updates.push({ state, metadata });
+            current = { ...current, state };
+            return current;
+        },
+    };
 }
 
-test('completed PR comment results close nonterminal task states', async (t) => {
-    const cases = [
-        { status: 'complete', expected: TaskStates.COMPLETED },
-        { status: 'completed', expected: TaskStates.COMPLETED },
-        { status: 'partial', expected: TaskStates.COMPLETED },
-        { status: 'skipped', expected: TaskStates.COMPLETED },
-        { status: 'cancelled', expected: TaskStates.CANCELLED },
-        { status: 'requeued', expected: TaskStates.CANCELLED },
-        { status: 'rescheduled', expected: TaskStates.CANCELLED },
-        { status: 'failed', expected: TaskStates.FAILED },
-    ] as const;
+describe('PR comment task finalization', () => {
+    test('turns a skipped BullMQ result into a terminal completed state', async () => {
+        const manager = stateManager(task(TaskStates.PENDING));
 
-    for (const testCase of cases) {
-        await t.test(testCase.status, async () => {
-            const store = createStore(makeTask());
-            const result = await finalizeCompletedPRCommentTask(
-                'task-123',
-                { status: testCase.status, reason: 'test reason' },
-                store,
-            );
-            assert.equal(result.outcome, 'finalized');
-            assert.equal(store.current().state, testCase.expected);
+        const changed = await finalizePRCommentTaskResult('task-1', manager as never, {
+            status: 'skipped',
+            reason: 'already_processed',
+            pullRequestNumber: 42,
         });
-    }
-});
 
-test('unknown completed results are recorded as failures', async () => {
-    const store = createStore(makeTask());
-    await finalizeCompletedPRCommentTask('task-123', { status: 'mystery' }, store);
-
-    assert.equal(store.current().state, TaskStates.FAILED);
-    assert.match(store.current().lastError?.message ?? '', /Unexpected.*mystery/);
-});
-
-test('missing completed results are recorded as failures', async () => {
-    const store = createStore(makeTask());
-    await finalizeCompletedPRCommentTask('task-123', undefined, store);
-
-    assert.equal(store.current().state, TaskStates.FAILED);
-    assert.match(store.current().lastError?.message ?? '', /without a result status/);
-});
-
-test('failure finalization sanitizes errors before persisting them', async () => {
-    const store = createStore(makeTask());
-    await finalizeFailedPRCommentTask(
-        'task-123',
-        new Error('clone https://x-access-token:ghp_secretValue@github.com/integry/propr'),
-        store,
-    );
-
-    assert.equal(store.current().state, TaskStates.FAILED);
-    assert.doesNotMatch(store.current().lastError?.message ?? '', /ghp_secretValue/);
-});
-
-test('finalization never overwrites an existing terminal state', async () => {
-    const store = createStore(makeTask(TaskStates.CANCELLED));
-    const result = await finalizeCompletedPRCommentTask('task-123', { status: 'complete' }, store);
-
-    assert.equal(result.outcome, 'already_terminal');
-    assert.equal(store.current().state, TaskStates.CANCELLED);
-    assert.equal(store.updateTaskStateIfCurrentDetailed.mock.calls.length, 0);
-});
-
-test('finalization retries a compare-and-set conflict with fresh state', async () => {
-    const store = createStore(makeTask(), 1);
-    const result = await finalizeCompletedPRCommentTask('task-123', { status: 'skipped' }, store);
-
-    assert.equal(result.outcome, 'finalized');
-    assert.equal(store.current().state, TaskStates.COMPLETED);
-    assert.equal(store.updateTaskStateIfCurrentDetailed.mock.calls.length, 2);
-});
-
-test('finalization keeps retrying after five compare-and-set conflicts', async () => {
-    const store = createStore(makeTask(), 5);
-
-    const result = await finalizeCompletedPRCommentTask('task-123', { status: 'complete' }, store);
-
-    assert.equal(result.outcome, 'finalized');
-    assert.equal(store.updateTaskStateIfCurrentDetailed.mock.calls.length, 6);
-    assert.equal(store.current().state, TaskStates.COMPLETED);
-});
-
-test('processor reasons are sanitized and bounded before persistence', async () => {
-    const store = createStore(makeTask());
-    const secret = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn';
-    await finalizeCompletedPRCommentTask(
-        'task-123',
-        { status: 'skipped', reason: `${secret}${'x'.repeat(1_000)}` },
-        store,
-    );
-
-    const history = store.current().history.at(-1);
-    assert.ok(history);
-    assert.doesNotMatch(history.reason, /ghp_/);
-    assert.ok(history.reason.length <= 516);
-    assert.doesNotMatch(String(history.metadata?.jobResultReason), /ghp_/);
-});
-
-test('finalization explicitly reports incomplete durable publication', async () => {
-    const store = createStore(makeTask(), 0, {
-        historyPersisted: false,
-        eventPublished: true,
-        errors: ['history: unavailable'],
+        assert.equal(changed, true);
+        assert.equal(manager.updates.length, 1);
+        assert.equal(manager.updates[0].state, TaskStates.COMPLETED);
+        assert.equal(manager.updates[0].metadata.reason, 'Task skipped: already_processed');
+        assert.deepEqual(manager.updates[0].metadata.historyMetadata, {
+            outcome: 'skipped',
+            resultReason: 'already_processed',
+            pullRequestNumber: 42,
+        });
     });
 
-    const result = await finalizeCompletedPRCommentTask('task-123', { status: 'complete' }, store);
+    test('marks a rescheduled attempt as superseded instead of leaving it running', async () => {
+        const manager = stateManager(task(TaskStates.CLAUDE_EXECUTION));
 
-    assert.equal(result.outcome, 'partial_publication');
-    assert.equal(result.stateChanged, true);
-    assert.equal(result.publication?.historyPersisted, false);
+        await finalizePRCommentTaskResult('task-1', manager as never, {
+            status: 'rescheduled',
+            reason: 'pr_locked_by_other_job',
+        });
+
+        assert.equal(manager.updates[0].state, TaskStates.CANCELLED);
+        assert.equal(manager.updates[0].metadata.historyMetadata?.superseded, true);
+    });
+
+    test('is idempotent for terminal task states', async () => {
+        const manager = stateManager(task(TaskStates.COMPLETED));
+        const changed = await finalizePRCommentTaskResult('task-1', manager as never, { status: 'skipped' });
+
+        assert.equal(changed, false);
+        assert.equal(manager.updates.length, 0);
+    });
+
+    test('marks an unhandled worker failure terminal', async () => {
+        const manager = stateManager(task(TaskStates.PROCESSING));
+        const changed = await finalizePRCommentTaskFailure('task-1', manager as never, new Error('worker exited'));
+
+        assert.equal(changed, true);
+        assert.equal(manager.updates[0].state, TaskStates.FAILED);
+        assert.equal(manager.updates[0].metadata.error?.message, 'worker exited');
+    });
+
+    test('sanitizes recovery failures before persistence', async () => {
+        const manager = stateManager(task(TaskStates.PROCESSING));
+        await finalizePRCommentTaskFailure(
+            'task-1',
+            manager as never,
+            new Error('failed at https://x-access-token:secret-token@github.com/integry/propr'),
+        );
+
+        assert.doesNotMatch(manager.updates[0].metadata.error?.message ?? '', /secret-token/);
+        assert.match(manager.updates[0].metadata.error?.message ?? '', /REDACTED/);
+        assert.doesNotMatch(manager.updates[0].metadata.reason ?? '', /secret-token/);
+    });
+
+    test('maps an explicit failed result to failed instead of completed', async () => {
+        const manager = stateManager(task(TaskStates.PROCESSING));
+
+        const changed = await finalizePRCommentTaskResult('task-1', manager as never, {
+            status: 'failed',
+            reason: 'review generation failed',
+        });
+
+        assert.equal(changed, true);
+        assert.equal(manager.updates[0].state, TaskStates.FAILED);
+        assert.equal(manager.updates[0].metadata.error?.message, 'review generation failed');
+    });
+
+    test('turns an unknown completed-job outcome into a diagnostic failure', async () => {
+        const manager = stateManager(task(TaskStates.PROCESSING));
+
+        const changed = await finalizePRCommentTaskResult('task-1', manager as never, { status: 'compelete' });
+
+        assert.equal(changed, true);
+        assert.equal(manager.updates[0].state, TaskStates.FAILED);
+        assert.match(manager.updates[0].metadata.error?.message ?? '', /unknown result status: compelete/);
+        assert.deepEqual(manager.updates[0].metadata.historyMetadata, {
+            outcome: 'invalid_completed_result',
+            returnedStatus: 'compelete',
+        });
+    });
+
+    test('turns a missing completed-job result into a diagnostic failure', async () => {
+        const manager = stateManager(task(TaskStates.PROCESSING));
+
+        await finalizePRCommentTaskResult('task-1', manager as never, undefined);
+
+        assert.equal(manager.updates[0].state, TaskStates.FAILED);
+        assert.match(manager.updates[0].metadata.error?.message ?? '', /missing result status/);
+    });
+
+    test('does not overwrite a cancellation that wins the finalization race', async () => {
+        let current = task(TaskStates.PROCESSING);
+        const manager = {
+            getTaskState: async () => current,
+            updateTaskStateIfCurrent: async (
+                _taskId: string,
+                expectation: Pick<TaskStateData, 'state' | 'updatedAt'>,
+            ) => {
+                current = { ...current, state: TaskStates.CANCELLED };
+                return current.state === expectation.state ? current : null;
+            },
+        };
+
+        const changed = await finalizePRCommentTaskResult('task-1', manager as never, { status: 'complete' });
+
+        assert.equal(changed, false);
+        assert.equal(current.state, TaskStates.CANCELLED);
+    });
+
+    test('requires the matching attempt token for generated task state', async () => {
+        const generated = task(TaskStates.PROCESSING);
+        generated.prProcessingLockToken = 'successor-token';
+        const manager = stateManager(generated);
+
+        const unfenced = await finalizePRCommentTaskResult('task-1', manager as never, {
+            status: 'complete',
+        });
+        const stale = await finalizePRCommentTaskResult('task-1', manager as never, {
+            status: 'complete',
+            prProcessingLockToken: 'old-token',
+        });
+        const matching = await finalizePRCommentTaskResult('task-1', manager as never, {
+            status: 'complete',
+            prProcessingLockToken: 'successor-token',
+        });
+
+        assert.equal(unfenced, false);
+        assert.equal(stale, false);
+        assert.equal(matching, true);
+        assert.equal(manager.updates.length, 1);
+        assert.equal(manager.updates[0].state, TaskStates.COMPLETED);
+    });
+
+    test('validates a completed result token even when reconciliation supplies an expectation', async () => {
+        const generated = task(TaskStates.PROCESSING);
+        generated.prProcessingLockToken = 'successor-token';
+        const manager = stateManager(generated);
+
+        const changed = await finalizePRCommentTaskResult(
+            'task-1',
+            manager as never,
+            { status: 'complete', prProcessingLockToken: 'stale-token' },
+            {
+                expectation: {
+                    state: generated.state,
+                    updatedAt: generated.updatedAt,
+                    prProcessingLockToken: generated.prProcessingLockToken,
+                },
+            },
+        );
+
+        assert.equal(changed, false);
+        assert.equal(manager.updates.length, 0);
+    });
+
+    test('does not let an explicit current token mask stale result authority', async () => {
+        const generated = task(TaskStates.PROCESSING);
+        generated.prProcessingLockToken = 'successor-token';
+        const manager = stateManager(generated);
+
+        const staleRawToken = await finalizePRCommentTaskResult(
+            'task-1',
+            manager as never,
+            { status: 'complete', prProcessingLockToken: 'stale-token' },
+            { prProcessingLockToken: 'successor-token' },
+        );
+        const staleGeneration = await finalizePRCommentTaskResult(
+            'task-1',
+            manager as never,
+            {
+                status: 'complete',
+                prProcessingLockToken: 'successor-token',
+                prProcessingAttemptGeneration: hashTaskAttemptToken('stale-token'),
+            },
+            { prProcessingLockToken: 'successor-token' },
+        );
+
+        assert.equal(staleRawToken, false);
+        assert.equal(staleGeneration, false);
+        assert.equal(manager.updates.length, 0);
+    });
+
+    test('defers a skipped result when Redis finalization fails', async () => {
+        let reportedError: unknown;
+        const changed = await finalizePRCommentTaskResultBestEffort(
+            'task-1',
+            {
+                getTaskState: async () => { throw new Error('Redis unavailable'); },
+                updateTaskStateIfCurrent: async () => null,
+            } as never,
+            { status: 'skipped' },
+            { onError: error => { reportedError = error; } },
+        );
+
+        assert.equal(changed, false);
+        assert.match((reportedError as Error).message, /Redis unavailable/);
+    });
 });

@@ -10,8 +10,12 @@ import {
     saveState,
     loadState,
     clearState,
+    clearStateWithLease,
+    clearDeferredContinuationWithLease,
+    completeLoop,
     startLoop,
     recordAction,
+    saveDeferredContinuation,
     retainOriginalScope,
     recordReviewFindings,
     markFindingsSelected,
@@ -19,6 +23,7 @@ import {
     type UltrafixLoopState,
     type StartLoopOptions,
 } from '../src/jobs/ultrafixOrchestrationService.js';
+import { authorizeUltrafixContinuation } from '../src/jobs/ultrafixLeaseTransitions.js';
 
 // --- Mock Redis ---
 
@@ -301,6 +306,113 @@ describe('Redis persistence', () => {
         await clearState(redis as any, 'o', 'r', 1);
         const loaded = await loadState(redis as any, 'o', 'r', 1);
         assert.strictEqual(loaded, null);
+    });
+
+    test('records a continuation in the same Redis operation that verifies its lease', async () => {
+        const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1 });
+        const calls: unknown[][] = [];
+        const redis = {
+            eval: async (...args: unknown[]) => {
+                calls.push(args);
+                return [1, JSON.stringify({
+                    ...state,
+                    lastAction: 'fix',
+                    handledContinuationIds: ['task-1748'],
+                    fixCount: 1,
+                })];
+            },
+        };
+        const assertLease = async () => {};
+
+        const updated = await recordAction(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, action: 'fix', continuationId: 'task-1748',
+        }, {
+            lockKey: 'lock:pr:o:r:1',
+            lockToken: 'attempt-token',
+            assertLease,
+        });
+
+        assert.deepStrictEqual(updated?.handledContinuationIds, ['task-1748']);
+        assert.deepStrictEqual(calls[0].slice(1, 5), [
+            2,
+            'lock:pr:o:r:1',
+            'ultrafix:state:o:r:1',
+            'attempt-token',
+        ]);
+    });
+
+    test('propagates canonical lease loss from a rejected fenced continuation', async () => {
+        const leaseLost = new Error('lease lost');
+        await assert.rejects(
+            recordAction({ eval: async () => [-1] } as any, {
+                owner: 'o', repo: 'r', pr: 1, action: 'review', continuationId: 'task-1748',
+            }, {
+                lockKey: 'lock:pr:o:r:1',
+                lockToken: 'stale-token',
+                assertLease: async () => { throw leaseLost; },
+            }),
+            error => error === leaseLost,
+        );
+    });
+
+    test('authorizes queue delivery atomically under the same lease', async () => {
+        const calls: unknown[][] = [];
+        await authorizeUltrafixContinuation({
+            eval: async (...args: unknown[]) => { calls.push(args); return 1; },
+        } as any, {
+            stateKey: 'ultrafix:state:o:r:1', continuationId: 'task-1748:review',
+        }, {
+            lockKey: 'lock:pr:o:r:1',
+            lockToken: 'attempt-token',
+            assertLease: async () => {},
+        });
+
+        assert.deepStrictEqual(calls[0].slice(1), [
+            2,
+            'lock:pr:o:r:1',
+            'ultrafix:state:o:r:1',
+            'attempt-token',
+            'task-1748:review',
+        ]);
+    });
+
+    test('fences completion, deferred writes, and cleanup in their Redis mutations', async () => {
+        const state = createDefaultState({ owner: 'o', repo: 'r', pr: 1 });
+        const calls: unknown[][] = [];
+        const redis = {
+            eval: async (...args: unknown[]) => {
+                calls.push(args);
+                return String(args[0]).includes('state.completionStatus')
+                    ? [1, JSON.stringify({ ...state, active: false, completionStatus: 'failed' })]
+                    : 1;
+            },
+        };
+        const lease = {
+            lockKey: 'lock:pr:o:r:1',
+            lockToken: 'attempt-token',
+            assertLease: async () => {},
+        };
+
+        await saveDeferredContinuation(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, nextAction: 'fix', savedAt: new Date().toISOString(), reason: 'checks',
+        }, lease);
+        await completeLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1,
+            completionStatus: 'failed', completionReason: 'limit', finalScore: 4,
+        }, lease);
+        await clearDeferredContinuationWithLease(redis as any, { owner: 'o', repo: 'r', pr: 1 }, lease);
+        await clearStateWithLease(redis as any, { owner: 'o', repo: 'r', pr: 1 }, lease);
+
+        assert.equal(calls.length, 4);
+        assert.deepStrictEqual(calls.map(call => call[3]), [
+            'ultrafix:deferred:o:r:1',
+            'ultrafix:state:o:r:1',
+            'ultrafix:deferred:o:r:1',
+            'ultrafix:state:o:r:1',
+        ]);
+        assert.ok(calls.every(call => call[1] === 2
+            && call[2] === 'lock:pr:o:r:1'
+            && call[4] === 'attempt-token'));
     });
 });
 

@@ -4,6 +4,7 @@ import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
+import { getWorkerStateRedisKeys, type WorkerStateManagerOptions } from '@propr/core';
 import {
   REDIS_CHANNELS,
   TASK_UPDATE,
@@ -30,6 +31,62 @@ export interface QueueDependencies {
   taskQueue: Queue;
   redisClient: RedisClientType;
   db: Knex;
+  workerStateOptions?: Pick<WorkerStateManagerOptions, 'keyPrefix' | 'revisionKeyPrefix' | 'revisionExpiry'>;
+}
+
+const DEFAULT_TASK_REVISION_EXPIRY_SECONDS = 30 * 24 * 3600;
+
+export interface TaskRevisionCacheEntry {
+  version: number;
+  expiresAt: number;
+}
+
+export function readCachedTaskRevision(
+  entry: TaskRevisionCacheEntry | undefined,
+  now = Date.now(),
+): number | undefined {
+  return entry && entry.expiresAt > now ? entry.version : undefined;
+}
+
+export function shouldBroadcastTaskUpdate(
+  latestVersion: number | undefined,
+  incomingVersion: number | undefined,
+  allowSeededEquality = false,
+): boolean {
+  if (latestVersion === undefined) return true;
+  if (incomingVersion === undefined) return false;
+  return incomingVersion > latestVersion
+    || (allowSeededEquality && incomingVersion === latestVersion);
+}
+
+export async function loadDurableTaskRevision(
+  get: (key: string) => Promise<string | null>,
+  taskId: string,
+  options: Pick<WorkerStateManagerOptions, 'keyPrefix' | 'revisionKeyPrefix'> = {},
+): Promise<number | undefined> {
+  const { revisionKey, stateKey } = getWorkerStateRedisKeys(taskId, options);
+  const [revisionValue, stateValue] = await Promise.all([
+    get(revisionKey),
+    get(stateKey),
+  ]);
+  const isValidRevision = (value: number): boolean => (
+    Number.isSafeInteger(value) && value >= 0
+  );
+  const parsedRevision = revisionValue === null ? Number.NaN : Number(revisionValue);
+  const revision = isValidRevision(parsedRevision) ? parsedRevision : Number.NaN;
+  let stateRevision = Number.NaN;
+  if (stateValue) {
+    try {
+      const parsed = JSON.parse(stateValue) as { version?: unknown };
+      stateRevision = typeof parsed.version === 'number' && isValidRevision(parsed.version)
+        ? parsed.version
+        : Number.NaN;
+    } catch {
+      // A malformed/partially-written state cannot seed event ordering.
+    }
+  }
+  const versions = [revision, stateRevision].filter(isValidRevision);
+  return versions.length > 0 ? Math.max(...versions) : undefined;
 }
 
 /**
@@ -48,6 +105,8 @@ export class SocketService {
   private queueBroadcaster: QueueBroadcaster | null = null;
   private taskWatcherManager: TaskWatcherManager;
   private queueDeps: QueueDependencies | null = null;
+  private taskRevisions = new Map<string, TaskRevisionCacheEntry>();
+  private taskUpdateTails = new Map<string, Promise<void>>();
 
   constructor(httpServer: HttpServer, corsOrigins: string | string[] | CorsOriginFunction) {
     // Initialize Socket.IO server with CORS configuration
@@ -229,7 +288,7 @@ export class SocketService {
   private handleEvent(_channel: string, payload: EventPayload): void {
     switch (payload.eventType) {
       case TASK_UPDATE:
-        this.handleTaskUpdate(payload as TaskUpdatePayload);
+        this.enqueueTaskUpdate(payload as TaskUpdatePayload);
         break;
       case DRAFT_UPDATE:
         this.handleDraftUpdate(payload as DraftUpdatePayload);
@@ -249,7 +308,60 @@ export class SocketService {
     }
   }
 
-  private handleTaskUpdate(payload: TaskUpdatePayload): void {
+  private enqueueTaskUpdate(payload: TaskUpdatePayload): void {
+    const previous = this.taskUpdateTails.get(payload.taskId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.handleTaskUpdate(payload))
+      .finally(() => {
+        if (this.taskUpdateTails.get(payload.taskId) === current) {
+          this.taskUpdateTails.delete(payload.taskId);
+        }
+      });
+    this.taskUpdateTails.set(payload.taskId, current);
+  }
+
+  private async handleTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
+    const now = Date.now();
+    const cachedRevision = this.taskRevisions.get(payload.taskId);
+    let latestVersion = readCachedTaskRevision(cachedRevision, now);
+    if (cachedRevision && latestVersion === undefined) this.taskRevisions.delete(payload.taskId);
+    let allowSeededEquality = false;
+    if (latestVersion === undefined && this.queueDeps) {
+      try {
+        latestVersion = await loadDurableTaskRevision(
+          key => this.queueDeps!.redisClient.get(key),
+          payload.taskId,
+          this.queueDeps.workerStateOptions,
+        );
+        allowSeededEquality = latestVersion !== undefined;
+      } catch (error) {
+        console.error(`[SocketService] Failed to seed task revision for ${payload.taskId}:`, error);
+        // A versioned pub/sub event is already self-ordering. Accept it as the
+        // live baseline when durable state is transiently unavailable rather
+        // than silently dropping the only update clients may receive.
+        if (payload.version === undefined) return;
+        latestVersion = undefined;
+      }
+    }
+    // During rolling upgrades, legacy events may be accepted until a
+    // versioned producer establishes the ordered stream for this task.
+    if (!shouldBroadcastTaskUpdate(latestVersion, payload.version, allowSeededEquality)) return;
+    if (payload.version !== undefined) {
+      const revisionExpirySeconds = Math.max(
+        1,
+        this.queueDeps?.workerStateOptions?.revisionExpiry ?? DEFAULT_TASK_REVISION_EXPIRY_SECONDS,
+      );
+      this.taskRevisions.delete(payload.taskId);
+      this.taskRevisions.set(payload.taskId, {
+        version: payload.version,
+        expiresAt: now + revisionExpirySeconds * 1000,
+      });
+      if (this.taskRevisions.size > 10_000) {
+        const oldestTaskId = this.taskRevisions.keys().next().value;
+        if (oldestTaskId !== undefined) this.taskRevisions.delete(oldestTaskId);
+      }
+    }
     this.io.to(`task:${payload.taskId}`).emit(TASK_UPDATE, payload);
     this.io.emit(TASK_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${TASK_UPDATE} for task ${payload.taskId}`);

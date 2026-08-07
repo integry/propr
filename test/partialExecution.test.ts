@@ -1,8 +1,12 @@
 import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { after, describe, test } from 'node:test';
 import { closeConnection } from '@propr/core';
 import {
     executeDockerCommand,
+    runWithExecutionAbortSignal,
     type ExecutionResult,
 } from '../packages/core/src/claude/docker/dockerExecutor.js';
 import { parseStreamJsonOutput } from '../packages/core/src/claude/claudeHelpers.js';
@@ -62,6 +66,73 @@ describe('partial agent execution', () => {
         assert.strictEqual(result.timeoutMs, 200);
         assert.match(result.stdout, /partial-agent-output/);
         assert.match(result.stderr, /Command timed out after 200ms/);
+    });
+
+    test('terminates nested agent commands when protected execution ownership is lost', async () => {
+        const controller = new AbortController();
+        const leaseError = new Error('lease superseded');
+        const execution = runWithExecutionAbortSignal(controller.signal, () => executeDockerCommand(
+            process.execPath,
+            ['-e', 'setInterval(() => {}, 1000);'],
+            { timeout: 10_000 },
+        ));
+        setTimeout(() => controller.abort(leaseError), 50);
+
+        await assert.rejects(execution, error => error === leaseError);
+    });
+
+    test('does not spawn a command after protected execution ownership is already lost', async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-pre-aborted-execution-'));
+        const sentinel = path.join(tempDir, 'spawned');
+        const controller = new AbortController();
+        const leaseError = new Error('lease already superseded');
+        controller.abort(leaseError);
+
+        try {
+            await assert.rejects(
+                runWithExecutionAbortSignal(controller.signal, () => executeDockerCommand(
+                    process.execPath,
+                    ['-e', `require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'spawned')`],
+                )),
+                error => error === leaseError,
+            );
+            assert.equal(fs.existsSync(sentinel), false);
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    test('rejects when an ownership callback reports a superseded attempt', async () => {
+        const superseded = new Error('superseded callback');
+        superseded.name = 'SupersededTaskAttemptError';
+
+        await assert.rejects(
+            executeDockerCommand(process.execPath, [
+                '-e',
+                'console.log(JSON.stringify({type:"assistant",session_id:"session-old"}))',
+            ], {
+                onSessionId: async () => { throw superseded; },
+            }),
+            error => error === superseded,
+        );
+    });
+
+    test('waits for a delayed ownership callback before completing execution', async () => {
+        const superseded = new Error('delayed superseded callback');
+        superseded.name = 'SupersededTaskAttemptError';
+
+        await assert.rejects(
+            executeDockerCommand(process.execPath, [
+                '-e',
+                'console.log(JSON.stringify({type:"assistant",session_id:"session-old"}))',
+            ], {
+                onSessionId: async () => {
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                    throw superseded;
+                },
+            }),
+            error => error === superseded,
+        );
     });
 
     test('retains Claude max-turn metadata and the latest assistant update', () => {

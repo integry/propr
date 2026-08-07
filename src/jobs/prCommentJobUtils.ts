@@ -4,7 +4,7 @@ import type { Redis } from 'ioredis';
 import {
     generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
-    resolveModelAlias, getPendingPrCommentsKey,
+    resolveModelAlias, getPendingPrCommentsKey, hashTaskAttemptToken,
     describeAgentTermination, resolveAgentTerminationReason,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager,
@@ -14,7 +14,21 @@ import { getFixEnvironmentRepairInstructions } from './environmentRepairPrompt.j
 import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
-import { releasePRProcessingLock } from './prProcessingLock.js';
+import { runJobCleanupLifecycle } from './prCommentCleanupLifecycle.js';
+import { postCancellationComment } from './prCommentCancellationComment.js';
+import {
+    assertPRProcessingLock,
+    PRProcessingLeaseLostError,
+    releasePRProcessingLock,
+} from './prProcessingLock.js';
+import {
+    schedulePRCommentCleanupRecovery,
+} from './prCommentCleanupRecovery.js';
+
+export {
+    buildPRCommentWorktreeDirName,
+    schedulePRCommentCleanupRecovery,
+} from './prCommentCleanupRecovery.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -167,6 +181,9 @@ export interface JobErrorOptions {
     startingWorkComment: { data: { id: number } } | null;
     claudeResult: ClaudeCodeResponse | null; correlationId: string;
     correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string;
+    prProcessingLockToken?: string;
+    assertLease: () => Promise<void>;
+    signal: AbortSignal;
 }
 
 export class UsageLimitError extends Error {
@@ -175,26 +192,6 @@ export class UsageLimitError extends Error {
         super(message);
         this.name = 'UsageLimitError';
         this.resetTimestamp = resetTimestamp;
-    }
-}
-
-interface CancellationCommentParams {
-    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
-    repoOwner: string;
-    repoName: string;
-    commentId: number;
-    correlatedLogger: Logger;
-}
-
-async function postCancellationComment(params: CancellationCommentParams): Promise<void> {
-    const { octokit, repoOwner, repoName, commentId, correlatedLogger } = params;
-    try {
-        await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-            owner: repoOwner, repo: repoName, comment_id: commentId,
-            body: `🛑 **Execution Cancelled**\n\nThe task processing was stopped by user request.\n\nYou can post a new comment to restart processing.`,
-        });
-    } catch (commentError) {
-        correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post cancellation comment');
     }
 }
 
@@ -213,34 +210,54 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
 
     if (octokit) {
         try {
+            await options.assertLease();
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`
+                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`,
+                request: { signal: options.signal },
             });
         } catch (commentError) {
+            options.signal.throwIfAborted();
+            await options.assertLease();
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to PR.');
         }
+        await options.assertLease();
     }
 
-    await issueQueue.add(job.name, job.data, { jobId: requeueJobId, delay: Math.max(0, delay) });
+    await options.assertLease();
+    const requeuedData = { ...job.data };
+    delete requeuedData.prProcessingLockToken;
+    await issueQueue.add(job.name, requeuedData, { jobId: requeueJobId, delay: Math.max(0, delay) });
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
-    const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
-    await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } });
+    const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId, prProcessingLockToken } = options;
+    await options.assertLease();
+    await stateManager.updateTaskState(taskId, TaskStates.CANCELLED, { reason: 'Task cancelled by user', error: { message: errorMessage } }, prProcessingLockToken);
     correlatedLogger.info({ taskId }, 'Task marked as cancelled due to user abort');
     if (octokit && startingWorkComment) {
-        await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
+        await options.assertLease();
+        await postCancellationComment({
+            octokit,
+            repoOwner,
+            repoName,
+            commentId: startingWorkComment.data.id,
+            correlatedLogger,
+            assertLease: options.assertLease,
+            signal: options.signal,
+        });
     }
 }
 
 async function handleGenericError(error: Error, options: JobErrorOptions): Promise<void> {
-    const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId } = options;
+    const { pullRequestNumber, repoOwner, repoName, authorsText, unprocessedComments, octokit, startingWorkComment, claudeResult, correlationId, correlatedLogger, stateManager, taskId, prProcessingLockToken } = options;
     handleError(error, 'Failed to process PR comment job', { correlationId });
     const sanitizedMessage = sanitizeErrorMessage(error.message);
-    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage } });
+    await options.assertLease();
+    await stateManager.updateTaskState(taskId, TaskStates.FAILED, { reason: 'PR comment processing failed', error: { message: sanitizedMessage } }, prProcessingLockToken);
     if (claudeResult) {
         try {
+            await options.assertLease();
             await recordLLMMetrics(toClaudeResult(claudeResult), { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_comment', correlationId, taskId });
         } catch (metricsError) {
             correlatedLogger.error({ error: (metricsError as Error).message, correlationId }, 'Failed to record LLM metrics for failed PR comment job');
@@ -248,31 +265,55 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
     }
     if (octokit && startingWorkComment) {
         try {
+            await options.assertLease();
             const realCommentIds = filterRealComments(unprocessedComments).map(comment => comment.id);
             const failedEvidence = buildWorkEvidenceMarker('failed', realCommentIds);
             await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
                 owner: repoOwner, repo: repoName, comment_id: startingWorkComment.data.id,
                 body: `❌ **Failed to apply follow-up changes** requested by ${authorsText}\n\nAn error occurred while processing your request:\n\n\`\`\`\n${sanitizedMessage}\n\`\`\`\n\n---\nComment ID${unprocessedComments.length > 1 ? 's' : ''}: ${unprocessedComments.map(c => String(c.id) + '✓').join(', ')}\nPlease check the logs for more details.${failedEvidence ? `\n${failedEvidence}` : ''}`,
+                request: { signal: options.signal },
             });
         } catch (commentError) {
+            options.signal.throwIfAborted();
+            await options.assertLease();
             correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post error comment');
         }
+        await options.assertLease();
     }
 }
 
 export async function handleJobError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
-    const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
+    const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId, prProcessingLockToken } = options;
 
     const isUserCancelled = error.message?.includes('aborted by user');
     const isUsageLimit = error.name === 'UsageLimitError' || error.message?.includes('usage limit');
 
+    // A matching token in task JSON is not sufficient: the renewable PR lease
+    // may already have expired while no successor has rewritten the state yet.
+    await options.assertLease();
+
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     const currentState = await stateManager.getTaskState(taskId);
+
+    if (prProcessingLockToken !== undefined
+        && currentState?.prProcessingLockToken !== prProcessingLockToken) {
+        correlatedLogger.info({ taskId }, 'Skipping error handling for a superseded PR processing attempt');
+        return;
+    }
 
     if (currentState && TERMINAL_STATES.includes(currentState.state)) {
         correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state, skipping error handler state update');
         if (currentState.state === TaskStates.CANCELLED && octokit && startingWorkComment) {
-            await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
+            await options.assertLease();
+            await postCancellationComment({
+                octokit,
+                repoOwner,
+                repoName,
+                commentId: startingWorkComment.data.id,
+                correlatedLogger,
+                assertLease: options.assertLease,
+                signal: options.signal,
+            });
             correlatedLogger.info({ taskId, commentId: startingWorkComment.data.id }, 'Updated GitHub comment for cancelled task');
         }
         return;
@@ -296,10 +337,26 @@ export interface CleanupOptions {
     correlatedLogger: Logger; redisClient: Redis;
 }
 
-export async function cleanupJob(options: CleanupOptions): Promise<void> {
+export async function cleanupJob(options: CleanupOptions, beforeRelease?: () => Promise<void>): Promise<void> {
     const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
-    if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
-        correlatedLogger.debug('Released PR processing lock');
+    let ownsLease = true;
+    let ownershipCheckError: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            await assertPRProcessingLock(redisClient, lockKey, lockToken);
+            ownershipCheckError = undefined;
+            break;
+        } catch (error) {
+            if (error instanceof PRProcessingLeaseLostError) {
+                ownsLease = false;
+                correlatedLogger.info('Cleaning the generation-specific worktree after this attempt lost the PR lease');
+                break;
+            }
+            ownershipCheckError = error;
+            if (attempt < 2) {
+                await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+            }
+        }
     }
 
     if (localRepoPath && worktreeInfo) {
@@ -309,6 +366,18 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
             correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
         }
     }
+
+    if (ownershipCheckError && ownsLease) {
+        // Keep the job retryable when ownership cannot be verified.
+        correlatedLogger.warn({ error: (ownershipCheckError as Error).message }, 'Could not verify PR lease ownership during cleanup; deferring cleanup finalization');
+        throw ownershipCheckError;
+    }
+    if (!ownsLease) return;
+
+    await beforeRelease?.();
+    const releasedLock = await releasePRProcessingLock(redisClient, lockKey, lockToken);
+    if (releasedLock) correlatedLogger.debug('Released PR processing lock after cleaning attempt resources');
+    if (!releasedLock) return;
 
     try {
         const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
@@ -327,44 +396,31 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
         }
     } catch (pendingCheckError) {
         correlatedLogger.warn({ error: (pendingCheckError as Error).message }, 'Failed to check/queue pending comments');
+        throw pendingCheckError;
     }
+}
+
+export async function cleanupJobBeforeStoppingHeartbeat(options: CleanupOptions, stopLockHeartbeat: () => Promise<void>, preserveJobOutcome = false): Promise<void> {
+    await runJobCleanupLifecycle({
+        cleanup: beforeRelease => cleanupJob(options, beforeRelease),
+        stopHeartbeat: stopLockHeartbeat,
+        correlatedLogger: options.correlatedLogger,
+        preserveJobOutcome,
+        recoverPreservedFailure: () => schedulePRCommentCleanupRecovery({
+            repoOwner: options.repoOwner,
+            repoName: options.repoName,
+            pullRequestNumber: options.pullRequestNumber,
+            jobBranchName: options.jobBranchName,
+            jobLlm: options.jobLlm,
+            jobReasoningLevel: options.jobReasoningLevel,
+            attemptGeneration: hashTaskAttemptToken(options.lockToken),
+            correlatedLogger: options.correlatedLogger,
+        }),
+    });
 }
 
 export { buildMetricsSection } from './prCommentMetrics.js';
-
-export function parsePendingComment(commentJson: string, correlatedLogger: Logger): UnprocessedComment | null {
-    try {
-        return JSON.parse(commentJson) as UnprocessedComment;
-    } catch (parseError) {
-        correlatedLogger.warn({ error: (parseError as Error).message }, 'Failed to parse pending comment');
-        return null;
-    }
-}
-
-export function processPendingComments(commentsToProcess: UnprocessedComment[], pendingComments: string[], correlatedLogger: Logger): void {
-    for (const commentJson of pendingComments) {
-        const pendingComment = parsePendingComment(commentJson, correlatedLogger);
-        if (pendingComment && !commentsToProcess.some(c => c.id === pendingComment.id)) {
-            commentsToProcess.push(pendingComment);
-        }
-    }
-}
-
-export async function pickUpPendingComments(commentsToProcess: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }): Promise<UnprocessedComment[]> {
-    const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = options;
-    const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
-    try {
-        const pendingComments = await redisClient.lrange(pendingCommentsKey, 0, -1);
-        if (pendingComments.length > 0) {
-            await redisClient.del(pendingCommentsKey);
-            processPendingComments(commentsToProcess, pendingComments, correlatedLogger);
-            correlatedLogger.info({ pullRequestNumber, pendingCount: pendingComments.length, totalCount: commentsToProcess.length }, 'Picked up pending comments from Redis');
-        }
-    } catch (redisError) {
-        correlatedLogger.warn({ error: (redisError as Error).message }, 'Failed to fetch pending comments from Redis');
-    }
-    return commentsToProcess;
-}
+export { stopAbandonedPRTaskContainer } from './prCommentContainerCleanup.js';
 
 export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
@@ -377,4 +433,9 @@ export {
     formatFileContents,
     agentResultToClaudeResponse,
 } from './prFileUtils.js';
+export {
+    parsePendingComment,
+    pickUpPendingComments,
+    processPendingComments,
+} from './prPendingComments.js';
 export { applyPendingCommentCommandContext } from './prCommentCommandContext.js';

@@ -10,20 +10,25 @@ import type { AgentConfig } from '@propr/core';
 import {
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
+  inspectAgentLoginCompletion,
   resolveAgentLoginConfigPath,
   resolveAgentLoginImage,
 } from './agentLoginDocker.js';
+import {
+  buildDockerAttachCommand,
+  sanitizeTerminalChunk,
+  type TerminalSanitizerState,
+} from './agentLoginTerminal.js';
 
 export { AgentLoginInputError } from './agentLoginDocker.js';
+export { buildDockerAttachCommand } from './agentLoginTerminal.js';
 
 const DEFAULT_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_SESSION_RETENTION_MS = 5 * 60 * 1000;
 const MAX_OUTPUT_LENGTH = 128 * 1024;
 const MAX_INPUT_LENGTH = 4096;
-
-type TerminalEscapeState = 'text' | 'escape' | 'escape_intermediate' | 'csi'
-  | 'control_string' | 'control_string_escape';
-type EscapeSequenceState = Exclude<TerminalEscapeState, 'text'>;
+const DEFAULT_PROVIDER_COMPLETION_POLL_MS = 500;
+const REQUIRED_PROVIDER_COMPLETION_STABLE_POLLS = 3;
 
 export type AgentLoginSessionStatus = 'starting' | 'running' | 'succeeded'
   | 'failed' | 'cancelled' | 'timed_out';
@@ -34,12 +39,6 @@ const TERMINAL_STATUSES = new Set<AgentLoginSessionStatus>([
   'cancelled',
   'timed_out',
 ]);
-const CONTROL_STRING_STARTS = new Set([']', 'P', 'X', '^', '_']);
-const C1_CONTROL_STRING_STARTS = new Set(['\u0090', '\u0098', '\u009d', '\u009e', '\u009f']);
-const CSI_FINAL_CHARACTER = /[\u0040-\u007e]/u;
-const ESCAPE_INTERMEDIATE_CHARACTER = /[\u0020-\u002f]/u;
-const UNSAFE_CONTROL_RANGES = [[0x00, 0x08], [0x0b, 0x0c], [0x0e, 0x1a], [0x1c, 0x1f], [0x7f, 0x9f]];
-
 export interface AgentLoginSessionSnapshot {
   id: string;
   agentId: string;
@@ -53,16 +52,16 @@ export interface AgentLoginSessionSnapshot {
   error?: string;
 }
 
-interface AgentLoginSession extends AgentLoginSessionSnapshot {
+interface AgentLoginSession extends AgentLoginSessionSnapshot, TerminalSanitizerState {
   owner: string;
   credentialPath: string;
   containerName: string;
   process?: ChildProcessWithoutNullStreams;
   timeout?: ReturnType<typeof setTimeout>;
   retentionTimeout?: ReturnType<typeof setTimeout>;
-  cleanupStarted?: boolean;
-  escapeState: TerminalEscapeState;
-  outputEndedWithCarriageReturn?: boolean;
+  providerCompletionTimeout?: ReturnType<typeof setTimeout>; providerLoginInitiallyComplete?: boolean;
+  initialCredentialContentFingerprint?: string; providerCompletionFingerprint?: string;
+  providerCompletionStablePolls?: number; cleanupStarted?: boolean;
 }
 
 export interface DockerCommandResult {
@@ -77,6 +76,7 @@ export interface AgentLoginSessionManagerDeps {
   id?: () => string;
   sessionTimeoutMs?: number;
   sessionRetentionMs?: number;
+  providerCompletionPollMs?: number;
   scope?: string;
 }
 
@@ -108,11 +108,12 @@ function defaultRunDocker(args: string[]): Promise<DockerCommandResult> {
 }
 
 function defaultSpawnDocker(args: string[]): ChildProcessWithoutNullStreams {
-  const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
-  const command = ['docker', ...args].map(shellQuote).join(' ');
+  const command = buildDockerAttachCommand(args);
   // Docker refuses to attach a container TTY when its own stdin is a pipe.
   // script(1) supplies the controlling PTY while keeping Node's stdin/stdout
-  // pipeable for the browser session.
+  // pipeable for the browser session. Set a real initial terminal size before
+  // Docker attaches; otherwise the container receives a 0x0 PTY and full-screen
+  // provider login UIs can stay alive without rendering any prompt.
   return spawn('script', ['-qefc', command, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
@@ -129,69 +130,6 @@ function normalizeScope(value: string): string {
   return normalized || 'propr';
 }
 
-const ESCAPE_TRANSITIONS: Record<
-  EscapeSequenceState,
-  (value: string) => TerminalEscapeState
-> = {
-  escape: value => {
-    if (value === '[') return 'csi';
-    if (CONTROL_STRING_STARTS.has(value)) return 'control_string';
-    return ESCAPE_INTERMEDIATE_CHARACTER.test(value) ? 'escape_intermediate' : 'text';
-  },
-  escape_intermediate: value => (
-    ESCAPE_INTERMEDIATE_CHARACTER.test(value) ? 'escape_intermediate' : 'text'
-  ),
-  csi: value => CSI_FINAL_CHARACTER.test(value) ? 'text' : 'csi',
-  control_string: value => {
-    if (value === '\u0007' || value === '\u009c') return 'text';
-    return value === '\u001b' ? 'control_string_escape' : 'control_string';
-  },
-  control_string_escape: value => {
-    if (value === '\\' || value === '\u009c') return 'text';
-    return value === '\u001b' ? 'control_string_escape' : 'control_string';
-  },
-};
-
-function startEscapeSequence(value: string): EscapeSequenceState | undefined {
-  if (value === '\u001b') return 'escape';
-  if (value === '\u009b') return 'csi';
-  if (C1_CONTROL_STRING_STARTS.has(value)) return 'control_string';
-  return undefined;
-}
-
-function isUnsafeControlCharacter(value: string): boolean {
-  const code = value.charCodeAt(0);
-  return UNSAFE_CONTROL_RANGES.some(([start, end]) => code >= start && code <= end);
-}
-
-function sanitizeTerminalChunk(session: AgentLoginSession, chunk: string): string {
-  let sanitized = '';
-  for (const value of chunk) {
-    const state = session.escapeState;
-    if (state !== 'text') {
-      session.escapeState = ESCAPE_TRANSITIONS[state](value);
-      continue;
-    }
-    const escapeState = startEscapeSequence(value);
-    if (escapeState) {
-      session.escapeState = escapeState;
-      continue;
-    }
-    if (value === '\r') {
-      sanitized += '\n';
-      session.outputEndedWithCarriageReturn = true;
-      continue;
-    }
-    if (value === '\n' && session.outputEndedWithCarriageReturn) {
-      session.outputEndedWithCarriageReturn = false;
-      continue;
-    }
-    session.outputEndedWithCarriageReturn = false;
-    if (!isUnsafeControlCharacter(value)) sanitized += value;
-  }
-  return sanitized;
-}
-
 export class AgentLoginSessionManager {
   private readonly sessions = new Map<string, AgentLoginSession>();
   private readonly activeCredentialPaths = new Set<string>();
@@ -201,6 +139,7 @@ export class AgentLoginSessionManager {
   private readonly id: NonNullable<AgentLoginSessionManagerDeps['id']>;
   private readonly sessionTimeoutMs: number;
   private readonly sessionRetentionMs: number;
+  private readonly providerCompletionPollMs: number;
   private readonly scope: string;
 
   constructor(deps: AgentLoginSessionManagerDeps = {}) {
@@ -210,6 +149,7 @@ export class AgentLoginSessionManager {
     this.id = deps.id ?? randomUUID;
     this.sessionTimeoutMs = deps.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
     this.sessionRetentionMs = deps.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS;
+    this.providerCompletionPollMs = deps.providerCompletionPollMs ?? DEFAULT_PROVIDER_COMPLETION_POLL_MS;
     this.scope = normalizeScope(deps.scope ?? process.env.PROPR_STACK ?? 'propr');
   }
 
@@ -255,6 +195,8 @@ export class AgentLoginSessionManager {
       status: 'starting',
       output: '',
       escapeState: 'text',
+      controlStringBuffer: '',
+      emittedTerminalLinks: new Set<string>(),
       createdAt: new Date(timestamp).toISOString(),
       updatedAt: new Date(timestamp).toISOString(),
       expiresAt: new Date(timestamp + this.sessionTimeoutMs).toISOString(),
@@ -268,7 +210,19 @@ export class AgentLoginSessionManager {
         // Materialize the isolated bind source explicitly. The provider
         // entrypoint then normalizes ownership of the mounted leaf before
         // dropping privileges and writing credential files.
-        mkdirSync(credentialPath, { recursive: true, mode: 0o755 });
+        try {
+          mkdirSync(credentialPath, { recursive: true, mode: 0o755 });
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'EACCES' && code !== 'EPERM') throw error;
+          // The root-started login container repairs an existing bind source.
+        }
+      }
+      const initialLogin = await inspectAgentLoginCompletion(agent.type, credentialPath);
+      session.providerLoginInitiallyComplete = initialLogin.complete;
+      session.initialCredentialContentFingerprint = initialLogin.contentFingerprint;
+      if (session.providerLoginInitiallyComplete) {
+        this.appendOutput(session, 'Existing Antigravity authentication will be revalidated by the provider.\n');
       }
       const image = resolveAgentLoginImage(agent);
       const createArgs = buildAgentLoginCreateArgs(
@@ -335,6 +289,7 @@ export class AgentLoginSessionManager {
     await Promise.all(sessions.map(async (session) => {
       if (session.timeout) clearTimeout(session.timeout);
       if (session.retentionTimeout) clearTimeout(session.retentionTimeout);
+      if (session.providerCompletionTimeout) clearTimeout(session.providerCompletionTimeout);
       if (!isTerminal(session.status)) {
         session.status = 'cancelled';
         session.process?.kill();
@@ -355,6 +310,7 @@ export class AgentLoginSessionManager {
     child.stdin.on('error', () => {
       // A provider can close stdin as it transitions to browser polling.
     });
+    this.scheduleProviderCompletionCheck(session);
     child.on('error', error => {
       if (isTerminal(session.status)) return;
       this.appendOutput(session, `${error.message}\n`);
@@ -395,6 +351,10 @@ export class AgentLoginSessionManager {
       clearTimeout(session.timeout);
       session.timeout = undefined;
     }
+    if (session.providerCompletionTimeout) {
+      clearTimeout(session.providerCompletionTimeout);
+      session.providerCompletionTimeout = undefined;
+    }
     if (!session.retentionTimeout) {
       session.retentionTimeout = setTimeout(() => {
         this.sessions.delete(session.id);
@@ -422,6 +382,44 @@ export class AgentLoginSessionManager {
       void this.timeoutSession(session);
     }, this.sessionTimeoutMs);
     unrefTimer(session.timeout);
+  }
+
+  private scheduleProviderCompletionCheck(session: AgentLoginSession): void {
+    if (session.agentType !== 'antigravity') return;
+    session.providerCompletionTimeout = setTimeout(() => {
+      session.providerCompletionTimeout = undefined;
+      void inspectAgentLoginCompletion(session.agentType, session.credentialPath)
+        .then(completion => {
+          if (isTerminal(session.status)) return;
+          const credentialsChanged = completion.contentFingerprint !== undefined
+            && completion.contentFingerprint !== session.initialCredentialContentFingerprint;
+          const isCompletionCandidate = completion.complete && (!session.providerLoginInitiallyComplete || credentialsChanged)
+            && completion.fingerprint !== undefined;
+          if (isCompletionCandidate) {
+            if (completion.fingerprint === session.providerCompletionFingerprint) {
+              session.providerCompletionStablePolls = (session.providerCompletionStablePolls ?? 0) + 1;
+            } else {
+              session.providerCompletionFingerprint = completion.fingerprint;
+              session.providerCompletionStablePolls = 1;
+            }
+          } else {
+            session.providerCompletionFingerprint = undefined;
+            session.providerCompletionStablePolls = 0;
+          }
+          if (isCompletionCandidate && (session.providerCompletionStablePolls ?? 0) >= REQUIRED_PROVIDER_COMPLETION_STABLE_POLLS) {
+            this.appendOutput(session, '\nAuthentication saved. Closing the provider prompt…\n');
+            this.finish(session, 'succeeded', 0);
+            session.process?.kill();
+            void this.cleanupContainer(session);
+            return;
+          }
+          this.scheduleProviderCompletionCheck(session);
+        })
+        .catch(() => {
+          if (!isTerminal(session.status)) this.scheduleProviderCompletionCheck(session);
+        });
+    }, this.providerCompletionPollMs);
+    unrefTimer(session.providerCompletionTimeout);
   }
 
   private requireSession(sessionId: string, owner: string): AgentLoginSession {

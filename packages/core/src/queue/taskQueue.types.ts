@@ -65,6 +65,8 @@ export interface CommentJobData {
     ultrafixMeta?: UltrafixCommandMeta;
     /** Reasoning level override resolved from PR or linked issue level-* labels. */
     reasoningLevel?: ReasoningLevel;
+    /** Ephemeral generation fence for the currently executing PR attempt. */
+    prProcessingLockToken?: string;
 }
 
 export interface UnprocessedComment {
@@ -180,6 +182,8 @@ export interface JobResult {
     status: string;
     claudeResult?: ClaudeResult;
     correlationId?: string;
+    /** One-way generation fence for the PR-processing attempt that produced this result. */
+    prProcessingAttemptGeneration?: string;
     [key: string]: unknown;
 }
 

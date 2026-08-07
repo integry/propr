@@ -19,7 +19,7 @@ await mock.module('../packages/core/src/db/connection.js', {
   namedExports: { db: database },
 });
 
-const publishDraftUpdate = mock.fn(async () => true);
+const publishDraftUpdate = mock.fn(async (_payload: { generationTrace?: unknown }) => true);
 await mock.module('../packages/core/src/utils/eventPublisher.js', {
   namedExports: {
     getEventPublisher: () => ({ publishDraftUpdate }),

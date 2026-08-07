@@ -1,9 +1,9 @@
-import { SimpleGit, StatusResult, FileStatusResult } from 'simple-git';
+import { simpleGit, SimpleGit, StatusResult, FileStatusResult } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
-import { createHooklessGit } from './hooklessGit.js';
+import { DISABLED_GIT_HOOKS_PATH } from './hooklessGit.js';
 
 interface Author {
     name: string;
@@ -22,6 +22,7 @@ interface CommitMessageObject {
 interface CommitOptions {
     issueNumber?: number;
     issueTitle?: string;
+    signal?: AbortSignal;
 }
 
 export interface CommitResult {
@@ -102,7 +103,8 @@ function resolveCommitMessage(commitMessage: string | CommitMessageObject, issue
 }
 
 export async function commitChanges(worktreePath: string, commitMessage: string | CommitMessageObject, author: Author | null, options: CommitOptions = {}): Promise<CommitResult | null> {
-    const { issueNumber, issueTitle } = options;
+    const { issueNumber, issueTitle, signal } = options;
+    signal?.throwIfAborted();
     try {
         await validateWorktree(worktreePath, issueNumber);
     } catch (validationError) {
@@ -110,7 +112,12 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
         throw validationError;
     }
 
-    const git: SimpleGit = createHooklessGit(worktreePath);
+    const git: SimpleGit = simpleGit({
+        baseDir: worktreePath,
+        abort: signal,
+        config: [`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`],
+        unsafe: { allowUnsafeHooksPath: true },
+    });
     logger.debug({ worktreePath, issueNumber }, 'Initializing git operations in worktree');
 
     try {

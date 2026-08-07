@@ -2,15 +2,27 @@ import { test, mock } from 'node:test';
 import assert from 'node:assert';
 
 // Mock Redis
+const mockRedisGet = mock.fn(async (_key: string) => null as string | null);
 const mockRedisInstance = {
     setex: mock.fn(async () => 'OK'),
-    get: mock.fn(async () => null),
-    eval: mock.fn(async () => 1),
+    get: mockRedisGet,
     on: mock.fn(),
     quit: mock.fn(async () => {}),
-    disconnect: mock.fn(),
     keys: mock.fn(async () => []),
-    del: mock.fn(async () => 1)
+    scan: mock.fn(async () => ['0', []] as [string, string[]]),
+    del: mock.fn(async () => 1),
+    eval: mock.fn(async () => 1),
+    pipeline: mock.fn(() => {
+        const keys: string[] = [];
+        const pipeline = {
+            get: (key: string) => {
+                keys.push(key);
+                return pipeline;
+            },
+            exec: async () => Promise.all(keys.map(async key => [null, await mockRedisGet(key)])),
+        };
+        return pipeline;
+    }),
 };
 
 await mock.module('ioredis', {
@@ -22,17 +34,32 @@ await mock.module('ioredis', {
 });
 
 // Mock database with proper chain methods
-const mockDbTasksInsert = mock.fn(() => ({
+const mockDbTasksReturning = mock.fn(async () => [{ task_id: 'task-id' }]);
+const mockDbTasksWhere = mock.fn((predicate: (query: {
+    whereNull: (column: string) => { orWhere: (column: string, operator: string, value: number) => void };
+}) => void) => {
+    predicate({
+        whereNull: () => ({ orWhere: () => {} }),
+    });
+    return { returning: mockDbTasksReturning };
+});
+const mockDbTasksMerge = mock.fn(() => ({ where: mockDbTasksWhere }));
+const defaultMockDbTasksInsert = () => ({
     onConflict: mock.fn(() => ({
-        ignore: mock.fn(async () => [1])
+        merge: mockDbTasksMerge
     }))
+});
+const mockDbTasksInsert = mock.fn(defaultMockDbTasksInsert);
+const mockDbTasksFirst = mock.fn(async () => undefined as { attempt_generation_version?: unknown } | undefined);
+const mockDbTasksSelect = mock.fn(() => ({
+    where: mock.fn(() => ({ first: mockDbTasksFirst })),
 }));
 
 const mockDbHistoryInsert = mock.fn(async () => [1]);
 
 const mockDb = (tableName: string) => {
     if (tableName === 'tasks') {
-        return { insert: mockDbTasksInsert };
+        return { insert: mockDbTasksInsert, select: mockDbTasksSelect };
     }
     if (tableName === 'task_history') {
         return { insert: mockDbHistoryInsert };
@@ -47,7 +74,7 @@ await mock.module('../packages/core/src/db/connection.js', {
 });
 
 // Mock event publisher
-const mockPublishTaskUpdate = mock.fn(async () => true);
+const mockPublishTaskUpdate = mock.fn(async () => {});
 const mockEventPublisher = {
     publishTaskUpdate: mockPublishTaskUpdate
 };
@@ -82,16 +109,288 @@ await mock.module('../packages/core/src/utils/logger.js', {
 });
 
 // Import after mocks are set up
-const { WorkerStateManager, TaskStates } = await import('../packages/core/src/utils/workerStateManager.js');
+const { SupersededTaskAttemptError, WorkerStateManager, TaskStates } = await import('../packages/core/src/utils/workerStateManager.js');
+const { hashTaskAttemptToken } = await import('../packages/core/src/utils/taskAttemptGeneration.js');
 import type { IssueRef, TaskStateData } from '../packages/core/src/utils/workerStateManager.types.js';
 
 // Test configuration
 const TEST_KEY_PREFIX = 'test:worker:state:';
 const TEST_STATE_EXPIRY = 3600; // 1 hour for testing
 
+function mockMaintenanceScan(keys: string[]): void {
+    mockRedisInstance.scan.mock.mockImplementation(async () => ['0', keys]);
+}
+
+test('getNonTerminalTasks scans Redis without including terminal states', async () => {
+    const pending = {
+        taskId: 'pending-task',
+        issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'pending-correlation',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    const completed = { ...pending, taskId: 'completed-task', state: TaskStates.COMPLETED };
+    mockRedisInstance.pipeline.mock.resetCalls();
+    mockRedisInstance.get.mock.resetCalls();
+    mockRedisInstance.scan.mock.mockImplementation(async () => [
+        '0',
+        [
+            `${TEST_KEY_PREFIX}pending-task`,
+            `${TEST_KEY_PREFIX}pending-task`,
+            `${TEST_KEY_PREFIX}completed-task`,
+        ],
+    ]);
+    mockRedisInstance.get.mock.mockImplementation(async key => (
+        key.endsWith('pending-task') ? JSON.stringify(pending) : JSON.stringify(completed)
+    ));
+
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+    const result = await stateManager.getNonTerminalTasks();
+
+    assert.deepStrictEqual(result.map(task => task.taskId), ['pending-task']);
+    assert.strictEqual(mockRedisInstance.pipeline.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.get.mock.calls.length, 2);
+});
+
+test('getNonTerminalTasks rejects a state stored under another task ID', async () => {
+    const state = {
+        taskId: 'different-task',
+        issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'correlation',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    mockRedisInstance.scan.mock.mockImplementation(async () => ['0', [`${TEST_KEY_PREFIX}expected-task`]]);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(state));
+    mockLogger.warn.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    assert.deepStrictEqual(await stateManager.getNonTerminalTasks(), []);
+    assert.match(mockLogger.warn.mock.calls[0].arguments[1], /does not match its Redis key/);
+    await stateManager.close();
+});
+
+test('getNonTerminalTasks safely includes legacy PR-comment records without a type', async () => {
+    const legacyPRComment: TaskStateData = {
+        taskId: '42',
+        issueRef: {
+            number: 1748,
+            repoOwner: 'integry',
+            repoName: 'propr',
+            comments: [{ id: 1, body: '/fix' }],
+        },
+        correlationId: 'legacy-pr-comment',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+        attempts: 0,
+        history: [],
+    };
+    const unrelated = {
+        ...legacyPRComment,
+        taskId: 'legacy-issue',
+        issueRef: {
+            number: 1353,
+            repoOwner: 'integry',
+            repoName: 'propr',
+            comments: [{ id: 2, body: 'imported issue comment' }],
+        },
+    };
+    const emptyComments = {
+        ...legacyPRComment,
+        taskId: '43',
+        issueRef: { ...legacyPRComment.issueRef, comments: [] },
+    };
+    mockRedisInstance.scan.mock.mockImplementation(async () => [
+        '0',
+        [`${TEST_KEY_PREFIX}42`, `${TEST_KEY_PREFIX}43`, `${TEST_KEY_PREFIX}legacy-issue`],
+    ]);
+    mockRedisInstance.get.mock.mockImplementation(async key => (
+        key.endsWith('legacy-issue')
+            ? JSON.stringify(unrelated)
+            : key.endsWith('43') ? JSON.stringify(emptyComments) : JSON.stringify(legacyPRComment)
+    ));
+
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+    const result = await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'] });
+
+    assert.deepStrictEqual(result.map(task => task.taskId), ['42']);
+    await stateManager.close();
+});
+
+test('getNonTerminalTasks includes standard pre-migration pr-comments task IDs', async () => {
+    const legacyPRComment: TaskStateData = {
+        taskId: 'pr-comments-integry-propr-1748-1785928912960',
+        issueRef: { number: 1748, repoOwner: 'integry', repoName: 'propr' },
+        correlationId: 'legacy-standard-pr-comment',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:00:00.000Z',
+        attempts: 0,
+        history: [],
+    };
+    mockRedisInstance.scan.mock.mockImplementation(async () => [
+        '0',
+        [`${TEST_KEY_PREFIX}${legacyPRComment.taskId}`],
+    ]);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(legacyPRComment));
+
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+    const result = await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'] });
+
+    assert.deepStrictEqual(result.map(task => task.taskId), [legacyPRComment.taskId]);
+    await stateManager.close();
+});
+
+test('getNonTerminalTasks maintains independent cursors for task-type filters', async () => {
+    const prTask: TaskStateData = {
+        taskId: 'pr-task',
+        issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        correlationId: 'pr',
+        state: TaskStates.PENDING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    const issueTask = { ...prTask, taskId: 'issue-task', issueRef: { ...prTask.issueRef, type: 'issue' } };
+    mockRedisInstance.scan.mock.resetCalls();
+    mockRedisInstance.scan.mock.mockImplementation(async (cursor: string) => {
+        return cursor === '0'
+            ? ['17', [`${TEST_KEY_PREFIX}${prTask.taskId}`, `${TEST_KEY_PREFIX}${issueTask.taskId}`]]
+            : ['0', []];
+    });
+    mockRedisInstance.get.mock.mockImplementation(async key => (
+        key.endsWith(prTask.taskId) ? JSON.stringify(prTask) : JSON.stringify(issueTask)
+    ));
+
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+    await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'], limit: 1 });
+    await stateManager.getNonTerminalTasks({ taskTypes: ['issue'], limit: 1 });
+
+    assert.strictEqual(mockRedisInstance.scan.mock.calls[0].arguments[0], '0');
+    assert.strictEqual(mockRedisInstance.scan.mock.calls[1].arguments[0], '0');
+    await stateManager.close();
+});
+
+test('getNonTerminalTasks strictly bounds oversized SCAN pages and preserves unread keys', async () => {
+    const base: TaskStateData = {
+        taskId: 'scan-task-1',
+        issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        correlationId: 'scan',
+        state: TaskStates.COMPLETED,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    const values = new Map<string, TaskStateData>([
+        [`${TEST_KEY_PREFIX}scan-task-1`, base],
+        [`${TEST_KEY_PREFIX}scan-task-2`, { ...base, taskId: 'scan-task-2' }],
+        [`${TEST_KEY_PREFIX}scan-task-3`, { ...base, taskId: 'scan-task-3', state: TaskStates.PROCESSING }],
+        [`${TEST_KEY_PREFIX}scan-task-4`, { ...base, taskId: 'scan-task-4' }],
+        [`${TEST_KEY_PREFIX}scan-task-5`, { ...base, taskId: 'scan-task-5' }],
+    ]);
+    mockRedisInstance.scan.mock.resetCalls();
+    mockRedisInstance.scan.mock.mockImplementation(async () => ['17', [...values.keys()]]);
+    mockRedisInstance.get.mock.resetCalls();
+    mockRedisInstance.get.mock.mockImplementation(async key => JSON.stringify(values.get(key)));
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const first = await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'], limit: 2 });
+    const second = await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'], limit: 2 });
+
+    assert.deepStrictEqual(first, []);
+    assert.deepStrictEqual(second.map(value => value.taskId), ['scan-task-3']);
+    assert.strictEqual(mockRedisInstance.scan.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.get.mock.calls.length, 4);
+    await stateManager.close();
+});
+
+test('getNonTerminalTasks caps empty SCAN pages and resumes from the saved cursor', async () => {
+    mockRedisInstance.scan.mock.resetCalls();
+    mockRedisInstance.scan.mock.mockImplementation(async (cursor: string) => {
+        if (cursor === '0') return ['17', []];
+        if (cursor === '17') return ['19', []];
+        return ['0', []];
+    });
+    mockRedisInstance.get.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'], limit: 2 });
+    assert.strictEqual(mockRedisInstance.scan.mock.calls.length, 2);
+
+    await stateManager.getNonTerminalTasks({ taskTypes: ['pr_comment'], limit: 2 });
+    assert.strictEqual(mockRedisInstance.scan.mock.calls.length, 3);
+    assert.strictEqual(mockRedisInstance.scan.mock.calls[2].arguments[0], '19');
+    assert.strictEqual(mockRedisInstance.get.mock.calls.length, 0);
+    await stateManager.close();
+});
+
+test('getNonTerminalTaskPage reports whether the rotating SCAN cycle is complete', async () => {
+    const terminal: TaskStateData = {
+        taskId: 'terminal-page-task',
+        issueRef: { number: 1, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        correlationId: 'terminal-page',
+        state: TaskStates.COMPLETED,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    const processing = { ...terminal, taskId: 'processing-page-task', state: TaskStates.PROCESSING };
+    mockRedisInstance.scan.mock.resetCalls();
+    mockRedisInstance.scan.mock.mockImplementation(async (cursor: string) => cursor === '0'
+        ? ['17', [`${TEST_KEY_PREFIX}${terminal.taskId}`]]
+        : ['0', [`${TEST_KEY_PREFIX}${processing.taskId}`]]);
+    mockRedisInstance.get.mock.resetCalls();
+    mockRedisInstance.get.mock.mockImplementation(async key => JSON.stringify(
+        key.endsWith(terminal.taskId) ? terminal : processing,
+    ));
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const first = await stateManager.getNonTerminalTaskPage({ taskTypes: ['pr_comment'], limit: 1 });
+    const second = await stateManager.getNonTerminalTaskPage({ taskTypes: ['pr_comment'], limit: 1 });
+
+    assert.deepStrictEqual(first, { tasks: [], scanComplete: false });
+    assert.deepStrictEqual(second.tasks.map(task => task.taskId), [processing.taskId]);
+    assert.strictEqual(second.scanComplete, true);
+    await stateManager.close();
+});
+
+test('getProcessingTasks uses SCAN and pipelined reads for legacy recovery', async () => {
+    const processing: TaskStateData = {
+        taskId: 'processing-maintenance-task',
+        issueRef: { number: 1748, repoOwner: 'integry', repoName: 'propr' },
+        correlationId: 'maintenance-scan',
+        state: TaskStates.PROCESSING,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        attempts: 0,
+        history: [],
+    };
+    mockMaintenanceScan([`${TEST_KEY_PREFIX}${processing.taskId}`]);
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(processing));
+    mockRedisInstance.pipeline.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    assert.deepStrictEqual(await stateManager.getProcessingTasks(), [processing]);
+    assert.strictEqual(mockRedisInstance.pipeline.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.scan.mock.calls.at(-1)?.arguments[2], `${TEST_KEY_PREFIX}*`);
+    await stateManager.close();
+});
+
 test('createTaskState creates state with correct structure', async () => {
     // Reset mocks
     mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
     mockPublishTaskUpdate.mock.resetCalls();
 
     const stateManager = new WorkerStateManager({
@@ -129,9 +428,10 @@ test('createTaskState creates state with correct structure', async () => {
     await stateManager.close();
 });
 
-test('createTaskState stores state in Redis with TTL', async () => {
+test('createTaskState stores expiring state with a durable revision', async () => {
     // Reset mocks
-    mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
 
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX,
@@ -147,14 +447,18 @@ test('createTaskState stores state in Redis with TTL', async () => {
 
     await stateManager.createTaskState(taskId, issueRef);
 
-    // Verify Redis setex was called with correct TTL
-    assert.strictEqual(mockRedisInstance.setex.mock.calls.length, 1);
-    const setexCall = mockRedisInstance.setex.mock.calls[0];
-    assert.strictEqual(setexCall.arguments[0], `${TEST_KEY_PREFIX}${taskId}`);
-    assert.strictEqual(setexCall.arguments[1], TEST_STATE_EXPIRY);
+    // Verify the atomic creation script received a separate retained revision key.
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
+    const createCall = mockRedisInstance.eval.mock.calls[0];
+    assert.strictEqual(createCall.arguments[2], `${TEST_KEY_PREFIX}${taskId}`);
+    assert.strictEqual(createCall.arguments[3], `revision:${TEST_KEY_PREFIX}${taskId}`);
+    assert.strictEqual(createCall.arguments[4], TEST_STATE_EXPIRY);
+    assert.strictEqual(createCall.arguments[6], 30 * 24 * 3600);
+    assert.strictEqual(createCall.arguments.length, 7);
+    assert.match(createCall.arguments[0] as string, /redis\.call\('setex', KEYS\[2\], ARGV\[3\], version\)/);
 
     // Verify the stored state is valid JSON with correct structure
-    const storedState = JSON.parse(setexCall.arguments[2] as string) as TaskStateData;
+    const storedState = JSON.parse(createCall.arguments[5] as string) as TaskStateData;
     assert.strictEqual(storedState.taskId, taskId);
     assert.strictEqual(storedState.state, TaskStates.PENDING);
     assert.strictEqual(storedState.issueRef.number, 100);
@@ -163,7 +467,8 @@ test('createTaskState stores state in Redis with TTL', async () => {
 });
 
 test('createTaskState uses default TTL when not specified', async () => {
-    mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
 
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX
@@ -179,9 +484,9 @@ test('createTaskState uses default TTL when not specified', async () => {
 
     await stateManager.createTaskState(taskId, issueRef);
 
-    const setexCall = mockRedisInstance.setex.mock.calls[0];
+    const createCall = mockRedisInstance.eval.mock.calls[0];
     const defaultTTL = 7 * 24 * 3600; // 7 days in seconds
-    assert.strictEqual(setexCall.arguments[1], defaultTTL);
+    assert.strictEqual(createCall.arguments[4], defaultTTL);
 
     await stateManager.close();
 });
@@ -276,12 +581,16 @@ test('createTaskState publishes real-time event', async () => {
         state: string;
         repository: string;
         issueNumber: number;
+        version: number;
+        updatedAt: string;
     };
 
     assert.strictEqual(eventPayload.taskId, taskId);
     assert.strictEqual(eventPayload.state, TaskStates.PENDING);
     assert.strictEqual(eventPayload.repository, 'event-owner/event-repo');
     assert.strictEqual(eventPayload.issueNumber, 88);
+    assert.strictEqual(eventPayload.version, 1);
+    assert.ok(eventPayload.updatedAt);
 
     await stateManager.close();
 });
@@ -347,7 +656,6 @@ test('createTaskState handles database error gracefully', async () => {
     mockCorrelatedLogger.error.mock.resetCalls();
 
     // Make db throw an error by replacing the mock temporarily
-    const originalInsert = mockDbTasksInsert.mock.mockImplementation;
     mockDbTasksInsert.mock.mockImplementation(() => {
         throw new Error('Database connection failed');
     });
@@ -375,13 +683,14 @@ test('createTaskState handles database error gracefully', async () => {
     assert.ok(mockCorrelatedLogger.error.mock.calls.length >= 1, 'Error should be logged');
 
     // Restore original mock
-    mockDbTasksInsert.mock.mockImplementation(originalInsert);
+    mockDbTasksInsert.mock.mockImplementation(defaultMockDbTasksInsert);
 
     await stateManager.close();
 });
 
 test('createTaskState generates unique task keys', async () => {
-    mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
 
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX,
@@ -399,11 +708,11 @@ test('createTaskState generates unique task keys', async () => {
     await stateManager.createTaskState(taskId1, issueRef);
     await stateManager.createTaskState(taskId2, issueRef);
 
-    const setexCalls = mockRedisInstance.setex.mock.calls;
-    assert.strictEqual(setexCalls.length, 2);
+    const createCalls = mockRedisInstance.eval.mock.calls;
+    assert.strictEqual(createCalls.length, 2);
 
-    const key1 = setexCalls[0].arguments[0];
-    const key2 = setexCalls[1].arguments[0];
+    const key1 = createCalls[0].arguments[2];
+    const key2 = createCalls[1].arguments[2];
 
     assert.notStrictEqual(key1, key2, 'Keys should be unique');
     assert.strictEqual(key1, `${TEST_KEY_PREFIX}${taskId1}`);
@@ -413,7 +722,8 @@ test('createTaskState generates unique task keys', async () => {
 });
 
 test('createTaskState stores valid JSON in Redis', async () => {
-    mockRedisInstance.setex.mock.resetCalls();
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
 
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX,
@@ -431,8 +741,8 @@ test('createTaskState stores valid JSON in Redis', async () => {
 
     await stateManager.createTaskState(taskId, issueRef);
 
-    const setexCall = mockRedisInstance.setex.mock.calls[0];
-    const storedJson = setexCall.arguments[2] as string;
+    const createCall = mockRedisInstance.eval.mock.calls[0];
+    const storedJson = createCall.arguments[5] as string;
 
     // Should not throw when parsing
     let parsed: TaskStateData | undefined;
@@ -627,8 +937,7 @@ test('updateTaskState increments attempts on retry', async () => {
         reason: 'Retrying task'
     });
 
-    // Verify the failed task resumes processing and attempts was incremented
-    assert.strictEqual(result.state, TaskStates.PROCESSING);
+    // Verify attempts was incremented
     assert.strictEqual(result.attempts, 2);
 
     await stateManager.close();
@@ -854,6 +1163,7 @@ test('updateTaskState persists to Redis with TTL renewal', async () => {
     };
 
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.setex.mock.resetCalls();
     mockRedisInstance.eval.mock.resetCalls();
     mockDbHistoryInsert.mock.resetCalls();
     mockPublishTaskUpdate.mock.resetCalls();
@@ -865,14 +1175,16 @@ test('updateTaskState persists to Redis with TTL renewal', async () => {
 
     await stateManager.updateTaskState('task-redis-persist', TaskStates.PROCESSING);
 
-    // Verify the atomic Redis write used the correct key and renewed TTL
+    // Verify the atomic Redis transition used the correct key and TTL
     assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
     const evalCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-redis-persist`);
-    assert.strictEqual(evalCall.arguments[4], TEST_STATE_EXPIRY);
+    assert.strictEqual(evalCall.arguments[5], TEST_STATE_EXPIRY);
+    assert.strictEqual(evalCall.arguments[7], 30 * 24 * 3600);
+    assert.strictEqual(evalCall.arguments.length, 8);
 
     // Verify state was stored correctly
-    const storedState = JSON.parse(evalCall.arguments[5] as string) as TaskStateData;
+    const storedState = JSON.parse(evalCall.arguments[6] as string) as TaskStateData;
     assert.strictEqual(storedState.state, TaskStates.PROCESSING);
     assert.strictEqual(storedState.history.length, 2);
 
@@ -892,7 +1204,7 @@ test('updateTaskState inserts history record into database', async () => {
     };
 
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
-    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.setex.mock.resetCalls();
     mockDbHistoryInsert.mock.resetCalls();
     mockPublishTaskUpdate.mock.resetCalls();
 
@@ -920,6 +1232,42 @@ test('updateTaskState inserts history record into database', async () => {
     assert.strictEqual(metadata.customField, 'customValue');
     assert.strictEqual(metadata.previousState, TaskStates.PENDING);
 
+    await stateManager.close();
+});
+
+test('fenced state updates record their generation and Redis version in SQL history', async () => {
+    const attemptToken = 'correlation:attempt-token';
+    const existingState: TaskStateData = {
+        taskId: 'task-fenced-db-history',
+        issueRef: { number: 1748, repoOwner: 'integry', repoName: 'propr', type: 'pr_comment' },
+        correlationId: 'corr-fenced-db-history',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-05T00:00:00.000Z',
+        updatedAt: '2026-08-05T00:01:00.000Z',
+        version: 7,
+        attempts: 0,
+        history: [],
+        prProcessingLockToken: attemptToken,
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(existingState));
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => [1, 8]);
+    mockDbHistoryInsert.mock.resetCalls();
+
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+    await stateManager.updateTaskState(
+        existingState.taskId,
+        TaskStates.COMPLETED,
+        { reason: 'Completed current generation' },
+        attemptToken,
+    );
+
+    const historyData = mockDbHistoryInsert.mock.calls[0].arguments[0] as Record<string, unknown>;
+    assert.strictEqual(historyData.attempt_generation, hashTaskAttemptToken(attemptToken));
+    assert.strictEqual(historyData.task_version, 8);
     await stateManager.close();
 });
 
@@ -1007,7 +1355,6 @@ test('updateTaskState handles database error gracefully', async () => {
     mockCorrelatedLogger.error.mock.resetCalls();
 
     // Make db history insert throw an error
-    const originalHistoryInsert = mockDbHistoryInsert.mock.mockImplementation;
     mockDbHistoryInsert.mock.mockImplementation(() => {
         throw new Error('Database connection failed');
     });
@@ -1030,7 +1377,7 @@ test('updateTaskState handles database error gracefully', async () => {
     assert.ok(mockCorrelatedLogger.error.mock.calls.length >= 1, 'Error should be logged');
 
     // Restore original mock
-    mockDbHistoryInsert.mock.mockImplementation(originalHistoryInsert);
+    mockDbHistoryInsert.mock.mockImplementation(async () => [1]);
 
     await stateManager.close();
 });
@@ -1358,7 +1705,7 @@ test('markTaskFailed publishes real-time event', async () => {
     await stateManager.close();
 });
 
-test('markTaskFailed persists failure to Redis', async () => {
+test('markTaskFailed persists failure to Redis atomically', async () => {
     const existingState: TaskStateData = {
         taskId: 'task-fail-redis',
         issueRef: { number: 208, repoOwner: 'redis-owner', repoName: 'redis-repo' },
@@ -1383,14 +1730,16 @@ test('markTaskFailed persists failure to Redis', async () => {
     const error = new Error('System failure');
     await stateManager.markTaskFailed('task-fail-redis', error);
 
-    // Verify the atomic Redis write was called
+    // Verify the full-value CAS renewed the Redis TTL.
     assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
     const evalCall = mockRedisInstance.eval.mock.calls[0];
     assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-fail-redis`);
-    assert.strictEqual(evalCall.arguments[4], TEST_STATE_EXPIRY);
+    assert.strictEqual(evalCall.arguments[5], TEST_STATE_EXPIRY);
+    assert.strictEqual(evalCall.arguments[7], 30 * 24 * 3600);
+    assert.strictEqual(evalCall.arguments.length, 8);
 
     // Verify stored state has FAILED status
-    const storedState = JSON.parse(evalCall.arguments[5] as string) as TaskStateData;
+    const storedState = JSON.parse(evalCall.arguments[6] as string) as TaskStateData;
     assert.strictEqual(storedState.state, TaskStates.FAILED);
     assert.ok(storedState.lastError);
     assert.strictEqual(storedState.lastError.message, 'System failure');
@@ -2108,7 +2457,7 @@ test('cleanupOldTasks removes tasks older than maxAge', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-completed']);
+    mockMaintenanceScan(['test:worker:state:task-old-completed']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldCompletedTask));
     mockRedisInstance.del.mock.resetCalls();
     mockLogger.debug.mock.resetCalls();
@@ -2125,6 +2474,7 @@ test('cleanupOldTasks removes tasks older than maxAge', async () => {
     assert.strictEqual(cleanedCount, 1);
     assert.strictEqual(mockRedisInstance.del.mock.calls.length, 1);
     assert.strictEqual(mockRedisInstance.del.mock.calls[0].arguments[0], 'test:worker:state:task-old-completed');
+    assert.strictEqual(mockRedisInstance.del.mock.calls[0].arguments.length, 1, 'durable revision fence must be retained');
 
     await stateManager.close();
 });
@@ -2143,7 +2493,7 @@ test('cleanupOldTasks skips tasks within maxAge', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: recentTime, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-recent-completed']);
+    mockMaintenanceScan(['test:worker:state:task-recent-completed']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(recentCompletedTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2175,7 +2525,7 @@ test('cleanupOldTasks skips PROCESSING state tasks even if old', async () => {
         history: [{ state: TaskStates.PROCESSING, timestamp: oldTime, reason: 'Processing' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-processing']);
+    mockMaintenanceScan(['test:worker:state:task-old-processing']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldProcessingTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2207,7 +2557,7 @@ test('cleanupOldTasks skips PENDING state tasks even if old', async () => {
         history: [{ state: TaskStates.PENDING, timestamp: oldTime, reason: 'Created' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-pending']);
+    mockMaintenanceScan(['test:worker:state:task-old-pending']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldPendingTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2239,7 +2589,7 @@ test('cleanupOldTasks skips CLAUDE_EXECUTION state tasks even if old', async () 
         history: [{ state: TaskStates.CLAUDE_EXECUTION, timestamp: oldTime, reason: 'Claude execution' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-claude-exec']);
+    mockMaintenanceScan(['test:worker:state:task-old-claude-exec']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldClaudeExecTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2271,7 +2621,7 @@ test('cleanupOldTasks skips POST_PROCESSING state tasks even if old', async () =
         history: [{ state: TaskStates.POST_PROCESSING, timestamp: oldTime, reason: 'Post-processing' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-post-proc']);
+    mockMaintenanceScan(['test:worker:state:task-old-post-proc']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldPostProcTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2304,7 +2654,7 @@ test('cleanupOldTasks removes old FAILED tasks', async () => {
         lastError: { message: 'Some error', category: 'unknown', timestamp: oldTime }
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-failed']);
+    mockMaintenanceScan(['test:worker:state:task-old-failed']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldFailedTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2335,7 +2685,7 @@ test('cleanupOldTasks removes old CANCELLED tasks', async () => {
         history: [{ state: TaskStates.CANCELLED, timestamp: oldTime, reason: 'Cancelled by user' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-old-cancelled']);
+    mockMaintenanceScan(['test:worker:state:task-old-cancelled']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldCancelledTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2353,7 +2703,7 @@ test('cleanupOldTasks removes old CANCELLED tasks', async () => {
 });
 
 test('cleanupOldTasks handles corrupted JSON gracefully', async () => {
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-corrupted']);
+    mockMaintenanceScan(['test:worker:state:task-corrupted']);
     mockRedisInstance.get.mock.mockImplementation(async () => 'this is not valid JSON {{{');
     mockRedisInstance.del.mock.resetCalls();
     mockLogger.warn.mock.resetCalls();
@@ -2392,7 +2742,7 @@ test('cleanupOldTasks uses custom maxAge parameter', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: twoHoursAgo, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-custom-maxage']);
+    mockMaintenanceScan(['test:worker:state:task-custom-maxage']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2424,7 +2774,7 @@ test('cleanupOldTasks skips task when maxAge is longer than task age', async () 
         history: [{ state: TaskStates.COMPLETED, timestamp: twoHoursAgo, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-longer-maxage']);
+    mockMaintenanceScan(['test:worker:state:task-longer-maxage']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(task));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2489,7 +2839,7 @@ test('cleanupOldTasks handles multiple tasks with mixed states and ages', async 
         }
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => Object.keys(tasks));
+    mockMaintenanceScan(Object.keys(tasks));
     mockRedisInstance.get.mock.mockImplementation(async (key: string) => {
         const task = tasks[key];
         return task ? JSON.stringify(task) : null;
@@ -2513,7 +2863,7 @@ test('cleanupOldTasks handles multiple tasks with mixed states and ages', async 
 });
 
 test('cleanupOldTasks returns 0 when no keys exist', async () => {
-    mockRedisInstance.keys.mock.mockImplementation(async () => []);
+    mockMaintenanceScan([]);
     mockRedisInstance.del.mock.resetCalls();
     mockLogger.info.mock.resetCalls();
 
@@ -2531,7 +2881,7 @@ test('cleanupOldTasks returns 0 when no keys exist', async () => {
 });
 
 test('cleanupOldTasks skips keys with null values', async () => {
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:null-task']);
+    mockMaintenanceScan(['test:worker:state:null-task']);
     mockRedisInstance.get.mock.mockImplementation(async () => null);
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2561,7 +2911,7 @@ test('cleanupOldTasks logs debug message for each cleaned task', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-debug-log']);
+    mockMaintenanceScan(['test:worker:state:task-debug-log']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
     mockRedisInstance.del.mock.resetCalls();
     mockLogger.debug.mock.resetCalls();
@@ -2598,7 +2948,7 @@ test('cleanupOldTasks logs info message with summary', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-summary-log']);
+    mockMaintenanceScan(['test:worker:state:task-summary-log']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
     mockRedisInstance.del.mock.resetCalls();
     mockLogger.info.mock.resetCalls();
@@ -2625,8 +2975,8 @@ test('cleanupOldTasks logs info message with summary', async () => {
 });
 
 test('cleanupOldTasks uses key prefix pattern for searching', async () => {
-    mockRedisInstance.keys.mock.resetCalls();
-    mockRedisInstance.keys.mock.mockImplementation(async () => []);
+    mockRedisInstance.scan.mock.resetCalls();
+    mockMaintenanceScan([]);
 
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX,
@@ -2635,9 +2985,9 @@ test('cleanupOldTasks uses key prefix pattern for searching', async () => {
 
     await stateManager.cleanupOldTasks();
 
-    // Verify keys was called with correct pattern
-    assert.strictEqual(mockRedisInstance.keys.mock.calls.length, 1);
-    assert.strictEqual(mockRedisInstance.keys.mock.calls[0].arguments[0], `${TEST_KEY_PREFIX}*`);
+    assert.strictEqual(mockRedisInstance.scan.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.scan.mock.calls[0].arguments[1], 'MATCH');
+    assert.strictEqual(mockRedisInstance.scan.mock.calls[0].arguments[2], `${TEST_KEY_PREFIX}*`);
 
     await stateManager.close();
 });
@@ -2655,7 +3005,7 @@ test('cleanupOldTasks handles Redis errors during delete gracefully', async () =
         history: [{ state: TaskStates.COMPLETED, timestamp: oldTime, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-del-error']);
+    mockMaintenanceScan(['test:worker:state:task-del-error']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(oldTask));
     mockRedisInstance.del.mock.mockImplementation(async () => {
         throw new Error('Redis delete failed');
@@ -2697,7 +3047,7 @@ test('cleanupOldTasks determines age based on updatedAt not createdAt', async ()
         history: [{ state: TaskStates.COMPLETED, timestamp: recentUpdated, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-updated-recently']);
+    mockMaintenanceScan(['test:worker:state:task-updated-recently']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(task));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2729,7 +3079,7 @@ test('cleanupOldTasks handles task at exactly maxAge boundary', async () => {
         history: [{ state: TaskStates.COMPLETED, timestamp: exactlyMaxAge, reason: 'Completed' }]
     };
 
-    mockRedisInstance.keys.mock.mockImplementation(async () => ['test:worker:state:task-exact-boundary']);
+    mockMaintenanceScan(['test:worker:state:task-exact-boundary']);
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(task));
     mockRedisInstance.del.mock.resetCalls();
 
@@ -2748,251 +3098,372 @@ test('cleanupOldTasks handles task at exactly maxAge boundary', async () => {
     await stateManager.close();
 });
 
-test('updateTaskStateIfCurrent atomically updates a matching task snapshot', async () => {
-    const current = {
-        taskId: 'task-conditional-update',
+test('updateTaskStateIfCurrent loses atomically to a concurrent cancellation', async () => {
+    const processing: TaskStateData = {
+        taskId: 'task-cas-race',
         issueRef: { number: 625, repoOwner: 'owner', repoName: 'repo' },
-        correlationId: 'corr-conditional-update',
+        correlationId: 'corr-cas-race',
         state: TaskStates.PROCESSING,
-        createdAt: '2026-08-05T10:00:00.000Z',
-        updatedAt: '2026-08-05T10:01:00.000Z',
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
         attempts: 0,
-        history: [{
-            state: TaskStates.PROCESSING,
-            timestamp: '2026-08-05T10:01:00.000Z',
-            reason: 'Processing',
-        }],
-    } satisfies TaskStateData;
-    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(current));
+        history: [],
+    };
+    let stored = JSON.stringify(processing);
+    mockRedisInstance.get.mock.mockImplementation(async () => stored);
     mockRedisInstance.eval.mock.resetCalls();
-    mockRedisInstance.eval.mock.mockImplementation(async () => 1);
-    mockRedisInstance.setex.mock.resetCalls();
-
+    mockRedisInstance.eval.mock.mockImplementation(async (
+        _script: string,
+        _numberOfKeys: number,
+        _key: string,
+        _revisionKey: string,
+        expectedJson: string,
+    ) => {
+        stored = JSON.stringify({
+            ...processing,
+            state: TaskStates.CANCELLED,
+            updatedAt: '2026-08-04T00:02:00.000Z',
+        });
+        return stored === expectedJson ? 1 : 0;
+    });
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX,
         stateExpiry: TEST_STATE_EXPIRY,
     });
-    const updated = await stateManager.updateTaskStateIfCurrent(
-        current.taskId,
-        {
-            state: current.state,
-            createdAt: current.createdAt,
-            updatedAt: current.updatedAt,
-            correlationId: current.correlationId,
-        },
+
+    const result = await stateManager.updateTaskStateIfCurrent(
+        processing.taskId,
+        { state: TaskStates.PROCESSING, updatedAt: processing.updatedAt },
         TaskStates.COMPLETED,
-        { reason: 'Finalized by worker event' },
+        { reason: 'worker completed' },
     );
 
-    assert.equal(updated?.state, TaskStates.COMPLETED);
-    assert.equal(mockRedisInstance.eval.mock.calls.length, 1);
-    assert.equal(mockRedisInstance.eval.mock.calls[0].arguments[2], `${TEST_KEY_PREFIX}${current.taskId}`);
-    assert.equal(mockRedisInstance.eval.mock.calls[0].arguments[3], JSON.stringify(current));
-    assert.equal(mockRedisInstance.setex.mock.calls.length, 0);
+    assert.strictEqual(result, null);
+    assert.strictEqual(JSON.parse(stored).state, TaskStates.CANCELLED);
+    assert.strictEqual(mockDbHistoryInsert.mock.calls.length, 0);
+    assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 0);
     await stateManager.close();
 });
 
-test('updateTaskStateIfCurrent does not publish a lost compare-and-set race', async () => {
-    const current = {
-        taskId: 'task-conditional-conflict',
+test('updateTaskState cannot resurrect a task finalized after its read', async () => {
+    const processing: TaskStateData = {
+        taskId: 'task-common-transition-race',
         issueRef: { number: 626, repoOwner: 'owner', repoName: 'repo' },
-        correlationId: 'corr-conditional-conflict',
+        correlationId: 'corr-common-transition-race',
         state: TaskStates.PROCESSING,
-        createdAt: '2026-08-05T10:00:00.000Z',
-        updatedAt: '2026-08-05T10:01:00.000Z',
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
         attempts: 0,
-        history: [{
-            state: TaskStates.PROCESSING,
-            timestamp: '2026-08-05T10:01:00.000Z',
-            reason: 'Processing',
-        }],
-    } satisfies TaskStateData;
-    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(current));
+        history: [],
+    };
+    const completed = {
+        ...processing,
+        state: TaskStates.COMPLETED,
+        updatedAt: '2026-08-04T00:02:00.000Z',
+    };
+    let stored = JSON.stringify(processing);
+    mockRedisInstance.get.mock.mockImplementation(async () => stored);
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => {
+        stored = JSON.stringify(completed);
+        return 0;
+    });
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+    const stateManager = new WorkerStateManager({
+        keyPrefix: TEST_KEY_PREFIX,
+        stateExpiry: TEST_STATE_EXPIRY,
+    });
+
+    const result = await stateManager.updateTaskState(
+        processing.taskId,
+        TaskStates.CLAUDE_EXECUTION,
+        { reason: 'processor continued' },
+    );
+
+    assert.strictEqual(result.state, TaskStates.COMPLETED);
+    assert.strictEqual(JSON.parse(stored).state, TaskStates.COMPLETED);
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
+    assert.strictEqual(mockDbHistoryInsert.mock.calls.length, 0);
+    assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 0);
+    await stateManager.close();
+});
+
+test('updateIssueRef applies its patch to a concurrent terminal state without resurrecting it', async () => {
+    const processing: TaskStateData = {
+        taskId: 'task-issue-ref-cancel-race',
+        issueRef: { number: 627, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-issue-ref-race',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
+        version: 2,
+        attempts: 0,
+        history: [],
+    };
+    let stored = JSON.stringify(processing);
+    let cancellationCommitted = false;
+    mockRedisInstance.get.mock.mockImplementation(async () => stored);
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async (
+        _script: string,
+        _numberOfKeys: number,
+        _key: string,
+        _revisionKey: string,
+        expectedJson: string,
+        _expiry: number,
+        updatedJson: string,
+    ) => {
+        if (!cancellationCommitted) {
+            stored = JSON.stringify({
+                ...processing,
+                state: TaskStates.CANCELLED,
+                updatedAt: '2026-08-04T00:02:00.000Z',
+                version: 3,
+            });
+            cancellationCommitted = true;
+            return 0;
+        }
+        if (stored !== expectedJson) return 0;
+        stored = updatedJson;
+        return 1;
+    });
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const result = await stateManager.updateIssueRef(processing.taskId, { title: 'Updated title' });
+
+    assert.strictEqual(result?.state, TaskStates.CANCELLED);
+    assert.strictEqual(JSON.parse(stored).state, TaskStates.CANCELLED);
+    assert.strictEqual(JSON.parse(stored).issueRef.title, 'Updated title');
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 2);
+    await stateManager.close();
+});
+
+test('updateHistoryMetadata merges into a concurrent completed state without resurrecting it', async () => {
+    const processing: TaskStateData = {
+        taskId: 'task-history-cancel-race',
+        issueRef: { number: 628, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-history-race',
+        state: TaskStates.PROCESSING,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
+        version: 2,
+        attempts: 0,
+        history: [{ state: TaskStates.PROCESSING, timestamp: '2026-08-04T00:01:00.000Z', reason: 'processing' }],
+    };
+    let stored = JSON.stringify(processing);
+    let completionCommitted = false;
+    mockRedisInstance.get.mock.mockImplementation(async () => stored);
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async (
+        _script: string,
+        _numberOfKeys: number,
+        _key: string,
+        _revisionKey: string,
+        expectedJson: string,
+        _expiry: number,
+        updatedJson: string,
+    ) => {
+        if (!completionCommitted) {
+            stored = JSON.stringify({
+                ...processing,
+                state: TaskStates.COMPLETED,
+                updatedAt: '2026-08-04T00:02:00.000Z',
+                version: 3,
+            });
+            completionCommitted = true;
+            return 0;
+        }
+        if (stored !== expectedJson) return 0;
+        stored = updatedJson;
+        return 1;
+    });
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const result = await stateManager.updateHistoryMetadata(
+        processing.taskId,
+        TaskStates.PROCESSING,
+        { containerId: 'container-1' },
+    );
+
+    assert.strictEqual(result.state, TaskStates.COMPLETED);
+    assert.strictEqual(JSON.parse(stored).state, TaskStates.COMPLETED);
+    assert.strictEqual(JSON.parse(stored).history[0].metadata.containerId, 'container-1');
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 2);
+    await stateManager.close();
+});
+
+test('fenced creation and bounded CAS retries reject stale attempts predictably', async () => {
+    mockRedisInstance.eval.mock.resetCalls();
     mockRedisInstance.eval.mock.mockImplementation(async () => 0);
     mockDbHistoryInsert.mock.resetCalls();
     mockPublishTaskUpdate.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
 
-    const stateManager = new WorkerStateManager({
-        keyPrefix: TEST_KEY_PREFIX,
-        stateExpiry: TEST_STATE_EXPIRY,
-    });
-    const updated = await stateManager.updateTaskStateIfCurrent(
-        current.taskId,
-        {
-            state: current.state,
-            createdAt: current.createdAt,
-            updatedAt: current.updatedAt,
-            correlationId: current.correlationId,
-        },
-        TaskStates.FAILED,
+    await assert.rejects(
+        stateManager.createTaskState(
+            'task-stale-create',
+            { number: 629, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+            'correlation',
+            { prProcessingLockToken: 'old-token', prProcessingLockKey: 'lock:pr:owner:repo:629' },
+        ),
+        /no longer owns its lease/,
     );
 
-    assert.equal(updated, null);
-    assert.equal(mockDbHistoryInsert.mock.calls.length, 0);
-    assert.equal(mockPublishTaskUpdate.mock.calls.length, 0);
-    await stateManager.close();
-});
-
-test('stale metadata updates retry without resurrecting a finalized task', async () => {
-    const initial = {
-        taskId: 'task-stale-metadata',
-        issueRef: { number: 627, repoOwner: 'owner', repoName: 'repo' },
-        correlationId: 'corr-stale-metadata',
+    assert.strictEqual(mockDbHistoryInsert.mock.calls.length, 0);
+    assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 0);
+    const processing: TaskStateData = {
+        taskId: 'task-cas-contention',
+        issueRef: { number: 630, repoOwner: 'owner', repoName: 'repo' },
+        correlationId: 'corr-contention',
         state: TaskStates.PROCESSING,
-        createdAt: '2026-08-05T10:00:00.000Z',
-        updatedAt: '2026-08-05T10:01:00.000Z',
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
         attempts: 0,
-        history: [{
-            state: TaskStates.PROCESSING,
-            timestamp: '2026-08-05T10:01:00.000Z',
-            reason: 'Processing',
-        }],
-    } satisfies TaskStateData;
-    let storedJson = JSON.stringify(initial);
-    let releaseStaleWriter: (() => void) | undefined;
-    let signalStaleWriterStarted: (() => void) | undefined;
-    const staleWriterStarted = new Promise<void>(resolve => { signalStaleWriterStarted = resolve; });
-    const staleWriterGate = new Promise<void>(resolve => { releaseStaleWriter = resolve; });
-    let isFirstEval = true;
+        history: [],
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(processing));
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 0);
 
-    mockRedisInstance.get.mock.mockImplementation(async () => storedJson);
-    mockRedisInstance.eval.mock.mockImplementation(async (...args: unknown[]) => {
-        const expectedJson = args[3] as string;
-        const nextJson = args[5] as string;
-        if (isFirstEval) {
-            isFirstEval = false;
-            signalStaleWriterStarted?.();
-            await staleWriterGate;
-        }
-        if (storedJson !== expectedJson) return 0;
-        storedJson = nextJson;
-        return 1;
-    });
-
-    const stateManager = new WorkerStateManager({
-        keyPrefix: TEST_KEY_PREFIX,
-        stateExpiry: TEST_STATE_EXPIRY,
-    });
-    const metadataUpdate = stateManager.updateIssueRef(initial.taskId, { modelName: 'gpt-5.6' });
-    await staleWriterStarted;
-
-    const finalized = await stateManager.updateTaskStateIfCurrentDetailed(
-        initial.taskId,
-        {
-            state: initial.state,
-            createdAt: initial.createdAt,
-            updatedAt: initial.updatedAt,
-            correlationId: initial.correlationId,
-        },
-        TaskStates.COMPLETED,
-        { reason: 'Finalized while metadata writer was paused' },
+    await assert.rejects(
+        stateManager.updateTaskState(processing.taskId, TaskStates.CLAUDE_EXECUTION),
+        /contention exceeded 8 attempts/,
     );
-    releaseStaleWriter?.();
-    const metadataState = await metadataUpdate;
 
-    assert.equal(finalized?.state.state, TaskStates.COMPLETED);
-    assert.equal(metadataState?.state, TaskStates.COMPLETED);
-    assert.equal(metadataState?.issueRef.modelName, 'gpt-5.6');
-    assert.equal((JSON.parse(storedJson) as TaskStateData).state, TaskStates.COMPLETED);
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 8);
     await stateManager.close();
 });
 
-test('ordinary state writers cannot move a terminal task back to processing', async () => {
-    const terminal = {
-        taskId: 'task-terminal-protection',
-        issueRef: { number: 628, repoOwner: 'owner', repoName: 'repo' },
-        correlationId: 'corr-terminal-protection',
-        state: TaskStates.CANCELLED,
-        createdAt: '2026-08-05T10:00:00.000Z',
-        updatedAt: '2026-08-05T10:02:00.000Z',
-        version: 4,
-        attempts: 0,
-        history: [{
-            state: TaskStates.CANCELLED,
-            timestamp: '2026-08-05T10:02:00.000Z',
-            reason: 'Cancelled concurrently',
-        }],
-    } satisfies TaskStateData;
-    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(terminal));
+test('fenced task recreation continues after the previous task revision', async () => {
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 8);
+    mockPublishTaskUpdate.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const created = await stateManager.createTaskState(
+        'task-replacement-revision',
+        { number: 631, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        'replacement-correlation',
+        { prProcessingLockToken: 'replacement-token', prProcessingLockKey: 'lock:pr:owner:repo:631' },
+    );
+
+    assert.strictEqual(created.version, 8);
+    await stateManager.close();
+});
+
+test('fenced task recreation seeds an expired Redis revision from SQL', async () => {
+    mockDbTasksFirst.mock.mockImplementationOnce(async () => ({ attempt_generation_version: 12 }));
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async (...args: unknown[]) => Number(args[9]) + 1);
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    const created = await stateManager.createTaskState(
+        'task-sql-revision-seed',
+        { number: 631, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        'replacement-correlation',
+        { prProcessingLockToken: 'replacement-token', prProcessingLockKey: 'lock:pr:owner:repo:631' },
+    );
+
+    assert.strictEqual(mockRedisInstance.eval.mock.calls[0].arguments[9], 12);
+    assert.strictEqual(created.version, 13);
+    const merged = mockDbTasksMerge.mock.calls.at(-1)?.arguments[0] as Record<string, unknown>;
+    assert.strictEqual(merged.attempt_generation_version, 13);
+    await stateManager.close();
+});
+
+test('fenced creation rejects a SQL row owned by a newer Redis revision', async () => {
+    mockRedisInstance.eval.mock.resetCalls();
+    mockRedisInstance.eval.mock.mockImplementation(async () => 8);
+    mockDbTasksMerge.mock.resetCalls();
+    mockDbTasksWhere.mock.resetCalls();
+    mockDbTasksReturning.mock.resetCalls();
+    mockDbTasksReturning.mock.mockImplementationOnce(async () => []);
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
+
+    await assert.rejects(
+        stateManager.createTaskState(
+            'task-stale-sql-generation',
+            { number: 631, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+            'stale-correlation',
+            { prProcessingLockToken: 'stale-token', prProcessingLockKey: 'lock:pr:owner:repo:631' },
+        ),
+        /newer task generation is already persisted/,
+    );
+
+    const merged = mockDbTasksMerge.mock.calls[0].arguments[0] as Record<string, unknown>;
+    assert.strictEqual(merged.attempt_generation_version, 8);
+    assert.strictEqual(mockDbTasksWhere.mock.calls.length, 1);
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 2);
+    await stateManager.close();
+});
+
+test('fenced creation fails closed when its SQL generation cannot be persisted', async () => {
     mockRedisInstance.eval.mock.resetCalls();
     mockRedisInstance.eval.mock.mockImplementation(async () => 1);
-
+    mockDbTasksReturning.mock.resetCalls();
+    mockDbTasksReturning.mock.mockImplementationOnce(async () => {
+        throw new Error('database unavailable');
+    });
     const stateManager = new WorkerStateManager({
         keyPrefix: TEST_KEY_PREFIX,
         stateExpiry: TEST_STATE_EXPIRY,
     });
-    const result = await stateManager.updateTaskState(
-        terminal.taskId,
-        TaskStates.PROCESSING,
-        { reason: 'Stale processor update' },
+
+    await assert.rejects(
+        stateManager.createTaskState(
+            'task-required-generation',
+            { number: 631, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+            'replacement-correlation',
+            {
+                prProcessingLockToken: 'replacement-token',
+                prProcessingLockKey: 'lock:pr:owner:repo:631',
+            },
+        ),
+        /database unavailable/,
     );
 
-    assert.equal(result.state, TaskStates.CANCELLED);
-    assert.equal(result.version, 4);
-    assert.equal(mockRedisInstance.eval.mock.calls.length, 0);
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 2);
+    const rollbackCall = mockRedisInstance.eval.mock.calls[1];
+    assert.strictEqual(rollbackCall.arguments[2], `${TEST_KEY_PREFIX}task-required-generation`);
+    assert.strictEqual(rollbackCall.arguments[3], 'replacement-token');
+    assert.strictEqual(rollbackCall.arguments[4], 1);
+
     await stateManager.close();
 });
 
-test('a retry writer that loses to cancellation cannot resurrect the task', async () => {
-    const processing = {
-        taskId: 'task-retry-cancellation-race',
-        issueRef: { number: 629, repoOwner: 'owner', repoName: 'repo' },
-        correlationId: 'corr-retry-cancellation-race',
+test('fenced task mutations throw when a successor owns the generation', async () => {
+    const successor: TaskStateData = {
+        taskId: 'task-successor-fence',
+        issueRef: { number: 632, repoOwner: 'owner', repoName: 'repo', type: 'pr_comment' },
+        correlationId: 'successor',
         state: TaskStates.PROCESSING,
-        createdAt: '2026-08-05T10:00:00.000Z',
-        updatedAt: '2026-08-05T10:01:00.000Z',
-        version: 2,
+        createdAt: '2026-08-04T00:00:00.000Z',
+        updatedAt: '2026-08-04T00:01:00.000Z',
+        version: 9,
         attempts: 0,
-        history: [{
-            state: TaskStates.PROCESSING,
-            timestamp: '2026-08-05T10:01:00.000Z',
-            reason: 'Processing',
-        }],
-    } satisfies TaskStateData;
-    let storedJson = JSON.stringify(processing);
-    let releaseRetryWriter: (() => void) | undefined;
-    let signalRetryWriterStarted: (() => void) | undefined;
-    const retryWriterStarted = new Promise<void>(resolve => { signalRetryWriterStarted = resolve; });
-    const retryWriterGate = new Promise<void>(resolve => { releaseRetryWriter = resolve; });
-    let pauseNextEval = true;
-
-    mockRedisInstance.get.mock.mockImplementation(async () => storedJson);
+        history: [],
+        prProcessingLockToken: 'successor-token',
+    };
+    mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(successor));
     mockRedisInstance.eval.mock.resetCalls();
-    mockRedisInstance.eval.mock.mockImplementation(async (...args: unknown[]) => {
-        const expectedJson = args[3] as string;
-        const nextJson = args[5] as string;
-        if (pauseNextEval) {
-            pauseNextEval = false;
-            signalRetryWriterStarted?.();
-            await retryWriterGate;
-        }
-        if (storedJson !== expectedJson) return 0;
-        storedJson = nextJson;
-        return 1;
-    });
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX, stateExpiry: TEST_STATE_EXPIRY });
 
-    const stateManager = new WorkerStateManager({
-        keyPrefix: TEST_KEY_PREFIX,
-        stateExpiry: TEST_STATE_EXPIRY,
-    });
-    const retryUpdate = stateManager.updateTaskState(
-        processing.taskId,
-        TaskStates.CLAUDE_EXECUTION,
-        { isRetry: true, reason: 'Retrying task' },
+    await assert.rejects(
+        stateManager.updateTaskState(
+            successor.taskId,
+            TaskStates.CLAUDE_EXECUTION,
+            {},
+            'stale-token',
+        ),
+        SupersededTaskAttemptError,
     );
-    await retryWriterStarted;
-
-    const cancellation = await stateManager.updateTaskState(
-        processing.taskId,
-        TaskStates.CANCELLED,
-        { reason: 'Cancelled concurrently' },
+    await assert.rejects(
+        stateManager.updateIssueRef(successor.taskId, { title: 'unfenced mutation' }),
+        SupersededTaskAttemptError,
     );
-    releaseRetryWriter?.();
-    const retryResult = await retryUpdate;
-
-    assert.equal(cancellation.state, TaskStates.CANCELLED);
-    assert.equal(retryResult.state, TaskStates.CANCELLED);
-    assert.equal((JSON.parse(storedJson) as TaskStateData).state, TaskStates.CANCELLED);
-    assert.equal(mockRedisInstance.eval.mock.calls.length, 2);
+    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 0);
     await stateManager.close();
 });

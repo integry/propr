@@ -223,6 +223,7 @@ RUN set -eu; \
     link_npm_bin @anthropic-ai/claude-code claude \
     && link_npm_bin @openai/codex codex \
     && link_npm_bin opencode-ai opencode \
+    && ln -sf /home/node/.local/bin/agy /usr/local/bin/agy \
     && chmod +x \
         /home/node/agent-entrypoint.sh \
         /home/node/claude-entrypoint.sh \

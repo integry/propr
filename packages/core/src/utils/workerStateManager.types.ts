@@ -57,22 +57,43 @@ export interface TaskStateData {
     state: TaskState;
     createdAt: string;
     updatedAt: string;
-    /** Monotonically increasing revision used for compare-and-set updates. */
+    /** Monotonic revision used to order concurrent persistence and UI events. */
     version?: number;
     attempts: number;
     history: HistoryEntry[];
+    /** Exact renewable lease token owned by this PR-comment attempt. */
+    prProcessingLockToken?: string;
     lastError?: LastError;
     worktreeInfo?: WorktreeInfo;
     claudeResult?: ClaudeResultSummary;
     prResult?: PRResult;
 }
 
+export interface CreateTaskStateOptions {
+    prProcessingLockToken?: string;
+    /** PR lease key whose current value must match the attempt token at creation. */
+    prProcessingLockKey?: string;
+}
+
+export interface NonTerminalTaskFilter {
+    taskTypes?: string[];
+    /** Maximum number of matching records returned by one rotating scan. */
+    limit?: number;
+}
+
+export interface NonTerminalTaskPage {
+    tasks: TaskStateData[];
+    /** True after every key in the current Redis SCAN cycle was inspected. */
+    scanComplete: boolean;
+}
+
 export interface TaskStateExpectation {
     state: TaskState;
-    createdAt: string;
-    updatedAt: string;
-    correlationId: string;
+    createdAt?: string;
+    updatedAt?: string;
+    correlationId?: string;
     version?: number;
+    prProcessingLockToken?: string;
 }
 
 export interface TaskStatePublicationResult {
@@ -125,5 +146,9 @@ export interface ResumableTaskInfo extends TaskStateData {
 export interface WorkerStateManagerOptions {
     redis?: Record<string, unknown>;
     keyPrefix?: string;
+    /** Namespace for durable task revisions; kept outside state scans. */
+    revisionKeyPrefix?: string;
     stateExpiry?: number;
+    /** Retains ordering after state cleanup without leaking one key per task forever. */
+    revisionExpiry?: number;
 }

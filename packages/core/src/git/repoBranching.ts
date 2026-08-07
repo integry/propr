@@ -1,9 +1,9 @@
-import { SimpleGit } from 'simple-git';
+import { simpleGit, SimpleGit } from 'simple-git';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { createHooklessGit } from './hooklessGit.js';
+import { createHooklessGit, DISABLED_GIT_HOOKS_PATH } from './hooklessGit.js';
 
 interface InstallationAuth {
     token: string;
@@ -116,6 +116,9 @@ interface PushBranchOptions {
     authToken?: string;
     remote?: string;
     rebaseOnNonFastForward?: boolean;
+    signal?: AbortSignal;
+    /** Called with the exact local HEAD immediately before each remote push attempt. */
+    beforePush?: (commitHash: string) => Promise<void>;
 }
 
 export interface PushBranchResult {
@@ -132,7 +135,23 @@ function isNonFastForwardPushError(error: unknown): boolean {
     const message = (error as Error).message || '';
     return message.includes('[rejected] (fetch first)')
         || message.includes('non-fast-forward')
+        || message.includes('stale info')
+        || message.includes('force-with-lease')
         || message.includes('Updates were rejected because the remote contains work that you do not');
+}
+
+async function getRemoteBranchHead(git: SimpleGit, remote: string, branchName: string): Promise<string> {
+    const output = await git.raw(['ls-remote', '--heads', remote, `refs/heads/${branchName}`]);
+    return output.trim().split(/\s+/u)[0] ?? '';
+}
+
+async function assertRemoteHeadIsAncestor(git: SimpleGit, remoteHead: string, branchName: string): Promise<void> {
+    if (!remoteHead) return;
+    try {
+        await git.raw(['merge-base', '--is-ancestor', remoteHead, 'HEAD']);
+    } catch {
+        throw new Error(`non-fast-forward: remote/${branchName} advanced beyond this attempt's local history`);
+    }
 }
 
 async function getHeadCommitHash(git: SimpleGit): Promise<string | undefined> {
@@ -144,9 +163,15 @@ async function getHeadCommitHash(git: SimpleGit): Promise<string | undefined> {
 }
 
 export async function pushBranch(worktreePath: string, branchName: string, options: PushBranchOptions = {}): Promise<PushBranchResult> {
-    const { repoUrl, authToken, remote = 'origin', rebaseOnNonFastForward = false } = options;
+    const { repoUrl, authToken, remote = 'origin', rebaseOnNonFastForward = false, signal, beforePush } = options;
 
-    const git = createHooklessGit(worktreePath);
+    signal?.throwIfAborted();
+    const git = simpleGit({
+        baseDir: worktreePath,
+        abort: signal,
+        config: [`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`],
+        unsafe: { allowUnsafeHooksPath: true },
+    });
 
     const performPush = async (token: string | undefined): Promise<void> => {
         if (repoUrl && token) await setupAuthenticatedRemote(git, repoUrl, token);
@@ -167,9 +192,24 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
                 logger.info({ worktreePath, previousBranch: currentBranch.trim(), newBranch: newBranch.trim(), expectedBranch: branchName, checkoutSuccess: newBranch.trim() === branchName }, 'Branch checkout completed');
             }
         } catch (branchCheckError) {
+            signal?.throwIfAborted();
             logger.warn({ error: (branchCheckError as Error).message }, 'Failed to verify current branch, proceeding with push anyway');
         }
 
+        const expectedRemoteHead = await getRemoteBranchHead(git, remote, branchName);
+        signal?.throwIfAborted();
+        await assertRemoteHeadIsAncestor(git, expectedRemoteHead, branchName);
+        signal?.throwIfAborted();
+        if (beforePush) {
+            const commitHash = await getHeadCommitHash(git);
+            if (!commitHash) throw new Error(`Could not resolve HEAD before pushing ${branchName}`);
+            await beforePush(commitHash);
+            signal?.throwIfAborted();
+        }
+        // A normal push asks receive-pack to update the exact advertised head
+        // and rejects a concurrent change. Do not use force-with-lease here:
+        // although it checks the head, it would also permit a non-fast-forward
+        // overwrite when that checked head still matches.
         await git.push([remote, branchName, '--set-upstream']);
     };
 
@@ -180,6 +220,7 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
             await git.raw(['fetch', remote, `+refs/heads/${branchName}:refs/remotes/${remote}/${branchName}`]);
             await git.raw(['rebase', `${remote}/${branchName}`]);
         } catch (rebaseError) {
+            signal?.throwIfAborted();
             try {
                 await git.raw(['rebase', '--abort']);
             } catch {
@@ -191,6 +232,7 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
         }
 
         await performPush(token);
+        signal?.throwIfAborted();
         const commitHash = await getHeadCommitHash(git);
         logger.info({ worktreePath, branchName, remote, commitHash }, 'Branch pushed to remote successfully after rebase');
         return { rebased: true, commitHash };
@@ -210,6 +252,7 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
 
     try {
         await performPush(authToken);
+        signal?.throwIfAborted();
         logger.info({ worktreePath, branchName, remote }, 'Branch pushed to remote successfully');
         return { rebased: false, commitHash: await getHeadCommitHash(git) };
     } catch (error) {

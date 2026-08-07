@@ -278,7 +278,7 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
 
   const submitInput = (event: React.FormEvent) => {
     event.preventDefault();
-    void sendTerminalInput(`${input}\n`, true);
+    void sendTerminalInput(`${input}\r`, true);
   };
 
   return (
@@ -366,7 +366,7 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
             {[
               { label: '↑', value: '\u001b[A', title: 'Up arrow' },
               { label: '↓', value: '\u001b[B', title: 'Down arrow' },
-              { label: 'Enter', value: '\n', title: 'Enter' },
+              { label: 'Enter', value: '\r', title: 'Enter' },
             ].map(key => (
               <button
                 key={key.title}

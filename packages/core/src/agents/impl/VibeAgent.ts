@@ -113,7 +113,7 @@ export class VibeAgent implements Agent {
             const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: parsedOutput.error || result.stderr });
             const success = isSuccessfulVibeResult(result.exitCode, parsedOutput) && !terminationReason;
             const error = success ? undefined : buildVibeFailureMessage(result, parsedOutput);
-            if (parsedOutput.sessionId && onSessionId) onSessionId(parsedOutput.sessionId);
+            if (parsedOutput.sessionId && onSessionId) await onSessionId(parsedOutput.sessionId);
 
             const response: AgentExecutionResult = {
                 success,

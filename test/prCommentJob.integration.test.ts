@@ -4,6 +4,7 @@ import type { Job } from 'bullmq';
 import {
     acquirePRProcessingLock,
     createPRProcessingLockToken,
+    PR_PROCESSING_LOCK_TTL_SECONDS,
     releasePRProcessingLock,
     renewPRProcessingLock,
 } from '../src/jobs/prProcessingLock.js';
@@ -409,7 +410,11 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
 
             const refreshedEntry = redisClient.storage.get(lockKey);
             assert.strictEqual(renewed, true, 'Current execution should renew the lock');
-            assert.strictEqual(refreshedEntry?.expiry, 3600, 'TTL should be refreshed to 3600');
+            assert.strictEqual(
+                refreshedEntry?.expiry,
+                PR_PROCESSING_LOCK_TTL_SECONDS,
+                'TTL should be refreshed to the configured renewable lease',
+            );
         });
 
         test('rejects both duplicate and different executions while the lock is held', async () => {

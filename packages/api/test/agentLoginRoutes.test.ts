@@ -19,6 +19,7 @@ import {
   AgentLoginInputError,
   AgentLoginConflictError,
   AgentLoginSessionManager,
+  buildDockerAttachCommand,
 } from '../services/agentLoginSessionManager.js';
 import {
   buildAgentLoginCreateArgs,
@@ -105,8 +106,18 @@ describe('agent login session manager', () => {
     assert.deepEqual(args.slice(-3), ['codex', 'login', '--device-auth']);
     assert.ok(args.includes('/tmp/propr-test-codex:/home/node/.codex:rw'));
     assert.ok(args.includes('PROPR_AGENT_TYPE=codex'));
+    assert.ok(args.includes('TERM=xterm-256color'));
+    assert.ok(args.includes('COLUMNS=120'));
+    assert.ok(args.includes('LINES=30'));
     assert.equal(args.some(value => value.includes('GH_TOKEN')), false);
     assert.equal(args.some(value => value.includes('ANTHROPIC_API_KEY')), false);
+  });
+
+  test('gives the browser-backed Docker attach PTY a renderable size', () => {
+    assert.equal(
+      buildDockerAttachCommand(['start', '-a', '-i', 'login-container']),
+      "stty rows 30 cols 120; exec 'docker' 'start' '-a' '-i' 'login-container'",
+    );
   });
 
   test('maps a ProPR-managed account to the managed host root and marks its container ownership as safe to normalize', () => {
@@ -217,9 +228,12 @@ describe('agent login session manager', () => {
     (child.stdout as PassThrough).write('32mOpen https://example.test/device\u001b[0m\r');
     (child.stdout as PassThrough).write('\n\u001b]0;private title');
     (child.stdout as PassThrough).write(' payload\u0007Ready\n');
+    (child.stdout as PassThrough).write('\u001b]8;id=auth-url;https://example.test/device?code=full\u0007Open login\u001b]8;;\u0007\n');
     const running = manager.write(started.id, 'owner', 'ABCD-1234\n');
     assert.match(running.output, /Open https:\/\/example\.test\/device/);
     assert.match(running.output, /Ready/);
+    assert.match(running.output, /https:\/\/example\.test\/device\?code=full/);
+    assert.equal(running.output.match(/https:\/\/example\.test\/device\?code=full/g)?.length, 1);
     assert.equal(running.output.includes('32m'), false);
     assert.equal(running.output.includes('private title'), false);
     assert.equal(running.output.includes('payload'), false);

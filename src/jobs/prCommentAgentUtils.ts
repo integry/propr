@@ -270,10 +270,11 @@ export interface AgentExecutionParams {
     githubToken: string;
     redisClient: Redis;
     reasoningLevel?: ReasoningLevel;
+    prProcessingLockToken?: string;
 }
 
 export async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
-    const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken, redisClient, reasoningLevel } = params;
+    const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken, redisClient, reasoningLevel, prProcessingLockToken } = params;
 
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
@@ -312,8 +313,8 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
         model: modelToUse,
         githubToken,
         branchName,
-        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: modelToUse, stateManager, correlatedLogger, redisClient }),
-        onContainerId: createContainerIdCallbackForPR(taskId, stateManager),
+        onSessionId: createSessionIdCallbackForPR(taskId, { pullRequestNumber, repoOwner, repoName }, { llm: modelToUse, stateManager, correlatedLogger, redisClient, prProcessingLockToken }),
+        onContainerId: createContainerIdCallbackForPR(taskId, stateManager, prProcessingLockToken),
         taskId,
         prNumber: pullRequestNumber,
         reasoningLevel,
