@@ -13,6 +13,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import { getEncoding } from 'js-tiktoken';
 import { buildAnalysisSafetySuffix } from '../packages/core/src/agents/impl/utils/analysisPromptSafety.js';
 
 const { buildReviewPrompt, buildReviewPromptWithinBudget } = await import('../src/jobs/reviewPromptBuilder.js');
@@ -201,11 +202,27 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         const analysisSafetySuffix = buildAnalysisSafetySuffix('text', false, undefined);
         const result = buildReviewPromptWithinBudget(baseOptions({ relatedContext: large }), 10_000, analysisSafetySuffix);
         const fullyComposedRequest = `${result.prompt}${analysisSafetySuffix}`;
-        const estimatedFullyComposedTokens = Math.ceil((fullyComposedRequest.length / 3.2) * 1.36);
+        const conservativeFullyComposedTokens = Buffer.byteLength(fullyComposedRequest, 'utf8');
 
-        assert.equal(result.estimatedTokens, estimatedFullyComposedTokens);
-        assert.ok(estimatedFullyComposedTokens <= 10_000);
-        assert.ok(Math.ceil((result.prompt.length / 3.2) * 1.36) < result.estimatedTokens);
+        assert.equal(result.estimatedTokens, conservativeFullyComposedTokens);
+        assert.ok(conservativeFullyComposedTokens <= 10_000);
+        assert.ok(Buffer.byteLength(result.prompt, 'utf8') < result.estimatedTokens);
+    });
+
+    test('conservatively caps token-dense Unicode review input', () => {
+        const tokenDenseContext = '漢字🙂🚀'.repeat(20_000);
+        const analysisSafetySuffix = buildAnalysisSafetySuffix('text', false, undefined);
+        const result = buildReviewPromptWithinBudget(baseOptions({
+            relatedContext: tokenDenseContext,
+        }), 10_000, analysisSafetySuffix);
+        const fullyComposedRequest = `${result.prompt}${analysisSafetySuffix}`;
+        const tokenizer = getEncoding('cl100k_base');
+        const tokenizedRequestLength = tokenizer.encode(fullyComposedRequest).length;
+
+        assert.ok(result.truncatedSections.includes('related unchanged context'));
+        assert.ok(result.estimatedTokens <= 10_000);
+        assert.ok(tokenizedRequestLength <= result.estimatedTokens);
+        assert.ok(tokenizedRequestLength <= 10_000);
     });
 
     test('discloses when the PR diff itself is truncated by the review budget', () => {

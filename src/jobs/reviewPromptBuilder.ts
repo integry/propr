@@ -185,13 +185,16 @@ Do NOT modify any files. This is a read-only review.`;
     return prompt;
 }
 
-const TOKEN_ESTIMATE_SAFETY_RATIO = 1.36;
-const CONSERVATIVE_CHARACTERS_PER_TOKEN = 3.2;
 const TRUNCATION_MARKER = '\n\n[Context truncated to fit the configured PR review token limit.]';
 const PR_DIFF_TRUNCATION_MARKER = '\n\n[PR diff truncated to fit the configured PR review token limit. Files or diff ranges were omitted by the review budget, so this review is partial.]';
 
 function estimateReviewPromptTokens(prompt: string): number {
-    return Math.ceil((prompt.length / CONSERVATIVE_CHARACTERS_PER_TOKEN) * TOKEN_ESTIMATE_SAFETY_RATIO);
+    // Reviewer tokenizers may disagree substantially on non-ASCII text. The
+    // UTF-8 byte count is a tokenizer-independent upper bound for the raw
+    // request: even a byte-fallback tokenizer cannot emit more text tokens
+    // than there are input bytes. This intentionally favors a guaranteed
+    // ceiling over the extra capacity of an average characters/token ratio.
+    return Buffer.byteLength(prompt, 'utf8');
 }
 
 /**
