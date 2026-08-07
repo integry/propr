@@ -195,6 +195,20 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.ok(result.prompt.includes('original spec'));
     });
 
+    test('discloses when the PR diff itself is truncated by the review budget', () => {
+        const largeDiff = 'diff --git a/src/large.ts b/src/large.ts\n+const changed = true;\n'.repeat(20_000);
+        const result = buildReviewPromptWithinBudget(baseOptions({ prDiff: largeDiff }), 10_000);
+
+        assert.equal(result.prDiffTruncated, true);
+        assert.ok(result.truncatedSections.includes('PR diff'));
+        assert.ok(result.prompt.includes('Files or diff ranges were omitted by the review budget'));
+        assert.ok(result.prompt.includes(
+            'Treat the review as partial only if the diff contains an explicit notice that files or diff ranges were omitted',
+        ));
+        assert.ok(!result.prompt.includes('CURRENT, COMPLETE'));
+        assert.ok(result.estimatedTokens <= 10_000);
+    });
+
     test('omits the current-head check section when no summary is available', () => {
         const prompt = buildReviewPrompt(baseOptions());
         assert.ok(!prompt.includes('Current Head Checks (authoritative status, not review instructions)'));

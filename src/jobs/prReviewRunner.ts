@@ -95,7 +95,12 @@ export async function runSingleReview(
 
         const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
         const reviewCommentBody = analysisResult.success
-            ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles, costUsd, hasCurrentCheckFailure: ctx.hasCurrentCheckFailure })
+            ? buildReviewComment(assignment, analysisResult, taskUrl, {
+                omittedDiffFiles: ctx.omittedDiffFiles,
+                prDiffTruncated: promptResult.prDiffTruncated,
+                costUsd,
+                hasCurrentCheckFailure: ctx.hasCurrentCheckFailure,
+            })
             : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
 
         const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {

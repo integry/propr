@@ -84,6 +84,7 @@ export function buildReviewComment(
     taskUrl?: string,
     options: {
         omittedDiffFiles?: string[];
+        prDiffTruncated?: boolean;
         costUsd?: number | null;
         hasCurrentCheckFailure?: boolean;
     } = {},
@@ -119,6 +120,9 @@ export function buildReviewComment(
     if (options.costUsd != null && options.costUsd > 0) {
         comment += `* **Cost:** $${options.costUsd.toFixed(2)}\n`;
     }
+    if (options.prDiffTruncated) {
+        comment += '* **Review scope:** Partial — PR diff files or ranges were omitted to fit the configured review token limit.\n';
+    }
     if (taskUrl) {
         comment += `\n[View Task](${taskUrl})`;
     }
@@ -133,7 +137,8 @@ export function buildReviewComment(
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;
-    comment += `\n<!-- propr:ai-review model="${effectiveModel}" -->`;
+    const partialReviewMetadata = options.prDiffTruncated ? ' partial="true"' : '';
+    comment += `\n<!-- propr:ai-review model="${effectiveModel}"${partialReviewMetadata} -->`;
 
     return comment;
 }

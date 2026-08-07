@@ -241,6 +241,24 @@ describe('buildReviewComment', () => {
         assert.ok(comment.includes('`assets/logo.png`'));
     });
 
+    test('marks review metadata partial when the prompt budget truncates the PR diff', () => {
+        const comment = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            {
+                response: '## Overall Evaluation\nPartial review.\n\n## Actionable Findings\nNo actionable findings.\n\n## Suggestions and Follow-ups\nNo suggestions.\n\n## Score\nScore: 7/10',
+                modelUsed: 'claude-sonnet',
+                executionTimeMs: 1200,
+                success: true,
+            },
+            undefined,
+            { prDiffTruncated: true },
+        );
+
+        assert.ok(comment.includes('**Review scope:** Partial'));
+        assert.ok(comment.includes('PR diff files or ranges were omitted'));
+        assert.ok(comment.includes('<!-- propr:ai-review model="claude-sonnet" partial="true" -->'));
+    });
+
     test('counts cache tokens as input tokens and includes cost', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-opus-4-8', label: 'Claude Opus 4.8' },

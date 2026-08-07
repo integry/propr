@@ -87,7 +87,7 @@ export function buildReviewPrompt(options: ReviewPromptOptions): string {
         : DEFAULT_REVIEW_GUIDANCE;
 
     const diffSection = prDiff
-        ? `\n**PR Diff (Current Code Changes):**\nThis diff shows the CURRENT, COMPLETE state of the PR changes included below. Base your review on this actual code, not on what earlier comments may have mentioned. Only treat the review as partial if the diff contains an explicit "files omitted" note; otherwise assume it is complete and do NOT claim it was truncated.\n\n${prDiff}\n`
+        ? `\n**PR Diff (Current Code Changes):**\nThe content below is the current PR diff available to this review. Base your review on this actual code, not on what earlier comments may have mentioned. Treat the review as partial only if the diff contains an explicit notice that files or diff ranges were omitted; otherwise assume it is complete and do NOT claim it was truncated.\n\n${prDiff}\n`
         : '\n**Note:** No diff available. Review based on available context only.\n';
 
     const fileContentsSection = fileContents
@@ -188,6 +188,7 @@ Do NOT modify any files. This is a read-only review.`;
 const TOKEN_ESTIMATE_SAFETY_RATIO = 1.36;
 const CONSERVATIVE_CHARACTERS_PER_TOKEN = 3.2;
 const TRUNCATION_MARKER = '\n\n[Context truncated to fit the configured PR review token limit.]';
+const PR_DIFF_TRUNCATION_MARKER = '\n\n[PR diff truncated to fit the configured PR review token limit. Files or diff ranges were omitted by the review budget, so this review is partial.]';
 
 function estimateReviewPromptTokens(prompt: string): number {
     return Math.ceil((prompt.length / CONSERVATIVE_CHARACTERS_PER_TOKEN) * TOKEN_ESTIMATE_SAFETY_RATIO);
@@ -202,9 +203,10 @@ function estimateReviewPromptTokens(prompt: string): number {
 export function buildReviewPromptWithinBudget(
     options: ReviewPromptOptions,
     maxContextTokens: number
-): { prompt: string; estimatedTokens: number; truncatedSections: string[] } {
+): { prompt: string; estimatedTokens: number; truncatedSections: string[]; prDiffTruncated: boolean } {
     const mutable: ReviewPromptOptions = { ...options };
     const truncatedSections: string[] = [];
+    let prDiffTruncated = false;
     let prompt = buildReviewPrompt(mutable);
 
     for (const [key, label] of [
@@ -220,25 +222,29 @@ export function buildReviewPromptWithinBudget(
         const current = mutable[key];
         if (!current || estimateReviewPromptTokens(prompt) <= maxContextTokens) continue;
 
+        const truncationMarker = key === 'prDiff' ? PR_DIFF_TRUNCATION_MARKER : TRUNCATION_MARKER;
         const fixedPrompt = buildReviewPrompt({ ...mutable, [key]: '' });
         const fixedTokens = estimateReviewPromptTokens(fixedPrompt);
         if (fixedTokens >= maxContextTokens) {
-            mutable[key] = '';
+            mutable[key] = key === 'prDiff' ? truncationMarker : '';
         } else {
             let low = 0;
             let high = current.length;
             while (low < high) {
                 const midpoint = Math.ceil((low + high) / 2);
-                const candidate = `${current.slice(0, midpoint)}${TRUNCATION_MARKER}`;
+                const candidate = `${current.slice(0, midpoint)}${truncationMarker}`;
                 const candidatePrompt = buildReviewPrompt({ ...mutable, [key]: candidate });
                 if (estimateReviewPromptTokens(candidatePrompt) <= maxContextTokens) low = midpoint;
                 else high = midpoint - 1;
             }
-            mutable[key] = low > 0 ? `${current.slice(0, low)}${TRUNCATION_MARKER}` : '';
+            mutable[key] = low > 0
+                ? `${current.slice(0, low)}${truncationMarker}`
+                : key === 'prDiff' ? truncationMarker : '';
         }
+        if (key === 'prDiff') prDiffTruncated = true;
         truncatedSections.push(label);
         prompt = buildReviewPrompt(mutable);
     }
 
-    return { prompt, estimatedTokens: estimateReviewPromptTokens(prompt), truncatedSections };
+    return { prompt, estimatedTokens: estimateReviewPromptTokens(prompt), truncatedSections, prDiffTruncated };
 }
