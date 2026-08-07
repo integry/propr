@@ -86,6 +86,8 @@ export function buildReviewComment(
         omittedDiffFiles?: string[];
         costUsd?: number | null;
         hasCurrentCheckFailure?: boolean;
+        firstFindingNumber?: number;
+        changedFilePaths?: readonly string[];
     } = {},
 ): string {
     const { model, label } = assignment;
@@ -98,7 +100,10 @@ export function buildReviewComment(
     const currentCheckScoreCap = options.hasCurrentCheckFailure
         ? { maximum: 7, reason: 'Score capped at 7 because a current-head check is failing.' }
         : undefined;
-    const publicResponse = renderPublicReview(sanitizedResponse, currentCheckScoreCap);
+    const publicResponse = renderPublicReview(sanitizedResponse, currentCheckScoreCap, {
+        firstFindingNumber: options.firstFindingNumber,
+        changedFilePaths: options.changedFilePaths,
+    });
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
     comment += publicResponse ?? '⚠️ **Review output was invalid and could not be displayed safely.**';
 
@@ -129,7 +134,7 @@ export function buildReviewComment(
     // --- /fix instructions ---
     comment += `\n\n---\n`;
     comment += `> 💡 **Next step:** Comment \`/fix\` to address F# merge blockers only.\n`;
-    comment += `> Explicit IDs such as \`/fix F1 F3\` refer to the newest review. Suggestions require a separate ordinary follow-up request.\n`;
+    comment += `> F# IDs increment across review comments and remain permanent, so selectors such as \`/fix F3 F5\` stay unambiguous across cycles. Suggestions require a separate ordinary follow-up request.\n`;
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;

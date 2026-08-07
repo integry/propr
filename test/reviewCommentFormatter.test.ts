@@ -2,7 +2,7 @@ import { after, test, describe } from 'node:test';
 import assert from 'node:assert';
 
 const { buildReviewComment } = await import('../src/jobs/reviewCommentFormatter.js');
-const { parseStructuredReview } = await import('../src/jobs/reviewOutputParser.js');
+const { getNextActionableFindingNumber, parseStructuredReview } = await import('../src/jobs/reviewOutputParser.js');
 const { closeConnection } = await import('@propr/core');
 
 after(async () => {
@@ -10,7 +10,7 @@ after(async () => {
 });
 
 describe('buildReviewComment', () => {
-    test('explains that explicit finding IDs refer to the newest review', () => {
+    test('explains that explicit finding IDs are permanent within the PR', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
             {
@@ -21,7 +21,8 @@ describe('buildReviewComment', () => {
             },
         );
 
-        assert.ok(comment.includes('Explicit IDs such as `/fix F1 F3` refer to the newest review.'));
+        assert.ok(comment.includes('F# IDs increment across review comments and remain permanent'));
+        assert.ok(comment.includes('`/fix F3 F5`'));
         assert.ok(comment.includes('require a separate ordinary follow-up request.'));
         assert.ok(!comment.includes('/fix include S'));
     });
@@ -109,6 +110,75 @@ describe('buildReviewComment', () => {
         assert.strictEqual(reparsed.actionableFindings[0].id, 'F1');
         assert.strictEqual(reparsed.actionableFindings[0].introducedByPR, true);
         assert.strictEqual(reparsed.actionableFindings[0].requiredForMerge, true);
+    });
+
+    test('assigns consecutive PR-wide finding IDs and parses them back', () => {
+        const response = [
+            '## Overall Evaluation',
+            'Two corrections remain.',
+            '## Actionable Findings',
+            '### F1: First local finding',
+            '- **violatedRequirement:** First changed behavior must remain correct.',
+            '- **evidence:** src/first.ts:10 — the changed branch returns the wrong value.',
+            '- **introducedByPR:** true — the PR added the branch.',
+            '- **requiredForMerge:** true',
+            '- **minimumCorrection:** Return the expected value.',
+            '### F2: Second local finding',
+            '- **violatedRequirement:** Second changed behavior must remain safe.',
+            '- **evidence:** src/second.ts:20 — the changed guard is bypassed.',
+            '- **introducedByPR:** true — the PR added the bypass.',
+            '- **requiredForMerge:** true',
+            '- **minimumCorrection:** Preserve the guard.',
+            '## Suggestions and Follow-ups',
+            'No suggestions.',
+            '## Score',
+            'Score: 5/10',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            { response, modelUsed: 'claude-sonnet', executionTimeMs: 1000, success: true },
+            undefined,
+            {
+                firstFindingNumber: 3,
+                changedFilePaths: ['src/first.ts', 'src/second.ts'],
+            },
+        );
+
+        assert.ok(formatted.includes('### F3: 🔴 First local finding'));
+        assert.ok(formatted.includes('### F4: 🔴 Second local finding'));
+        const parsed = parseStructuredReview(formatted);
+        assert.deepStrictEqual(parsed.actionableFindings.map(finding => finding.id), ['F3', 'F4']);
+        assert.strictEqual(getNextActionableFindingNumber([formatted]), 5);
+    });
+
+    test('rejects blocker output whose evidence cites only unchanged files', () => {
+        const response = [
+            '## Overall Evaluation',
+            'One claimed correction remains.',
+            '## Actionable Findings',
+            '### F1: Adjacent issue',
+            '- **violatedRequirement:** The adjacent helper should be hardened.',
+            '- **evidence:** src/unchanged.ts:10 — this existing helper accepts the input.',
+            '- **introducedByPR:** true — claimed to be exposed by the PR.',
+            '- **requiredForMerge:** true',
+            '- **minimumCorrection:** Rewrite the adjacent helper.',
+            '## Suggestions and Follow-ups',
+            'No suggestions.',
+            '## Score',
+            'Score: 5/10',
+        ].join('\n');
+
+        const formatted = buildReviewComment(
+            { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
+            { response, modelUsed: 'claude-sonnet', executionTimeMs: 1000, success: true },
+            undefined,
+            { firstFindingNumber: 3, changedFilePaths: ['src/changed.ts'] },
+        );
+
+        assert.ok(formatted.includes('Review output was invalid and could not be displayed safely.'));
+        assert.strictEqual(parseStructuredReview(formatted).status, 'invalid');
+        assert.strictEqual(getNextActionableFindingNumber([formatted]), 1);
     });
 
     test('caps an inconsistent blocker score at the merge-blocker ceiling', () => {

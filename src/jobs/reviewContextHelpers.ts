@@ -131,5 +131,14 @@ export async function fetchReviewContext(
 
     const checkContext = await checkSummaryPromise;
 
-    return { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents, ...checkContext };
+    return {
+        allComments,
+        commentHistory,
+        linkedIssueResult,
+        prDiff,
+        omittedDiffFiles,
+        changedFilePaths: prFiles.map(file => file.filename),
+        fileContents,
+        ...checkContext,
+    };
 }

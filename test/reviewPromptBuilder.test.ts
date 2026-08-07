@@ -149,6 +149,8 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.ok(prompt.includes('Trace the changed control and data paths through their relevant callers and consumers'));
         assert.ok(prompt.includes('empty, singleton, and limit cases when those cases apply'));
         assert.ok(prompt.includes('Keep pre-existing problems, optional hardening, and adjacent redesigns as S# suggestions'));
+        assert.ok(prompt.includes('must cite an exact changed-file path from the supplied PR diff'));
+        assert.ok(prompt.includes('findings supported only by unchanged or adjacent files are rejected'));
         assert.ok(prompt.includes('Do not print this validation pass or turn it into a generic checklist'));
     });
 
