@@ -134,6 +134,14 @@ export interface AnalyzeOptions {
     useConfiguredReasoningLevel?: boolean;
     /** Skip the low-level agent LLM log when a caller persists a higher-level authoritative log. */
     suppressLlmLog?: boolean;
+    /**
+     * Optional repository workspace exposed to the analysis agent as a read-only
+     * bind mount. Omitted analyses continue to use their isolated empty
+     * workspace.
+     */
+    readOnlyWorkspacePath?: string;
+    /** Allow read-only search and inspection commands inside readOnlyWorkspacePath. */
+    allowReadOnlyCommands?: boolean;
 }
 
 export interface AgentExecutionResult {

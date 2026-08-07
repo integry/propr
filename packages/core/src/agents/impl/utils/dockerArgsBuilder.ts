@@ -38,6 +38,8 @@ export interface DockerArgsParams {
     executionType?: string;
     /** Optional reasoning effort for Claude Code. Empty or omitted means CLI default. */
     reasoningLevel?: ClaudeRuntimeReasoningLevel | '';
+    /** Mount the repository workspace read-only and skip repository setup hooks. */
+    readOnlyWorkspace?: boolean;
 }
 
 /**
@@ -59,7 +61,7 @@ export function buildDockerArgs(
     maxTurns: number,
     params: DockerArgsParams
 ): string[] {
-    const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment, taskId, executionType, reasoningLevel } = params;
+    const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment, taskId, executionType, reasoningLevel, readOnlyWorkspace = false } = params;
     const configPath = resolveConfigPath(config.configPath);
 
     // Build environment variable arguments
@@ -96,13 +98,14 @@ export function buildDockerArgs(
         '--network', 'bridge',
         '--user', '0:0',
         // Volume mounts
-        '-v', `${worktreePath}:/home/node/workspace:rw`,
-        '-v', '/tmp/git-processor:/tmp/git-processor:rw',
+        '-v', `${worktreePath}:/home/node/workspace:${readOnlyWorkspace ? 'ro' : 'rw'}`,
+        '-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`,
         '-v', '/tmp/claude-logs:/tmp/claude-logs:rw',
         '-v', `${configPath}:/home/node/.claude:rw`,
         ...claudeJsonMount,
         // Environment variables
         '-e', `GH_TOKEN=${githubToken}`,
+        ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         ...envVars,
         // Working directory
         '-w', '/home/node/workspace',

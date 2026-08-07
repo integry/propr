@@ -50,6 +50,7 @@ async function fetchCurrentHeadCheckSummary(
 }
 
 const MIN_REVIEW_DIFF_MAX_CHARS = 100000;
+const MIN_CONFIGURED_REVIEW_DIFF_MAX_CHARS = 10000;
 const MAX_REVIEW_DIFF_MAX_CHARS = 1200000;
 const REVIEW_DIFF_CHARS_PER_TOKEN_ESTIMATE = 2;
 const REVIEW_DIFF_CONTEXT_RATIO = 0.7;
@@ -59,19 +60,31 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 export function resolveReviewDiffMaxChars(models: string[]): number {
+    return resolveReviewDiffMaxCharsForBudget(models);
+}
+
+export function resolveReviewContextTokenBudget(models: string[], configuredMaxTokens = 0): number {
+    const hardLimits = models.length > 0
+        ? models.map(model => getModelHardLimit(model))
+        : [getModelHardLimit(undefined)];
+    const smallestHardLimit = Math.min(...hardLimits);
+    return configuredMaxTokens > 0 ? Math.min(configuredMaxTokens, smallestHardLimit) : smallestHardLimit;
+}
+
+export function resolveReviewDiffMaxCharsForBudget(models: string[], configuredMaxTokens = 0): number {
     const envOverride = Number.parseInt(process.env.PR_REVIEW_DIFF_MAX_CHARS || '', 10);
     if (Number.isFinite(envOverride) && envOverride > 0) {
         return clamp(envOverride, MIN_REVIEW_DIFF_MAX_CHARS, MAX_REVIEW_DIFF_MAX_CHARS);
     }
 
-    const hardLimits = models.length > 0
-        ? models.map(model => getModelHardLimit(model))
-        : [getModelHardLimit(undefined)];
-    const smallestHardLimit = Math.min(...hardLimits);
-    const diffTokenBudget = Math.floor(smallestHardLimit * REVIEW_DIFF_CONTEXT_RATIO);
+    const contextTokenBudget = resolveReviewContextTokenBudget(models, configuredMaxTokens);
+    const diffTokenBudget = Math.floor(contextTokenBudget * REVIEW_DIFF_CONTEXT_RATIO);
     const maxChars = diffTokenBudget * REVIEW_DIFF_CHARS_PER_TOKEN_ESTIMATE;
 
-    return clamp(maxChars, MIN_REVIEW_DIFF_MAX_CHARS, MAX_REVIEW_DIFF_MAX_CHARS);
+    const minimumChars = configuredMaxTokens > 0
+        ? MIN_CONFIGURED_REVIEW_DIFF_MAX_CHARS
+        : MIN_REVIEW_DIFF_MAX_CHARS;
+    return clamp(maxChars, minimumChars, MAX_REVIEW_DIFF_MAX_CHARS);
 }
 
 export async function calculateReviewCost(
@@ -99,9 +112,9 @@ export async function calculateReviewCost(
 export async function fetchReviewContext(
     octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>,
     prData: PRData,
-    params: { repoOwner: string; repoName: string; pullRequestNumber: number; models: string[]; correlationId: string; correlatedLogger: Logger }
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number; models: string[]; maxContextTokens?: number; correlationId: string; correlatedLogger: Logger }
 ) {
-    const { repoOwner, repoName, pullRequestNumber, models, correlationId, correlatedLogger } = params;
+    const { repoOwner, repoName, pullRequestNumber, models, maxContextTokens = 0, correlationId, correlatedLogger } = params;
     const checkSummaryPromise = fetchCurrentHeadCheckSummary(octokit, prData, {
         repoOwner,
         repoName,
@@ -115,7 +128,7 @@ export async function fetchReviewContext(
 
     correlatedLogger.info({ pullRequestNumber }, 'Fetching PR diff for review');
     const prFiles = await fetchPRFiles({ octokit, repoOwner, repoName, pullRequestNumber });
-    const diffMaxChars = resolveReviewDiffMaxChars(models);
+    const diffMaxChars = resolveReviewDiffMaxCharsForBudget(models, maxContextTokens);
     const { diff: prDiff, omittedFiles: omittedDiffFiles } = formatPRDiffWithMetadata(prFiles, diffMaxChars);
     correlatedLogger.info({
         pullRequestNumber,
@@ -131,5 +144,14 @@ export async function fetchReviewContext(
 
     const checkContext = await checkSummaryPromise;
 
-    return { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents, ...checkContext };
+    return {
+        allComments,
+        commentHistory,
+        linkedIssueResult,
+        prDiff,
+        changedFiles: prFiles.map(file => file.filename),
+        omittedDiffFiles,
+        fileContents,
+        ...checkContext,
+    };
 }

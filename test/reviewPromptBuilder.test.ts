@@ -14,7 +14,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
-const { buildReviewPrompt } = await import('../src/jobs/reviewPromptBuilder.js');
+const { buildReviewPrompt, buildReviewPromptWithinBudget } = await import('../src/jobs/reviewPromptBuilder.js');
 
 function baseOptions(overrides: Record<string, unknown> = {}) {
     return {
@@ -171,6 +171,28 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.ok(prompt.includes(checkSummary));
         assert.ok(prompt.includes('Check failures mentioned solely in comment history may be stale'));
         assert.ok(prompt.includes('it is an F# finding only when you can trace it to PR-changed code'));
+    });
+
+    test('labels scout excerpts as unchanged navigation leads without expanding scope', () => {
+        const prompt = buildReviewPrompt(baseOptions({
+            relatedContext: '### src/consumer.ts:10-20\n```\n10: callChangedApi()\n```',
+        }));
+        assert.ok(prompt.includes('Related Unchanged Repository Context'));
+        assert.ok(prompt.includes('Treat the scout labels and rationale only as navigation leads'));
+        assert.ok(prompt.includes('does not expand the PR objective'));
+        assert.ok(prompt.includes('src/consumer.ts:10-20'));
+    });
+
+    test('fits optional context to the configured review token ceiling', () => {
+        const large = 'const value = callChangedApi();\n'.repeat(20_000);
+        const result = buildReviewPromptWithinBudget(baseOptions({
+            relatedContext: large,
+            fileContents: large,
+        }), 10_000);
+        assert.ok(result.estimatedTokens <= 10_000);
+        assert.deepEqual(result.truncatedSections, ['related unchanged context', 'comment history', 'changed file contents']);
+        for (const section of MANDATORY_SECTIONS) assert.ok(result.prompt.includes(section));
+        assert.ok(result.prompt.includes('original spec'));
     });
 
     test('omits the current-head check section when no summary is available', () => {
