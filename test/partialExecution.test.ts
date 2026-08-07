@@ -135,6 +135,55 @@ describe('partial agent execution', () => {
         );
     });
 
+    test('does not convert a delayed ownership callback failure into a timeout result', async () => {
+        const superseded = new Error('delayed callback superseded timed-out attempt');
+        superseded.name = 'SupersededTaskAttemptError';
+
+        await assert.rejects(
+            executeDockerCommand(process.execPath, [
+                '-e',
+                'console.log(JSON.stringify({type:"assistant",session_id:"session-old"})); setInterval(() => {}, 1000);',
+            ], {
+                timeout: 200,
+                preserveOutputOnTimeout: true,
+                onSessionId: async () => {
+                    await new Promise(resolve => setTimeout(resolve, 350));
+                    throw superseded;
+                },
+            }),
+            error => error === superseded,
+        );
+    });
+
+    test('preserves the first ownership failure when a callback rejects later', async () => {
+        const controller = new AbortController();
+        const leaseError = new Error('lease lost before callback rejection');
+        const superseded = new Error('later superseded callback');
+        let markCallbackStarted: () => void = () => {};
+        let releaseCallback: () => void = () => {};
+        const callbackStarted = new Promise<void>(resolve => { markCallbackStarted = resolve; });
+        const callbackRelease = new Promise<void>(resolve => { releaseCallback = resolve; });
+        const execution = runWithExecutionAbortSignal(controller.signal, () => executeDockerCommand(
+            process.execPath,
+            ['-e', 'console.log(JSON.stringify({type:"assistant",session_id:"session-old"})); setInterval(() => {}, 1000);'],
+            {
+                timeout: 10_000,
+                onSessionId: async () => {
+                    markCallbackStarted();
+                    await callbackRelease;
+                    throw superseded;
+                },
+            },
+        ));
+        const rejection = assert.rejects(execution, error => error === leaseError);
+
+        await callbackStarted;
+        controller.abort(leaseError);
+        releaseCallback();
+
+        await rejection;
+    });
+
     test('retains Claude max-turn metadata and the latest assistant update', () => {
         const stdout = [
             JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Implemented the parser; validation remains.' }] } }),

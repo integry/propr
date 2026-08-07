@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { findRunningDockerContainerForTask, hashTaskAttemptToken, logger, runWithExecutionAbortSignal } from '@propr/core';
+import { findRunningDockerContainerForTask, hashTaskAttemptToken, inspectLegacyDockerContainerLivenessForTask, logger, runWithExecutionAbortSignal } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
@@ -411,8 +411,8 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
 
     const runningContainer = await findRunningDockerContainerForTask(taskId);
-    if (runningContainer) {
-        correlatedLogger.warn({ taskId, containerId: runningContainer.id, containerName: runningContainer.name }, 'Agent execution for this task is already running. Rescheduling without starting another attempt.');
+    if (runningContainer || await inspectLegacyDockerContainerLivenessForTask(taskId) !== 'not_found') {
+        correlatedLogger.warn({ taskId, containerId: runningContainer?.id, containerName: runningContainer?.name }, 'Agent execution for this task may already be running. Rescheduling without starting another attempt.');
         await issueQueue.add(job.name, job.data, { delay: 60000 });
         await releasePRProcessingLock(redisClient, lockKey, lockToken);
         return { status: 'rescheduled', reason: 'agent_container_already_running' };

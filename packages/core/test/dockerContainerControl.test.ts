@@ -207,3 +207,37 @@ test('retries a failed forced removal until the container is gone', async () => 
         ['rm', '-f', 'container-one'],
     ]);
 });
+
+test('retries name-only teardown when the container has not been created yet', async () => {
+    responses.push(
+        { error: new Error('No such container'), stdout: '', stderr: 'No such container: agent-task-name' },
+        { error: null, stdout: 'agent-task-name\n', stderr: '' },
+    );
+
+    await teardownDockerExecution({
+        containerName: 'agent-task-name',
+        attempts: 2,
+        retryDelayMs: 0,
+    });
+
+    assert.deepEqual(dockerCalls.map(call => call.args), [
+        ['rm', '-f', 'agent-task-name'],
+        ['rm', '-f', 'agent-task-name'],
+    ]);
+});
+
+test('does not retry an absent container when its ID is already known', async () => {
+    responses.push(
+        { error: new Error('No such container'), stdout: '', stderr: 'No such container: 417758dda147' },
+    );
+
+    await teardownDockerExecution({
+        containerId: '417758dda147',
+        attempts: 2,
+        retryDelayMs: 0,
+    });
+
+    assert.deepEqual(dockerCalls.map(call => call.args), [
+        ['rm', '-f', '417758dda147'],
+    ]);
+});

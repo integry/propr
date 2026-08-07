@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import {
     addTaskAttemptLabelsToDockerArgs,
     findTaskContainer,
+    inspectLegacyDockerContainerLivenessForTask,
     type ExecutionResult,
 } from '../packages/core/src/claude/docker/dockerExecutor.js';
 
@@ -107,5 +108,24 @@ describe('running Docker task container lookup', () => {
         );
 
         assert.strictEqual(container, null);
+    });
+
+    test('detects a running pre-label container without authorizing removal', async () => {
+        let receivedArgs: string[] = [];
+        const liveness = await inspectLegacyDockerContainerLivenessForTask(
+            'pr-comments-propr-gitfix-1734-96957312',
+            async (_command, args) => {
+                receivedArgs = args;
+                return result('417758dda147:claude-issue-1734-96957312\n');
+            },
+        );
+
+        assert.strictEqual(liveness, 'running');
+        assert.deepStrictEqual(receivedArgs, [
+            'ps',
+            '--filter', 'name=96957312$',
+            '--format', '{{.ID}}:{{.Names}}',
+        ]);
+        assert.ok(!receivedArgs.includes('rm'));
     });
 });

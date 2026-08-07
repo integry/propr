@@ -118,8 +118,26 @@ async function findExecutionContainers(
     return containers;
 }
 
-async function removeExecutionContainers(containers: Set<string>, deadline: number): Promise<Set<string>> {
+interface ContainerRemovalResult {
+    failed: Set<string>;
+    notFound: Set<string>;
+}
+
+function hasCompletedContainerRemoval(
+    options: DockerExecutionTeardownOptions,
+    removal: ContainerRemovalResult,
+): boolean {
+    if (removal.failed.size > 0) return false;
+    const hasGenerationFence = Boolean(options.taskId && options.attemptGeneration);
+    const onlyContainerNameAvailable = !hasGenerationFence && !options.containerId && Boolean(options.containerName);
+    return !onlyContainerNameAvailable
+        || !options.containerName
+        || !removal.notFound.has(options.containerName);
+}
+
+async function removeExecutionContainers(containers: Set<string>, deadline: number): Promise<ContainerRemovalResult> {
     const failed = new Set<string>();
+    const notFound = new Set<string>();
     for (const container of containers) {
         if (!CONTAINER_IDENTIFIER_PATTERN.test(container)) continue;
         const removalBudgetMs = Math.min(2000, deadline - Date.now());
@@ -131,13 +149,15 @@ async function removeExecutionContainers(containers: Set<string>, deadline: numb
             await runDocker(['rm', '-f', container], removalBudgetMs);
         } catch (error) {
             const message = (error as Error).message;
-            if (!message.includes('No such container') && !message.includes('No such object')) {
+            if (message.includes('No such container') || message.includes('No such object')) {
+                notFound.add(container);
+            } else {
                 failed.add(container);
                 logger.warn({ containerId: container, error: message }, 'Failed to remove Docker container after execution ownership loss');
             }
         }
     }
-    return failed;
+    return { failed, notFound };
 }
 
 async function retryExecutionContainerRemoval(
@@ -163,8 +183,9 @@ async function retryExecutionContainerRemoval(
         }
 
         if (containers.size > 0) {
-            failedRemovals = await removeExecutionContainers(containers, deadline);
-            if (failedRemovals.size === 0) return;
+            const removal = await removeExecutionContainers(containers, deadline);
+            failedRemovals = removal.failed;
+            if (hasCompletedContainerRemoval(options, removal)) return;
         }
 
         if (discoveryAttempts < attempts || failedRemovals.size > 0) {

@@ -173,11 +173,13 @@ export function executeDockerCommand(command: string, args: string[], options: D
 
         let stdout = '', stderr = '';
         const state = createDockerExecutionState();
-        let callbackFailure: unknown;
+        let ownershipFailure: unknown;
+        let hasOwnershipFailure = false;
+        let timeoutInitiatedAbort = false;
         const pendingCallbacks = new Set<Promise<void>>();
         let containerDetectionTimer: ReturnType<typeof setTimeout> | null = null;
         const messageTimestamps = new Map<string, string>();
-        const abortForExecutionSignal = (): void => {
+        const abortExecution = (): void => {
             void abortSpawnedExecution(
                 child,
                 state,
@@ -189,19 +191,18 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 },
             );
         };
+        const preserveOwnershipFailure = (error: unknown): void => {
+            if (hasOwnershipFailure) return;
+            hasOwnershipFailure = true;
+            ownershipFailure = error;
+        };
+        const abortForExecutionSignal = (): void => {
+            preserveOwnershipFailure(getExecutionAbortError(executionSignal) ?? new ExecutionAbortedError());
+            abortExecution();
+        };
         const failFromCallback = (error: unknown): void => {
-            if (callbackFailure !== undefined) return;
-            callbackFailure = error;
-            void abortSpawnedExecution(
-                child,
-                state,
-                {
-                    namedContainer,
-                    scheduleForceKill,
-                    taskId,
-                    attemptGeneration: ownershipContext?.attemptGeneration,
-                },
-            );
+            preserveOwnershipFailure(error);
+            abortExecution();
         };
         const invokeExecutionCallback = (callback: () => void | Promise<void>): void => {
             const callbackPromise = Promise.resolve().then(callback).catch(failFromCallback);
@@ -211,7 +212,8 @@ export function executeDockerCommand(command: string, args: string[], options: D
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
         const timeoutHandle = setTimeout(() => {
             state.timedOut = true;
-            abortForExecutionSignal();
+            timeoutInitiatedAbort = !state.aborted.value;
+            abortExecution();
         }, timeout);
         const plannerAbortKey = taskId ? plannerAbortSignalKeyForTask(taskId) : null;
         const abortChecker = taskId && plannerAbortKey
@@ -265,11 +267,21 @@ export function executeDockerCommand(command: string, args: string[], options: D
         child.on('close', async (exitCode: number | null) => {
             clearTimeout(timeoutHandle);
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
-            executionSignal?.removeEventListener('abort', abortForExecutionSignal);
             if (abortChecker) await abortChecker.close();
             await Promise.allSettled([...pendingCallbacks]);
             if (state.teardownPromise) await state.teardownPromise;
+            executionSignal?.removeEventListener('abort', abortForExecutionSignal);
             await cleanupRedisStreaming(redisState, taskId, stripAnsi, getRedisOutput());
+            const executionAbortError = getExecutionAbortError(executionSignal);
+            if (executionAbortError) preserveOwnershipFailure(executionAbortError);
+            if (hasOwnershipFailure) {
+                reject(ownershipFailure);
+                return;
+            }
+            if (state.aborted.value && !timeoutInitiatedAbort) {
+                reject(new ExecutionAbortedError());
+                return;
+            }
             if (state.timedOut) {
                 const timeoutMessage = `Command timed out after ${timeout}ms`;
                 const timeoutStderr = stderr.trim() ? `${stderr.trimEnd()}\n${timeoutMessage}` : timeoutMessage;
@@ -278,14 +290,6 @@ export function executeDockerCommand(command: string, args: string[], options: D
                 } else {
                     reject(new Error(timeoutMessage));
                 }
-                return;
-            }
-            if (state.aborted.value) {
-                reject(callbackFailure ?? getExecutionAbortError(executionSignal) ?? new ExecutionAbortedError());
-                return;
-            }
-            if (callbackFailure !== undefined) {
-                reject(callbackFailure);
                 return;
             }
             resolve({ exitCode, stdout, stderr, messageTimestamps });
