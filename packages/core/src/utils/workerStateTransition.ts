@@ -192,6 +192,7 @@ export async function publishTaskStateTransition(
             repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
             issueNumber: state.issueRef.number,
             timestamp: state.updatedAt,
+            version: state.version,
             metadata: { attempts: state.attempts, reason: metadata.reason },
         });
         if (!publication.eventPublished) publication.errors.push('event: publisher returned false');
