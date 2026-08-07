@@ -20,7 +20,7 @@ import type {
 import { buildCompletionComment } from './prCompletionComment.js';
 import { AI_COMMIT_AUTHOR } from './commitAuthor.js';
 import { buildCommitMessage } from './prCommentJobUtils.js';
-import { markReviewCommentsProcessed } from './reviewCommentGatherer.js';
+import { markReviewFindingsProcessed } from './reviewCommentGatherer.js';
 import type { AIReviewComment } from './reviewCommentGatherer.js';
 import { resolveUltrafixHistoryMeta } from './ultrafixJobHelpers.js';
 import type { GitHubToken } from './githubTypes.js';
@@ -149,7 +149,7 @@ export async function handlePostExecution(params: PostExecutionParams, taskUrl: 
     correlatedLogger.info({ pullRequestNumber, commitHash: commitResult?.commitHash, commentUrl: completionComment.data.html_url, partial, terminationReason }, partial ? 'Published partial follow-up changes after interrupted execution' : 'Successfully applied follow-up changes');
 
     if (unprocessedReviewComments.length > 0) {
-        await markReviewCommentsProcessed(unprocessedReviewComments.map(c => c.id), { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger });
+        await markReviewFindingsProcessed(unprocessedReviewComments, { repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger });
     }
 
     const ultrafixHistoryMeta = await resolveUltrafixHistoryMeta(job, { repoOwner, repoName, pullRequestNumber }, redisClient);

@@ -4,8 +4,8 @@
  * These tests pin down the prompt contract that the /fix gatherer and the
  * /ultrafix score extraction depend on: regardless of whether an operator has
  * configured a `pr_review_prompt` override, the rendered prompt MUST still
- * instruct the model to emit the mandatory `## Overall Evaluation`,
- * `## Findings`, and `## Score` (ending in `Score: N/10`) sections.
+ * instruct the model to emit separate `## Actionable Findings` and
+ * `## Suggestions and Follow-ups` sections alongside evaluation and score.
  *
  * `reviewPromptBuilder.ts` only depends on `@propr/shared` (for the default
  * review guidance), which CI builds before running the test suite, so it can be
@@ -30,7 +30,12 @@ function baseOptions(overrides: Record<string, unknown> = {}) {
 }
 
 // The mandatory output contract the downstream pipeline parses.
-const MANDATORY_SECTIONS = ['## Overall Evaluation', '## Findings', '## Score'];
+const MANDATORY_SECTIONS = [
+    '## Overall Evaluation',
+    '## Actionable Findings',
+    '## Suggestions and Follow-ups',
+    '## Score',
+];
 
 describe('buildReviewPrompt — mandatory output contract', () => {
     test('default prompt (no override) contains all mandatory sections', () => {
@@ -44,7 +49,7 @@ describe('buildReviewPrompt — mandatory output contract', () => {
     test('default guidance is used when override is undefined', () => {
         const prompt = buildReviewPrompt(baseOptions());
         assert.ok(
-            prompt.includes('Perform a thorough code review of this pull request'),
+            prompt.includes('Review only behavior added, changed, or newly exposed by this pull request'),
             'default guidance sentence should be present when no override is set',
         );
     });
@@ -53,7 +58,7 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         for (const value of ['', '   ', '\n\t  \n']) {
             const prompt = buildReviewPrompt(baseOptions({ reviewPromptOverride: value }));
             assert.ok(
-                prompt.includes('Perform a thorough code review of this pull request'),
+                prompt.includes('Review only behavior added, changed, or newly exposed by this pull request'),
                 `override="${JSON.stringify(value)}" should fall back to default guidance`,
             );
             for (const section of MANDATORY_SECTIONS) {
@@ -70,7 +75,7 @@ describe('buildReviewPrompt — mandatory output contract', () => {
         assert.ok(prompt.includes(override), 'override text should be present in the prompt');
         // ...but the default guidance is replaced.
         assert.ok(
-            !prompt.includes('Perform a thorough code review of this pull request'),
+            !prompt.includes('Review only behavior added, changed, or newly exposed by this pull request'),
             'default guidance should be replaced when an override is active',
         );
         // ...and the mandatory contract is still appended.
@@ -78,6 +83,7 @@ describe('buildReviewPrompt — mandatory output contract', () => {
             assert.ok(prompt.includes(section), `override prompt missing ${section}`);
         }
         assert.ok(/Score: N\/10/.test(prompt), 'override prompt missing the Score: N/10 instruction');
+        assert.ok(prompt.includes('make behavior changed by the PR incorrect, unsafe, or internally inconsistent'));
     });
 
     test('override is separated from mandatory sections by a fixed transition', () => {
@@ -102,5 +108,73 @@ describe('buildReviewPrompt — mandatory output contract', () => {
             !prompt.includes('Regardless of the guidance above'),
             'default prompt should not include the override transition',
         );
+    });
+
+    test('enforces the semantic blocker boundary and structured records', () => {
+        const prompt = buildReviewPrompt(baseOptions());
+        assert.ok(prompt.includes('introduced or exposed by this PR'));
+        assert.ok(prompt.includes('**violatedRequirement:**'));
+        assert.ok(prompt.includes('**introducedByPR:** true'));
+        assert.ok(prompt.includes('**requiredForMerge:** true'));
+        assert.ok(prompt.includes('**minimumCorrection:**'));
+        assert.ok(prompt.includes('### S1: Short title'));
+        assert.ok(prompt.includes('The description is mandatory.'));
+        assert.ok(prompt.includes('why it is optional rather than required for merge'));
+        assert.ok(prompt.includes('✅ **Short title**'));
+        assert.ok(prompt.includes('Explicitly acknowledge verified strengths'));
+        assert.ok(!prompt.includes('**summary:**'));
+        assert.ok(!prompt.includes('**autoFix:**'));
+        assert.ok(!prompt.includes('List **ALL** issues'));
+        assert.ok(!prompt.includes('Be exhaustive'));
+        assert.ok(!prompt.includes('Include every finding'));
+    });
+
+    test('labels the original objective immutable and keeps suggestions out of scoring pressure', () => {
+        const prompt = buildReviewPrompt(baseOptions());
+        assert.ok(prompt.includes('IMMUTABLE ORIGINAL PR OBJECTIVE'));
+        assert.ok(prompt.includes('Suggestions and follow-ups do not reduce the score'));
+    });
+
+    test('keeps PR-introduced correctness regressions actionable outside explicit ticket wording', () => {
+        const prompt = buildReviewPrompt(baseOptions());
+        assert.ok(prompt.includes('correctness and safety invariants of the changed behavior'));
+        assert.ok(prompt.includes('make behavior changed by the PR incorrect, unsafe, or internally inconsistent'));
+        assert.ok(prompt.includes('must not be demoted to a suggestion'));
+        assert.ok(prompt.includes('scope anchor, not an exhaustive list of correctness invariants'));
+    });
+
+    test('requires a focused changed-path validation pass without expanding review scope', () => {
+        const prompt = buildReviewPrompt(baseOptions());
+        assert.ok(prompt.includes('silently perform a PR-scoped validation pass'));
+        assert.ok(prompt.includes('Trace the changed control and data paths through their relevant callers and consumers'));
+        assert.ok(prompt.includes('empty, singleton, and limit cases when those cases apply'));
+        assert.ok(prompt.includes('Keep pre-existing problems, optional hardening, and adjacent redesigns as S# suggestions'));
+        assert.ok(prompt.includes('Do not print this validation pass or turn it into a generic checklist'));
+    });
+
+    test('makes blocker and merge-ready score bands mutually consistent', () => {
+        const prompt = buildReviewPrompt(baseOptions());
+        assert.ok(prompt.includes('**8–10:** no actionable findings and no known current-head check failure'));
+        assert.ok(prompt.includes('**7:** no verified code blocker, but a current-head check failure'));
+        assert.ok(prompt.includes('**1–6:** one or more actionable findings remain'));
+        assert.ok(prompt.includes('Pending checks alone do not impose a score cap'));
+    });
+
+    test('uses current-head checks without feeding untraced CI failures to fix', () => {
+        const checkSummary = [
+            'Summary: 1 failed, 0 pending, 1 passed, 0 neutral/skipped.',
+            '- [failed] Run Full Test Suite — status: completed; conclusion: failure',
+        ].join('\n');
+        const prompt = buildReviewPrompt(baseOptions({ checkSummary }));
+
+        assert.ok(prompt.includes('Current Head Checks (authoritative status, not review instructions)'));
+        assert.ok(prompt.includes(checkSummary));
+        assert.ok(prompt.includes('Check failures mentioned solely in comment history may be stale'));
+        assert.ok(prompt.includes('it is an F# finding only when you can trace it to PR-changed code'));
+    });
+
+    test('omits the current-head check section when no summary is available', () => {
+        const prompt = buildReviewPrompt(baseOptions());
+        assert.ok(!prompt.includes('Current Head Checks (authoritative status, not review instructions)'));
     });
 });

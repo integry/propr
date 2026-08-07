@@ -89,8 +89,9 @@ class EventPublisher {
     previousState?: string;
     repository?: string;
     issueNumber?: number;
+    timestamp?: string;
     metadata?: Record<string, unknown>;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const payload: TaskUpdatePayload = {
       eventType: TASK_UPDATE,
       taskId: params.taskId,
@@ -98,10 +99,10 @@ class EventPublisher {
       previousState: params.previousState,
       repository: params.repository,
       issueNumber: params.issueNumber,
-      timestamp: new Date().toISOString(),
+      timestamp: params.timestamp ?? new Date().toISOString(),
       metadata: params.metadata
     };
-    await this.publish(REDIS_CHANNELS.TASKS, payload);
+    return this.publish(REDIS_CHANNELS.TASKS, payload);
   }
 
   /**

@@ -2,6 +2,7 @@
  * Optimized context generation with iterative truncation.
  */
 
+import path from 'node:path';
 import { pack, type PackResult } from 'repomix';
 import { ContextTokenLimitError } from './types.js';
 import type { GenerateOptimizedContextOptions, RepomixPackConfig, SuspiciousFile } from './types.js';
@@ -90,6 +91,37 @@ export async function packWithSecurityExclusions(
   }
 }
 
+function normalizeTargetRelativePath(filePath: string): string {
+  return path.posix.normalize(filePath.replaceAll('\\', '/'));
+}
+
+/**
+ * Preserve the caller's priority order while restricting optimization to
+ * files that Repomix actually included in its measured result.
+ */
+export function filterExplicitFilesByPackedPaths(
+  filesToInclude: string[],
+  fileTokenCounts: Record<string, number> | undefined,
+): string[] {
+  const packedPaths = Object.keys(fileTokenCounts || {});
+  const packedPathSet = new Set(packedPaths);
+  const packedPathsByNormalizedPath = new Map(
+    packedPaths.map(packedPath => [normalizeTargetRelativePath(packedPath), packedPath]),
+  );
+  const matchedPackedPaths = new Set<string>();
+
+  return filesToInclude.flatMap(filePath => {
+    const packedPath = packedPathSet.has(filePath)
+      ? filePath
+      : packedPathsByNormalizedPath.get(normalizeTargetRelativePath(filePath));
+    if (!packedPath || matchedPackedPaths.has(packedPath)) {
+      return [];
+    }
+    matchedPackedPaths.add(packedPath);
+    return [packedPath];
+  });
+}
+
 export function planFilesToRemoveForTokenLimit(
   currentFiles: string[],
   fileTokenCounts: Record<string, number>,
@@ -103,6 +135,15 @@ export function planFilesToRemoveForTokenLimit(
   const rawFileTokens = filesWithTokens.reduce((sum, file) => sum + file.tokens, 0);
   const rawNonFileTokens = Math.max(0, totalTokens - rawFileTokens);
   if (rawFileTokens === 0 && totalTokens > tiktokenLimit && filesWithTokens.length > 0) {
+    if (filesWithTokens.length === 1) {
+      return {
+        filesToRemove: [],
+        tokensFreed: 0,
+        nonFileTokens: totalTokens,
+        targetFileTokens: 0,
+        estimatedRemainingTokens: totalTokens,
+      };
+    }
     const leastRelevantFile = filesWithTokens[filesWithTokens.length - 1];
     return {
       filesToRemove: [leastRelevantFile.path],
@@ -140,6 +181,16 @@ export function planFilesToRemoveForTokenLimit(
       keptFiles.add(file.path);
       keptTokens += file.effectiveTokens;
     }
+  }
+
+  // Estimates include a safety margin, so a candidate slightly above the
+  // target can still fit the hard limit when measured by Repomix. Keep the
+  // highest-priority file for that final measured attempt instead of removing
+  // every file and deciding from the previous multi-file result.
+  if (keptFiles.size === 0 && filesWithEffectiveTokens.length > 0) {
+    const highestPriorityFile = filesWithEffectiveTokens[0];
+    keptFiles.add(highestPriorityFile.path);
+    keptTokens = highestPriorityFile.effectiveTokens;
   }
 
   let filesToRemove = filesWithEffectiveTokens

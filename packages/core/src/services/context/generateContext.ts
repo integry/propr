@@ -10,7 +10,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import logger from '../../utils/logger.js';
 import { TIKTOKEN_TO_CLAUDE_RATIO } from '../../config/modelLimits.js';
-import { generateOptimizedContext, packWithSecurityExclusions } from './optimizedContext.js';
+import {
+  filterExplicitFilesByPackedPaths,
+  generateOptimizedContext,
+  packWithSecurityExclusions,
+} from './optimizedContext.js';
 import type { ContextGenerationOptions, ContextGenerationResult, RepomixPackConfig, SuspiciousFile } from './types.js';
 import { ContextTokenLimitError, SecurityException } from './types.js';
 
@@ -99,7 +103,7 @@ function getFilesForOptimization(
   fileTokenCounts: Record<string, number> | undefined,
 ): string[] {
   if (filesToInclude && filesToInclude.length > 0) {
-    return filesToInclude;
+    return filterExplicitFilesByPackedPaths(filesToInclude, fileTokenCounts);
   }
   const allPackedFiles = Object.keys(fileTokenCounts || {});
   if (priorityFiles && priorityFiles.length > 0) {

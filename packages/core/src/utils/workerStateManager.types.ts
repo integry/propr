@@ -57,12 +57,33 @@ export interface TaskStateData {
     state: TaskState;
     createdAt: string;
     updatedAt: string;
+    /** Monotonically increasing revision used for compare-and-set updates. */
+    version?: number;
     attempts: number;
     history: HistoryEntry[];
     lastError?: LastError;
     worktreeInfo?: WorktreeInfo;
     claudeResult?: ClaudeResultSummary;
     prResult?: PRResult;
+}
+
+export interface TaskStateExpectation {
+    state: TaskState;
+    createdAt: string;
+    updatedAt: string;
+    correlationId: string;
+    version?: number;
+}
+
+export interface TaskStatePublicationResult {
+    historyPersisted: boolean;
+    eventPublished: boolean;
+    errors: string[];
+}
+
+export interface TaskStateUpdateResult {
+    state: TaskStateData;
+    publication: TaskStatePublicationResult;
 }
 
 export interface CancellationMetadata {
