@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -52,35 +52,19 @@ describe('release test-suite runner', () => {
     test('waits for a timed-out process to close after escalating to SIGKILL', {
         skip: process.platform === 'win32',
     }, async () => {
-        const root = mkdtempSync(join(tmpdir(), 'propr-runner-timeout-'));
-        const readyFile = join(root, 'ready');
-        let childReady = false;
-        try {
-            const result = await runTestProcess(process.execPath, [
-                '-e',
-                `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(readyFile)}, ""); setInterval(() => {}, 1000);`,
-            ], {
-                stdio: 'ignore',
-                timeout: 100,
-            }, child => {
-                if (!child) return;
-                const waitState = new Int32Array(new SharedArrayBuffer(4));
-                const deadline = Date.now() + 2_000;
-                while (!existsSync(readyFile) && Date.now() < deadline) {
-                    Atomics.wait(waitState, 0, 0, 10);
-                }
-                childReady = existsSync(readyFile);
-            }, {
-                terminationGraceMs: 25,
-                forcedExitWaitMs: 500,
-            });
+        const result = await runTestProcess(process.execPath, [
+            '-e',
+            'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);',
+        ], {
+            stdio: 'ignore',
+            timeout: 100,
+        }, () => {}, {
+            terminationGraceMs: 25,
+            forcedExitWaitMs: 500,
+        });
 
-            assert.equal(childReady, true, 'child did not install its SIGTERM handler');
-            assert.equal(result.timedOut, true);
-            assert.equal(result.signal, 'SIGKILL');
-        } finally {
-            rmSync(root, { recursive: true, force: true });
-        }
+        assert.equal(result.timedOut, true);
+        assert.equal(result.signal, 'SIGKILL');
     });
 
     test('discovers root and workspace tests while delegating native workspace runners', () => {
