@@ -1,8 +1,9 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { setupAuthenticatedRemote } from './repoBranching.js';
+import { createHooklessGit } from './hooklessGit.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 
@@ -77,7 +78,7 @@ export async function fetchLatestChanges(options: FetchLatestChangesOptions): Pr
             return { success: false, repoPath: localRepoPath, error: 'Repository not cloned yet' };
         }
 
-        const git: SimpleGit = simpleGit(localRepoPath);
+        const git: SimpleGit = createHooklessGit(localRepoPath);
         if (!await git.checkIsRepo()) {
             logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists but is not a valid git repository');
             return { success: false, repoPath: localRepoPath, error: 'Not a valid git repository' };

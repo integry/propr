@@ -1,4 +1,4 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import { Octokit } from '@octokit/core';
@@ -18,6 +18,7 @@ import { commitChanges } from './commitOperations.js';
 import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations } from './branchConfig.js';
 import { ensureSeedCommitIfEmpty } from './seedCommit.js';
 import { fetchLatestChanges, FetchLatestChangesOptions, FetchLatestChangesResult } from './fetchOperations.js';
+import { createHooklessGit } from './hooklessGit.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
@@ -84,13 +85,13 @@ async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoPar
 
     // Add to safe.directory BEFORE any git operations on this path
     try {
-        await simpleGit().raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);
+        await createHooklessGit().raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);
     } catch {
         // Non-fatal - continue anyway, the directory might already be safe
     }
 
     try {
-        const git: SimpleGit = simpleGit(localRepoPath);
+        const git: SimpleGit = createHooklessGit(localRepoPath);
         if (!await git.checkIsRepo()) throw new Error('Directory exists but is not a valid git repository');
         await configureGcWorktreePrune(git);
         await setupAuthenticatedRemote(git, repoUrl, authToken);
@@ -107,7 +108,7 @@ async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoPar
         return;
     }
 
-    const git: SimpleGit = simpleGit(localRepoPath);
+    const git: SimpleGit = createHooklessGit(localRepoPath);
     // Treat 'HEAD' as unspecified - use default branch detection
     const effectiveBranch = baseBranch && baseBranch !== 'HEAD' ? baseBranch : undefined;
     let targetBranch = effectiveBranch || 'main';
@@ -143,12 +144,12 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
 
     const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
     try {
-        await simpleGit().clone(authenticatedUrl, localRepoPath, cloneOptions);
+        await createHooklessGit().clone(authenticatedUrl, localRepoPath, cloneOptions);
     } catch (error) {
         throw new Error(redactAuthenticatedGitUrl((error as Error).message));
     }
 
-    const repoGit: SimpleGit = simpleGit(localRepoPath);
+    const repoGit: SimpleGit = createHooklessGit(localRepoPath);
     await configureGcWorktreePrune(repoGit);
 
     // Treat 'HEAD' as unspecified - use default branch detection
@@ -226,7 +227,7 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
 
     try {
-        const git: SimpleGit = simpleGit(localRepoPath);
+        const git: SimpleGit = createHooklessGit(localRepoPath);
 
         if (await fs.pathExists(worktreePath)) {
             logger.warn({ worktreePath, issueId }, 'Worktree path already exists. Removing existing worktree...');

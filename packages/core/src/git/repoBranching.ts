@@ -1,8 +1,9 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { createHooklessGit } from './hooklessGit.js';
 
 interface InstallationAuth {
     token: string;
@@ -34,7 +35,7 @@ export async function ensureBranchAndPush(worktreePath: string, branchName: stri
     const { repoUrl, authToken, tokenRefreshFn, correlationId } = options;
 
     const pushOperation = async (currentToken: string | undefined): Promise<void> => {
-        const git: SimpleGit = simpleGit({ baseDir: worktreePath });
+        const git: SimpleGit = createHooklessGit(worktreePath);
 
         if (repoUrl && currentToken) await setupAuthenticatedRemote(git, repoUrl, currentToken);
 
@@ -145,7 +146,7 @@ async function getHeadCommitHash(git: SimpleGit): Promise<string | undefined> {
 export async function pushBranch(worktreePath: string, branchName: string, options: PushBranchOptions = {}): Promise<PushBranchResult> {
     const { repoUrl, authToken, remote = 'origin', rebaseOnNonFastForward = false } = options;
 
-    const git = simpleGit({ baseDir: worktreePath });
+    const git = createHooklessGit(worktreePath);
 
     const performPush = async (token: string | undefined): Promise<void> => {
         if (repoUrl && token) await setupAuthenticatedRemote(git, repoUrl, token);

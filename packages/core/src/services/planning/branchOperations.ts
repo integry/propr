@@ -2,8 +2,8 @@
  * Git branch operations for the planning service.
  */
 
-import { simpleGit } from 'simple-git';
 import logger from '../../utils/logger.js';
+import { createHooklessGit } from '../../git/hooklessGit.js';
 import { BranchNotFoundError } from './planningErrors.js';
 import type { MinimalLogger } from './planningTypes.js';
 
@@ -12,7 +12,7 @@ import type { MinimalLogger } from './planningTypes.js';
  * Fetches from origin first, then checks out the branch.
  */
 export async function checkoutBranch(repoPath: string, branch: string): Promise<void> {
-  const git = simpleGit(repoPath);
+  const git = createHooklessGit(repoPath);
   try {
     await git.fetch(['origin', '--prune']);
   } catch (e) {

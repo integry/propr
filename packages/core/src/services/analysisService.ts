@@ -5,6 +5,7 @@ import { runLightweightLLMAnalysis } from '../claude/claudeService.js';
 import logger from '../utils/logger.js';
 import fs from 'fs';
 import { execa } from 'execa';
+import { DISABLED_GIT_HOOKS_PATH } from '../git/hooklessGit.js';
 
 // Lazy-initialized Redis connection
 let redis: Redis | null = null;
@@ -277,7 +278,11 @@ export async function getExecutionAnalysis({ executionId, sessionId, correlation
     correlatedLogger.info({ worktreePath, repository: task.repository }, 'Using cloned repository for commit diff retrieval');
 
     if (fs.existsSync(worktreePath)) {
-      await execa('git', ['fetch', 'origin'], { cwd: worktreePath, reject: false });
+      await execa(
+        'git',
+        ['-c', `core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`, 'fetch', 'origin'],
+        { cwd: worktreePath, reject: false }
+      );
     } else {
       correlatedLogger.warn({ worktreePath }, 'Repository path does not exist, commit diff will not be available');
     }

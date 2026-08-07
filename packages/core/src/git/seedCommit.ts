@@ -1,9 +1,10 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { setupAuthenticatedRemote, redactAuthenticatedGitUrl } from './repoBranching.js';
 import { AI_COMMIT_AUTHOR } from './commitOperations.js';
+import { createHooklessGit } from './hooklessGit.js';
 
 export interface SeedCommitOptions {
     localRepoPath: string;
@@ -67,7 +68,7 @@ async function localRepoHasCommits(git: SimpleGit): Promise<boolean> {
 async function remoteHasAnyRefs(repoUrl: string, authToken: string): Promise<boolean> {
     const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
     try {
-        const lsRemote = await simpleGit().raw(['ls-remote', authenticatedUrl]);
+        const lsRemote = await createHooklessGit().raw(['ls-remote', authenticatedUrl]);
         return lsRemote.trim().length > 0;
     } catch (error) {
         throw new Error(redactAuthenticatedGitUrl((error as Error).message));
@@ -92,6 +93,7 @@ export async function ensureSeedCommitIfEmpty(
     options: SeedCommitOptions
 ): Promise<boolean> {
     const { localRepoPath, owner, repoName, defaultBranch, authToken, repoUrl } = options;
+    const mutationGit = createHooklessGit(localRepoPath);
     try {
         if (await localRepoHasCommits(git)) {
             return false;
@@ -120,15 +122,15 @@ export async function ensureSeedCommitIfEmpty(
         const gitignorePath = path.join(localRepoPath, '.gitignore');
         await fs.writeFile(gitignorePath, DEFAULT_GITIGNORE);
 
-        await git.addConfig('user.email', AI_COMMIT_AUTHOR.email);
-        await git.addConfig('user.name', AI_COMMIT_AUTHOR.name);
+        await mutationGit.addConfig('user.email', AI_COMMIT_AUTHOR.email);
+        await mutationGit.addConfig('user.name', AI_COMMIT_AUTHOR.name);
 
-        await git.checkoutLocalBranch(defaultBranch);
-        await git.add([readmePath, gitignorePath]);
-        await git.commit('Initial commit\n\nRepository initialized by ProPR to enable AI-assisted development.');
+        await mutationGit.checkoutLocalBranch(defaultBranch);
+        await mutationGit.add([readmePath, gitignorePath]);
+        await mutationGit.commit('Initial commit\n\nRepository initialized by ProPR to enable AI-assisted development.');
 
-        await setupAuthenticatedRemote(git, repoUrl, authToken);
-        await git.push(['--set-upstream', 'origin', defaultBranch]);
+        await setupAuthenticatedRemote(mutationGit, repoUrl, authToken);
+        await mutationGit.push(['--set-upstream', 'origin', defaultBranch]);
 
         logger.info({ repo: `${owner}/${repoName}`, branch: defaultBranch }, 'Seed commit created and pushed successfully');
         return true;
