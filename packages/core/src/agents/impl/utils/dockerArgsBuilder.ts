@@ -13,6 +13,7 @@ import { AgentConfig } from '../../types.js';
 import { resolveConfigPath, type ClaudeRuntimeReasoningLevel } from '../../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
+import { buildRepositoryScoutMcpConfig, REPOSITORY_SCOUT_MCP_TOOLS } from './repositoryScoutMcpServer.js';
 
 const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
@@ -64,6 +65,8 @@ export interface DockerArgsParams {
     reasoningLevel?: ClaudeRuntimeReasoningLevel | '';
     /** Mount the repository workspace read-only and skip repository setup hooks. */
     readOnlyWorkspace?: boolean;
+    /** Expose only the root-confined repository scout MCP tools. */
+    repositoryInspection?: boolean;
 }
 
 /**
@@ -85,13 +88,27 @@ export function buildDockerArgs(
     maxTurns: number,
     params: DockerArgsParams
 ): string[] {
-    const { worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment, taskId, executionType, reasoningLevel, readOnlyWorkspace = false } = params;
+    const {
+        worktreePath, githubToken, modelName, issueNumber, systemPrompt, tools, environment,
+        taskId, executionType, reasoningLevel, readOnlyWorkspace = false, repositoryInspection = false,
+    } = params;
     const configPath = resolveConfigPath(config.configPath);
-    // Claude's native file tools cannot be confined to the workspace while its
-    // provider configuration is mounted. Disable every model-controlled tool in
-    // read-only workspace mode; callers that need repository inspection must
-    // treat this runtime as unsupported until a root-confined tool layer exists.
+    if (repositoryInspection && !readOnlyWorkspace) {
+        throw new Error('Repository inspection requires a read-only workspace');
+    }
+    // Native file tools can read mounted provider configuration, so read-only
+    // runs always disable them. Scout runs receive only a path-validating MCP
+    // server whose operations are rooted at the read-only repository mount.
     const effectiveTools = readOnlyWorkspace ? '' : tools;
+    const repositoryInspectionArgs = repositoryInspection
+        ? [
+            '--mcp-config', buildRepositoryScoutMcpConfig(),
+            '--strict-mcp-config',
+            '--allowedTools', REPOSITORY_SCOUT_MCP_TOOLS.join(','),
+            '--setting-sources', '',
+            '--disable-slash-commands',
+        ]
+        : [];
 
     // Build environment variable arguments
     const envVars = buildEnvironmentVariableArgs([config.envVars, environment], readOnlyWorkspace);
@@ -136,6 +153,7 @@ export function buildDockerArgs(
         '--max-turns', maxTurns.toString(),
         '--output-format', 'stream-json',
         '--verbose',
+        ...repositoryInspectionArgs,
         ...(reasoningLevel ? ['--effort', reasoningLevel] : []),
         '--dangerously-skip-permissions'
     ];

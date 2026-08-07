@@ -16,9 +16,9 @@ const SCOUT_TIMEOUT_MS = 30 * 60 * 1000;
 function supportsRuntimeEnforcedRepositoryInspection(agent: Agent): boolean {
     switch (agent.config.type) {
         case 'claude':
-            // Claude's native Read/Grep/Glob tools can open absolute paths outside
-            // the workspace, including its mounted provider configuration.
-            return false;
+            // Claude scout analysis disables every built-in tool and exposes only
+            // the path-validating repository MCP server from its runtime adapter.
+            return true;
         default:
             // Other current runtimes expose a shell or an equivalently broad file
             // surface in analysis mode, so none can host the scout safely yet.

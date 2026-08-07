@@ -223,7 +223,7 @@ describe('buildReviewComment', () => {
         assert.strictEqual(parseStructuredReview(formatted).status, 'invalid');
     });
 
-    test('includes files omitted from the review diff', () => {
+    test('marks review partial when initial diff formatting omits files', () => {
         const comment = buildReviewComment(
             { agentAlias: 'claude', model: 'claude-sonnet', label: 'Claude Sonnet' },
             {
@@ -239,6 +239,8 @@ describe('buildReviewComment', () => {
         assert.ok(comment.includes('<summary>Files omitted from review diff</summary>'));
         assert.ok(comment.includes('`package-lock.json`'));
         assert.ok(comment.includes('`assets/logo.png`'));
+        assert.ok(comment.includes('**Review scope:** Partial'));
+        assert.ok(comment.includes('<!-- propr:ai-review model="claude-sonnet" partial="true" -->'));
     });
 
     test('marks review metadata partial when the prompt budget truncates the PR diff', () => {

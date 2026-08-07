@@ -91,6 +91,8 @@ export function buildReviewComment(
 ): string {
     const { model, label } = assignment;
     const { response, executionTimeMs, tokenUsage, modelUsed } = analysisResult;
+    const omittedDiffFiles = options.omittedDiffFiles ?? [];
+    const isPartialReview = options.prDiffTruncated === true || omittedDiffFiles.length > 0;
 
     const effectiveModel = modelUsed || model;
     const modelDisplayName = getModelName(effectiveModel);
@@ -120,14 +122,14 @@ export function buildReviewComment(
     if (options.costUsd != null && options.costUsd > 0) {
         comment += `* **Cost:** $${options.costUsd.toFixed(2)}\n`;
     }
-    if (options.prDiffTruncated) {
+    if (isPartialReview) {
         comment += '* **Review scope:** Partial — PR diff files or ranges were omitted to fit the configured review token limit.\n';
     }
     if (taskUrl) {
         comment += `\n[View Task](${taskUrl})`;
     }
-    if (options.omittedDiffFiles && options.omittedDiffFiles.length > 0) {
-        comment += formatOmittedDiffFilesForComment(options.omittedDiffFiles);
+    if (omittedDiffFiles.length > 0) {
+        comment += formatOmittedDiffFilesForComment(omittedDiffFiles);
     }
 
     // --- /fix instructions ---
@@ -137,7 +139,7 @@ export function buildReviewComment(
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;
-    const partialReviewMetadata = options.prDiffTruncated ? ' partial="true"' : '';
+    const partialReviewMetadata = isPartialReview ? ' partial="true"' : '';
     comment += `\n<!-- propr:ai-review model="${effectiveModel}"${partialReviewMetadata} -->`;
 
     return comment;

@@ -40,12 +40,15 @@ export { UsageLimitError };
 function resolveClaudeAnalysisWorkspace(
     readOnlyWorkspacePath: string | undefined,
     allowReadOnlyCommands: boolean
-): { path: string; tools: string; readOnly: boolean } {
-    if (!readOnlyWorkspacePath) return { path: '/tmp/claude-analysis', tools: '', readOnly: false };
+): { path: string; tools: string; readOnly: boolean; repositoryInspection: boolean } {
+    if (!readOnlyWorkspacePath) {
+        return { path: '/tmp/claude-analysis', tools: '', readOnly: false, repositoryInspection: false };
+    }
     return {
         path: readOnlyWorkspacePath,
-        tools: allowReadOnlyCommands ? 'Read,Grep,Glob' : '',
+        tools: '',
         readOnly: true,
+        repositoryInspection: allowReadOnlyCommands,
     };
 }
 
@@ -198,6 +201,7 @@ export class ClaudeAgent implements Agent {
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
                 tools: analysisWorkspace.tools, taskId, executionType,
                 readOnlyWorkspace: analysisWorkspace.readOnly,
+                repositoryInspection: analysisWorkspace.repositoryInspection,
                 reasoningLevel: effectiveReasoningLevel
             });
 
