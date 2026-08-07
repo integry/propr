@@ -1,12 +1,12 @@
 import logger from '../../../utils/logger.js';
 
 // Antigravity JSONL event types
-export interface AntigravityInitEvent { type: 'init'; timestamp: string; session_id: string; model: string }
-export interface AntigravityMessageEvent { type: 'message'; role: 'user' | 'assistant'; content: string; timestamp: string; delta?: boolean }
-export interface AntigravityToolUseEvent { type: 'tool_use'; tool_name: string; tool_id: string; parameters: Record<string, unknown>; timestamp: string }
-export interface AntigravityToolResultEvent { type: 'tool_result'; tool_id: string; status: 'success' | 'error'; output: string; timestamp: string }
-export interface AntigravityResultEvent { type: 'result'; status: 'success' | 'error'; stats: { total_tokens?: number; input_tokens?: number; output_tokens?: number; inputTokens?: number; outputTokens?: number; duration_ms?: number; tool_calls?: number }; timestamp: string }
-export type AntigravityEvent = AntigravityInitEvent | AntigravityMessageEvent | AntigravityToolUseEvent | AntigravityToolResultEvent | AntigravityResultEvent | { type: 'error'; message: string; timestamp: string }
+export interface AntigravityInitEvent { type: 'init'; timestamp?: string; session_id: string; model: string }
+export interface AntigravityMessageEvent { type: 'message'; role: 'user' | 'assistant'; content: string; timestamp?: string; delta?: boolean }
+export interface AntigravityToolUseEvent { type: 'tool_use'; tool_name: string; tool_id: string; parameters: Record<string, unknown>; timestamp?: string }
+export interface AntigravityToolResultEvent { type: 'tool_result'; tool_id: string; status: 'success' | 'error'; output: string; timestamp?: string }
+export interface AntigravityResultEvent { type: 'result'; status: 'success' | 'error'; stats?: { total_tokens?: number; input_tokens?: number; output_tokens?: number; inputTokens?: number; outputTokens?: number; duration_ms?: number; tool_calls?: number }; timestamp?: string }
+export type AntigravityEvent = AntigravityInitEvent | AntigravityMessageEvent | AntigravityToolUseEvent | AntigravityToolResultEvent | AntigravityResultEvent | { type: 'error'; message: string; timestamp?: string }
 export interface AntigravityTranscriptEvent { step_index?: number; source: string; type: string; status?: string; created_at?: string; content?: string }
 export type AntigravityOutputEvent = AntigravityEvent | AntigravityTranscriptEvent;
 
@@ -37,13 +37,14 @@ const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharC
 
 function stripAnsiCodes(text: string): string { return text.replace(ANSI_REGEX, ''); }
 
-function extractAntigravityResult(cleanedOutput: string): string | undefined {
+function extractAntigravityResult(lines: Array<{ line: string; isJson: boolean }>): string | undefined {
     const resultLines: string[] = [];
     let inResponse = false;
-    for (const line of cleanedOutput.split('\n')) {
+    for (const { line: rawLine, isJson } of lines) {
+        const line = stripAnsiCodes(rawLine);
         const t = line.trim();
         if (!inResponse && !t) continue;
-        if (t.startsWith('>') || t === '/quit' || t.startsWith('Antigravity') || t.includes('Press') || t.includes('Ctrl+')) continue;
+        if (t.startsWith('>') || t === '/quit' || t.startsWith('Antigravity') || (!isJson && (t.includes('Press') || t.includes('Ctrl+')))) continue;
         inResponse = true;
         resultLines.push(line);
     }
@@ -51,11 +52,96 @@ function extractAntigravityResult(cleanedOutput: string): string | undefined {
     return result || undefined;
 }
 
+const ANTIGRAVITY_TRANSCRIPT_SOURCES = new Set(['MODEL', 'USER_EXPLICIT']);
+
+function normalizeTranscriptIdentifier(value: string): string {
+    return value.trim().toUpperCase();
+}
+
 function isTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent {
-    const candidate = event as Partial<AntigravityTranscriptEvent>;
+    if (!isRecord(event)) return false;
+    const candidate = event;
     return typeof candidate.source === 'string'
+        && ANTIGRAVITY_TRANSCRIPT_SOURCES.has(normalizeTranscriptIdentifier(candidate.source))
         && typeof candidate.type === 'string'
-        && !['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(candidate.type);
+        && candidate.type.trim().length > 0
+        && !['init', 'message', 'tool_use', 'tool_result', 'result', 'error'].includes(candidate.type.trim().toLowerCase())
+        && (candidate.step_index === undefined || Number.isInteger(candidate.step_index))
+        && (candidate.status === undefined || typeof candidate.status === 'string')
+        && (candidate.created_at === undefined || typeof candidate.created_at === 'string')
+        && (candidate.content === undefined || typeof candidate.content === 'string')
+        && ['step_index', 'status', 'created_at', 'content'].some(key => candidate[key] !== undefined);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasProtocolStatus(candidate: Record<string, unknown>): boolean {
+    return candidate.status === 'success' || candidate.status === 'error';
+}
+
+function hasProtocolTimestamp(candidate: Record<string, unknown>): boolean {
+    return typeof candidate.timestamp === 'string' && candidate.timestamp.trim().length > 0;
+}
+
+function hasValidOptionalTimestamp(candidate: Record<string, unknown>): boolean {
+    return candidate.timestamp === undefined || typeof candidate.timestamp === 'string';
+}
+
+const ANTIGRAVITY_RESULT_STAT_KEYS = [
+    'total_tokens',
+    'input_tokens',
+    'output_tokens',
+    'inputTokens',
+    'outputTokens',
+    'duration_ms',
+    'tool_calls',
+] as const;
+
+function hasValidResultStats(stats: unknown): boolean {
+    if (stats === undefined) return true;
+    return isRecord(stats)
+        && ANTIGRAVITY_RESULT_STAT_KEYS.every(key => stats[key] === undefined || typeof stats[key] === 'number');
+}
+
+const ANTIGRAVITY_EVENT_VALIDATORS: Record<string, (candidate: Record<string, unknown>, contextual: boolean) => boolean> = {
+    init: candidate => hasValidOptionalTimestamp(candidate)
+        && typeof candidate.session_id === 'string' && typeof candidate.model === 'string',
+    message: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && hasValidOptionalTimestamp(candidate)
+        && (candidate.role === 'user' || candidate.role === 'assistant')
+        && typeof candidate.content === 'string'
+        && (candidate.delta === undefined || typeof candidate.delta === 'boolean'),
+    tool_use: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && hasValidOptionalTimestamp(candidate)
+        && typeof candidate.tool_name === 'string' && typeof candidate.tool_id === 'string' && isRecord(candidate.parameters),
+    tool_result: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && hasValidOptionalTimestamp(candidate)
+        && typeof candidate.tool_id === 'string' && hasProtocolStatus(candidate) && typeof candidate.output === 'string',
+    result: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && hasValidOptionalTimestamp(candidate)
+        && hasProtocolStatus(candidate) && hasValidResultStats(candidate.stats),
+    error: (candidate, contextual) => (hasProtocolTimestamp(candidate) || contextual)
+        && hasValidOptionalTimestamp(candidate) && typeof candidate.message === 'string',
+};
+
+function isAntigravityEvent(event: unknown, contextual = false): event is AntigravityEvent {
+    if (!isRecord(event) || typeof event.type !== 'string') return false;
+    if (!Object.hasOwn(ANTIGRAVITY_EVENT_VALIDATORS, event.type)) return false;
+    return ANTIGRAVITY_EVENT_VALIDATORS[event.type](event, contextual);
+}
+
+function isAntigravityOutputEvent(event: unknown, contextual = false): event is AntigravityOutputEvent {
+    return isTranscriptEvent(event) || isAntigravityEvent(event, contextual);
+}
+
+function isAntigravityFramingEvent(event: unknown): boolean {
+    if (isTranscriptEvent(event)) return true;
+    if (!isRecord(event)) return false;
+    if (event.type === 'init') return ANTIGRAVITY_EVENT_VALIDATORS.init(event, false);
+    return (event.type === 'message' || event.type === 'error')
+        && isAntigravityEvent(event, false);
 }
 
 function normalizeTokenUsage(stats: AntigravityResultEvent['stats'] | undefined): { input_tokens?: number; output_tokens?: number } {
@@ -90,8 +176,8 @@ function processEvent(event: AntigravityEvent, state: { sessionId: string | unde
 
 export function isAntigravityAnalysisEvent(event: AntigravityOutputEvent): boolean {
     if (isTranscriptEvent(event)) {
-        return event.source === 'MODEL'
-            && event.type === 'PLANNER_RESPONSE'
+        return normalizeTranscriptIdentifier(event.source) === 'MODEL'
+            && normalizeTranscriptIdentifier(event.type) === 'PLANNER_RESPONSE'
             && typeof event.content === 'string'
             && event.content.trim().length > 0;
     }
@@ -109,28 +195,43 @@ export function filterAntigravityAnalysisEvents(events: AntigravityOutputEvent[]
 export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
     const events: AntigravityOutputEvent[] = [];
     const state = { sessionId: undefined as string | undefined, modelUsed: undefined as string | undefined, tokenUsage: {} as { input_tokens?: number; output_tokens?: number }, currentAssistantMessage: '', lastCompleteAssistantMessage: '' };
-    let sawJsonEvent = false;
+    const parsedLines: Array<{ line: string; value?: unknown }> = [];
     for (const line of output.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-            const event = JSON.parse(line) as AntigravityOutputEvent;
-            events.push(event);
-            sawJsonEvent = true;
-            if (isTranscriptEvent(event)) {
-                if (event.source === 'MODEL' && typeof event.content === 'string' && event.content.trim()) {
-                    state.lastCompleteAssistantMessage = event.content;
-                }
-            } else { processEvent(event as AntigravityEvent, state); }
+        if (!line.trim()) {
+            parsedLines.push({ line });
+            continue;
         }
-        catch { logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in Antigravity output'); }
+        try {
+            parsedLines.push({ line, value: JSON.parse(line) as unknown });
+        }
+        catch {
+            parsedLines.push({ line });
+            logger.debug({ linePreview: line.substring(0, 100) }, 'Non-JSON line in Antigravity output');
+        }
+    }
+    const hasProtocolContext = parsedLines.some(({ value }) => isAntigravityFramingEvent(value));
+    const plainLines: Array<{ line: string; isJson: boolean }> = [];
+    for (const { line, value } of parsedLines) {
+        if (!isAntigravityOutputEvent(value, hasProtocolContext)) {
+            plainLines.push({ line, isJson: value !== undefined });
+            continue;
+        }
+        events.push(value);
+        if (isTranscriptEvent(value)) {
+            if (normalizeTranscriptIdentifier(value.source) === 'MODEL' && typeof value.content === 'string' && value.content.trim()) {
+                state.lastCompleteAssistantMessage = value.content;
+            }
+        } else {
+            processEvent(value, state);
+        }
     }
     if (state.currentAssistantMessage) state.lastCompleteAssistantMessage = state.currentAssistantMessage;
-    const plainTextSummary = sawJsonEvent ? undefined : extractAntigravityResult(stripAnsiCodes(output));
+    const plainTextSummary = extractAntigravityResult(plainLines);
     return { sessionId: state.sessionId, modelUsed: state.modelUsed, summary: state.lastCompleteAssistantMessage || plainTextSummary || undefined, conversationLog: events, tokenUsage: state.tokenUsage };
 }
 
 /** Flushes pending message to result array. */
-function flushPendingMessage(result: AntigravityOutputEvent[], pending: { content: string; timestamp: string; role: 'user' | 'assistant' } | null): null {
+function flushPendingMessage(result: AntigravityOutputEvent[], pending: { content: string; timestamp?: string; role: 'user' | 'assistant' } | null): null {
     if (pending) result.push({ type: 'message', role: pending.role, content: pending.content, timestamp: pending.timestamp } as AntigravityMessageEvent);
     return null;
 }
@@ -138,7 +239,7 @@ function flushPendingMessage(result: AntigravityOutputEvent[], pending: { conten
 /** Aggregates consecutive delta messages into single messages. */
 export function aggregateDeltaMessages(events: AntigravityOutputEvent[]): AntigravityOutputEvent[] {
     const result: AntigravityOutputEvent[] = [];
-    let pending: { content: string; timestamp: string; role: 'user' | 'assistant' } | null = null;
+    let pending: { content: string; timestamp?: string; role: 'user' | 'assistant' } | null = null;
     for (const event of events) {
         if (isTranscriptEvent(event)) { pending = flushPendingMessage(result, pending); result.push(event); continue; }
         if (event.type !== 'message') { pending = flushPendingMessage(result, pending); result.push(event); continue; }
@@ -156,7 +257,8 @@ export function aggregateDeltaMessages(events: AntigravityOutputEvent[]): Antigr
 /** Converts an Antigravity event to Claude conversation format. */
 export function convertEventToClaudeFormat(event: AntigravityOutputEvent): unknown {
     if (isTranscriptEvent(event)) {
-        const role = event.source === 'MODEL' ? 'assistant' : event.source === 'USER_EXPLICIT' ? 'user' : 'system';
+        const source = normalizeTranscriptIdentifier(event.source);
+        const role = source === 'MODEL' ? 'assistant' : source === 'USER_EXPLICIT' ? 'user' : 'system';
         return { type: role, timestamp: event.created_at, message: { content: [{ type: 'text', text: event.content || '' }] }, antigravity: { source: event.source, type: event.type, status: event.status, step_index: event.step_index } };
     }
     if (event.type === 'message') { const e = event as AntigravityMessageEvent; return { type: e.role === 'assistant' ? 'assistant' : 'user', timestamp: e.timestamp, message: { content: [{ type: 'text', text: e.content }] } }; }

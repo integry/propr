@@ -136,6 +136,59 @@ test('Antigravity output parser falls back to plain print output', () => {
     assert.deepEqual(parsed.conversationLog, []);
 });
 
+test('Antigravity output parser preserves plain responses that are valid JSON values', () => {
+    const numeric = parseAntigravityJsonl('2\n');
+    const object = parseAntigravityJsonl('{"answer":2}\n');
+    const commonType = parseAntigravityJsonl('{"type":"result","value":2}\n');
+    const sourceAndType = parseAntigravityJsonl('{"source":"data","type":"answer","content":"42"}\n');
+    const commonError = parseAntigravityJsonl('{"type":"error","message":"No issues"}\n');
+    const commonMessage = parseAntigravityJsonl('{"type":"message","role":"assistant","content":"plain JSON"}\n');
+
+    assert.equal(numeric.summary, '2');
+    assert.equal(object.summary, '{"answer":2}');
+    assert.equal(commonType.summary, '{"type":"result","value":2}');
+    assert.equal(sourceAndType.summary, '{"source":"data","type":"answer","content":"42"}');
+    assert.equal(commonError.summary, '{"type":"error","message":"No issues"}');
+    assert.equal(commonMessage.summary, '{"type":"message","role":"assistant","content":"plain JSON"}');
+    assert.deepEqual(numeric.conversationLog, []);
+    assert.deepEqual(object.conversationLog, []);
+    assert.deepEqual(commonType.conversationLog, []);
+    assert.deepEqual(sourceAndType.conversationLog, []);
+    assert.deepEqual(commonError.conversationLog, []);
+    assert.deepEqual(commonMessage.conversationLog, []);
+});
+
+test('Antigravity output parser does not filter TUI substrings from fallback JSON', () => {
+    const line = '{"answer":"Press Enter"}';
+    const parsed = parseAntigravityJsonl(line);
+
+    assert.equal(parsed.summary, line);
+    assert.deepEqual(parsed.conversationLog, []);
+});
+
+test('Antigravity output parser treats prototype keys as plain fallback JSON', () => {
+    for (const type of ['__proto__', 'constructor', 'toString']) {
+        const line = JSON.stringify({ type });
+        const parsed = parseAntigravityJsonl(line);
+
+        assert.equal(parsed.summary, line);
+        assert.deepEqual(parsed.conversationLog, []);
+    }
+});
+
+test('Antigravity output parser requires framing for ambiguous standalone protocol shapes', () => {
+    for (const value of [
+        { type: 'result', status: 'success' },
+        { type: 'tool_use', tool_name: 'shell', tool_id: 'tool-1', parameters: {} },
+        { type: 'tool_result', tool_id: 'tool-1', status: 'success', output: 'done' },
+    ]) {
+        const line = JSON.stringify(value);
+        const parsed = parseAntigravityJsonl(line);
+        assert.equal(parsed.summary, line);
+        assert.deepEqual(parsed.conversationLog, []);
+    }
+});
+
 test('Antigravity output parser reads real transcript JSONL events', () => {
     const transcript = [
         JSON.stringify({
@@ -171,6 +224,61 @@ test('Antigravity output parser accepts camelCase result token stats', () => {
     }));
 
     assert.deepEqual(parsed.tokenUsage, { input_tokens: 12, output_tokens: 4 });
+});
+
+test('Antigravity output parser accepts optional protocol fields and mixed plain output', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ type: 'init', session_id: 'session-1', model: 'provider-model' }),
+        'provider progress text',
+        JSON.stringify({ type: 'error', message: 'provider failed' }),
+        JSON.stringify({ type: 'result', status: 'error' }),
+    ].join('\n'));
+
+    assert.equal(parsed.sessionId, 'session-1');
+    assert.equal(parsed.modelUsed, 'provider-model');
+    assert.equal(parsed.summary, 'provider progress text');
+    assert.equal(parsed.conversationLog.length, 3);
+});
+
+test('Antigravity output parser rejects protocol and transcript events with malformed optional fields', () => {
+    const malformedLines = [
+        { type: 'message', role: 'assistant', content: 'bad delta', delta: 'yes', timestamp: '2026-06-06T09:40:25Z' },
+        { type: 'result', status: 'success', stats: { inputTokens: 'twelve' }, timestamp: '2026-06-06T09:40:25Z' },
+        { type: 'error', message: 'bad timestamp', timestamp: 123 },
+        { source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 42 },
+    ].map(value => JSON.stringify(value));
+    const parsed = parseAntigravityJsonl(malformedLines.join('\n'));
+
+    assert.equal(parsed.summary, malformedLines.join('\n'));
+    assert.deepEqual(parsed.conversationLog, []);
+    assert.deepEqual(parsed.tokenUsage, {});
+});
+
+test('Antigravity output parser preserves internal blank lines in plain and mixed output', () => {
+    const plain = parseAntigravityJsonl('first paragraph\n\nsecond paragraph');
+    const mixed = parseAntigravityJsonl([
+        JSON.stringify({ type: 'init', session_id: 'session-1', model: 'provider-model' }),
+        'first paragraph',
+        '',
+        'second paragraph',
+        JSON.stringify({ type: 'result', status: 'success' }),
+    ].join('\n'));
+
+    assert.equal(plain.summary, 'first paragraph\n\nsecond paragraph');
+    assert.equal(mixed.summary, 'first paragraph\n\nsecond paragraph');
+    assert.equal(mixed.conversationLog.length, 2);
+});
+
+test('Antigravity output parser accepts lower-case transcript identifiers without optional metadata', () => {
+    const parsed = parseAntigravityJsonl(JSON.stringify({
+        source: ' model ',
+        type: ' planner_response ',
+        content: 'schema-compatible response',
+    }));
+
+    assert.equal(parsed.summary, 'schema-compatible response');
+    assert.equal(parsed.conversationLog.length, 1);
+    assert.equal(filterAntigravityAnalysisEvents(parsed.conversationLog).length, 1);
 });
 
 test('Antigravity display log keeps planner analysis and drops tool output', () => {
