@@ -109,7 +109,7 @@ describe('Socket.IO authentication', () => {
       dependencies({
         validateToken: async token => token === 'valid-token' ? validated : null,
         isWhitelisted: username => username === 'allowed',
-        resolveInstanceAuthorization: async () => ({ role: 'admin', permissions: [], source: 'durable' }),
+        resolveInstanceAuthorization: async () => ({ role: 'admin', permissions: [], source: 'managed' }),
       }),
     );
 
@@ -121,7 +121,10 @@ describe('Socket.IO authentication', () => {
     const sessionUser = user({ username: 'removed' });
     await assert.rejects(
       authenticateSocketRequest(
-        request({ isAuthenticated: () => true, user: sessionUser }),
+        request({
+          isAuthenticated: (() => true) as Request['isAuthenticated'],
+          user: sessionUser,
+        }),
         dependencies({ isWhitelisted: () => false }),
       ),
       (error: unknown) => error instanceof SocketAuthenticationError
@@ -133,7 +136,10 @@ describe('Socket.IO authentication', () => {
     const sessionUser = user({ tokenExpiresAt: Date.now() - 1, refreshToken: 'refresh' });
     await assert.rejects(
       authenticateSocketRequest(
-        request({ isAuthenticated: () => true, user: sessionUser }),
+        request({
+          isAuthenticated: (() => true) as Request['isAuthenticated'],
+          user: sessionUser,
+        }),
         dependencies({ refreshToken: async () => ({ status: 'temporarily-unavailable' }) }),
       ),
       (error: unknown) => error instanceof SocketAuthenticationError
