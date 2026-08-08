@@ -56,6 +56,7 @@ import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfi
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
+import { resolveApiListenHost } from './listenAddress.js';
 import {
   startConfigReloadSubscription,
   type ConfigReloadSubscription,
@@ -131,7 +132,8 @@ const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: Comment
 const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 const app = express();
-const PORT = process.env.DASHBOARD_API_PORT || 4000;
+const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
+const HOST = resolveApiListenHost();
 
 // Trust proxy for secure cookies behind reverse proxy (Cloudflare, nginx, etc.)
 app.set('trust proxy', 1);
@@ -446,7 +448,7 @@ async function start(): Promise<void> {
         }
       }, 30 * 1000);
     }
-    httpServer.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
+    httpServer.listen(PORT, HOST, () => { console.log(`Dashboard API server running at ${HOST}:${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
 
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
