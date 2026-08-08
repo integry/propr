@@ -4,6 +4,7 @@ import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction, RequestHandler } from 'express';
+import { validateSessionSecret } from '@propr/shared';
 import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenIfNeeded, refreshGitHubTokenWithResult } from './authGithubTokens.js';
@@ -131,6 +132,11 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
     }
 
+    const sessionSecret = process.env.SESSION_SECRET;
+    if (!demoModeAtStartup) {
+        const sessionSecretError = validateSessionSecret(sessionSecret);
+        if (sessionSecretError) throw new Error(sessionSecretError);
+    }
     const engineMiddleware: RequestHandler[] = [];
 
     if (!demoModeAtStartup) {
@@ -150,7 +156,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         const cookieDomain = getSessionCookieDomain();
         const sessionMiddleware = session({
             store: redisStore,
-            secret: process.env.SESSION_SECRET || 'your-secret-key-here',
+            secret: sessionSecret!,
             resave: false,
             saveUninitialized: false,
             rolling: true, // Extend session expiration on each request

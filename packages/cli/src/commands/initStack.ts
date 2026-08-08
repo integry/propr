@@ -8,16 +8,31 @@
  */
 
 import { Command } from "commander";
+import { randomBytes } from "node:crypto";
 import { existsSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { validateSessionSecret } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import {
   ensurePrivateDirectory,
   secureExistingPrivateFile,
   writePrivateFileAtomic,
 } from "../utils/privateFilesystem.js";
+
+export function materializeSessionSecret(
+  template: string,
+  secret: string = randomBytes(32).toString("hex"),
+): string {
+  const validationError = validateSessionSecret(secret);
+  if (validationError) throw new Error(`Cannot scaffold stack: ${validationError}`);
+  const linePattern = /^SESSION_SECRET=.*$/m;
+  if (!linePattern.test(template)) {
+    throw new Error("Cannot scaffold stack: .env.example does not define SESSION_SECRET");
+  }
+  return template.replace(linePattern, `SESSION_SECRET=${secret}`);
+}
 
 export interface DetectedCred {
   envKey: string;
@@ -157,7 +172,7 @@ export async function scaffoldStack(
         "Could not locate .env.example. Run `npm run build` in packages/cli, or run from a ProPR source checkout."
       );
     }
-    envContent = readFileSync(example, "utf-8");
+    envContent = materializeSessionSecret(readFileSync(example, "utf-8"));
     if (options.force && envExists) {
       secureExistingPrivateFile(envPath);
       const bakPath = `${envPath}.bak`;
