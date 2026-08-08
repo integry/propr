@@ -19,12 +19,17 @@ import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfiguratio
 import { ensureSeedCommitIfEmpty } from './seedCommit.js';
 import { fetchLatestChanges, FetchLatestChangesOptions, FetchLatestChangesResult } from './fetchOperations.js';
 import { createHooklessGit } from './hooklessGit.js';
+import {
+    assertGitHubRepositoryUrl,
+    assertRepositoryClonePath,
+    resolveRepositoryClonePath,
+} from './repositoryPaths.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
 
-async function getRepoPath(owner: string, repoName: string): Promise<string> {
-    return path.join(CLONES_BASE_PATH, owner, repoName);
+function getRepoPath(owner: string, repoName: string): string {
+    return resolveRepositoryClonePath(CLONES_BASE_PATH, owner, repoName);
 }
 
 /**
@@ -175,8 +180,9 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
 }
 
 async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<string> {
-    const { owner, repoName } = opts;
-    const localRepoPath = await getRepoPath(owner, repoName);
+    const { owner, repoName, repoUrl } = opts;
+    assertGitHubRepositoryUrl(repoUrl, owner, repoName);
+    const localRepoPath = getRepoPath(owner, repoName);
 
     try {
         if (await fs.pathExists(path.join(localRepoPath, ".git"))) {
@@ -214,6 +220,7 @@ export type WorktreeInfo = WorktreeResult;
 export async function createWorktreeForIssue(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions = {}): Promise<WorktreeResult> {
     const { issueId, issueTitle, owner, repoName } = issueInfo;
     const { baseBranch = null, octokit = null, modelName = null } = options;
+    assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, owner, repoName);
 
     const sanitizedTitle = issueTitle.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').substring(0, 25);
     const randomString = Math.random().toString(36).substring(2, 5);
