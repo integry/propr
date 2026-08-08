@@ -89,6 +89,10 @@ test('does not charge CORS preflight requests against the quota', async () => {
 test('route-level webhook limiting rejects excess requests before body parsing', async () => {
   const app = express();
   let bodyParserRuns = 0;
+  let rawBodySeen = false;
+  app.use(express.json({
+    type: request => !/^\/webhook(?:[/?]|$)/.test(request.url ?? '') && /^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? '')),
+  }));
   app.post(
     '/webhook',
     createRequestRateLimiter({ identifier: 'webhook-test', limit: 1, windowMs: 60_000 }),
@@ -97,7 +101,10 @@ test('route-level webhook limiting rejects excess requests before body parsing',
       next();
     },
     express.raw({ type: 'application/json' }),
-    (_request, response) => response.sendStatus(204),
+    (request, response) => {
+      rawBodySeen = Buffer.isBuffer(request.body);
+      response.sendStatus(204);
+    },
   );
   const server = await listenTestApp(app);
   openServers.push(server.close);
@@ -111,6 +118,7 @@ test('route-level webhook limiting rejects excess requests before body parsing',
   assert.equal((await request()).status, 204);
   assert.equal((await request()).status, 429);
   assert.equal(bodyParserRuns, 1);
+  assert.equal(rawBodySeen, true);
 });
 
 test('does not let an unconfigured private peer rotate quota buckets with X-Forwarded-For', async () => {

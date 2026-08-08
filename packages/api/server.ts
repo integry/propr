@@ -158,7 +158,6 @@ try {
 app.use(cors({ origin: validateCorsOrigin, credentials: true }));
 
 app.use('/api', createApiRequestRateLimiter());
-setupWebhookRoute();
 
 // Prevent caching of API responses to avoid stale CORS issues
 app.use('/api', (_req, res, next) => {
@@ -168,7 +167,10 @@ app.use('/api', (_req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({
+  limit: '1mb',
+  type: request => !/^\/webhook(?:[/?]|$)/.test(request.url ?? '') && /^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? '')),
+}));
 
 // Register demo read-only protection before routes so future mutating /api routes,
 // including auth-adjacent endpoints, cannot bypass it by ordering.
@@ -296,6 +298,8 @@ function setupRoutes(): void {
   assertNoDuplicateRoutes(routes);
   registerRouteEntries(app, routes);
   app.use('/api/agents', agentRoutes.router);
+
+  setupWebhookRoute();
 }
 
 function setupWebhookRoute(): void {
