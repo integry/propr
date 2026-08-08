@@ -271,8 +271,7 @@ export async function startWorkerTaskStateRecovery(
                 await runWithinDeadline(
                     'Task state recovery lease release',
                     () => redis.eval(RELEASE_LEASE_SCRIPT, 1, RECONCILIATION_LEASE_KEY, token),
-                    deadline,
-                    controller.signal,
+                    Date.now() + leaseReleaseBudgetMs,
                 );
             } catch (error) {
                 if (!closed) {
