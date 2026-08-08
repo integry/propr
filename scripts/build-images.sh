@@ -4,7 +4,7 @@
 # Usage:
 #   scripts/build-images.sh                    # build all images, no push
 #   scripts/build-images.sh --push             # build + push to Docker Hub + GHCR
-#   scripts/build-images.sh --push-only        # push images already built and smoke-tested
+#   scripts/build-images.sh --push-only        # stage, preflight, then publish smoke-tested images
 #   scripts/build-images.sh --promote-latest   # promote immutable version tags to latest
 #   scripts/build-images.sh --push --dockerhub # push to Docker Hub only
 #   scripts/build-images.sh --push --ghcr      # push to GHCR only
@@ -278,24 +278,76 @@ reconcile_repository() {
   fi
 }
 
-push_reconciled_image() {
-  local name="$1" repository source_ref candidate_ref rebuilt_digest
+verify_local_release_image() {
+  local name="$1" repository source_ref
   while IFS= read -r repository; do
     source_ref="$repository:$VERSION"
-    candidate_ref="$(candidate_ref_for "$repository")"
     if ! docker image inspect "$source_ref" >/dev/null 2>&1; then
       echo "Refusing to publish missing local image $source_ref; build and smoke-test it first" >&2
       return 1
     fi
+  done < <(repositories_for "$name")
+}
+
+stage_candidate_image() {
+  local name="$1" repository source_ref candidate_ref
+  while IFS= read -r repository; do
+    source_ref="$repository:$VERSION"
+    candidate_ref="$(candidate_ref_for "$repository")"
     docker tag "$source_ref" "$candidate_ref"
     echo "  pushing non-consumer reconciliation tag $candidate_ref"
     docker push "$candidate_ref"
+  done < <(repositories_for "$name")
+}
+
+preflight_immutable_tag() {
+  local target="$1" rebuilt_digest="$2" existing_digest status
+  if existing_digest="$(inspect_remote_digest "$target")"; then
+    if [[ "$existing_digest" != "$rebuilt_digest" ]]; then
+      echo "Refusing to overwrite immutable image tag $target" >&2
+      echo "  existing digest: $existing_digest" >&2
+      echo "  rebuilt digest:  $rebuilt_digest" >&2
+      return 1
+    fi
+    return 0
+  else
+    status=$?
+    [[ $status -eq 1 ]] || return "$status"
+  fi
+}
+
+preflight_candidate_image() {
+  local name="$1" repository candidate_ref rebuilt_digest suffix
+  while IFS= read -r repository; do
+    candidate_ref="$(candidate_ref_for "$repository")"
     if ! rebuilt_digest="$(inspect_remote_digest "$candidate_ref")"; then
-      echo "Unable to resolve rebuilt artifact digest from $candidate_ref" >&2
+      echo "Unable to resolve staged artifact digest from $candidate_ref" >&2
+      return 1
+    fi
+    while IFS= read -r suffix; do
+      preflight_immutable_tag "$repository:$suffix" "$rebuilt_digest" || return
+    done < <(immutable_suffixes_for "$name")
+  done < <(repositories_for "$name")
+}
+
+publish_candidate_image() {
+  local name="$1" repository candidate_ref rebuilt_digest
+  while IFS= read -r repository; do
+    candidate_ref="$(candidate_ref_for "$repository")"
+    if ! rebuilt_digest="$(inspect_remote_digest "$candidate_ref")"; then
+      echo "Unable to resolve staged artifact digest from $candidate_ref" >&2
       return 1
     fi
     reconcile_repository "$name" "$repository" "$rebuilt_digest" || return
   done < <(repositories_for "$name")
+}
+
+push_reconciled_image() {
+  local name="$1"
+  verify_local_release_image "$name"
+  stage_candidate_image "$name"
+  preflight_candidate_image "$name"
+  publish_candidate_image "$name"
 }
 
 reconcile_pushed_candidates() {
@@ -489,11 +541,6 @@ build_image() {
   echo "  context:    $context"
   for t in $(tags_for "$name"); do echo "  tag:        $t"; done
 
-  if $PUSH_ONLY; then
-    push_reconciled_image "$name"
-    return
-  fi
-
   if $PUSH && [[ -n "$PLATFORM" && "$PLATFORM" == *,* ]]; then
     # Multi-arch cannot be loaded into the local daemon. Publish only a staging
     # reference, then apply the same immutable-tag checks used by native builds.
@@ -528,10 +575,34 @@ if $PROMOTE_LATEST; then
   exit 0
 fi
 
-if ! $PUSH_ONLY; then
-  refresh_notices
-  write_manifest
+if $PUSH_ONLY; then
+  RELEASE_IMAGES=("${IMAGES[@]}" "launcher|docker/Dockerfile.launcher|.")
+  # Validate every local source before the first registry mutation. Candidates
+  # are intentionally non-consumer tags; all immutable consumer tags across
+  # both registries are then preflighted before any are created or changed.
+  for entry in "${RELEASE_IMAGES[@]}"; do
+    IFS='|' read -r name _dockerfile _context <<< "$entry"
+    should_build "$name" && verify_local_release_image "$name"
+  done
+  for entry in "${RELEASE_IMAGES[@]}"; do
+    IFS='|' read -r name _dockerfile _context <<< "$entry"
+    should_build "$name" && stage_candidate_image "$name"
+  done
+  for entry in "${RELEASE_IMAGES[@]}"; do
+    IFS='|' read -r name _dockerfile _context <<< "$entry"
+    should_build "$name" && preflight_candidate_image "$name"
+  done
+  for entry in "${RELEASE_IMAGES[@]}"; do
+    IFS='|' read -r name _dockerfile _context <<< "$entry"
+    should_build "$name" && publish_candidate_image "$name"
+  done
+  echo ""
+  echo "✓ staged artifacts preflighted and published"
+  exit 0
 fi
+
+refresh_notices
+write_manifest
 
 for entry in "${IMAGES[@]}"; do
   IFS='|' read -r name dockerfile context <<< "$entry"

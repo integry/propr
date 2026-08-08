@@ -175,6 +175,27 @@ describe('build-images publication reconciliation', () => {
     assert.equal(readState(root).digests[versionRef], DIGEST_B);
   });
 
+  test('preflights every selected image before publishing any consumer tag', () => {
+    const uiRepository = 'registry.example/propr/ui';
+    const conflictingUiVersion = `${uiRepository}:1.2.3`;
+    const root = createFixture({ [conflictingUiVersion]: DIGEST_B });
+    const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app,ui']);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing to overwrite immutable image tag/);
+    const state = readState(root);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], undefined);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], undefined);
+    assert.equal(state.digests[conflictingUiVersion], DIGEST_B);
+    assert.deepEqual(
+      readDockerLog(root).filter(args => args[0] === 'push').map(args => args[1]),
+      [
+        `${IMAGE_REPOSITORY}:reconcile-${FULL_SHA}`,
+        `${uiRepository}:reconcile-${FULL_SHA}`,
+      ],
+    );
+  });
+
   test('does not treat registry authorization failures as missing manifests', () => {
     const shaRef = `${IMAGE_REPOSITORY}:${FULL_SHA}`;
     const root = createFixture();
