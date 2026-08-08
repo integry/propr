@@ -198,7 +198,7 @@ const mockGetPendingReviewState = mock.fn(async () => ({
     hasPendingReview: false,
 }));
 
-const mockClearState = mock.fn(async () => {});
+const mockClearStateIfGenerationCurrent = mock.fn(async () => true);
 const mockClearDeferredContinuation = mock.fn(async () => 1);
 
 setUltrafixDeps({
@@ -207,7 +207,7 @@ setUltrafixDeps({
     loadUltrafixPauseSeconds: mock.fn(async () => 60),
     loadPrReviewModel: mock.fn(async () => ''),
     startLoop: mockStartLoop,
-    clearState: mockClearState,
+    clearStateIfGenerationCurrent: mockClearStateIfGenerationCurrent,
     clearDeferredContinuation: mockClearDeferredContinuation,
     getPendingReviewState: mockGetPendingReviewState,
 });
@@ -268,6 +268,8 @@ describe('commentEventHandler — /ultrafix command', () => {
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
         mockStartLoop.mock.resetCalls();
+        mockClearStateIfGenerationCurrent.mock.resetCalls();
+        mockClearStateIfGenerationCurrent.mock.mockImplementation(async () => true);
         mockClearDeferredContinuation.mock.resetCalls();
         mockGetPendingReviewState.mock.resetCalls();
         mockFilterCommentByAuthor.mock.resetCalls();
@@ -341,6 +343,27 @@ describe('commentEventHandler — /ultrafix command', () => {
             (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST')
         );
         assert.ok(postCalls.length > 0, 'Expected a POST request to create a comment');
+    });
+
+    test('stale startup rollback preserves a label that may belong to a newer loop', async () => {
+        mockStartLoop.mock.mockImplementationOnce(async () => {
+            throw new Error('Ultrafix loop startup was superseded by a newer command');
+        });
+        mockClearStateIfGenerationCurrent.mock.mockImplementationOnce(async () => false);
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-stale-rollback', config),
+            /superseded/,
+        );
+
+        assert.strictEqual(mockClearStateIfGenerationCurrent.mock.callCount(), 1);
+        assert.deepStrictEqual(mockClearStateIfGenerationCurrent.mock.calls[0].arguments.slice(1), [
+            { owner: 'testowner', repo: 'testrepo', pr: 42 }, 1,
+        ]);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['ultrafix']);
     });
 
     test('duplicate /ultrafix deliveries for the same comment initialize only one loop', async () => {

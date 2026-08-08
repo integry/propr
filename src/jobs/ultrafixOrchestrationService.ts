@@ -8,7 +8,7 @@
 
 import type { Redis } from 'ioredis';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
-import { clearDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
+import { clearDeferredContinuation, getUltrafixDeferredGenerationKey } from './ultrafixDeferredContinuationStore.js';
 
 export {
     claimDeferredContinuation,
@@ -121,6 +121,24 @@ const KEY_PREFIX = 'ultrafix:state';
 const DEFAULT_GOAL = 7;
 const DEFAULT_MAX_CYCLES = 5;
 const DEFAULT_PAUSE_SECONDS = 60;
+
+const SAVE_STATE_IF_CURRENT_SCRIPT = `
+local current_generation = redis.call('GET', KEYS[1]) or '0'
+if current_generation ~= ARGV[1] then
+    return 0
+end
+redis.call('SET', KEYS[2], ARGV[2])
+return 1
+`;
+
+const CLEAR_STATE_IF_CURRENT_SCRIPT = `
+local current_generation = redis.call('GET', KEYS[1]) or '0'
+if current_generation ~= ARGV[1] then
+    return 0
+end
+redis.call('DEL', KEYS[2])
+return 1
+`;
 
 // --- Key helper ---
 
@@ -264,6 +282,35 @@ export async function clearState(redis: Redis, owner: string, repo: string, pr: 
     await redis.del(key);
 }
 
+export async function saveStateIfGenerationCurrent(redis: Redis, state: UltrafixLoopState): Promise<boolean> {
+    const generationKey = getUltrafixDeferredGenerationKey(state.owner, state.repo, state.pr);
+    const stateKey = getUltrafixStateKey(state.owner, state.repo, state.pr);
+    return Number(await redis.eval(
+        SAVE_STATE_IF_CURRENT_SCRIPT,
+        2,
+        generationKey,
+        stateKey,
+        String(state.generation),
+        JSON.stringify(state),
+    )) === 1;
+}
+
+export async function clearStateIfGenerationCurrent(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    generation: number,
+): Promise<boolean> {
+    const generationKey = getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr);
+    const stateKey = getUltrafixStateKey(identity.owner, identity.repo, identity.pr);
+    return Number(await redis.eval(
+        CLEAR_STATE_IF_CURRENT_SCRIPT,
+        2,
+        generationKey,
+        stateKey,
+        String(generation),
+    )) === 1;
+}
+
 // --- High-level helpers ---
 
 /**
@@ -278,7 +325,9 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
     const initialAction = determineInitialAction(hasPendingReviews);
     state.lastAction = initialAction;
     state.lastActionTimestamp = new Date().toISOString();
-    await saveState(redis, state);
+    if (!await saveStateIfGenerationCurrent(redis, state)) {
+        throw new Error('Ultrafix loop startup was superseded by a newer command');
+    }
     return { state, initialAction };
 }
 

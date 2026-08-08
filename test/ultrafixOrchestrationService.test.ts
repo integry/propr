@@ -10,6 +10,8 @@ import {
     saveState,
     loadState,
     clearState,
+    clearStateIfGenerationCurrent,
+    clearDeferredContinuation,
     saveDeferredContinuation,
     loadDeferredContinuation,
     startLoop,
@@ -370,6 +372,37 @@ describe('startLoop', () => {
         await startLoop(redis as any, { owner: 'o', repo: 'r', pr: 1 }, false);
 
         assert.strictEqual(await loadDeferredContinuation(redis as any, 'o', 'r', 1), null);
+    });
+
+    test('rejects stale out-of-order startup without overwriting the newer loop', async () => {
+        const redis = createMockRedis();
+        const olderGeneration = await clearDeferredContinuation(redis as any, 'o', 'r', 1);
+        const newerGeneration = await clearDeferredContinuation(redis as any, 'o', 'r', 1);
+        await startLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, goal: 9, generation: newerGeneration,
+        }, false);
+
+        await assert.rejects(
+            startLoop(redis as any, {
+                owner: 'o', repo: 'r', pr: 1, goal: 3, generation: olderGeneration,
+            }, false),
+            /superseded/,
+        );
+        assert.strictEqual((await loadState(redis as any, 'o', 'r', 1))?.goal, 9);
+    });
+
+    test('stale rollback cannot clear state owned by a newer generation', async () => {
+        const redis = createMockRedis();
+        const olderGeneration = await clearDeferredContinuation(redis as any, 'o', 'r', 1);
+        const newerGeneration = await clearDeferredContinuation(redis as any, 'o', 'r', 1);
+        await startLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, goal: 9, generation: newerGeneration,
+        }, false);
+
+        assert.strictEqual(await clearStateIfGenerationCurrent(
+            redis as any, { owner: 'o', repo: 'r', pr: 1 }, olderGeneration,
+        ), false);
+        assert.strictEqual((await loadState(redis as any, 'o', 'r', 1))?.goal, 9);
     });
 });
 

@@ -27,7 +27,7 @@ export interface UltrafixDeps {
     loadUltrafixPauseSeconds: () => Promise<number>;
     loadPrReviewModel: () => Promise<string>;
     startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; generation?: number }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
-    clearState: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
+    clearStateIfGenerationCurrent: (redis: Redis, identity: { owner: string; repo: string; pr: number }, generation: number) => Promise<boolean>;
     clearDeferredContinuation: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
@@ -476,18 +476,20 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         // This is safe because the enqueued job has NOT committed if we land here.
         correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed before job enqueue, rolling back');
         try {
-            await deps.clearState(redisClient, owner, repo, prNumber);
+            const rollbackOwned = await deps.clearStateIfGenerationCurrent(
+                redisClient, { owner, repo, pr: prNumber }, generation,
+            );
 
-            if (labelWasAdded) {
+            if (labelWasAdded && rollbackOwned) {
                 await safeUpdateLabels(
                     { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
                     ['ultrafix'],
                     [],
                 );
             }
-            const labelNote = labelWasAdded
+            const labelNote = labelWasAdded && rollbackOwned
                 ? 'The ultrafix label has been removed.'
-                : 'The existing ultrafix label was left in place — remove it manually if you do not want further ultrafix cycles.';
+                : 'The ultrafix label was left in place because a newer command may own it — remove it manually if you do not want further ultrafix cycles.';
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner,
                 repo,
