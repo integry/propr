@@ -48,7 +48,8 @@ import {
   processCommentEvent,
   closeUltrafixStateRedis,
   getActiveTasksForPR,
-  AGENT_RUNTIME_BUILD_QUEUE_NAME
+  AGENT_RUNTIME_BUILD_QUEUE_NAME,
+  runMigrations
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -381,7 +382,7 @@ const httpServer: HttpServer = createServer(app);
 async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
-    try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
+    await runMigrations();
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();
     await initRedis();
