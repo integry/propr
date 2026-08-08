@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
@@ -281,9 +281,9 @@ export class OpenCodeAgent implements Agent {
             const runAsNode = process.getuid?.() === 0;
             if (runAsNode) fs.chownSync(workspace, 1000, 1000);
             const execOptions = { cwd: workspace, stdio: 'pipe' as const, ...(runAsNode ? { uid: 1000, gid: 1000 } : {}) };
-            execSync('git init', execOptions);
-            execSync('git config user.email "opencode@propr.dev"', execOptions);
-            execSync('git config user.name "OpenCode Analysis"', execOptions);
+            execFileSync('git', ['init'], execOptions);
+            execFileSync('git', ['config', 'user.email', 'opencode@propr.dev'], execOptions);
+            execFileSync('git', ['config', 'user.name', 'OpenCode Analysis'], execOptions);
         } catch (initError) {
             logger.warn({ error: (initError as Error).message }, 'Failed to initialize OpenCode analysis workspace');
         }
