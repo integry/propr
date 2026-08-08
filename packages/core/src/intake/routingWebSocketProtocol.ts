@@ -30,13 +30,16 @@ export interface MinimalWebSocket {
     on(event: 'close', listener: (code: number, reason: Buffer) => void): void;
     on(event: 'error', listener: (err: Error) => void): void;
     on(event: 'pong', listener: () => void): void;
-    /** Send a text frame back to the relay (ACK / pong). */
+    /** Send a text frame back to the relay (hello / ACK / pong). */
     send(data: string): void;
     ping(): void;
     close(code?: number, reason?: string): void;
     terminate(): void;
     readonly readyState: number;
 }
+
+/** RoutingHub wire protocol version used by application-heartbeat probes. */
+export const ROUTING_HUB_PROTOCOL_VERSION = 1;
 
 export type WebSocketCtor = new (address: string, options?: Record<string, unknown>) => MinimalWebSocket;
 
@@ -704,11 +707,13 @@ export interface RoutingWebSocketIntakeServiceOptions {
     reconnectDelayMs?: number;
     /** Maximum reconnect backoff delay in ms. */
     maxReconnectDelayMs?: number;
-    /** Keepalive ping interval in ms. */
+    /** Transport and application-heartbeat probe interval in ms. */
     pingIntervalMs?: number;
     /**
-     * Maximum time to wait for a WebSocket pong after each transport ping before
+     * Maximum time to wait for heartbeat evidence after each probe before
      * terminating the stale socket so the normal reconnect path can take over.
+     * Once the relay answers an application probe, only an application response
+     * counts; transport pongs remain a compatibility fallback for older relays.
      */
     pongTimeoutMs?: number;
     /** Maximum number of delivery ids retained for deduplication. */

@@ -43,9 +43,10 @@
  *   - `pong`: `{ type: 'pong' }` — keepalive response.
  *
  * The service is resilient by design: it reconnects with capped exponential
- * backoff, verifies socket liveness with periodic WebSocket ping/pong deadlines, deduplicates
- * deliveries by id with bounded memory, and shuts down cleanly so the daemon can
- * stop it on SIGINT/SIGTERM without leaking sockets or timers.
+ * backoff, verifies end-to-end relay liveness with periodic application and
+ * transport heartbeat deadlines, deduplicates deliveries by id with bounded
+ * memory, and shuts down cleanly so the daemon can stop it on SIGINT/SIGTERM
+ * without leaking sockets or timers.
  */
 
 import { DEFAULT_PROPR_ROUTING_URL } from '@propr/shared';
@@ -261,7 +262,7 @@ export class RoutingWebSocketIntakeService {
         socket.on('pong', () => {
             // A late pong from a socket that has already been replaced must not
             // clear the current connection's liveness deadline.
-            if (socket === this.socket) this.keepalive.clearPongDeadline();
+            if (socket === this.socket) this.keepalive.acknowledgeTransportPong();
         });
 
         socket.on('message', (data: RawData) => {
@@ -323,6 +324,13 @@ export class RoutingWebSocketIntakeService {
                 );
                 return;
             case 'ping':
+                // A delayed frame from a socket superseded by reconnect must not
+                // clear the current connection's heartbeat deadline.
+                if (socket !== this.socket) return;
+                // Receiving an application-level ping proves the hello probe
+                // reached the RoutingHub itself. From this point on, edge-level
+                // WebSocket pongs are no longer sufficient liveness evidence.
+                this.keepalive.acknowledgeApplicationHeartbeat();
                 // Echo the relay's nonce; the relay requires a non-empty nonce on
                 // pong frames and rejects a nonce-less reply as a malformed frame.
                 this.send({ type: 'pong', nonce: frame.nonce }, socket);

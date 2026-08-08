@@ -156,7 +156,7 @@ test('connects to the /v1/connect path with a Bearer relay token', async () => {
     await service.stop();
 });
 
-test('uses a low-frequency default WebSocket transport ping', async () => {
+test('uses a low-frequency default transport and application heartbeat probe', async () => {
     mock.timers.enable({ apis: ['setInterval'] });
     const prev = process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
     delete process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
@@ -172,6 +172,7 @@ test('uses a low-frequency default WebSocket transport ping', async () => {
 
         mock.timers.tick(1);
         assert.equal(socket.pings, 1, 'default ping fires at 5 minutes');
+        assert.deepEqual(socket.sentFrames(), [{ type: 'hello', protocolVersion: 1 }]);
     } finally {
         await service?.stop();
         mock.timers.reset();
@@ -245,6 +246,92 @@ test('keeps the routing socket alive when a transport pong arrives before the de
         mock.timers.tick(1);
 
         assert.equal(socket.terminated, false, 'a timely pong clears the stale-socket deadline');
+        assert.equal(service.getStatus().connected, true);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+    }
+});
+
+test('requires an application response after the relay negotiates application heartbeats', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService({ pingIntervalMs: 100, pongTimeoutMs: 50 }));
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        // A RoutingHub ping proves application-heartbeat support and is answered
+        // using the existing protocol pong.
+        socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'negotiation' }));
+        assert.deepEqual(socket.sentFrames(), [{ type: 'pong', nonce: 'negotiation' }]);
+
+        mock.timers.tick(100);
+        assert.equal(socket.pings, 1);
+        socket.emit('pong');
+        mock.timers.tick(50);
+
+        assert.equal(socket.terminated, true, 'an edge transport pong cannot mask a lost RoutingHub path');
+        assert.equal(service.getStatus().connected, false);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+    }
+});
+
+test('keeps a negotiated connection alive when the RoutingHub answers the probe', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService({ pingIntervalMs: 100, pongTimeoutMs: 50 }));
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+        socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'negotiation' }));
+
+        mock.timers.tick(100);
+        mock.timers.tick(49);
+        socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'probe-response' }));
+        mock.timers.tick(1);
+
+        assert.equal(socket.terminated, false);
+        assert.equal(service.getStatus().connected, true);
+        assert.deepEqual(socket.sentFrames().slice(-2), [
+            { type: 'hello', protocolVersion: 1 },
+            { type: 'pong', nonce: 'probe-response' },
+        ]);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+    }
+});
+
+test('ignores an application heartbeat from a superseded socket', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService({
+            pingIntervalMs: 100,
+            pongTimeoutMs: 50,
+            reconnectDelayMs: 25,
+            maxReconnectDelayMs: 25,
+        }));
+        await service.start();
+        const first = FakeWebSocket.instances[0];
+        first.emit('open');
+        first.emit('close', 1006, Buffer.from('dropped'));
+        mock.timers.tick(25);
+
+        const second = FakeWebSocket.instances[1];
+        second.emit('open');
+        first.emit('message', JSON.stringify({ type: 'ping', nonce: 'late-old-socket' }));
+
+        mock.timers.tick(100);
+        second.emit('pong');
+        mock.timers.tick(50);
+
+        assert.equal(second.terminated, false, 'stale application frames cannot change current heartbeat mode');
         assert.equal(service.getStatus().connected, true);
     } finally {
         await service?.stop();
