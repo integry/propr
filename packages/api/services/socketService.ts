@@ -312,6 +312,9 @@ export class SocketService {
         if (this.taskUpdateTails.get(payload.taskId) === current) {
           this.taskUpdateTails.delete(payload.taskId);
         }
+      })
+      .catch(error => {
+        console.error(`[SocketService] Failed to process task update for ${payload.taskId}:`, error);
       });
     this.taskUpdateTails.set(payload.taskId, current);
   }
