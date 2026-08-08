@@ -73,9 +73,7 @@ export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string
 
 export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
     const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, repositoryInspection = false, dataPath, ensureConfigPath = ensureDirectory } = params;
-    if (repositoryInspection && !readOnlyWorkspace) {
-        throw new Error('Repository inspection requires a read-only workspace');
-    }
+    assertRepositoryInspectionMode(repositoryInspection, readOnlyWorkspace);
     const configPath = params.configPath || resolveConfigPath(config.configPath);
     const managedCredentials = isManagedAgentConfigPath(config.configPath);
     ensureConfigPath(configPath);
@@ -120,6 +118,10 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, 'opencode');
 }
 
+function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyWorkspace: boolean | undefined): void {
+    if (repositoryInspection && !readOnlyWorkspace) throw new Error('Repository inspection requires a read-only workspace');
+}
+
 interface OpenCodeDataMount { hostPath: string; mode: 'ro' | 'rw'; }
 
 function appendOpenCodeDataMount(dockerArgs: string[], dataMount: OpenCodeDataMount | null): void {
@@ -150,8 +152,10 @@ function resolveOpenCodeDataMount(
         : null;
 }
 
-function inferOpenCodeDataPath(configPath: string): string | null {
-    const normalized = configPath.replace(/\/+$/, '');
+export function inferOpenCodeDataPath(configPath: string): string | null {
+    let end = configPath.length;
+    while (end > 0 && configPath.charCodeAt(end - 1) === 47) end--;
+    const normalized = configPath.slice(0, end);
     if (normalized.endsWith('/.config/opencode')) {
         return `${normalized.slice(0, -'/.config/opencode'.length)}/.local/share/opencode`;
     }

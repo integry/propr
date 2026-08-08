@@ -46,6 +46,49 @@ const STOP_WORDS = new Set([
 
 /** Minimum length for a keyword */
 const MIN_KEYWORD_LENGTH = 2;
+const LEADING_KEYWORD_DELIMITERS = new Set(['`', "'", '"', '(', '[', '{']);
+const TRAILING_KEYWORD_DELIMITERS = new Set(['.', '`', "'", '"', ']', ')', '}', ',', ';', ':', '!', '?']);
+
+function trimKeywordDelimiters(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && LEADING_KEYWORD_DELIMITERS.has(value[start])) start++;
+  while (end > start && TRAILING_KEYWORD_DELIMITERS.has(value[end - 1])) end--;
+  return value.slice(start, end);
+}
+
+function isFileTokenCharacter(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return (code >= 48 && code <= 57)
+    || (code >= 65 && code <= 90)
+    || (code >= 97 && code <= 122)
+    || char === '_' || char === '.' || char === '-' || char === '/';
+}
+
+function isFileLikeToken(token: string): boolean {
+  if (!token) return false;
+  if (token.includes('/')) {
+    const segments = token.split('/');
+    return segments.every(Boolean) && /[A-Za-z0-9_-]/.test(token[token.length - 1]);
+  }
+  if (!token.includes('.') || !/[A-Za-z0-9_]/.test(token[0])) return false;
+  return token.split('.').every(segment => segment.length > 0 && !/[^A-Za-z0-9_-]/.test(segment));
+}
+
+function fileLikeTokens(prompt: string): string[] {
+  const tokens: string[] = [];
+  let start = -1;
+  for (let index = 0; index <= prompt.length; index++) {
+    const isTokenCharacter = index < prompt.length && isFileTokenCharacter(prompt[index]);
+    if (isTokenCharacter && start === -1) start = index;
+    if (!isTokenCharacter && start !== -1) {
+      const token = trimKeywordDelimiters(prompt.slice(start, index));
+      if (isFileLikeToken(token)) tokens.push(token);
+      start = -1;
+    }
+  }
+  return tokens;
+}
 
 /**
  * Basic regex-based keyword extraction from a prompt.
@@ -55,7 +98,7 @@ export function extractKeywords(prompt: string): string[] {
   const keywords: string[] = [];
   const seen = new Set<string>();
   const addKeyword = (value: string, preserveCase = false): void => {
-    const normalized = value.replace(/^[`'"([{]+|[.`'"\])},;:!?]+$/g, '');
+    const normalized = trimKeywordDelimiters(value);
     const comparison = normalized.toLowerCase();
     if (comparison.length < MIN_KEYWORD_LENGTH
         || STOP_WORDS.has(comparison)
@@ -69,8 +112,8 @@ export function extractKeywords(prompt: string): string[] {
 
   // Paths and filenames carry the strongest signal. Preserve separators and
   // extensions so path scoring can perform exact and directory matches.
-  for (const match of prompt.matchAll(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]*[A-Za-z0-9_-]|\b[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+\b/g)) {
-    addKeyword(match[0], true);
+  for (const token of fileLikeTokens(prompt)) {
+    addKeyword(token, true);
   }
 
   // Preserve source identifiers exactly for diagnostics and git searches,
