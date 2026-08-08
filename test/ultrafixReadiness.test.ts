@@ -28,6 +28,23 @@ function createMockRedis() {
         async get(key: string) { return store.get(key) ?? null; },
         async set(key: string, value: string) { store.set(key, value); return 'OK'; },
         async del(key: string) { store.delete(key); lists.delete(key); return 1; },
+        async eval(script: string, _keyCount: number, ...args: string[]) {
+            const [generationKey, deferredKey] = args;
+            if (script.includes('return { deferred, generation }')) {
+                const deferred = store.get(deferredKey);
+                if (!deferred) return null;
+                store.delete(deferredKey);
+                return [deferred, store.get(generationKey) ?? '0'];
+            }
+            if (script.includes("redis.call('INCR'")) {
+                store.set(generationKey, String(Number(store.get(generationKey) ?? '0') + 1));
+                store.delete(deferredKey);
+                return 1;
+            }
+            if ((store.get(generationKey) ?? '0') !== args[2]) return 0;
+            store.set(deferredKey, args[3]);
+            return 1;
+        },
         async llen(key: string) { return (lists.get(key) ?? []).length; },
         async lpush(key: string, ...values: string[]) {
             if (!lists.has(key)) lists.set(key, []);

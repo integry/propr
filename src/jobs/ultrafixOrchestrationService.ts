@@ -103,12 +103,15 @@ export interface UltrafixDeferredContinuation {
     reason: string;
     /** UltrafixMeta to pass to the next job when resuming */
     ultrafixMeta?: import('@propr/core').UltrafixCommandMeta;
+    /** Cancellation generation captured when this continuation was claimed. */
+    generation?: number;
 }
 
 // --- Constants ---
 
 const KEY_PREFIX = 'ultrafix:state';
 const DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
+const DEFERRED_GENERATION_KEY_PREFIX = 'ultrafix:deferred-generation';
 const DEFAULT_GOAL = 7;
 const DEFAULT_MAX_CYCLES = 5;
 const DEFAULT_PAUSE_SECONDS = 60;
@@ -121,6 +124,10 @@ export function getUltrafixStateKey(owner: string, repo: string, pr: number): st
 
 export function getUltrafixDeferredKey(owner: string, repo: string, pr: number): string {
     return `${DEFERRED_KEY_PREFIX}:${owner}:${repo}:${pr}`;
+}
+
+export function getUltrafixDeferredGenerationKey(owner: string, repo: string, pr: number): string {
+    return `${DEFERRED_GENERATION_KEY_PREFIX}:${owner}:${repo}:${pr}`;
 }
 
 // --- State defaults ---
@@ -492,12 +499,50 @@ export function checkReadiness(opts: {
 
 // --- Deferred continuation persistence ---
 
+const SAVE_DEFERRED_IF_CURRENT_SCRIPT = `
+local current_generation = redis.call('GET', KEYS[1]) or '0'
+if current_generation ~= ARGV[1] then
+    return 0
+end
+redis.call('SET', KEYS[2], ARGV[2])
+return 1
+`;
+
+const CLAIM_DEFERRED_SCRIPT = `
+local deferred = redis.call('GET', KEYS[2])
+if not deferred then
+    return nil
+end
+local generation = redis.call('GET', KEYS[1]) or '0'
+redis.call('DEL', KEYS[2])
+return { deferred, generation }
+`;
+
+const CANCEL_DEFERRED_SCRIPT = `
+redis.call('INCR', KEYS[1])
+redis.call('DEL', KEYS[2])
+return 1
+`;
+
 export async function saveDeferredContinuation(
     redis: Redis,
     deferred: UltrafixDeferredContinuation,
-): Promise<void> {
+): Promise<boolean> {
     const key = getUltrafixDeferredKey(deferred.owner, deferred.repo, deferred.pr);
-    await redis.set(key, JSON.stringify(deferred));
+    const generationKey = getUltrafixDeferredGenerationKey(deferred.owner, deferred.repo, deferred.pr);
+    const generation = deferred.generation
+        ?? Number(await redis.get(generationKey) ?? '0');
+    const persisted = { ...deferred };
+    delete persisted.generation;
+    const saved = await redis.eval(
+        SAVE_DEFERRED_IF_CURRENT_SCRIPT,
+        2,
+        generationKey,
+        key,
+        String(generation),
+        JSON.stringify(persisted),
+    );
+    return Number(saved) === 1;
 }
 
 export async function loadDeferredContinuation(
@@ -519,9 +564,22 @@ export async function claimDeferredContinuation(
     pr: number,
 ): Promise<UltrafixDeferredContinuation | null> {
     const key = getUltrafixDeferredKey(owner, repo, pr);
-    const raw = await redis.getdel(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as UltrafixDeferredContinuation;
+    const generationKey = getUltrafixDeferredGenerationKey(owner, repo, pr);
+    const claimed = await redis.eval(CLAIM_DEFERRED_SCRIPT, 2, generationKey, key);
+    if (!Array.isArray(claimed) || claimed.length !== 2) return null;
+    const deferred = JSON.parse(String(claimed[0])) as UltrafixDeferredContinuation;
+    deferred.generation = Number(claimed[1]);
+    return deferred;
+}
+
+export async function isDeferredContinuationCurrent(
+    redis: Redis,
+    deferred: UltrafixDeferredContinuation,
+): Promise<boolean> {
+    if (deferred.generation === undefined) return false;
+    const generationKey = getUltrafixDeferredGenerationKey(deferred.owner, deferred.repo, deferred.pr);
+    const currentGeneration = Number(await redis.get(generationKey) ?? '0');
+    return currentGeneration === deferred.generation;
 }
 
 export async function clearDeferredContinuation(
@@ -531,7 +589,8 @@ export async function clearDeferredContinuation(
     pr: number,
 ): Promise<void> {
     const key = getUltrafixDeferredKey(owner, repo, pr);
-    await redis.del(key);
+    const generationKey = getUltrafixDeferredGenerationKey(owner, repo, pr);
+    await redis.eval(CANCEL_DEFERRED_SCRIPT, 2, generationKey, key);
 }
 
 /**

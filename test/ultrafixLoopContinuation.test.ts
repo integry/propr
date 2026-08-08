@@ -1,4 +1,4 @@
-import { test, describe, beforeEach } from 'node:test';
+import { test, describe, beforeEach, mock } from 'node:test';
 import assert from 'node:assert';
 
 import {
@@ -9,8 +9,45 @@ import {
     completeLoop,
     determineNextAction,
     hasReviewReachedGoal,
+    startLoop,
+    saveDeferredContinuation,
+    loadDeferredContinuation,
+    clearDeferredContinuation,
     type UltrafixLoopState,
 } from '../src/jobs/ultrafixOrchestrationService.js';
+
+const enqueueNextStep = mock.fn(async () => {});
+const evaluateReadiness = mock.fn(async () => ({ ready: true, reasons: [] as string[] }));
+
+await mock.module('@propr/core', {
+    namedExports: {
+        generateCorrelationId: mock.fn(() => 'resume-correlation-id'),
+        getAuthenticatedOctokit: mock.fn(),
+        withRetry: mock.fn(async (fn: () => Promise<unknown>) => fn()),
+        retryConfigs: { githubApi: {} },
+    },
+});
+
+await mock.module('../src/jobs/ultrafixLoopContinuationHelpers.js', {
+    namedExports: {
+        enqueueNextStep,
+        evaluateReadiness,
+        hasUltrafixLabel: mock.fn(async () => true),
+        maybeEnableAutoMerge: mock.fn(async () => {}),
+        postPrComment: mock.fn(async () => {}),
+        removeUltrafixLabel: mock.fn(async () => {}),
+    },
+});
+
+await mock.module('../src/jobs/prCommentJobUtils.js', {
+    namedExports: { fetchAllComments: mock.fn(async () => []) },
+});
+
+await mock.module('../src/jobs/reviewCommentGatherer.js', {
+    namedExports: { getPendingReviewState: mock.fn() },
+});
+
+const { resumeDeferredContinuation } = await import('../src/jobs/ultrafixLoopContinuation.js');
 
 // --- Mock Redis ---
 
@@ -23,6 +60,23 @@ function createMockRedis() {
         async get(key: string) { return store.get(key) ?? null; },
         async set(key: string, value: string) { store.set(key, value); return 'OK'; },
         async del(key: string) { store.delete(key); return 1; },
+        async eval(script: string, _keyCount: number, ...args: string[]) {
+            const [generationKey, deferredKey] = args;
+            if (script.includes('return { deferred, generation }')) {
+                const deferred = store.get(deferredKey);
+                if (!deferred) return null;
+                store.delete(deferredKey);
+                return [deferred, store.get(generationKey) ?? '0'];
+            }
+            if (script.includes("redis.call('INCR'")) {
+                store.set(generationKey, String(Number(store.get(generationKey) ?? '0') + 1));
+                store.delete(deferredKey);
+                return 1;
+            }
+            if ((store.get(generationKey) ?? '0') !== args[2]) return 0;
+            store.set(deferredKey, args[3]);
+            return 1;
+        },
         async smembers(key: string) { return [...(sets.get(key) ?? [])]; },
         async sadd(key: string, ...members: string[]) {
             if (!sets.has(key)) sets.set(key, new Set());
@@ -319,5 +373,86 @@ describe('Ultrafix loop continuation logic', () => {
             assert.strictEqual(finalDecision.action, null);
             assert.ok(finalDecision.reason.includes('Max cycles'));
         });
+    });
+});
+
+describe('claimed deferred continuation cancellation', () => {
+    let redis: ReturnType<typeof createMockRedis>;
+    const logger = {
+        info: mock.fn(),
+        warn: mock.fn(),
+        error: mock.fn(),
+        debug: mock.fn(),
+    };
+
+    beforeEach(() => {
+        redis = createMockRedis();
+        enqueueNextStep.mock.resetCalls();
+        evaluateReadiness.mock.resetCalls();
+    });
+
+    function pauseReadiness() {
+        let markClaimed!: () => void;
+        let release!: (readiness: { ready: boolean; reasons: string[] }) => void;
+        const claimed = new Promise<void>((resolve) => { markClaimed = resolve; });
+        const readiness = new Promise<{ ready: boolean; reasons: string[] }>((resolve) => { release = resolve; });
+        evaluateReadiness.mock.mockImplementationOnce(async () => {
+            markClaimed();
+            return readiness;
+        });
+        return { claimed, release };
+    }
+
+    async function seedDeferredLoop() {
+        await startLoop(redis as never, {
+            owner: 'acme', repo: 'web', pr: 42, pauseSeconds: 1,
+        }, false);
+        await saveDeferredContinuation(redis as never, {
+            owner: 'acme', repo: 'web', pr: 42,
+            nextAction: 'review',
+            savedAt: new Date().toISOString(),
+            reason: 'checks_not_passing',
+        });
+    }
+
+    test('manual takeover prevents a claimed continuation from enqueueing', async () => {
+        await seedDeferredLoop();
+        const gate = pauseReadiness();
+        const resumed = resumeDeferredContinuation(
+            { owner: 'acme', repo: 'web', pr: 42 },
+            redis as never,
+            logger as never,
+        );
+
+        await gate.claimed;
+        await clearDeferredContinuation(redis as never, 'acme', 'web', 42);
+        gate.release({ ready: true, reasons: [] });
+
+        const result = await resumed;
+        assert.strictEqual(result.reason, 'deferred_cancelled');
+        assert.strictEqual(enqueueNextStep.mock.callCount(), 0);
+        assert.strictEqual(await loadDeferredContinuation(redis as never, 'acme', 'web', 42), null);
+    });
+
+    test('fresh loop startup prevents a claimed continuation from being re-saved', async () => {
+        await seedDeferredLoop();
+        const gate = pauseReadiness();
+        const resumed = resumeDeferredContinuation(
+            { owner: 'acme', repo: 'web', pr: 42 },
+            redis as never,
+            logger as never,
+        );
+
+        await gate.claimed;
+        await startLoop(redis as never, {
+            owner: 'acme', repo: 'web', pr: 42, goal: 9,
+        }, false);
+        gate.release({ ready: false, reasons: ['checks_not_passing'] });
+
+        const result = await resumed;
+        assert.strictEqual(result.reason, 'deferred_cancelled');
+        assert.strictEqual(enqueueNextStep.mock.callCount(), 0);
+        assert.strictEqual(await loadDeferredContinuation(redis as never, 'acme', 'web', 42), null);
+        assert.strictEqual((await loadState(redis as never, 'acme', 'web', 42))?.goal, 9);
     });
 });

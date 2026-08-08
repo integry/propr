@@ -25,6 +25,7 @@ import {
     recordReviewFindings,
     saveDeferredContinuation,
     clearDeferredContinuation,
+    isDeferredContinuationCurrent,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
@@ -334,12 +335,29 @@ export async function resumeDeferredContinuation(
 
     if (!readiness.ready) {
         // Not ready yet — re-save so a future check_run can try again
-        await saveDeferredContinuation(redisClient, deferred);
+        const saved = await saveDeferredContinuation(redisClient, deferred);
+        if (!saved) {
+            correlatedLogger.info(
+                { pr, nextAction: deferred.nextAction },
+                'Ultrafix deferred resume: cancellation superseded claimed transition',
+            );
+            return { continued: false, reason: 'deferred_cancelled' };
+        }
         return {
             continued: false,
             reason: `still_deferred: ${readiness.reasons.join(', ')}`,
             deferred: true,
         };
+    }
+
+    // A manual takeover or fresh loop may have cancelled this record while
+    // readiness was being evaluated after the atomic claim.
+    if (!await isDeferredContinuationCurrent(redisClient, deferred)) {
+        correlatedLogger.info(
+            { pr, nextAction: deferred.nextAction },
+            'Ultrafix deferred resume: cancellation superseded claimed transition',
+        );
+        return { continued: false, reason: 'deferred_cancelled' };
     }
 
     const delayMs = (state.pauseSeconds || 60) * 1000;
