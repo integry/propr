@@ -175,6 +175,12 @@ describe('parseSlashCommand', () => {
         assert.deepStrictEqual(result.args, ['claude', 'antigravity']);
     });
 
+    test('rejects embedded line terminators in inline arguments', () => {
+        assert.strictEqual(parseSlashCommand('/fix one\rtwo'), null);
+        assert.strictEqual(parseSlashCommand('/fix one\u2028two'), null);
+        assert.strictEqual(parseSlashCommand('/fix one\u2029two'), null);
+    });
+
     test('returns empty instructions when only whitespace follows command line', () => {
         const result = parseSlashCommand('/use sonnet\n   \n  ');
         assert.ok(result);

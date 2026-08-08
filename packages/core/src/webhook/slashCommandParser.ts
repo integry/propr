@@ -74,6 +74,10 @@ export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta 
 
 const SLASH_COMMANDS = new Set<SlashCommandName>(['review', 'fix', 'merge', 'switch', 'use', 'ultrafix']);
 
+function isLineTerminator(character: string): boolean {
+    return character === '\n' || character === '\r' || character === '\u2028' || character === '\u2029';
+}
+
 /**
  * Parse a PR comment body for a slash command.
  *
@@ -99,6 +103,16 @@ export function parseSlashCommand(body: string | undefined | null): ParsedSlashC
     }
     const commandText = firstLineTrimmed.slice(1, separatorIndex === -1 ? undefined : separatorIndex);
     if (!SLASH_COMMANDS.has(commandText as SlashCommandName)) return null;
+
+    let hasInlineArgumentContent = false;
+    for (let index = separatorIndex; index !== -1 && index < firstLineTrimmed.length; index++) {
+        const character = firstLineTrimmed[index];
+        if (isLineTerminator(character)) {
+            if (hasInlineArgumentContent) return null;
+        } else if (character.trim() !== '') {
+            hasInlineArgumentContent = true;
+        }
+    }
 
     const command = commandText as SlashCommandName;
     const argsStr = separatorIndex === -1 ? '' : firstLineTrimmed.slice(separatorIndex).trim();

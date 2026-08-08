@@ -36,6 +36,8 @@ test('keyword extraction preserves dotted filename word boundaries', () => {
     ['.eslintrc.json', 'eslintrc.json'],
     ['-package.json', 'package.json'],
     ['package.json-', 'package.json'],
+    ['check...package.json', 'package.json'],
+    ['package.json...next', 'package.json'],
   ]) {
     assert.equal(extractKeywords(prompt)[0], expected);
   }

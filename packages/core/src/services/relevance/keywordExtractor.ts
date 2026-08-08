@@ -95,6 +95,54 @@ function isFileLikeToken(token: string): boolean {
   return token.split('.').every(segment => segment.length > 0 && !/[^A-Za-z0-9_-]/.test(segment));
 }
 
+function filenameTokensWithin(value: string): string[] {
+  const tokens: string[] = [];
+  let candidateStart = -1;
+  let segmentLength = 0;
+  let hasExtension = false;
+  let lastValidEnd = -1;
+
+  const finishCandidate = (): void => {
+    if (candidateStart !== -1 && lastValidEnd !== -1) {
+      tokens.push(value.slice(candidateStart, lastValidEnd));
+    }
+    candidateStart = -1;
+    segmentLength = 0;
+    hasExtension = false;
+    lastValidEnd = -1;
+  };
+
+  for (let index = 0; index <= value.length; index++) {
+    const character = value[index];
+    const isWordCharacter = character !== undefined && isWordTokenCharacter(character);
+
+    if (candidateStart === -1) {
+      const previousCharacter = value[index - 1];
+      if (isWordCharacter && (index === 0 || !isWordTokenCharacter(previousCharacter))) {
+        candidateStart = index;
+        segmentLength = 1;
+      }
+      continue;
+    }
+
+    if (isWordCharacter || character === '-') {
+      segmentLength++;
+      if (hasExtension && isWordCharacter) lastValidEnd = index + 1;
+      continue;
+    }
+
+    if (character === '.' && segmentLength > 0) {
+      hasExtension = true;
+      segmentLength = 0;
+      continue;
+    }
+
+    finishCandidate();
+  }
+
+  return tokens;
+}
+
 function fileLikeTokens(prompt: string): string[] {
   const tokens: string[] = [];
   let start = -1;
@@ -108,7 +156,13 @@ function fileLikeTokens(prompt: string): string[] {
       const token = rawToken.includes('/')
         ? trimPathBoundarySlashes(trimKeywordDelimiters(rawToken))
         : trimFilenameWordBoundaries(rawToken);
-      if (isFileLikeToken(token)) tokens.push(token);
+      if (isFileLikeToken(token)) {
+        tokens.push(token);
+      } else {
+        for (const filenameToken of filenameTokensWithin(rawToken)) {
+          tokens.push(filenameToken);
+        }
+      }
       start = -1;
     }
     if (reachedEnd) break;
