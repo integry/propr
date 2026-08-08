@@ -135,6 +135,7 @@ test('UI tunnel is disabled by default with local-development URL defaults intac
   assert.equal(cfg.proprInstanceId, undefined);
   assert.equal(cfg.uiPublicApiUrl, undefined);
   assert.equal(cfg.cloudflaredImage, 'cloudflare/cloudflared:2024.12.2');
+  assert.equal(cfg.trustedProxyPeers, undefined);
   // Local-development defaults must stay untouched and COOKIE_DOMAIN unset.
   assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
   assert.equal(cfg.frontendUrl, 'http://localhost:5173');
@@ -151,6 +152,7 @@ test('enabling the tunnel derives public API, frontend, and OAuth callback URLs'
   assert.equal(cfg.apiPublicUrl, 'https://t-abc123.propr.dev');
   assert.equal(cfg.frontendUrl, 'https://app.propr.dev');
   assert.equal(cfg.ghOauthCallbackUrl, 'https://t-abc123.propr.dev/api/auth/github/callback');
+  assert.equal(cfg.trustedProxyPeers, 'uniquelocal');
 });
 
 test('explicit public URLs still win over tunnel-derived values', () => {
@@ -191,6 +193,7 @@ test('api container propagates the tunnel PROPR_UI_* env without the tunnel toke
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_ENABLED'), ['true']);
   assert.deepEqual(envValues(args, 'PROPR_INSTANCE_ID'), ['abc123']);
   assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
+  assert.deepEqual(envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'), ['uniquelocal']);
   // The tunnel token must never reach the API container.
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), []);
 });
@@ -204,6 +207,20 @@ test('api container gets a stable `api` network alias for the tunnel ingress tar
   const aliasIdx = args.indexOf('--network-alias');
   assert.notEqual(aliasIdx, -1, 'expected --network-alias in the api spec');
   assert.equal(args[aliasIdx + 1], 'api');
+});
+
+test('api container propagates an explicit reverse-proxy peer list without enabling the tunnel', () => {
+  const cfg = resolveConfig({
+    PROPR_TRUSTED_PROXY_PEERS: 'loopback,10.0.0.8/32',
+  }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'api');
+
+  assert.equal(cfg.uiTunnelEnabled, false);
+  assert.equal(cfg.trustedProxyPeers, 'loopback,10.0.0.8/32');
+  assert.deepEqual(
+    envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'),
+    ['loopback,10.0.0.8/32'],
+  );
 });
 
 test('an explicit PROPR_UI_PUBLIC_API_URL is normalized (trailing slash stripped) once at resolve time', () => {
@@ -234,6 +251,7 @@ test('ui container omits PROPR_UI_PUBLIC_API_URL in local development', () => {
   const { args } = buildServiceSpec(cfg, 'ui');
 
   assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), []);
+  assert.deepEqual(envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'), []);
 });
 
 test('api container reports the tunnel disabled and omits optional PROPR_* vars in local development', () => {
@@ -243,6 +261,7 @@ test('api container reports the tunnel disabled and omits optional PROPR_* vars 
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_ENABLED'), ['false']);
   assert.deepEqual(envValues(args, 'PROPR_INSTANCE_ID'), []);
   assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), []);
+  assert.deepEqual(envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'), []);
   assert.deepEqual(envValues(args, 'API_PUBLIC_URL'), ['http://localhost:4000']);
 });
 

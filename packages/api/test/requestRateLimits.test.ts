@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import express from 'express';
+import session from 'express-session';
 import {
   configureApiProxyTrust,
   createRequestRateLimiter,
@@ -10,6 +11,7 @@ import {
 interface TestAppOptions {
   proxyEnvironment?: Record<string, string | undefined>;
   remoteAddress?: string;
+  secureSession?: boolean;
 }
 
 async function startTestApp(
@@ -28,6 +30,14 @@ async function startTestApp(
     });
   }
   app.use(createRequestRateLimiter({ identifier: 'test', limit, windowMs: 60_000 }));
+  if (options.secureSession) {
+    app.use(session({
+      secret: 'production-shaped-proxy-test-secret',
+      resave: false,
+      saveUninitialized: true,
+      cookie: { secure: true, httpOnly: true, sameSite: 'lax' },
+    }));
+  }
   app.all('/resource', (_request, response) => response.json({ ok: true }));
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
@@ -93,26 +103,37 @@ test('does not let an unconfigured private peer rotate quota buckets with X-Forw
   assert.equal(limited.status, 429);
 });
 
-test('uses forwarded client addresses from an explicitly trusted proxy', async () => {
+test('trusted TLS proxy preserves per-client quotas and secure session cookies', async () => {
   const app = await startTestApp(1, {
     proxyEnvironment: { PROPR_TRUSTED_PROXY_PEERS: '10.0.0.2' },
     remoteAddress: '10.0.0.2',
+    secureSession: true,
   });
   openServers.push(app.close);
 
   const firstClient = await fetch(`${app.origin}/resource`, {
-    headers: { 'X-Forwarded-For': '192.0.2.1' },
+    headers: {
+      'X-Forwarded-For': '192.0.2.1',
+      'X-Forwarded-Proto': 'https',
+    },
   });
   const secondClient = await fetch(`${app.origin}/resource`, {
-    headers: { 'X-Forwarded-For': '192.0.2.2' },
+    headers: {
+      'X-Forwarded-For': '192.0.2.2',
+      'X-Forwarded-Proto': 'https',
+    },
   });
   const limited = await fetch(`${app.origin}/resource`, {
-    headers: { 'X-Forwarded-For': '192.0.2.2' },
+    headers: {
+      'X-Forwarded-For': '192.0.2.2',
+      'X-Forwarded-Proto': 'https',
+    },
   });
 
   assert.equal(firstClient.status, 200);
   assert.equal(secondClient.status, 200);
   assert.equal(limited.status, 429);
+  assert.match(firstClient.headers.get('set-cookie') ?? '', /; Secure(?:;|$)/i);
 });
 
 test('resolves secure defaults and explicit positive-integer overrides', () => {

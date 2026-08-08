@@ -332,6 +332,10 @@ FRONTEND_URL=https://propr.example.com
 API_PUBLIC_URL=https://propr.example.com
 GH_OAUTH_CALLBACK_URL=https://propr.example.com/api/auth/github/callback
 
+# nginx reaches the container through the launcher's private Docker bridge.
+# This trusts that immediate hop so forwarded client IP/HTTPS state is honored.
+PROPR_TRUSTED_PROXY_PEERS=uniquelocal
+
 # Browser sign-in (GitHub OAuth App + signed session cookies). Without these the
 # dashboard cannot complete a GitHub login after the stack starts in step 11.
 GH_OAUTH_CLIENT_ID=your_github_oauth_client_id

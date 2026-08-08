@@ -238,9 +238,12 @@ Terminate TLS at your reverse proxy or ingress, then:
 
 - Route the public site to the UI container (port 5173).
 - Route `/api/*`, `/webhook`, and `/socket.io/` to the API container (port 4000). The Web UI uses WebSockets for live updates, so the proxy must support connection upgrades on `/socket.io/`.
-- Set `FRONTEND_URL` and `GH_OAUTH_CALLBACK_URL` to the public HTTPS origins, and configure the same callback URL in the GitHub OAuth App settings.
+- Forward `X-Forwarded-For` and `X-Forwarded-Proto`, and set `PROPR_TRUSTED_PROXY_PEERS` to the API connection's **immediate socket peer**. Use `loopback` when nginx and the API both run directly on the host, `uniquelocal` when a loopback-bound host proxy reaches the launcher API through its private Docker bridge, or the ingress's exact IP/CIDR for another topology. Do not list public client or CDN egress ranges: this setting identifies the last proxy hop, not the browser.
+- Set `FRONTEND_URL`, `API_PUBLIC_URL`, and `GH_OAUTH_CALLBACK_URL` to the public HTTPS origins, and configure the same callback URL in the GitHub OAuth App settings.
 
 If the UI and API are served from different origins, the API's CORS configuration uses `FRONTEND_URL` and browser requests send session cookies cross-origin — keep both URLs consistent with the actual public origins.
+
+Leave `PROPR_TRUSTED_PROXY_PEERS` unset when clients connect directly. In that fail-closed mode the API ignores forwarded client/protocol headers, preventing a direct client from choosing another quota bucket or claiming HTTPS. The legacy source-build `docker-compose.prod.yml` passes this variable through but does not choose a peer for an operator-managed proxy.
 
 ## Hosted UI Tunnel
 

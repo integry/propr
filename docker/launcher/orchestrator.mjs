@@ -294,6 +294,13 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // A persisted CLI toggle (`propr tunnel on|off`) wins over the env-derived
     // default so `propr start` honors the user's last explicit choice.
     const uiTunnelEnabled = overrides.uiTunnelEnabled ?? (Boolean(uiTunnelToken) || parseTruthyEnvValue(get('PROPR_UI_TUNNEL_ENABLED')));
+    // The managed cloudflared sidecar reaches the API from the stack's private
+    // Docker network. Trust that address class only while tunnel mode is on;
+    // direct/local deployments remain fail-closed unless an operator names
+    // their own immediate reverse-proxy peers explicitly.
+    const trustedProxyPeers = overrides.trustedProxyPeers
+        ?? get('PROPR_TRUSTED_PROXY_PEERS')
+        ?? (uiTunnelEnabled ? 'uniquelocal' : undefined);
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
     // Cloudflared image for the optional tunnel sidecar: an explicit env override
     // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a
@@ -320,6 +327,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         // Hosted UI tunnel settings (see resolution above). Defaults keep local
         // development unaffected: no instance id ⇒ no derived public URL.
         uiTunnelEnabled, uiTunnelToken, proprInstanceId, uiPublicApiUrl, cloudflaredImage,
+        trustedProxyPeers,
         // misc -e overrides the launcher computed from ports/env. When the UI
         // tunnel is enabled the API/worker must advertise the public proxy URL
         // (OAuth/session redirects, attachment links, browser-visible API refs)
@@ -439,6 +447,12 @@ function tunnelApiEnvArgs(cfg) {
     if (isValidProprInstanceId(cfg.proprInstanceId)) args.push('-e', `PROPR_INSTANCE_ID=${cfg.proprInstanceId.trim().toLowerCase()}`);
     if (cfg.uiPublicApiUrl) args.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
     return args;
+}
+
+function proxyTrustApiEnvArgs(cfg) {
+    return cfg.trustedProxyPeers
+        ? ['-e', `PROPR_TRUSTED_PROXY_PEERS=${cfg.trustedProxyPeers}`]
+        : [];
 }
 
 // Validates host bind-mount paths for Linux deployments. ':' rejection prevents
@@ -911,6 +925,7 @@ export function buildServiceSpec(cfg, service) {
                 '-e', `SESSION_REDIS_HOST=${cfg.stack}-redis`,
                 '-e', 'CONFIG_REPO_PATH=/tmp/config_repo',
                 ...tunnelApiEnvArgs(cfg),
+                ...proxyTrustApiEnvArgs(cfg),
             ]);
         case 'ui': {
             // The UI image's docker-entrypoint.sh rewrites public/config.js from

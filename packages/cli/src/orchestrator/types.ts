@@ -40,6 +40,8 @@ export interface OrchestratorConfig {
   readonly proprInstanceId?: string;
   readonly uiPublicApiUrl?: string;
   readonly cloudflaredImage: string;
+  /** Immediate socket peers whose forwarded client/protocol headers the API trusts. */
+  readonly trustedProxyPeers?: string;
   /**
    * Hosted UI origin allowed by CORS/redirects. Always resolves to a value:
    * an explicit FRONTEND_URL, the hosted origin in tunnel mode, or the
