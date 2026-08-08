@@ -264,8 +264,8 @@ export async function safePruneWorktrees(localRepoPath: string, minAgeHours: num
 
 export async function setupWorktreePermissions(worktreePath: string, branchName: string, issueId: number | string | null): Promise<void> {
     try {
-        const { execSync } = await import('child_process');
-        execSync(`sudo chown -R 1000:1000 "${worktreePath}"`, {
+        const { execFileSync } = await import('child_process');
+        execFileSync('sudo', ['chown', '-R', '1000:1000', '--', worktreePath], {
             stdio: 'inherit',
             timeout: 10000
         });
