@@ -21,6 +21,8 @@ test('slash commands handle long whitespace runs without ambiguous matching', ()
 test('keyword extraction handles long delimiter and path-like runs', () => {
   const keywords = extractKeywords(`${'!'.repeat(REPETITIONS)} src/auth/login.ts ${'-'.repeat(REPETITIONS)}`);
   assert.ok(keywords.includes('src/auth/login.ts'));
+  assert.ok(keywords.length <= 256);
+  assert.ok(keywords.every(keyword => keyword.length <= 512));
 });
 
 test('sentence truncation consumes long punctuation runs in one pass', () => {

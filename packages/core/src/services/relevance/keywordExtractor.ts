@@ -46,6 +46,9 @@ const STOP_WORDS = new Set([
 
 /** Minimum length for a keyword */
 const MIN_KEYWORD_LENGTH = 2;
+const MAX_KEYWORD_INPUT_CHARS = 200_000;
+const MAX_KEYWORD_LENGTH = 512;
+const MAX_KEYWORDS = 256;
 const LEADING_KEYWORD_DELIMITERS = new Set(['`', "'", '"', '(', '[', '{']);
 const TRAILING_KEYWORD_DELIMITERS = new Set(['.', '`', "'", '"', ']', ')', '}', ',', ';', ':', '!', '?']);
 
@@ -95,12 +98,15 @@ function fileLikeTokens(prompt: string): string[] {
  * Extracts meaningful words that might appear in file paths or names.
  */
 export function extractKeywords(prompt: string): string[] {
+  const boundedPrompt = prompt.slice(0, MAX_KEYWORD_INPUT_CHARS);
   const keywords: string[] = [];
   const seen = new Set<string>();
   const addKeyword = (value: string, preserveCase = false): void => {
     const normalized = trimKeywordDelimiters(value);
     const comparison = normalized.toLowerCase();
-    if (comparison.length < MIN_KEYWORD_LENGTH
+    if (keywords.length >= MAX_KEYWORDS
+        || comparison.length < MIN_KEYWORD_LENGTH
+        || comparison.length > MAX_KEYWORD_LENGTH
         || STOP_WORDS.has(comparison)
         || /^\d+$/.test(comparison)
         || seen.has(comparison)) {
@@ -112,13 +118,13 @@ export function extractKeywords(prompt: string): string[] {
 
   // Paths and filenames carry the strongest signal. Preserve separators and
   // extensions so path scoring can perform exact and directory matches.
-  for (const token of fileLikeTokens(prompt)) {
+  for (const token of fileLikeTokens(boundedPrompt)) {
     addKeyword(token, true);
   }
 
   // Preserve source identifiers exactly for diagnostics and git searches,
   // while also adding their constituent words for broader path matching.
-  for (const match of prompt.matchAll(/\b[A-Za-z][A-Za-z0-9_]*\b/g)) {
+  for (const match of boundedPrompt.matchAll(/\b[A-Za-z][A-Za-z0-9_]*\b/g)) {
     const token = match[0];
     const isStructuredIdentifier = token.includes('_') || /[a-z0-9][A-Z]/.test(token);
     if (!isStructuredIdentifier) continue;
@@ -129,7 +135,7 @@ export function extractKeywords(prompt: string): string[] {
   }
 
   // Finally retain ordinary technical terms and hyphenated identifiers.
-  for (const match of prompt.matchAll(/\b[A-Za-z0-9][A-Za-z0-9_-]*\b/g)) {
+  for (const match of boundedPrompt.matchAll(/\b[A-Za-z0-9][A-Za-z0-9_-]*\b/g)) {
     addKeyword(match[0]);
   }
 
