@@ -45,11 +45,11 @@ export async function loginWithGithubCli(
   options: GithubLoginOptions = {}
 ): Promise<GithubLoginResult> {
   const { interactive = false, onLog } = options;
-  const { execFileSync, spawnSync } = await import("child_process");
+  const { execSync, spawnSync } = await import("child_process");
 
   // Require the gh CLI up front — every path below shells out to it.
   try {
-    execFileSync("gh", ["--version"], { stdio: "ignore" });
+    execSync("gh --version", { stdio: "ignore" });
   } catch {
     return {
       ok: false,
@@ -59,7 +59,7 @@ export async function loginWithGithubCli(
   }
 
   // Reuse an existing gh session when one is already authenticated.
-  const existing = readGhToken(execFileSync);
+  const existing = readGhToken(execSync);
   if (existing) {
     await configManager.setGithubToken(existing);
     return { ok: true, token: existing, message: "Authenticated using your existing gh CLI session." };
@@ -80,7 +80,7 @@ export async function loginWithGithubCli(
     return { ok: false, message: "GitHub login failed or was cancelled." };
   }
 
-  const token = readGhToken(execFileSync);
+  const token = readGhToken(execSync);
   if (!token) {
     return { ok: false, message: "Could not retrieve a token after login." };
   }
@@ -89,9 +89,9 @@ export async function loginWithGithubCli(
 }
 
 /** Read the current `gh` token, or null when no session is authenticated. */
-function readGhToken(execFileSync: typeof import("child_process").execFileSync): string | null {
+function readGhToken(execSync: typeof import("child_process").execSync): string | null {
   try {
-    const token = execFileSync("gh", ["auth", "token"], { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] }).trim();
+    const token = execSync("gh auth token", { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] }).trim();
     return token || null;
   } catch {
     return null;

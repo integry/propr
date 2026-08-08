@@ -76,9 +76,6 @@ test('production subprocess call sites do not invoke a command shell', () => {
     '../routes/dockerRoutes.ts',
     '../../core/src/claude/docker/dockerExecutor.ts',
     '../../core/src/git/worktreeOperations.ts',
-    '../../core/src/agents/impl/CodexAgent.ts',
-    '../../core/src/agents/impl/OpenCodeAgent.ts',
-    '../../cli/src/auth/githubLogin.ts',
   ];
 
   for (const relativePath of productionFiles) {

@@ -1,6 +1,5 @@
-/* eslint-disable max-lines */
 import fs from 'fs';
-import { execFileSync } from 'child_process';
+import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
@@ -276,11 +275,11 @@ export class CodexAgent implements Agent {
         try {
             if (!fs.existsSync(workspace)) fs.mkdirSync(workspace, { recursive: true });
             if (!fs.existsSync(`${workspace}/.git`)) {
-                execFileSync('git', ['init'], { cwd: workspace, stdio: 'pipe' });
-                execFileSync('git', ['config', 'user.email', 'codex@propr.dev'], { cwd: workspace, stdio: 'pipe' });
-                execFileSync('git', ['config', 'user.name', 'Codex Analysis'], { cwd: workspace, stdio: 'pipe' });
+                execSync('git init', { cwd: workspace, stdio: 'pipe' });
+                execSync('git config user.email "codex@propr.dev"', { cwd: workspace, stdio: 'pipe' });
+                execSync('git config user.name "Codex Analysis"', { cwd: workspace, stdio: 'pipe' });
             }
-            execFileSync('chown', ['-R', '1000:1000', '--', workspace], { stdio: 'pipe' });
+            execSync(`chown -R 1000:1000 ${workspace}`, { stdio: 'pipe' });
         } catch (initError) {
             logger.warn({ error: (initError as Error).message }, 'Failed to initialize analysis workspace git repo');
         }
@@ -379,7 +378,6 @@ export class CodexAgent implements Agent {
     /**
      * Builds Docker arguments for running Codex in a container.
      */
-    // eslint-disable-next-line complexity
     private buildDockerArgs(params: {
         worktreePath: string; githubToken: string; modelName?: string;
         issueNumber: number; jsonOutput?: boolean; environment?: Record<string, string>;
