@@ -4,6 +4,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -54,6 +55,31 @@ test("stack scaffolding does not change the chosen project root mode", async () 
     assert.equal(mode(root), 0o755);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("stack generation includes detected credentials in the published environment", async () => {
+  const root = mkdtempSync(join(tmpdir(), "propr-private-stack-"));
+  const home = mkdtempSync(join(tmpdir(), "propr-private-home-"));
+  const originalHome = process.env.HOME;
+  try {
+    mkdirSync(join(home, ".claude"));
+    process.env.HOME = home;
+
+    const result = await scaffoldStack(
+      { root },
+      { persistStackRoot: async () => undefined },
+    );
+
+    assert.equal(result.envCreated, true);
+    assert.equal(result.credentialsAppended, true);
+    const envLines = readFileSync(join(root, ".env"), "utf-8").split(/\r?\n/);
+    assert.ok(envLines.includes(`HOST_CLAUDE_DIR=${join(home, ".claude")}`));
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   }
 });
 

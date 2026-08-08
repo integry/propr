@@ -8,7 +8,7 @@
  */
 
 import { Command } from "commander";
-import { existsSync, chmodSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
+import { existsSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -142,9 +142,13 @@ export async function scaffoldStack(
     if (created) result.dirsCreated.push(sub);
   }
 
-  // 2. .env from .env.example
-  if (existsSync(envPath) && !options.force) {
+  // 2. Load the environment content that will be used below.
+  const envExists = existsSync(envPath);
+  let envContent: string;
+  let shouldWriteEnv = false;
+  if (envExists && !options.force) {
     secureExistingPrivateFile(envPath);
+    envContent = readFileSync(envPath, "utf-8");
     result.envSkipped = true;
   } else {
     const example = resolveEnvExample();
@@ -153,22 +157,22 @@ export async function scaffoldStack(
         "Could not locate .env.example. Run `npm run build` in packages/cli, or run from a ProPR source checkout."
       );
     }
-    if (options.force && existsSync(envPath)) {
+    envContent = readFileSync(example, "utf-8");
+    if (options.force && envExists) {
       secureExistingPrivateFile(envPath);
       const bakPath = `${envPath}.bak`;
       writePrivateFileAtomic(bakPath, readFileSync(envPath), { secureParent: false });
       result.envBackedUp = true;
     }
-    writePrivateFileAtomic(envPath, readFileSync(example), { secureParent: false });
-    result.envCreated = true;
+    shouldWriteEnv = true;
   }
 
-  // 3. Detect credential dirs and record any not already present in .env.
+  // 3. Detect credential dirs and include missing entries in newly generated
+  //    content before publishing .env atomically.
   //    When the .env was pre-existing (not created this run) and --force was
   //    not given, collect but do NOT write — the caller should surface the
   //    suggestions without silently mutating a user-managed file.
   const detected = detectCredentials();
-  const envContent = readFileSync(envPath, "utf-8");
   const toAppend = detected.filter((c) => {
     const re = new RegExp(`^\\s*(export\\s+)?${c.envKey}\\s*=`, "m");
     return !re.test(envContent);
@@ -178,13 +182,18 @@ export async function scaffoldStack(
       "\n# --- Host agent-credential directories (detected by `propr init stack`) ---\n" +
       toAppend.map((c) => `${c.envKey}=${c.path}`).join("\n") +
       "\n";
-    appendFileSync(envPath, block, "utf-8");
+    envContent += block;
     result.credentialsAppended = true;
   } else {
     result.credentialsAppended = false;
   }
   result.detected = detected;
   result.pendingCredentials = toAppend;
+
+  if (shouldWriteEnv) {
+    writePrivateFileAtomic(envPath, envContent, { secureParent: false });
+    result.envCreated = true;
+  }
 
   // 3b. When Vibe is in play, pre-create its prompt-cache dir so spawned Vibe
   //     agent containers can bind-mount a writable host directory. Creating it
