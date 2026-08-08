@@ -19,6 +19,7 @@ import {
   resolveGithubEventIntakeMode,
   validateIntakeModePrerequisites,
   validateRelayUrl,
+  validateSessionSecret,
 } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { createApiClient, getSystemStatus } from "../api/index.js";
@@ -167,6 +168,32 @@ function readCliVersion(): string {
 
 function runCliChecks(emit: (result: CheckResult) => void): void {
   emit({ name: "CLI version", status: "ok", detail: readCliVersion(), group: "CLI" });
+}
+
+export interface SessionSecretCheckMode {
+  proprDemoMode?: string;
+  githubAuthMode?: string;
+}
+
+export function resolveSessionSecretCheck(
+  secret: string | undefined,
+  mode: SessionSecretCheckMode,
+): CheckResult | undefined {
+  // GH_AUTH_MODE=demo only disables backend GitHub access. The API still
+  // creates browser sessions unless the deployment is in full ProPR demo mode.
+  if (isTruthy(mode.proprDemoMode)) return undefined;
+
+  const error = validateSessionSecret(secret);
+  if (error) {
+    return {
+      name: "Session secret",
+      status: "fail",
+      detail: error,
+      group: "Configuration",
+      fix: "Generate a secret with `openssl rand -hex 32` and set SESSION_SECRET in .env.",
+    };
+  }
+  return { name: "Session secret", status: "ok", detail: "strong secret configured", group: "Configuration" };
 }
 
 /** Run all checks and return the structured outcome (no printing). */
@@ -390,8 +417,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   // 8. User whitelist — warn when no whitelist is configured for non-demo stacks
   const whitelistRaw = process.env.GITHUB_USER_WHITELIST ?? fileEnv.GITHUB_USER_WHITELIST;
   const whitelistEntries = (whitelistRaw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const proprDemoMode = process.env.PROPR_DEMO_MODE ?? fileEnv.PROPR_DEMO_MODE;
   const authMode = (process.env.GH_AUTH_MODE ?? fileEnv.GH_AUTH_MODE ?? "").trim().toLowerCase();
-  const isDemo = isTruthy(process.env.PROPR_DEMO_MODE ?? fileEnv.PROPR_DEMO_MODE) || authMode === "demo";
+  const isDemo = isTruthy(proprDemoMode) || authMode === "demo";
   if (whitelistEntries.length === 0 && !isDemo) {
     emit({
       name: "User whitelist",
@@ -403,6 +431,12 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   } else if (whitelistEntries.length > 0) {
     emit({ name: "User whitelist", status: "ok", detail: `${whitelistEntries.length} user(s) allowed`, group: "GitHub" });
   }
+
+  const sessionSecretCheck = resolveSessionSecretCheck(
+    process.env.SESSION_SECRET ?? fileEnv.SESSION_SECRET,
+    { proprDemoMode, githubAuthMode: authMode },
+  );
+  if (sessionSecretCheck) emit(sessionSecretCheck);
 
   // 9. Config validation from the orchestrator (bind paths, vibe dirs, etc.)
   const validation = orch.validateEnv(cfg);

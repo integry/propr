@@ -56,6 +56,8 @@ export {
 
 export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
 
+export { MIN_SESSION_SECRET_LENGTH, validateSessionSecret } from './sessionSecret.js';
+
 export {
   INSTANCE_PERMISSIONS,
   type AuthenticatedInstanceUser,

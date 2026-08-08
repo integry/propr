@@ -256,7 +256,10 @@ export function createPlannerRoutes(deps: PlannerRoutesDeps) {
     }
   }
 
-  const uploadAttachment = withAuthCheck(db, createUploadAttachmentHandler({ verifyOwnership: ownershipVerifier }));
+  const uploadAttachment = withAuthCheck(db, createUploadAttachmentHandler({
+    verifyOwnership: ownershipVerifier,
+    tempRoot: uploadDir,
+  }));
   const getContextStats = withAuthCheck(db, createGetContextStatsHandler({ verifyOwnership: ownershipVerifier }));
   const previewContext = withAuthCheck(db, createPreviewContextHandler({ verifyOwnership: ownershipVerifier, validateInput: validatePreviewInput, db }));
   const deleteAttachment = withAuthCheck(db, createDeleteAttachmentHandler({ verifyOwnership: ownershipVerifier }));

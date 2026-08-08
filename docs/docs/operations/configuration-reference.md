@@ -26,6 +26,7 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `ENABLE_BEARER_AUTH` | `true` (any value except `false` enables it) | Bearer token auth for the CLI. Set `false` to allow session login only. | Optional. |
 | `PROPR_DEMO_MODE` | `false` | `true`/`1` allows read-only access without GitHub OAuth and blocks all mutating API requests. Use a curated config/database for public demos. | Demo deployments. |
 | `DASHBOARD_API_PORT` | `4000` | Host port the dashboard API is published on. | Optional. |
+| `DASHBOARD_API_HOST` | Direct host: `127.0.0.1`; container: `0.0.0.0` | Interface the API listens on. Keep the loopback default for direct runs; set explicitly only when a trusted reverse proxy or network must reach a non-container process. | Optional advanced override. |
 | `FRONTEND_URL` | `http://localhost:5173` when unset | Browser origin for CORS and auth redirects. In hosted UI tunnel mode it is derived as `https://app.propr.dev` — leave it commented so derivation wins. | Custom origin only. |
 | `API_PUBLIC_URL` | `http://localhost:4000` when unset | Public URL the API is reached at (auth redirects, attachment links, cookie security). Derived to the `t-<id>.propr.dev` host in tunnel mode. | Custom deployments; derived in tunnel mode. |
 | `COOKIE_DOMAIN` | Unset | Session cookie domain. Leave unset — including for tunnel proxy sessions, which run host-only on a single `t-<id>.propr.dev` host. | Custom multi-subdomain deployments only. |

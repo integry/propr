@@ -1,4 +1,4 @@
-import { Server as SocketIOServer, Socket } from 'socket.io';
+import { Server as SocketIOServer } from 'socket.io';
 import { Server as HttpServer } from 'http';
 import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
@@ -21,6 +21,16 @@ import {
 } from '@propr/shared';
 import { QueueBroadcaster } from './queueBroadcaster.js';
 import { TaskWatcherManager } from './taskWatcher.js';
+import {
+  configureSocketAuthentication,
+  type SocketAuthenticationOptions,
+} from './socketAuthentication.js';
+import {
+  INSTANCE_OPERATIONAL_ROOM,
+  SocketSubscriptionManager,
+  taskRoom,
+  userRoom,
+} from './socketSubscriptions.js';
 
 /** CORS origin validation function type compatible with Socket.IO */
 type CorsOriginCallback = (err: Error | null, allow?: boolean) => void;
@@ -99,11 +109,17 @@ export class SocketService {
   private isSubscribed = false;
   private queueBroadcaster: QueueBroadcaster | null = null;
   private taskWatcherManager: TaskWatcherManager;
+  private subscriptionManager: SocketSubscriptionManager;
   private queueDeps: QueueDependencies | null = null;
   private taskRevisions = new Map<string, TaskRevisionCacheEntry>();
   private taskUpdateTails = new Map<string, Promise<void>>();
+  private draftUpdateTails = new Map<string, Promise<void>>();
 
-  constructor(httpServer: HttpServer, corsOrigins: string | string[] | CorsOriginFunction) {
+  constructor(
+    httpServer: HttpServer,
+    corsOrigins: string | string[] | CorsOriginFunction,
+    authentication: SocketAuthenticationOptions,
+  ) {
     // Initialize Socket.IO server with CORS configuration
     this.io = new SocketIOServer(httpServer, {
       cors: {
@@ -112,6 +128,7 @@ export class SocketService {
       },
       transports: ['websocket']
     });
+    configureSocketAuthentication(this.io, authentication);
 
     // Create a dedicated Redis client for subscriptions
     // (pub/sub clients can't be used for other commands)
@@ -127,6 +144,11 @@ export class SocketService {
     });
 
     this.taskWatcherManager = new TaskWatcherManager(this.io);
+    this.subscriptionManager = new SocketSubscriptionManager({
+      getQueueDependencies: () => this.queueDeps,
+      getQueueBroadcaster: () => this.queueBroadcaster,
+      taskWatcherManager: this.taskWatcherManager,
+    });
 
     this.setupConnectionHandlers();
     this.setupRedisSubscription();
@@ -148,102 +170,9 @@ export class SocketService {
    * Set up Socket.IO connection handlers
    */
   private setupConnectionHandlers(): void {
-    this.io.on('connection', (socket: Socket) => {
+    this.io.on('connection', socket => {
       console.log(`[SocketService] Client connected: ${socket.id}`);
-      this.setupTaskHandlers(socket);
-      this.setupDraftHandlers(socket);
-      this.setupIndexingHandlers(socket);
-      this.setupQueueStatsHandlers(socket);
-      this.setupDisconnectHandler(socket);
-    });
-  }
-
-  private setupTaskHandlers(socket: Socket): void {
-    socket.on('subscribe:task', (taskId: string) => {
-      socket.join(`task:${taskId}`);
-      console.log(`[SocketService] Client ${socket.id} subscribed to task:${taskId}`);
-    });
-
-    socket.on('unsubscribe:task', (taskId: string) => {
-      socket.leave(`task:${taskId}`);
-      console.log(`[SocketService] Client ${socket.id} unsubscribed from task:${taskId}`);
-    });
-
-    socket.on('subscribe:task:live', async (taskId: string) => {
-      try {
-        socket.join(`task:live:${taskId}`);
-        console.log(`[SocketService] Client ${socket.id} subscribed to task:live:${taskId}`);
-        await this.taskWatcherManager.startTaskWatcher(taskId);
-        // Send initial full state on subscription (isInitial=true)
-        await this.taskWatcherManager.sendTaskLiveUpdate(taskId, true);
-      } catch (error) {
-        console.error(`[SocketService] Failed to start live task subscription for ${taskId}:`, error);
-      }
-    });
-
-    socket.on('unsubscribe:task:live', async (taskId: string) => {
-      try {
-        socket.leave(`task:live:${taskId}`);
-        console.log(`[SocketService] Client ${socket.id} unsubscribed from task:live:${taskId}`);
-        await this.taskWatcherManager.stopTaskWatcherIfEmpty(taskId);
-      } catch (error) {
-        console.error(`[SocketService] Failed to stop live task subscription for ${taskId}:`, error);
-      }
-    });
-  }
-
-  private setupDraftHandlers(socket: Socket): void {
-    socket.on('subscribe:draft', (draftId: string) => {
-      socket.join(`draft:${draftId}`);
-      console.log(`[SocketService] Client ${socket.id} subscribed to draft:${draftId}`);
-    });
-
-    socket.on('unsubscribe:draft', (draftId: string) => {
-      socket.leave(`draft:${draftId}`);
-      console.log(`[SocketService] Client ${socket.id} unsubscribed from draft:${draftId}`);
-    });
-  }
-
-  private setupIndexingHandlers(socket: Socket): void {
-    socket.on('subscribe:indexing', (repository: string) => {
-      socket.join(`indexing:${repository}`);
-      console.log(`[SocketService] Client ${socket.id} subscribed to indexing:${repository}`);
-    });
-
-    socket.on('unsubscribe:indexing', (repository: string) => {
-      socket.leave(`indexing:${repository}`);
-      console.log(`[SocketService] Client ${socket.id} unsubscribed from indexing:${repository}`);
-    });
-
-    socket.on('subscribe:indexing:updates', () => {
-      socket.join('indexing:updates');
-      console.log(`[SocketService] Client ${socket.id} subscribed to indexing:updates`);
-    });
-
-    socket.on('unsubscribe:indexing:updates', () => {
-      socket.leave('indexing:updates');
-      console.log(`[SocketService] Client ${socket.id} unsubscribed from indexing:updates`);
-    });
-  }
-
-  private setupQueueStatsHandlers(socket: Socket): void {
-    socket.on('subscribe:queue:stats', async () => {
-      socket.join('queue:stats');
-      console.log(`[SocketService] Client ${socket.id} subscribed to queue:stats`);
-      if (this.queueBroadcaster) {
-        await this.queueBroadcaster.broadcastQueueStats();
-      }
-    });
-
-    socket.on('unsubscribe:queue:stats', () => {
-      socket.leave('queue:stats');
-      console.log(`[SocketService] Client ${socket.id} unsubscribed from queue:stats`);
-    });
-  }
-
-  private setupDisconnectHandler(socket: Socket): void {
-    socket.on('disconnect', (reason: string) => {
-      console.log(`[SocketService] Client disconnected: ${socket.id}, reason: ${reason}`);
+      this.subscriptionManager.setup(socket);
     });
   }
 
@@ -286,7 +215,7 @@ export class SocketService {
         this.enqueueTaskUpdate(payload as TaskUpdatePayload);
         break;
       case DRAFT_UPDATE:
-        this.handleDraftUpdate(payload as DraftUpdatePayload);
+        this.enqueueDraftUpdate(payload as DraftUpdatePayload);
         break;
       case INDEXING_UPDATE:
         this.handleIndexingUpdate(payload as IndexingUpdatePayload);
@@ -298,8 +227,7 @@ export class SocketService {
         this.handleQueueStatsUpdate(payload as QueueStatsUpdatePayload);
         break;
       default:
-        this.io.emit(payload.eventType, payload);
-        console.log(`[SocketService] Broadcasted event ${payload.eventType}`);
+        console.warn(`[SocketService] Dropped unsupported event ${payload.eventType}`);
     }
   }
 
@@ -317,6 +245,22 @@ export class SocketService {
         console.error(`[SocketService] Failed to process task update for ${payload.taskId}:`, error);
       });
     this.taskUpdateTails.set(payload.taskId, current);
+  }
+
+  private enqueueDraftUpdate(payload: DraftUpdatePayload): void {
+    const previous = this.draftUpdateTails.get(payload.draftId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.handleDraftUpdate(payload))
+      .finally(() => {
+        if (this.draftUpdateTails.get(payload.draftId) === current) {
+          this.draftUpdateTails.delete(payload.draftId);
+        }
+      })
+      .catch(error => {
+        console.error(`[SocketService] Failed to process draft update for ${payload.draftId}:`, error);
+      });
+    this.draftUpdateTails.set(payload.draftId, current);
   }
 
   private async handleTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
@@ -360,14 +304,34 @@ export class SocketService {
         if (oldestTaskId !== undefined) this.taskRevisions.delete(oldestTaskId);
       }
     }
-    this.io.to(`task:${payload.taskId}`).emit(TASK_UPDATE, payload);
-    this.io.emit(TASK_UPDATE, payload);
+    this.io
+      .to(INSTANCE_OPERATIONAL_ROOM)
+      .to(taskRoom(payload.taskId))
+      .emit(TASK_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${TASK_UPDATE} for task ${payload.taskId}`);
   }
 
-  private handleDraftUpdate(payload: DraftUpdatePayload): void {
-    this.io.to(`draft:${payload.draftId}`).emit(DRAFT_UPDATE, payload);
-    this.io.emit(DRAFT_UPDATE, payload);
+  private async handleDraftUpdate(payload: DraftUpdatePayload): Promise<void> {
+    const queueDependencies = this.queueDeps;
+    if (!queueDependencies) return;
+
+    let ownerId: string;
+    try {
+      const draft = await queueDependencies.db('task_drafts')
+        .select('user_id')
+        .where({ draft_id: payload.draftId })
+        .first() as { user_id?: string } | undefined;
+      if (typeof draft?.user_id !== 'string' || !draft.user_id) return;
+      ownerId = draft.user_id;
+    } catch (error) {
+      console.error(`[SocketService] Failed to resolve owner for draft ${payload.draftId}:`, error);
+      return;
+    }
+
+    this.io
+      .to(`draft:${payload.draftId}`)
+      .to(userRoom(ownerId))
+      .emit(DRAFT_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${DRAFT_UPDATE} for draft ${payload.draftId}, step: ${payload.step}`);
   }
 
@@ -452,13 +416,14 @@ let socketServiceInstance: SocketService | null = null;
  */
 export function initSocketService(
   httpServer: HttpServer,
-  corsOrigins: string | string[] | CorsOriginFunction
+  corsOrigins: string | string[] | CorsOriginFunction,
+  authentication: SocketAuthenticationOptions,
 ): SocketService {
   if (socketServiceInstance) {
     console.warn('[SocketService] Service already initialized, returning existing instance');
     return socketServiceInstance;
   }
-  socketServiceInstance = new SocketService(httpServer, corsOrigins);
+  socketServiceInstance = new SocketService(httpServer, corsOrigins, authentication);
   return socketServiceInstance;
 }
 
