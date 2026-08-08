@@ -1,10 +1,9 @@
 import 'dotenv/config';
 import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager } from '@propr/core';
+import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
-import { db } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
 import { loadSettingsFromConfig } from '@propr/core';
@@ -158,18 +157,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
 
     validateAttachmentBaseUrlConfig();
 
-    // Run migrations first, before loading any configs from the database
-    try {
-        logger.info('Running database migrations...');
-        await db.migrate.latest();
-        logger.info('Database migrations completed successfully');
-    } catch (error) {
-        const err = error as Error;
-        logger.error({
-            error: err.message,
-            stack: err.stack
-        }, 'Database migration failed - worker will continue but database persistence may not work');
-    }
+    // No jobs may be claimed against a partially migrated schema.
+    await runMigrations();
 
     try {
         if (process.env.CONFIG_REPO) {
