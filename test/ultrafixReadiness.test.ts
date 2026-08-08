@@ -12,10 +12,10 @@ import {
     getUltrafixDeferredKey,
     parseDeferredKey,
     createDefaultState,
-    areChecksReadyForUltrafix,
     type UltrafixLoopState,
     type UltrafixDeferredContinuation,
 } from '../src/jobs/ultrafixOrchestrationService.js';
+import { areChecksReadyForUltrafix, requiresPassingChecks } from '../src/jobs/ultrafixReadinessPolicy.js';
 
 // --- Mock Redis ---
 
@@ -203,6 +203,16 @@ describe('checkReadiness', () => {
         });
         assert.strictEqual(result.ready, false);
         assert.strictEqual(result.reasons.length, 3);
+    });
+});
+
+describe('requiresPassingChecks', () => {
+    test('allows review-to-fix progression while CI is failing', () => {
+        assert.strictEqual(requiresPassingChecks('fix'), false);
+    });
+
+    test('requires settled passing CI before fix-to-review progression', () => {
+        assert.strictEqual(requiresPassingChecks('review'), true);
     });
 });
 

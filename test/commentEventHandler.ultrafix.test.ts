@@ -199,6 +199,7 @@ const mockGetPendingReviewState = mock.fn(async () => ({
 }));
 
 const mockClearState = mock.fn(async () => {});
+const mockClearDeferredContinuation = mock.fn(async () => {});
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -207,6 +208,7 @@ setUltrafixDeps({
     loadPrReviewModel: mock.fn(async () => ''),
     startLoop: mockStartLoop,
     clearState: mockClearState,
+    clearDeferredContinuation: mockClearDeferredContinuation,
     getPendingReviewState: mockGetPendingReviewState,
 });
 
@@ -266,6 +268,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
         mockStartLoop.mock.resetCalls();
+        mockClearDeferredContinuation.mock.resetCalls();
         mockGetPendingReviewState.mock.resetCalls();
         mockFilterCommentByAuthor.mock.resetCalls();
         mockActiveJobs = [];
@@ -308,6 +311,7 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         // Should call startLoop
         assert.strictEqual(mockStartLoop.mock.callCount(), 1);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
         const loopOptions = mockStartLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
         // DB defaults are used when command args match parser defaults
         assert.strictEqual(loopOptions.goal, 7);       // DB default
@@ -558,5 +562,34 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         assert.strictEqual(mockStartLoop.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('manual /fix cancels a deferred ultrafix transition before enqueueing', async () => {
+        const event = createPRCommentEvent('/fix F1');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-manual-fix', config);
+
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
+        assert.deepStrictEqual(
+            mockClearDeferredContinuation.mock.calls[0].arguments.slice(1),
+            ['testowner', 'testrepo', 42],
+        );
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+    });
+
+    test('manual /review cancels a deferred ultrafix transition before batching', async () => {
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+        const event = createPRCommentEvent('/review');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-manual-review', config);
+
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
     });
 });

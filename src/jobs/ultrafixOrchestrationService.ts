@@ -269,6 +269,7 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
     const initialAction = determineInitialAction(hasPendingReviews);
     state.lastAction = initialAction;
     state.lastActionTimestamp = new Date().toISOString();
+    await clearDeferredContinuation(redis, options.owner, options.repo, options.pr);
     await saveState(redis, state);
     return { state, initialAction };
 }
@@ -487,15 +488,6 @@ export function checkReadiness(opts: {
     }
 
     return { ready: reasons.length === 0, reasons };
-}
-
-/**
- * Interpret GitHub check/status state for ultrafix progression.
- * A commit with zero check runs/status contexts is considered ready: there is
- * no future webhook to wait for, so deferring would deadlock the loop.
- */
-export function areChecksReadyForUltrafix(status: UltrafixCheckStatus): boolean {
-    return status.allPassing;
 }
 
 // --- Deferred continuation persistence ---

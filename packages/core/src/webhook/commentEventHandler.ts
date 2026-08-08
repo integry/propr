@@ -28,6 +28,7 @@ export interface UltrafixDeps {
     loadPrReviewModel: () => Promise<string>;
     startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
     clearState: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
+    clearDeferredContinuation: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
 
@@ -261,6 +262,14 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         }
     }
 
+    if ((commandMeta.mode === 'fix' || commandMeta.mode === 'review') && _ultrafixDeps) {
+        await _ultrafixDeps.clearDeferredContinuation(redisClient, owner, repo, prNumber);
+        correlatedLogger.info(
+            { pullRequestNumber: prNumber, command: commandMeta.mode },
+            'Manual command cancelled any deferred ultrafix transition',
+        );
+    }
+
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
     // Strip the slash command line from the comment body so the downstream job
     // only sees the user's instructions, not the control syntax (consistent with /switch).
@@ -365,6 +374,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
 
     // 1. Load configured defaults from settings, then override with command arguments
     const deps = loadUltrafixDeps();
+    await deps.clearDeferredContinuation(redisClient, owner, repo, prNumber);
     const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel] = await Promise.all([
         deps.loadUltrafixRatingGoal(),
         deps.loadUltrafixMaxCycles(),

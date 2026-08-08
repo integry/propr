@@ -14,6 +14,7 @@ import type { WorkerStateManager } from '@propr/core';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import { loadState as loadUltrafixState, saveDeferredContinuation, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import { requiresPassingChecks } from './ultrafixReadinessPolicy.js';
 
 /** Re-check CI readiness for ultrafix jobs before executing. Returns true if ready. */
 export async function checkUltrafixReadiness(
@@ -22,13 +23,18 @@ export async function checkUltrafixReadiness(
 ): Promise<boolean> {
     if (!job.data.ultrafixMeta) return true;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = params;
+    const nextAction: UltrafixAction = job.data.commandMode === 'fix' ? 'fix' : 'review';
+    if (!requiresPassingChecks(nextAction)) {
+        correlatedLogger.info({ pullRequestNumber, nextAction }, 'Ultrafix pre-check: allowing fix transition without passing CI checks');
+        return true;
+    }
     try {
         const headSha = await getCurrentPRHead(repoOwner, repoName, pullRequestNumber);
         if (!headSha) { correlatedLogger.warn({ pullRequestNumber }, 'Ultrafix pre-check: could not get PR head SHA'); return true; }
         const checksPassing = await areAllChecksPassing(repoOwner, repoName, headSha);
         if (checksPassing) { correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks passing, proceeding'); return true; }
         correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks not passing, deferring');
-        await saveDeferredContinuation(redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber, nextAction: job.data.commandMode as 'review' | 'fix', savedAt: new Date().toISOString(), reason: 'pre_execution_ci_check_failed' });
+        await saveDeferredContinuation(redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber, nextAction, savedAt: new Date().toISOString(), reason: 'pre_execution_ci_check_failed', ultrafixMeta: job.data.ultrafixMeta });
         return false;
     } catch (err) {
         correlatedLogger.warn({ pullRequestNumber, error: (err as Error).message }, 'Ultrafix pre-check: error checking CI, proceeding anyway');

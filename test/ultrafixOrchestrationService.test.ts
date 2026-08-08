@@ -10,6 +10,8 @@ import {
     saveState,
     loadState,
     clearState,
+    saveDeferredContinuation,
+    loadDeferredContinuation,
     startLoop,
     recordAction,
     retainOriginalScope,
@@ -331,6 +333,20 @@ describe('startLoop', () => {
         }, true);
 
         assert.strictEqual(initialAction, 'fix');
+    });
+
+    test('clears an older deferred transition when starting a fresh loop', async () => {
+        const redis = createMockRedis();
+        await saveDeferredContinuation(redis as any, {
+            owner: 'o', repo: 'r', pr: 1,
+            nextAction: 'fix',
+            savedAt: new Date().toISOString(),
+            reason: 'checks_not_passing',
+        });
+
+        await startLoop(redis as any, { owner: 'o', repo: 'r', pr: 1 }, false);
+
+        assert.strictEqual(await loadDeferredContinuation(redis as any, 'o', 'r', 1), null);
     });
 });
 
