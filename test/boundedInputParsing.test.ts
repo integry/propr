@@ -31,6 +31,24 @@ test('keyword extraction preserves paths with boundary slashes', () => {
   assert.ok(keywords.includes('src/auth'));
 });
 
+test('keyword extraction preserves dotted filename word boundaries', () => {
+  const keywords = extractKeywords('.eslintrc.json -package.json package.json-');
+  assert.ok(keywords.includes('eslintrc.json'));
+  assert.ok(keywords.includes('package.json'));
+  assert.ok(!keywords.includes('package.json-'));
+});
+
+test('keyword extraction does not silently cap input or results', () => {
+  const lateKeyword = `${'padding '.repeat(30_000)}tail-file.ts`;
+  assert.ok(extractKeywords(lateKeyword).includes('tail-file.ts'));
+
+  const manyKeywords = Array.from({ length: 300 }, (_, index) => `term${index}`).join(' ');
+  assert.ok(extractKeywords(manyKeywords).includes('term299'));
+
+  const longKeyword = `x${'y'.repeat(512)}`;
+  assert.ok(extractKeywords(longKeyword).includes(longKeyword));
+});
+
 test('sentence truncation consumes long punctuation runs in one pass', () => {
   const firstSentence = `Ready${'!'.repeat(REPETITIONS)}`;
   assert.equal(truncateToSentences(`${firstSentence} Next? Ignored.`), `${firstSentence} Next?`);
