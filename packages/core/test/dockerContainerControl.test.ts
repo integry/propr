@@ -167,7 +167,33 @@ test('retries generation-labeled teardown across the Docker creation race', asyn
     assert.deepEqual(dockerCalls[1]?.args, ['ps', '-aq', '--filter', 'label=propr.task.id=task-1748', '--filter', 'label=propr.task.attempt-generation=generation-hash']);
     assert.deepEqual(dockerCalls[2]?.args, ['rm', '-f', 'container-one']);
     assert.deepEqual(dockerCalls[3]?.args, ['rm', '-f', 'container-two']);
-    assert.equal(dockerCalls.length, 4);
+    assert.deepEqual(dockerCalls[4]?.args, ['ps', '-aq', '--filter', 'label=propr.task.id=task-1748', '--filter', 'label=propr.task.attempt-generation=generation-hash']);
+    assert.equal(dockerCalls.length, 5);
+});
+
+test('continues generation-fenced discovery after removing an earlier batch', async () => {
+    responses.push(
+        { error: null, stdout: 'container-one\n', stderr: '' },
+        { error: null, stdout: '', stderr: '' },
+        { error: null, stdout: 'container-two\n', stderr: '' },
+        { error: null, stdout: '', stderr: '' },
+        { error: null, stdout: '', stderr: '' },
+    );
+
+    await teardownDockerExecution({
+        taskId: 'task-1748',
+        attemptGeneration: 'generation-hash',
+        attempts: 3,
+        retryDelayMs: 0,
+    });
+
+    assert.deepEqual(dockerCalls.map(call => call.args), [
+        ['ps', '-aq', '--filter', 'label=propr.task.id=task-1748', '--filter', 'label=propr.task.attempt-generation=generation-hash'],
+        ['rm', '-f', 'container-one'],
+        ['ps', '-aq', '--filter', 'label=propr.task.id=task-1748', '--filter', 'label=propr.task.attempt-generation=generation-hash'],
+        ['rm', '-f', 'container-two'],
+        ['ps', '-aq', '--filter', 'label=propr.task.id=task-1748', '--filter', 'label=propr.task.attempt-generation=generation-hash'],
+    ]);
 });
 
 test('does not retry label queries when the Docker daemon is unavailable', async () => {

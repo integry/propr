@@ -129,6 +129,9 @@ function hasCompletedContainerRemoval(
 ): boolean {
     if (removal.failed.size > 0) return false;
     const hasGenerationFence = Boolean(options.taskId && options.attemptGeneration);
+    // A successful generation-fenced batch does not prove that `docker run`
+    // cannot publish another owned container on a later observation.
+    if (hasGenerationFence) return false;
     const onlyContainerNameAvailable = !hasGenerationFence && !options.containerId && Boolean(options.containerName);
     return !onlyContainerNameAvailable
         || !options.containerName

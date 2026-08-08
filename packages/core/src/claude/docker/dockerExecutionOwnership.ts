@@ -52,6 +52,13 @@ interface AbortSpawnedExecutionOptions {
 
 const executionOwnershipContext = new AsyncLocalStorage<ExecutionOwnershipContext>();
 
+function waitForChildTermination(child: ChildProcess): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+    return new Promise(resolve => {
+        child.once('exit', () => resolve());
+    });
+}
+
 export function runWithExecutionAbortSignal<T>(
     signal: AbortSignal,
     operation: () => Promise<T>,
@@ -71,14 +78,25 @@ export function abortSpawnedExecution(
 ): Promise<void> {
     if (state.aborted.value) return state.teardownPromise ?? Promise.resolve();
     state.aborted.value = true;
-    child.kill('SIGTERM');
-    options.scheduleForceKill(child);
-    state.teardownPromise = teardownDockerExecution({
+    const teardownOptions = {
         taskId: options.taskId,
         attemptGeneration: options.attemptGeneration,
         containerId: state.containerId.value,
         containerName: options.namedContainer,
-    });
+    };
+    const hasGenerationFence = Boolean(options.taskId && options.attemptGeneration);
+    const childTermination = hasGenerationFence ? waitForChildTermination(child) : null;
+    child.kill('SIGTERM');
+    options.scheduleForceKill(child);
+    state.teardownPromise = (async () => {
+        await teardownDockerExecution(teardownOptions);
+        if (childTermination) {
+            await childTermination;
+            // Once SIGTERM or the fallback SIGKILL has ended `docker run`, use
+            // a fresh observation window to catch its last creation-race work.
+            await teardownDockerExecution(teardownOptions);
+        }
+    })();
     return state.teardownPromise;
 }
 
