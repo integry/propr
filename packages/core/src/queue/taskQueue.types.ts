@@ -65,6 +65,8 @@ export interface CommentJobData {
     ultrafixMeta?: UltrafixCommandMeta;
     /** Reasoning level override resolved from PR or linked issue level-* labels. */
     reasoningLevel?: ReasoningLevel;
+    /** Internal lease token persisted across BullMQ redelivery and rescheduling. */
+    prProcessingLockToken?: string;
 }
 
 export interface UnprocessedComment {
