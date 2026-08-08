@@ -13,6 +13,8 @@ type ImageOptimizationLogger = {
 };
 
 const STORAGE_ROOT = path.join(process.cwd(), 'storage', 'drafts');
+const TEMP_UPLOAD_ROOT = path.join(process.cwd(), 'temp_uploads');
+const UUID_PATH_SEGMENT_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_TEXT_CHARS = 100000;
 const HEAD_CHARS = 5000;
 const TAIL_CHARS = 20000;
@@ -203,7 +205,33 @@ export interface MulterFile {
 
 export interface ProcessUploadOptions {
   storageRoot?: string;
+  tempRoot?: string;
   persistAttachment?: (draftId: string, attachment: Attachment) => Promise<void>;
+}
+
+function validateDraftPathSegment(draftId: string): string {
+  const safeDraftId = path.basename(draftId);
+  if (safeDraftId !== draftId || !UUID_PATH_SEGMENT_PATTERN.test(safeDraftId)) {
+    throw new Error('Draft ID must be a valid UUID');
+  }
+  return safeDraftId;
+}
+
+function validateOriginalFilename(originalName: string): string {
+  const safeOriginalName = path.basename(originalName);
+  if (!safeOriginalName || safeOriginalName !== originalName) {
+    throw new Error('Invalid attachment filename');
+  }
+  return safeOriginalName;
+}
+
+function resolveTemporaryUploadPath(filePath: string, tempRoot: string = TEMP_UPLOAD_ROOT): string {
+  const resolvedRoot = path.resolve(tempRoot);
+  const safePath = path.join(resolvedRoot, path.basename(filePath));
+  if (path.resolve(filePath) !== safePath) {
+    throw new Error('Temporary upload path is outside the configured upload directory');
+  }
+  return safePath;
 }
 
 function isImageType(mimetype: string, ext: string): boolean {
@@ -246,17 +274,24 @@ async function persistAttachment(draftId: string, attachment: Attachment): Promi
 }
 
 export class AttachmentService {
+  static async removeTemporaryUpload(filePath: string, tempRoot?: string): Promise<void> {
+    await fs.remove(resolveTemporaryUploadPath(filePath, tempRoot));
+  }
+
   static async processUpload(
     file: MulterFile,
     draftId: string,
     options: ProcessUploadOptions = {},
   ): Promise<Attachment> {
-    const draftDir = path.join(options.storageRoot ?? STORAGE_ROOT, draftId);
+    const tempPath = resolveTemporaryUploadPath(file.path, options.tempRoot);
     let finalPath: string | undefined;
 
     try {
+      const safeDraftId = validateDraftPathSegment(draftId);
+      const originalName = validateOriginalFilename(file.originalname);
+      const draftDir = path.join(options.storageRoot ?? STORAGE_ROOT, safeDraftId);
       const fileId = uuidv4();
-      const ext = path.extname(file.originalname).toLowerCase();
+      const ext = path.extname(originalName).toLowerCase();
       if (isBinaryType(file.mimetype, ext)) {
         throw new Error('Binary files are not supported. Please upload images or text files only.');
       }
@@ -273,11 +308,11 @@ export class AttachmentService {
       let fileSize = 0;
 
       if (isImage) {
-        const optimization = await optimizeImageForContext(file.path, finalPath);
+        const optimization = await optimizeImageForContext(tempPath, finalPath);
         fileSize = optimization.size;
         tokenEstimate = calculateImageTokenEstimate(fileSize);
       } else {
-        let content = await fs.readFile(file.path, 'utf-8');
+        let content = await fs.readFile(tempPath, 'utf-8');
         if (content.includes('\0')) {
           throw new Error('Binary files are not supported. The file appears to contain binary data.');
         }
@@ -294,24 +329,24 @@ export class AttachmentService {
       }
 
       // Do not publish metadata while Multer's plaintext temporary copy remains.
-      await fs.remove(file.path);
+      await fs.remove(tempPath);
 
       const attachment: Attachment = {
         id: fileId,
-        originalName: file.originalname,
+        originalName,
         storedPath: path.relative(process.cwd(), finalPath),
         mimeType: isImage ? 'image/webp' : 'text/plain',
         size: fileSize,
         tokenEstimate,
         type: isImage ? 'image' : 'text'
       };
-      await (options.persistAttachment ?? persistAttachment)(draftId, attachment);
+      await (options.persistAttachment ?? persistAttachment)(safeDraftId, attachment);
       return attachment;
     } catch (error) {
       if (finalPath) await fs.remove(finalPath).catch(() => undefined);
       throw error;
     } finally {
-      await fs.remove(file.path).catch(() => undefined);
+      await fs.remove(tempPath).catch(() => undefined);
     }
   }
 

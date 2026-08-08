@@ -3,7 +3,6 @@
  */
 
 import type { Response } from 'express';
-import fs from 'fs-extra';
 import type { FlatRequest as Request } from '../../../requestTypes.js';
 import { AttachmentService } from '@propr/core';
 import type { MulterFile } from '@propr/core';
@@ -57,12 +56,13 @@ export function createGetAttachmentContentHandler(deps: AttachmentContentDeps) {
 
 interface UploadAttachmentDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
+  tempRoot?: string;
 }
 
-async function removeUploadedTempFile(filePath: string | undefined): Promise<void> {
+async function removeUploadedTempFile(filePath: string | undefined, tempRoot?: string): Promise<void> {
   if (!filePath) return;
   try {
-    await fs.remove(filePath);
+    await AttachmentService.removeTemporaryUpload(filePath, tempRoot);
   } catch (error) {
     console.error('Failed to remove temporary upload:', error);
   }
@@ -83,7 +83,9 @@ export function createUploadAttachmentHandler(deps: UploadAttachmentDeps) {
       const ownership = await deps.verifyOwnership(req.params.id, req.user!.id);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
-      const attachment = await AttachmentService.processUpload(req.file as MulterFile, req.params.id);
+      const attachment = await AttachmentService.processUpload(req.file as MulterFile, req.params.id, {
+        tempRoot: deps.tempRoot,
+      });
       res.json(attachment);
     } catch (error) {
       console.error('Upload attachment error:', error);
@@ -94,7 +96,7 @@ export function createUploadAttachmentHandler(deps: UploadAttachmentDeps) {
       // AttachmentService also cleans its input. This idempotent boundary cleanup
       // covers requests rejected before the service is called and unexpected
       // service failures without trusting every downstream path to remember it.
-      await removeUploadedTempFile(req.file.path);
+      await removeUploadedTempFile(req.file.path, deps.tempRoot);
     }
   };
 }

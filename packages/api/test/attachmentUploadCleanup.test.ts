@@ -50,6 +50,7 @@ test('upload handler removes Multer files rejected before attachment processing'
       } as unknown as FlatRequest;
       const recorder = responseRecorder();
       const handler = createUploadAttachmentHandler({
+        tempRoot: root,
         verifyOwnership: async () => authorized
           ? { authorized: true }
           : { authorized: false, status: 403, error: 'Forbidden' },
@@ -74,6 +75,7 @@ test('attachment processing removes temporary and final files when persistence f
     await assert.rejects(
       AttachmentService.processUpload(uploadedFile(tempPath), DRAFT_ID, {
         storageRoot,
+        tempRoot: root,
         persistAttachment: async () => { throw new Error('database write failed'); },
       }),
       /database write failed/,
@@ -82,6 +84,42 @@ test('attachment processing removes temporary and final files when persistence f
     assert.equal(existsSync(tempPath), false);
     const draftDir = join(storageRoot, DRAFT_ID);
     assert.deepEqual(existsSync(draftDir) ? readdirSync(draftDir) : [], []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('temporary cleanup refuses paths outside its configured root', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'propr-upload-root-'));
+  const outsideRoot = mkdtempSync(join(tmpdir(), 'propr-upload-outside-'));
+  const outsidePath = join(outsideRoot, 'upload');
+  writeFileSync(outsidePath, 'notes');
+  try {
+    await assert.rejects(
+      AttachmentService.removeTemporaryUpload(outsidePath, root),
+      /outside the configured upload directory/,
+    );
+    assert.equal(existsSync(outsidePath), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test('attachment processing rejects path-like draft IDs and still cleans its temp file', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'propr-upload-cleanup-'));
+  const tempPath = join(root, 'upload');
+  writeFileSync(tempPath, 'notes');
+  try {
+    await assert.rejects(
+      AttachmentService.processUpload(uploadedFile(tempPath), '../../escape', {
+        storageRoot: join(root, 'storage'),
+        tempRoot: root,
+        persistAttachment: async () => undefined,
+      }),
+      /valid UUID/,
+    );
+    assert.equal(existsSync(tempPath), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
