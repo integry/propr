@@ -57,20 +57,16 @@ function trimKeywordDelimiters(value: string): string {
   return value.slice(start, end);
 }
 
-function trimPathBoundarySlashes(value: string): string {
-  let start = 0;
-  let end = value.length;
-  while (start < end && value[start] === '/') start++;
-  while (end > start && value[end - 1] === '/') end--;
-  return value.slice(start, end);
-}
-
 function isWordTokenCharacter(char: string): boolean {
   const code = char.charCodeAt(0);
   return (code >= 48 && code <= 57)
     || (code >= 65 && code <= 90)
     || (code >= 97 && code <= 122)
     || char === '_';
+}
+
+function isFileTokenCharacter(char: string): boolean {
+  return isWordTokenCharacter(char) || char === '.' || char === '-' || char === '/';
 }
 
 function trimFilenameWordBoundaries(value: string): string {
@@ -90,7 +86,7 @@ function filenameCandidates(rawToken: string): string[] {
       return;
     }
     const candidate = trimFilenameWordBoundaries(segments.join('.'));
-    if (isFileLikeToken(candidate)) candidates.push(candidate);
+    if (candidate.includes('.')) candidates.push(candidate);
     segments = [];
   };
 
@@ -102,28 +98,65 @@ function filenameCandidates(rawToken: string): string[] {
   return candidates;
 }
 
-function isFileLikeToken(token: string): boolean {
-  if (!token) return false;
-  if (token.includes('/')) {
-    const segments = token.split('/');
-    return segments.every(Boolean) && /[A-Za-z0-9_-]/.test(token[token.length - 1]);
+function appendFilenameCandidates(value: string, candidates: string[]): void {
+  for (const candidate of filenameCandidates(value)) candidates.push(candidate);
+}
+
+// Preserve the former path-first regex alternation: each slash chain consumes
+// through its last valid path segment, while repeated slashes resume scanning.
+function appendFileLikeRun(run: string, candidates: string[]): void {
+  let cursor = 0;
+  while (cursor < run.length) {
+    while (cursor < run.length && run[cursor] === '/') cursor++;
+    if (cursor === run.length) return;
+
+    const chainStart = cursor;
+    const segments: Array<{ start: number; end: number }> = [];
+    let lastPathEnd = -1;
+
+    while (cursor < run.length) {
+      const segmentStart = cursor;
+      while (cursor < run.length && run[cursor] !== '/') cursor++;
+      const segmentEnd = cursor;
+      segments.push({ start: segmentStart, end: segmentEnd });
+
+      if (segments.length > 1) {
+        let pathEnd = segmentEnd;
+        while (pathEnd > segmentStart && run[pathEnd - 1] === '.') pathEnd--;
+        if (pathEnd > segmentStart) lastPathEnd = pathEnd;
+      }
+
+      if (cursor === run.length || cursor === run.length - 1 || run[cursor + 1] === '/') break;
+      cursor++;
+    }
+
+    if (lastPathEnd !== -1) {
+      candidates.push(run.slice(chainStart, lastPathEnd));
+    } else {
+      for (const segment of segments) {
+        appendFilenameCandidates(run.slice(segment.start, segment.end), candidates);
+      }
+    }
   }
-  if (!token.includes('.') || !/[A-Za-z0-9_]/.test(token[0])) return false;
-  return token.split('.').every(segment => segment.length > 0 && !/[^A-Za-z0-9_-]/.test(segment));
 }
 
 function fileLikeTokens(prompt: string): string[] {
-  const tokens: string[] = [];
-  for (const match of prompt.matchAll(/[A-Za-z0-9_./-]+/g)) {
-    const rawToken = match[0];
-    if (rawToken.includes('/')) {
-      const token = trimPathBoundarySlashes(trimKeywordDelimiters(rawToken));
-      if (isFileLikeToken(token)) tokens.push(token);
-    } else {
-      tokens.push(...filenameCandidates(rawToken));
+  const candidates: string[] = [];
+  let runStart = -1;
+
+  for (let index = 0; index <= prompt.length; index++) {
+    const character = prompt[index];
+    if (character !== undefined && isFileTokenCharacter(character)) {
+      if (runStart === -1) runStart = index;
+      continue;
+    }
+    if (runStart !== -1) {
+      appendFileLikeRun(prompt.slice(runStart, index), candidates);
+      runStart = -1;
     }
   }
-  return tokens;
+
+  return candidates;
 }
 
 /**

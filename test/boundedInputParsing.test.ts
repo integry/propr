@@ -21,6 +21,11 @@ test('slash commands handle long whitespace runs without ambiguous matching', ()
 test('slash commands reject embedded line terminators but accept trailing ones', () => {
   for (const separator of ['\r', '\u2028', '\u2029']) {
     assert.equal(parseSlashCommand(`/fix one${separator}two`), null);
+    assert.deepEqual(parseSlashCommand(`/fix${separator}one`), {
+      command: 'fix',
+      args: ['one'],
+      instructions: '',
+    });
     assert.deepEqual(parseSlashCommand(`/fix one${separator}`), {
       command: 'fix',
       args: ['one'],
@@ -38,6 +43,25 @@ test('keyword extraction preserves paths with boundary slashes', () => {
   const keywords = extractKeywords('Inspect /src/auth/login.ts and src/auth/');
   assert.ok(keywords.includes('src/auth/login.ts'));
   assert.ok(keywords.includes('src/auth'));
+});
+
+test('keyword extraction resumes after invalid path separators', () => {
+  const separators = '/'.repeat(REPETITIONS);
+  assert.deepEqual(
+    extractKeywords(`src/file.ts${separators}lib/next.ts`).slice(0, 2),
+    ['src/file.ts', 'lib/next.ts'],
+  );
+});
+
+test('keyword extraction preserves filename boundaries next to slashes', () => {
+  for (const [prompt, expected] of [
+    ['package.json-/', 'package.json'],
+    ['/-package.json', 'package.json'],
+    ['src/auth./', 'src/auth'],
+    ['foo.ts/...', 'foo.ts'],
+  ]) {
+    assert.equal(extractKeywords(prompt)[0], expected);
+  }
 });
 
 test('keyword extraction preserves dotted filename word boundaries', () => {
