@@ -23,6 +23,7 @@ import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { toAntigravityCliModelId } from './antigravityModelIds.js';
 import fs from 'fs';
 import path from 'path';
+import { randomBytes } from 'node:crypto';
 import { resolveAgentTerminationReason } from '../termination.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
 import {
@@ -39,6 +40,34 @@ const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_
 const ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH = '/home/node/.gemini-source';
 const DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT = '/tmp/git-processor/propr-cache/transcripts/antigravity';
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
+
+function isSuccessfulAnalysisResult(
+    result: { timedOut?: boolean; exitCode: number | null },
+    summary: string | undefined,
+): boolean {
+    return !result.timedOut && (result.exitCode === 0 || !!summary);
+}
+
+function buildAgentEnvironmentArgs(
+    repositoryInspection: boolean,
+    ...sources: Array<Record<string, string> | undefined>
+): string[] {
+    const args: string[] = [];
+    for (const source of sources) {
+        if (!source) continue;
+        for (const [key, value] of Object.entries(source)) {
+            if (repositoryInspection && GITHUB_CREDENTIAL_ENV_PATTERN.test(key.toUpperCase())) continue;
+            args.push('-e', `${key}=${value}`);
+        }
+    }
+    return args;
+}
+
+function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyWorkspace: boolean): void {
+    if (repositoryInspection && !readOnlyWorkspace) {
+        throw new Error('Repository inspection requires a read-only workspace');
+    }
+}
 
 function getAntigravityTranscriptRoot(): string {
     return process.env.PROPR_ANTIGRAVITY_TRANSCRIPT_ROOT || DEFAULT_ANTIGRAVITY_TRANSCRIPT_ROOT;
@@ -173,8 +202,8 @@ export class AntigravityAgent implements Agent {
     }
 
     private createTransientTranscriptPath(taskId?: string): string {
-        const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-        const safeTaskId = taskId?.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(-80) || 'run';
+        const suffix = `${Date.now().toString(36)}-${randomBytes(8).toString('hex')}`;
+        const safeTaskId = taskId?.slice(-80).replace(/[^a-zA-Z0-9_.-]/g, '-') || 'run';
         const transcriptRoot = getAntigravityTranscriptRoot();
         fs.mkdirSync(transcriptRoot, { recursive: true });
         return path.join(transcriptRoot, `${safeTaskId}-${suffix}.jsonl`);
@@ -320,7 +349,7 @@ export class AntigravityAgent implements Agent {
             const executionTimeMs = Date.now() - startTime;
             const { summary, tokenUsage, sessionId } = parseAntigravityJsonl(result.stdout);
 
-            if (!result.timedOut && (result.exitCode === 0 || summary)) {
+            if (isSuccessfulAnalysisResult(result, summary)) {
                 const analysisText = (summary || '').trim();
                 // agy --print emits plain text with no token stats, so
                 // parseAntigravityJsonl returns empty usage. Estimate from the
@@ -379,23 +408,9 @@ export class AntigravityAgent implements Agent {
 
     private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean }): string[] {
         const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false } = params;
-        if (repositoryInspection && !readOnlyWorkspace) {
-            throw new Error('Repository inspection requires a read-only workspace');
-        }
+        assertRepositoryInspectionMode(repositoryInspection, readOnlyWorkspace);
         const configPath = this.getHostConfigPath();
-        const envVars: string[] = [];
-        if (this.config.envVars) {
-            for (const [key, value] of Object.entries(this.config.envVars)) {
-                if (repositoryInspection && GITHUB_CREDENTIAL_ENV_PATTERN.test(key.toUpperCase())) continue;
-                envVars.push('-e', `${key}=${value}`);
-            }
-        }
-        if (environment) {
-            for (const [key, value] of Object.entries(environment)) {
-                if (repositoryInspection && GITHUB_CREDENTIAL_ENV_PATTERN.test(key.toUpperCase())) continue;
-                envVars.push('-e', `${key}=${value}`);
-            }
-        }
+        const envVars = buildAgentEnvironmentArgs(repositoryInspection, this.config.envVars, environment);
         const shortTaskId = createContainerExecutionId(taskId);
         const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
         const runtimeName = this.getRuntimeName();

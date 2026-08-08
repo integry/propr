@@ -146,7 +146,7 @@ export async function runBackgroundRefinement(
       sampleCount: result.estimation?.sampleCount
     };
 
-    console.log(`[refine] Storing refinement result for draft ${draftId}:`, JSON.stringify(refinementMeta));
+    console.log('[refine] Storing refinement result', { draftId, refinementMeta });
 
     const persisted = await persistActiveRefinement(db, draftId, runId, {
       plan_json: JSON.stringify(result.plan),
@@ -161,7 +161,7 @@ export async function runBackgroundRefinement(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? error.stack : undefined;
-    console.error(`[refine] Plan refinement failed for draft ${draftId}:`, errorMessage);
+    console.error('[refine] Plan refinement failed', { draftId, error: errorMessage });
     if (errorStack) console.error(`[refine] Stack trace:`, errorStack);
     // Only revert status to review on failure if not aborted. Persist the
     // error into refinement_result so the UI can surface it to the user
@@ -170,7 +170,10 @@ export async function runBackgroundRefinement(
     try {
       aborted = await checkAborted();
     } catch (abortCheckError) {
-      console.error(`[refine] Failed to check abort state while recovering draft ${draftId}:`, abortCheckError);
+      console.error('[refine] Failed to check abort state while recovering draft', {
+        draftId,
+        error: abortCheckError,
+      });
     }
     if (aborted) return;
 
