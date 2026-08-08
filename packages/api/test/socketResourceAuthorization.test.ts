@@ -119,6 +119,68 @@ describe('Socket.IO resource authorization', () => {
     assert.equal(canJoin(socket, 'task:task-5'), true);
   });
 
+  test('does not let an unsubscribe be undone while task authorization is pending', async () => {
+    let resolveTaskLookup!: (value: string | null) => void;
+    const pendingTaskLookup = new Promise<string | null>(resolve => {
+      resolveTaskLookup = resolve;
+    });
+    let markTaskLookupStarted!: () => void;
+    const taskLookupStarted = new Promise<void>(resolve => {
+      markTaskLookupStarted = resolve;
+    });
+    const watcherCalls: string[] = [];
+    const manager = new SocketSubscriptionManager({
+      getQueueDependencies: () => ({
+        taskQueue: {} as Queue,
+        redisClient: {
+          get: () => {
+            markTaskLookupStarted();
+            return pendingTaskLookup;
+          },
+        } as unknown as RedisClientType,
+        db: fakeDb({}),
+      }),
+      getQueueBroadcaster: () => null,
+      taskWatcherManager: {
+        startTaskWatcher: async () => { watcherCalls.push('start'); },
+        sendTaskLiveUpdate: async () => { watcherCalls.push('update'); },
+        stopTaskWatcherIfEmpty: async () => { watcherCalls.push('stop'); },
+      } as unknown as TaskWatcherManager,
+    });
+    const handlers = new Map<string, (value?: unknown) => unknown>();
+    const rooms = new Set(['socket-id']);
+    const socket = {
+      id: 'socket-id',
+      data: {
+        principal: principal('owner'),
+        revalidateAuthentication: async () => true,
+      },
+      connected: true,
+      rooms,
+      emit: () => true,
+      join: async (room: string) => { rooms.add(room); },
+      leave: async (room: string) => { rooms.delete(room); },
+      on: (event: string, handler: (value?: unknown) => unknown) => {
+        handlers.set(event, handler);
+        return socket;
+      },
+    } as unknown as Socket;
+    manager.setup(socket);
+    const subscribe = handlers.get('subscribe:task:live');
+    const unsubscribe = handlers.get('unsubscribe:task:live');
+    assert(subscribe);
+    assert(unsubscribe);
+
+    const pendingSubscribe = Promise.resolve(subscribe('task-1'));
+    await taskLookupStarted;
+    await Promise.resolve(unsubscribe('task-1'));
+    resolveTaskLookup('{}');
+    await pendingSubscribe;
+
+    assert.equal(rooms.has('task:live:task-1'), false);
+    assert.deepEqual(watcherCalls, ['stop']);
+  });
+
   test('broadcasts drafts only to the authorized draft and owner rooms', async () => {
     const emitted: Array<{ rooms: string[]; event: string; payload: DraftUpdatePayload }> = [];
     const service = Object.create(SocketService.prototype) as SocketService;

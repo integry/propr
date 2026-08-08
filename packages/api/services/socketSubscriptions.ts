@@ -23,6 +23,18 @@ interface SocketSubscriptionDependencies {
   taskWatcherManager: TaskWatcherManager;
 }
 
+interface PendingSubscriptionState {
+  generation: symbol;
+  pendingCount: number;
+}
+
+interface SocketSubscriptionRequest {
+  event: string;
+  room: string;
+  authorize: () => boolean | Promise<boolean>;
+  onJoined?: () => void | Promise<void>;
+}
+
 export function normalizeSocketResourceId(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim();
@@ -45,6 +57,8 @@ export function userRoom(userId: string): string {
 }
 
 export class SocketSubscriptionManager {
+  private readonly pendingSubscriptions = new WeakMap<Socket, Map<string, PendingSubscriptionState>>();
+
   constructor(private readonly dependencies: SocketSubscriptionDependencies) {}
 
   setup(socket: Socket): void {
@@ -78,6 +92,40 @@ export class SocketSubscriptionManager {
       .filter(existingRoom => RESOURCE_ROOM_PREFIXES.some(prefix => existingRoom.startsWith(prefix)))
       .length;
     return resourceRoomCount < MAX_RESOURCE_ROOMS_PER_SOCKET;
+  }
+
+  private beginPendingSubscription(socket: Socket, room: string): symbol {
+    let socketSubscriptions = this.pendingSubscriptions.get(socket);
+    if (!socketSubscriptions) {
+      socketSubscriptions = new Map();
+      this.pendingSubscriptions.set(socket, socketSubscriptions);
+    }
+    let state = socketSubscriptions.get(room);
+    if (!state) {
+      state = { generation: Symbol(), pendingCount: 0 };
+      socketSubscriptions.set(room, state);
+    }
+    state.pendingCount += 1;
+    return state.generation;
+  }
+
+  private cancelPendingSubscription(socket: Socket, room: string): void {
+    const state = this.pendingSubscriptions.get(socket)?.get(room);
+    if (state) state.generation = Symbol();
+  }
+
+  private isPendingSubscriptionCurrent(socket: Socket, room: string, generation: symbol): boolean {
+    return this.pendingSubscriptions.get(socket)?.get(room)?.generation === generation;
+  }
+
+  private finishPendingSubscription(socket: Socket, room: string): void {
+    const socketSubscriptions = this.pendingSubscriptions.get(socket);
+    const state = socketSubscriptions?.get(room);
+    if (!socketSubscriptions || !state) return;
+    state.pendingCount -= 1;
+    if (state.pendingCount > 0) return;
+    socketSubscriptions.delete(room);
+    if (socketSubscriptions.size === 0) this.pendingSubscriptions.delete(socket);
   }
 
   async taskExists(taskId: string): Promise<boolean> {
@@ -134,44 +182,67 @@ export class SocketSubscriptionManager {
 
   private async join(
     socket: Socket,
-    event: string,
-    room: string,
-    authorize: () => boolean | Promise<boolean>,
+    request: SocketSubscriptionRequest,
   ): Promise<boolean> {
-    if (!await revalidateSocketAuthentication(socket)) return false;
-    if (!await authorize()) {
-      this.reject(socket, event, 'FORBIDDEN');
-      return false;
+    const { event, room, authorize, onJoined } = request;
+    const generation = this.beginPendingSubscription(socket, room);
+    try {
+      if (!await revalidateSocketAuthentication(socket)) return false;
+      if (!this.isPendingSubscriptionCurrent(socket, room, generation)) return false;
+      const authorized = await authorize();
+      if (!this.isPendingSubscriptionCurrent(socket, room, generation)) return false;
+      if (!authorized) {
+        this.reject(socket, event, 'FORBIDDEN');
+        return false;
+      }
+      if (!socket.connected) return false;
+      if (!this.canJoin(socket, room)) {
+        this.reject(socket, event, 'SUBSCRIPTION_LIMIT');
+        return false;
+      }
+      if (!this.isPendingSubscriptionCurrent(socket, room, generation)) return false;
+      await socket.join(room);
+      if (!this.isPendingSubscriptionCurrent(socket, room, generation)) return false;
+      await onJoined?.();
+      return true;
+    } finally {
+      this.finishPendingSubscription(socket, room);
     }
-    if (!socket.connected) return false;
-    if (!this.canJoin(socket, room)) {
-      this.reject(socket, event, 'SUBSCRIPTION_LIMIT');
-      return false;
-    }
-    await socket.join(room);
-    return true;
   }
 
   private setupTaskHandlers(socket: Socket): void {
     socket.on('subscribe:task', async (rawTaskId: unknown) => {
       const taskId = normalizeSocketResourceId(rawTaskId);
       if (!taskId) return this.reject(socket, 'subscribe:task', 'INVALID_RESOURCE');
-      if (!await this.join(socket, 'subscribe:task', `task:${taskId}`, () => this.taskExists(taskId))) return;
+      if (!await this.join(socket, {
+        event: 'subscribe:task',
+        room: `task:${taskId}`,
+        authorize: () => this.taskExists(taskId),
+      })) return;
       console.log(`[SocketService] Client ${socket.id} subscribed to task:${taskId}`);
     });
 
     socket.on('unsubscribe:task', async (rawTaskId: unknown) => {
       const taskId = normalizeSocketResourceId(rawTaskId);
-      if (taskId) await socket.leave(`task:${taskId}`);
+      if (!taskId) return;
+      const room = `task:${taskId}`;
+      this.cancelPendingSubscription(socket, room);
+      await socket.leave(room);
     });
 
     socket.on('subscribe:task:live', async (rawTaskId: unknown) => {
       const taskId = normalizeSocketResourceId(rawTaskId);
       if (!taskId) return this.reject(socket, 'subscribe:task:live', 'INVALID_RESOURCE');
       try {
-        if (!await this.join(socket, 'subscribe:task:live', `task:live:${taskId}`, () => this.taskExists(taskId))) return;
-        await this.dependencies.taskWatcherManager.startTaskWatcher(taskId);
-        await this.dependencies.taskWatcherManager.sendTaskLiveUpdate(taskId, true);
+        await this.join(socket, {
+          event: 'subscribe:task:live',
+          room: `task:live:${taskId}`,
+          authorize: () => this.taskExists(taskId),
+          onJoined: async () => {
+            await this.dependencies.taskWatcherManager.startTaskWatcher(taskId);
+            await this.dependencies.taskWatcherManager.sendTaskLiveUpdate(taskId, true);
+          },
+        });
       } catch (error) {
         console.error(`[SocketService] Failed to start live task subscription for ${taskId}:`, error);
       }
@@ -181,7 +252,9 @@ export class SocketSubscriptionManager {
       const taskId = normalizeSocketResourceId(rawTaskId);
       if (!taskId) return;
       try {
-        await socket.leave(`task:live:${taskId}`);
+        const room = `task:live:${taskId}`;
+        this.cancelPendingSubscription(socket, room);
+        await socket.leave(room);
         await this.dependencies.taskWatcherManager.stopTaskWatcherIfEmpty(taskId);
       } catch (error) {
         console.error(`[SocketService] Failed to stop live task subscription for ${taskId}:`, error);
@@ -193,13 +266,20 @@ export class SocketSubscriptionManager {
     socket.on('subscribe:draft', async (rawDraftId: unknown) => {
       const draftId = normalizeSocketResourceId(rawDraftId);
       if (!draftId) return this.reject(socket, 'subscribe:draft', 'INVALID_RESOURCE');
-      if (!await this.join(socket, 'subscribe:draft', `draft:${draftId}`, () => this.ownsDraft(socket, draftId))) return;
+      if (!await this.join(socket, {
+        event: 'subscribe:draft',
+        room: `draft:${draftId}`,
+        authorize: () => this.ownsDraft(socket, draftId),
+      })) return;
       console.log(`[SocketService] Client ${socket.id} subscribed to draft:${draftId}`);
     });
 
     socket.on('unsubscribe:draft', async (rawDraftId: unknown) => {
       const draftId = normalizeSocketResourceId(rawDraftId);
-      if (draftId) await socket.leave(`draft:${draftId}`);
+      if (!draftId) return;
+      const room = `draft:${draftId}`;
+      this.cancelPendingSubscription(socket, room);
+      await socket.leave(room);
     });
   }
 
@@ -207,37 +287,46 @@ export class SocketSubscriptionManager {
     socket.on('subscribe:indexing', async (rawRepository: unknown) => {
       const repository = normalizeRepositorySubscription(rawRepository);
       if (!repository) return this.reject(socket, 'subscribe:indexing', 'INVALID_RESOURCE');
-      await this.join(
-        socket,
-        'subscribe:indexing',
-        `indexing:${repository}`,
-        () => this.canAccessRepositoryIndexing(socket, repository),
-      );
+      await this.join(socket, {
+        event: 'subscribe:indexing',
+        room: `indexing:${repository}`,
+        authorize: () => this.canAccessRepositoryIndexing(socket, repository),
+      });
     });
     socket.on('unsubscribe:indexing', async (rawRepository: unknown) => {
       const repository = normalizeRepositorySubscription(rawRepository);
-      if (repository) await socket.leave(`indexing:${repository}`);
+      if (!repository) return;
+      const room = `indexing:${repository}`;
+      this.cancelPendingSubscription(socket, room);
+      await socket.leave(room);
     });
     socket.on('subscribe:indexing:updates', async () => {
-      await this.join(
-        socket,
-        'subscribe:indexing:updates',
-        'indexing:updates',
-        () => this.canAccessAllRepositoryIndexing(socket),
-      );
+      await this.join(socket, {
+        event: 'subscribe:indexing:updates',
+        room: 'indexing:updates',
+        authorize: () => this.canAccessAllRepositoryIndexing(socket),
+      });
     });
     socket.on('unsubscribe:indexing:updates', async () => {
-      await socket.leave('indexing:updates');
+      const room = 'indexing:updates';
+      this.cancelPendingSubscription(socket, room);
+      await socket.leave(room);
     });
   }
 
   private setupQueueStatsHandlers(socket: Socket): void {
     socket.on('subscribe:queue:stats', async () => {
-      if (!await this.join(socket, 'subscribe:queue:stats', 'queue:stats', () => true)) return;
+      if (!await this.join(socket, {
+        event: 'subscribe:queue:stats',
+        room: 'queue:stats',
+        authorize: () => true,
+      })) return;
       await this.dependencies.getQueueBroadcaster()?.broadcastQueueStats();
     });
     socket.on('unsubscribe:queue:stats', async () => {
-      await socket.leave('queue:stats');
+      const room = 'queue:stats';
+      this.cancelPendingSubscription(socket, room);
+      await socket.leave(room);
     });
   }
 
