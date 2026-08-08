@@ -113,6 +113,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      AGENT_CONTAINER_MEMORY_LIMIT: ${AGENT_CONTAINER_MEMORY_LIMIT:-6g}
+      AGENT_CONTAINER_CPU_LIMIT: ${AGENT_CONTAINER_CPU_LIMIT:-4}
+      AGENT_CONTAINER_PIDS_LIMIT: ${AGENT_CONTAINER_PIDS_LIMIT:-512}
       # Vibe prompt cache — active with sane defaults so setting MISTRAL_API_KEY
       # is sufficient for API-key auth. PREFLIGHT: create the host directory
       # before starting (mkdir -p /tmp/propr-vibe-prompts && chown to your

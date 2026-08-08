@@ -2,7 +2,7 @@ import fs from 'fs';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
-import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
+import { buildAgentContainerResourceArgs, wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { resolveConfigPath, loadSettings } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
@@ -422,7 +422,7 @@ export class VibeAgent implements Agent {
         ];
         const cliArgsSource = (process.env.VIBE_CLI_ARGS ?? this.config.envVars?.VIBE_CLI_ARGS) ? 'custom' : 'default';
         logger.info({ issueNumber, agentAlias: this.config.alias, mode, dockerImage: this.config.dockerImage, configPath, configPathMounted: hasUsableConfig, workspaceMountMode, cliArgsSource, cliArgCount: cliArgs.length }, 'Docker args built for Vibe agent');
-        if (mode === 'analysis') return dockerArgs;
+        if (mode === 'analysis') return [dockerArgs[0], ...buildAgentContainerResourceArgs(), ...dockerArgs.slice(1)];
         return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, 'vibe');
     }
 

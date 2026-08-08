@@ -29,6 +29,10 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         assert.match(wrapperScript, /Continuing so the agent can inspect and repair/);
         assert.match(wrapperScript, /exec "\$entrypoint" "\$@"/);
         assert.ok(wrapped.includes('no-new-privileges'));
+        assert.deepStrictEqual(wrapped.slice(1, 9), [
+            '--memory', '6g', '--memory-swap', '6g',
+            '--cpus', '4', '--pids-limit', '512'
+        ]);
     });
 
     test('preserves inline no-new-privileges before repo setup', () => {
