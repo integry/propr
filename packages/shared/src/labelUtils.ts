@@ -9,8 +9,10 @@ export function shortHash(value: string): string {
         throw new RangeError(`Label hash input exceeds ${MAX_LABEL_HASH_INPUT_LENGTH} characters`);
     }
     let hash = 2166136261;
-    for (let index = 0; index < boundedValue.length; index++) {
-        hash ^= boundedValue.charCodeAt(index);
+    for (let index = 0; index < MAX_LABEL_HASH_INPUT_LENGTH; index++) {
+        const character = boundedValue[index];
+        if (character === undefined) break;
+        hash ^= character.charCodeAt(0);
         hash = Math.imul(hash, 16777619);
     }
     return (hash >>> 0).toString(36);

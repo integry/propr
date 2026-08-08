@@ -13,6 +13,7 @@ test('npm registry package paths encode scoped names and reject ambiguous input'
 
 test('label hashing rejects unbounded model identifiers', () => {
   assert.equal(shortHash('model-id'), shortHash('model-id'));
+  assert.equal(typeof shortHash('x'.repeat(4096)), 'string');
   assert.throws(() => shortHash('x'.repeat(4097)), /exceeds 4096 characters/);
 });
 
