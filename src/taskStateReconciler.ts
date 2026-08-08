@@ -128,8 +128,7 @@ async function runWithinRemainingBudget<T>(
 function isPRCommentTask(task: TaskStateData): boolean {
     if (task.issueRef.type !== undefined) return task.issueRef.type === 'pr_comment';
     return task.taskId.startsWith('pr-comment-')
-        || task.taskId.startsWith('pr-comments-')
-        || (Array.isArray(task.issueRef.comments) && task.issueRef.comments.length > 0);
+        || task.taskId.startsWith('pr-comments-');
 }
 
 export function taskAgeMs(updatedAt: string, now = Date.now()): number | null {

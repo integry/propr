@@ -154,6 +154,38 @@ test('leaves live, recent, non-PR, and future-dated work untouched', async () =>
     assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
 });
 
+test('leaves an untyped issue task with comments untouched', async () => {
+    const issue = makeTask('issue-task-with-comments', {
+        issueRef: {
+            number: 1,
+            repoOwner: 'integry',
+            repoName: 'propr',
+            comments: [{ id: 1, body: 'Additional issue context' }],
+        },
+    });
+    const queue = { getJob: mock.fn(async () => null) };
+    const inspectContainer = mock.fn(async () => 'not_found' as const);
+    const result = await reconcileStalePRCommentTasks({
+        queue,
+        stateManager: createStateManager([issue]),
+        inspectContainer,
+        now: NOW,
+    });
+
+    assert.deepEqual(result.summary, {
+        scanned: 1,
+        stale: 0,
+        live: 0,
+        recovered: 0,
+        skipped: 1,
+        errors: 0,
+    });
+    assert.equal(queue.getJob.mock.calls.length, 0);
+    assert.equal(inspectContainer.mock.calls.length, 0);
+    assert.equal(finalizeCompletedPRCommentTask.mock.calls.length, 0);
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
+});
+
 test('leaves future-dated work untouched when the stale threshold is zero', async () => {
     const future = makeTask('pr-comments-future-zero-threshold', {
         updatedAt: new Date(NOW + 60_000).toISOString(),
