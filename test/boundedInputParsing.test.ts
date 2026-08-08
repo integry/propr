@@ -56,6 +56,7 @@ test('keyword extraction resumes after invalid path separators', () => {
     extractKeywords(`src/file.ts${separators}lib/next.ts`).slice(0, 2),
     ['src/file.ts', 'lib/next.ts'],
   );
+  assert.equal(extractKeywords('foo.ts//bar')[0], 'foo.ts');
 });
 
 test('keyword extraction preserves filename boundaries next to slashes', () => {
