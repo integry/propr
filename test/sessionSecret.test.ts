@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { validateSessionSecret } from '../packages/shared/src/sessionSecret.js';
+import { resolveSessionSecretCheck } from '../packages/cli/src/commands/checkCommands.js';
 import { materializeSessionSecret } from '../packages/cli/src/commands/initStack.js';
 
 test('session secret validation rejects missing, placeholder, and short values', () => {
@@ -11,6 +12,21 @@ test('session secret validation rejects missing, placeholder, and short values',
 
 test('session secret validation accepts generated-length values', () => {
   assert.equal(validateSessionSecret('a'.repeat(32)), undefined);
+});
+
+test('CLI only exempts full ProPR demo mode from the session-secret requirement', () => {
+  assert.equal(
+    resolveSessionSecretCheck(undefined, { proprDemoMode: 'true', githubAuthMode: 'demo' }),
+    undefined,
+  );
+  assert.equal(
+    resolveSessionSecretCheck(undefined, { proprDemoMode: 'false', githubAuthMode: 'demo' })?.status,
+    'fail',
+  );
+  assert.equal(
+    resolveSessionSecretCheck('a'.repeat(32), { proprDemoMode: 'false', githubAuthMode: 'demo' })?.status,
+    'ok',
+  );
 });
 
 test('stack scaffolding replaces the example secret without changing other values', () => {
