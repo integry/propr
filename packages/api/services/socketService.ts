@@ -296,24 +296,26 @@ export class SocketService {
   }
 
   private async handleDraftUpdate(payload: DraftUpdatePayload): Promise<void> {
-    let ownerId: string | undefined;
-    if (this.queueDeps) {
-      try {
-        const draft = await this.queueDeps.db('task_drafts')
-          .select('user_id')
-          .where({ draft_id: payload.draftId })
-          .first() as { user_id?: string } | undefined;
-        ownerId = draft?.user_id;
-      } catch (error) {
-        // The draft-specific room contains only clients that already passed an
-        // ownership check. Keep that targeted stream available when the owner
-        // lookup is transiently unavailable, but never widen it to a user room.
-        console.error(`[SocketService] Failed to resolve owner for draft ${payload.draftId}:`, error);
-      }
+    const queueDependencies = this.queueDeps;
+    if (!queueDependencies) return;
+
+    let ownerId: string;
+    try {
+      const draft = await queueDependencies.db('task_drafts')
+        .select('user_id')
+        .where({ draft_id: payload.draftId })
+        .first() as { user_id?: string } | undefined;
+      if (typeof draft?.user_id !== 'string' || !draft.user_id) return;
+      ownerId = draft.user_id;
+    } catch (error) {
+      console.error(`[SocketService] Failed to resolve owner for draft ${payload.draftId}:`, error);
+      return;
     }
-    let broadcaster = this.io.to(`draft:${payload.draftId}`);
-    if (ownerId) broadcaster = broadcaster.to(userRoom(ownerId));
-    broadcaster.emit(DRAFT_UPDATE, payload);
+
+    this.io
+      .to(`draft:${payload.draftId}`)
+      .to(userRoom(ownerId))
+      .emit(DRAFT_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${DRAFT_UPDATE} for draft ${payload.draftId}, step: ${payload.step}`);
   }
 
