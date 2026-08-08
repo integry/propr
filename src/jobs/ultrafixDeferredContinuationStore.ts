@@ -16,6 +16,8 @@ export interface UltrafixDeferredContinuation {
     generation?: number;
 }
 
+export type UltrafixIdentity = Pick<UltrafixDeferredContinuation, 'owner' | 'repo' | 'pr'>;
+
 const DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
 const DEFERRED_GENERATION_KEY_PREFIX = 'ultrafix:deferred-generation';
 
@@ -47,7 +49,16 @@ return { deferred, generation }
 `;
 
 const CANCEL_DEFERRED_SCRIPT = `
-redis.call('INCR', KEYS[1])
+local generation = redis.call('INCR', KEYS[1])
+redis.call('DEL', KEYS[2])
+return generation
+`;
+
+const DELETE_DEFERRED_IF_CURRENT_SCRIPT = `
+local current_generation = redis.call('GET', KEYS[1]) or '0'
+if current_generation ~= ARGV[1] then
+    return 0
+end
 redis.call('DEL', KEYS[2])
 return 1
 `;
@@ -56,19 +67,16 @@ export async function saveDeferredContinuation(
     redis: Redis,
     deferred: UltrafixDeferredContinuation,
 ): Promise<boolean> {
+    if (deferred.generation === undefined) return false;
     const key = getUltrafixDeferredKey(deferred.owner, deferred.repo, deferred.pr);
     const generationKey = getUltrafixDeferredGenerationKey(deferred.owner, deferred.repo, deferred.pr);
-    const generation = deferred.generation
-        ?? Number(await redis.get(generationKey) ?? '0');
-    const persisted = { ...deferred };
-    delete persisted.generation;
     const saved = await redis.eval(
         SAVE_DEFERRED_IF_CURRENT_SCRIPT,
         2,
         generationKey,
         key,
-        String(generation),
-        JSON.stringify(persisted),
+        String(deferred.generation),
+        JSON.stringify(deferred),
     );
     return Number(saved) === 1;
 }
@@ -104,10 +112,24 @@ export async function isDeferredContinuationCurrent(
     redis: Redis,
     deferred: UltrafixDeferredContinuation,
 ): Promise<boolean> {
-    if (deferred.generation === undefined) return false;
-    const generationKey = getUltrafixDeferredGenerationKey(deferred.owner, deferred.repo, deferred.pr);
-    const currentGeneration = Number(await redis.get(generationKey) ?? '0');
-    return currentGeneration === deferred.generation;
+    return isUltrafixGenerationCurrent(redis, deferred, deferred.generation);
+}
+
+export async function getUltrafixGeneration(
+    redis: Redis,
+    identity: UltrafixIdentity,
+): Promise<number> {
+    const generationKey = getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr);
+    return Number(await redis.get(generationKey) ?? '0');
+}
+
+export async function isUltrafixGenerationCurrent(
+    redis: Redis,
+    identity: UltrafixIdentity,
+    generation: number | undefined,
+): Promise<boolean> {
+    if (generation === undefined) return false;
+    return await getUltrafixGeneration(redis, identity) === generation;
 }
 
 export async function clearDeferredContinuation(
@@ -115,10 +137,26 @@ export async function clearDeferredContinuation(
     owner: string,
     repo: string,
     pr: number,
-): Promise<void> {
+): Promise<number> {
     const key = getUltrafixDeferredKey(owner, repo, pr);
     const generationKey = getUltrafixDeferredGenerationKey(owner, repo, pr);
-    await redis.eval(CANCEL_DEFERRED_SCRIPT, 2, generationKey, key);
+    return Number(await redis.eval(CANCEL_DEFERRED_SCRIPT, 2, generationKey, key));
+}
+
+export async function deleteDeferredContinuationIfCurrent(
+    redis: Redis,
+    identity: UltrafixIdentity,
+    generation: number,
+): Promise<boolean> {
+    const key = getUltrafixDeferredKey(identity.owner, identity.repo, identity.pr);
+    const generationKey = getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr);
+    return Number(await redis.eval(
+        DELETE_DEFERRED_IF_CURRENT_SCRIPT,
+        2,
+        generationKey,
+        key,
+        String(generation),
+    )) === 1;
 }
 
 /** List deferred continuation keys without blocking a large Redis keyspace. */

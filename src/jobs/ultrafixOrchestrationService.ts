@@ -15,11 +15,14 @@ export {
     clearDeferredContinuation,
     getUltrafixDeferredGenerationKey,
     getUltrafixDeferredKey,
+    getUltrafixGeneration,
     isDeferredContinuationCurrent,
+    isUltrafixGenerationCurrent,
     listDeferredContinuationKeys,
     loadDeferredContinuation,
     parseDeferredKey,
     saveDeferredContinuation,
+    deleteDeferredContinuationIfCurrent,
 } from './ultrafixDeferredContinuationStore.js';
 export type { UltrafixDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
 
@@ -28,6 +31,8 @@ export type { UltrafixDeferredContinuation } from './ultrafixDeferredContinuatio
 export type UltrafixAction = 'review' | 'fix';
 
 export interface UltrafixLoopState {
+    /** Cancellation generation shared by every job in this loop. */
+    generation: number;
     /** Repository owner */
     owner: string;
     /** Repository name */
@@ -94,6 +99,8 @@ export interface StartLoopOptions {
     maxCycles?: number;
     pauseSeconds?: number;
     reviewModel?: string;
+    /** Generation already captured by slash-command intake. */
+    generation?: number;
 }
 
 export interface UltrafixReadinessResult {
@@ -125,6 +132,7 @@ export function getUltrafixStateKey(owner: string, repo: string, pr: number): st
 
 export function createDefaultState(options: StartLoopOptions): UltrafixLoopState {
     return {
+        generation: options.generation ?? 0,
         owner: options.owner,
         repo: options.repo,
         pr: options.pr,
@@ -263,11 +271,13 @@ export async function clearState(redis: Redis, owner: string, repo: string, pr: 
  * Returns the created state.
  */
 export async function startLoop(redis: Redis, options: StartLoopOptions, hasPendingReviews: boolean): Promise<{ state: UltrafixLoopState; initialAction: UltrafixAction }> {
+    const generation = options.generation
+        ?? await clearDeferredContinuation(redis, options.owner, options.repo, options.pr);
     const state = createDefaultState(options);
+    state.generation = generation;
     const initialAction = determineInitialAction(hasPendingReviews);
     state.lastAction = initialAction;
     state.lastActionTimestamp = new Date().toISOString();
-    await clearDeferredContinuation(redis, options.owner, options.repo, options.pr);
     await saveState(redis, state);
     return { state, initialAction };
 }
@@ -275,10 +285,11 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
 /**
  * Record that an action was completed and advance the cycle count if appropriate.
  */
-export async function recordAction(redis: Redis, params: { owner: string; repo: string; pr: number; action: UltrafixAction }): Promise<UltrafixLoopState | null> {
+export async function recordAction(redis: Redis, params: { owner: string; repo: string; pr: number; action: UltrafixAction; generation?: number }): Promise<UltrafixLoopState | null> {
     const { owner, repo, pr, action } = params;
     const state = await loadState(redis, owner, repo, pr);
     if (!state) return null;
+    if (params.generation !== undefined && state.generation !== params.generation) return null;
 
     const { reviewCount, fixCount } = getActionCounts(state);
     state.lastAction = action;

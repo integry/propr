@@ -199,7 +199,7 @@ const mockGetPendingReviewState = mock.fn(async () => ({
 }));
 
 const mockClearState = mock.fn(async () => {});
-const mockClearDeferredContinuation = mock.fn(async () => {});
+const mockClearDeferredContinuation = mock.fn(async () => 1);
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -318,6 +318,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(loopOptions.maxCycles, 5);   // DB default
         assert.strictEqual(loopOptions.pauseSeconds, 60); // DB default
         assert.strictEqual(loopOptions.reviewModel, ''); // DB default
+        assert.strictEqual(loopOptions.generation, 1);
 
         // Should add ultrafix label
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
@@ -333,6 +334,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         const ultrafixMeta = jobData.ultrafixMeta as Record<string, unknown>;
         assert.ok(ultrafixMeta, 'Job data should include ultrafixMeta');
         assert.strictEqual(ultrafixMeta.mode, 'ultrafix');
+        assert.strictEqual(ultrafixMeta.generation, 1);
 
         // Should have posted a circuit-breaker comment (Octokit request for POST comments)
         const postCalls = mockOctokit.request.mock.calls.filter(

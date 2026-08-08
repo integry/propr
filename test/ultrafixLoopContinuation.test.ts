@@ -69,11 +69,16 @@ function createMockRedis() {
                 return [deferred, store.get(generationKey) ?? '0'];
             }
             if (script.includes("redis.call('INCR'")) {
-                store.set(generationKey, String(Number(store.get(generationKey) ?? '0') + 1));
+                const generation = Number(store.get(generationKey) ?? '0') + 1;
+                store.set(generationKey, String(generation));
+                store.delete(deferredKey);
+                return generation;
+            }
+            if ((store.get(generationKey) ?? '0') !== args[2]) return 0;
+            if (script.includes("redis.call('DEL', KEYS[2])")) {
                 store.delete(deferredKey);
                 return 1;
             }
-            if ((store.get(generationKey) ?? '0') !== args[2]) return 0;
             store.set(deferredKey, args[3]);
             return 1;
         },
@@ -412,6 +417,7 @@ describe('claimed deferred continuation cancellation', () => {
             nextAction: 'review',
             savedAt: new Date().toISOString(),
             reason: 'checks_not_passing',
+            generation: 1,
         });
     }
 

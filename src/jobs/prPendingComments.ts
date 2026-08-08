@@ -36,6 +36,7 @@ export function applyPendingCommentCommandContext(jobData: CommentJobData, comme
         jobData.commandMode = latestCommandComment.commandMode;
         jobData.requestedModels = latestCommandComment.requestedModels;
         jobData.commandInstructions = latestCommandComment.commandInstructions;
+        jobData.ultrafixMeta = latestCommandComment.ultrafixMeta;
     }
 
     if (latestOverrideComment?.llmOverride !== undefined) {

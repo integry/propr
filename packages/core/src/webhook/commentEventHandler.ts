@@ -26,9 +26,9 @@ export interface UltrafixDeps {
     loadUltrafixMaxCycles: () => Promise<number>;
     loadUltrafixPauseSeconds: () => Promise<number>;
     loadPrReviewModel: () => Promise<string>;
-    startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
+    startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; generation?: number }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
     clearState: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
-    clearDeferredContinuation: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
+    clearDeferredContinuation: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
 
@@ -374,7 +374,8 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
 
     // 1. Load configured defaults from settings, then override with command arguments
     const deps = loadUltrafixDeps();
-    await deps.clearDeferredContinuation(redisClient, owner, repo, prNumber);
+    const generation = await deps.clearDeferredContinuation(redisClient, owner, repo, prNumber);
+    const loopMeta: UltrafixCommandMeta = { ...commandMeta, generation };
     const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel] = await Promise.all([
         deps.loadUltrafixRatingGoal(),
         deps.loadUltrafixMaxCycles(),
@@ -396,7 +397,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         // Store the original ultrafix meta so commandMode is 'ultrafix', not a provisional value.
         // The actual initial action (review vs fix) will be determined when the batch is processed.
         await storeCommentForBatch(
-            { ...strippedComment, ...buildPendingCommandFields(commandMeta), ultrafixMeta: commandMeta },
+            { ...strippedComment, ...buildPendingCommandFields(commandMeta), ultrafixMeta: loopMeta },
             commentAuthor,
             eventContext,
             { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },
@@ -446,6 +447,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             maxCycles: effectiveMaxCycles,
             pauseSeconds: effectivePauseSeconds,
             reviewModel: effectiveReviewModel,
+            generation,
         }, hasPendingReview);
 
         correlatedLogger.info(
@@ -467,7 +469,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             correlationId,
             commandMeta: firstActionMeta,
             prefetchedPRData: prData,
-            ultrafixMeta: commandMeta,
+            ultrafixMeta: loopMeta,
         });
     } catch (error) {
         // Rollback: remove the ultrafix label if we added it, clear loop state, and post a failure comment.

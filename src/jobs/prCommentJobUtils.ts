@@ -16,6 +16,18 @@ import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvide
 import type { ReasoningLevel } from '@propr/shared';
 import { releasePRProcessingLock } from './prProcessingLock.js';
 
+export function checkTerminalStateAfterExecution(
+    currentState: { state: string } | null,
+    taskId: string,
+    correlatedLogger: Logger,
+): void {
+    const terminalStates: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
+    if (!currentState || !terminalStates.includes(currentState.state)) return;
+    correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state after agent execution, skipping state update');
+    if (currentState.state === TaskStates.CANCELLED) throw new Error('Execution aborted by user request');
+    throw new Error(`Task already in terminal state: ${currentState.state}`);
+}
+
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
         model: response.model,

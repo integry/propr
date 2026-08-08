@@ -56,6 +56,8 @@ export interface UseCommandMeta {
 
 export interface UltrafixCommandMeta {
     mode: 'ultrafix';
+    /** Internal loop generation used to reject superseded queued work. */
+    generation?: number;
     /** Target number of passing review cycles (undefined = not provided, use DB default) */
     goal?: number;
     /** Maximum fix cycles before giving up (undefined = not provided, use DB default) */

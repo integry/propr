@@ -986,6 +986,30 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
 });
 
 describe('applyPendingCommentCommandContext', () => {
+    test('clears inherited Ultrafix metadata when a manual command takes over', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-manual',
+            commandMode: 'review' as const,
+            ultrafixMeta: { mode: 'ultrafix' as const, instructions: '', generation: 2 },
+        };
+        const commentsToProcess = [{
+            id: 99,
+            body: 'Fix F3',
+            author: 'alice',
+            type: 'issue' as const,
+            commandMode: 'fix' as const,
+            commandInstructions: 'Fix F3',
+        }];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'fix');
+        assert.strictEqual(jobData.ultrafixMeta, undefined);
+    });
+
     test('keeps an earlier /use llm override when a later pending /fix becomes the active command', () => {
         const jobData = {
             pullRequestNumber: 42,

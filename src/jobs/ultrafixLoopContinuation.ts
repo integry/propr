@@ -25,7 +25,9 @@ import {
     recordReviewFindings,
     saveDeferredContinuation,
     clearDeferredContinuation,
+    deleteDeferredContinuationIfCurrent,
     isDeferredContinuationCurrent,
+    isUltrafixGenerationCurrent,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import { fetchAllComments } from './prCommentJobUtils.js';
@@ -86,6 +88,62 @@ export interface ContinuationResult {
     deferred?: boolean;
 }
 
+async function loadCurrentLoopState(
+    params: UltrafixContinuationParams,
+): Promise<Awaited<ReturnType<typeof loadState>>> {
+    const { owner, repo, pullRequestNumber, redisClient, correlatedLogger } = params;
+    const generation = params.ultrafixMeta?.generation;
+    const current = await isUltrafixGenerationCurrent(
+        redisClient, { owner, repo, pr: pullRequestNumber }, generation,
+    );
+    if (!current) {
+        correlatedLogger.info(
+            { pullRequestNumber, generation },
+            'Ultrafix loop: job belongs to a superseded generation, skipping continuation',
+        );
+        return null;
+    }
+    const state = await loadState(redisClient, owner, repo, pullRequestNumber);
+    return state?.active && state.generation === generation ? state : null;
+}
+
+async function deferCurrentTransition(
+    params: UltrafixContinuationParams,
+    details: { nextAction: UltrafixAction; reasons: string[]; latestScore: number | null; cycleCount: number },
+): Promise<ContinuationResult> {
+    const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, ultrafixMeta } = params;
+    const { nextAction, reasons, latestScore, cycleCount } = details;
+    const saved = await saveDeferredContinuation(redisClient, {
+        owner,
+        repo,
+        pr: pullRequestNumber,
+        nextAction,
+        savedAt: new Date().toISOString(),
+        reason: reasons.join(', '),
+        ultrafixMeta,
+        generation: ultrafixMeta?.generation,
+    });
+    if (!saved) {
+        correlatedLogger.info(
+            { pullRequestNumber, nextAction, generation: ultrafixMeta?.generation },
+            'Ultrafix loop: cancellation superseded deferred transition',
+        );
+        return { continued: false, reason: 'deferred_cancelled' };
+    }
+    correlatedLogger.info(
+        { pullRequestNumber, nextAction, blockingReasons: reasons },
+        'Ultrafix loop: deferred continuation — waiting for readiness',
+    );
+    return {
+        continued: false,
+        reason: `deferred: ${reasons.join(', ')}`,
+        nextAction,
+        score: latestScore,
+        cycleCount,
+        deferred: true,
+    };
+}
+
 /**
  * Main continuation entry point. Call after a review or fix step completes
  * to decide whether to continue the ultrafix loop.
@@ -99,10 +157,11 @@ export async function continueUltrafixLoop(
         owner, repo, pullRequestNumber, completedAction,
         redisClient, correlatedLogger, correlationId,
     } = params;
+    const generation = params.ultrafixMeta?.generation;
 
     // 1. Load current loop state
-    const state = await loadState(redisClient, owner, repo, pullRequestNumber);
-    if (!state || !state.active) {
+    const state = await loadCurrentLoopState(params);
+    if (!state) {
         correlatedLogger.info(
             { pullRequestNumber, hasState: !!state },
             'Ultrafix loop: no active loop state, skipping continuation',
@@ -112,7 +171,7 @@ export async function continueUltrafixLoop(
 
     // 2. Record the completed action
     const updatedState = await recordAction(redisClient, {
-        owner, repo, pr: pullRequestNumber, action: completedAction,
+        owner, repo, pr: pullRequestNumber, action: completedAction, generation,
     });
     if (!updatedState) {
         return { continued: false, reason: 'state_lost_after_record' };
@@ -239,31 +298,18 @@ export async function continueUltrafixLoop(
 
     if (!readiness.ready) {
         // Defer the continuation — a check_run event can wake it later
-        await saveDeferredContinuation(redisClient, {
-            owner,
-            repo,
-            pr: pullRequestNumber,
-            nextAction: decision.action,
-            savedAt: new Date().toISOString(),
-            reason: readiness.reasons.join(', '),
-            ultrafixMeta: params.ultrafixMeta,
-        });
-        correlatedLogger.info(
-            { pullRequestNumber, nextAction: decision.action, blockingReasons: readiness.reasons },
-            'Ultrafix loop: deferred continuation — waiting for readiness',
+        return deferCurrentTransition(
+            params,
+            { nextAction: decision.action, reasons: readiness.reasons, latestScore, cycleCount: updatedState.cycleCount },
         );
-        return {
-            continued: false,
-            reason: `deferred: ${readiness.reasons.join(', ')}`,
-            nextAction: decision.action,
-            score: latestScore,
-            cycleCount: updatedState.cycleCount,
-            deferred: true,
-        };
     }
 
-    // Clear any stale deferred record before proceeding
-    await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
+    // Atomically prove this loop is still current and clear any stale record.
+    if (!await deleteDeferredContinuationIfCurrent(
+        redisClient, { owner, repo, pr: pullRequestNumber }, generation!,
+    )) {
+        return { continued: false, reason: 'ultrafix_superseded' };
+    }
 
     // 8. Enqueue the next step with configured pause
     const delayMs = (updatedState.pauseSeconds || 60) * 1000;
@@ -304,14 +350,21 @@ export async function resumeDeferredContinuation(
     }
 
     const correlationId = generateCorrelationId();
-    const ultrafixMeta = deferred.ultrafixMeta ?? {
+    const ultrafixMeta: UltrafixCommandMeta = {
+        ...(deferred.ultrafixMeta ?? {
         mode: 'ultrafix' as const,
         goal: state.goal,
         maxCycles: state.maxCycles,
         pauseSeconds: state.pauseSeconds,
         reviewModel: state.reviewModel || undefined,
         instructions: '',
+        }),
+        generation: deferred.generation,
     };
+
+    if (state.generation !== deferred.generation) {
+        return { continued: false, reason: 'deferred_cancelled' };
+    }
     const params: UltrafixContinuationParams = {
         owner,
         repo,

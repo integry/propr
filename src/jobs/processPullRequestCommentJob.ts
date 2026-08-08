@@ -22,7 +22,7 @@ import {
 import { localizeContentImages } from './issueJobHelpers.js';
 import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildPrompt,
-    handleJobError, cleanupJob, toClaudeResult
+    checkTerminalStateAfterExecution, handleJobError, cleanupJob, toClaudeResult
 } from './prCommentJobUtils.js';
 import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
@@ -30,7 +30,7 @@ import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName
 import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
 import { markFindingsSelected, retainOriginalScope } from './ultrafixOrchestrationService.js';
-import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
+import { guardUltrafixJobExecution, handleUltrafixContinuation } from './ultrafixJobHelpers.js';
 import { handleNoAuthorizedFindings } from './prCommentNoAuthorizedFindings.js';
 import { handlePostExecution } from './prCommentPostExecution.js';
 import {
@@ -178,17 +178,6 @@ interface ExecuteProcessingParams {
     state: ProcessingState;
     lockKey: string;
     lockToken: string;
-}
-
-function checkTerminalStateAfterExecution(currentState: { state: string } | null, taskId: string, correlatedLogger: Logger): void {
-    const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
-    if (currentState && TERMINAL_STATES.includes(currentState.state)) {
-        correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state after agent execution, skipping state update');
-        if (currentState.state === TaskStates.CANCELLED) {
-            throw new Error('Execution aborted by user request');
-        }
-        throw new Error(`Task already in terminal state: ${currentState.state}`);
-    }
 }
 
 function getWebUiUrl(): string {
@@ -398,6 +387,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     const context = await initializePRJobContext(job);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
+    const ultrafixGuard = await guardUltrafixJobExecution(job, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
+    if (ultrafixGuard) return ultrafixGuard;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
 
     const modelName = await resolvePRCommentModelName(llm, correlatedLogger);

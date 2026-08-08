@@ -37,11 +37,16 @@ function createMockRedis() {
                 return [deferred, store.get(generationKey) ?? '0'];
             }
             if (script.includes("redis.call('INCR'")) {
-                store.set(generationKey, String(Number(store.get(generationKey) ?? '0') + 1));
+                const generation = Number(store.get(generationKey) ?? '0') + 1;
+                store.set(generationKey, String(generation));
+                store.delete(deferredKey);
+                return generation;
+            }
+            if ((store.get(generationKey) ?? '0') !== args[2]) return 0;
+            if (script.includes("redis.call('DEL', KEYS[2])")) {
                 store.delete(deferredKey);
                 return 1;
             }
-            if ((store.get(generationKey) ?? '0') !== args[2]) return 0;
             store.set(deferredKey, args[3]);
             return 1;
         },
@@ -257,6 +262,7 @@ describe('deferred continuation persistence', () => {
             nextAction: 'review',
             savedAt: '2026-04-28T20:00:00Z',
             reason: 'checks_not_passing',
+            generation: 0,
         };
         await saveDeferredContinuation(redis as any, deferred);
         const loaded = await loadDeferredContinuation(redis as any, 'acme', 'web', 42);
@@ -268,6 +274,21 @@ describe('deferred continuation persistence', () => {
         assert.strictEqual(loaded, null);
     });
 
+    test('generation-less stale work cannot adopt the latest generation', async () => {
+        await clearDeferredContinuation(redis as any, 'acme', 'web', 42);
+        const saved = await saveDeferredContinuation(redis as any, {
+            owner: 'acme',
+            repo: 'web',
+            pr: 42,
+            nextAction: 'fix',
+            savedAt: new Date().toISOString(),
+            reason: 'stale_in_flight_job',
+        });
+
+        assert.strictEqual(saved, false);
+        assert.strictEqual(await loadDeferredContinuation(redis as any, 'acme', 'web', 42), null);
+    });
+
     test('clearDeferredContinuation removes the record', async () => {
         const deferred: UltrafixDeferredContinuation = {
             owner: 'acme',
@@ -276,6 +297,7 @@ describe('deferred continuation persistence', () => {
             nextAction: 'fix',
             savedAt: '2026-04-28T20:00:00Z',
             reason: 'cooldown_not_elapsed',
+            generation: 0,
         };
         await saveDeferredContinuation(redis as any, deferred);
         await clearDeferredContinuation(redis as any, 'acme', 'web', 42);
@@ -322,6 +344,7 @@ describe('defer and resume behavior', () => {
             nextAction: 'fix',
             savedAt: new Date().toISOString(),
             reason: 'checks_not_passing',
+            generation: 0,
         };
         await saveDeferredContinuation(redis as any, deferred);
 
@@ -340,6 +363,7 @@ describe('defer and resume behavior', () => {
             nextAction: 'review',
             savedAt: new Date().toISOString(),
             reason: 'checks_not_passing',
+            generation: 0,
         };
         await saveDeferredContinuation(redis as any, deferred);
 
@@ -364,6 +388,7 @@ describe('defer and resume behavior', () => {
             nextAction: 'fix',
             savedAt: new Date().toISOString(),
             reason: 'checks_not_passing, follow_up_jobs_active',
+            generation: 0,
         };
         await saveDeferredContinuation(redis as any, deferred);
 
