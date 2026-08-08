@@ -89,14 +89,17 @@ function isFileLikeToken(token: string): boolean {
 function fileLikeTokens(prompt: string): string[] {
   const tokens: string[] = [];
   let start = -1;
-  for (let index = 0; index <= prompt.length; index++) {
-    const isTokenCharacter = index < prompt.length && isFileTokenCharacter(prompt[index]);
+  for (let index = 0; index <= MAX_KEYWORD_INPUT_CHARS; index++) {
+    const character = prompt[index];
+    const reachedEnd = character === undefined;
+    const isTokenCharacter = !reachedEnd && isFileTokenCharacter(character);
     if (isTokenCharacter && start === -1) start = index;
     if (!isTokenCharacter && start !== -1) {
       const token = trimPathBoundarySlashes(trimKeywordDelimiters(prompt.slice(start, index)));
       if (isFileLikeToken(token)) tokens.push(token);
       start = -1;
     }
+    if (reachedEnd) break;
   }
   return tokens;
 }
