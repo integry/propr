@@ -93,6 +93,7 @@ export function parseSlashCommand(body: string | undefined | null): ParsedSlashC
     const firstLineTrimmed = rawFirstLine.trim();
 
     if (!firstLineTrimmed.startsWith('/')) return null;
+    if (/[\r\u2028\u2029]/.test(firstLineTrimmed)) return null;
 
     let separatorIndex = -1;
     for (let index = 1; index < firstLineTrimmed.length; index++) {

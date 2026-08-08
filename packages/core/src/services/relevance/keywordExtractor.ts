@@ -73,16 +73,33 @@ function isWordTokenCharacter(char: string): boolean {
     || char === '_';
 }
 
-function isFileTokenCharacter(char: string): boolean {
-  return isWordTokenCharacter(char) || char === '.' || char === '-' || char === '/';
-}
-
 function trimFilenameWordBoundaries(value: string): string {
   let start = 0;
   let end = value.length;
   while (start < end && !isWordTokenCharacter(value[start])) start++;
   while (end > start && !isWordTokenCharacter(value[end - 1])) end--;
   return value.slice(start, end);
+}
+
+function filenameCandidates(rawToken: string): string[] {
+  const candidates: string[] = [];
+  let segments: string[] = [];
+  const flush = (): void => {
+    if (segments.length < 2) {
+      segments = [];
+      return;
+    }
+    const candidate = trimFilenameWordBoundaries(segments.join('.'));
+    if (isFileLikeToken(candidate)) candidates.push(candidate);
+    segments = [];
+  };
+
+  for (const segment of rawToken.split('.')) {
+    if (segment) segments.push(segment);
+    else flush();
+  }
+  flush();
+  return candidates;
 }
 
 function isFileLikeToken(token: string): boolean {
@@ -95,77 +112,16 @@ function isFileLikeToken(token: string): boolean {
   return token.split('.').every(segment => segment.length > 0 && !/[^A-Za-z0-9_-]/.test(segment));
 }
 
-function filenameTokensWithin(value: string): string[] {
-  const tokens: string[] = [];
-  let candidateStart = -1;
-  let segmentLength = 0;
-  let hasExtension = false;
-  let lastValidEnd = -1;
-
-  const finishCandidate = (): void => {
-    if (candidateStart !== -1 && lastValidEnd !== -1) {
-      tokens.push(value.slice(candidateStart, lastValidEnd));
-    }
-    candidateStart = -1;
-    segmentLength = 0;
-    hasExtension = false;
-    lastValidEnd = -1;
-  };
-
-  for (let index = 0; index <= value.length; index++) {
-    const character = value[index];
-    const isWordCharacter = character !== undefined && isWordTokenCharacter(character);
-
-    if (candidateStart === -1) {
-      const previousCharacter = value[index - 1];
-      if (isWordCharacter && (index === 0 || !isWordTokenCharacter(previousCharacter))) {
-        candidateStart = index;
-        segmentLength = 1;
-      }
-      continue;
-    }
-
-    if (isWordCharacter || character === '-') {
-      segmentLength++;
-      if (hasExtension && isWordCharacter) lastValidEnd = index + 1;
-      continue;
-    }
-
-    if (character === '.' && segmentLength > 0) {
-      hasExtension = true;
-      segmentLength = 0;
-      continue;
-    }
-
-    finishCandidate();
-  }
-
-  return tokens;
-}
-
 function fileLikeTokens(prompt: string): string[] {
   const tokens: string[] = [];
-  let start = -1;
-  for (let index = 0; index <= prompt.length; index++) {
-    const character = prompt[index];
-    const reachedEnd = character === undefined;
-    const isTokenCharacter = !reachedEnd && isFileTokenCharacter(character);
-    if (isTokenCharacter && start === -1) start = index;
-    if (!isTokenCharacter && start !== -1) {
-      const rawToken = prompt.slice(start, index);
-      const token = rawToken.includes('/')
-        ? trimPathBoundarySlashes(trimKeywordDelimiters(rawToken))
-        : trimFilenameWordBoundaries(rawToken);
-      if (isFileLikeToken(token)) {
-        tokens.push(token);
-      } else {
-        for (const filenameToken of filenameTokensWithin(rawToken)) {
-          tokens.push(filenameToken);
-        }
-      }
-      start = -1;
+  for (const match of prompt.matchAll(/[A-Za-z0-9_./-]+/g)) {
+    const rawToken = match[0];
+    if (rawToken.includes('/')) {
+      const token = trimPathBoundarySlashes(trimKeywordDelimiters(rawToken));
+      if (isFileLikeToken(token)) tokens.push(token);
+    } else {
+      tokens.push(...filenameCandidates(rawToken));
     }
-    if (reachedEnd) break;
   }
   return tokens;
 }
