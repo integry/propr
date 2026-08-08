@@ -5,7 +5,7 @@ import { createClient, RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
-import { setupAuth, ensureAuthenticated } from './auth.js';
+import { authenticateSocketRequest, setupAuth, ensureAuthenticated } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
@@ -169,7 +169,7 @@ app.use(express.json({ limit: '1mb' }));
 // including auth-adjacent endpoints, cannot bypass it by ordering.
 app.use('/api', demoModeReadOnlyMiddleware);
 
-setupAuth(app, demoMode);
+const socketAuthMiddleware = setupAuth(app, demoMode);
 
 let redisClient: RedisClientType;
 let taskQueue: Queue;
@@ -401,7 +401,10 @@ async function start(): Promise<void> {
     }
     setupRoutes();
     if (!demoMode) {
-      const socketService = initSocketService(httpServer, validateCorsOrigin);
+      const socketService = initSocketService(httpServer, validateCorsOrigin, {
+        engineMiddleware: socketAuthMiddleware.engineMiddleware,
+        authenticate: authenticateSocketRequest,
+      });
       console.log('[WebSocket] Socket.IO server initialized');
       socketService.initQueueFeatures({ taskQueue, redisClient, db });
       console.log('[WebSocket] Queue features initialized for real-time updates');
