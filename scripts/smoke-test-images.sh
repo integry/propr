@@ -320,7 +320,7 @@ echo "✓ agent runtime exposes every bundled CLI"
 # command -v is insufficient because each entrypoint places gh-wrapper first in
 # PATH; a wrapper that delegates back through PATH resolves itself and hangs.
 for entrypoint in claude codex antigravity opencode vibe; do
-  docker run --rm --entrypoint "/home/node/${entrypoint}-entrypoint.sh" \
+  docker run --rm --network none --entrypoint "/home/node/${entrypoint}-entrypoint.sh" \
     "$AGENT_TAG" gh --version >/dev/null
 done
 echo "✓ agent entrypoints can execute GitHub CLI through the wrapper"
