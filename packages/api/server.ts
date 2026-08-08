@@ -31,7 +31,8 @@ import {
   createAgentRuntimeRoutes,
   createAdminRoutes,
   createInstanceCatalogRoutes,
-  attachmentUpload
+  attachmentUpload,
+  registerHostedFleetRoutes
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
 import { checkAndExecuteDelayedReindex } from './routes/indexingQueueHelpers.js';
@@ -218,6 +219,7 @@ async function initRedis(): Promise<void> {
 
 function setupRoutes(): void {
   const statusRoutes = createStatusRoutes({ redisClient });
+  const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   // INTENTIONALLY UNAUTHENTICATED: /api/compatibility is registered BEFORE the
   // `ensureAuthenticated` guard below so the hosted UI can run its pre-auth
   // version-gate before the user logs in. This is the one deliberate exception to
@@ -226,13 +228,20 @@ function setupRoutes(): void {
   // compatibility dates). All other /api routes registered after this line are
   // authenticated.
   app.get('/api/compatibility', statusRoutes.getCompatibility);
+  // Machine-to-machine bootstrap verification has its own narrow service
+  // credential and deliberately does not depend on a customer's OAuth session.
+  // Registration remains before the OAuth boundary and is a no-op unless Fleet
+  // control was explicitly enabled at startup.
+  registerHostedFleetRoutes(app, {
+    operationalStatus: statusRoutes.collectStatus,
+    queueStatus: queueRoutes.collectQueueStats
+  });
   app.use('/api', ensureAuthenticated, resolveAuthorization);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
   const fileChangesRoutes = createFileChangesRoutes({ db });
   const configRoutes = createConfigRoutes({ redisClient });
-  const queueRoutes = createQueueRoutes({ redisClient, taskQueue });
   const executionRoutes = createExecutionRoutes({ redisClient, db });
   const dockerRoutes = createDockerRoutes({ redisClient });
   const githubRoutes = createGitHubRoutes({ redisClient, taskQueue, db });
