@@ -223,6 +223,27 @@ test('api container propagates an explicit reverse-proxy peer list without enabl
   );
 });
 
+test('api container receives explicit request rate-limit overrides', () => {
+  const overrideCases = [
+    ['PROPR_API_RATE_LIMIT_MAX', 'apiRateLimitMax', '601'],
+    ['PROPR_API_RATE_LIMIT_WINDOW_MS', 'apiRateLimitWindowMs', '60001'],
+    ['PROPR_AUTH_RATE_LIMIT_MAX', 'authRateLimitMax', '31'],
+    ['PROPR_AUTH_RATE_LIMIT_WINDOW_MS', 'authRateLimitWindowMs', '900001'],
+    ['PROPR_WEBHOOK_RATE_LIMIT_MAX', 'webhookRateLimitMax', '301'],
+    ['PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS', 'webhookRateLimitWindowMs', '60002'],
+  ];
+  const environment = Object.fromEntries(
+    overrideCases.map(([environmentName, , value]) => [environmentName, value]),
+  );
+  const cfg = resolveConfig(environment, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'api');
+
+  for (const [environmentName, configName, value] of overrideCases) {
+    assert.equal(cfg[configName], value);
+    assert.deepEqual(envValues(args, environmentName), [value]);
+  }
+});
+
 test('an explicit PROPR_UI_PUBLIC_API_URL is normalized (trailing slash stripped) once at resolve time', () => {
   const cfg = resolveConfig({
     PROPR_UI_TUNNEL_TOKEN: 'secret-token',

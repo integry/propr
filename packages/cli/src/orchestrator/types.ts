@@ -26,6 +26,12 @@ export interface OrchestratorConfig {
   readonly docsPort: string;
   readonly redisExternalPort: string;
   readonly docsEnabled: boolean;
+  readonly apiRateLimitMax: string;
+  readonly apiRateLimitWindowMs: string;
+  readonly authRateLimitMax: string;
+  readonly authRateLimitWindowMs: string;
+  readonly webhookRateLimitMax: string;
+  readonly webhookRateLimitWindowMs: string;
   readonly hostClaudeDir?: string;
   readonly hostCodexDir?: string;
   readonly hostAntigravityDir?: string;

@@ -260,6 +260,12 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const docsPort = overrides.docsPort ?? get('DOCS_PORT') ?? '8080';
     const redisExternalPort = overrides.redisExternalPort ?? get('REDIS_EXTERNAL_PORT') ?? '';
     const docsEnabled = overrides.docsEnabled ?? (get('DOCS_ENABLED') === 'true');
+    const apiRateLimitMax = overrides.apiRateLimitMax ?? get('PROPR_API_RATE_LIMIT_MAX') ?? '600';
+    const apiRateLimitWindowMs = overrides.apiRateLimitWindowMs ?? get('PROPR_API_RATE_LIMIT_WINDOW_MS') ?? '60000';
+    const authRateLimitMax = overrides.authRateLimitMax ?? get('PROPR_AUTH_RATE_LIMIT_MAX') ?? '30';
+    const authRateLimitWindowMs = overrides.authRateLimitWindowMs ?? get('PROPR_AUTH_RATE_LIMIT_WINDOW_MS') ?? '900000';
+    const webhookRateLimitMax = overrides.webhookRateLimitMax ?? get('PROPR_WEBHOOK_RATE_LIMIT_MAX') ?? '300';
+    const webhookRateLimitWindowMs = overrides.webhookRateLimitWindowMs ?? get('PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS') ?? '60000';
 
     // Agent credential host dirs (HOST:HOST mounts so spawned agent containers
     // resolve the same path end-to-end).
@@ -320,6 +326,9 @@ export function resolveConfig(env = process.env, overrides = {}) {
         validateHostPaths: overrides.validateHostPaths === true,
         hostData, hostLogs, hostRepos, managedCredentialsDir,
         apiPort, uiPort, docsPort, redisExternalPort, docsEnabled,
+        apiRateLimitMax, apiRateLimitWindowMs,
+        authRateLimitMax, authRateLimitWindowMs,
+        webhookRateLimitMax, webhookRateLimitWindowMs,
         hostClaudeDir, hostCodexDir, hostAntigravityDir,
         hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
@@ -924,6 +933,12 @@ export function buildServiceSpec(cfg, service) {
                 '-e', `GH_OAUTH_CALLBACK_URL=${cfg.ghOauthCallbackUrl}`,
                 '-e', `SESSION_REDIS_HOST=${cfg.stack}-redis`,
                 '-e', 'CONFIG_REPO_PATH=/tmp/config_repo',
+                '-e', `PROPR_API_RATE_LIMIT_MAX=${cfg.apiRateLimitMax}`,
+                '-e', `PROPR_API_RATE_LIMIT_WINDOW_MS=${cfg.apiRateLimitWindowMs}`,
+                '-e', `PROPR_AUTH_RATE_LIMIT_MAX=${cfg.authRateLimitMax}`,
+                '-e', `PROPR_AUTH_RATE_LIMIT_WINDOW_MS=${cfg.authRateLimitWindowMs}`,
+                '-e', `PROPR_WEBHOOK_RATE_LIMIT_MAX=${cfg.webhookRateLimitMax}`,
+                '-e', `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS=${cfg.webhookRateLimitWindowMs}`,
                 ...tunnelApiEnvArgs(cfg),
                 ...proxyTrustApiEnvArgs(cfg),
             ]);
