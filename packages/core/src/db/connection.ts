@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
+import { applyDatabaseMigrations } from './migrationGate.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -154,19 +155,8 @@ export async function runMigrations(): Promise<void> {
     try {
         logger.info('Running database migrations...');
 
-        // Disable foreign keys during migrations to prevent cascade deletes
-        // when tables are recreated (common in SQLite ALTER TABLE operations)
-        await db.raw('PRAGMA foreign_keys = OFF');
-        logger.info('Disabled foreign keys for migration safety');
-
-        try {
-            await db.migrate.latest();
-            logger.info('Database migrations completed successfully');
-        } finally {
-            // Re-enable foreign keys after migrations
-            await db.raw('PRAGMA foreign_keys = ON');
-            logger.info('Re-enabled foreign keys after migrations');
-        }
+        await applyDatabaseMigrations(db);
+        logger.info('Database migrations completed successfully');
     } catch (error) {
         const err = error as Error;
         logger.error({

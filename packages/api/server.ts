@@ -5,7 +5,7 @@ import { createClient, RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
-import { setupAuth, ensureAuthenticated } from './auth.js';
+import { authenticateSocketRequest, setupAuth, ensureAuthenticated } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
@@ -48,7 +48,8 @@ import {
   processCommentEvent,
   closeUltrafixStateRedis,
   getActiveTasksForPR,
-  AGENT_RUNTIME_BUILD_QUEUE_NAME
+  AGENT_RUNTIME_BUILD_QUEUE_NAME,
+  runMigrations
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -172,7 +173,7 @@ app.use(express.json({ limit: '1mb' }));
 // including auth-adjacent endpoints, cannot bypass it by ordering.
 app.use('/api', demoModeReadOnlyMiddleware);
 
-setupAuth(app, demoMode);
+const socketAuthMiddleware = setupAuth(app, demoMode);
 
 let redisClient: RedisClientType;
 let taskQueue: Queue;
@@ -386,7 +387,7 @@ const httpServer: HttpServer = createServer(app);
 async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
-    try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
+    await runMigrations();
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();
     await initRedis();
@@ -408,7 +409,10 @@ async function start(): Promise<void> {
     }
     setupRoutes();
     if (!demoMode) {
-      const socketService = initSocketService(httpServer, validateCorsOrigin);
+      const socketService = initSocketService(httpServer, validateCorsOrigin, {
+        engineMiddleware: socketAuthMiddleware.engineMiddleware,
+        authenticate: authenticateSocketRequest,
+      });
       console.log('[WebSocket] Socket.IO server initialized');
       socketService.initQueueFeatures({ taskQueue, redisClient, db });
       console.log('[WebSocket] Queue features initialized for real-time updates');

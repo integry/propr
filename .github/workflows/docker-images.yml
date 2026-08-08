@@ -160,9 +160,48 @@ jobs:
           path: ${{ steps.package.outputs.tarball }}
           if-no-files-found: error
 
+  preflight-cli:
+    name: Preflight npm Release Artifact
+    needs: [validate-release, prepare-cli]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Download smoke-tested CLI artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-artifacts
+
+      - name: Reject npm version collisions before image publication
+        env:
+          PACKAGE_VERSION: ${{ needs.validate-release.outputs.version }}
+        run: |
+          TARBALL="$(find release-artifacts -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          if [ -z "$TARBALL" ]; then
+            echo "Smoke-tested CLI tarball is missing" >&2
+            exit 1
+          fi
+          node scripts/reconcile-npm-artifact.mjs \
+            --artifact "$TARBALL" \
+            --expected-name propr-cli \
+            --expected-version "$PACKAGE_VERSION"
+
   build-smoke-and-push:
     name: Build, Smoke Test, Push
-    needs: [validate-release, prepare-cli]
+    needs: [validate-release, prepare-cli, preflight-cli]
     runs-on: [self-hosted, linux, x64, propr]
     timeout-minutes: 180
     env:
@@ -266,11 +305,8 @@ jobs:
 
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
-      - name: Push smoke-tested GHCR images
-        run: ./scripts/build-images.sh --push-only --ghcr
-
-      - name: Push smoke-tested Docker Hub images
-        run: ./scripts/build-images.sh --push-only --dockerhub
+      - name: Stage, preflight, and publish smoke-tested images
+        run: ./scripts/build-images.sh --push-only
 
       - name: Sync Docker Hub metadata
         continue-on-error: true
@@ -336,20 +372,11 @@ jobs:
             echo "Smoke-tested CLI tarball is missing" >&2
             exit 1
           fi
-          LOCAL_INTEGRITY="$(node -e "const fs=require('fs');const crypto=require('crypto');process.stdout.write('sha512-'+crypto.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "$TARBALL")"
-          LOOKUP_ERROR="$RUNNER_TEMP/npm-view-error.txt"
-          if PUBLISHED_INTEGRITY="$(npm view "@propr/cli@$PACKAGE_VERSION" dist.integrity 2>"$LOOKUP_ERROR")"; then
-            if [ "$PUBLISHED_INTEGRITY" != "$LOCAL_INTEGRITY" ]; then
-              echo "@propr/cli@$PACKAGE_VERSION already exists with different package contents" >&2
-              exit 1
-            fi
-            echo "@propr/cli@$PACKAGE_VERSION is already published with the matching artifact"
-          elif grep -Eq 'E404|404 Not Found' "$LOOKUP_ERROR"; then
-            npm publish "$TARBALL" --access public
-          else
-            cat "$LOOKUP_ERROR" >&2
-            exit 1
-          fi
+          node scripts/reconcile-npm-artifact.mjs \
+            --artifact "$TARBALL" \
+            --expected-name propr-cli \
+            --expected-version "$PACKAGE_VERSION" \
+            --publish
 
       - name: Show CLI publication reconciliation guidance
         if: failure()

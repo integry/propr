@@ -11,7 +11,6 @@ import {
     retryConfigs,
     shutdownQueue,
     getDefaultModel,
-    db,
     initializeWebhookHandler,
     validateGithubIntakePrerequisites,
     RoutingWebSocketIntakeService,
@@ -27,7 +26,8 @@ import {
     loadUltrafixMaxCycles,
     loadUltrafixPauseSeconds,
     loadPrReviewModel,
-    AgentRegistry
+    AgentRegistry,
+    runMigrations
 } from '@propr/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { logger } from '@propr/core';
@@ -161,15 +161,8 @@ async function scheduleDraftContextSweep(): Promise<NodeJS.Timeout> {
 }
 
 async function startDaemon(options: DaemonOptions = {}): Promise<void> {
-    // Run migrations first, before loading any configs from the database
-    try {
-        logger.info('Running database migrations...');
-        await db.migrate.latest();
-        logger.info('Database migrations completed successfully');
-    } catch (error) {
-        const err = error as Error;
-        logger.error({ error: err.message, stack: err.stack }, 'Database migration failed - daemon will continue but database persistence may not work');
-    }
+    // No config, queue, or event intake may start against a partially migrated schema.
+    await runMigrations();
 
     await loadAllConfigs();
 
