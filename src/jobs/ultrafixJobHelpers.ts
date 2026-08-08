@@ -30,15 +30,20 @@ export async function checkUltrafixReadiness(
     }
     try {
         const headSha = await getCurrentPRHead(repoOwner, repoName, pullRequestNumber);
-        if (!headSha) { correlatedLogger.warn({ pullRequestNumber }, 'Ultrafix pre-check: could not get PR head SHA'); return true; }
+        if (!headSha) {
+            correlatedLogger.warn({ pullRequestNumber }, 'Ultrafix pre-check: could not get PR head SHA, deferring review');
+            await saveDeferredContinuation(redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber, nextAction, savedAt: new Date().toISOString(), reason: 'pre_execution_ci_head_unavailable', ultrafixMeta: job.data.ultrafixMeta });
+            return false;
+        }
         const checksPassing = await areAllChecksPassing(repoOwner, repoName, headSha);
         if (checksPassing) { correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks passing, proceeding'); return true; }
         correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks not passing, deferring');
         await saveDeferredContinuation(redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber, nextAction, savedAt: new Date().toISOString(), reason: 'pre_execution_ci_check_failed', ultrafixMeta: job.data.ultrafixMeta });
         return false;
     } catch (err) {
-        correlatedLogger.warn({ pullRequestNumber, error: (err as Error).message }, 'Ultrafix pre-check: error checking CI, proceeding anyway');
-        return true;
+        correlatedLogger.warn({ pullRequestNumber, error: (err as Error).message }, 'Ultrafix pre-check: error checking CI, deferring review');
+        await saveDeferredContinuation(redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber, nextAction, savedAt: new Date().toISOString(), reason: 'pre_execution_ci_check_error', ultrafixMeta: job.data.ultrafixMeta });
+        return false;
     }
 }
 
