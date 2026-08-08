@@ -5,7 +5,11 @@ import {
     type MigrationDatabase,
 } from '../packages/core/src/db/migrationGate.js';
 
-function fakeDatabase(options: { migrationError?: Error; restoreError?: Error } = {}): {
+function fakeDatabase(options: {
+    migrationError?: Error;
+    migrationRejectsWithUndefined?: boolean;
+    restoreError?: Error;
+} = {}): {
     database: MigrationDatabase;
     calls: string[];
 } {
@@ -20,6 +24,7 @@ function fakeDatabase(options: { migrationError?: Error; restoreError?: Error } 
             migrate: {
                 latest: async () => {
                     calls.push('migrate.latest');
+                    if (options.migrationRejectsWithUndefined) return Promise.reject(undefined);
                     if (options.migrationError) throw options.migrationError;
                 },
             },
@@ -47,6 +52,13 @@ test('migration gate re-enables foreign keys and rejects a failed migration', as
     assert.equal(calls.at(-1), 'PRAGMA foreign_keys = ON');
 });
 
+test('migration gate rejects when a migration rejects with undefined', async () => {
+    const { database, calls } = fakeDatabase({ migrationRejectsWithUndefined: true });
+
+    await assert.rejects(applyDatabaseMigrations(database));
+    assert.equal(calls.at(-1), 'PRAGMA foreign_keys = ON');
+});
+
 test('migration gate reports both migration and connection-restoration failures', async () => {
     const migrationError = new Error('broken migration');
     const restoreError = new Error('foreign keys stayed disabled');
@@ -57,5 +69,21 @@ test('migration gate reports both migration and connection-restoration failures'
         (error: unknown) => error instanceof AggregateError
             && error.errors.includes(migrationError)
             && error.errors.includes(restoreError),
+    );
+});
+
+test('migration gate reports an undefined migration rejection with a restoration failure', async () => {
+    const restoreError = new Error('foreign keys stayed disabled');
+    const { database } = fakeDatabase({
+        migrationRejectsWithUndefined: true,
+        restoreError,
+    });
+
+    await assert.rejects(
+        applyDatabaseMigrations(database),
+        (error: unknown) => error instanceof AggregateError
+            && error.errors.length === 2
+            && error.errors[0] === undefined
+            && error.errors[1] === restoreError,
     );
 });

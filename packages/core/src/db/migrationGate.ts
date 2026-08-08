@@ -16,17 +16,19 @@ export interface MigrationDatabase {
 export async function applyDatabaseMigrations(database: MigrationDatabase): Promise<void> {
     await database.raw('PRAGMA foreign_keys = OFF');
 
+    let migrationFailed = false;
     let migrationFailure: unknown;
     try {
         await database.migrate.latest();
     } catch (error) {
+        migrationFailed = true;
         migrationFailure = error;
     }
 
     try {
         await database.raw('PRAGMA foreign_keys = ON');
     } catch (restoreError) {
-        if (migrationFailure !== undefined) {
+        if (migrationFailed) {
             throw new AggregateError(
                 [migrationFailure, restoreError],
                 'Database migration failed and foreign keys could not be re-enabled',
@@ -35,5 +37,5 @@ export async function applyDatabaseMigrations(database: MigrationDatabase): Prom
         throw restoreError;
     }
 
-    if (migrationFailure !== undefined) throw migrationFailure;
+    if (migrationFailed) throw migrationFailure;
 }
