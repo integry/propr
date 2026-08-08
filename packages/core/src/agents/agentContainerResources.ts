@@ -1,6 +1,7 @@
 const DEFAULT_MEMORY_LIMIT = '6g';
 const DEFAULT_CPU_LIMIT = '4';
 const DEFAULT_PIDS_LIMIT = '512';
+const MIN_CPU_LIMIT = 0.01;
 
 const DOCKER_MEMORY_LIMIT_PATTERN = /^[1-9]\d*(?:[bkmg])?$/i;
 const DOCKER_CPU_LIMIT_PATTERN = /^(?:0?\.\d+|[1-9]\d*(?:\.\d+)?)$/;
@@ -24,8 +25,8 @@ function validateMemoryLimit(value: string): string {
 }
 
 function validateCpuLimit(value: string): string {
-    if (!DOCKER_CPU_LIMIT_PATTERN.test(value) || !Number.isFinite(Number(value)) || Number(value) <= 0) {
-        throw new Error(`AGENT_CONTAINER_CPU_LIMIT must be a positive CPU count such as 4 or 1.5, got: ${value}`);
+    if (!DOCKER_CPU_LIMIT_PATTERN.test(value) || !Number.isFinite(Number(value)) || Number(value) < MIN_CPU_LIMIT) {
+        throw new Error(`AGENT_CONTAINER_CPU_LIMIT must be at least ${MIN_CPU_LIMIT} CPUs, got: ${value}`);
     }
     return value;
 }

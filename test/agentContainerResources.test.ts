@@ -25,6 +25,19 @@ describe('agent container resource policy', () => {
         ]);
     });
 
+    test('enforces Docker\'s minimum effective CPU quota', () => {
+        assert.deepEqual(buildAgentContainerResourceArgs({ AGENT_CONTAINER_CPU_LIMIT: '0.01' }), [
+            '--memory', '6g',
+            '--memory-swap', '6g',
+            '--cpus', '0.01',
+            '--pids-limit', '512',
+        ]);
+        assert.throws(
+            () => buildAgentContainerResourceArgs({ AGENT_CONTAINER_CPU_LIMIT: '0.009' }),
+            /AGENT_CONTAINER_CPU_LIMIT/
+        );
+    });
+
     test('rejects malformed or unbounded values before invoking Docker', () => {
         assert.throws(
             () => buildAgentContainerResourceArgs({ AGENT_CONTAINER_MEMORY_LIMIT: '0' }),
