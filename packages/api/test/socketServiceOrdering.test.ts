@@ -20,14 +20,14 @@ describe('SocketService task update ordering', () => {
 
   test('accepts a legacy event without seeding from durable versioned state', async () => {
     let durableReads = 0;
-    const broadcasts: Array<{ room?: string; payload: TaskUpdatePayload }> = [];
+    const broadcasts: Array<{ rooms: string[]; payload: TaskUpdatePayload }> = [];
     const service = Object.create(SocketService.prototype) as SocketService;
     const internals = service as unknown as {
       io: {
         to: (room: string) => {
+          to: (additionalRoom: string) => unknown;
           emit: (event: string, payload: TaskUpdatePayload) => void;
         };
-        emit: (event: string, payload: TaskUpdatePayload) => void;
       };
       queueDeps: {
         redisClient: { get: (key: string) => Promise<string | null> };
@@ -36,10 +36,19 @@ describe('SocketService task update ordering', () => {
       handleTaskUpdate: (payload: TaskUpdatePayload) => Promise<void>;
     };
     internals.io = {
-      to: room => ({
-        emit: (_event, payload) => { broadcasts.push({ room, payload }); },
-      }),
-      emit: (_event, payload) => { broadcasts.push({ payload }); },
+      to: room => {
+        const rooms = [room];
+        const operator = {
+          to: (additionalRoom: string) => {
+            rooms.push(additionalRoom);
+            return operator;
+          },
+          emit: (_event: string, emittedPayload: TaskUpdatePayload) => {
+            broadcasts.push({ rooms, payload: emittedPayload });
+          },
+        };
+        return operator;
+      },
     };
     internals.queueDeps = {
       redisClient: {
@@ -61,8 +70,7 @@ describe('SocketService task update ordering', () => {
 
     assert.equal(durableReads, 0);
     assert.deepEqual(broadcasts, [
-      { room: 'task:legacy-task', payload },
-      { payload },
+      { rooms: ['instance:operational', 'task:legacy-task'], payload },
     ]);
   });
 
