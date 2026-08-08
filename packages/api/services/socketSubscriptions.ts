@@ -1,6 +1,7 @@
 import type { Socket } from 'socket.io';
 import type { SocketPrincipal } from '../auth.js';
 import type { QueueBroadcaster } from './queueBroadcaster.js';
+import { revalidateSocketAuthentication } from './socketAuthentication.js';
 import type { QueueDependencies } from './socketService.js';
 import type { TaskWatcherManager } from './taskWatcher.js';
 
@@ -111,11 +112,18 @@ export class SocketSubscriptionManager {
     }
   }
 
-  private async join(socket: Socket, event: string, room: string, authorized: boolean): Promise<boolean> {
-    if (!authorized) {
+  private async join(
+    socket: Socket,
+    event: string,
+    room: string,
+    authorize: () => boolean | Promise<boolean>,
+  ): Promise<boolean> {
+    if (!await revalidateSocketAuthentication(socket)) return false;
+    if (!await authorize()) {
       this.reject(socket, event, 'FORBIDDEN');
       return false;
     }
+    if (!socket.connected) return false;
     if (!this.canJoin(socket, room)) {
       this.reject(socket, event, 'SUBSCRIPTION_LIMIT');
       return false;
@@ -128,7 +136,7 @@ export class SocketSubscriptionManager {
     socket.on('subscribe:task', async (rawTaskId: unknown) => {
       const taskId = normalizeSocketResourceId(rawTaskId);
       if (!taskId) return this.reject(socket, 'subscribe:task', 'INVALID_RESOURCE');
-      if (!await this.join(socket, 'subscribe:task', `task:${taskId}`, await this.taskExists(taskId))) return;
+      if (!await this.join(socket, 'subscribe:task', `task:${taskId}`, () => this.taskExists(taskId))) return;
       console.log(`[SocketService] Client ${socket.id} subscribed to task:${taskId}`);
     });
 
@@ -141,7 +149,7 @@ export class SocketSubscriptionManager {
       const taskId = normalizeSocketResourceId(rawTaskId);
       if (!taskId) return this.reject(socket, 'subscribe:task:live', 'INVALID_RESOURCE');
       try {
-        if (!await this.join(socket, 'subscribe:task:live', `task:live:${taskId}`, await this.taskExists(taskId))) return;
+        if (!await this.join(socket, 'subscribe:task:live', `task:live:${taskId}`, () => this.taskExists(taskId))) return;
         await this.dependencies.taskWatcherManager.startTaskWatcher(taskId);
         await this.dependencies.taskWatcherManager.sendTaskLiveUpdate(taskId, true);
       } catch (error) {
@@ -152,8 +160,12 @@ export class SocketSubscriptionManager {
     socket.on('unsubscribe:task:live', async (rawTaskId: unknown) => {
       const taskId = normalizeSocketResourceId(rawTaskId);
       if (!taskId) return;
-      await socket.leave(`task:live:${taskId}`);
-      await this.dependencies.taskWatcherManager.stopTaskWatcherIfEmpty(taskId);
+      try {
+        await socket.leave(`task:live:${taskId}`);
+        await this.dependencies.taskWatcherManager.stopTaskWatcherIfEmpty(taskId);
+      } catch (error) {
+        console.error(`[SocketService] Failed to stop live task subscription for ${taskId}:`, error);
+      }
     });
   }
 
@@ -161,7 +173,7 @@ export class SocketSubscriptionManager {
     socket.on('subscribe:draft', async (rawDraftId: unknown) => {
       const draftId = normalizeSocketResourceId(rawDraftId);
       if (!draftId) return this.reject(socket, 'subscribe:draft', 'INVALID_RESOURCE');
-      if (!await this.join(socket, 'subscribe:draft', `draft:${draftId}`, await this.ownsDraft(socket, draftId))) return;
+      if (!await this.join(socket, 'subscribe:draft', `draft:${draftId}`, () => this.ownsDraft(socket, draftId))) return;
       console.log(`[SocketService] Client ${socket.id} subscribed to draft:${draftId}`);
     });
 
@@ -175,14 +187,14 @@ export class SocketSubscriptionManager {
     socket.on('subscribe:indexing', async (rawRepository: unknown) => {
       const repository = normalizeRepositorySubscription(rawRepository);
       if (!repository) return this.reject(socket, 'subscribe:indexing', 'INVALID_RESOURCE');
-      await this.join(socket, 'subscribe:indexing', `indexing:${repository}`, true);
+      await this.join(socket, 'subscribe:indexing', `indexing:${repository}`, () => true);
     });
     socket.on('unsubscribe:indexing', async (rawRepository: unknown) => {
       const repository = normalizeRepositorySubscription(rawRepository);
       if (repository) await socket.leave(`indexing:${repository}`);
     });
     socket.on('subscribe:indexing:updates', async () => {
-      await this.join(socket, 'subscribe:indexing:updates', 'indexing:updates', true);
+      await this.join(socket, 'subscribe:indexing:updates', 'indexing:updates', () => true);
     });
     socket.on('unsubscribe:indexing:updates', async () => {
       await socket.leave('indexing:updates');
@@ -191,7 +203,7 @@ export class SocketSubscriptionManager {
 
   private setupQueueStatsHandlers(socket: Socket): void {
     socket.on('subscribe:queue:stats', async () => {
-      if (!await this.join(socket, 'subscribe:queue:stats', 'queue:stats', true)) return;
+      if (!await this.join(socket, 'subscribe:queue:stats', 'queue:stats', () => true)) return;
       await this.dependencies.getQueueBroadcaster()?.broadcastQueueStats();
     });
     socket.on('unsubscribe:queue:stats', async () => {
