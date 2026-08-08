@@ -8,7 +8,7 @@ import {
 } from '../requestRateLimits.js';
 
 interface TestAppOptions {
-  useServerProxyConfiguration?: boolean;
+  proxyEnvironment?: Record<string, string | undefined>;
   remoteAddress?: string;
 }
 
@@ -17,7 +17,7 @@ async function startTestApp(
   options: TestAppOptions = {},
 ): Promise<{ origin: string; close: () => Promise<void> }> {
   const app = express();
-  if (options.useServerProxyConfiguration) configureApiProxyTrust(app);
+  if (options.proxyEnvironment) configureApiProxyTrust(app, options.proxyEnvironment);
   if (options.remoteAddress) {
     app.use((request, _response, next) => {
       Object.defineProperty(request.socket, 'remoteAddress', {
@@ -71,10 +71,10 @@ test('does not charge CORS preflight requests against the quota', async () => {
   assert.equal((await fetch(`${app.origin}/resource`)).status, 429);
 });
 
-test('does not let direct clients rotate quota buckets with X-Forwarded-For', async () => {
+test('does not let an unconfigured private peer rotate quota buckets with X-Forwarded-For', async () => {
   const app = await startTestApp(2, {
-    useServerProxyConfiguration: true,
-    remoteAddress: '203.0.113.10',
+    proxyEnvironment: { PROPR_TRUSTED_PROXY_PEERS: '10.0.0.2' },
+    remoteAddress: '10.0.0.3',
   });
   openServers.push(app.close);
 
@@ -94,7 +94,10 @@ test('does not let direct clients rotate quota buckets with X-Forwarded-For', as
 });
 
 test('uses forwarded client addresses from an explicitly trusted proxy', async () => {
-  const app = await startTestApp(1, { useServerProxyConfiguration: true });
+  const app = await startTestApp(1, {
+    proxyEnvironment: { PROPR_TRUSTED_PROXY_PEERS: '10.0.0.2' },
+    remoteAddress: '10.0.0.2',
+  });
   openServers.push(app.close);
 
   const firstClient = await fetch(`${app.origin}/resource`, {
@@ -134,5 +137,13 @@ test('rejects invalid overrides instead of silently disabling protection', () =>
   assert.throws(
     () => resolveRequestRateLimitPolicies({ PROPR_API_RATE_LIMIT_WINDOW_MS: '1.5' }),
     /must be a positive integer/,
+  );
+  assert.equal(
+    resolveRequestRateLimitPolicies({ PROPR_API_RATE_LIMIT_WINDOW_MS: '2147483647' }).api.windowMs,
+    2_147_483_647,
+  );
+  assert.throws(
+    () => resolveRequestRateLimitPolicies({ PROPR_API_RATE_LIMIT_WINDOW_MS: '2147483648' }),
+    /must be at most 2147483647/,
   );
 });

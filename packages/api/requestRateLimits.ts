@@ -23,14 +23,25 @@ const DEFAULT_POLICIES: RequestRateLimitPolicies = {
   webhook: { identifier: 'webhook', limit: 300, windowMs: 60_000 },
 };
 
-const TRUSTED_PROXY_PEERS = 'loopback, linklocal, uniquelocal';
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const TRUSTED_PROXY_PEERS_ENVIRONMENT_VARIABLE = 'PROPR_TRUSTED_PROXY_PEERS';
 
 /**
- * Supported reverse proxies reach the API over loopback or an internal
- * container network. Public socket peers remain untrusted.
+ * Forwarded addresses are trusted only when the immediate socket peer is
+ * explicitly configured as a reverse proxy. Without configuration, all
+ * clients are keyed by their socket address.
  */
-export function configureApiProxyTrust(app: Express): void {
-  app.set('trust proxy', TRUSTED_PROXY_PEERS);
+export function configureApiProxyTrust(
+  app: Express,
+  environment: RateLimitEnvironment = process.env,
+): void {
+  const configuredPeers = environment[TRUSTED_PROXY_PEERS_ENVIRONMENT_VARIABLE];
+  if (configuredPeers === undefined || configuredPeers.trim() === '') {
+    app.set('trust proxy', false);
+    return;
+  }
+
+  app.set('trust proxy', configuredPeers.split(',').map(peer => peer.trim()).filter(Boolean));
 }
 
 function positiveInteger(environment: RateLimitEnvironment, name: string, fallback: number): number {
@@ -44,6 +55,14 @@ function positiveInteger(environment: RateLimitEnvironment, name: string, fallba
   return value;
 }
 
+function windowMilliseconds(environment: RateLimitEnvironment, name: string, fallback: number): number {
+  const value = positiveInteger(environment, name, fallback);
+  if (value > MAX_TIMER_DELAY_MS) {
+    throw new Error(`${name} must be at most ${MAX_TIMER_DELAY_MS}, got: ${value}`);
+  }
+  return value;
+}
+
 export function resolveRequestRateLimitPolicies(
   environment: RateLimitEnvironment = process.env,
 ): RequestRateLimitPolicies {
@@ -51,17 +70,17 @@ export function resolveRequestRateLimitPolicies(
     api: {
       identifier: 'api',
       limit: positiveInteger(environment, 'PROPR_API_RATE_LIMIT_MAX', DEFAULT_POLICIES.api.limit),
-      windowMs: positiveInteger(environment, 'PROPR_API_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.api.windowMs),
+      windowMs: windowMilliseconds(environment, 'PROPR_API_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.api.windowMs),
     },
     auth: {
       identifier: 'auth',
       limit: positiveInteger(environment, 'PROPR_AUTH_RATE_LIMIT_MAX', DEFAULT_POLICIES.auth.limit),
-      windowMs: positiveInteger(environment, 'PROPR_AUTH_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.auth.windowMs),
+      windowMs: windowMilliseconds(environment, 'PROPR_AUTH_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.auth.windowMs),
     },
     webhook: {
       identifier: 'webhook',
       limit: positiveInteger(environment, 'PROPR_WEBHOOK_RATE_LIMIT_MAX', DEFAULT_POLICIES.webhook.limit),
-      windowMs: positiveInteger(environment, 'PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.webhook.windowMs),
+      windowMs: windowMilliseconds(environment, 'PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.webhook.windowMs),
     },
   };
 }
