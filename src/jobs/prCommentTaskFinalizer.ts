@@ -4,6 +4,7 @@ import {
     type JobResult,
     type TaskStatePublicationResult,
     type TaskState,
+    type TaskStateExpectation,
     type UpdateMetadata,
     type WorkerStateManager,
 } from '@propr/core';
@@ -26,12 +27,18 @@ export type PRCommentTaskFinalizationOutcome =
     | 'partial_publication'
     | 'already_terminal'
     | 'retry_pending'
+    | 'state_changed'
     | 'task_missing';
 
 export interface PRCommentTaskFinalizationResult {
     outcome: PRCommentTaskFinalizationOutcome;
     stateChanged: boolean;
     publication?: TaskStatePublicationResult;
+}
+
+export interface PRCommentTaskFinalizationOptions {
+    expectation?: TaskStateExpectation;
+    signal?: AbortSignal;
 }
 
 interface FinalTransition {
@@ -115,16 +122,19 @@ async function applyFinalTransition(
     taskId: string,
     transition: FinalTransition,
     stateManager: TaskStateStore,
+    options: PRCommentTaskFinalizationOptions = {},
 ): Promise<PRCommentTaskFinalizationResult> {
     for (let attempt = 0; ; attempt++) {
+        options.signal?.throwIfAborted();
         const current = await stateManager.getTaskState(taskId);
+        options.signal?.throwIfAborted();
         if (!current) return { outcome: 'task_missing', stateChanged: false };
         if (TERMINAL_STATES.has(current.state)) {
             return { outcome: 'already_terminal', stateChanged: false };
         }
         const updated = await stateManager.updateTaskStateIfCurrentDetailed(
             taskId,
-            taskStateExpectation(current),
+            options.expectation ?? taskStateExpectation(current),
             transition.state,
             transition.metadata,
         );
@@ -137,6 +147,9 @@ async function applyFinalTransition(
                 publication: updated.publication,
             };
         }
+        if (options.expectation) {
+            return { outcome: 'state_changed', stateChanged: false };
+        }
         await waitForFinalizationRetry(attempt);
     }
 }
@@ -145,18 +158,21 @@ export async function finalizeCompletedPRCommentTask(
     taskId: string,
     result: JobResult | undefined,
     stateManager: TaskStateStore,
+    options?: PRCommentTaskFinalizationOptions,
 ): Promise<PRCommentTaskFinalizationResult> {
-    return applyFinalTransition(taskId, completedTransition(result), stateManager);
+    return applyFinalTransition(taskId, completedTransition(result), stateManager, options);
 }
 
 export async function finalizeFailedPRCommentTask(
     taskId: string,
     error: Error,
     stateManager: TaskStateStore,
+    options?: PRCommentTaskFinalizationOptions,
 ): Promise<PRCommentTaskFinalizationResult> {
     return applyFinalTransition(
         taskId,
         failedTransition(error.message, 'bullmq_failed'),
         stateManager,
+        options,
     );
 }

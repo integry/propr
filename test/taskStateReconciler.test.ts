@@ -3,7 +3,18 @@ import { beforeEach, mock, test } from 'node:test';
 import {
     TaskStates,
     type TaskStateData,
+    type TaskStateExpectation,
 } from '../packages/core/src/utils/workerStateManager.types.js';
+
+function expectationFor(task: TaskStateData): TaskStateExpectation {
+    return {
+        state: task.state,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+        correlationId: task.correlationId,
+        version: task.version,
+    };
+}
 
 const finalizeCompletedPRCommentTask = mock.fn(async () => ({
     outcome: 'finalized' as const,
@@ -27,6 +38,7 @@ await mock.module('@propr/core', {
             error: mock.fn(),
             warn: mock.fn(),
         },
+        taskStateExpectation: expectationFor,
     },
 });
 
@@ -104,6 +116,14 @@ test('recovers completed and failed BullMQ outcomes through the shared finalizer
     });
     assert.equal(finalizeCompletedPRCommentTask.mock.calls[0].arguments[1]?.status, 'complete');
     assert.match(finalizeFailedPRCommentTask.mock.calls[0].arguments[1].message, /agent crashed/);
+    assert.deepEqual(
+        finalizeCompletedPRCommentTask.mock.calls[0].arguments[3]?.expectation,
+        expectationFor(completed),
+    );
+    assert.deepEqual(
+        finalizeFailedPRCommentTask.mock.calls[0].arguments[3]?.expectation,
+        expectationFor(failed),
+    );
 });
 
 test('leaves live, recent, non-PR, and future-dated work untouched', async () => {
@@ -175,6 +195,54 @@ test('isolates a task lookup failure and continues the scan', async () => {
 
     assert.equal(result.summary.errors, 1);
     assert.equal(result.summary.recovered, 1);
+});
+
+test('resumes the unprocessed part of a page before scanning the next cursor', async () => {
+    const first = makeTask('pr-comments-first');
+    const second = makeTask('pr-comments-second');
+    const stateManager = createStateManager([first, second]);
+    const budgetResult = await reconcileStalePRCommentTasks({
+        queue: { getJob: async () => new Promise<never>(() => {}) },
+        stateManager,
+        now: NOW,
+        timeBudgetMs: 10,
+    });
+
+    assert.deepEqual(budgetResult.backlog.map(task => task.taskId), [first.taskId, second.taskId]);
+    assert.equal(budgetResult.summary.skipped, 0);
+
+    const resumedResult = await reconcileStalePRCommentTasks({
+        queue: {
+            getJob: async () => ({
+                returnvalue: { status: 'complete' },
+                getState: async () => 'completed',
+            }),
+        },
+        stateManager,
+        cursor: budgetResult.nextCursor,
+        backlog: budgetResult.backlog,
+        now: NOW,
+    });
+
+    assert.deepEqual(resumedResult.backlog, []);
+    assert.equal(resumedResult.summary.recovered, 2);
+    assert.equal(stateManager.scanNonTerminalTasks.mock.calls.length, 1);
+});
+
+test('bounds the initial Redis scan by the reconciliation budget', async () => {
+    const stateManager = createStateManager([]);
+    stateManager.scanNonTerminalTasks.mock.mockImplementationOnce(
+        async () => new Promise<never>(() => {}),
+    );
+
+    await assert.rejects(
+        reconcileStalePRCommentTasks({
+            queue: { getJob: async () => null },
+            stateManager,
+            timeBudgetMs: 10,
+        }),
+        /time budget was exhausted/,
+    );
 });
 
 test('legacy container inspection is non-destructive and distinguishes Docker outages', async () => {

@@ -4,8 +4,9 @@ import { mock, test } from 'node:test';
 const logInfo = mock.fn();
 const logError = mock.fn();
 const logWarn = mock.fn();
-const reconcileStalePRCommentTasks = mock.fn(async () => ({
+const reconcileStalePRCommentTasks = mock.fn(async (_options?: { backlog?: unknown[] }) => ({
     nextCursor: '0',
+    backlog: [] as unknown[],
     summary: {
         scanned: 0,
         stale: 0,
@@ -54,6 +55,7 @@ test('coalesces overlapping runs and releases the distributed lease', async () =
         await new Promise<void>(resolve => { releaseReconciliation = resolve; });
         return {
             nextCursor: '23',
+            backlog: [],
             summary: {
                 scanned: 1,
                 stale: 1,
@@ -120,4 +122,90 @@ test('contains lease acquisition failures instead of creating an unhandled rejec
     await runner.close();
     assert.equal(logError.mock.calls.length > 0, true);
     assert.equal(reconcileStalePRCommentTasks.mock.calls.length, 0);
+});
+
+test('retains an unfinished page backlog across recovery runs', async () => {
+    reconcileStalePRCommentTasks.mock.resetCalls();
+    const pendingTask = { taskId: 'pr-comments-pending' };
+    reconcileStalePRCommentTasks.mock.mockImplementationOnce(async () => ({
+        nextCursor: '41',
+        backlog: [pendingTask],
+        summary: {
+            scanned: 2,
+            stale: 1,
+            live: 0,
+            recovered: 0,
+            skipped: 0,
+            errors: 0,
+        },
+    }));
+    const redis = {
+        set: mock.fn(async () => 'OK'),
+        eval: mock.fn(async () => 1),
+    };
+    const runner = await startWorkerTaskStateRecovery({
+        ...dependencies(),
+        redis,
+        intervalMs: 60_000,
+    });
+
+    await runner.runOnce();
+    if (reconcileStalePRCommentTasks.mock.calls.length === 1) {
+        await runner.runOnce();
+    }
+    await runner.close();
+
+    assert.equal(reconcileStalePRCommentTasks.mock.calls.length, 2);
+    assert.deepEqual(
+        reconcileStalePRCommentTasks.mock.calls[1].arguments[0]?.backlog,
+        [pendingTask],
+    );
+    assert.equal(reconcileStalePRCommentTasks.mock.calls[1].arguments[0]?.cursor, '41');
+});
+
+test('bounds a stalled lease acquisition by the recovery budget', async () => {
+    reconcileStalePRCommentTasks.mock.resetCalls();
+    const runner = await startWorkerTaskStateRecovery({
+        ...dependencies(),
+        redis: {
+            set: mock.fn(async () => new Promise<never>(() => {})),
+            eval: mock.fn(async () => 0),
+        },
+        intervalMs: 60_000,
+        timeBudgetMs: 10,
+    });
+
+    const settled = await Promise.race([
+        runner.runOnce().then(() => true),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 250)),
+    ]);
+    await runner.close();
+
+    assert.equal(settled, true);
+    assert.equal(reconcileStalePRCommentTasks.mock.calls.length, 0);
+});
+
+test('close aborts a stalled active recovery run', async () => {
+    reconcileStalePRCommentTasks.mock.resetCalls();
+    const redis = {
+        set: mock.fn(async () => 'OK'),
+        eval: mock.fn(async () => 1),
+    };
+    reconcileStalePRCommentTasks.mock.mockImplementationOnce(
+        async () => new Promise<never>(() => {}),
+    );
+    const runner = await startWorkerTaskStateRecovery({
+        ...dependencies(),
+        redis,
+        intervalMs: 60_000,
+        timeBudgetMs: 5_000,
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const settled = await Promise.race([
+        runner.close().then(() => true),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 250)),
+    ]);
+
+    assert.equal(settled, true);
 });

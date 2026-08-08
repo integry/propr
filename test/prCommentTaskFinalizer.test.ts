@@ -16,6 +16,7 @@ await mock.module('@propr/core', {
             createdAt: task.createdAt,
             updatedAt: task.updatedAt,
             correlationId: task.correlationId,
+            version: task.version,
         }),
     },
 });
@@ -58,7 +59,11 @@ function createStore(
             current.updatedAt = new Date(Date.parse(current.updatedAt) + 1).toISOString();
             return null;
         }
-        if (expectation.updatedAt !== current.updatedAt || expectation.state !== current.state) return null;
+        if (expectation.state !== current.state
+            || expectation.createdAt !== current.createdAt
+            || expectation.updatedAt !== current.updatedAt
+            || expectation.correlationId !== current.correlationId
+            || (expectation.version ?? 0) !== (current.version ?? 0)) return null;
         current.state = newState;
         current.updatedAt = new Date(Date.parse(current.updatedAt) + 1).toISOString();
         current.history.push({
@@ -162,6 +167,38 @@ test('finalization keeps retrying after five compare-and-set conflicts', async (
     assert.equal(result.outcome, 'finalized');
     assert.equal(store.updateTaskStateIfCurrentDetailed.mock.calls.length, 6);
     assert.equal(store.current().state, TaskStates.COMPLETED);
+});
+
+test('recovery finalization rejects when the task changed after its stale scan', async () => {
+    const scanned = makeTask();
+    scanned.version = 4;
+    const refreshed = structuredClone(scanned);
+    refreshed.updatedAt = '2026-08-05T12:05:00.000Z';
+    refreshed.version = 5;
+    const store = createStore(refreshed);
+    const expectation: TaskStateExpectation = {
+        state: scanned.state,
+        createdAt: scanned.createdAt,
+        updatedAt: scanned.updatedAt,
+        correlationId: scanned.correlationId,
+        version: scanned.version,
+    };
+
+    const result = await finalizeFailedPRCommentTask(
+        'task-123',
+        new Error('orphaned'),
+        store,
+        { expectation },
+    );
+
+    assert.equal(result.outcome, 'state_changed');
+    assert.equal(result.stateChanged, false);
+    assert.equal(store.current().state, TaskStates.PROCESSING);
+    assert.equal(store.updateTaskStateIfCurrentDetailed.mock.calls.length, 1);
+    assert.deepEqual(
+        store.updateTaskStateIfCurrentDetailed.mock.calls[0].arguments[1],
+        expectation,
+    );
 });
 
 test('processor reasons are sanitized and bounded before persistence', async () => {

@@ -12,6 +12,7 @@ import {
     reconcileStalePRCommentTasks,
     type ReconciliationQueue,
     type ReconciliationStateManager,
+    type TaskStateReconciliationResult,
 } from './taskStateReconciler.js';
 
 const RECONCILIATION_LEASE_KEY = 'lock:worker:pr-task-state-reconciliation';
@@ -26,6 +27,7 @@ interface ReconciliationLeaseRedis {
     set(key: string, value: string, mode: 'PX', ttlMs: number, condition: 'NX'): Promise<unknown>;
     eval(script: string, numberOfKeys: number, ...args: Array<string | number>): Promise<unknown>;
     quit?(): Promise<unknown>;
+    disconnect?(): void;
 }
 
 export interface WorkerTaskStateRecovery {
@@ -44,6 +46,103 @@ export interface WorkerTaskStateRecoveryOptions {
     timeBudgetMs?: number;
 }
 
+class RecoveryOperationTimeoutError extends Error {
+    constructor(operation: string) {
+        super(`${operation} exceeded the task state recovery time budget`);
+        this.name = 'RecoveryOperationTimeoutError';
+    }
+}
+
+class RecoveryClosedError extends Error {
+    constructor() {
+        super('Task state recovery is closing');
+        this.name = 'RecoveryClosedError';
+    }
+}
+
+function abortReason(signal: AbortSignal): unknown {
+    return signal.reason ?? new RecoveryClosedError();
+}
+
+async function runWithinDeadline<T>(
+    operationName: string,
+    operation: () => Promise<T>,
+    deadline: number,
+    signal?: AbortSignal,
+): Promise<T> {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new RecoveryOperationTimeoutError(operationName);
+    signal?.throwIfAborted();
+
+    return new Promise<T>((resolve, reject) => {
+        const finish = (callback: () => void): void => {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+            callback();
+        };
+        const onAbort = (): void => finish(() => reject(signal ? abortReason(signal) : new RecoveryClosedError()));
+        const timer = setTimeout(
+            () => finish(() => reject(new RecoveryOperationTimeoutError(operationName))),
+            remainingMs,
+        );
+        signal?.addEventListener('abort', onAbort, { once: true });
+        if (signal?.aborted) {
+            onAbort();
+            return;
+        }
+
+        let pending: Promise<T>;
+        try {
+            pending = operation();
+        } catch (error) {
+            finish(() => reject(error));
+            return;
+        }
+        pending.then(
+            value => finish(() => resolve(value)),
+            error => finish(() => reject(error)),
+        );
+    });
+}
+
+async function runUntilAborted<T>(
+    operation: () => Promise<T>,
+    signal: AbortSignal,
+): Promise<T> {
+    signal.throwIfAborted();
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = (): void => {
+            cleanup();
+            reject(abortReason(signal));
+        };
+        const cleanup = (): void => signal.removeEventListener('abort', onAbort);
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) {
+            onAbort();
+            return;
+        }
+
+        let pending: Promise<T>;
+        try {
+            pending = operation();
+        } catch (error) {
+            cleanup();
+            reject(error);
+            return;
+        }
+        pending.then(
+            value => {
+                cleanup();
+                resolve(value);
+            },
+            error => {
+                cleanup();
+                reject(error);
+            },
+        );
+    });
+}
+
 function boundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number): number {
     if (value === undefined) return fallback;
     const parsed = Number(value);
@@ -56,7 +155,8 @@ function createLeaseRedis(): InstanceType<typeof Redis> {
     return new Redis({
         host: process.env.REDIS_HOST || '127.0.0.1',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
-        maxRetriesPerRequest: null,
+        maxRetriesPerRequest: 1,
+        connectTimeout: 10_000,
         enableReadyCheck: false,
     });
 }
@@ -74,7 +174,6 @@ async function resolveDependencies(options: WorkerTaskStateRecoveryOptions): Pro
 export async function startWorkerTaskStateRecovery(
     options: WorkerTaskStateRecoveryOptions = {},
 ): Promise<WorkerTaskStateRecovery> {
-    const dependencies = await resolveDependencies(options);
     const intervalMs = options.intervalMs ?? boundedInteger(
         process.env.TASK_STATE_RECONCILIATION_INTERVAL_MS,
         60_000,
@@ -100,54 +199,95 @@ export async function startWorkerTaskStateRecovery(
         120_000,
     );
     const leaseTtlMs = options.leaseTtlMs ?? Math.max(5 * 60_000, timeBudgetMs * 3);
+    const leaseReleaseBudgetMs = Math.min(1_000, Math.max(1, Math.floor(timeBudgetMs / 10)));
+    const dependencies = await runWithinDeadline(
+        'Resolving task state recovery dependencies',
+        () => resolveDependencies(options),
+        Date.now() + timeBudgetMs,
+    );
     const ownsRedis = options.redis === undefined;
     const redis = options.redis ?? createLeaseRedis();
     let cursor = '0';
+    let backlog: TaskStateReconciliationResult['backlog'] = [];
     let closed = false;
     let activeRun: Promise<boolean> | null = null;
+    let activeAbortController: AbortController | null = null;
 
     const execute = async (): Promise<boolean> => {
         if (closed) return false;
+        const deadline = Date.now() + timeBudgetMs;
+        const controller = new AbortController();
+        activeAbortController = controller;
         const token = randomUUID();
         let acquired: unknown;
         try {
-            acquired = await redis.set(
-                RECONCILIATION_LEASE_KEY,
-                token,
-                'PX',
-                leaseTtlMs,
-                'NX',
+            acquired = await runWithinDeadline(
+                'Task state recovery lease acquisition',
+                () => redis.set(
+                    RECONCILIATION_LEASE_KEY,
+                    token,
+                    'PX',
+                    leaseTtlMs,
+                    'NX',
+                ),
+                deadline,
+                controller.signal,
             );
         } catch (error) {
-            logger.error({ error: (error as Error).message }, 'Failed to acquire task reconciliation lease');
+            if (!closed) {
+                logger.error({ error: (error as Error).message }, 'Failed to acquire task reconciliation lease');
+            }
             return false;
         }
         if (acquired !== 'OK') return false;
         try {
-            const result = await reconcileStalePRCommentTasks({
-                ...dependencies,
-                cursor,
-                staleMs,
-                batchSize,
-                timeBudgetMs,
-            });
+            const reconciliationBudgetMs = deadline - Date.now() - leaseReleaseBudgetMs;
+            if (reconciliationBudgetMs <= 0) {
+                throw new RecoveryOperationTimeoutError('Task state reconciliation');
+            }
+            const result = await runUntilAborted(
+                () => reconcileStalePRCommentTasks({
+                    ...dependencies,
+                    cursor,
+                    backlog,
+                    staleMs,
+                    batchSize,
+                    timeBudgetMs: reconciliationBudgetMs,
+                    signal: controller.signal,
+                }),
+                controller.signal,
+            );
             cursor = result.nextCursor;
+            backlog = result.backlog ?? [];
             logger.info(result.summary, 'Reconciled stale PR comment task states');
             return true;
         } catch (error) {
-            logger.error({ error: (error as Error).message }, 'Failed to reconcile stale PR comment task states');
+            if (!closed) {
+                logger.error({ error: (error as Error).message }, 'Failed to reconcile stale PR comment task states');
+            }
             return false;
         } finally {
             try {
-                await redis.eval(RELEASE_LEASE_SCRIPT, 1, RECONCILIATION_LEASE_KEY, token);
+                await runWithinDeadline(
+                    'Task state recovery lease release',
+                    () => redis.eval(RELEASE_LEASE_SCRIPT, 1, RECONCILIATION_LEASE_KEY, token),
+                    deadline,
+                    controller.signal,
+                );
             } catch (error) {
-                logger.warn({ error: (error as Error).message }, 'Failed to release task reconciliation lease');
+                if (!closed) {
+                    logger.warn({ error: (error as Error).message }, 'Failed to release task reconciliation lease');
+                }
             }
         }
     };
 
     const runOnce = (): Promise<boolean> => {
-        activeRun ??= execute().finally(() => { activeRun = null; });
+        if (activeRun) return activeRun;
+        activeRun = execute().finally(() => {
+            activeRun = null;
+            activeAbortController = null;
+        });
         return activeRun;
     };
     const timer = setInterval(() => { void runOnce(); }, intervalMs);
@@ -160,8 +300,20 @@ export async function startWorkerTaskStateRecovery(
             if (closed) return;
             closed = true;
             clearInterval(timer);
+            activeAbortController?.abort(new RecoveryClosedError());
             await activeRun;
-            if (ownsRedis) await redis.quit?.();
+            if (ownsRedis && redis.quit) {
+                try {
+                    await runWithinDeadline(
+                        'Task state recovery Redis shutdown',
+                        () => redis.quit!(),
+                        Date.now() + Math.min(timeBudgetMs, 1_000),
+                    );
+                } catch (error) {
+                    logger.warn({ error: (error as Error).message }, 'Failed to close task reconciliation Redis client cleanly');
+                    redis.disconnect?.();
+                }
+            }
         },
     };
 }
