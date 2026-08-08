@@ -19,6 +19,7 @@ import {
   resolveGithubEventIntakeMode,
   validateIntakeModePrerequisites,
   validateRelayUrl,
+  validateSessionSecret,
 } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { createApiClient, getSystemStatus } from "../api/index.js";
@@ -402,6 +403,19 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     });
   } else if (whitelistEntries.length > 0) {
     emit({ name: "User whitelist", status: "ok", detail: `${whitelistEntries.length} user(s) allowed`, group: "GitHub" });
+  }
+
+  const sessionSecretError = validateSessionSecret(process.env.SESSION_SECRET ?? fileEnv.SESSION_SECRET);
+  if (!isDemo && sessionSecretError) {
+    emit({
+      name: "Session secret",
+      status: "fail",
+      detail: sessionSecretError,
+      group: "Configuration",
+      fix: "Generate a secret with `openssl rand -hex 32` and set SESSION_SECRET in .env.",
+    });
+  } else if (!isDemo) {
+    emit({ name: "Session secret", status: "ok", detail: "strong secret configured", group: "Configuration" });
   }
 
   // 9. Config validation from the orchestrator (bind paths, vibe dirs, etc.)

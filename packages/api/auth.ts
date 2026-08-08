@@ -4,6 +4,7 @@ import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient } from 'redis';
 import type { Express, Request, Response, NextFunction } from 'express';
+import { validateSessionSecret } from '@propr/shared';
 import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenIfNeeded, refreshGitHubTokenWithResult } from './authGithubTokens.js';
@@ -58,6 +59,12 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
     }
 
+    const sessionSecret = process.env.SESSION_SECRET;
+    if (!demoModeAtStartup) {
+        const sessionSecretError = validateSessionSecret(sessionSecret);
+        if (sessionSecretError) throw new Error(sessionSecretError);
+    }
+
     if (!demoModeAtStartup) {
         // Create Redis client for session store
         // SESSION_REDIS_HOST allows PR previews to share sessions with main API via host Redis
@@ -75,7 +82,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         const cookieDomain = getSessionCookieDomain();
         app.use(session({
             store: redisStore,
-            secret: process.env.SESSION_SECRET || 'your-secret-key-here',
+            secret: sessionSecret!,
             resave: false,
             saveUninitialized: false,
             rolling: true, // Extend session expiration on each request
