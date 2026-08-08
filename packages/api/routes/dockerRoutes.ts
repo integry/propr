@@ -1,10 +1,10 @@
 import type { Response } from 'express';
 import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
-import { execSync } from 'child_process';
 import { stopDockerContainer, getStateManager, getIssueQueue } from '@propr/core';
 import type { IssueRef } from '@propr/core';
 import { validateTaskId, validateTailParam } from './validation.js';
+import { getDockerContainerLogs, getDockerContainerStatus } from './dockerCommandSafety.js';
 
 interface DockerRoutesDeps {
   redisClient: RedisClientType;
@@ -463,7 +463,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
       try {
-        const logsOutput = execSync(`docker logs --tail ${tail} ${entry.metadata.containerId}`, { encoding: 'utf8', timeout: 10000, maxBuffer: 10 * 1024 * 1024 });
+        const logsOutput = getDockerContainerLogs(entry.metadata.containerId, tail);
         res.setHeader('Content-Type', 'text/plain');
         res.send(logsOutput);
       } catch (err) {
@@ -529,7 +529,7 @@ export function normalizeTaskId(jobId: string): string {
 
 async function getContainerInfo(containerId: string, containerName?: string): Promise<Record<string, unknown>> {
   try {
-    const statusOutput = execSync(`docker ps -a --filter "id=${containerId}" --format "{{.Status}}"`, { encoding: 'utf8', timeout: 5000 }).trim();
+    const statusOutput = getDockerContainerStatus(containerId);
     if (statusOutput) {
       return { id: containerId, name: containerName, status: statusOutput.includes('Up') ? 'running' : 'stopped', logsAvailable: true };
     }

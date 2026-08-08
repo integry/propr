@@ -1,4 +1,4 @@
-import { spawn, execSync, SpawnOptions, ChildProcess } from 'child_process';
+import { spawn, execFileSync, SpawnOptions, ChildProcess } from 'child_process';
 import fs from 'fs';
 import { Redis } from 'ioredis';
 import logger from '../../utils/logger.js';
@@ -342,7 +342,12 @@ function detectContainerId(
     return setTimeout(() => {
         if (state.containerIdDetected) return;
         try {
-            const out = execSync(`/usr/bin/docker ps --filter "volume=${worktreePath}" --format "{{.ID}}:{{.Names}}" --latest`, { encoding: 'utf8', timeout: 5000 }).trim();
+            const out = execFileSync('/usr/bin/docker', [
+                'ps',
+                '--filter', `volume=${worktreePath}`,
+                '--format', '{{.ID}}:{{.Names}}',
+                '--latest',
+            ], { encoding: 'utf8', timeout: 5000 }).trim();
             if (out) {
                 const [id, name] = out.split(':');
                 state.containerIdDetected = true;
