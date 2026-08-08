@@ -154,6 +154,34 @@ test('leaves live, recent, non-PR, and future-dated work untouched', async () =>
     assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
 });
 
+test('leaves future-dated work untouched when the stale threshold is zero', async () => {
+    const future = makeTask('pr-comments-future-zero-threshold', {
+        updatedAt: new Date(NOW + 60_000).toISOString(),
+    });
+    const queue = { getJob: mock.fn(async () => null) };
+    const inspectContainer = mock.fn(async () => 'not_found' as const);
+    const result = await reconcileStalePRCommentTasks({
+        queue,
+        stateManager: createStateManager([future]),
+        inspectContainer,
+        now: NOW,
+        staleMs: 0,
+    });
+
+    assert.deepEqual(result.summary, {
+        scanned: 1,
+        stale: 0,
+        live: 0,
+        recovered: 0,
+        skipped: 1,
+        errors: 0,
+    });
+    assert.equal(queue.getJob.mock.calls.length, 0);
+    assert.equal(inspectContainer.mock.calls.length, 0);
+    assert.equal(finalizeCompletedPRCommentTask.mock.calls.length, 0);
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
+});
+
 test('fails an orphan only when Docker is available and no container is live', async () => {
     const orphan = makeTask('pr-comments-orphan');
     const unavailable = makeTask('pr-comments-unavailable');
@@ -275,5 +303,5 @@ test('legacy container inspection is non-destructive and distinguishes Docker ou
 
 test('invalid and future timestamps are not treated as stale', () => {
     assert.equal(taskAgeMs('not-a-date', NOW), null);
-    assert.equal(taskAgeMs(new Date(NOW + 1_000).toISOString(), NOW), 0);
+    assert.equal(taskAgeMs(new Date(NOW + 1_000).toISOString(), NOW), null);
 });

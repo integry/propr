@@ -134,8 +134,8 @@ function isPRCommentTask(task: TaskStateData): boolean {
 
 export function taskAgeMs(updatedAt: string, now = Date.now()): number | null {
     const timestamp = Date.parse(updatedAt);
-    if (!Number.isFinite(timestamp)) return null;
-    return Math.max(0, now - timestamp);
+    if (!Number.isFinite(timestamp) || timestamp > now) return null;
+    return now - timestamp;
 }
 
 function asJobResult(value: unknown): JobResult | undefined {
