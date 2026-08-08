@@ -179,15 +179,21 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const pendingCallbacks = new Set<Promise<void>>();
         let containerDetectionTimer: ReturnType<typeof setTimeout> | null = null;
         const messageTimestamps = new Map<string, string>();
-        const abortExecution = (): void => {
+        const abortExecution = (executionTimeout = false): void => {
             void abortSpawnedExecution(
                 child,
                 state,
                 {
                     namedContainer,
                     scheduleForceKill,
-                    taskId,
-                    attemptGeneration: ownershipContext?.attemptGeneration,
+                    // A command timeout belongs only to this subprocess. Using
+                    // the task-generation fence here leaves a teardown sweep
+                    // running for several seconds, which can kill the next
+                    // analysis container started by the same task. Ownership
+                    // loss and explicit cancellation still require the broad,
+                    // generation-fenced cleanup below.
+                    taskId: executionTimeout ? undefined : taskId,
+                    attemptGeneration: executionTimeout ? undefined : ownershipContext?.attemptGeneration,
                 },
             );
         };
@@ -213,7 +219,7 @@ export function executeDockerCommand(command: string, args: string[], options: D
         const timeoutHandle = setTimeout(() => {
             state.timedOut = true;
             timeoutInitiatedAbort = !state.aborted.value;
-            abortExecution();
+            abortExecution(true);
         }, timeout);
         const plannerAbortKey = taskId ? plannerAbortSignalKeyForTask(taskId) : null;
         const abortChecker = taskId && plannerAbortKey
