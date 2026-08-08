@@ -17,6 +17,7 @@ test('rejects container references that could be parsed as options or shell synt
 
 test('production subprocess call sites do not invoke a command shell', () => {
   const productionFiles = [
+    '../routes/dockerCommandSafety.ts',
     '../routes/dockerRoutes.ts',
     '../../core/src/claude/docker/dockerExecutor.ts',
     '../../core/src/git/worktreeOperations.ts',

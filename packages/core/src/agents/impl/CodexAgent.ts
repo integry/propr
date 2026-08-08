@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import fs from 'fs';
 import { execFileSync } from 'child_process';
 import logger from '../../utils/logger.js';
@@ -378,6 +379,7 @@ export class CodexAgent implements Agent {
     /**
      * Builds Docker arguments for running Codex in a container.
      */
+    // eslint-disable-next-line complexity
     private buildDockerArgs(params: {
         worktreePath: string; githubToken: string; modelName?: string;
         issueNumber: number; jsonOutput?: boolean; environment?: Record<string, string>;

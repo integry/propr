@@ -136,6 +136,7 @@ export class OpenCodeAgent implements Agent {
         }
     }
 
+    // eslint-disable-next-line complexity
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
         const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands, responseFormat = 'text', timeoutMs } = options || {};
         const startTime = Date.now();
