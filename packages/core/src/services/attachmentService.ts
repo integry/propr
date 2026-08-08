@@ -219,7 +219,12 @@ function validateDraftPathSegment(draftId: string): string {
 
 function validateOriginalFilename(originalName: string): string {
   const safeOriginalName = path.basename(originalName);
-  if (!safeOriginalName || safeOriginalName !== originalName) {
+  if (
+    !safeOriginalName
+    || safeOriginalName === '.'
+    || safeOriginalName === '..'
+    || safeOriginalName !== originalName
+  ) {
     throw new Error('Invalid attachment filename');
   }
   return safeOriginalName;
@@ -227,8 +232,15 @@ function validateOriginalFilename(originalName: string): string {
 
 function resolveTemporaryUploadPath(filePath: string, tempRoot: string = TEMP_UPLOAD_ROOT): string {
   const resolvedRoot = path.resolve(tempRoot);
-  const safePath = path.join(resolvedRoot, path.basename(filePath));
-  if (path.resolve(filePath) !== safePath) {
+  const safeFilename = path.basename(filePath);
+  const safePath = path.join(resolvedRoot, safeFilename);
+  if (
+    !safeFilename
+    || safeFilename === '.'
+    || safeFilename === '..'
+    || path.dirname(safePath) !== resolvedRoot
+    || path.resolve(filePath) !== safePath
+  ) {
     throw new Error('Temporary upload path is outside the configured upload directory');
   }
   return safePath;

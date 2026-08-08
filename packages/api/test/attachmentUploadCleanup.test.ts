@@ -106,6 +106,22 @@ test('temporary cleanup refuses paths outside its configured root', async () => 
   }
 });
 
+test('temporary cleanup rejects dot-segment paths that resolve above its root', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'propr-upload-root-'));
+  const uploadRoot = join(root, 'uploads');
+  const markerPath = join(root, 'marker');
+  writeFileSync(markerPath, 'keep');
+  try {
+    await assert.rejects(
+      AttachmentService.removeTemporaryUpload(join(uploadRoot, '..'), uploadRoot),
+      /outside the configured upload directory/,
+    );
+    assert.equal(existsSync(markerPath), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('attachment processing rejects path-like draft IDs and still cleans its temp file', async () => {
   const root = mkdtempSync(join(tmpdir(), 'propr-upload-cleanup-'));
   const tempPath = join(root, 'upload');
