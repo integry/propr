@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { db } from '@propr/core';
 import type { FlatRequest } from '../requestTypes.js';
+import { trimPathSlashes } from './summaryPathUtils.js';
 
 interface SummaryPathParams {
   owner: string;
@@ -48,7 +49,7 @@ async function getDirectoryTree(req: Request<SummaryPathParams>, res: Response):
   const { owner, repo } = req.params;
   const pathParam = req.params.path?.join('/') ?? '';
   const repository = `${owner}/${repo}`;
-  const basePath = pathParam ? pathParam.replace(/^\/+|\/+$/g, '') : '';
+  const basePath = trimPathSlashes(pathParam);
   const repoPrefix = getRepositoryPrefix(owner, repo);
   // Get branch from query parameter or default to HEAD
   const branch = (req.query.branch as string) || 'HEAD';
@@ -147,7 +148,7 @@ async function getPathSummary(req: Request<SummaryPathParams>, res: Response): P
   const { owner, repo } = req.params;
   const pathParam = req.params.path?.join('/') ?? '';
   const repository = `${owner}/${repo}`;
-  const filePath = pathParam.replace(/^\/+|\/+$/g, '');
+  const filePath = trimPathSlashes(pathParam);
   const repoPrefix = getRepositoryPrefix(owner, repo);
   // Get branch from query parameter or default to HEAD
   const branch = (req.query.branch as string) || 'HEAD';

@@ -72,7 +72,7 @@ export interface UltrafixCommandMeta {
 
 export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta | SwitchCommandMeta | UseCommandMeta | UltrafixCommandMeta;
 
-const SLASH_COMMAND_REGEX = /^\/(?<cmd>review|fix|merge|switch|use|ultrafix)(?:[\s\t]+(?<rest>.*))?[\r]?$/;
+const SLASH_COMMANDS = new Set<SlashCommandName>(['review', 'fix', 'merge', 'switch', 'use', 'ultrafix']);
 
 /**
  * Parse a PR comment body for a slash command.
@@ -90,11 +90,14 @@ export function parseSlashCommand(body: string | undefined | null): ParsedSlashC
 
     if (!firstLineTrimmed.startsWith('/')) return null;
 
-    const match = firstLineTrimmed.match(SLASH_COMMAND_REGEX);
-    if (!match?.groups) return null;
+    const separatorOffset = firstLineTrimmed.slice(1).search(/\s/);
+    const separatorIndex = separatorOffset === -1 ? -1 : separatorOffset + 1;
+    const commandText = firstLineTrimmed.slice(1, separatorIndex === -1 ? undefined : separatorIndex);
+    if (!SLASH_COMMANDS.has(commandText as SlashCommandName)) return null;
 
-    const command = match.groups.cmd as SlashCommandName;
-    const argsStr = match.groups.rest?.trim() ?? '';
+    const command = commandText as SlashCommandName;
+    const argsStr = separatorIndex === -1 ? '' : firstLineTrimmed.slice(separatorIndex).trim();
+    if (/[\r\u2028\u2029]/.test(argsStr)) return null;
     const args = argsStr ? argsStr.split(/\s+/) : [];
     const rest = firstNewline === -1 ? '' : body.substring(firstNewline + 1).trim();
 

@@ -109,7 +109,16 @@ export function isSuccessfulVibeResult(exitCode: number | null, parsedOutput: Re
 }
 
 export function sanitizeDockerNamePart(value: string | undefined, fallback: string): string {
-    const sanitized = value?.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').replace(/[^a-zA-Z0-9]+$/, '');
+    const replaced = value?.replace(/[^a-zA-Z0-9_.-]/g, '-') ?? '';
+    let start = 0;
+    let end = replaced.length;
+    const isAlphaNumeric = (char: string): boolean => {
+        const code = char.charCodeAt(0);
+        return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    };
+    while (start < end && !isAlphaNumeric(replaced[start])) start++;
+    while (end > start && !isAlphaNumeric(replaced[end - 1])) end--;
+    const sanitized = replaced.slice(start, end);
     return sanitized || fallback;
 }
 
