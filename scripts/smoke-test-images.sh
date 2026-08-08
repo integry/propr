@@ -199,8 +199,10 @@ check_page_assets() {
   local -a assets=()
   html=$(curl -fsS --max-time 5 "$base_url")
   mapfile -t assets < <(
-    grep -oE "(src|href)=(\"[^\"]+\"|'[^']+'|[^[:space:]>]+)" <<< "$html" \
-      | sed -E "s/^[^=]+=['\"]?([^'\"]+)['\"]?$/\1/" \
+    grep -oE "(src|href)=(\"[^\"]+\"|'[^']+'|[^[:space:]>\"']+)" <<< "$html" \
+      | sed -E -e "s/^[^=]+=\"([^\"]+)\"$/\1/" \
+        -e "s/^[^=]+='([^']+)'$/\1/" \
+        -e "s/^[^=]+=([^[:space:]>\"']+)$/\1/" \
       | grep -E '^/[^/]' \
       | sort -u
   )
