@@ -1,4 +1,4 @@
-import { rateLimit, type RateLimitRequestHandler } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit, type RateLimitRequestHandler } from 'express-rate-limit';
 
 interface RateLimitEnvironment {
   [key: string]: string | undefined;
@@ -62,6 +62,24 @@ export function createRequestRateLimiter(policy: RequestRateLimitPolicy): RateLi
     identifier: policy.identifier,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
+    keyGenerator: request => {
+      const socketAddress = request.socket.remoteAddress;
+      const trustProxySetting: unknown = request.app.get('trust proxy');
+      const hasExplicitProxyTrust = typeof trustProxySetting === 'string'
+        || Array.isArray(trustProxySetting)
+        || typeof trustProxySetting === 'function';
+
+      // Boolean and hop-count proxy settings do not identify a trusted peer.
+      // Express only populates request.ips when its trust rule accepts the
+      // immediate socket peer and a forwarded address is present.
+      const clientAddress = hasExplicitProxyTrust && request.ips.length > 0
+        ? request.ip
+        : socketAddress;
+
+      // A missing socket address must share one fail-closed bucket rather than
+      // falling back to a client-controlled forwarding header.
+      return ipKeyGenerator(clientAddress ?? 'unknown');
+    },
     skip: request => request.method === 'OPTIONS',
     message: {
       code: 'RATE_LIMIT_EXCEEDED',

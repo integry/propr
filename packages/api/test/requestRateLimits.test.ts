@@ -6,8 +6,12 @@ import {
   resolveRequestRateLimitPolicies,
 } from '../requestRateLimits.js';
 
-async function startTestApp(limit = 2): Promise<{ origin: string; close: () => Promise<void> }> {
+async function startTestApp(
+  limit = 2,
+  trustProxy?: number | string | string[],
+): Promise<{ origin: string; close: () => Promise<void> }> {
   const app = express();
+  if (trustProxy !== undefined) app.set('trust proxy', trustProxy);
   app.use(createRequestRateLimiter({ identifier: 'test', limit, windowMs: 60_000 }));
   app.all('/resource', (_request, response) => response.json({ ok: true }));
   const server = app.listen(0, '127.0.0.1');
@@ -50,6 +54,44 @@ test('does not charge CORS preflight requests against the quota', async () => {
   assert.equal((await fetch(`${app.origin}/resource`, { method: 'OPTIONS' })).status, 200);
   assert.equal((await fetch(`${app.origin}/resource`)).status, 200);
   assert.equal((await fetch(`${app.origin}/resource`)).status, 429);
+});
+
+test('does not let direct clients rotate quota buckets with X-Forwarded-For', async () => {
+  const app = await startTestApp(2, 1);
+  openServers.push(app.close);
+
+  const first = await fetch(`${app.origin}/resource`, {
+    headers: { 'X-Forwarded-For': '192.0.2.1' },
+  });
+  const second = await fetch(`${app.origin}/resource`, {
+    headers: { 'X-Forwarded-For': '192.0.2.2' },
+  });
+  const limited = await fetch(`${app.origin}/resource`, {
+    headers: { 'X-Forwarded-For': '192.0.2.3' },
+  });
+
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(limited.status, 429);
+});
+
+test('uses forwarded client addresses from an explicitly trusted proxy', async () => {
+  const app = await startTestApp(1, '127.0.0.1');
+  openServers.push(app.close);
+
+  const firstClient = await fetch(`${app.origin}/resource`, {
+    headers: { 'X-Forwarded-For': '192.0.2.1' },
+  });
+  const secondClient = await fetch(`${app.origin}/resource`, {
+    headers: { 'X-Forwarded-For': '192.0.2.2' },
+  });
+  const limited = await fetch(`${app.origin}/resource`, {
+    headers: { 'X-Forwarded-For': '192.0.2.2' },
+  });
+
+  assert.equal(firstClient.status, 200);
+  assert.equal(secondClient.status, 200);
+  assert.equal(limited.status, 429);
 });
 
 test('resolves secure defaults and explicit positive-integer overrides', () => {
