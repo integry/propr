@@ -56,6 +56,10 @@ import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import {
+  startConfigReloadSubscription,
+  type ConfigReloadSubscription,
+} from './services/configReloadSubscription.js';
+import {
   assertNoDuplicateRoutes,
   createManagementRouteEntries,
   createMemberCatalogRouteEntries,
@@ -173,6 +177,7 @@ setupAuth(app, demoMode);
 let redisClient: RedisClientType;
 let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
+let configReloadSubscription: ConfigReloadSubscription | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -386,7 +391,10 @@ async function start(): Promise<void> {
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
-      try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+      configReloadSubscription = await startConfigReloadSubscription(redisClient, loadSettingsFromConfig);
+      // Subscribe first, then enqueue the initial load through the same serial
+      // chain so no settings update can race with the startup snapshot.
+      await configReloadSubscription.reload();
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
         if (removed > 0) console.log(`Removed ${removed} orphaned agent login container(s)`);
@@ -446,6 +454,7 @@ async function start(): Promise<void> {
       ];
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }
