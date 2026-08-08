@@ -158,7 +158,7 @@ try {
 app.use(cors({ origin: validateCorsOrigin, credentials: true }));
 
 app.use('/api', createApiRequestRateLimiter());
-app.use('/webhook', createWebhookRequestRateLimiter());
+setupWebhookRoute();
 
 // Prevent caching of API responses to avoid stale CORS issues
 app.use('/api', (_req, res, next) => {
@@ -168,7 +168,6 @@ app.use('/api', (_req, res, next) => {
   next();
 });
 
-app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '1mb' }));
 
 // Register demo read-only protection before routes so future mutating /api routes,
@@ -297,13 +296,11 @@ function setupRoutes(): void {
   assertNoDuplicateRoutes(routes);
   registerRouteEntries(app, routes);
   app.use('/api/agents', agentRoutes.router);
-
-  setupWebhookRoute();
 }
 
 function setupWebhookRoute(): void {
   if (demoMode) {
-    app.post('/webhook', (_req: Request, res: Response) => {
+    app.post('/webhook', createWebhookRequestRateLimiter(), express.raw({ type: 'application/json' }), (_req: Request, res: Response) => {
       res.status(403).send('Webhook processing is disabled in demo mode.');
     });
     console.log('[webhook] Webhook endpoint disabled in demo mode');
@@ -352,7 +349,7 @@ function setupWebhookRoute(): void {
   // via initializeWebhookHandler in start(), in this same API process — so a
   // direct_webhook delivery accepted here is processed in-process, not forwarded
   // to the daemon. The daemon's own handler registration is for the routing path.
-  app.post('/webhook', async (req: Request, res: Response) => {
+  app.post('/webhook', createWebhookRequestRateLimiter(), express.raw({ type: 'application/json' }), async (req: Request, res: Response) => {
     const correlationId = generateCorrelationId();
     try {
       await handleWebhookRequest(req, res, {
