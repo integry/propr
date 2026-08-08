@@ -112,6 +112,26 @@ export class SocketSubscriptionManager {
     }
   }
 
+  async canAccessRepositoryIndexing(socket: Socket, repository: string): Promise<boolean> {
+    if (!this.canAccessAllRepositoryIndexing(socket)) return false;
+    try {
+      const queueDependencies = this.dependencies.getQueueDependencies();
+      if (!queueDependencies) return false;
+      const existingRepository = await queueDependencies.db('repositories')
+        .select('full_name')
+        .where({ full_name: repository })
+        .first();
+      return Boolean(existingRepository);
+    } catch (error) {
+      console.error(`[SocketService] Failed to authorize indexing subscription for ${repository}:`, error);
+      return false;
+    }
+  }
+
+  private canAccessAllRepositoryIndexing(socket: Socket): boolean {
+    return this.getPrincipal(socket).authorization.permissions.includes('instance.manage_settings');
+  }
+
   private async join(
     socket: Socket,
     event: string,
@@ -187,14 +207,24 @@ export class SocketSubscriptionManager {
     socket.on('subscribe:indexing', async (rawRepository: unknown) => {
       const repository = normalizeRepositorySubscription(rawRepository);
       if (!repository) return this.reject(socket, 'subscribe:indexing', 'INVALID_RESOURCE');
-      await this.join(socket, 'subscribe:indexing', `indexing:${repository}`, () => true);
+      await this.join(
+        socket,
+        'subscribe:indexing',
+        `indexing:${repository}`,
+        () => this.canAccessRepositoryIndexing(socket, repository),
+      );
     });
     socket.on('unsubscribe:indexing', async (rawRepository: unknown) => {
       const repository = normalizeRepositorySubscription(rawRepository);
       if (repository) await socket.leave(`indexing:${repository}`);
     });
     socket.on('subscribe:indexing:updates', async () => {
-      await this.join(socket, 'subscribe:indexing:updates', 'indexing:updates', () => true);
+      await this.join(
+        socket,
+        'subscribe:indexing:updates',
+        'indexing:updates',
+        () => this.canAccessAllRepositoryIndexing(socket),
+      );
     });
     socket.on('unsubscribe:indexing:updates', async () => {
       await socket.leave('indexing:updates');
