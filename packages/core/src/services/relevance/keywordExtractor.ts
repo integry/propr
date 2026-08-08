@@ -60,6 +60,14 @@ function trimKeywordDelimiters(value: string): string {
   return value.slice(start, end);
 }
 
+function trimPathBoundarySlashes(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '/') start++;
+  while (end > start && value[end - 1] === '/') end--;
+  return value.slice(start, end);
+}
+
 function isFileTokenCharacter(char: string): boolean {
   const code = char.charCodeAt(0);
   return (code >= 48 && code <= 57)
@@ -85,7 +93,7 @@ function fileLikeTokens(prompt: string): string[] {
     const isTokenCharacter = index < prompt.length && isFileTokenCharacter(prompt[index]);
     if (isTokenCharacter && start === -1) start = index;
     if (!isTokenCharacter && start !== -1) {
-      const token = trimKeywordDelimiters(prompt.slice(start, index));
+      const token = trimPathBoundarySlashes(trimKeywordDelimiters(prompt.slice(start, index)));
       if (isFileLikeToken(token)) tokens.push(token);
       start = -1;
     }

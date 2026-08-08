@@ -25,9 +25,19 @@ test('keyword extraction handles long delimiter and path-like runs', () => {
   assert.ok(keywords.every(keyword => keyword.length <= 512));
 });
 
+test('keyword extraction preserves paths with boundary slashes', () => {
+  const keywords = extractKeywords('Inspect /src/auth/login.ts and src/auth/');
+  assert.ok(keywords.includes('src/auth/login.ts'));
+  assert.ok(keywords.includes('src/auth'));
+});
+
 test('sentence truncation consumes long punctuation runs in one pass', () => {
   const firstSentence = `Ready${'!'.repeat(REPETITIONS)}`;
   assert.equal(truncateToSentences(`${firstSentence} Next? Ignored.`), `${firstSentence} Next?`);
+});
+
+test('sentence truncation preserves punctuation-only separator matches', () => {
+  assert.equal(truncateToSentences('Hello. ... World?'), 'Hello. ...');
 });
 
 test('Docker-name sanitization trims long invalid boundary runs', () => {

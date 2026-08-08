@@ -11,7 +11,7 @@ export function truncateToSentences(text: string): string {
       sentenceEnd++;
     }
     const sentence = trimmed.slice(sentenceStart, sentenceEnd).trim();
-    if ([...sentence].some(char => char !== '.' && char !== '!' && char !== '?')) sentences.push(sentence);
+    if (index > sentenceStart) sentences.push(sentence);
     sentenceStart = sentenceEnd;
     index = sentenceEnd - 1;
   }
