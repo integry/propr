@@ -1,4 +1,7 @@
 import type { AgentType } from '../../agents/types.js';
+import { buildAgentContainerResourceArgs } from '../../agents/agentContainerResources.js';
+
+export { buildAgentContainerResourceArgs };
 
 const ENTRYPOINT_PATHS: Record<AgentType, string> = {
     claude: '/home/node/claude-entrypoint.sh',
@@ -72,6 +75,7 @@ export function wrapDockerRunArgsWithRepoSetup(
     const afterImage = dockerArgs.slice(imageIndex + 1);
     const cacheDir = `${DEFAULT_CACHE_ROOT}/${agentType}`;
     const gitIdentity = GIT_IDENTITIES[agentType];
+    const resourceArgs = buildAgentContainerResourceArgs();
     const setupEnv = [
         '-e', `PROPR_AGENT_TYPE=${agentType}`,
         '-e', `PROPR_WORKSPACE=${WORKSPACE_PATH}`,
@@ -82,8 +86,8 @@ export function wrapDockerRunArgsWithRepoSetup(
         '-e', `GIT_COMMITTER_EMAIL=${gitIdentity.email}`
     ];
     const beforeImageWithSetupEnv = beforeImage[0] === 'run'
-        ? [beforeImage[0], ...setupEnv, ...beforeImage.slice(1)]
-        : [...setupEnv, ...beforeImage];
+        ? [beforeImage[0], ...resourceArgs, ...setupEnv, ...beforeImage.slice(1)]
+        : [...resourceArgs, ...setupEnv, ...beforeImage];
 
     return [
         ...beforeImageWithSetupEnv,
