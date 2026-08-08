@@ -28,6 +28,7 @@ import {
 import {
   INSTANCE_OPERATIONAL_ROOM,
   SocketSubscriptionManager,
+  taskRoom,
   userRoom,
 } from './socketSubscriptions.js';
 
@@ -112,6 +113,7 @@ export class SocketService {
   private queueDeps: QueueDependencies | null = null;
   private taskRevisions = new Map<string, TaskRevisionCacheEntry>();
   private taskUpdateTails = new Map<string, Promise<void>>();
+  private draftUpdateTails = new Map<string, Promise<void>>();
 
   constructor(
     httpServer: HttpServer,
@@ -213,9 +215,7 @@ export class SocketService {
         this.enqueueTaskUpdate(payload as TaskUpdatePayload);
         break;
       case DRAFT_UPDATE:
-        void this.handleDraftUpdate(payload as DraftUpdatePayload).catch(error => {
-          console.error('[SocketService] Failed to broadcast draft update:', error);
-        });
+        this.enqueueDraftUpdate(payload as DraftUpdatePayload);
         break;
       case INDEXING_UPDATE:
         this.handleIndexingUpdate(payload as IndexingUpdatePayload);
@@ -245,6 +245,22 @@ export class SocketService {
         console.error(`[SocketService] Failed to process task update for ${payload.taskId}:`, error);
       });
     this.taskUpdateTails.set(payload.taskId, current);
+  }
+
+  private enqueueDraftUpdate(payload: DraftUpdatePayload): void {
+    const previous = this.draftUpdateTails.get(payload.draftId) ?? Promise.resolve();
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.handleDraftUpdate(payload))
+      .finally(() => {
+        if (this.draftUpdateTails.get(payload.draftId) === current) {
+          this.draftUpdateTails.delete(payload.draftId);
+        }
+      })
+      .catch(error => {
+        console.error(`[SocketService] Failed to process draft update for ${payload.draftId}:`, error);
+      });
+    this.draftUpdateTails.set(payload.draftId, current);
   }
 
   private async handleTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
@@ -290,7 +306,7 @@ export class SocketService {
     }
     this.io
       .to(INSTANCE_OPERATIONAL_ROOM)
-      .to(`task:${payload.taskId}`)
+      .to(taskRoom(payload.taskId))
       .emit(TASK_UPDATE, payload);
     console.log(`[SocketService] Broadcasted ${TASK_UPDATE} for task ${payload.taskId}`);
   }

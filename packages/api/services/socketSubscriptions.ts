@@ -56,6 +56,10 @@ export function userRoom(userId: string): string {
   return `${USER_ROOM_PREFIX}${userId}`;
 }
 
+export function taskRoom(taskId: string): string {
+  return `task:${encodeURIComponent(taskId)}`;
+}
+
 export class SocketSubscriptionManager {
   private readonly pendingSubscriptions = new WeakMap<Socket, Map<string, PendingSubscriptionState>>();
 
@@ -216,7 +220,7 @@ export class SocketSubscriptionManager {
       if (!taskId) return this.reject(socket, 'subscribe:task', 'INVALID_RESOURCE');
       if (!await this.join(socket, {
         event: 'subscribe:task',
-        room: `task:${taskId}`,
+        room: taskRoom(taskId),
         authorize: () => this.taskExists(taskId),
       })) return;
       console.log(`[SocketService] Client ${socket.id} subscribed to task:${taskId}`);
@@ -225,7 +229,7 @@ export class SocketSubscriptionManager {
     socket.on('unsubscribe:task', async (rawTaskId: unknown) => {
       const taskId = normalizeSocketResourceId(rawTaskId);
       if (!taskId) return;
-      const room = `task:${taskId}`;
+      const room = taskRoom(taskId);
       this.cancelPendingSubscription(socket, room);
       await socket.leave(room);
     });
