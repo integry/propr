@@ -57,6 +57,7 @@ import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
+import { createApiRequestRateLimiter, createWebhookRequestRateLimiter } from './requestRateLimits.js';
 import {
   startConfigReloadSubscription,
   type ConfigReloadSubscription,
@@ -155,10 +156,10 @@ try {
   process.exit(1);
 }
 
-app.use(cors({
-  origin: validateCorsOrigin,
-  credentials: true
-}));
+app.use(cors({ origin: validateCorsOrigin, credentials: true }));
+
+app.use('/api', createApiRequestRateLimiter());
+app.use('/webhook', createWebhookRequestRateLimiter());
 
 // Prevent caching of API responses to avoid stale CORS issues
 app.use('/api', (_req, res, next) => {

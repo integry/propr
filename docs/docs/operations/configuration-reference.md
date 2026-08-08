@@ -31,6 +31,9 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `API_PUBLIC_URL` | `http://localhost:4000` when unset | Public URL the API is reached at (auth redirects, attachment links, cookie security). Derived to the `t-<id>.propr.dev` host in tunnel mode. | Custom deployments; derived in tunnel mode. |
 | `COOKIE_DOMAIN` | Unset | Session cookie domain. Leave unset — including for tunnel proxy sessions, which run host-only on a single `t-<id>.propr.dev` host. | Custom multi-subdomain deployments only. |
 | `AUTH_REDIRECT_ALLOWED_HOSTS` | Unset | Comma-separated extra redirect hosts for auth preview flows. Entries are exact-match unless prefixed with `.` or `*.` for trusted parent domains. | Preview auth flows. |
+| `PROPR_API_RATE_LIMIT_MAX` / `PROPR_API_RATE_LIMIT_WINDOW_MS` | `600` / `60000` | Per-client quota and window (milliseconds) for all `/api` requests. | Optional tuning. |
+| `PROPR_AUTH_RATE_LIMIT_MAX` / `PROPR_AUTH_RATE_LIMIT_WINDOW_MS` | `30` / `900000` | Additional, tighter per-client quota for OAuth and session endpoints. | Optional tuning. |
+| `PROPR_WEBHOOK_RATE_LIMIT_MAX` / `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS` | `300` / `60000` | Per-client quota for direct webhook requests, applied before body parsing and signature verification. | Optional tuning in direct-webhook mode. |
 | `LOG_LEVEL` | `info` | Log verbosity across services. | Optional. |
 | `NODE_ENV` | `development` | Node environment; use `production` on servers. | Optional. |
 | `DB_FILENAME` | `./data/propr.sqlite` | Path to the SQLite database file (created if it doesn't exist). | Optional. |

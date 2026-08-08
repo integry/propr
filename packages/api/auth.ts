@@ -11,6 +11,7 @@ import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenIfNeeded
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
+import { createAuthRequestRateLimiter } from './requestRateLimits.js';
 import {
     authenticatedUserResponse,
     resolveAuthorization,
@@ -138,6 +139,10 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         if (sessionSecretError) throw new Error(sessionSecretError);
     }
     const engineMiddleware: RequestHandler[] = [];
+
+    // Keep unauthenticated OAuth/session endpoints bounded independently from
+    // the general API quota. Register this before session and Passport work.
+    app.use('/api/auth', createAuthRequestRateLimiter());
 
     if (!demoModeAtStartup) {
         // Create Redis client for session store
