@@ -15,6 +15,19 @@ interface TestAppOptions {
   secureSession?: boolean;
 }
 
+async function listenTestApp(app: ReturnType<typeof express>): Promise<{ origin: string; close: () => Promise<void> }> {
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+    }),
+  };
+}
+
 async function startTestApp(
   limit = 2,
   options: TestAppOptions = {},
@@ -40,16 +53,7 @@ async function startTestApp(
     }));
   }
   app.all('/resource', (_request, response) => response.json({ ok: true }));
-  const server = app.listen(0, '127.0.0.1');
-  await new Promise<void>(resolve => server.once('listening', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address === 'object');
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise<void>((resolve, reject) => {
-      server.close(error => error ? reject(error) : resolve());
-    }),
-  };
+  return listenTestApp(app);
 }
 
 const openServers: Array<() => Promise<void>> = [];
@@ -80,6 +84,39 @@ test('does not charge CORS preflight requests against the quota', async () => {
   assert.equal((await fetch(`${app.origin}/resource`, { method: 'OPTIONS' })).status, 200);
   assert.equal((await fetch(`${app.origin}/resource`)).status, 200);
   assert.equal((await fetch(`${app.origin}/resource`)).status, 429);
+});
+
+test('route-level webhook limiting preserves alternate-case raw bodies and rejects excess requests before parsing', async () => {
+  const app = express();
+  let bodyParserRuns = 0;
+  let rawBodySeen = false;
+  app.post(
+    '/webhook',
+    createRequestRateLimiter({ identifier: 'webhook-test', limit: 1, windowMs: 60_000 }),
+    (_request, _response, next) => {
+      bodyParserRuns++;
+      next();
+    },
+    express.raw({ type: 'application/json' }),
+    (request, response) => {
+      rawBodySeen = Buffer.isBuffer(request.body);
+      response.sendStatus(204);
+    },
+  );
+  app.use(express.json());
+  const server = await listenTestApp(app);
+  openServers.push(server.close);
+
+  const request = (): Promise<Response> => fetch(`${server.origin}/WEBHOOK`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{"event":"test"}',
+  });
+
+  assert.equal((await request()).status, 204);
+  assert.equal((await request()).status, 429);
+  assert.equal(bodyParserRuns, 1);
+  assert.equal(rawBodySeen, true);
 });
 
 test('does not let an unconfigured private peer rotate quota buckets with X-Forwarded-For', async () => {
