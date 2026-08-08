@@ -4,6 +4,7 @@ import path from 'path';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { createHooklessGit } from './hooklessGit.js';
+import { resolveRepositoryWorktreePath } from './repositoryPaths.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
@@ -349,5 +350,5 @@ export async function setupWorktreeRemote(worktreeGit: SimpleGit, parentGit: Sim
 }
 
 export function getWorktreePath(owner: string, repoName: string, worktreeDirName: string): string {
-    return path.join(WORKTREES_BASE_PATH, owner, repoName, worktreeDirName);
+    return resolveRepositoryWorktreePath(WORKTREES_BASE_PATH, owner, repoName, worktreeDirName);
 }

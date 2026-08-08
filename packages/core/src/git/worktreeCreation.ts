@@ -12,6 +12,9 @@ import {
     getWorktreePath
 } from './worktreeOperations.js';
 import { createHooklessGit } from './hooklessGit.js';
+import { assertRepositoryClonePath } from './repositoryPaths.js';
+
+const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
 
 async function removeWorktreeForBranch(git: SimpleGit, worktreeLines: string[], branchName: string): Promise<void> {
     for (let i = 0; i < worktreeLines.length; i++) {
@@ -200,6 +203,7 @@ interface WorktreeResult {
 
 export async function createWorktreeFromExistingBranch(localRepoPath: string, branchName: string, options: CreateWorktreeFromExistingBranchOptions): Promise<WorktreeResult> {
     const { worktreeDirName, owner, repoName } = options;
+    assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, owner, repoName);
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
 
     try {
