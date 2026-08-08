@@ -1426,6 +1426,23 @@ export function validateEnv(cfg) {
         errors.push(`PROPR_NETWORK ("${cfg.network}") is not a valid Docker network name — use letters, digits, '_', '.' or '-', starting with a letter or digit.`);
     }
 
+    // `uniquelocal` is intentionally broad: proxy-addr expands it to every
+    // private/link-local range. It is safe for the documented host-nginx path
+    // only because Docker publishes the API on host loopback, leaving the host
+    // bridge gateway as the sole reachable private peer. Refuse combinations
+    // that would expose this trust boundary to LAN or unrelated Docker peers.
+    const trustedProxyPeers = String(cfg.trustedProxyPeers ?? '')
+        .split(',')
+        .map((peer) => peer.trim().toLowerCase())
+        .filter(Boolean);
+    const apiIsLoopbackBound = /^(?:127\.0\.0\.1|\[::1\]):\d+$/.test(String(cfg.apiPort ?? '').trim());
+    if (trustedProxyPeers.includes('uniquelocal') && !apiIsLoopbackBound) {
+        errors.push(
+            'PROPR_TRUSTED_PROXY_PEERS=uniquelocal requires API_PORT to be bound to host loopback '
+            + '(for example, API_PORT=127.0.0.1:4000); otherwise private peers can spoof forwarded client addresses.'
+        );
+    }
+
     if (!cfg.envFileHost) errors.push('env file path is not set (PROPR_ENV_FILE / <root>/.env)');
     if (!cfg.hostData) errors.push('data dir is not set (PROPR_DATA_DIR)');
     if (!cfg.hostLogs) errors.push('logs dir is not set (PROPR_LOGS_DIR)');

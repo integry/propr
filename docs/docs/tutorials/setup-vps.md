@@ -333,7 +333,8 @@ API_PUBLIC_URL=https://propr.example.com
 GH_OAUTH_CALLBACK_URL=https://propr.example.com/api/auth/github/callback
 
 # nginx reaches the container through the launcher's private Docker bridge.
-# This trusts that immediate hop so forwarded client IP/HTTPS state is honored.
+# uniquelocal is safe here only because API_PORT is loopback-bound above; the
+# launcher rejects this proxy setting if the API could accept other private peers.
 PROPR_TRUSTED_PROXY_PEERS=uniquelocal
 
 # Browser sign-in (GitHub OAuth App + signed session cookies). Without these the

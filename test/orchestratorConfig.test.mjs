@@ -733,3 +733,32 @@ test('validateEnv rejects stack names that are not valid Docker names', () => {
   assert.match(errors, /PROPR_STACK/);
   assert.match(errors, /PROPR_NETWORK/);
 });
+
+test('validateEnv permits broad private proxy trust only behind a loopback API bind', () => {
+  const base = {
+    PROPR_TRUSTED_PROXY_PEERS: 'uniquelocal',
+  };
+
+  const exposed = resolveConfig({ ...base, API_PORT: '4000' }, { manifestPath });
+  assert.match(
+    validateEnv(exposed).errors.join('\n'),
+    /PROPR_TRUSTED_PROXY_PEERS=uniquelocal requires API_PORT to be bound to host loopback/,
+  );
+
+  for (const apiPort of ['127.0.0.1:4000', '[::1]:4000']) {
+    const loopbackOnly = resolveConfig({ ...base, API_PORT: apiPort }, { manifestPath });
+    assert.doesNotMatch(
+      validateEnv(loopbackOnly).errors.join('\n'),
+      /PROPR_TRUSTED_PROXY_PEERS=uniquelocal/,
+    );
+  }
+
+  const exactPeer = resolveConfig({
+    PROPR_TRUSTED_PROXY_PEERS: '172.20.0.1/32',
+    API_PORT: '4000',
+  }, { manifestPath });
+  assert.doesNotMatch(
+    validateEnv(exactPeer).errors.join('\n'),
+    /PROPR_TRUSTED_PROXY_PEERS=uniquelocal/,
+  );
+});
