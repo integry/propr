@@ -48,7 +48,13 @@ export async function acquirePRProcessingLock(
     ttlSeconds = PR_PROCESSING_LOCK_TTL_SECONDS,
 ): Promise<boolean> {
     const result = await redisClient.set(lockKey, lockToken, 'EX', ttlSeconds, 'NX');
-    return result === 'OK';
+    if (result === 'OK') return true;
+
+    // A worker can exit after acquiring the lease but before releasing it.
+    // BullMQ redelivery of that same logical execution must be able to resume
+    // immediately with its persisted token, while a different token remains
+    // excluded even when it shares the same correlation ID.
+    return renewPRProcessingLock(redisClient, lockKey, lockToken, ttlSeconds);
 }
 
 export async function renewPRProcessingLock(

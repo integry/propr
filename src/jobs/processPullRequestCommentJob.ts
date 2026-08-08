@@ -405,7 +405,12 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
-    const lockToken = createPRProcessingLockToken(correlationId);
+    let lockToken = job.data.prProcessingLockToken;
+    if (!lockToken) {
+        lockToken = createPRProcessingLockToken(correlationId);
+        job.data.prProcessingLockToken = lockToken;
+        await job.updateData(job.data);
+    }
 
     const lockAcquired = await acquirePRLock({ lockKey, lockToken, correlatedLogger, job });
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
