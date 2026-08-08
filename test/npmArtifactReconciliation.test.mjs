@@ -14,7 +14,7 @@ import {
 
 const fixtures = [];
 
-function tarEntry(name, content) {
+function tarEntry(name, content, type = "0") {
   const body = Buffer.from(content);
   const header = Buffer.alloc(512);
   header.write(name, 0, 100, "utf8");
@@ -24,7 +24,7 @@ function tarEntry(name, content) {
   header.write(`${body.length.toString(8).padStart(11, "0")}\0`, 124, 12, "ascii");
   header.write("00000000000\0", 136, 12, "ascii");
   header.fill(0x20, 148, 156);
-  header.write("0", 156, 1, "ascii");
+  header.write(type, 156, 1, "ascii");
   header.write("ustar\0", 257, 6, "ascii");
   header.write("00", 263, 2, "ascii");
   const checksum = [...header].reduce((sum, byte) => sum + byte, 0);
@@ -33,16 +33,20 @@ function tarEntry(name, content) {
   return Buffer.concat([header, body, padding]);
 }
 
-function createArtifact(manifest = { name: "propr-cli", version: "1.2.3" }) {
+function createTarArtifact(tar) {
   const root = mkdtempSync(join(tmpdir(), "propr-npm-artifact-"));
   fixtures.push(root);
-  const compressed = gzipSync(Buffer.concat([
-    tarEntry("package/package.json", JSON.stringify(manifest)),
-    Buffer.alloc(1024),
-  ]));
+  const compressed = gzipSync(tar);
   const artifactPath = join(root, "package.tgz");
   writeFileSync(artifactPath, compressed);
   return { artifactPath, compressed };
+}
+
+function createArtifact(manifest = { name: "propr-cli", version: "1.2.3" }) {
+  return createTarArtifact(Buffer.concat([
+    tarEntry("package/package.json", JSON.stringify(manifest)),
+    Buffer.alloc(1024),
+  ]));
 }
 
 afterEach(() => {
@@ -89,5 +93,43 @@ describe("npm release artifact reconciliation", () => {
   test("rejects malformed, oversized-identity, and non-release manifests", () => {
     assert.throws(() => inspectNpmArtifact(createArtifact({ name: "Bad Name", version: "1.2.3" }).artifactPath), /invalid package name/);
     assert.throws(() => inspectNpmArtifact(createArtifact({ name: "propr-cli", version: "1.2.3-beta.1" }).artifactPath), /invalid release version/);
+  });
+
+  test("rejects duplicate package manifests", () => {
+    const manifest = JSON.stringify({ name: "propr-cli", version: "1.2.3" });
+    const { artifactPath } = createTarArtifact(Buffer.concat([
+      tarEntry("package/package.json", manifest),
+      tarEntry("package/package.json", manifest),
+      Buffer.alloc(1024),
+    ]));
+
+    assert.throws(() => inspectNpmArtifact(artifactPath), /duplicate package\/package\.json entries/);
+  });
+
+  test("rejects corruption after the package manifest", () => {
+    const trailingEntry = tarEntry("package/README.md", "read me");
+    trailingEntry[0] ^= 1;
+    const { artifactPath } = createTarArtifact(Buffer.concat([
+      tarEntry("package/package.json", JSON.stringify({ name: "propr-cli", version: "1.2.3" })),
+      trailingEntry,
+      Buffer.alloc(1024),
+    ]));
+
+    assert.throws(() => inspectNpmArtifact(artifactPath), /invalid tar header checksum/);
+  });
+
+  test("requires a regular manifest and a complete tar terminator", () => {
+    const manifest = JSON.stringify({ name: "propr-cli", version: "1.2.3" });
+    const nonRegular = createTarArtifact(Buffer.concat([
+      tarEntry("package/package.json", manifest, "2"),
+      Buffer.alloc(1024),
+    ]));
+    const unterminated = createTarArtifact(Buffer.concat([
+      tarEntry("package/package.json", manifest),
+      Buffer.alloc(512),
+    ]));
+
+    assert.throws(() => inspectNpmArtifact(nonRegular.artifactPath), /must be a regular file/);
+    assert.throws(() => inspectNpmArtifact(unterminated.artifactPath), /invalid tar terminator/);
   });
 });

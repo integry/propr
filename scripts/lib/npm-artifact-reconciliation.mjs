@@ -11,36 +11,87 @@ function readTarString(block, start, length) {
   return block.subarray(start, start + length).toString("utf8").replace(/\0.*$/s, "").trim();
 }
 
+function readTarOctal(block, start, length, errorMessage) {
+  const value = block.subarray(start, start + length).toString("ascii").match(/^[ \0]*([0-7]+)[ \0]*$/)?.[1];
+  if (value === undefined) throw new Error(errorMessage);
+  const number = Number.parseInt(value, 8);
+  if (!Number.isSafeInteger(number) || number < 0) throw new Error(errorMessage);
+  return number;
+}
+
 function readTarSize(block) {
-  const value = readTarString(block, 124, 12);
-  if (!/^[0-7]+$/.test(value)) throw new Error("npm artifact contains an invalid tar entry size");
-  const size = Number.parseInt(value, 8);
-  if (!Number.isSafeInteger(size) || size < 0) throw new Error("npm artifact tar entry is too large");
-  return size;
+  return readTarOctal(block, 124, 12, "npm artifact contains an invalid tar entry size");
+}
+
+function validateTarHeaderChecksum(header) {
+  const expected = readTarOctal(header, 148, 8, "npm artifact contains an invalid tar header checksum");
+  let actual = 0;
+  for (let index = 0; index < TAR_BLOCK_BYTES; index += 1) {
+    actual += index >= 148 && index < 156 ? 0x20 : header[index];
+  }
+  if (actual !== expected) throw new Error("npm artifact contains an invalid tar header checksum");
+}
+
+function isZeroBlock(block) {
+  return block.every((byte) => byte === 0);
 }
 
 function readPackageManifest(tarBuffer) {
+  if (tarBuffer.length % TAR_BLOCK_BYTES !== 0) {
+    throw new Error("npm artifact has an invalid tar block boundary");
+  }
+
   let offset = 0;
-  while (offset + TAR_BLOCK_BYTES <= tarBuffer.length) {
+  let manifest;
+  let terminated = false;
+  while (offset < tarBuffer.length) {
     const header = tarBuffer.subarray(offset, offset + TAR_BLOCK_BYTES);
-    if (header.every((byte) => byte === 0)) break;
+    if (isZeroBlock(header)) {
+      const secondTerminator = tarBuffer.subarray(offset + TAR_BLOCK_BYTES, offset + 2 * TAR_BLOCK_BYTES);
+      if (secondTerminator.length !== TAR_BLOCK_BYTES || !isZeroBlock(secondTerminator)) {
+        throw new Error("npm artifact has an invalid tar terminator");
+      }
+      if (!tarBuffer.subarray(offset + 2 * TAR_BLOCK_BYTES).every((byte) => byte === 0)) {
+        throw new Error("npm artifact contains data after the tar terminator");
+      }
+      terminated = true;
+      break;
+    }
+
+    validateTarHeaderChecksum(header);
     const name = readTarString(header, 0, 100);
     const prefix = readTarString(header, 345, 155);
     const entryPath = prefix ? `${prefix}/${name}` : name;
     const size = readTarSize(header);
     const contentStart = offset + TAR_BLOCK_BYTES;
     const contentEnd = contentStart + size;
-    if (contentEnd > tarBuffer.length) throw new Error("npm artifact contains a truncated tar entry");
+    const nextOffset = contentStart + Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
+    if (contentEnd > tarBuffer.length || nextOffset > tarBuffer.length) {
+      throw new Error("npm artifact contains a truncated tar entry");
+    }
+    if (!tarBuffer.subarray(contentEnd, nextOffset).every((byte) => byte === 0)) {
+      throw new Error("npm artifact contains invalid tar entry padding");
+    }
+
     if (entryPath === PACKAGE_MANIFEST_PATH) {
+      if (header[156] !== 0 && header[156] !== 0x30) {
+        throw new Error(`npm artifact ${PACKAGE_MANIFEST_PATH} must be a regular file`);
+      }
+      if (manifest !== undefined) {
+        throw new Error(`npm artifact contains duplicate ${PACKAGE_MANIFEST_PATH} entries`);
+      }
       try {
-        return JSON.parse(tarBuffer.subarray(contentStart, contentEnd).toString("utf8"));
+        manifest = JSON.parse(tarBuffer.subarray(contentStart, contentEnd).toString("utf8"));
       } catch {
         throw new Error("npm artifact package.json is invalid JSON");
       }
     }
-    offset = contentStart + Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
+    offset = nextOffset;
   }
-  throw new Error(`npm artifact is missing ${PACKAGE_MANIFEST_PATH}`);
+
+  if (!terminated) throw new Error("npm artifact is missing a valid tar terminator");
+  if (manifest === undefined) throw new Error(`npm artifact is missing ${PACKAGE_MANIFEST_PATH}`);
+  return manifest;
 }
 
 function isValidPackageName(name) {
