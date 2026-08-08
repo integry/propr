@@ -5,6 +5,7 @@ import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
     type TaskResult, type ResumableTaskInfo, type TaskStateExpectation,
+    type NonTerminalTaskScanResult,
     type TaskStateUpdateResult,
     type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
@@ -16,6 +17,7 @@ import {
     compareAndSetTaskState,
     publishTaskStateTransition,
 } from './workerStateTransition.js';
+import { scanNonTerminalTaskStates } from './workerStateScan.js';
 
 const MAX_ATOMIC_UPDATE_ATTEMPTS = 8;
 const TERMINAL_TASK_STATES = new Set<TaskState>([
@@ -425,6 +427,14 @@ export class WorkerStateManager {
             }
         }
         return processingTasks;
+    }
+
+    /**
+     * Reads one bounded Redis SCAN page for crash recovery without blocking
+     * Redis with KEYS. Callers retain nextCursor between reconciliation runs.
+     */
+    async scanNonTerminalTasks(cursor = '0', count = 100): Promise<NonTerminalTaskScanResult> {
+        return scanNonTerminalTaskStates(this.redis, this.keyPrefix, cursor, count);
     }
 
     /**
