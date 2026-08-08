@@ -45,7 +45,7 @@ import type { GitHubToken } from './githubTypes.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import {
     acquirePRProcessingLock,
-    createPRProcessingLockToken,
+    ensurePRProcessingLockToken,
     releasePRProcessingLock,
     startPRProcessingLockHeartbeat,
 } from './prProcessingLock.js';
@@ -405,12 +405,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
-    let lockToken = job.data.prProcessingLockToken;
-    if (!lockToken) {
-        lockToken = createPRProcessingLockToken(correlationId);
-        job.data.prProcessingLockToken = lockToken;
-        await job.updateData(job.data);
-    }
+    const lockToken = await ensurePRProcessingLockToken(job.data, correlationId, () => job.updateData(job.data));
 
     const lockAcquired = await acquirePRLock({ lockKey, lockToken, correlatedLogger, job });
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };

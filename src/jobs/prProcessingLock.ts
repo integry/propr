@@ -41,6 +41,17 @@ export function createPRProcessingLockToken(correlationId: string): string {
     return `${correlationId}:${randomUUID()}`;
 }
 
+export async function ensurePRProcessingLockToken(
+    data: { prProcessingLockToken?: string },
+    correlationId: string,
+    persist: () => Promise<void>,
+): Promise<string> {
+    if (data.prProcessingLockToken) return data.prProcessingLockToken;
+    data.prProcessingLockToken = createPRProcessingLockToken(correlationId);
+    await persist();
+    return data.prProcessingLockToken;
+}
+
 export async function acquirePRProcessingLock(
     redisClient: PRProcessingLockRedisClient,
     lockKey: string,
