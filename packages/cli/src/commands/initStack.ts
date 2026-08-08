@@ -8,11 +8,16 @@
  */
 
 import { Command } from "commander";
-import { existsSync, copyFileSync, chmodSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
+import { existsSync, chmodSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createConfigManager } from "../config/index.js";
+import {
+  ensurePrivateDirectory,
+  secureExistingPrivateFile,
+  writePrivateFileAtomic,
+} from "../utils/privateFilesystem.js";
 
 export interface DetectedCred {
   envKey: string;
@@ -99,7 +104,21 @@ export interface InitStackResult {
   pendingCredentials: DetectedCred[];
 }
 
-export async function scaffoldStack(options: InitStackOptions = {}): Promise<InitStackResult> {
+export interface InitStackDependencies {
+  persistStackRoot: (rootDir: string) => Promise<void>;
+}
+
+const defaultInitStackDependencies: InitStackDependencies = {
+  persistStackRoot: async rootDir => {
+    const configManager = await createConfigManager();
+    await configManager.setStackRoot(rootDir);
+  },
+};
+
+export async function scaffoldStack(
+  options: InitStackOptions = {},
+  dependencies: InitStackDependencies = defaultInitStackDependencies,
+): Promise<InitStackResult> {
   const rootDir = resolve(options.root ?? process.cwd());
   const envPath = join(rootDir, ".env");
   const result: InitStackResult = {
@@ -118,14 +137,14 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
   // 1. data/logs/repos directories
   for (const sub of ["data", "logs", "repos"]) {
     const dir = join(rootDir, sub);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-      result.dirsCreated.push(sub);
-    }
+    const created = !existsSync(dir);
+    ensurePrivateDirectory(dir);
+    if (created) result.dirsCreated.push(sub);
   }
 
   // 2. .env from .env.example
   if (existsSync(envPath) && !options.force) {
+    secureExistingPrivateFile(envPath);
     result.envSkipped = true;
   } else {
     const example = resolveEnvExample();
@@ -135,17 +154,12 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
       );
     }
     if (options.force && existsSync(envPath)) {
+      secureExistingPrivateFile(envPath);
       const bakPath = `${envPath}.bak`;
-      copyFileSync(envPath, bakPath);
-      try { chmodSync(bakPath, 0o600); } catch { /* best-effort */ }
+      writePrivateFileAtomic(bakPath, readFileSync(envPath), { secureParent: false });
       result.envBackedUp = true;
     }
-    copyFileSync(example, envPath);
-    try {
-      chmodSync(envPath, 0o600);
-    } catch {
-      // Best-effort — may fail on Windows or non-owned files.
-    }
+    writePrivateFileAtomic(envPath, readFileSync(example), { secureParent: false });
     result.envCreated = true;
   }
 
@@ -190,8 +204,7 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
   }
 
   // 4. Persist the stack root so other commands can find it.
-  const configManager = await createConfigManager();
-  await configManager.setStackRoot(rootDir);
+  await dependencies.persistStackRoot(rootDir);
 
   return result;
 }
