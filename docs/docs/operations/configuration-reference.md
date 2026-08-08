@@ -34,7 +34,7 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `PROPR_API_RATE_LIMIT_MAX` / `PROPR_API_RATE_LIMIT_WINDOW_MS` | `600` / `60000` | Per-client quota and window (milliseconds) for all `/api` requests. | Optional tuning. |
 | `PROPR_AUTH_RATE_LIMIT_MAX` / `PROPR_AUTH_RATE_LIMIT_WINDOW_MS` | `30` / `900000` | Additional, tighter per-client quota for OAuth and session endpoints. | Optional tuning. |
 | `PROPR_WEBHOOK_RATE_LIMIT_MAX` / `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS` | `300` / `60000` | Per-client quota for direct webhook requests, applied before body parsing and signature verification. | Optional tuning in direct-webhook mode. |
-| `PROPR_TRUSTED_PROXY_PEERS` | Unset; launcher-managed tunnel: `uniquelocal` | Comma-separated immediate proxy IPs, CIDRs, or `proxy-addr` names whose forwarded client IP and protocol are trusted. Unset ignores forwarding headers. | Reverse-proxy deployments; injected automatically for the managed tunnel. |
+| `PROPR_TRUSTED_PROXY_PEERS` | Unset; launcher-managed tunnel: reserved `self` mode | Comma-separated immediate proxy IPs, CIDRs, or `proxy-addr` names whose forwarded client IP and protocol are trusted. Unset ignores forwarding headers. The launcher injects `self` only for its managed sidecar sharing the API network namespace. | Reverse-proxy deployments; injected automatically for the managed tunnel. |
 | `LOG_LEVEL` | `info` | Log verbosity across services. | Optional. |
 | `NODE_ENV` | `development` | Node environment; use `production` on servers. | Optional. |
 | `DB_FILENAME` | `./data/propr.sqlite` | Path to the SQLite database file (created if it doesn't exist). | Optional. |
