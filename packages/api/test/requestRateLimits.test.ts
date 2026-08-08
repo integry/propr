@@ -86,13 +86,10 @@ test('does not charge CORS preflight requests against the quota', async () => {
   assert.equal((await fetch(`${app.origin}/resource`)).status, 429);
 });
 
-test('route-level webhook limiting rejects excess requests before body parsing', async () => {
+test('route-level webhook limiting preserves alternate-case raw bodies and rejects excess requests before parsing', async () => {
   const app = express();
   let bodyParserRuns = 0;
   let rawBodySeen = false;
-  app.use(express.json({
-    type: request => !/^\/webhook(?:[/?]|$)/.test(request.url ?? '') && /^application\/json(?:\s*;|$)/i.test(String(request.headers['content-type'] ?? '')),
-  }));
   app.post(
     '/webhook',
     createRequestRateLimiter({ identifier: 'webhook-test', limit: 1, windowMs: 60_000 }),
@@ -106,10 +103,11 @@ test('route-level webhook limiting rejects excess requests before body parsing',
       response.sendStatus(204);
     },
   );
+  app.use(express.json());
   const server = await listenTestApp(app);
   openServers.push(server.close);
 
-  const request = (): Promise<Response> => fetch(`${server.origin}/webhook`, {
+  const request = (): Promise<Response> => fetch(`${server.origin}/WEBHOOK`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: '{"event":"test"}',
