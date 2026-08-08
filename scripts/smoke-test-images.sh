@@ -161,10 +161,12 @@ GH_AUTH_MODE=app
 GITHUB_EVENT_INTAKE_MODE=polling
 GITHUB_REPOS_TO_MONITOR=smoketest/fake-repo
 WORKER_CONCURRENCY=1
+PROPR_CONTAINERIZED=1
+PROPR_ADMIN_USERS=smoketest-admin
 API_PUBLIC_URL=http://localhost:${API_PORT}
 FRONTEND_URL=http://localhost:${UI_PORT}
 GH_OAUTH_CALLBACK_URL=http://localhost:${API_PORT}/api/auth/github/callback
-SESSION_SECRET=smoke-test-not-secret
+SESSION_SECRET=smoke-test-only-session-secret-0000000000000000
 GH_OAUTH_CLIENT_ID=smoke-test
 GH_OAUTH_CLIENT_SECRET=smoke-test
 GITHUB_WEBHOOK_SECRET=smoke-test
@@ -197,8 +199,8 @@ check_page_assets() {
   local -a assets=()
   html=$(curl -fsS --max-time 5 "$base_url")
   mapfile -t assets < <(
-    grep -oE '(src|href)="[^"]+"' <<< "$html" \
-      | sed -E 's/^[^=]+="([^"]+)"$/\1/' \
+    grep -oE "(src|href)=(\"[^\"]+\"|'[^']+'|[^[:space:]>]+)" <<< "$html" \
+      | sed -E "s/^[^=]+=['\"]?([^'\"]+)['\"]?$/\1/" \
       | grep -E '^/[^/]' \
       | sort -u
   )
@@ -232,19 +234,19 @@ NODE
     -H "Origin: http://localhost:${UI_PORT}" \
     -D "$response_headers" \
     -o "$response_body" \
-    "$expected_origin/api/status"; then
+    "$expected_origin/api/compatibility"; then
     rm -f -- "$response_headers" "$response_body"
-    echo "✗ UI-configured API status path is not reachable" >&2
+    echo "✗ UI-configured compatibility path is not reachable" >&2
     return 1
   fi
   if ! grep -Fqi "access-control-allow-origin: http://localhost:${UI_PORT}" "$response_headers" \
-      || ! grep -Fq '"api":"healthy"' "$response_body"; then
+      || ! grep -Fq "\"version\":\"${EXPECTED_VERSION}\"" "$response_body"; then
     rm -f -- "$response_headers" "$response_body"
-    echo "✗ UI-configured API status path did not return healthy CORS-enabled output" >&2
+    echo "✗ UI-configured compatibility path did not return versioned CORS-enabled output" >&2
     return 1
   fi
   rm -f -- "$response_headers" "$response_body"
-  echo "✓ UI runtime configuration reaches the API status endpoint"
+  echo "✓ UI runtime configuration reaches the API compatibility endpoint"
 }
 
 # --- Network ---------------------------------------------------------------
