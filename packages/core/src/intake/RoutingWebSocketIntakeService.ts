@@ -327,9 +327,9 @@ export class RoutingWebSocketIntakeService {
                 // A delayed frame from a socket superseded by reconnect must not
                 // clear the current connection's heartbeat deadline.
                 if (socket !== this.socket) return;
-                // Receiving an application-level ping proves the hello probe
-                // reached the RoutingHub itself. From this point on, edge-level
-                // WebSocket pongs are no longer sufficient liveness evidence.
+                // If a hello probe is outstanding, this application-level ping
+                // proves it reached the RoutingHub itself. Only then do edge-level
+                // WebSocket pongs stop being sufficient liveness evidence.
                 this.keepalive.acknowledgeApplicationHeartbeat();
                 // Echo the relay's nonce; the relay requires a non-empty nonce on
                 // pong frames and rejects a nonce-less reply as a malformed frame.

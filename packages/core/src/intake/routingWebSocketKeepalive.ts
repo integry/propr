@@ -43,6 +43,7 @@ export class RoutingWebSocketKeepalive {
     private pingTimer: NodeJS.Timeout | null = null;
     private heartbeatDeadlineTimer: NodeJS.Timeout | null = null;
     private applicationHeartbeatNegotiated = false;
+    private helloProbeOutstanding = false;
 
     constructor(options: RoutingWebSocketKeepaliveOptions) {
         this.pingIntervalMs = options.pingIntervalMs;
@@ -54,6 +55,7 @@ export class RoutingWebSocketKeepalive {
     start(socket: MinimalWebSocket): void {
         this.stop();
         this.applicationHeartbeatNegotiated = false;
+        this.helloProbeOutstanding = false;
         this.pingTimer = setInterval(() => {
             if (!this.isCurrentSocket(socket) || socket.readyState !== WS_OPEN) return;
 
@@ -91,8 +93,10 @@ export class RoutingWebSocketKeepalive {
                     type: 'hello',
                     protocolVersion: ROUTING_HUB_PROTOCOL_VERSION,
                 }));
+                this.helloProbeOutstanding = true;
                 socket.ping();
             } catch (error) {
+                this.helloProbeOutstanding = false;
                 this.clearHeartbeatDeadline();
                 logger.warn(
                     { error: (error as Error).message },
@@ -118,8 +122,10 @@ export class RoutingWebSocketKeepalive {
         if (!this.applicationHeartbeatNegotiated) this.clearHeartbeatDeadline();
     }
 
-    /** Record proof that a probe reached the RoutingHub application. */
+    /** Record proof that an outstanding probe reached the RoutingHub application. */
     acknowledgeApplicationHeartbeat(): void {
+        if (!this.helloProbeOutstanding) return;
+        this.helloProbeOutstanding = false;
         this.applicationHeartbeatNegotiated = true;
         this.clearHeartbeatDeadline();
     }
@@ -138,5 +144,6 @@ export class RoutingWebSocketKeepalive {
         }
         this.clearHeartbeatDeadline();
         this.applicationHeartbeatNegotiated = false;
+        this.helloProbeOutstanding = false;
     }
 }

@@ -253,6 +253,34 @@ test('keeps the routing socket alive when a transport pong arrives before the de
     }
 });
 
+test('does not negotiate application heartbeats from an unsolicited ping before the first probe', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService({ pingIntervalMs: 100, pongTimeoutMs: 50 }));
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'unsolicited' }));
+        assert.deepEqual(socket.sentFrames(), [{ type: 'pong', nonce: 'unsolicited' }]);
+
+        mock.timers.tick(100);
+        assert.deepEqual(socket.sentFrames(), [
+            { type: 'pong', nonce: 'unsolicited' },
+            { type: 'hello', protocolVersion: 1 },
+        ]);
+        socket.emit('pong');
+        mock.timers.tick(50);
+
+        assert.equal(socket.terminated, false, 'transport pong compatibility remains enabled');
+        assert.equal(service.getStatus().connected, true);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+    }
+});
+
 test('requires an application response after the relay negotiates application heartbeats', async () => {
     mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
     let service: RoutingWebSocketIntakeService | undefined;
@@ -264,11 +292,15 @@ test('requires an application response after the relay negotiates application he
 
         // A RoutingHub ping proves application-heartbeat support and is answered
         // using the existing protocol pong.
+        mock.timers.tick(100);
         socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'negotiation' }));
-        assert.deepEqual(socket.sentFrames(), [{ type: 'pong', nonce: 'negotiation' }]);
+        assert.deepEqual(socket.sentFrames(), [
+            { type: 'hello', protocolVersion: 1 },
+            { type: 'pong', nonce: 'negotiation' },
+        ]);
 
         mock.timers.tick(100);
-        assert.equal(socket.pings, 1);
+        assert.equal(socket.pings, 2);
         socket.emit('pong');
         mock.timers.tick(50);
 
@@ -288,6 +320,7 @@ test('keeps a negotiated connection alive when the RoutingHub answers the probe'
         await service.start();
         const socket = FakeWebSocket.instances[0];
         socket.emit('open');
+        mock.timers.tick(100);
         socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'negotiation' }));
 
         mock.timers.tick(100);
