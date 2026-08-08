@@ -46,7 +46,7 @@ function principal(userId: string): SocketPrincipal {
       email: null,
       avatarUrl: null,
     },
-    authorization: { role: 'member', permissions: [], source: 'durable' },
+    authorization: { role: 'member', permissions: [], source: 'managed' },
   };
 }
 
@@ -211,6 +211,7 @@ describe('Socket.IO resource authorization', () => {
       eventType: DRAFT_UPDATE,
       draftId: 'draft-1',
       step: 'planning',
+      status: 'in_progress',
       timestamp: new Date(0).toISOString(),
     };
 
