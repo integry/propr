@@ -12,8 +12,14 @@ import type { GitHubToken } from './githubTypes.js';
 import type { ReasoningLevel } from '@propr/shared';
 
 const MAX_GENERATED_SUBTITLE_LENGTH = 140;
-const CONFIGURED_TITLE_GENERATION_TIMEOUT_MS = Number.parseInt(process.env.PR_TASK_TITLE_GENERATION_TIMEOUT_MS || '5000', 10);
-const TITLE_GENERATION_TIMEOUT_MS = Number.isFinite(CONFIGURED_TITLE_GENERATION_TIMEOUT_MS) ? CONFIGURED_TITLE_GENERATION_TIMEOUT_MS : 5000;
+const DEFAULT_TITLE_GENERATION_TIMEOUT_MS = 30_000;
+const CONFIGURED_TITLE_GENERATION_TIMEOUT_MS = Number.parseInt(
+    process.env.PR_TASK_TITLE_GENERATION_TIMEOUT_MS || String(DEFAULT_TITLE_GENERATION_TIMEOUT_MS),
+    10,
+);
+const TITLE_GENERATION_TIMEOUT_MS = Number.isFinite(CONFIGURED_TITLE_GENERATION_TIMEOUT_MS)
+    ? CONFIGURED_TITLE_GENERATION_TIMEOUT_MS
+    : DEFAULT_TITLE_GENERATION_TIMEOUT_MS;
 const NOOP_LOGGER = { debug: () => undefined, warn: () => undefined } as unknown as Logger;
 
 interface SummaryTitleOptions {

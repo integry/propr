@@ -27,6 +27,7 @@ export interface AgentRegistryOperationalStatus {
 }
 
 const RUNTIME_PACKAGE_STATE_CHECK_INTERVAL_MS = 5000;
+const UNIFIED_AGENT_IMAGE_RETRY_INTERVAL_MS = 60_000;
 
 /**
  * AgentRegistry manages the lifecycle of agent instances.
@@ -44,6 +45,7 @@ export class AgentRegistry {
     private runtimePackageStateUnavailable = false;
     private pendingBackgroundRefresh: Promise<void> | null = null;
     private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
+    private unifiedAgentImageRetryTimer: NodeJS.Timeout | null = null;
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -368,9 +370,11 @@ export class AgentRegistry {
                     error: result.error || 'Unified agent image is unavailable',
                     recordedAt: new Date().toISOString()
                 };
+                this.scheduleUnifiedAgentImageRetry();
                 return null;
             }
             const image = await resolveAgentRuntimeImage(result.imageTag, { buildMissing: false });
+            this.clearUnifiedAgentImageRetry();
             this.unavailableUnifiedAgentImage = null;
             return image;
         } catch (error) {
@@ -380,8 +384,43 @@ export class AgentRegistry {
                 error: message,
                 recordedAt: new Date().toISOString()
             };
+            this.scheduleUnifiedAgentImageRetry();
             return null;
         }
+    }
+
+    /**
+     * A transient registry pull or artifact download must not leave an initialized
+     * but empty registry wedged until an operator edits configuration or restarts
+     * the service. Retry in the background with one shared timer; refresh already
+     * serializes the actual pull/build through the registry's normal path.
+     */
+    private scheduleUnifiedAgentImageRetry(): void {
+        if (this.unifiedAgentImageRetryTimer) return;
+        this.unifiedAgentImageRetryTimer = setTimeout(() => {
+            this.unifiedAgentImageRetryTimer = null;
+            if (!this.initialized || !this.unavailableUnifiedAgentImage || this.pendingBackgroundRefresh) return;
+
+            const refresh = this.refresh();
+            this.pendingBackgroundRefresh = refresh;
+            void refresh
+                .catch(error => {
+                    logger.error(
+                        { error: (error as Error).message },
+                        'Automatic unified agent image recovery refresh failed',
+                    );
+                })
+                .finally(() => {
+                    if (this.pendingBackgroundRefresh === refresh) this.pendingBackgroundRefresh = null;
+                });
+        }, UNIFIED_AGENT_IMAGE_RETRY_INTERVAL_MS);
+        this.unifiedAgentImageRetryTimer.unref?.();
+    }
+
+    private clearUnifiedAgentImageRetry(): void {
+        if (!this.unifiedAgentImageRetryTimer) return;
+        clearTimeout(this.unifiedAgentImageRetryTimer);
+        this.unifiedAgentImageRetryTimer = null;
     }
 
     /**
@@ -469,6 +508,7 @@ export class AgentRegistry {
      */
     async destroy(): Promise<void> {
         try {
+            this.clearUnifiedAgentImageRetry();
             // Clear agents and state
             this.agents.clear();
             this.agentsByAlias.clear();

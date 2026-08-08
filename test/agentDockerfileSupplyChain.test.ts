@@ -19,6 +19,13 @@ test('Antigravity checksum verification happens before archive extraction', () =
   assert.ok(extractionIndex > checksumIndex);
 });
 
+test('Antigravity artifact download retries and uses a pinned-path fallback', () => {
+  assert.match(dockerfile, /--retry 5 --retry-delay 2 --retry-max-time 180 --retry-all-errors/);
+  assert.match(dockerfile, /storage\.googleapis\.com\/download\/storage\/v1\/b\/antigravity-public\/o\/antigravity-cli%2F/);
+  assert.match(dockerfile, /for candidate_url in "\$source_url" "\$fallback_url"/);
+  assert.match(dockerfile, /printf '%s\\n' "\$downloaded_from" > \/home\/node\/\.local\/share\/propr\/antigravity-cli\.source/);
+});
+
 test('agent build never downloads and executes the mutable installer script', () => {
   assert.doesNotMatch(dockerfile, /antigravity\.google\/cli\/install\.sh/);
   assert.doesNotMatch(dockerfile, /antigravity-install\.sh/);

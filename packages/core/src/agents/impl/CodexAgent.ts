@@ -257,6 +257,17 @@ export class CodexAgent implements Agent {
                 return this.buildAnalysisSuccess({ parsedOutput, effectiveModel, effectiveReasoningLevel, executionTimeMs, usageMetrics, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata, suppressLlmLog });
             }
 
+            logger.warn({
+                agentAlias: this.config.alias,
+                exitCode: result.exitCode,
+                timedOut: result.timedOut ?? false,
+                stdoutLength: result.stdout.length,
+                stderrLength: result.stderr.length,
+                parsedResultPresent: Boolean(parsedOutput.result),
+                parsedErrorPresent: Boolean(parsedOutput.error),
+                executionType,
+                taskId,
+            }, 'Codex analysis process exited without a usable result');
             const errorMsg = parsedOutput.error || result.stderr || 'No result returned';
             return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}` };
         } catch (error) {
