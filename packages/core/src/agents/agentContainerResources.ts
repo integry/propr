@@ -1,9 +1,10 @@
 const DEFAULT_MEMORY_LIMIT = '6g';
 const DEFAULT_CPU_LIMIT = '4';
 const DEFAULT_PIDS_LIMIT = '512';
+const MIN_MEMORY_LIMIT_BYTES = 6n * 1024n * 1024n;
 const MIN_CPU_LIMIT = 0.01;
 
-const DOCKER_MEMORY_LIMIT_PATTERN = /^[1-9]\d*(?:[bkmg])?$/i;
+const DOCKER_MEMORY_LIMIT_PATTERN = /^([1-9]\d*)([bkmg])?$/i;
 const DOCKER_CPU_LIMIT_PATTERN = /^(?:0?\.\d+|[1-9]\d*(?:\.\d+)?)$/;
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/;
 
@@ -18,8 +19,30 @@ function configuredValue(value: string | undefined, fallback: string): string {
 }
 
 function validateMemoryLimit(value: string): string {
-    if (!DOCKER_MEMORY_LIMIT_PATTERN.test(value)) {
-        throw new Error(`AGENT_CONTAINER_MEMORY_LIMIT must be a positive Docker memory value such as 6g, got: ${value}`);
+    const match = DOCKER_MEMORY_LIMIT_PATTERN.exec(value);
+    let memoryBytes: bigint | undefined;
+
+    if (match) {
+        const amount = BigInt(match[1]);
+        switch (match[2]?.toLowerCase()) {
+            case 'g':
+                memoryBytes = amount * 1024n * 1024n * 1024n;
+                break;
+            case 'm':
+                memoryBytes = amount * 1024n * 1024n;
+                break;
+            case 'k':
+                memoryBytes = amount * 1024n;
+                break;
+            case 'b':
+            case undefined:
+                memoryBytes = amount;
+                break;
+        }
+    }
+
+    if (memoryBytes === undefined || memoryBytes < MIN_MEMORY_LIMIT_BYTES) {
+        throw new Error(`AGENT_CONTAINER_MEMORY_LIMIT must be a Docker memory value of at least 6m, got: ${value}`);
     }
     return value.toLowerCase();
 }
