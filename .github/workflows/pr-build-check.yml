@@ -162,6 +162,7 @@ jobs:
         id: filter
         uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         with:
+          list-files: json
           filters: |
             core:
               - 'src/**'
@@ -169,6 +170,8 @@ jobs:
               - 'package*.json'
               - 'packages/core/**'
               - 'packages/shared/**'
+            core_lint:
+              - added|modified: 'packages/core/src/**/*.{js,ts}'
             ui:
               - 'propr-ui/**'
               - 'packages/shared/**'
@@ -187,6 +190,8 @@ jobs:
       - name: Run Checks
         id: build
         continue-on-error: true
+        env:
+          CORE_LINT_FILES_JSON: ${{ steps.filter.outputs.core_lint_files }}
         run: |
           # Preserve diagnostics from every earlier validation stage.
           touch build_log.txt
@@ -372,15 +377,31 @@ jobs:
 
             if [ $CORE_SECTION_FAILED -eq 0 ]; then
               # 2. Lint Verification
+              # Keep zero-warning enforcement on the PR delta without making
+              # unrelated warnings already present on the base branch fatal.
               echo "Linting @propr/core..."
-              LINT_OUTPUT=$(npm run lint -w @propr/core -- --max-warnings 0 2>&1) || {
-                echo "❌ Core Package Lint FAILED" >> build_log.txt
-                echo "$LINT_OUTPUT" >> build_log.txt
-                CORE_SECTION_FAILED=1
-                EXIT_CODE=1
-              }
-              if [ $CORE_SECTION_FAILED -eq 0 ]; then
-                echo "✅ Core Package Lint passed" >> build_log.txt
+              CORE_LINT_FILES=()
+              if [ -n "$CORE_LINT_FILES_JSON" ]; then
+                mapfile -d '' -t CORE_LINT_FILES < <(
+                  node -e 'for (const file of JSON.parse(process.env.CORE_LINT_FILES_JSON || "[]")) process.stdout.write(file + "\0")'
+                )
+              fi
+              if [ ${#CORE_LINT_FILES[@]} -gt 0 ]; then
+                CORE_LINT_PATHS=("${CORE_LINT_FILES[@]#packages/core/}")
+                LINT_OUTPUT=$(
+                  cd packages/core
+                  ../../node_modules/.bin/eslint --max-warnings 0 -- "${CORE_LINT_PATHS[@]}"
+                ) 2>&1 || {
+                  echo "❌ Core Package Lint FAILED" >> build_log.txt
+                  echo "$LINT_OUTPUT" >> build_log.txt
+                  CORE_SECTION_FAILED=1
+                  EXIT_CODE=1
+                }
+                if [ $CORE_SECTION_FAILED -eq 0 ]; then
+                  echo "✅ Core Package Lint passed" >> build_log.txt
+                fi
+              else
+                echo "✅ Core Package Lint skipped (no changed lintable files)" >> build_log.txt
               fi
             fi
           fi

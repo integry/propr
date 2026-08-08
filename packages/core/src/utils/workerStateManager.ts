@@ -105,6 +105,7 @@ export class WorkerStateManager {
                 repository,
                 issueNumber: issueRef.number,
                 timestamp: state.updatedAt,
+                version: state.version,
             });
         } catch (error) {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
@@ -248,6 +249,7 @@ export class WorkerStateManager {
                     repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                     issueNumber: state.issueRef.number,
                     timestamp: state.updatedAt,
+                    version: state.version,
                     metadata: {
                         issueRefUpdated: true,
                         updatedFields: Object.keys(issueRefPatch)
@@ -335,6 +337,7 @@ export class WorkerStateManager {
                     repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
                     issueNumber: state.issueRef.number,
                     timestamp: state.updatedAt,
+                    version: state.version,
                     metadata: {
                         metadataUpdate: true,
                         updatedFields: Object.keys(metadata)
