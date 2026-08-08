@@ -260,6 +260,12 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const docsPort = overrides.docsPort ?? get('DOCS_PORT') ?? '8080';
     const redisExternalPort = overrides.redisExternalPort ?? get('REDIS_EXTERNAL_PORT') ?? '';
     const docsEnabled = overrides.docsEnabled ?? (get('DOCS_ENABLED') === 'true');
+    const apiRateLimitMax = overrides.apiRateLimitMax ?? get('PROPR_API_RATE_LIMIT_MAX') ?? '600';
+    const apiRateLimitWindowMs = overrides.apiRateLimitWindowMs ?? get('PROPR_API_RATE_LIMIT_WINDOW_MS') ?? '60000';
+    const authRateLimitMax = overrides.authRateLimitMax ?? get('PROPR_AUTH_RATE_LIMIT_MAX') ?? '30';
+    const authRateLimitWindowMs = overrides.authRateLimitWindowMs ?? get('PROPR_AUTH_RATE_LIMIT_WINDOW_MS') ?? '900000';
+    const webhookRateLimitMax = overrides.webhookRateLimitMax ?? get('PROPR_WEBHOOK_RATE_LIMIT_MAX') ?? '300';
+    const webhookRateLimitWindowMs = overrides.webhookRateLimitWindowMs ?? get('PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS') ?? '60000';
 
     // Agent credential host dirs (HOST:HOST mounts so spawned agent containers
     // resolve the same path end-to-end).
@@ -294,6 +300,12 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // A persisted CLI toggle (`propr tunnel on|off`) wins over the env-derived
     // default so `propr start` honors the user's last explicit choice.
     const uiTunnelEnabled = overrides.uiTunnelEnabled ?? (Boolean(uiTunnelToken) || parseTruthyEnvValue(get('PROPR_UI_TUNNEL_ENABLED')));
+    // The managed cloudflared sidecar shares the API container's network
+    // namespace. Trust only that namespace's own non-loopback addresses while
+    // tunnel mode is on; other private-network peers remain untrusted.
+    const trustedProxyPeers = overrides.trustedProxyPeers
+        ?? get('PROPR_TRUSTED_PROXY_PEERS')
+        ?? (uiTunnelEnabled ? 'self' : undefined);
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
     // Cloudflared image for the optional tunnel sidecar: an explicit env override
     // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a
@@ -313,6 +325,9 @@ export function resolveConfig(env = process.env, overrides = {}) {
         validateHostPaths: overrides.validateHostPaths === true,
         hostData, hostLogs, hostRepos, managedCredentialsDir,
         apiPort, uiPort, docsPort, redisExternalPort, docsEnabled,
+        apiRateLimitMax, apiRateLimitWindowMs,
+        authRateLimitMax, authRateLimitWindowMs,
+        webhookRateLimitMax, webhookRateLimitWindowMs,
         hostClaudeDir, hostCodexDir, hostAntigravityDir,
         hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
@@ -320,6 +335,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         // Hosted UI tunnel settings (see resolution above). Defaults keep local
         // development unaffected: no instance id ⇒ no derived public URL.
         uiTunnelEnabled, uiTunnelToken, proprInstanceId, uiPublicApiUrl, cloudflaredImage,
+        trustedProxyPeers,
         // misc -e overrides the launcher computed from ports/env. When the UI
         // tunnel is enabled the API/worker must advertise the public proxy URL
         // (OAuth/session redirects, attachment links, browser-visible API refs)
@@ -441,6 +457,12 @@ function tunnelApiEnvArgs(cfg) {
     return args;
 }
 
+function proxyTrustApiEnvArgs(cfg) {
+    return cfg.trustedProxyPeers
+        ? ['-e', `PROPR_TRUSTED_PROXY_PEERS=${cfg.trustedProxyPeers}`]
+        : [];
+}
+
 // Validates host bind-mount paths for Linux deployments. ':' rejection prevents
 // malformed -v HOST:CONTAINER args; Windows drive paths (C:\...) are unsupported.
 export function validateDockerBindPath(name, value, { containerPath = false } = {}) {
@@ -511,10 +533,10 @@ export function dockerAvailable() {
     return res.status === 0;
 }
 
-function dockerRunDetached(cfg, name, service, args) {
+function dockerRunDetached(cfg, name, service, args, networkMode = cfg.network) {
     const full = [
         'run', '-d', '--init', '--name', name,
-        '--network', cfg.network, '--restart', 'unless-stopped',
+        '--network', networkMode, '--restart', 'unless-stopped',
         '--label', `propr.stack=${cfg.stack}`,
         '--label', `propr.service=${service}`,
         ...args,
@@ -910,7 +932,14 @@ export function buildServiceSpec(cfg, service) {
                 '-e', `GH_OAUTH_CALLBACK_URL=${cfg.ghOauthCallbackUrl}`,
                 '-e', `SESSION_REDIS_HOST=${cfg.stack}-redis`,
                 '-e', 'CONFIG_REPO_PATH=/tmp/config_repo',
+                '-e', `PROPR_API_RATE_LIMIT_MAX=${cfg.apiRateLimitMax}`,
+                '-e', `PROPR_API_RATE_LIMIT_WINDOW_MS=${cfg.apiRateLimitWindowMs}`,
+                '-e', `PROPR_AUTH_RATE_LIMIT_MAX=${cfg.authRateLimitMax}`,
+                '-e', `PROPR_AUTH_RATE_LIMIT_WINDOW_MS=${cfg.authRateLimitWindowMs}`,
+                '-e', `PROPR_WEBHOOK_RATE_LIMIT_MAX=${cfg.webhookRateLimitMax}`,
+                '-e', `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS=${cfg.webhookRateLimitWindowMs}`,
                 ...tunnelApiEnvArgs(cfg),
+                ...proxyTrustApiEnvArgs(cfg),
             ]);
         case 'ui': {
             // The UI image's docker-entrypoint.sh rewrites public/config.js from
@@ -956,6 +985,11 @@ export function buildServiceSpec(cfg, service) {
                 image: cfg.cloudflaredImage,
                 args: ['-e', `TUNNEL_TOKEN=${cfg.uiTunnelToken}`],
                 command: ['tunnel', '--no-autoupdate', 'run'],
+                // Sharing the API network namespace makes cloudflared's socket
+                // peer one of the API container's own addresses. The API can
+                // therefore trust this exact path without trusting unrelated
+                // containers or direct private-network clients.
+                networkMode: `container:${cfg.stack}-api`,
             };
         default:
             throw new Error(`unknown service: ${service}`);
@@ -973,7 +1007,7 @@ export function startService(cfg, service, { onLog, pull = true, freshnessCache 
     const spec = buildServiceSpec(cfg, service);
     removeIfExists(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    dockerRunDetached(cfg, name, service, runArgs);
+    dockerRunDetached(cfg, name, service, runArgs, spec.networkMode);
     onLog?.(`  [ok] started ${name}`);
     return getServiceState(cfg, service);
 }
@@ -1059,10 +1093,10 @@ async function removeIfExistsAsync(cfg, name, onLog) {
     }
 }
 
-async function dockerRunDetachedAsync(cfg, name, service, args) {
+async function dockerRunDetachedAsync(cfg, name, service, args, networkMode = cfg.network) {
     const full = [
         'run', '-d', '--init', '--name', name,
-        '--network', cfg.network, '--restart', 'unless-stopped',
+        '--network', networkMode, '--restart', 'unless-stopped',
         '--label', `propr.stack=${cfg.stack}`,
         '--label', `propr.service=${service}`,
         ...args,
@@ -1121,7 +1155,7 @@ export async function startServiceAsync(cfg, service, { onLog, pull = true, fres
     const spec = buildServiceSpec(cfg, service);
     await removeIfExistsAsync(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    await dockerRunDetachedAsync(cfg, name, service, runArgs);
+    await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode);
     onLog?.(`  [ok] started ${name}`);
     return getServiceStateAsync(cfg, service);
 }
@@ -1390,6 +1424,23 @@ export function validateEnv(cfg) {
     }
     if (!dockerNamePattern.test(cfg.network)) {
         errors.push(`PROPR_NETWORK ("${cfg.network}") is not a valid Docker network name — use letters, digits, '_', '.' or '-', starting with a letter or digit.`);
+    }
+
+    // `uniquelocal` is intentionally broad: proxy-addr expands it to every
+    // private/link-local range. It is safe for the documented host-nginx path
+    // only because Docker publishes the API on host loopback, leaving the host
+    // bridge gateway as the sole reachable private peer. Refuse combinations
+    // that would expose this trust boundary to LAN or unrelated Docker peers.
+    const trustedProxyPeers = String(cfg.trustedProxyPeers ?? '')
+        .split(',')
+        .map((peer) => peer.trim().toLowerCase())
+        .filter(Boolean);
+    const apiIsLoopbackBound = /^(?:127\.0\.0\.1|\[::1\]):\d+$/.test(String(cfg.apiPort ?? '').trim());
+    if (trustedProxyPeers.includes('uniquelocal') && !apiIsLoopbackBound) {
+        errors.push(
+            'PROPR_TRUSTED_PROXY_PEERS=uniquelocal requires API_PORT to be bound to host loopback '
+            + '(for example, API_PORT=127.0.0.1:4000); otherwise private peers can spoof forwarded client addresses.'
+        );
     }
 
     if (!cfg.envFileHost) errors.push('env file path is not set (PROPR_ENV_FILE / <root>/.env)');

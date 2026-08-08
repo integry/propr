@@ -57,6 +57,7 @@ import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
+import { configureApiProxyTrust, createApiRequestRateLimiter, createWebhookRequestRateLimiter } from './requestRateLimits.js';
 import {
   startConfigReloadSubscription,
   type ConfigReloadSubscription,
@@ -135,8 +136,7 @@ const app = express();
 const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
 const HOST = resolveApiListenHost();
 
-// Trust proxy for secure cookies behind reverse proxy (Cloudflare, nginx, etc.)
-app.set('trust proxy', 1);
+configureApiProxyTrust(app);
 
 if (!process.env.FRONTEND_URL) {
   console.error('FRONTEND_URL environment variable is required');
@@ -155,10 +155,10 @@ try {
   process.exit(1);
 }
 
-app.use(cors({
-  origin: validateCorsOrigin,
-  credentials: true
-}));
+app.use(cors({ origin: validateCorsOrigin, credentials: true }));
+
+app.use('/api', createApiRequestRateLimiter());
+app.use('/webhook', createWebhookRequestRateLimiter());
 
 // Prevent caching of API responses to avoid stale CORS issues
 app.use('/api', (_req, res, next) => {

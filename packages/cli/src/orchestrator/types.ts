@@ -26,6 +26,12 @@ export interface OrchestratorConfig {
   readonly docsPort: string;
   readonly redisExternalPort: string;
   readonly docsEnabled: boolean;
+  readonly apiRateLimitMax: string;
+  readonly apiRateLimitWindowMs: string;
+  readonly authRateLimitMax: string;
+  readonly authRateLimitWindowMs: string;
+  readonly webhookRateLimitMax: string;
+  readonly webhookRateLimitWindowMs: string;
   readonly hostClaudeDir?: string;
   readonly hostCodexDir?: string;
   readonly hostAntigravityDir?: string;
@@ -40,6 +46,8 @@ export interface OrchestratorConfig {
   readonly proprInstanceId?: string;
   readonly uiPublicApiUrl?: string;
   readonly cloudflaredImage: string;
+  /** Immediate socket peers whose forwarded client/protocol headers the API trusts. */
+  readonly trustedProxyPeers?: string;
   /**
    * Hosted UI origin allowed by CORS/redirects. Always resolves to a value:
    * an explicit FRONTEND_URL, the hosted origin in tunnel mode, or the
