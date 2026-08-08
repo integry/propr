@@ -3,18 +3,57 @@ import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
 import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient } from 'redis';
-import type { Express, Request, Response, NextFunction } from 'express';
+import type { Express, Request, Response, NextFunction, RequestHandler } from 'express';
 import { validateGitHubToken } from './authBearer.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenIfNeeded, refreshGitHubTokenWithResult } from './authGithubTokens.js';
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
-import { authenticatedUserResponse, resolveAuthorization } from './authorization.js';
+import {
+    authenticatedUserResponse,
+    resolveAuthorization,
+    resolveInstanceAuthorization,
+    type InstanceAuthorization,
+} from './authorization.js';
 import './authTypes.js';
 
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
 export type { GitHubUser } from './authTypes.js';
+
+export interface SocketAuthMiddlewareBundle {
+    /** Express-compatible middleware that must run on the Engine.IO handshake. */
+    engineMiddleware: RequestHandler[];
+}
+
+export interface SocketPrincipal {
+    user: GitHubUser;
+    authorization: InstanceAuthorization;
+}
+
+export interface SocketAuthenticationDependencies {
+    validateToken: typeof validateGitHubToken;
+    isWhitelisted: typeof isUserWhitelisted;
+    resolveInstanceAuthorization: typeof resolveInstanceAuthorization;
+    refreshToken: typeof refreshGitHubTokenWithResult;
+}
+
+const defaultSocketAuthenticationDependencies: SocketAuthenticationDependencies = {
+    validateToken: validateGitHubToken,
+    isWhitelisted: isUserWhitelisted,
+    resolveInstanceAuthorization,
+    refreshToken: refreshGitHubTokenWithResult,
+};
+
+export class SocketAuthenticationError extends Error {
+    constructor(
+        public readonly code: string,
+        message: string,
+    ) {
+        super(message);
+        this.name = 'SocketAuthenticationError';
+    }
+}
 
 export function getSessionCookieDomain(): string | undefined {
     if (process.env.COOKIE_DOMAIN) return process.env.COOKIE_DOMAIN;
@@ -82,7 +121,7 @@ export function createGitHubOAuthStrategy(config: GitHubOAuthStrategyConfig): Gi
     });
 }
 
-export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void {
+export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): SocketAuthMiddlewareBundle {
     configureDemoMode(demoModeAtStartup);
     const requiredEnvVars = demoModeAtStartup
         ? ['FRONTEND_URL']
@@ -91,6 +130,8 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
     if (missingVars.length > 0) {
         throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
     }
+
+    const engineMiddleware: RequestHandler[] = [];
 
     if (!demoModeAtStartup) {
         // Create Redis client for session store
@@ -107,7 +148,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         const redisStore = new RedisStore({ client: redisClient, prefix: 'propr:session:' });
 
         const cookieDomain = getSessionCookieDomain();
-        app.use(session({
+        const sessionMiddleware = session({
             store: redisStore,
             secret: process.env.SESSION_SECRET || 'your-secret-key-here',
             resave: false,
@@ -120,9 +161,17 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
                 ...(cookieDomain ? { domain: cookieDomain } : {}),
                 sameSite: 'lax'
             }
-        }));
-        app.use(passport.initialize());
-        app.use(passport.session());
+        });
+        const passportInitializeMiddleware = passport.initialize();
+        const passportSessionMiddleware = passport.session();
+        engineMiddleware.push(
+            sessionMiddleware,
+            passportInitializeMiddleware,
+            passportSessionMiddleware,
+        );
+        app.use(sessionMiddleware);
+        app.use(passportInitializeMiddleware);
+        app.use(passportSessionMiddleware);
 
         passport.use(createGitHubOAuthStrategy({
             clientID: process.env.GH_OAUTH_CLIENT_ID!,
@@ -224,6 +273,68 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): void 
         res.json({ demoMode: demoModeAtStartup });
     });
 
+    return { engineMiddleware };
+}
+
+/**
+ * Authenticate a Socket.IO handshake using the same identities accepted by the
+ * HTTP API. Browser clients normally arrive with a Passport session cookie;
+ * non-browser clients may provide the normal Authorization: Bearer header.
+ */
+export async function authenticateSocketRequest(
+    req: Request,
+    dependencies: SocketAuthenticationDependencies = defaultSocketAuthenticationDependencies,
+): Promise<SocketPrincipal> {
+    if (req.isAuthenticated?.() && req.user) {
+        if (req.user.githubAuthInvalid) {
+            throw new SocketAuthenticationError('GITHUB_REAUTH_REQUIRED', 'GitHub authentication expired');
+        }
+
+        if (isGitHubTokenExpired(req)) {
+            const refreshResult = await dependencies.refreshToken(req, true);
+            if (refreshResult.status === 'reauth-required' || req.user.githubAuthInvalid) {
+                throw new SocketAuthenticationError('GITHUB_REAUTH_REQUIRED', 'GitHub authentication expired');
+            }
+            if (refreshResult.status === 'temporarily-unavailable') {
+                throw new SocketAuthenticationError(
+                    'GITHUB_TOKEN_REFRESH_UNAVAILABLE',
+                    'GitHub authentication could not be refreshed',
+                );
+            }
+        }
+
+        if (!dependencies.isWhitelisted(req.user.username)) {
+            throw new SocketAuthenticationError('USER_NOT_WHITELISTED', 'GitHub user is not allowed');
+        }
+
+        return {
+            user: req.user,
+            authorization: await dependencies.resolveInstanceAuthorization(req.user),
+        };
+    }
+
+    const bearerEnabled = process.env.ENABLE_BEARER_AUTH !== 'false';
+    const rawAuthHeader = req.headers.authorization;
+    const authHeader = Array.isArray(rawAuthHeader) ? rawAuthHeader[0] : rawAuthHeader;
+    if (bearerEnabled && authHeader?.startsWith('Bearer ')) {
+        const token = authHeader.slice(7).trim();
+        if (!token) {
+            throw new SocketAuthenticationError('INVALID_BEARER_TOKEN', 'Bearer token is empty');
+        }
+        const user = await dependencies.validateToken(token);
+        if (!user) {
+            throw new SocketAuthenticationError('INVALID_BEARER_TOKEN', 'Bearer token is invalid');
+        }
+        if (!dependencies.isWhitelisted(user.username)) {
+            throw new SocketAuthenticationError('USER_NOT_WHITELISTED', 'GitHub user is not allowed');
+        }
+        return {
+            user,
+            authorization: await dependencies.resolveInstanceAuthorization(user),
+        };
+    }
+
+    throw new SocketAuthenticationError('AUTHENTICATION_REQUIRED', 'Authentication required');
 }
 
 export async function ensureAuthenticated(req: Request, res: Response, next: NextFunction): Promise<void> {

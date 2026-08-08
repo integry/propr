@@ -5,7 +5,7 @@ import { createClient, RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
-import { setupAuth, ensureAuthenticated } from './auth.js';
+import { authenticateSocketRequest, setupAuth, ensureAuthenticated } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
@@ -48,13 +48,19 @@ import {
   processCommentEvent,
   closeUltrafixStateRedis,
   getActiveTasksForPR,
-  AGENT_RUNTIME_BUILD_QUEUE_NAME
+  AGENT_RUNTIME_BUILD_QUEUE_NAME,
+  runMigrations
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
+import { resolveApiListenHost } from './listenAddress.js';
+import {
+  startConfigReloadSubscription,
+  type ConfigReloadSubscription,
+} from './services/configReloadSubscription.js';
 import {
   assertNoDuplicateRoutes,
   createManagementRouteEntries,
@@ -126,7 +132,8 @@ const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: Comment
 const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 const app = express();
-const PORT = process.env.DASHBOARD_API_PORT || 4000;
+const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
+const HOST = resolveApiListenHost();
 
 // Trust proxy for secure cookies behind reverse proxy (Cloudflare, nginx, etc.)
 app.set('trust proxy', 1);
@@ -168,11 +175,12 @@ app.use(express.json({ limit: '1mb' }));
 // including auth-adjacent endpoints, cannot bypass it by ordering.
 app.use('/api', demoModeReadOnlyMiddleware);
 
-setupAuth(app, demoMode);
+const socketAuthMiddleware = setupAuth(app, demoMode);
 
 let redisClient: RedisClientType;
 let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
+let configReloadSubscription: ConfigReloadSubscription | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -381,12 +389,15 @@ const httpServer: HttpServer = createServer(app);
 async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
-    try { await db.migrate.latest(); console.log('Database migrations completed successfully'); } catch (error) { console.error('Database migration failed:', error); }
+    await runMigrations();
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
-      try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
+      configReloadSubscription = await startConfigReloadSubscription(redisClient, loadSettingsFromConfig);
+      // Subscribe first, then enqueue the initial load through the same serial
+      // chain so no settings update can race with the startup snapshot.
+      await configReloadSubscription.reload();
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
         if (removed > 0) console.log(`Removed ${removed} orphaned agent login container(s)`);
@@ -400,7 +411,10 @@ async function start(): Promise<void> {
     }
     setupRoutes();
     if (!demoMode) {
-      const socketService = initSocketService(httpServer, validateCorsOrigin);
+      const socketService = initSocketService(httpServer, validateCorsOrigin, {
+        engineMiddleware: socketAuthMiddleware.engineMiddleware,
+        authenticate: authenticateSocketRequest,
+      });
       console.log('[WebSocket] Socket.IO server initialized');
       socketService.initQueueFeatures({ taskQueue, redisClient, db });
       console.log('[WebSocket] Queue features initialized for real-time updates');
@@ -434,7 +448,7 @@ async function start(): Promise<void> {
         }
       }, 30 * 1000);
     }
-    httpServer.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
+    httpServer.listen(PORT, HOST, () => { console.log(`Dashboard API server running at ${HOST}:${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
 
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
@@ -446,6 +460,7 @@ async function start(): Promise<void> {
       ];
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }
