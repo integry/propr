@@ -316,6 +316,8 @@ preflight_immutable_tag() {
   fi
 }
 
+declare -A PREFLIGHTED_CANDIDATE_DIGESTS=()
+
 preflight_candidate_image() {
   local name="$1" repository candidate_ref rebuilt_digest suffix
   while IFS= read -r repository; do
@@ -327,15 +329,16 @@ preflight_candidate_image() {
     while IFS= read -r suffix; do
       preflight_immutable_tag "$repository:$suffix" "$rebuilt_digest" || return
     done < <(immutable_suffixes_for "$name")
+    PREFLIGHTED_CANDIDATE_DIGESTS["$repository"]="$rebuilt_digest"
   done < <(repositories_for "$name")
 }
 
 publish_candidate_image() {
-  local name="$1" repository candidate_ref rebuilt_digest
+  local name="$1" repository rebuilt_digest
   while IFS= read -r repository; do
-    candidate_ref="$(candidate_ref_for "$repository")"
-    if ! rebuilt_digest="$(inspect_remote_digest "$candidate_ref")"; then
-      echo "Unable to resolve staged artifact digest from $candidate_ref" >&2
+    rebuilt_digest="${PREFLIGHTED_CANDIDATE_DIGESTS[$repository]:-}"
+    if [[ -z "$rebuilt_digest" ]]; then
+      echo "Refusing to publish $repository without a preflighted staged artifact digest" >&2
       return 1
     fi
     reconcile_repository "$name" "$repository" "$rebuilt_digest" || return

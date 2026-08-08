@@ -64,6 +64,11 @@ if (args[0] === 'buildx' && args[1] === 'imagetools' && args[2] === 'inspect') {
     console.error('manifest unknown: ' + ref + ' not found');
     process.exit(1);
   }
+  if (ref === process.env.SWITCH_CANDIDATE_REF && !state.candidateSwitched) {
+    state.digests[ref] = process.env.SWITCHED_CANDIDATE_DIGEST;
+    state.candidateSwitched = true;
+    save();
+  }
   const formatIndex = args.indexOf('--format');
   const format = formatIndex >= 0 ? args[formatIndex + 1] : '';
   if (format === '{{json .Manifest.Digest}}') console.log(JSON.stringify(digest));
@@ -194,6 +199,28 @@ describe('build-images publication reconciliation', () => {
         `${uiRepository}:reconcile-${FULL_SHA}`,
       ],
     );
+  });
+
+  test('publishes the preflighted digest when the staging tag changes afterward', () => {
+    const candidateRef = `${IMAGE_REPOSITORY}:reconcile-${FULL_SHA}`;
+    const root = createFixture();
+    const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app'], {
+      SWITCH_CANDIDATE_REF: candidateRef,
+      SWITCHED_CANDIDATE_DIGEST: DIGEST_B,
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const state = readState(root);
+    assert.equal(state.digests[candidateRef], DIGEST_B);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], DIGEST_A);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], DIGEST_A);
+    const publicationSources = readDockerLog(root)
+      .filter(args => args[0] === 'buildx' && args[1] === 'imagetools' && args[2] === 'create')
+      .map(args => args.at(-1));
+    assert.deepEqual(publicationSources, [
+      `${IMAGE_REPOSITORY}@${DIGEST_A}`,
+      `${IMAGE_REPOSITORY}@${DIGEST_A}`,
+    ]);
   });
 
   test('does not treat registry authorization failures as missing manifests', () => {
