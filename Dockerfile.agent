@@ -172,7 +172,6 @@ RUN set -eu; \
     printf '%s\n' "$source_url" > /home/node/.local/share/propr/antigravity-cli.source; \
     printf '%s\n' "$ANTIGRAVITY_CLI_SHA512" > /home/node/.local/share/propr/antigravity-cli.sha512; \
     rm -f "$archive" /tmp/antigravity; \
-    agy install >/dev/null 2>&1 || true; \
     test "$(agy --version)" = "$ANTIGRAVITY_CLI_VERSION"; \
     agy --version | tee /home/node/.local/share/propr/antigravity-cli.version
 

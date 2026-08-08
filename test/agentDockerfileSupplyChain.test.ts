@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const dockerfile = readFileSync(new URL('../Dockerfile.agent', import.meta.url), 'utf8');
+const buildScript = readFileSync(new URL('../scripts/build-images.sh', import.meta.url), 'utf8');
 
 test('Antigravity agent build uses a versioned artifact with a pinned checksum', () => {
   assert.match(dockerfile, /ARG ANTIGRAVITY_CLI_VERSION=\d+\.\d+\.\d+/);
@@ -21,4 +22,12 @@ test('Antigravity checksum verification happens before archive extraction', () =
 test('agent build never downloads and executes the mutable installer script', () => {
   assert.doesNotMatch(dockerfile, /antigravity\.google\/cli\/install\.sh/);
   assert.doesNotMatch(dockerfile, /antigravity-install\.sh/);
+  assert.doesNotMatch(dockerfile, /\bagy install\b/);
+});
+
+test('the image build script uses the same pinned Antigravity version', () => {
+  const dockerVersion = dockerfile.match(/ARG ANTIGRAVITY_CLI_VERSION=(\d+\.\d+\.\d+)/)?.[1];
+  const scriptVersion = buildScript.match(/ANTIGRAVITY_CLI_VERSION="\$\{ANTIGRAVITY_CLI_VERSION:-(\d+\.\d+\.\d+)\}"/)?.[1];
+  assert.ok(dockerVersion);
+  assert.equal(scriptVersion, dockerVersion);
 });
