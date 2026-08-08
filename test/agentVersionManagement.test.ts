@@ -169,10 +169,11 @@ describe('agent version management', () => {
         assert.match(vibeAgent, /PROPR_AGENT_TYPE=vibe/);
     });
 
-    test('records proprietary installer provenance in the unified agent image', () => {
+    test('records proprietary release artifact provenance in the unified agent image', () => {
         const agentDockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
 
-        assert.match(agentDockerfile, /antigravity-installer\.sha256/);
+        assert.match(agentDockerfile, /antigravity-cli\.source/);
+        assert.match(agentDockerfile, /antigravity-cli\.sha512/);
         assert.match(agentDockerfile, /antigravity-cli\.version/);
     });
 
