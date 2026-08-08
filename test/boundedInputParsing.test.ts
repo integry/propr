@@ -46,6 +46,11 @@ test('keyword extraction preserves paths with boundary slashes', () => {
 });
 
 test('keyword extraction resumes after invalid path separators', () => {
+  assert.deepEqual(
+    extractKeywords('src/auth//lib/util').slice(0, 2),
+    ['src/auth', 'lib/util'],
+  );
+
   const separators = '/'.repeat(REPETITIONS);
   assert.deepEqual(
     extractKeywords(`src/file.ts${separators}lib/next.ts`).slice(0, 2),
