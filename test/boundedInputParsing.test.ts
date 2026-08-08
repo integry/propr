@@ -32,10 +32,13 @@ test('keyword extraction preserves paths with boundary slashes', () => {
 });
 
 test('keyword extraction preserves dotted filename word boundaries', () => {
-  const keywords = extractKeywords('.eslintrc.json -package.json package.json-');
-  assert.ok(keywords.includes('eslintrc.json'));
-  assert.ok(keywords.includes('package.json'));
-  assert.ok(!keywords.includes('package.json-'));
+  for (const [prompt, expected] of [
+    ['.eslintrc.json', 'eslintrc.json'],
+    ['-package.json', 'package.json'],
+    ['package.json-', 'package.json'],
+  ]) {
+    assert.equal(extractKeywords(prompt)[0], expected);
+  }
 });
 
 test('keyword extraction does not silently cap input or results', () => {
