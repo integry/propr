@@ -3,6 +3,7 @@
  */
 
 import type { Response } from 'express';
+import fs from 'fs-extra';
 import type { FlatRequest as Request } from '../../../requestTypes.js';
 import { AttachmentService } from '@propr/core';
 import type { MulterFile } from '@propr/core';
@@ -58,17 +59,27 @@ interface UploadAttachmentDeps {
   verifyOwnership: (draftId: string, userId: string, fields?: string[]) => Promise<OwnershipResult>;
 }
 
+async function removeUploadedTempFile(filePath: string | undefined): Promise<void> {
+  if (!filePath) return;
+  try {
+    await fs.remove(filePath);
+  } catch (error) {
+    console.error('Failed to remove temporary upload:', error);
+  }
+}
+
 export function createUploadAttachmentHandler(deps: UploadAttachmentDeps) {
   return async function uploadAttachment(req: Request, res: Response): Promise<void> {
-    // Validate draft ID
-    const idValidation = validateUUID(req.params.id, 'Draft ID');
-    if (!idValidation.valid) {
-      res.status(400).json({ error: idValidation.error });
-      return;
-    }
-
     if (!req.file) { res.status(400).json({ error: 'No file uploaded' }); return; }
     try {
+      // Multer has already written the file by this point, so validation and
+      // authorization exits must still flow through the cleanup below.
+      const idValidation = validateUUID(req.params.id, 'Draft ID');
+      if (!idValidation.valid) {
+        res.status(400).json({ error: idValidation.error });
+        return;
+      }
+
       const ownership = await deps.verifyOwnership(req.params.id, req.user!.id);
       if (!ownership.authorized) { res.status(ownership.status!).json({ error: ownership.error }); return; }
 
@@ -79,6 +90,11 @@ export function createUploadAttachmentHandler(deps: UploadAttachmentDeps) {
       const message = error instanceof Error ? error.message : 'Processing failed';
       const status = message.includes('not supported') || message.includes('Unsupported') ? 400 : 500;
       res.status(status).json({ error: message });
+    } finally {
+      // AttachmentService also cleans its input. This idempotent boundary cleanup
+      // covers requests rejected before the service is called and unexpected
+      // service failures without trusting every downstream path to remember it.
+      await removeUploadedTempFile(req.file.path);
     }
   };
 }
