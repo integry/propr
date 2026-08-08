@@ -15,6 +15,12 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { CLIConfig, ConfigKey, ConfigValues, DEFAULT_CONFIG, RemoteProfile } from "./types.js";
+import {
+  ensurePrivateDirectory,
+  secureExistingPrivateDirectory,
+  secureExistingPrivateFile,
+  writePrivateFileAtomic,
+} from "../utils/privateFilesystem.js";
 
 /**
  * Default configuration directory name.
@@ -85,22 +91,6 @@ export class ConfigManager {
   }
 
   /**
-   * Ensures the configuration directory exists.
-   *
-   * @returns A promise that resolves when the directory exists.
-   */
-  private async ensureConfigDir(): Promise<void> {
-    try {
-      await fs.promises.mkdir(this.configDir, { recursive: true });
-    } catch (error) {
-      // Directory already exists or other error
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw error;
-      }
-    }
-  }
-
-  /**
    * Loads the configuration from the file.
    * If the file doesn't exist, uses default values.
    * If the file is corrupted, resets to defaults and warns the user.
@@ -109,6 +99,9 @@ export class ConfigManager {
    */
   async load(): Promise<CLIConfig> {
     try {
+      if (secureExistingPrivateDirectory(this.configDir)) {
+        secureExistingPrivateFile(this.configFilePath);
+      }
       const data = await fs.promises.readFile(this.configFilePath, "utf-8");
       const parsed = JSON.parse(data);
 
@@ -256,7 +249,7 @@ export class ConfigManager {
    * @returns A promise that resolves when the configuration is saved.
    */
   async save(): Promise<void> {
-    await this.ensureConfigDir();
+    ensurePrivateDirectory(this.configDir);
 
     // Only write non-undefined values
     const dataToWrite: Record<string, unknown> = {};
@@ -267,7 +260,7 @@ export class ConfigManager {
     }
 
     const content = JSON.stringify(dataToWrite, null, 2);
-    await fs.promises.writeFile(this.configFilePath, content, "utf-8");
+    writePrivateFileAtomic(this.configFilePath, content);
   }
 
   /**

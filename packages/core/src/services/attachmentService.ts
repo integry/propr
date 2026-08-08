@@ -4,6 +4,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
+import { fetchRemoteImage } from './remoteImageFetch.js';
 
 type ImageOptimizationLogger = {
   debug?: (obj: unknown, msg?: string) => void;
@@ -18,6 +19,7 @@ const TAIL_CHARS = 20000;
 const MAX_IMAGE_DIMENSION = 1024;
 const IMAGE_QUALITY = 80; // WebP quality (0-100)
 const DEFAULT_MAX_OPTIMIZED_IMAGE_BYTES = 512 * 1024;
+const MAX_IMAGE_INPUT_PIXELS = 4096 * 4096;
 const IMAGE_OPTIMIZATION_STEPS = [
   { dimension: MAX_IMAGE_DIMENSION, quality: IMAGE_QUALITY },
   { dimension: 768, quality: 75 },
@@ -61,7 +63,7 @@ async function optimizeImageForContext(
   let lastResult: { size: number; dimension: number; quality: number; withinLimit: boolean } | null = null;
 
   for (const step of IMAGE_OPTIMIZATION_STEPS) {
-    await sharp(input)
+    await sharp(input, { limitInputPixels: MAX_IMAGE_INPUT_PIXELS })
       .resize({
         width: step.dimension,
         height: step.dimension,
@@ -371,52 +373,15 @@ export class AttachmentService {
     const finalPath = path.join(targetDir, finalFilename);
 
     try {
-      // Build headers - add auth for GitHub URLs
-      const headers: Record<string, string> = {
-        'User-Agent': 'ProPR-Bot/1.0 (https://github.com/integry/gitfix)'
-      };
-
-      // GitHub user-attachments require authentication
-      const isGitHubUrl = url.includes('github.com') || url.includes('githubusercontent.com');
-      logger?.debug?.({ url, isGitHubUrl, hasAuthToken: !!authToken }, 'Attempting to download remote image');
-      if (isGitHubUrl && authToken) {
-        headers['Authorization'] = `Bearer ${authToken}`;
-        headers['Accept'] = 'application/octet-stream';
-        logger?.debug?.({ url }, 'Using GitHub auth token for image download');
-      }
-
-      // Fetch the image from the remote URL
-      const response = await fetch(url, { headers });
-
-      if (!response.ok) {
-        logger?.warn?.({
-          url,
-          status: response.status,
-          statusText: response.statusText,
-          hasAuthToken: !!authToken,
-          tokenPrefix: authToken ? authToken.substring(0, 4) : 'none',
-          redirected: response.redirected,
-          finalUrl: response.url
-        }, 'Image fetch failed');
-        throw new Error(`Failed to fetch image: HTTP ${response.status} ${response.statusText}`);
-      }
-
-      const contentType = response.headers.get('content-type') || '';
-      if (!contentType.startsWith('image/')) {
-        throw new Error(`URL does not point to an image: content-type is ${contentType}`);
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-
-      // Process and optimize the image using sharp
+      const buffer = await fetchRemoteImage(url, { authToken, logger });
       const optimization = await optimizeImageForContext(buffer, finalPath, logger);
 
-      logger?.debug?.({ url, savedTo: finalPath, imageSize: optimization.size }, 'Successfully downloaded and optimized remote image');
+      logger?.debug?.({ savedTo: finalPath, imageSize: optimization.size }, 'Successfully downloaded and optimized remote image');
 
       return finalPath;
     } catch (error) {
-      logger?.warn?.({ url, error: (error as Error).message }, 'Failed to download remote image');
+      await fs.remove(finalPath).catch(() => undefined);
+      logger?.warn?.({ error: (error as Error).message }, 'Failed to download remote image');
       throw error;
     }
   }

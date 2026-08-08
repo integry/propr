@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { Job, Worker } from 'bullmq';
-import { createWorker, ANALYSIS_QUEUE_NAME, issueQueue } from '@propr/core';
+import { createWorker, ANALYSIS_QUEUE_NAME, issueQueue, runMigrations } from '@propr/core';
 import type { AnalysisJobData, JobResult, CommentJobData, UnprocessedComment } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
@@ -285,6 +285,9 @@ async function processAnalysisJob(job: Job<AnalysisJobData>): Promise<AnalysisRe
 
 async function startAnalysisWorker(): Promise<Worker<AnalysisJobData, AnalysisResult>> {
     const workerId = `analysis-worker:${generateCorrelationId()}`;
+
+    // Do not claim analysis work until the shared schema is current.
+    await runMigrations();
 
     logger.info({
         queue: ANALYSIS_QUEUE_NAME,
