@@ -140,7 +140,7 @@ export async function runBackgroundGeneration(
     ));
     console.log(`[generate] Plan generation completed for draft ${draftId}`);
   } catch (error) {
-    console.error(`[generate] Plan generation failed for draft ${draftId}:`, error);
+    console.error('[generate] Plan generation failed', { draftId, error });
     try {
       // Re-read and retry a CAS miss when a same-run trace update won the race.
       // Abort or replacement runs still win because their status/run ID differs.
@@ -162,7 +162,7 @@ export async function runBackgroundGeneration(
         console.warn(`[generate] Failed to publish failure event for draft ${draftId} — client will resync via safety-net poll`);
       }
     } catch (dbError) {
-      console.error(`[generate] Failed to update draft status after error:`, dbError);
+      console.error('[generate] Failed to update draft status after error', { draftId, error: dbError });
     }
   }
 }

@@ -218,7 +218,7 @@ export function createRefineHandler(db: Knex) {
         correlationId,
         accessToken: req.user!.accessToken || '',
         runId: correlationId
-      }).catch(error => console.error(`[refine] Detached refinement failed for draft ${draftId}:`, error));
+      }).catch(error => console.error('[refine] Detached refinement failed', { draftId, error }));
     } catch (error) {
       console.error('Refine plan error:', error);
       if (refinementClaimed && !res.headersSent) {
@@ -303,7 +303,7 @@ export function createFinalizeHandler(db: Knex) {
           console.log(`[finalize] Draft ${draftId} execution completed, ${result.results?.length || 0} issues created`);
         }
       } catch (error) {
-        console.error(`[finalize] Draft ${draftId} execution failed:`, error);
+        console.error('[finalize] Draft execution failed', { draftId, error });
         // Emit failure event via WebSocket
         const eventPublisher = getEventPublisher();
         await eventPublisher.publishDraftUpdate({

@@ -78,9 +78,8 @@ export const EPIC_BRANCH_PATTERN = /^(\d+)-epic-([a-z0-9]+)-([a-z0-9]+)-([a-z0-9
 function generateRandomSuffix(): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
   let result = '';
-  const randomBytes = crypto.randomBytes(3);
   for (let i = 0; i < 3; i++) {
-    result += chars[randomBytes[i] % chars.length];
+    result += chars[crypto.randomInt(chars.length)];
   }
   return result;
 }
