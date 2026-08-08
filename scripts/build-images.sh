@@ -345,26 +345,6 @@ publish_candidate_image() {
   done < <(repositories_for "$name")
 }
 
-push_reconciled_image() {
-  local name="$1"
-  verify_local_release_image "$name"
-  stage_candidate_image "$name"
-  preflight_candidate_image "$name"
-  publish_candidate_image "$name"
-}
-
-reconcile_pushed_candidates() {
-  local name="$1" repository candidate_ref rebuilt_digest
-  while IFS= read -r repository; do
-    candidate_ref="$(candidate_ref_for "$repository")"
-    if ! rebuilt_digest="$(inspect_remote_digest "$candidate_ref")"; then
-      echo "Unable to resolve multi-platform artifact digest from $candidate_ref" >&2
-      return 1
-    fi
-    reconcile_repository "$name" "$repository" "$rebuilt_digest" || return
-  done < <(repositories_for "$name")
-}
-
 PROMOTION_REPOSITORIES=()
 PROMOTION_TARGETS=()
 PROMOTION_DIGESTS=()
@@ -546,19 +526,17 @@ build_image() {
 
   if $PUSH && [[ -n "$PLATFORM" && "$PLATFORM" == *,* ]]; then
     # Multi-arch cannot be loaded into the local daemon. Publish only a staging
-    # reference, then apply the same immutable-tag checks used by native builds.
+    # reference. Immutable-tag checks and publication are deferred until every
+    # selected image has been staged successfully.
     docker buildx build "${build_args[@]}" --push -f "$dockerfile" "${tag_args[@]}" "$context"
-    reconcile_pushed_candidates "$name"
   else
     docker build "${build_args[@]}" -f "$dockerfile" "${tag_args[@]}" "$context"
-    if $PUSH; then
-      push_reconciled_image "$name"
-    fi
   fi
 }
 
 # --- Main ---------------------------------------------------------------------
 AGENT_BUNDLE_TAG="$(resolve_agent_bundle_tag)"
+RELEASE_IMAGES=("${IMAGES[@]}" "launcher|docker/Dockerfile.launcher|.")
 
 echo "Propr image build"
 echo "  version:    $VERSION"
@@ -579,7 +557,6 @@ if $PROMOTE_LATEST; then
 fi
 
 if $PUSH_ONLY; then
-  RELEASE_IMAGES=("${IMAGES[@]}" "launcher|docker/Dockerfile.launcher|.")
   # Validate every local source before the first registry mutation. Candidates
   # are intentionally non-consumer tags; all immutable consumer tags across
   # both registries are then preflighted before any are created or changed.
@@ -619,6 +596,32 @@ done
 # Launcher is built last so it bakes the fresh manifest above.
 if should_build "launcher"; then
   build_image "launcher" "docker/Dockerfile.launcher" "."
+fi
+
+if $PUSH; then
+  if [[ -z "$PLATFORM" || "$PLATFORM" != *,* ]]; then
+    # Native builds remain local until every selected image has built and can be
+    # validated. Only then stage all candidates, without publishing consumers.
+    for entry in "${RELEASE_IMAGES[@]}"; do
+      IFS='|' read -r name _dockerfile _context <<< "$entry"
+      should_build "$name" && verify_local_release_image "$name"
+    done
+    for entry in "${RELEASE_IMAGES[@]}"; do
+      IFS='|' read -r name _dockerfile _context <<< "$entry"
+      should_build "$name" && stage_candidate_image "$name"
+    done
+  fi
+
+  # Multi-platform builds have already pushed only their candidate references.
+  # Preflight every selected repository before publishing the first consumer.
+  for entry in "${RELEASE_IMAGES[@]}"; do
+    IFS='|' read -r name _dockerfile _context <<< "$entry"
+    should_build "$name" && preflight_candidate_image "$name"
+  done
+  for entry in "${RELEASE_IMAGES[@]}"; do
+    IFS='|' read -r name _dockerfile _context <<< "$entry"
+    should_build "$name" && publish_candidate_image "$name"
+  done
 fi
 
 echo ""
