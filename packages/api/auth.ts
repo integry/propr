@@ -87,6 +87,40 @@ function clearSessionCookie(res: Response): void {
     });
 }
 
+export interface GitHubOAuthStrategyConfig {
+    clientID: string;
+    clientSecret: string;
+    callbackURL: string;
+}
+
+export function createGitHubOAuthStrategy(config: GitHubOAuthStrategyConfig): GitHubStrategy {
+    return new GitHubStrategy({
+        ...config,
+        // passport-github2's types narrow the inherited OAuth2 option to a
+        // string, but passport-oauth2 uses the boolean form to enable its
+        // random, session-backed state store.
+        state: true as unknown as string,
+    },
+    // eslint-disable-next-line max-params
+    function verifyCallback(accessToken: string, refreshToken: string, params: { expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) {
+        console.log('User authenticated:', profile.username);
+
+        const tokenExpiresAt = params.expires_in ? Date.now() + (params.expires_in * 1000) : undefined;
+        const user: GitHubUser = {
+            id: profile.id,
+            login: profile.username || '',
+            username: profile.username || '',
+            displayName: profile.displayName,
+            email: profile.emails?.[0]?.value || null,
+            avatarUrl: profile.photos?.[0]?.value || null,
+            accessToken,
+            refreshToken: refreshToken || undefined,
+            tokenExpiresAt,
+        };
+        return done(null, user);
+    });
+}
+
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): SocketAuthMiddlewareBundle {
     configureDemoMode(demoModeAtStartup);
     const requiredEnvVars = demoModeAtStartup
@@ -139,32 +173,10 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         app.use(passportInitializeMiddleware);
         app.use(passportSessionMiddleware);
 
-        passport.use(new GitHubStrategy({
+        passport.use(createGitHubOAuthStrategy({
             clientID: process.env.GH_OAUTH_CLIENT_ID!,
             clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
             callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
-        },
-        // eslint-disable-next-line max-params
-        function verifyCallback(accessToken: string, refreshToken: string, params: { expires_in?: number }, profile: Profile, done: (error: Error | null, user?: GitHubUser) => void) {
-            // Here you would find or create a user in your database.
-            // For now, we'll just pass the profile through.
-            console.log('User authenticated:', profile.username);
-
-            // Calculate token expiration time (expires_in is in seconds)
-            const tokenExpiresAt = params.expires_in ? Date.now() + (params.expires_in * 1000) : undefined;
-
-            const user: GitHubUser = {
-                id: profile.id,
-                login: profile.username || '',
-                username: profile.username || '',
-                displayName: profile.displayName,
-                email: profile.emails?.[0]?.value || null,
-                avatarUrl: profile.photos?.[0]?.value || null,
-                accessToken: accessToken,
-                refreshToken: refreshToken || undefined,
-                tokenExpiresAt: tokenExpiresAt
-            };
-            return done(null, user);
         }));
 
         passport.serializeUser((user, done) => done(null, user));
