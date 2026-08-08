@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { networkInterfaces } from 'node:os';
 import { after, test } from 'node:test';
 import express from 'express';
 import session from 'express-session';
@@ -85,6 +86,36 @@ test('does not let an unconfigured private peer rotate quota buckets with X-Forw
   const app = await startTestApp(2, {
     proxyEnvironment: { PROPR_TRUSTED_PROXY_PEERS: '10.0.0.2' },
     remoteAddress: '10.0.0.3',
+  });
+  openServers.push(app.close);
+
+  const first = await fetch(`${app.origin}/resource`, {
+    headers: { 'X-Forwarded-For': '192.0.2.1' },
+  });
+  const second = await fetch(`${app.origin}/resource`, {
+    headers: { 'X-Forwarded-For': '192.0.2.2' },
+  });
+  const limited = await fetch(`${app.origin}/resource`, {
+    headers: { 'X-Forwarded-For': '192.0.2.3' },
+  });
+
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(limited.status, 429);
+});
+
+test('tunnel trust does not let an unrelated private peer rotate quota buckets', async () => {
+  const assignedAddresses = new Set(
+    Object.values(networkInterfaces()).flatMap(interfaces =>
+      (interfaces ?? []).map(networkInterface => networkInterface.address)),
+  );
+  const privatePeer = Array.from({ length: 254 }, (_, index) => `10.255.255.${index + 1}`)
+    .find(address => !assignedAddresses.has(address));
+  assert.ok(privatePeer);
+
+  const app = await startTestApp(2, {
+    proxyEnvironment: { PROPR_TRUSTED_PROXY_PEERS: 'self' },
+    remoteAddress: privatePeer,
   });
   openServers.push(app.close);
 

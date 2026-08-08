@@ -1,4 +1,5 @@
 import type { Express } from 'express';
+import { networkInterfaces } from 'node:os';
 import { ipKeyGenerator, rateLimit, type RateLimitRequestHandler } from 'express-rate-limit';
 
 interface RateLimitEnvironment {
@@ -25,11 +26,27 @@ const DEFAULT_POLICIES: RequestRateLimitPolicies = {
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const TRUSTED_PROXY_PEERS_ENVIRONMENT_VARIABLE = 'PROPR_TRUSTED_PROXY_PEERS';
+const SELF_PROXY_PEER = 'self';
+
+function selfProxyAddresses(): ReadonlySet<string> {
+  const addresses = new Set<string>();
+  for (const interfaces of Object.values(networkInterfaces())) {
+    for (const networkInterface of interfaces ?? []) {
+      if (networkInterface.internal) continue;
+      addresses.add(networkInterface.address);
+      if (networkInterface.family === 'IPv4') {
+        addresses.add(`::ffff:${networkInterface.address}`);
+      }
+    }
+  }
+  return addresses;
+}
 
 /**
  * Forwarded addresses are trusted only when the immediate socket peer is
  * explicitly configured as a reverse proxy. Without configuration, all
- * clients are keyed by their socket address.
+ * clients are keyed by their socket address. The reserved `self` peer is used
+ * by the managed tunnel sidecar, which shares the API network namespace.
  */
 export function configureApiProxyTrust(
   app: Express,
@@ -41,7 +58,14 @@ export function configureApiProxyTrust(
     return;
   }
 
-  app.set('trust proxy', configuredPeers.split(',').map(peer => peer.trim()).filter(Boolean));
+  const peers = configuredPeers.split(',').map(peer => peer.trim()).filter(Boolean);
+  if (peers.length === 1 && peers[0] === SELF_PROXY_PEER) {
+    const addresses = selfProxyAddresses();
+    app.set('trust proxy', (address: string) => addresses.has(address));
+    return;
+  }
+
+  app.set('trust proxy', peers);
 }
 
 function positiveInteger(environment: RateLimitEnvironment, name: string, fallback: number): number {

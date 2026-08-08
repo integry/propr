@@ -152,7 +152,7 @@ test('enabling the tunnel derives public API, frontend, and OAuth callback URLs'
   assert.equal(cfg.apiPublicUrl, 'https://t-abc123.propr.dev');
   assert.equal(cfg.frontendUrl, 'https://app.propr.dev');
   assert.equal(cfg.ghOauthCallbackUrl, 'https://t-abc123.propr.dev/api/auth/github/callback');
-  assert.equal(cfg.trustedProxyPeers, 'uniquelocal');
+  assert.equal(cfg.trustedProxyPeers, 'self');
 });
 
 test('explicit public URLs still win over tunnel-derived values', () => {
@@ -193,7 +193,7 @@ test('api container propagates the tunnel PROPR_UI_* env without the tunnel toke
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_ENABLED'), ['true']);
   assert.deepEqual(envValues(args, 'PROPR_INSTANCE_ID'), ['abc123']);
   assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
-  assert.deepEqual(envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'), ['uniquelocal']);
+  assert.deepEqual(envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'), ['self']);
   // The tunnel token must never reach the API container.
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), []);
 });
@@ -311,6 +311,7 @@ test('only the tunnel sidecar receives the token, via cloudflared TUNNEL_TOKEN',
   // The token must not appear in the container argv (visible via docker inspect).
   assert.ok(!spec.command.includes('--token'));
   assert.ok(!spec.command.includes('secret-token'));
+  assert.equal(spec.networkMode, 'container:propr-api');
 });
 
 test('buildServiceSpec throws for a tunnel without a token', () => {

@@ -300,13 +300,12 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // A persisted CLI toggle (`propr tunnel on|off`) wins over the env-derived
     // default so `propr start` honors the user's last explicit choice.
     const uiTunnelEnabled = overrides.uiTunnelEnabled ?? (Boolean(uiTunnelToken) || parseTruthyEnvValue(get('PROPR_UI_TUNNEL_ENABLED')));
-    // The managed cloudflared sidecar reaches the API from the stack's private
-    // Docker network. Trust that address class only while tunnel mode is on;
-    // direct/local deployments remain fail-closed unless an operator names
-    // their own immediate reverse-proxy peers explicitly.
+    // The managed cloudflared sidecar shares the API container's network
+    // namespace. Trust only that namespace's own non-loopback addresses while
+    // tunnel mode is on; other private-network peers remain untrusted.
     const trustedProxyPeers = overrides.trustedProxyPeers
         ?? get('PROPR_TRUSTED_PROXY_PEERS')
-        ?? (uiTunnelEnabled ? 'uniquelocal' : undefined);
+        ?? (uiTunnelEnabled ? 'self' : undefined);
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
     // Cloudflared image for the optional tunnel sidecar: an explicit env override
     // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a
@@ -534,10 +533,10 @@ export function dockerAvailable() {
     return res.status === 0;
 }
 
-function dockerRunDetached(cfg, name, service, args) {
+function dockerRunDetached(cfg, name, service, args, networkMode = cfg.network) {
     const full = [
         'run', '-d', '--init', '--name', name,
-        '--network', cfg.network, '--restart', 'unless-stopped',
+        '--network', networkMode, '--restart', 'unless-stopped',
         '--label', `propr.stack=${cfg.stack}`,
         '--label', `propr.service=${service}`,
         ...args,
@@ -986,6 +985,11 @@ export function buildServiceSpec(cfg, service) {
                 image: cfg.cloudflaredImage,
                 args: ['-e', `TUNNEL_TOKEN=${cfg.uiTunnelToken}`],
                 command: ['tunnel', '--no-autoupdate', 'run'],
+                // Sharing the API network namespace makes cloudflared's socket
+                // peer one of the API container's own addresses. The API can
+                // therefore trust this exact path without trusting unrelated
+                // containers or direct private-network clients.
+                networkMode: `container:${cfg.stack}-api`,
             };
         default:
             throw new Error(`unknown service: ${service}`);
@@ -1003,7 +1007,7 @@ export function startService(cfg, service, { onLog, pull = true, freshnessCache 
     const spec = buildServiceSpec(cfg, service);
     removeIfExists(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    dockerRunDetached(cfg, name, service, runArgs);
+    dockerRunDetached(cfg, name, service, runArgs, spec.networkMode);
     onLog?.(`  [ok] started ${name}`);
     return getServiceState(cfg, service);
 }
@@ -1089,10 +1093,10 @@ async function removeIfExistsAsync(cfg, name, onLog) {
     }
 }
 
-async function dockerRunDetachedAsync(cfg, name, service, args) {
+async function dockerRunDetachedAsync(cfg, name, service, args, networkMode = cfg.network) {
     const full = [
         'run', '-d', '--init', '--name', name,
-        '--network', cfg.network, '--restart', 'unless-stopped',
+        '--network', networkMode, '--restart', 'unless-stopped',
         '--label', `propr.stack=${cfg.stack}`,
         '--label', `propr.service=${service}`,
         ...args,
@@ -1151,7 +1155,7 @@ export async function startServiceAsync(cfg, service, { onLog, pull = true, fres
     const spec = buildServiceSpec(cfg, service);
     await removeIfExistsAsync(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    await dockerRunDetachedAsync(cfg, name, service, runArgs);
+    await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode);
     onLog?.(`  [ok] started ${name}`);
     return getServiceStateAsync(cfg, service);
 }
