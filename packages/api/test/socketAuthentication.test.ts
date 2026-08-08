@@ -3,9 +3,10 @@ import { createServer } from 'node:http';
 import { after, afterEach, describe, test } from 'node:test';
 import type { AddressInfo } from 'node:net';
 import type { Request, RequestHandler } from 'express';
-import { Server as SocketIOServer } from 'socket.io';
+import { Server as SocketIOServer, type Socket as ServerSocket } from 'socket.io';
 import { io as createSocketClient, type Socket as ClientSocket } from 'socket.io-client';
 import { closeConnection } from '@propr/core';
+import { INDEXING_UPDATE, type IndexingUpdatePayload } from '@propr/shared';
 import type { GitHubUser } from '../authTypes.js';
 import {
   authenticateSocketRequest,
@@ -13,7 +14,12 @@ import {
   type SocketAuthenticationDependencies,
   type SocketPrincipal,
 } from '../auth.js';
-import { configureSocketAuthentication } from '../services/socketAuthentication.js';
+import {
+  configureSocketAuthentication,
+  revalidateSocketAuthentication,
+} from '../services/socketAuthentication.js';
+import { SocketSubscriptionManager } from '../services/socketSubscriptions.js';
+import type { TaskWatcherManager } from '../services/taskWatcher.js';
 
 const originalBearerSetting = process.env.ENABLE_BEARER_AUTH;
 
@@ -36,10 +42,14 @@ function user(overrides: Partial<GitHubUser> = {}): GitHubUser {
   };
 }
 
-function principal(githubUser = user()): SocketPrincipal {
+function principal(githubUser = user(), canManageSettings = false): SocketPrincipal {
   return {
     user: githubUser,
-    authorization: { role: 'member', permissions: [], source: 'implicit' },
+    authorization: {
+      role: canManageSettings ? 'admin' : 'member',
+      permissions: canManageSettings ? ['instance.manage_settings'] : [],
+      source: 'implicit',
+    },
   };
 }
 
@@ -73,6 +83,14 @@ async function waitForConnectError(socket: ClientSocket): Promise<Error & { data
     socket.once('connect', () => reject(new Error('Socket unexpectedly connected')));
     socket.once('connect_error', error => resolve(error as Error & { data?: { code?: string } }));
   });
+}
+
+async function waitFor(condition: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
 }
 
 describe('Socket.IO authentication', () => {
@@ -192,6 +210,67 @@ describe('Socket.IO authentication', () => {
     try {
       const error = await waitForConnectError(client);
       assert.equal(error.data?.code, 'USER_NOT_WHITELISTED');
+    } finally {
+      client.disconnect();
+      await io.close();
+      await new Promise<void>(resolve => httpServer.close(() => resolve()));
+    }
+  });
+
+  test('stops indexing updates after manage-settings permission is revoked', async () => {
+    const httpServer = createServer();
+    const io = new SocketIOServer(httpServer, { transports: ['websocket'] });
+    let canManageSettings = true;
+    configureSocketAuthentication(io, {
+      engineMiddleware: [],
+      authenticate: async () => principal(user(), canManageSettings),
+    });
+    const subscriptionManager = new SocketSubscriptionManager({
+      getQueueDependencies: () => null,
+      getQueueBroadcaster: () => null,
+      taskWatcherManager: {
+        stopTaskWatcherIfEmpty: async () => undefined,
+      } as unknown as TaskWatcherManager,
+    });
+    let serverSocket: ServerSocket | undefined;
+    io.on('connection', socket => {
+      serverSocket = socket;
+      subscriptionManager.setup(socket);
+    });
+    await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+    const client = createSocketClient(`http://127.0.0.1:${port}`, {
+      transports: ['websocket'],
+      reconnection: false,
+    });
+    const received: IndexingUpdatePayload[] = [];
+    client.on(INDEXING_UPDATE, payload => received.push(payload as IndexingUpdatePayload));
+
+    try {
+      await waitForConnect(client);
+      client.emit('subscribe:indexing:updates');
+      await waitFor(
+        () => serverSocket?.rooms.has('indexing:updates') === true,
+        'Socket did not join the indexing updates room',
+      );
+
+      const disconnected = new Promise<void>(resolve => client.once('disconnect', () => resolve()));
+      canManageSettings = false;
+      assert(serverSocket);
+      assert.equal(await revalidateSocketAuthentication(serverSocket), false);
+      await disconnected;
+
+      const payload: IndexingUpdatePayload = {
+        eventType: INDEXING_UPDATE,
+        repository: 'integry/propr',
+        phase: 'indexing',
+        timestamp: new Date(0).toISOString(),
+      };
+      io.to('indexing:updates').emit(INDEXING_UPDATE, payload);
+      await new Promise(resolve => setTimeout(resolve, 25));
+
+      assert.equal(io.sockets.adapter.rooms.has('indexing:updates'), false);
+      assert.deepEqual(received, []);
     } finally {
       client.disconnect();
       await io.close();

@@ -69,6 +69,17 @@ function revalidationInterval(options: SocketAuthenticationOptions): number {
     : DEFAULT_REVALIDATION_INTERVAL_MS;
 }
 
+function hasSameEffectiveAuthorization(
+  current: SocketPrincipal['authorization'],
+  next: SocketPrincipal['authorization'],
+): boolean {
+  if (current.role !== next.role) return false;
+  const currentPermissions = new Set(current.permissions);
+  const nextPermissions = new Set(next.permissions);
+  return currentPermissions.size === nextPermissions.size
+    && [...currentPermissions].every(permission => nextPermissions.has(permission));
+}
+
 export async function revalidateSocketAuthentication(socket: Socket): Promise<boolean> {
   const revalidate = (socket.data as RevalidatingSocketData).revalidateAuthentication;
   if (!revalidate) {
@@ -125,6 +136,12 @@ export function configureSocketAuthentication(
               throw new SocketAuthenticationError(
                 'AUTHENTICATION_IDENTITY_CHANGED',
                 'Socket identity changed during revalidation',
+              );
+            }
+            if (!hasSameEffectiveAuthorization(initialPrincipal.authorization, principal.authorization)) {
+              throw new SocketAuthenticationError(
+                'AUTHORIZATION_CHANGED',
+                'Socket authorization changed during revalidation',
               );
             }
             data.principal = principal;
