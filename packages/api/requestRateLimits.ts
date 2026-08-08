@@ -1,3 +1,4 @@
+import type { Express } from 'express';
 import { ipKeyGenerator, rateLimit, type RateLimitRequestHandler } from 'express-rate-limit';
 
 interface RateLimitEnvironment {
@@ -21,6 +22,16 @@ const DEFAULT_POLICIES: RequestRateLimitPolicies = {
   auth: { identifier: 'auth', limit: 30, windowMs: 15 * 60_000 },
   webhook: { identifier: 'webhook', limit: 300, windowMs: 60_000 },
 };
+
+const TRUSTED_PROXY_PEERS = 'loopback, linklocal, uniquelocal';
+
+/**
+ * Supported reverse proxies reach the API over loopback or an internal
+ * container network. Public socket peers remain untrusted.
+ */
+export function configureApiProxyTrust(app: Express): void {
+  app.set('trust proxy', TRUSTED_PROXY_PEERS);
+}
 
 function positiveInteger(environment: RateLimitEnvironment, name: string, fallback: number): number {
   const configured = environment[name];
@@ -65,14 +76,17 @@ export function createRequestRateLimiter(policy: RequestRateLimitPolicy): RateLi
     keyGenerator: request => {
       const socketAddress = request.socket.remoteAddress;
       const trustProxySetting: unknown = request.app.get('trust proxy');
+      const trustProxyFunction: unknown = request.app.get('trust proxy fn');
       const hasExplicitProxyTrust = typeof trustProxySetting === 'string'
         || Array.isArray(trustProxySetting)
         || typeof trustProxySetting === 'function';
+      const immediatePeerIsTrusted = hasExplicitProxyTrust
+        && socketAddress !== undefined
+        && typeof trustProxyFunction === 'function'
+        && trustProxyFunction(socketAddress, 0) === true;
 
       // Boolean and hop-count proxy settings do not identify a trusted peer.
-      // Express only populates request.ips when its trust rule accepts the
-      // immediate socket peer and a forwarded address is present.
-      const clientAddress = hasExplicitProxyTrust && request.ips.length > 0
+      const clientAddress = immediatePeerIsTrusted
         ? request.ip
         : socketAddress;
 

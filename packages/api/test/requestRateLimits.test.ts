@@ -2,16 +2,31 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import express from 'express';
 import {
+  configureApiProxyTrust,
   createRequestRateLimiter,
   resolveRequestRateLimitPolicies,
 } from '../requestRateLimits.js';
 
+interface TestAppOptions {
+  useServerProxyConfiguration?: boolean;
+  remoteAddress?: string;
+}
+
 async function startTestApp(
   limit = 2,
-  trustProxy?: number | string | string[],
+  options: TestAppOptions = {},
 ): Promise<{ origin: string; close: () => Promise<void> }> {
   const app = express();
-  if (trustProxy !== undefined) app.set('trust proxy', trustProxy);
+  if (options.useServerProxyConfiguration) configureApiProxyTrust(app);
+  if (options.remoteAddress) {
+    app.use((request, _response, next) => {
+      Object.defineProperty(request.socket, 'remoteAddress', {
+        configurable: true,
+        value: options.remoteAddress,
+      });
+      next();
+    });
+  }
   app.use(createRequestRateLimiter({ identifier: 'test', limit, windowMs: 60_000 }));
   app.all('/resource', (_request, response) => response.json({ ok: true }));
   const server = app.listen(0, '127.0.0.1');
@@ -57,7 +72,10 @@ test('does not charge CORS preflight requests against the quota', async () => {
 });
 
 test('does not let direct clients rotate quota buckets with X-Forwarded-For', async () => {
-  const app = await startTestApp(2, 1);
+  const app = await startTestApp(2, {
+    useServerProxyConfiguration: true,
+    remoteAddress: '203.0.113.10',
+  });
   openServers.push(app.close);
 
   const first = await fetch(`${app.origin}/resource`, {
@@ -76,7 +94,7 @@ test('does not let direct clients rotate quota buckets with X-Forwarded-For', as
 });
 
 test('uses forwarded client addresses from an explicitly trusted proxy', async () => {
-  const app = await startTestApp(1, '127.0.0.1');
+  const app = await startTestApp(1, { useServerProxyConfiguration: true });
   openServers.push(app.close);
 
   const firstClient = await fetch(`${app.origin}/resource`, {
