@@ -32,6 +32,9 @@ describe('remote image fetching', () => {
     assert.equal(isPublicRemoteAddress('::ffff:7f00:1'), false);
     assert.equal(isPublicRemoteAddress('fc00::1'), false);
     assert.equal(isPublicRemoteAddress('3fff::1'), false);
+    assert.equal(isPublicRemoteAddress('2001:5::1'), false);
+    assert.equal(isPublicRemoteAddress('2001:3::1'), true);
+    assert.equal(isPublicRemoteAddress('2001:20::1'), true);
   });
 
   test('rejects localhost and URL credentials before resolving or requesting', async () => {
@@ -107,6 +110,33 @@ describe('remote image fetching', () => {
     );
     assert.equal(result.toString(), 'image');
     assert.deepEqual(observedAuth, ['Bearer secret', undefined]);
+  });
+
+  test('never forwards GitHub authorization over HTTP after a redirect', async () => {
+    const observedAuth: Array<string | undefined> = [];
+    const deps = dependencies(async (url, _address, headers) => {
+      observedAuth.push(headers.Authorization);
+      if (url.hostname === 'images.example') {
+        return {
+          statusCode: 302,
+          headers: { location: 'http://private-user-images.githubusercontent.com/image.png' },
+          body: Buffer.alloc(0),
+        };
+      }
+      return {
+        statusCode: 200,
+        headers: { 'content-type': 'image/png' },
+        body: Buffer.from('image'),
+      };
+    });
+
+    const result = await fetchRemoteImage(
+      'https://images.example/image.png',
+      { authToken: 'secret' },
+      deps,
+    );
+    assert.equal(result.toString(), 'image');
+    assert.deepEqual(observedAuth, [undefined, undefined]);
   });
 
   test('accepts only exact GitHub domains and strips signed query data from logs', () => {

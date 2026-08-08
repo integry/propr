@@ -47,10 +47,7 @@ for (const [address, prefix] of [
   ['64:ff9b::', 96],
   ['64:ff9b:1::', 48],
   ['100::', 64],
-  ['2001::', 32],
-  ['2001:2::', 48],
-  ['2001:10::', 28],
-  ['2001:20::', 28],
+  ['2001::', 23],
   ['2001:db8::', 32],
   ['2002::', 16],
   ['3fff::', 20],
@@ -59,6 +56,18 @@ for (const [address, prefix] of [
   ['ff00::', 8],
 ] as const) {
   blockedIpv6Addresses.addSubnet(address, prefix, 'ipv6');
+}
+const globallyReachableIpv6Exceptions = new BlockList();
+for (const [address, prefix] of [
+  ['2001:1::1', 128],
+  ['2001:1::2', 128],
+  ['2001:1::3', 128],
+  ['2001:3::', 32],
+  ['2001:4:112::', 48],
+  ['2001:20::', 28],
+  ['2001:30::', 28],
+] as const) {
+  globallyReachableIpv6Exceptions.addSubnet(address, prefix, 'ipv6');
 }
 
 export interface ResolvedRemoteAddress {
@@ -99,7 +108,8 @@ export function isPublicRemoteAddress(address: string, family = isIP(address)): 
   if (family === 4) return !blockedIpv4Addresses.check(address, 'ipv4');
   const firstWord = Number.parseInt(address.split(':', 1)[0], 16);
   const isGlobalUnicast = Number.isFinite(firstWord) && (firstWord & 0xe000) === 0x2000;
-  return isGlobalUnicast && !blockedIpv6Addresses.check(address, 'ipv6');
+  const isGloballyReachableException = globallyReachableIpv6Exceptions.check(address, 'ipv6');
+  return isGlobalUnicast && (isGloballyReachableException || !blockedIpv6Addresses.check(address, 'ipv6'));
 }
 
 export function isGitHubAssetHost(hostname: string): boolean {
@@ -281,7 +291,7 @@ function requestHeaders(url: URL, authToken?: string): Record<string, string> {
     Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif,image/tiff,image/bmp',
     'User-Agent': 'ProPR-Bot/1.0 (https://github.com/integry/propr)',
   };
-  if (authToken && isGitHubAssetHost(normalizedHostname(url))) {
+  if (authToken && url.protocol === 'https:' && isGitHubAssetHost(normalizedHostname(url))) {
     headers.Authorization = `Bearer ${authToken}`;
   }
   return headers;
