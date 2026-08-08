@@ -82,3 +82,47 @@ test('clamps invalid page sizes before passing the SCAN hint to Redis', async ()
     );
     assert.equal(calls[0].at(-1), 100);
 });
+
+test('bounds over-sized SCAN responses and drains every key before advancing', async () => {
+    const keys = [
+        'worker:state:first',
+        'worker:state:second',
+        'worker:state:third',
+        'worker:state:fourth',
+        'worker:state:fifth',
+    ];
+    const records = new Map(keys.map(key => [
+        key,
+        JSON.stringify(makeTask(key.slice('worker:state:'.length))),
+    ]));
+    const scanCalls: unknown[][] = [];
+    const pipelineBatches: string[][] = [];
+    const redis = {
+        scan: async (...args: unknown[]) => {
+            scanCalls.push(args);
+            return ['42', keys] as [string, string[]];
+        },
+        pipeline: () => {
+            const batch: string[] = [];
+            pipelineBatches.push(batch);
+            return {
+                get: (key: string) => { batch.push(key); },
+                exec: async () => batch.map(key => [null, records.get(key)]),
+            };
+        },
+    };
+    const stateRedis = redis as Parameters<typeof scanNonTerminalTaskStates>[0];
+
+    const first = await scanNonTerminalTaskStates(stateRedis, 'worker:state:', '7', 2);
+    const second = await scanNonTerminalTaskStates(stateRedis, 'worker:state:', first.nextCursor, 2);
+    const third = await scanNonTerminalTaskStates(stateRedis, 'worker:state:', second.nextCursor, 2);
+
+    assert.equal(scanCalls.length, 1);
+    assert.deepEqual(pipelineBatches, [keys.slice(0, 2), keys.slice(2, 4), keys.slice(4)]);
+    assert.deepEqual(first.tasks.map(task => task.taskId), ['first', 'second']);
+    assert.deepEqual(second.tasks.map(task => task.taskId), ['third', 'fourth']);
+    assert.deepEqual(third.tasks.map(task => task.taskId), ['fifth']);
+    assert.equal(first.nextCursor, '7');
+    assert.equal(second.nextCursor, '7');
+    assert.equal(third.nextCursor, '42');
+});
