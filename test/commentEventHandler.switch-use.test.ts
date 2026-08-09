@@ -1153,7 +1153,7 @@ describe('commentEventHandler — comment revision cancellation', () => {
         mockDelayedJobs = [];
     });
 
-    test('deleting an active revision-based manual job uses the stable per-PR abort key', async () => {
+    test('deleting an active revision-based manual job uses its exact worker abort key', async () => {
         const remove = mock.fn(async () => {});
         mockActiveJobs = [{
             id: 'pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z',
@@ -1174,7 +1174,7 @@ describe('commentEventHandler — comment revision cancellation', () => {
         await handleCommentDeleted(event, 'issue_comment', 'corr-delete-delayed', config);
 
         assert.strictEqual(remove.mock.callCount(), 1);
-        assert.strictEqual(config.redisClient.set.mock.calls[0].arguments[0], 'worker:abort:testowner-testrepo-42');
+        assert.strictEqual(config.redisClient.set.mock.calls[0].arguments[0], 'worker:abort:pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z');
         assert.strictEqual(config.redisClient.del.mock.callCount(), 1);
         assert.strictEqual(
             config.redisClient.del.mock.calls[0].arguments[0],
@@ -1182,7 +1182,7 @@ describe('commentEventHandler — comment revision cancellation', () => {
         );
     });
 
-    test('editing an active revision-based manual job uses the stable per-PR abort key', async () => {
+    test('editing an active revision-based manual job uses its exact worker abort key', async () => {
         const remove = mock.fn(async () => {});
         mockActiveJobs = [{
             id: 'pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z',
@@ -1203,7 +1203,7 @@ describe('commentEventHandler — comment revision cancellation', () => {
         await handleCommentEdited(event, 'issue_comment', 'corr-edit-active-manual', config);
 
         assert.strictEqual(remove.mock.callCount(), 1);
-        assert.strictEqual(config.redisClient.set.mock.calls[0].arguments[0], 'worker:abort:testowner-testrepo-42');
+        assert.strictEqual(config.redisClient.set.mock.calls[0].arguments[0], 'worker:abort:pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z');
         assert.strictEqual(config.redisClient.del.mock.calls[0].arguments[0], 'pr-comment-processed:testowner:testrepo:42:123');
     });
 });

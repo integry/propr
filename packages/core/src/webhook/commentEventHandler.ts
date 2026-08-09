@@ -93,10 +93,6 @@ type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 're
 type PRComment = { id: number; created_at: string; updated_at: string; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type ManualCommandTakeover = { workEpoch: number; hadAutomaticWork: boolean };
 
-function getPRWorkerTaskId(owner: string, repo: string, prNumber: number): string {
-    return `${owner}-${repo}-${prNumber}`;
-}
-
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
     const result = await redisClient.set(key, Date.now().toString(), 'EX', 86400, 'NX');
     return result === 'OK';
@@ -164,7 +160,7 @@ export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequ
         const jobCommentIds = job.data.comments?.map(c => c.id) || [];
         if (jobCommentIds.includes(commentId)) {
             correlatedLogger.info({ jobId: job.id, pullRequestNumber: prNumber, repository: repoFullName }, 'Aborting job due to comment deletion');
-            const taskId = getPRWorkerTaskId(owner, repo, prNumber);
+            const taskId = job.id ?? `${owner}-${repo}-${prNumber}`;
             await redisClient.set(`worker:abort:${taskId}`, JSON.stringify({ timestamp: new Date().toISOString(), reason: 'comment_deleted', commentId }), 'EX', 3600);
             await job.remove();
             correlatedLogger.info({ jobId: job.id, taskId }, 'Job aborted and removed from queue');
@@ -203,7 +199,7 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
 
     if (foundJob) {
         correlatedLogger.info({ jobId: foundJob.id, pullRequestNumber: prNumber, repository: repoFullName }, 'Aborting existing job due to comment edit');
-        const taskId = getPRWorkerTaskId(owner, repo, prNumber);
+        const taskId = foundJob.id ?? `${owner}-${repo}-${prNumber}`;
         await redisClient.set(`worker:abort:${taskId}`, JSON.stringify({ timestamp: new Date().toISOString(), reason: 'comment_edited', commentId }), 'EX', 3600);
         await foundJob.remove();
     }
