@@ -18,66 +18,90 @@ interface PendingCommandContext {
     latestPendingOverrideComment?: UnprocessedComment;
 }
 
-function compareCommentChronology(left: CommentChronology, right: CommentChronology): number {
-    if (left.createdAt !== undefined && right.createdAt !== undefined) {
+type CommentChronologyComparator = (left: CommentChronology, right: CommentChronology) => number;
+
+function compareCommentTypes(left: CommentChronology['type'], right: CommentChronology['type']): number {
+    if (left === right) return 0;
+    if (left === undefined) return -1;
+    if (right === undefined) return 1;
+    return left === 'issue' ? -1 : 1;
+}
+
+function compareCommentChronology(left: CommentChronology, right: CommentChronology, useCreatedAt: boolean): number {
+    if (useCreatedAt && left.createdAt !== undefined && right.createdAt !== undefined) {
         const createdAtOrder = left.createdAt.localeCompare(right.createdAt);
         if (createdAtOrder !== 0) return createdAtOrder;
 
-        if (left.type !== right.type) {
-            if (left.type === undefined) return -1;
-            if (right.type === undefined) return 1;
-            return left.type === 'issue' ? -1 : 1;
-        }
+        const typeOrder = compareCommentTypes(left.type, right.type);
+        if (typeOrder !== 0) return typeOrder;
     }
 
-    return left.id - right.id;
+    const idOrder = left.id - right.id;
+    return idOrder !== 0 || useCreatedAt
+        ? idOrder
+        : compareCommentTypes(left.type, right.type);
 }
 
-function findLatestComment(
-    comments: UnprocessedComment[],
-    predicate: (comment: UnprocessedComment) => boolean,
-): UnprocessedComment | undefined {
-    return comments.reduce<UnprocessedComment | undefined>((latest, comment) => {
+function findLatestComment<T extends CommentChronology>(
+    comments: T[],
+    predicate: (comment: T) => boolean,
+    compareChronology: CommentChronologyComparator,
+): T | undefined {
+    return comments.reduce<T | undefined>((latest, comment) => {
         if (!predicate(comment)) return latest;
-        return !latest || compareCommentChronology(comment, latest) > 0 ? comment : latest;
+        return !latest || compareChronology(comment, latest) > 0 ? comment : latest;
     }, undefined);
 }
 
-function inferQueuedCommandChronology(jobData: CommentJobData): CommentChronology | undefined {
-    if (!jobData.commandMode || jobData.commandMode === 'default') return undefined;
+function getQueuedCommandChronologyCandidates(jobData: CommentJobData): CommentChronology[] {
+    if (!jobData.commandMode || jobData.commandMode === 'default') return [];
 
     if (jobData.commandCommentId !== undefined) {
         const ownerComment = jobData.comments?.find(comment =>
             comment.id === jobData.commandCommentId
             && (jobData.commandCommentType === undefined || comment.type === jobData.commandCommentType));
-        return {
+        return [{
             id: jobData.commandCommentId,
             createdAt: jobData.commandCommentCreatedAt ?? ownerComment?.createdAt,
             type: jobData.commandCommentType ?? ownerComment?.type,
-        };
+        }];
     }
 
-    const queuedComments = jobData.comments
+    return jobData.comments
         ?? (jobData.commentId === undefined
             ? []
             : [{ id: jobData.commentId }]);
-    return queuedComments.reduce<CommentChronology | undefined>((latest, comment) =>
-        !latest || compareCommentChronology(comment, latest) > 0 ? comment : latest, undefined);
 }
 
 function resolvePendingCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[]): PendingCommandContext {
-    const queuedCommandChronology = inferQueuedCommandChronology(jobData);
+    const queuedCommandCandidates = getQueuedCommandChronologyCandidates(jobData);
+    const pendingChronologyRecords = commentsToProcess.filter(comment =>
+        (!!comment.commandMode && comment.commandMode !== 'default')
+        || comment.llmOverride !== undefined);
+    const useCreatedAt = [...queuedCommandCandidates, ...pendingChronologyRecords]
+        .every(comment => comment.createdAt !== undefined);
+    const compareChronology: CommentChronologyComparator = (left, right) =>
+        compareCommentChronology(left, right, useCreatedAt);
+    const queuedCommandChronology = findLatestComment(
+        queuedCommandCandidates,
+        () => true,
+        compareChronology,
+    );
     const isNewerThanQueuedCommand = (comment: UnprocessedComment): boolean =>
         queuedCommandChronology === undefined
-        || compareCommentChronology(comment, queuedCommandChronology) > 0;
-    const latestCommandComment = findLatestComment(commentsToProcess, comment =>
-        !!comment.commandMode
-        && comment.commandMode !== 'default'
-        && isNewerThanQueuedCommand(comment));
+        || compareChronology(comment, queuedCommandChronology) > 0;
+    const latestCommandComment = findLatestComment(
+        commentsToProcess,
+        comment => !!comment.commandMode
+            && comment.commandMode !== 'default'
+            && isNewerThanQueuedCommand(comment),
+        compareChronology,
+    );
     const latestPendingOverrideComment = findLatestComment(
         commentsToProcess,
         comment => comment.llmOverride !== undefined
             && isNewerThanQueuedCommand(comment),
+        compareChronology,
     );
     return { queuedCommandChronology, latestCommandComment, latestPendingOverrideComment };
 }

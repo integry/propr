@@ -989,6 +989,119 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
 });
 
 describe('applyPendingCommentCommandContext', () => {
+    test('selects the same pending command for every mixed-timestamp input permutation', () => {
+        const comments = [
+            {
+                id: 300,
+                createdAt: '2026-08-09T10:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'selected by legacy ID ordering',
+            },
+            {
+                id: 200,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'review' as const,
+                commandInstructions: '',
+            },
+            {
+                id: 100,
+                createdAt: '2026-08-09T11:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'switch' as const,
+                commandInstructions: '',
+            },
+        ];
+        const permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+
+        for (const permutation of permutations) {
+            const jobData = {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                correlationId: 'corr-mixed-command-chronology',
+                commandMode: 'default' as const,
+                commandCommentId: undefined as number | undefined,
+            };
+
+            applyPendingCommentCommandContext(
+                jobData,
+                permutation.map(index => comments[index]),
+                mockLoggerInstance as never,
+            );
+
+            assert.strictEqual(jobData.commandCommentId, 300, `permutation ${permutation.join(',')}`);
+        }
+    });
+
+    test('selects the same model override for every mixed-timestamp input permutation', () => {
+        const comments = [
+            {
+                id: 300,
+                createdAt: '2026-08-09T10:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                llmOverride: 'claude-opus-4-6',
+            },
+            {
+                id: 200,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                llmOverride: 'claude-sonnet-4-6',
+            },
+            {
+                id: 100,
+                createdAt: '2026-08-09T11:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                llmOverride: 'codex:gpt-5.6-sol',
+            },
+        ];
+        const permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+
+        for (const permutation of permutations) {
+            const jobData = {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                correlationId: 'corr-mixed-override-chronology',
+                commandMode: 'default' as const,
+                llm: 'initial-model',
+            };
+
+            applyPendingCommentCommandContext(
+                jobData,
+                permutation.map(index => comments[index]),
+                mockLoggerInstance as never,
+            );
+
+            assert.strictEqual(jobData.llm, 'claude-opus-4-6', `permutation ${permutation.join(',')}`);
+        }
+    });
+
     test('orders issue and review commands by creation time instead of cross-resource IDs', () => {
         const jobData = {
             pullRequestNumber: 42,
