@@ -67,6 +67,8 @@ export interface CommentJobData {
     commandSequence?: number;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
+    /** Deterministic retry ordinal while a fresh Ultrafix generation is reserved but unpublished. */
+    ultrafixStartupWaitCount?: number;
     /** Reasoning level override resolved from PR or linked issue level-* labels. */
     reasoningLevel?: ReasoningLevel;
     /** Internal lease token persisted across BullMQ redelivery and rescheduling. */

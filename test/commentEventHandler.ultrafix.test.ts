@@ -181,7 +181,7 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 });
 
 // Import module under test AFTER mocks
-const { processCommentEvent, setUltrafixDeps } = await import(
+const { handleCommentEdited, processCommentEvent, setUltrafixDeps } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
@@ -241,7 +241,12 @@ after(async () => {
 
 function createMockRedis() {
     const store = new Map<string, string>();
-    const rpush = mock.fn(async () => {});
+    const lists = new Map<string, string[]>();
+    const rpush = mock.fn(async (key: string, value: string) => {
+        const list = lists.get(key) ?? [];
+        list.push(value);
+        lists.set(key, list);
+    });
     const expire = mock.fn(async () => {});
     return {
         get: mock.fn(async (key: string) => store.get(key) ?? null),
@@ -262,6 +267,10 @@ function createMockRedis() {
             return next;
         }),
         rpush,
+        lrange: mock.fn(async (key: string, start: number, end: number) => {
+            const list = lists.get(key) ?? [];
+            return list.slice(start, end === -1 ? undefined : end + 1);
+        }),
         expire,
         eval: mock.fn(async (
             script: string,
@@ -287,6 +296,7 @@ function createMockRedis() {
             return 1;
         }),
         _store: store,
+        _lists: lists,
     };
 }
 
@@ -836,6 +846,14 @@ describe('commentEventHandler — /ultrafix command', () => {
         });
         const event = createPRCommentEvent('/fix F1');
         const config = createTestConfig();
+        config.redisClient.set.mock.mockImplementation(async (
+            key: string, value: string, ...args: string[]
+        ) => {
+            if (args.includes('NX') && config.redisClient._store.has(key)) return null;
+            config.redisClient._store.set(key, value);
+            if (key.startsWith('pr-command-takeover:')) operations.push('stage');
+            return 'OK';
+        });
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-manual-fix', config);
 
@@ -847,8 +865,37 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         assert.deepStrictEqual(
             operations,
-            ['lease-start', 'fence', 'enqueue', 'cancel', 'lease-end'],
+            ['lease-start', 'fence', 'stage', 'enqueue', 'cancel', 'lease-end'],
         );
+    });
+
+    test('editing a committed slash command allocates a new command sequence and job', async () => {
+        const original = createPRCommentEvent('/fix F1');
+        original.comment.id = 700;
+        original.comment.updated_at = '2026-08-09T01:00:00Z';
+        const config = createTestConfig();
+        config.processCommentEvent = (
+            payload: Parameters<typeof processCommentEvent>[0],
+            eventType: Parameters<typeof processCommentEvent>[1],
+            correlationId: string,
+        ) => processCommentEvent(payload, eventType, correlationId, config);
+
+        await processCommentEvent(original, 'issue_comment', 'corr-original-command', config);
+
+        const edited = createPRCommentEvent('/fix F2');
+        edited.comment.id = original.comment.id;
+        edited.comment.updated_at = '2026-08-09T01:01:00Z';
+        await handleCommentEdited(edited, 'issue_comment', 'corr-edited-command', config);
+
+        assert.deepStrictEqual(
+            mockBeginManualTakeover.mock.calls.map(call => call.arguments[2]),
+            [1, 2],
+        );
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
+        const jobIds = mockQueueAdd.mock.calls.map(call => call.arguments[2].jobId as string);
+        assert.notStrictEqual(jobIds[0], jobIds[1]);
+        assert.ok(jobIds[0].endsWith('-700-1'));
+        assert.ok(jobIds[1].endsWith('-700-2'));
     });
 
     test('manual /fix preserves deferred ultrafix when replacement enqueue fails', async () => {
@@ -867,6 +914,8 @@ describe('commentEventHandler — /ultrafix command', () => {
     });
 
     test('manual /fix redelivery resumes failed cancellation without enqueueing twice', async () => {
+        let replacementLookup = 0;
+        mockQueueGetJob.mock.mockImplementation(async () => (++replacementLookup === 1 ? null : {}));
         mockClearDeferredContinuation.mock.mockImplementationOnce(async () => {
             throw new Error('transition commit failed');
         });

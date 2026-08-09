@@ -35,9 +35,11 @@ export {
 export type { UltrafixDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
 export {
     abortFreshUltrafixTransition,
+    isFreshUltrafixTransitionReserved,
     reserveFreshUltrafixTransition,
 } from './ultrafixFreshTransitionStore.js';
 export {
+    adoptLegacyUltrafixGeneration,
     clearState,
     clearStateIfGenerationCurrent,
     getUltrafixStateKey,

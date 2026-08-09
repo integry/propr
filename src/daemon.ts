@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import { parseTruthyEnvValue, resolveGithubEventIntakeMode } from '@propr/shared';
 import {
     getAuthenticatedOctokit,
+    getIssueQueue,
     generateCorrelationId,
     withErrorHandling,
     handleError,
@@ -62,6 +63,7 @@ import { parseArgs } from './daemon/cliArgs.js';
 import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
 import { startEventIntake } from './daemon/eventIntakeStartup.js';
 import { scheduleUltrafixDeferredSweep } from './daemon/ultrafixDeferredSweep.js';
+import { scheduleManualUltrafixTakeoverSweep } from './daemon/ultrafixTakeoverSweep.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -213,6 +215,14 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         resume: resumeDeferredContinuation,
         createLogger: () => logger.withCorrelation(generateCorrelationId()) as unknown as Logger,
         warn: error => logger.warn({ error: error.message }, 'Ultrafix deferred continuation sweep failed'),
+    });
+    const ultrafixTakeoverSweepInterval = await scheduleManualUltrafixTakeoverSweep(redisClient, {
+        getJob: async jobId => (await getIssueQueue()).getJob(jobId),
+        complete: completeManualUltrafixTakeover,
+        withLease: withUltrafixTransitionLease,
+        createLogger: () => logger.withCorrelation(generateCorrelationId()) as unknown as Logger,
+        generateCorrelationId,
+        warn: error => logger.warn({ error: error.message }, 'Manual Ultrafix takeover sweep failed'),
     });
 
     const repos = getRepos();
@@ -412,6 +422,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
         clearInterval(ultrafixDeferredSweepInterval);
+        clearInterval(ultrafixTakeoverSweepInterval);
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the

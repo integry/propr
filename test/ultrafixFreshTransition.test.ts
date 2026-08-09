@@ -16,7 +16,7 @@ import {
     commitFreshUltrafixTransitionState,
     reserveFreshUltrafixTransition,
 } from '../src/jobs/ultrafixFreshTransitionStore.js';
-import { getUltrafixStateKey } from '../src/jobs/ultrafixLoopStateStore.js';
+import { adoptLegacyUltrafixGeneration, getUltrafixStateKey } from '../src/jobs/ultrafixLoopStateStore.js';
 
 test('fresh Ultrafix publication preserves its predecessor and never reuses an aborted generation', async t => {
     const redis = new Redis({
@@ -102,6 +102,44 @@ test('fresh Ultrafix publication preserves its predecessor and never reuses an a
         assert.equal(await redis.get(stateKey), 'new-state');
     } finally {
         await redis.del(...keys);
+        redis.disconnect();
+    }
+});
+
+test('legacy generation adoption is allowed only before a takeover advances generation', async t => {
+    const redis = new Redis({
+        host: process.env.REDIS_HOST ?? '127.0.0.1',
+        port: Number.parseInt(process.env.REDIS_PORT ?? '6379', 10),
+        connectTimeout: 250,
+        enableReadyCheck: false,
+        lazyConnect: true,
+        maxRetriesPerRequest: 1,
+        retryStrategy: () => null,
+    });
+    redis.on('error', () => {});
+    try {
+        await redis.connect();
+    } catch {
+        redis.disconnect();
+        t.skip('Redis is not available for integration testing');
+        return;
+    }
+
+    const identity = { owner: `legacy-generation-${process.pid}`, repo: String(Date.now()), pr: 43 };
+    const generationKey = getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr);
+    const stateKey = getUltrafixStateKey(identity.owner, identity.repo, identity.pr);
+    try {
+        await redis.set(stateKey, JSON.stringify({ active: true, goal: 8 }));
+        assert.equal(await adoptLegacyUltrafixGeneration(redis, identity), true);
+        assert.equal(await redis.get(generationKey), '0');
+        assert.equal(JSON.parse(await redis.get(stateKey) ?? '{}').generation, 0);
+
+        await redis.set(generationKey, '1');
+        await redis.set(stateKey, JSON.stringify({ active: true }));
+        assert.equal(await adoptLegacyUltrafixGeneration(redis, identity), false);
+        assert.equal(JSON.parse(await redis.get(stateKey) ?? '{}').generation, undefined);
+    } finally {
+        await redis.del(generationKey, stateKey);
         redis.disconnect();
     }
 });

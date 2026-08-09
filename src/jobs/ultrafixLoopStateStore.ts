@@ -26,6 +26,27 @@ redis.call('DEL', KEYS[2])
 return 1
 `;
 
+const ADOPT_LEGACY_GENERATION_SCRIPT = `
+local current_generation = redis.call('GET', KEYS[1])
+if current_generation and current_generation ~= '0' then
+    return 0
+end
+local serialized_state = redis.call('GET', KEYS[2])
+if serialized_state then
+    local decoded, state = pcall(cjson.decode, serialized_state)
+    if not decoded then
+        return 0
+    end
+    if state.generation ~= nil and tonumber(state.generation) ~= 0 then
+        return 0
+    end
+    state.generation = 0
+    redis.call('SET', KEYS[2], cjson.encode(state))
+end
+redis.call('SET', KEYS[1], '0')
+return 1
+`;
+
 const RETIRE_LOOP_IF_CURRENT_SCRIPT = `
 local current_generation = redis.call('GET', KEYS[1]) or '0'
 if current_generation ~= ARGV[1] then
@@ -91,6 +112,26 @@ export async function clearStateIfGenerationCurrent(
         generationKey,
         stateKey,
         String(generation),
+    )) === 1;
+}
+
+/**
+ * Adopt work created before generation fencing as generation zero. The
+ * migration is permitted only until any newer takeover advances the
+ * authoritative generation, so generation-less work can never re-enter after
+ * a manual command or fresh loop has superseded it.
+ */
+export async function adoptLegacyUltrafixGeneration(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+): Promise<boolean> {
+    const generationKey = getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr);
+    const stateKey = getUltrafixStateKey(identity.owner, identity.repo, identity.pr);
+    return Number(await redis.eval(
+        ADOPT_LEGACY_GENERATION_SCRIPT,
+        2,
+        generationKey,
+        stateKey,
     )) === 1;
 }
 

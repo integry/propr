@@ -156,3 +156,17 @@ export async function abortFreshUltrafixTransition(
         String(commandSequence),
     )) === 1;
 }
+
+/** Return whether a not-yet-published generation still has a live reservation. */
+export async function isFreshUltrafixTransitionReserved(
+    redis: Redis,
+    identity: UltrafixIdentity,
+    generation: number,
+): Promise<boolean> {
+    const reservation = await redis.get(
+        getUltrafixFreshReservationKey(identity.owner, identity.repo, identity.pr),
+    );
+    if (!reservation) return false;
+    const [, reservedGeneration] = reservation.split(':');
+    return Number(reservedGeneration) === generation;
+}

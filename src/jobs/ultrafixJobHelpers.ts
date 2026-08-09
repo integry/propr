@@ -8,12 +8,20 @@
 import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
-import { getCurrentPRHead, areAllChecksPassing } from '@propr/core';
+import { getCurrentPRHead, areAllChecksPassing, getIssueQueue } from '@propr/core';
 import type { CommentJobData, JobResult } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
-import { getActiveUltrafixTakeoverSequence, isUltrafixGenerationCurrent, loadState as loadUltrafixState, saveDeferredContinuation, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import {
+    adoptLegacyUltrafixGeneration,
+    getActiveUltrafixTakeoverSequence,
+    isFreshUltrafixTransitionReserved,
+    isUltrafixGenerationCurrent,
+    loadState as loadUltrafixState,
+    saveDeferredContinuation,
+    type UltrafixAction,
+} from './ultrafixOrchestrationService.js';
 import { requiresPassingChecks } from './ultrafixReadinessPolicy.js';
 
 /** Reject delayed or retried work from a loop superseded by a manual command. */
@@ -23,6 +31,12 @@ export async function checkUltrafixGeneration(
 ): Promise<boolean> {
     if (!job.data.ultrafixMeta) return true;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = params;
+    if (job.data.ultrafixMeta.generation === undefined) {
+        const adopted = await adoptLegacyUltrafixGeneration(
+            redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
+        );
+        if (adopted) job.data.ultrafixMeta.generation = 0;
+    }
     const generation = job.data.ultrafixMeta.generation;
     const current = await isUltrafixGenerationCurrent(
         redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber }, generation,
@@ -41,6 +55,27 @@ export async function guardUltrafixJobExecution(
     params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis },
 ): Promise<JobResult | null> {
     if (!await checkUltrafixGeneration(job, params)) {
+        const generation = job.data.ultrafixMeta?.generation;
+        const reserved = generation !== undefined && await isFreshUltrafixTransitionReserved(
+            params.redisClient,
+            { owner: params.repoOwner, repo: params.repoName, pr: params.pullRequestNumber },
+            generation,
+        );
+        if (reserved) {
+            const waitCount = (job.data.ultrafixStartupWaitCount ?? 0) + 1;
+            const retryData = { ...job.data, ultrafixStartupWaitCount: waitCount };
+            await (await getIssueQueue()).add(job.name, retryData, {
+                jobId: `pr-comments-ultrafix-wait-${params.repoOwner}-${params.repoName}-${params.pullRequestNumber}-${generation}-${waitCount}`,
+                delay: 5_000,
+                attempts: 3,
+                backoff: { type: 'exponential', delay: 10_000 },
+            });
+            params.correlatedLogger.info(
+                { pullRequestNumber: params.pullRequestNumber, generation },
+                'Ultrafix startup publication is pending; rescheduled reserved job',
+            );
+            return { status: 'rescheduled', reason: 'ultrafix_startup_pending' };
+        }
         return { status: 'cancelled', reason: 'ultrafix_superseded' };
     }
     if (!await checkUltrafixReadiness(job, params)) {

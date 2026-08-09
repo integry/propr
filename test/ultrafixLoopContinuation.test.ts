@@ -14,6 +14,8 @@ import {
     loadDeferredContinuation,
     clearDeferredContinuation,
     getUltrafixTakeoverFenceKey,
+    getUltrafixDeferredKey,
+    getUltrafixStateKey,
     type UltrafixLoopState,
 } from '../src/jobs/ultrafixOrchestrationService.js';
 
@@ -66,6 +68,19 @@ function createMockRedis() {
         },
         async del(key: string) { store.delete(key); return 1; },
         async eval(script: string, _keyCount: number, ...args: string[]) {
+            if (script.includes('state.generation = 0')) {
+                const [generationKey, stateKey] = args;
+                if (store.has(generationKey) && store.get(generationKey) !== '0') return 0;
+                const serialized = store.get(stateKey);
+                if (serialized) {
+                    const state = JSON.parse(serialized) as Record<string, unknown>;
+                    if (state.generation !== undefined && state.generation !== 0) return 0;
+                    state.generation = 0;
+                    store.set(stateKey, JSON.stringify(state));
+                }
+                store.set(generationKey, '0');
+                return 1;
+            }
             if (script.includes("redis.call('expire', KEYS[1]")) {
                 return store.get(args[0]) === args[1] ? 1 : 0;
             }
@@ -488,6 +503,25 @@ describe('claimed deferred continuation cancellation', () => {
             await loadDeferredContinuation(redis as never, 'acme', 'web', 42),
             null,
         );
+    });
+
+    test('legacy generation-zero deferred work is normalized and resumed during rollout', async () => {
+        const legacyState = createDefaultState({ owner: 'acme', repo: 'web', pr: 42, pauseSeconds: 1 });
+        legacyState.lastAction = 'fix';
+        delete (legacyState as Partial<UltrafixLoopState>).generation;
+        await redis.set(getUltrafixStateKey('acme', 'web', 42), JSON.stringify(legacyState));
+        await redis.set(getUltrafixDeferredKey('acme', 'web', 42), JSON.stringify({
+            owner: 'acme', repo: 'web', pr: 42,
+            nextAction: 'review', savedAt: new Date().toISOString(), reason: 'legacy_checks_pending',
+        }));
+
+        const result = await resumeDeferredContinuation(
+            { owner: 'acme', repo: 'web', pr: 42 }, redis as never, logger as never,
+        );
+
+        assert.strictEqual(result.continued, true);
+        assert.strictEqual(enqueueNextStep.mock.callCount(), 1);
+        assert.strictEqual((await loadState(redis as never, 'acme', 'web', 42))?.generation, 0);
     });
 
     test('fresh loop startup prevents a claimed continuation from being re-saved', async () => {

@@ -16,6 +16,7 @@ import {
     type UltrafixCommandMeta,
 } from '@propr/core';
 import {
+    adoptLegacyUltrafixGeneration,
     loadState,
     claimDeferredContinuation,
     recordAction,
@@ -96,6 +97,12 @@ async function loadCurrentLoopState(
     params: UltrafixContinuationParams,
 ): Promise<Awaited<ReturnType<typeof loadState>>> {
     const { owner, repo, pullRequestNumber, redisClient, correlatedLogger } = params;
+    if (params.ultrafixMeta && params.ultrafixMeta.generation === undefined) {
+        const adopted = await adoptLegacyUltrafixGeneration(
+            redisClient, { owner, repo, pr: pullRequestNumber },
+        );
+        if (adopted) params.ultrafixMeta.generation = 0;
+    }
     const generation = params.ultrafixMeta?.generation;
     const current = await isUltrafixGenerationCurrent(
         redisClient, { owner, repo, pr: pullRequestNumber }, generation,
@@ -422,7 +429,11 @@ async function resumeDeferredContinuationWithLease(
         return { continued: false, reason: 'no_deferred_continuation' };
     }
 
-    const state = await loadState(redisClient, owner, repo, pr);
+    let state = await loadState(redisClient, owner, repo, pr);
+    if (state && state.generation === undefined && deferred.generation === 0) {
+        const adopted = await adoptLegacyUltrafixGeneration(redisClient, { owner, repo, pr });
+        if (adopted) state = await loadState(redisClient, owner, repo, pr);
+    }
     if (!state || !state.active) {
         return { continued: false, reason: 'no_active_loop' };
     }
