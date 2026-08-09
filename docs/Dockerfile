@@ -1,5 +1,5 @@
 # Stage 1: Build the Docusaurus static site
-FROM node:20-slim as build
+FROM node:22-slim as build
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
@@ -8,7 +8,7 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Serve the app with a lightweight server
-FROM node:20-slim
+FROM node:22-slim
 WORKDIR /app
 # Docusaurus builds to a 'build' directory by default
 COPY --from=build /app/build /app/build

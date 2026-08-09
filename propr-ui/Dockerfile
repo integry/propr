@@ -1,7 +1,7 @@
 # Stage 1: Build the React app
 # NOTE: This Dockerfile should be built from the monorepo root with context set to include packages/shared
 # Example: docker build -f propr-ui/Dockerfile .
-FROM node:20-slim AS build
+FROM node:22-slim AS build
 
 ARG VITE_API_BASE_URL
 ARG VITE_OAUTH_API_URL
@@ -29,7 +29,7 @@ COPY propr-ui ./propr-ui
 RUN cd propr-ui && npm run build
 
 # Stage 2: Serve the app with a lightweight server
-FROM node:20-slim
+FROM node:22-slim
 WORKDIR /app
 COPY --from=build /app/propr-ui/dist /app/dist
 COPY propr-ui/serve.json /app/serve.json
