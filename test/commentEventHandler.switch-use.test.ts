@@ -716,6 +716,8 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.deepStrictEqual(jobData.requestedModels, ['claude-sonnet-5']);
+        assert.strictEqual(jobData.commandCommentCreatedAt, event.comment.created_at);
+        assert.strictEqual(jobData.commandCommentType, 'issue');
     });
 
     test('/review job includes requestedModels from command args', async () => {
@@ -940,6 +942,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
         const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
         assert.strictEqual(pendingComment.type, 'review');
+        assert.strictEqual(pendingComment.createdAt, event.comment.created_at);
         assert.strictEqual(pendingComment.hasCodeContext, true);
         assert.match(pendingComment.body as string, /Please fix this line/);
         assert.match(pendingComment.body as string, /--- Review Comment Context ---/);
@@ -986,6 +989,284 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
 });
 
 describe('applyPendingCommentCommandContext', () => {
+    test('selects the same pending command for every mixed-timestamp input permutation', () => {
+        const comments = [
+            {
+                id: 300,
+                createdAt: '2026-08-09T10:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'selected by legacy ID ordering',
+            },
+            {
+                id: 200,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'review' as const,
+                commandInstructions: '',
+            },
+            {
+                id: 100,
+                createdAt: '2026-08-09T11:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'switch' as const,
+                commandInstructions: '',
+            },
+        ];
+        const permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+
+        for (const permutation of permutations) {
+            const jobData = {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                correlationId: 'corr-mixed-command-chronology',
+                commandMode: 'default' as const,
+                commandCommentId: undefined as number | undefined,
+            };
+
+            applyPendingCommentCommandContext(
+                jobData,
+                permutation.map(index => comments[index]),
+                mockLoggerInstance as never,
+            );
+
+            assert.strictEqual(jobData.commandCommentId, 300, `permutation ${permutation.join(',')}`);
+        }
+    });
+
+    test('selects the same model override for every mixed-timestamp input permutation', () => {
+        const comments = [
+            {
+                id: 300,
+                createdAt: '2026-08-09T10:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                llmOverride: 'claude-opus-4-6',
+            },
+            {
+                id: 200,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                llmOverride: 'claude-sonnet-4-6',
+            },
+            {
+                id: 100,
+                createdAt: '2026-08-09T11:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                llmOverride: 'codex:gpt-5.6-sol',
+            },
+        ];
+        const permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+
+        for (const permutation of permutations) {
+            const jobData = {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                correlationId: 'corr-mixed-override-chronology',
+                commandMode: 'default' as const,
+                llm: 'initial-model',
+            };
+
+            applyPendingCommentCommandContext(
+                jobData,
+                permutation.map(index => comments[index]),
+                mockLoggerInstance as never,
+            );
+
+            assert.strictEqual(jobData.llm, 'claude-opus-4-6', `permutation ${permutation.join(',')}`);
+        }
+    });
+
+    test('orders issue and review commands by creation time instead of cross-resource IDs', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-cross-type-order',
+            comments: [{
+                id: 900,
+                createdAt: '2026-08-09T09:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+            }],
+            commandCommentId: 900,
+            commandCommentCreatedAt: '2026-08-09T09:00:00Z',
+            commandCommentType: 'issue' as const,
+            commandMode: 'fix' as const,
+            commandInstructions: 'queued fix',
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 10,
+                createdAt: '2026-08-09T09:01:00Z',
+                body: '',
+                author: 'alice',
+                type: 'review' as const,
+                commandMode: 'review' as const,
+                requestedModels: [],
+                commandInstructions: '',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(jobData.commandCommentId, 10);
+        assert.strictEqual(jobData.commandCommentCreatedAt, '2026-08-09T09:01:00Z');
+        assert.strictEqual(jobData.commandCommentType, 'review');
+    });
+
+    test('ignores an older cross-type override even when its resource ID is larger', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-cross-type-cutoff',
+            comments: [{
+                id: 10,
+                createdAt: '2026-08-09T09:01:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+            }],
+            commandCommentId: 10,
+            commandCommentCreatedAt: '2026-08-09T09:01:00Z',
+            commandCommentType: 'issue' as const,
+            commandMode: 'review' as const,
+            llm: 'codex:gpt-5.6-sol',
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 900,
+                createdAt: '2026-08-09T09:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'review' as const,
+                commandMode: 'use' as const,
+                llmOverride: 'claude-opus-4-6',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.llm, 'codex:gpt-5.6-sol');
+    });
+
+    test('does not let an older pending command override a newer queued command', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-order',
+            comments: [{ id: 200, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 200,
+            commandMode: 'review' as const,
+            ultrafixMeta: { mode: 'ultrafix' as const, instructions: '' },
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 199,
+                body: 'Fix F7',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'Fix F7',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.ok(jobData.ultrafixMeta);
+    });
+
+    test('does not let an older model override replace a newer queued command model', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-model-order',
+            comments: [{ id: 200, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 200,
+            commandMode: 'review' as const,
+            llm: 'codex:gpt-5.6-sol',
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 199,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'use' as const,
+                llmOverride: 'claude-opus-4-6',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.llm, 'codex:gpt-5.6-sol');
+    });
+
+    test('latest manual command clears inherited Ultrafix metadata', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-manual',
+            comments: [{ id: 98, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 98,
+            commandMode: 'review' as const,
+            ultrafixMeta: { mode: 'ultrafix' as const, instructions: '' },
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 99,
+                body: 'Fix F3',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'Fix F3',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'fix');
+        assert.strictEqual(jobData.ultrafixMeta, undefined);
+        assert.strictEqual(jobData.commandCommentId, 99);
+    });
+
     test('keeps an earlier /use llm override when a later pending /fix becomes the active command', () => {
         const jobData = {
             pullRequestNumber: 42,
@@ -1048,6 +1329,47 @@ describe('applyPendingCommentCommandContext', () => {
                 body: '',
                 author: 'alice',
                 type: 'issue' as const,
+                commandMode: 'review' as const,
+                requestedModels: [],
+                commandInstructions: '',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-opus-4-6']);
+    });
+
+    test('promotes a queued /use override when a newer model-less /review becomes active', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-queued-use-review',
+            comments: [{
+                id: 800,
+                createdAt: '2026-08-09T09:00:00Z',
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+            }],
+            commandCommentId: 800,
+            commandCommentCreatedAt: '2026-08-09T09:00:00Z',
+            commandCommentType: 'issue' as const,
+            commandMode: 'use' as const,
+            llm: 'claude-opus-4-6',
+            requestedModels: ['claude-opus-4-6'],
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 20,
+                createdAt: '2026-08-09T09:01:00Z',
+                body: '',
+                author: 'alice',
+                type: 'review' as const,
                 commandMode: 'review' as const,
                 requestedModels: [],
                 commandInstructions: '',
