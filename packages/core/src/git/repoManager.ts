@@ -290,7 +290,7 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
             git,
             worktreePath,
             branchName,
-            `origin/${resolvedBaseBranch}`,
+            { startPoint: `origin/${resolvedBaseBranch}` },
         );
         await setupWorktreePermissions(worktreePath, branchName, issueId);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId });

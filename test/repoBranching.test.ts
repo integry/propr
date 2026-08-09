@@ -97,7 +97,7 @@ test('parallel-safe worktree creation and push do not require shared config writ
             createHooklessGit(clonePath),
             worktreePath,
             'parallel-feature',
-            'origin/main',
+            { startPoint: 'origin/main' },
         );
 
         await writeFile(path.join(worktreePath, 'parallel.txt'), 'parallel\n');

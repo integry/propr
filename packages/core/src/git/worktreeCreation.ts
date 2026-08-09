@@ -26,9 +26,12 @@ export async function addWorktreeWithoutTracking(
     git: SimpleGit,
     worktreePath: string,
     branchName: string,
-    startPoint: string,
-    resetBranch = false,
+    options: {
+        startPoint: string;
+        resetBranch?: boolean;
+    },
 ): Promise<string> {
+    const { startPoint, resetBranch = false } = options;
     return git.raw([
         'worktree',
         'add',
@@ -126,8 +129,7 @@ async function handleWorktreeConflict(git: SimpleGit, error: Error, worktreePath
                 git,
                 worktreePath,
                 branchName,
-                `origin/${branchName}`,
-                true,
+                { startPoint: `origin/${branchName}`, resetBranch: true },
             );
             logger.info({ branchName, worktreePath, gitOutput: worktreeAddResult.trim() }, 'Successfully created worktree after removing existing one');
         } catch (retryError) {
@@ -189,8 +191,7 @@ async function createWorktreeFromRemote(git: SimpleGit, worktreePath: string, br
             git,
             worktreePath,
             branchName,
-            `origin/${branchName}`,
-            true,
+            { startPoint: `origin/${branchName}`, resetBranch: true },
         );
         logger.info({ branchName, worktreePath, gitOutput: worktreeAddResult.trim() }, 'Git worktree add command completed');
 
