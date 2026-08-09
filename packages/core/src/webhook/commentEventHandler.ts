@@ -85,9 +85,9 @@ interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS:
 interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
-type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta'> & { path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta'> & { created_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
-type PRComment = { id: number; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+type PRComment = { id: number; created_at: string; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
     const result = await redisClient.set(key, Date.now().toString(), 'EX', 86400, 'NX');
@@ -205,7 +205,7 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     if (processCommentEventFn) await processCommentEventFn(payload, eventType, correlationId, config);
 }
 
-interface SlashCommandComment { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }
+interface SlashCommandComment { id: number; created_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }
 
 interface SlashCommandHandlerOptions {
     parsedCommand: ReturnType<typeof parseSlashCommand> & object;
@@ -634,6 +634,7 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
 
     const pendingComment: UnprocessedComment = {
         id: comment.id,
+        createdAt: comment.created_at,
         body: pendingCommentBody,
         author: commentAuthor,
         type: reviewComment ? 'review' : 'issue',
@@ -665,7 +666,7 @@ async function getPRBranchAndLabels(eventType: CommentEventType, payload: IssueC
     return { branchName: prPayload.pull_request.head.ref, prLabels: prPayload.pull_request.labels || [] };
 }
 
-function prepareComment(comment: { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventType: CommentEventType, keywords: string[]): { enhancedBody: string; unprocessedComment: UnprocessedComment; llmFromKeywords: string | null } {
+function prepareComment(comment: { id: number; created_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventType: CommentEventType, keywords: string[]): { enhancedBody: string; unprocessedComment: UnprocessedComment; llmFromKeywords: string | null } {
     const llmFromKeywords = keywords.length > 0 ? extractLlmFromKeywords(comment.body, keywords) : null;
     let enhancedBody = keywords.length > 0 ? stripKeywordsFromBody(comment.body, keywords) : comment.body;
 
@@ -675,7 +676,7 @@ function prepareComment(comment: { id: number; body: string; path?: string; line
     }
 
     const commentType = isReviewComment(comment, eventType) ? 'review' as const : 'issue' as const;
-    const unprocessedComment: UnprocessedComment = { id: comment.id, body: enhancedBody, author: commentAuthor, type: commentType, hasCodeContext: commentType === 'review' && !!comment.diff_hunk };
+    const unprocessedComment: UnprocessedComment = { id: comment.id, createdAt: comment.created_at, body: enhancedBody, author: commentAuthor, type: commentType, hasCodeContext: commentType === 'review' && !!comment.diff_hunk };
     return { enhancedBody, unprocessedComment, llmFromKeywords };
 }
 
@@ -732,7 +733,7 @@ function buildPendingCommandFields(commandMeta: CommandMeta): Pick<UnprocessedCo
     };
 }
 
-async function enqueueNewCommentJob(comment: { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
+async function enqueueNewCommentJob(comment: { id: number; created_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
     const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -743,7 +744,12 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
 
     const jobData: CommentJobData = {
         pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),
-        ...(commandMeta ? { ...buildCommandJobFields(commandMeta), commandCommentId: comment.id } : {}),
+        ...(commandMeta ? {
+            ...buildCommandJobFields(commandMeta),
+            commandCommentId: comment.id,
+            commandCommentCreatedAt: comment.created_at,
+            commandCommentType: unprocessedComment.type,
+        } : {}),
         ...(ultrafixMeta ? { ultrafixMeta } : {}),
     };
     const timestamp = Date.now();
