@@ -28,6 +28,7 @@ import {
     saveDeferredContinuation,
     deleteDeferredContinuationIfCurrent,
     getActiveUltrafixTakeoverSequence,
+    hasPendingFreshUltrafixReservationForBaseGeneration,
     isDeferredContinuationCurrent,
     isUltrafixGenerationCurrent,
     retireLoopIfGenerationCurrent,
@@ -104,6 +105,15 @@ async function finalizeSuccessfulLoopWithLease(
     const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, generation } = params;
     let state = initialState;
     if (state.active || state.completionStatus !== 'succeeded' || state.generation !== generation) return false;
+    if (await hasPendingFreshUltrafixReservationForBaseGeneration(
+        redisClient, { owner, repo, pr: pullRequestNumber }, generation,
+    )) {
+        correlatedLogger.info(
+            { pullRequestNumber, generation },
+            'Ultrafix terminal finalization deferred for a pending fresh startup reservation',
+        );
+        return false;
+    }
 
     if (!state.terminalFinalization?.labelRemoved) {
         await assertTransitionOwned();

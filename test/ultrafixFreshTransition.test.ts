@@ -126,7 +126,7 @@ test('fresh Ultrafix publication preserves its predecessor and never reuses an a
             serializedState: 'stale-state',
         }), false);
         assert.equal(await redis.get(generationKey), '11');
-        assert.equal(await redis.get(stateKey), 'new-state');
+        assert.equal(await redis.get(stateKey), null);
         await redis.set(stateKey, JSON.stringify({ active: true, generation: 11 }));
         assert.equal(await isUltrafixGenerationActive(redis, identity, 11), true);
         await redis.set(stateKey, JSON.stringify({ active: false, generation: 11 }));
@@ -168,19 +168,28 @@ test('manual takeover recovery re-establishes only the newest eligible fence', a
         key(getUltrafixDeferredKey),
         key(getUltrafixGenerationAllocationKey),
         key(getUltrafixFreshReservationKey),
+        getUltrafixStateKey(identity.owner, identity.repo, identity.pr),
     ];
+    const stateKey = getUltrafixStateKey(identity.owner, identity.repo, identity.pr);
 
     try {
         await redis.set(key(getUltrafixTransitionOrderKey), '5');
+        await redis.set(stateKey, JSON.stringify({
+            active: false, generation: 0, completionStatus: 'succeeded',
+        }));
         assert.equal(await completeManualUltrafixTakeover(redis, identity, 6), null);
+        assert.notEqual(await redis.get(stateKey), null);
         assert.equal(await beginManualUltrafixTakeover(redis, identity, 6), true);
         assert.equal(await redis.get(key(getUltrafixTakeoverFenceKey)), '6');
         assert.equal(await completeManualUltrafixTakeover(redis, identity, 6), 1);
+        assert.equal(await redis.get(stateKey), null);
 
+        await redis.set(stateKey, JSON.stringify({ active: true, generation: 1 }));
         assert.equal(await beginManualUltrafixTakeover(redis, identity, 8), true);
         assert.equal(await completeManualUltrafixTakeover(redis, identity, 7), null);
         assert.equal(await beginManualUltrafixTakeover(redis, identity, 7), false);
         assert.equal(await redis.get(key(getUltrafixTakeoverFenceKey)), '8');
+        assert.notEqual(await redis.get(stateKey), null);
     } finally {
         await redis.del(...keys);
         redis.disconnect();

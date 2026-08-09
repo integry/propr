@@ -15,7 +15,10 @@ import {
     clearDeferredContinuation,
     getUltrafixTakeoverFenceKey,
     getUltrafixDeferredKey,
+    getUltrafixDeferredGenerationKey,
+    getUltrafixFreshReservationKey,
     getUltrafixStateKey,
+    getUltrafixTransitionOrderKey,
     type UltrafixLoopState,
 } from '../src/jobs/ultrafixOrchestrationService.js';
 
@@ -582,6 +585,16 @@ describe('successful terminal finalization recovery', () => {
         });
     }
 
+    function seedPendingFreshReservation(baseGeneration: number, generation: number): void {
+        redis.store.set(getUltrafixDeferredGenerationKey('acme', 'web', 42), String(baseGeneration));
+        redis.store.set(getUltrafixTakeoverFenceKey('acme', 'web', 42), '10');
+        redis.store.set(getUltrafixTransitionOrderKey('acme', 'web', 42), '9');
+        redis.store.set(
+            getUltrafixFreshReservationKey('acme', 'web', 42),
+            `10:${generation}:${baseGeneration}:${Date.now()}:startup-job-${generation}`,
+        );
+    }
+
     test('checkpoints completed side effects and resumes after a later sweep', async () => {
         const terminal = await seedSuccessfulTerminalState();
         assert.ok(terminal);
@@ -613,5 +626,42 @@ describe('successful terminal finalization recovery', () => {
         ), false);
         assert.equal(maybeEnableAutoMerge.mock.callCount(), 0);
         assert.equal((await loadState(redis as never, 'acme', 'web', 42))?.completionStatus, 'succeeded');
+    });
+
+    test('terminal lease winner defers side effects for an earlier fresh reservation', async () => {
+        const terminal = await seedSuccessfulTerminalState();
+        assert.ok(terminal);
+        seedPendingFreshReservation(terminal.generation, terminal.generation + 1);
+
+        assert.equal(await resumeTerminalUltrafixFinalization(
+            { owner: 'acme', repo: 'web', pr: 42 }, redis as never, logger as never,
+        ), false);
+        assert.equal(removeUltrafixLabel.mock.callCount(), 0);
+        assert.equal(maybeEnableAutoMerge.mock.callCount(), 0);
+        assert.equal((await loadState(redis as never, 'acme', 'web', 42))?.completionStatus, 'succeeded');
+    });
+
+    test('startup lease winner prevents predecessor terminal side effects', async () => {
+        const terminal = await seedSuccessfulTerminalState();
+        assert.ok(terminal);
+        const nextGeneration = terminal.generation + 1;
+        seedPendingFreshReservation(terminal.generation, nextGeneration);
+        await saveState(redis as never, {
+            ...terminal,
+            generation: nextGeneration,
+            active: true,
+            completionStatus: null,
+            terminalFinalization: undefined,
+        });
+        redis.store.set(getUltrafixDeferredGenerationKey('acme', 'web', 42), String(nextGeneration));
+        redis.store.delete(getUltrafixFreshReservationKey('acme', 'web', 42));
+        redis.store.delete(getUltrafixTakeoverFenceKey('acme', 'web', 42));
+
+        assert.equal(await resumeTerminalUltrafixFinalization(
+            { owner: 'acme', repo: 'web', pr: 42 }, redis as never, logger as never,
+        ), false);
+        assert.equal(removeUltrafixLabel.mock.callCount(), 0);
+        assert.equal(maybeEnableAutoMerge.mock.callCount(), 0);
+        assert.equal((await loadState(redis as never, 'acme', 'web', 42))?.active, true);
     });
 });

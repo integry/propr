@@ -994,6 +994,25 @@ describe('commentEventHandler — /ultrafix command', () => {
         );
     });
 
+    test('manual /fix re-establishes a missing fence before retiring its recovery stage', async () => {
+        let completionAttempt = 0;
+        mockClearDeferredContinuation.mock.mockImplementation(async () => (
+            ++completionAttempt === 1 ? null : 2
+        ));
+        const event = createPRCommentEvent('/fix F1');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-manual-fix-missing-fence', config);
+
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 2);
+        assert.strictEqual(mockBeginManualTakeover.mock.callCount(), 2);
+        assert.strictEqual(
+            [...config.redisClient._store.keys()].some(key =>
+                key.startsWith('pr-command-takeover:testowner:testrepo:42:issue_comment:')),
+            false,
+        );
+    });
+
     test('manual /fix retry keeps its intake order when the stage write fails', async () => {
         const event = createPRCommentEvent('/fix F1');
         const config = createTestConfig();
@@ -1167,6 +1186,9 @@ describe('commentEventHandler — /ultrafix command', () => {
         const manualEvent = createPRCommentEvent('/fix F1');
         manualEvent.comment.id = 100;
         const config = createTestConfig();
+        mockBeginManualTakeover.mock.mockImplementation(async (...args) => (
+            args[3] ? stageMockManualTakeover(...args) : false
+        ));
 
         await assert.rejects(
             processCommentEvent(manualEvent, 'issue_comment', 'corr-old-manual', config),
@@ -1183,6 +1205,10 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         assert.deepStrictEqual(
             mockClearDeferredContinuation.mock.calls.map(call => call.arguments[2]),
+            [1, 1],
+        );
+        assert.deepStrictEqual(
+            mockBeginManualTakeover.mock.calls.map(call => call.arguments[2]),
             [1, 1],
         );
         assert.deepStrictEqual(

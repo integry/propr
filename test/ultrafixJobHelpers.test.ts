@@ -21,6 +21,16 @@ const hasFollowUpJobsForPR = mock.fn(async (
     getJobs: () => Promise<unknown[]>,
 ) => (await getJobs()).length > 0);
 const hasPendingBatchedComments = mock.fn(async () => false);
+const transitionEvents: string[] = [];
+const withUltrafixTransitionLease = mock.fn(async (
+    _redis: unknown,
+    _identity: unknown,
+    _correlationId: string,
+    operation: (assertOwned: () => Promise<void>) => Promise<unknown>,
+) => {
+    transitionEvents.push('lease');
+    return operation(async () => { transitionEvents.push('assert'); });
+});
 
 await mock.module('@propr/core', {
     namedExports: { getCurrentPRHead, areAllChecksPassing, getIssueQueue, getPendingPrCommentsKey },
@@ -34,6 +44,9 @@ await mock.module('../src/jobs/ultrafixContinuationMeta.js', {
         buildContinuationMeta: mock.fn(),
         patchUltrafixContinuationMeta: mock.fn(),
     },
+});
+await mock.module('../src/jobs/ultrafixTransitionLease.js', {
+    namedExports: { withUltrafixTransitionLease },
 });
 await mock.module('../src/jobs/ultrafixOrchestrationService.js', {
     namedExports: {
@@ -72,6 +85,7 @@ function job(commandMode: 'fix' | 'review') {
         name: 'processPullRequestComment',
         data: {
             commandMode,
+            correlationId: 'job-correlation-id',
             ultrafixMeta: { mode: 'ultrafix', instructions: '', generation: 3, goal: 8 },
         },
     };
@@ -114,6 +128,8 @@ beforeEach(() => {
     ) => (await getJobs()).length > 0);
     hasPendingBatchedComments.mock.resetCalls();
     hasPendingBatchedComments.mock.mockImplementation(async () => false);
+    withUltrafixTransitionLease.mock.resetCalls();
+    transitionEvents.length = 0;
 });
 
 test('allows a queued Ultrafix job only while its generation is current', async () => {
@@ -167,8 +183,12 @@ test('adopts a generation-less queued job as legacy generation zero', async () =
 
 test('publishes a reserved generation from the durable startup job after intake exits', async () => {
     let generationChecks = 0;
-    isUltrafixGenerationActive.mock.mockImplementation(async () => ++generationChecks > 1);
-    isFreshUltrafixTransitionReserved.mock.mockImplementationOnce(async () => true);
+    isUltrafixGenerationActive.mock.mockImplementation(async () => ++generationChecks > 2);
+    isFreshUltrafixTransitionReserved.mock.mockImplementation(async () => true);
+    commitFreshUltrafixLoop.mock.mockImplementationOnce(async () => {
+        transitionEvents.push('commit');
+        return { state: {}, initialAction: 'fix' };
+    });
     const startupJob = job('fix');
     startupJob.data.ultrafixStartupRecovery = {
         commandSequence: 9,
@@ -195,17 +215,22 @@ test('publishes a reserved generation from the durable startup job after intake 
         reviewModel: 'codex:gpt-5.6-sol',
     }, true]);
     assert.equal(queueAdd.mock.callCount(), 0);
+    assert.deepEqual(transitionEvents, ['lease', 'assert', 'commit']);
+    assert.deepEqual(withUltrafixTransitionLease.mock.calls[0].arguments.slice(1, 3), [
+        { owner: 'owner', repo: 'repo', pr: 42 }, 'job-correlation-id',
+    ]);
 });
 
 test('cancels a reserved startup job without matching recovery data instead of retrying forever', async () => {
-    isUltrafixGenerationActive.mock.mockImplementationOnce(async () => false);
-    isFreshUltrafixTransitionReserved.mock.mockImplementationOnce(async () => true);
+    isUltrafixGenerationActive.mock.mockImplementation(async () => false);
+    isFreshUltrafixTransitionReserved.mock.mockImplementation(async () => true);
 
     assert.deepEqual(await guardUltrafixJobExecution(job('review') as never, params as never), {
         status: 'cancelled',
         reason: 'ultrafix_startup_unrecoverable',
     });
     assert.equal(queueAdd.mock.callCount(), 0);
+    assert.equal(withUltrafixTransitionLease.mock.callCount(), 1);
 });
 
 test('treats a readiness save rejected by a concurrent takeover as cancelled', async () => {

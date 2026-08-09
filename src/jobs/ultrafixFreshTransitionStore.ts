@@ -187,6 +187,24 @@ export async function isFreshUltrafixTransitionReserved(
     return Number(reservedGeneration) === generation;
 }
 
+/** Check a reservation's ownership while the caller holds the transition lease. */
+export async function hasPendingFreshUltrafixReservationForBaseGeneration(
+    redis: Redis,
+    identity: UltrafixIdentity,
+    baseGeneration: number,
+): Promise<boolean> {
+    const reservation = await loadFreshUltrafixReservation(redis, identity);
+    if (!reservation || reservation.baseGeneration !== baseGeneration) return false;
+    const [currentGeneration, fenceSequence, appliedSequence] = await Promise.all([
+        redis.get(getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr)),
+        redis.get(getUltrafixTakeoverFenceKey(identity.owner, identity.repo, identity.pr)),
+        redis.get(getUltrafixTransitionOrderKey(identity.owner, identity.repo, identity.pr)),
+    ]);
+    return Number(currentGeneration ?? '0') === baseGeneration
+        && Number(fenceSequence ?? '0') === reservation.commandSequence
+        && reservation.commandSequence > Number(appliedSequence ?? '0');
+}
+
 export async function loadFreshUltrafixReservation(
     redis: Redis,
     identity: UltrafixIdentity,

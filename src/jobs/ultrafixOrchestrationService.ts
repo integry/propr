@@ -18,6 +18,7 @@ export {
     getUltrafixDeferredGenerationKey,
     getUltrafixDeferredKey,
     getUltrafixGeneration,
+    getUltrafixFreshReservationKey,
     isDeferredContinuationCurrent,
     isManualUltrafixCommandSequenceCurrent,
     isUltrafixGenerationCurrent,
@@ -36,6 +37,7 @@ export {
 export type { UltrafixDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
 export {
     abortFreshUltrafixTransition,
+    hasPendingFreshUltrafixReservationForBaseGeneration,
     isFreshUltrafixTransitionReserved,
     reserveFreshUltrafixTransition,
 } from './ultrafixFreshTransitionStore.js';

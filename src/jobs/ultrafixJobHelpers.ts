@@ -27,6 +27,7 @@ import {
     type UltrafixAction,
 } from './ultrafixOrchestrationService.js';
 import { requiresPassingChecks } from './ultrafixReadinessPolicy.js';
+import { withUltrafixTransitionLease } from './ultrafixTransitionLease.js';
 
 /** Reject delayed or retried work from a loop superseded by a manual command. */
 export async function checkUltrafixGeneration(
@@ -95,33 +96,49 @@ export async function guardUltrafixJobExecution(
             generation,
         );
         if (reserved) {
-            const recovery = job.data.ultrafixStartupRecovery;
-            if (!recovery || recovery.generation !== generation) {
-                params.correlatedLogger.warn(
-                    { pullRequestNumber: params.pullRequestNumber, generation },
-                    'Reserved Ultrafix startup job has no matching recovery data; cancelling safely',
-                );
-                return { status: 'cancelled', reason: 'ultrafix_startup_unrecoverable' };
-            }
-            const committed = await commitFreshUltrafixLoop(params.redisClient, {
-                owner: params.repoOwner,
-                repo: params.repoName,
-                pr: params.pullRequestNumber,
-                commandSequence: recovery.commandSequence,
-                generation: recovery.generation,
-                baseGeneration: recovery.baseGeneration,
-                goal: recovery.goal,
-                maxCycles: recovery.maxCycles,
-                pauseSeconds: recovery.pauseSeconds,
-                reviewModel: recovery.reviewModel,
-            }, recovery.initialAction === 'fix');
-            if (!committed || !await checkUltrafixGeneration(job, params)) {
-                return { status: 'cancelled', reason: 'ultrafix_startup_superseded' };
-            }
-            params.correlatedLogger.info(
-                { pullRequestNumber: params.pullRequestNumber, generation },
-                'Recovered and published reserved Ultrafix startup from its durable first job',
+            const recoveryResult = await withUltrafixTransitionLease(
+                params.redisClient,
+                { owner: params.repoOwner, repo: params.repoName, pr: params.pullRequestNumber },
+                job.data.correlationId,
+                async assertOwned => {
+                    await assertOwned();
+                    if (await checkUltrafixGeneration(job, params)) return null;
+                    if (!await isFreshUltrafixTransitionReserved(
+                        params.redisClient,
+                        { owner: params.repoOwner, repo: params.repoName, pr: params.pullRequestNumber },
+                        generation!,
+                    )) return { status: 'cancelled', reason: 'ultrafix_startup_superseded' } as JobResult;
+                    const recovery = job.data.ultrafixStartupRecovery;
+                    if (!recovery || recovery.generation !== generation) {
+                        params.correlatedLogger.warn(
+                            { pullRequestNumber: params.pullRequestNumber, generation },
+                            'Reserved Ultrafix startup job has no matching recovery data; cancelling safely',
+                        );
+                        return { status: 'cancelled', reason: 'ultrafix_startup_unrecoverable' } as JobResult;
+                    }
+                    const committed = await commitFreshUltrafixLoop(params.redisClient, {
+                        owner: params.repoOwner,
+                        repo: params.repoName,
+                        pr: params.pullRequestNumber,
+                        commandSequence: recovery.commandSequence,
+                        generation: recovery.generation,
+                        baseGeneration: recovery.baseGeneration,
+                        goal: recovery.goal,
+                        maxCycles: recovery.maxCycles,
+                        pauseSeconds: recovery.pauseSeconds,
+                        reviewModel: recovery.reviewModel,
+                    }, recovery.initialAction === 'fix');
+                    if (!committed || !await checkUltrafixGeneration(job, params)) {
+                        return { status: 'cancelled', reason: 'ultrafix_startup_superseded' } as JobResult;
+                    }
+                    params.correlatedLogger.info(
+                        { pullRequestNumber: params.pullRequestNumber, generation },
+                        'Recovered and published reserved Ultrafix startup from its durable first job',
+                    );
+                    return null;
+                },
             );
+            if (recoveryResult) return recoveryResult;
         } else {
             return { status: 'cancelled', reason: 'ultrafix_superseded' };
         }

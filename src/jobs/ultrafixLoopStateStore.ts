@@ -5,8 +5,12 @@ import {
     getUltrafixDeferredKey,
     getUltrafixGenerationAllocationKey,
 } from './ultrafixDeferredContinuationStore.js';
+import {
+    getUltrafixStateKey,
+    ULTRAFIX_STATE_KEY_PREFIX,
+} from './ultrafixStateKey.js';
 
-const KEY_PREFIX = 'ultrafix:state';
+export { getUltrafixStateKey } from './ultrafixStateKey.js';
 
 const SAVE_STATE_IF_CURRENT_SCRIPT = `
 local current_generation = redis.call('GET', KEYS[1]) or '0'
@@ -81,10 +85,6 @@ redis.call('DEL', KEYS[3])
 return 1
 `;
 
-export function getUltrafixStateKey(owner: string, repo: string, pr: number): string {
-    return `${KEY_PREFIX}:${owner}:${repo}:${pr}`;
-}
-
 export async function saveState(redis: Redis, state: UltrafixLoopState): Promise<void> {
     const key = getUltrafixStateKey(state.owner, state.repo, state.pr);
     await redis.set(key, JSON.stringify(state));
@@ -102,7 +102,7 @@ export async function listUltrafixStateKeys(redis: Redis): Promise<string[]> {
     let cursor = '0';
     do {
         const [nextCursor, batch] = await redis.scan(
-            cursor, 'MATCH', `${KEY_PREFIX}:*`, 'COUNT', '100',
+            cursor, 'MATCH', `${ULTRAFIX_STATE_KEY_PREFIX}:*`, 'COUNT', '100',
         );
         cursor = nextCursor;
         keys.push(...batch);
@@ -113,7 +113,7 @@ export async function listUltrafixStateKeys(redis: Redis): Promise<string[]> {
 export function parseUltrafixStateKey(
     key: string,
 ): { owner: string; repo: string; pr: number } | null {
-    const prefix = `${KEY_PREFIX}:`;
+    const prefix = `${ULTRAFIX_STATE_KEY_PREFIX}:`;
     if (!key.startsWith(prefix)) return null;
     const [owner, repo, rawPr, ...extra] = key.slice(prefix.length).split(':');
     const pr = Number(rawPr);

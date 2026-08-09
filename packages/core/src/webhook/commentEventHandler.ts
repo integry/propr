@@ -626,13 +626,39 @@ async function finalizeManualUltrafixTakeover(
 ): Promise<void> {
     const { redisClient, owner, repo, prNumber, correlatedLogger } = options;
     await takeover.assertTransitionOwned();
-    const generation = await takeover.deps.completeManualTakeover(
+    const result = await completeRecoverableManualTakeover(
+        takeover.deps,
         redisClient, { owner, repo, pr: prNumber }, takeover.commandSequence,
     );
-    await deleteTakeoverRecoveryIfSequence(
-        redisClient, takeover.takeoverStageKey, takeover.takeoverIntentKey, takeover.commandSequence,
-    );
-    logManualTakeoverResult(generation, takeover.commandSequence, prNumber, correlatedLogger);
+    if (result.finalized) {
+        await deleteTakeoverRecoveryIfSequence(
+            redisClient, takeover.takeoverStageKey, takeover.takeoverIntentKey, takeover.commandSequence,
+        );
+        logManualTakeoverResult(result.generation, takeover.commandSequence, prNumber, correlatedLogger);
+    } else {
+        correlatedLogger.warn(
+            { pullRequestNumber: prNumber, commandSequence: takeover.commandSequence },
+            'Manual takeover remains staged for recovery after its fence could not be committed',
+        );
+    }
+}
+
+async function completeRecoverableManualTakeover(
+    deps: UltrafixDeps,
+    redisClient: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    commandSequence: number,
+): Promise<{ generation: number | null; finalized: boolean }> {
+    let generation = await deps.completeManualTakeover(redisClient, identity, commandSequence);
+    if (generation !== null) return { generation, finalized: true };
+    const retryable = await deps.beginManualTakeover(redisClient, identity, commandSequence);
+    if (!retryable) {
+        // The atomic begin result proves that this sequence is already applied
+        // or superseded by a newer applied/in-flight transition.
+        return { generation: null, finalized: true };
+    }
+    generation = await deps.completeManualTakeover(redisClient, identity, commandSequence);
+    return { generation, finalized: generation !== null };
 }
 
 async function cancelDeferredUltrafixTransition(
@@ -650,24 +676,32 @@ async function cancelDeferredUltrafixTransition(
     },
 ): Promise<void> {
     const { redisClient, owner, repo, prNumber, correlationId, correlatedLogger, commandSequence } = options;
-    const generation = await deps.withTransitionLease(
+    const result = await deps.withTransitionLease(
         redisClient,
         { owner, repo, pr: prNumber },
         correlationId,
         async assertOwned => {
             await assertOwned();
-            const completedGeneration = await deps.completeManualTakeover(
+            const completion = await completeRecoverableManualTakeover(
+                deps,
                 redisClient, { owner, repo, pr: prNumber }, commandSequence,
             );
-            if (options.takeoverStageKey && options.takeoverIntentKey) {
+            if (completion.finalized && options.takeoverStageKey && options.takeoverIntentKey) {
                 await deleteTakeoverRecoveryIfSequence(
                     redisClient, options.takeoverStageKey, options.takeoverIntentKey, commandSequence,
                 );
             }
-            return completedGeneration;
+            return completion;
         },
     );
-    logManualTakeoverResult(generation, commandSequence, prNumber, correlatedLogger);
+    if (result.finalized) {
+        logManualTakeoverResult(result.generation, commandSequence, prNumber, correlatedLogger);
+    } else {
+        correlatedLogger.warn(
+            { pullRequestNumber: prNumber, commandSequence },
+            'Manual takeover remains staged for daemon recovery',
+        );
+    }
 }
 
 function logManualTakeoverResult(

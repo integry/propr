@@ -1,5 +1,6 @@
 import type { UltrafixCommandMeta } from '@propr/core';
 import type { Redis } from 'ioredis';
+import { getUltrafixStateKey } from './ultrafixStateKey.js';
 
 export type UltrafixDeferredAction = 'review' | 'fix';
 
@@ -125,6 +126,7 @@ redis.call('SET', KEYS[5], generation)
 redis.call('SET', KEYS[3], generation)
 redis.call('DEL', KEYS[4])
 redis.call('DEL', KEYS[6])
+redis.call('DEL', KEYS[7])
 return generation
 `;
 
@@ -305,15 +307,17 @@ export async function completeManualUltrafixTakeover(
     const deferredKey = getUltrafixDeferredKey(identity.owner, identity.repo, identity.pr);
     const allocationKey = getUltrafixGenerationAllocationKey(identity.owner, identity.repo, identity.pr);
     const reservationKey = getUltrafixFreshReservationKey(identity.owner, identity.repo, identity.pr);
+    const stateKey = getUltrafixStateKey(identity.owner, identity.repo, identity.pr);
     const result = await redis.eval(
         COMPLETE_MANUAL_TAKEOVER_SCRIPT,
-        6,
+        7,
         orderKey,
         fenceKey,
         generationKey,
         deferredKey,
         allocationKey,
         reservationKey,
+        stateKey,
         String(commandSequence),
     );
     return result === null ? null : Number(result);
