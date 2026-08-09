@@ -221,10 +221,8 @@ export async function pollTasksToCompletion(
     await sleep(10_000);
     pollCount++;
 
-    let allDone = true;
     for (const r of withTasks) {
       if (r.finalState && terminalStates.has(r.finalState)) continue;
-      allDone = false;
 
       const status = await getTaskStatus(r.taskId!, client);
       const prevSize = r.observedStates.size;
@@ -260,7 +258,7 @@ export async function pollTasksToCompletion(
       console.log(`    Progress: ${done}/${withTasks.length} done`);
     }
 
-    if (allDone) return;
+    if (withTasks.every((r) => r.finalState && terminalStates.has(r.finalState))) return;
   }
 
   const unfinished = withTasks.filter((result) =>
