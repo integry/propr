@@ -208,21 +208,21 @@ export async function waitForTasks(
 export async function pollTasksToCompletion(
   results: ModelTestResult[],
   client: ApiClient,
+  timeoutMs = 900_000,
 ): Promise<void> {
   const withTasks = results.filter((r) => r.taskId);
   if (withTasks.length === 0) return;
 
   const terminalStates = new Set(["completed", "failed", "cancelled"]);
   let pollCount = 0;
+  const deadline = Date.now() + timeoutMs;
 
-  while (true) {
+  while (Date.now() < deadline) {
     await sleep(10_000);
     pollCount++;
 
-    let allDone = true;
     for (const r of withTasks) {
       if (r.finalState && terminalStates.has(r.finalState)) continue;
-      allDone = false;
 
       const status = await getTaskStatus(r.taskId!, client);
       const prevSize = r.observedStates.size;
@@ -258,8 +258,16 @@ export async function pollTasksToCompletion(
       console.log(`    Progress: ${done}/${withTasks.length} done`);
     }
 
-    if (allDone) break;
+    if (withTasks.every((r) => r.finalState && terminalStates.has(r.finalState))) return;
   }
+
+  const unfinished = withTasks.filter((result) =>
+    !result.finalState || !terminalStates.has(result.finalState));
+  throw new Error(
+    `Timed out waiting for ${unfinished.length}/${withTasks.length} model task(s): ${unfinished
+      .map((result) => `${result.agent_alias}/${result.model_name}`)
+      .join(", ")}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
