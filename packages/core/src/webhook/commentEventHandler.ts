@@ -448,7 +448,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
 
     const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     const identity = { owner, repo, pr: prNumber };
-    let workEpoch = 0;
+    let workEpoch: number | undefined;
     let loopMeta: UltrafixCommandMeta = commandMeta;
     let initialAction: 'review' | 'fix' = 'review';
     let labelApplied = false;
@@ -514,21 +514,24 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed before job enqueue, rolling back');
         try {
             let labelRemoved = false;
-            await withUltrafixLabelTransition(redisClient, identity, async () => {
-                const cleared = await deps.clearStateIfCurrent(
-                    redisClient,
-                    identity,
-                    workEpoch,
-                );
-                if (cleared && labelApplied) {
-                    const labelResult = await safeUpdateLabels(
-                        { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
-                        ['ultrafix'],
-                        [],
+            const reservedWorkEpoch = workEpoch;
+            if (reservedWorkEpoch !== undefined) {
+                await withUltrafixLabelTransition(redisClient, identity, async () => {
+                    const cleared = await deps.clearStateIfCurrent(
+                        redisClient,
+                        identity,
+                        reservedWorkEpoch,
                     );
-                    labelRemoved = labelResult.removed.includes('ultrafix');
-                }
-            });
+                    if (cleared && labelApplied) {
+                        const labelResult = await safeUpdateLabels(
+                            { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
+                            ['ultrafix'],
+                            [],
+                        );
+                        labelRemoved = labelResult.removed.includes('ultrafix');
+                    }
+                });
+            }
             const labelNote = labelRemoved
                 ? 'The ultrafix label has been removed.'
                 : 'No newer Ultrafix state or label was removed.';

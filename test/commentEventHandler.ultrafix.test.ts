@@ -652,6 +652,40 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(config.redisClient.del.mock.callCount(), 1, 'slash-command claim should be released for retry');
     });
 
+    test('lock acquisition failure cannot clear an unowned epoch-zero state', async () => {
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+        config.redisClient.set.mock.mockImplementation(async (key: string, value: string, ...args: string[]) => {
+            if (key.startsWith('ultrafix:label-transition:')) throw new Error('lock unavailable');
+            if (args.includes('NX') && config.redisClient._store.has(key)) return null;
+            config.redisClient._store.set(key, value);
+            return 'OK';
+        });
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-lock-failure', config),
+            /lock unavailable/,
+        );
+
+        assert.strictEqual(mockReserveAutomaticWork.mock.callCount(), 0);
+        assert.strictEqual(mockClearStateIfCurrent.mock.callCount(), 0);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+    });
+
+    test('reservation failure cannot clear an unowned epoch-zero state', async () => {
+        mockReserveAutomaticWork.mock.mockImplementation(async () => {
+            throw new Error('reservation unavailable');
+        });
+
+        await assert.rejects(
+            processCommentEvent(createPRCommentEvent('/ultrafix'), 'issue_comment', 'corr-uf-reserve-failure', createTestConfig()),
+            /reservation unavailable/,
+        );
+
+        assert.strictEqual(mockClearStateIfCurrent.mock.callCount(), 0);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+    });
+
     test('stale startup rollback preserves a newer loop state and label', async () => {
         mockQueueAdd.mock.mockImplementation(async () => {
             throw new Error('queue unavailable');

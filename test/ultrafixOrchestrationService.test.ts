@@ -555,16 +555,31 @@ describe('Serialization', () => {
 describe('shared label transition ownership', () => {
     function createTransitionRedis() {
         const store = new Map<string, string>();
+        const expiries = new Map<string, number>();
         return {
             store,
-            async set(key: string, value: string, _mode: string, _ttl: number, condition: string) {
+            async set(key: string, value: string, _mode: string, ttl: number, condition: string) {
+                if ((expiries.get(key) ?? Infinity) <= Date.now()) {
+                    store.delete(key);
+                    expiries.delete(key);
+                }
                 if (condition === 'NX' && store.has(key)) return null;
                 store.set(key, value);
+                expiries.set(key, Date.now() + ttl);
                 return 'OK';
             },
-            async eval(_script: string, _keyCount: number, key: string, token: string) {
+            async eval(_script: string, _keyCount: number, key: string, token: string, ttl?: string) {
+                if ((expiries.get(key) ?? Infinity) <= Date.now()) {
+                    store.delete(key);
+                    expiries.delete(key);
+                }
                 if (store.get(key) !== token) return 0;
+                if (_script.includes("redis.call('PEXPIRE'")) {
+                    expiries.set(key, Date.now() + Number(ttl));
+                    return 1;
+                }
                 store.delete(key);
+                expiries.delete(key);
                 return 1;
             },
         };
@@ -589,6 +604,26 @@ describe('shared label transition ownership', () => {
         await new Promise(resolve => setTimeout(resolve, 20));
         assert.deepStrictEqual(order, ['first-start']);
         releaseFirst();
+        await Promise.all([first, second]);
+        assert.deepStrictEqual(order, ['first-start', 'first-end', 'second']);
+    });
+
+    test('renews ownership when an operation exceeds its initial lease', async () => {
+        const redis = createTransitionRedis();
+        const identity = { owner: 'acme', repo: 'web', pr: 43 };
+        const order: string[] = [];
+        const timing = { ttlMs: 40, renewIntervalMs: 10, waitMs: 500 };
+
+        const first = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('first-start');
+            await new Promise(resolve => setTimeout(resolve, 120));
+            order.push('first-end');
+        }, timing);
+        await new Promise(resolve => setTimeout(resolve, 60));
+        const second = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('second');
+        }, timing);
+
         await Promise.all([first, second]);
         assert.deepStrictEqual(order, ['first-start', 'first-end', 'second']);
     });
