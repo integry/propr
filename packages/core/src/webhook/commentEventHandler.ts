@@ -267,13 +267,14 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     const manualCommand = commandMeta.mode === 'fix' || commandMeta.mode === 'review';
     const manualTakeover = manualCommand
         && await loadUltrafixDeps().hasAutomaticWork(redisClient, owner, repo, prNumber);
-    if (manualCommand) {
+    const invalidateAutomaticWorkAfterHandoff = async (): Promise<void> => {
+        if (!manualCommand) return;
         await loadUltrafixDeps().invalidateAutomaticWork(redisClient, owner, repo, prNumber);
         correlatedLogger.info(
             { pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode },
             'Manual command invalidated deferred and queued Ultrafix actions',
         );
-    }
+    };
 
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
     // Strip the slash command line from the comment body so the downstream job
@@ -284,6 +285,7 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob && !manualTakeover) {
         await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
+        await invalidateAutomaticWorkAfterHandoff();
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
         return;
     }
@@ -296,6 +298,7 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     }
 
     await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+    await invalidateAutomaticWorkAfterHandoff();
 }
 
 type SwitchCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'switch' } };
@@ -792,7 +795,8 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; b
         correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {
         const err = error as Error;
-        if (err.message?.includes('Job already exists')) correlatedLogger.debug({ pullRequestNumber: prNumber }, 'PR comment job already in queue, skipping');
+        if (err.message?.includes('Job already exists')) correlatedLogger.warn({ pullRequestNumber: prNumber }, 'PR comment job ID already exists; surfacing enqueue failure');
         else handleError(error, `Failed to add PR comment to queue`, { correlationId });
+        throw error;
     }
 }

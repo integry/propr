@@ -954,7 +954,13 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
     });
 
     test('manual review takeover gets a durable job instead of being stranded behind active Ultrafix work', async () => {
+        const takeoverSteps: string[] = [];
         mockHasAutomaticWork.mock.mockImplementation(async () => true);
+        mockQueueAdd.mock.mockImplementationOnce(async () => { takeoverSteps.push('enqueue'); });
+        mockInvalidateAutomaticWork.mock.mockImplementationOnce(async () => {
+            takeoverSteps.push('invalidate');
+            return 1;
+        });
         mockActiveJobs = [{
             name: 'processPullRequestComment',
             data: {
@@ -976,6 +982,33 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(jobData.commandMode, 'review');
         assert.deepStrictEqual(jobData.requestedModels, ['codex']);
         assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+        assert.deepStrictEqual(takeoverSteps, ['enqueue', 'invalidate']);
+    });
+
+    test('failed manual takeover enqueue remains observable and does not invalidate automatic work', async () => {
+        const enqueueError = new Error('queue unavailable');
+        mockHasAutomaticWork.mock.mockImplementation(async () => true);
+        mockQueueAdd.mock.mockImplementationOnce(async () => { throw enqueueError; });
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+
+        const event = createPRCommentEvent('/fix address the findings');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-ultrafix-takeover-failure', config),
+            enqueueError,
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 0);
     });
 
     test('later manual commands resume normal batching after an Ultrafix takeover', async () => {
