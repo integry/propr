@@ -8,6 +8,25 @@
 
 import type { Redis } from 'ioredis';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
+export {
+    clearDeferredContinuationIfCurrent,
+    getUltrafixAutomaticWorkEpoch,
+    getUltrafixAutomaticWorkEpochKey,
+    getUltrafixDeferredKey,
+    hasUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWorkForComment,
+    isUltrafixAutomaticWorkCurrent,
+} from './ultrafixAutomaticWorkEpoch.js';
+export {
+    claimDeferredContinuation,
+    clearDeferredContinuation,
+    listDeferredContinuationKeys,
+    loadDeferredContinuation,
+    parseDeferredKey,
+    saveDeferredContinuation,
+} from './ultrafixDeferredContinuationStore.js';
+export type { UltrafixDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
 
 // --- Interfaces ---
 
@@ -40,6 +59,8 @@ export interface UltrafixLoopState {
     lastActionTimestamp: string | null;
     /** Whether the loop is currently active */
     active: boolean;
+    /** Automatic-work epoch that owns this loop state. */
+    workEpoch: number;
     /** Terminal result once the loop has stopped. */
     completionStatus: 'succeeded' | 'failed' | null;
     /** Why the loop stopped. */
@@ -80,6 +101,7 @@ export interface StartLoopOptions {
     maxCycles?: number;
     pauseSeconds?: number;
     reviewModel?: string;
+    workEpoch?: number;
 }
 
 export interface UltrafixReadinessResult {
@@ -94,21 +116,9 @@ export interface UltrafixCheckStatus {
     anyFailed: boolean;
 }
 
-export interface UltrafixDeferredContinuation {
-    owner: string;
-    repo: string;
-    pr: number;
-    nextAction: UltrafixAction;
-    savedAt: string;
-    reason: string;
-    /** UltrafixMeta to pass to the next job when resuming */
-    ultrafixMeta?: import('@propr/core').UltrafixCommandMeta;
-}
-
 // --- Constants ---
 
 const KEY_PREFIX = 'ultrafix:state';
-const DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
 const DEFAULT_GOAL = 7;
 const DEFAULT_MAX_CYCLES = 5;
 const DEFAULT_PAUSE_SECONDS = 60;
@@ -117,10 +127,6 @@ const DEFAULT_PAUSE_SECONDS = 60;
 
 export function getUltrafixStateKey(owner: string, repo: string, pr: number): string {
     return `${KEY_PREFIX}:${owner}:${repo}:${pr}`;
-}
-
-export function getUltrafixDeferredKey(owner: string, repo: string, pr: number): string {
-    return `${DEFERRED_KEY_PREFIX}:${owner}:${repo}:${pr}`;
 }
 
 // --- State defaults ---
@@ -140,6 +146,7 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         lastAction: null,
         lastActionTimestamp: null,
         active: true,
+        workEpoch: options.workEpoch ?? 0,
         completionStatus: null,
         completionReason: null,
         finalScore: null,
@@ -496,77 +503,4 @@ export function checkReadiness(opts: {
  */
 export function areChecksReadyForUltrafix(status: UltrafixCheckStatus): boolean {
     return status.allPassing;
-}
-
-// --- Deferred continuation persistence ---
-
-export async function saveDeferredContinuation(
-    redis: Redis,
-    deferred: UltrafixDeferredContinuation,
-): Promise<void> {
-    const key = getUltrafixDeferredKey(deferred.owner, deferred.repo, deferred.pr);
-    await redis.set(key, JSON.stringify(deferred));
-}
-
-export async function loadDeferredContinuation(
-    redis: Redis,
-    owner: string,
-    repo: string,
-    pr: number,
-): Promise<UltrafixDeferredContinuation | null> {
-    const key = getUltrafixDeferredKey(owner, repo, pr);
-    const raw = await redis.get(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as UltrafixDeferredContinuation;
-}
-
-export async function claimDeferredContinuation(
-    redis: Redis,
-    owner: string,
-    repo: string,
-    pr: number,
-): Promise<UltrafixDeferredContinuation | null> {
-    const key = getUltrafixDeferredKey(owner, repo, pr);
-    const raw = await redis.getdel(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as UltrafixDeferredContinuation;
-}
-
-export async function clearDeferredContinuation(
-    redis: Redis,
-    owner: string,
-    repo: string,
-    pr: number,
-): Promise<void> {
-    const key = getUltrafixDeferredKey(owner, repo, pr);
-    await redis.del(key);
-}
-
-/**
- * List all deferred continuation keys currently in Redis.
- * Uses SCAN to avoid blocking on large keyspaces.
- */
-export async function listDeferredContinuationKeys(redis: Redis): Promise<string[]> {
-    const keys: string[] = [];
-    let cursor = '0';
-    do {
-        const [nextCursor, batch] = await redis.scan(cursor, 'MATCH', `${DEFERRED_KEY_PREFIX}:*`, 'COUNT', '100');
-        cursor = nextCursor;
-        keys.push(...batch);
-    } while (cursor !== '0');
-    return keys;
-}
-
-/**
- * Parse owner/repo/pr from a deferred continuation Redis key.
- */
-export function parseDeferredKey(key: string): { owner: string; repo: string; pr: number } | null {
-    const prefix = `${DEFERRED_KEY_PREFIX}:`;
-    if (!key.startsWith(prefix)) return null;
-    const parts = key.slice(prefix.length).split(':');
-    if (parts.length < 3) return null;
-    const pr = parseInt(parts[parts.length - 1], 10);
-    if (isNaN(pr)) return null;
-    // GitHub owner/repo cannot contain colons, so simple split is sufficient
-    return { owner: parts[0], repo: parts[1], pr };
 }

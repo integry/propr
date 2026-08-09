@@ -199,6 +199,9 @@ const mockGetPendingReviewState = mock.fn(async () => ({
 }));
 
 const mockClearState = mock.fn(async () => {});
+const mockGetAutomaticWorkEpoch = mock.fn(async () => 0);
+const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
+const mockHasAutomaticWork = mock.fn(async () => false);
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -207,6 +210,9 @@ setUltrafixDeps({
     loadPrReviewModel: mock.fn(async () => ''),
     startLoop: mockStartLoop,
     clearState: mockClearState,
+    hasAutomaticWork: mockHasAutomaticWork,
+    getAutomaticWorkEpoch: mockGetAutomaticWorkEpoch,
+    invalidateAutomaticWork: mockInvalidateAutomaticWork,
     getPendingReviewState: mockGetPendingReviewState,
 });
 
@@ -266,6 +272,12 @@ describe('commentEventHandler — /ultrafix command', () => {
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
         mockStartLoop.mock.resetCalls();
+        mockClearState.mock.resetCalls();
+        mockGetAutomaticWorkEpoch.mock.resetCalls();
+        mockGetAutomaticWorkEpoch.mock.mockImplementation(async () => 0);
+        mockInvalidateAutomaticWork.mock.resetCalls();
+        mockHasAutomaticWork.mock.resetCalls();
+        mockHasAutomaticWork.mock.mockImplementation(async () => false);
         mockGetPendingReviewState.mock.resetCalls();
         mockFilterCommentByAuthor.mock.resetCalls();
         mockActiveJobs = [];
@@ -314,6 +326,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(loopOptions.maxCycles, 5);   // DB default
         assert.strictEqual(loopOptions.pauseSeconds, 60); // DB default
         assert.strictEqual(loopOptions.reviewModel, ''); // DB default
+        assert.strictEqual(loopOptions.workEpoch, 0);
 
         // Should add ultrafix label
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
@@ -330,12 +343,34 @@ describe('commentEventHandler — /ultrafix command', () => {
         const ultrafixMeta = jobData.ultrafixMeta as Record<string, unknown>;
         assert.ok(ultrafixMeta, 'Job data should include ultrafixMeta');
         assert.strictEqual(ultrafixMeta.mode, 'ultrafix');
+        assert.strictEqual(ultrafixMeta.workEpoch, 0);
 
         // Should have posted a circuit-breaker comment (Octokit request for POST comments)
         const postCalls = mockOctokit.request.mock.calls.filter(
             (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST')
         );
         assert.ok(postCalls.length > 0, 'Expected a POST request to create a comment');
+    });
+
+    test('tracking refresh failure after enqueue does not roll back Ultrafix startup', async () => {
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+        config.redisClient.setex.mock.mockImplementationOnce(async () => {
+            throw new Error('tracking write failed');
+        });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-tracking-failure', config);
+
+        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockClearState.mock.callCount(), 0);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+
+        const postBodies = mockOctokit.request.mock.calls
+            .filter((call: { arguments: unknown[] }) => (call.arguments[0] as string).includes('POST'))
+            .map((call: { arguments: unknown[] }) => (call.arguments[1] as { body: string }).body);
+        assert.ok(postBodies.some(body => body.includes('Ultrafix loop started')));
+        assert.ok(postBodies.every(body => !body.includes('Ultrafix loop failed to start')));
     });
 
     test('duplicate /ultrafix deliveries for the same comment initialize only one loop', async () => {

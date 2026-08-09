@@ -9,6 +9,7 @@ import { getPendingPrCommentsKey } from '../utils/constants.js';
 import { withRetry } from '../utils/retryHandler.js';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
+import { createHash } from 'node:crypto';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
 import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels, modelLabelPrefix } from './commentEventHelpers.js';
 import { handleMergeCommand } from './mergeConflictDetector.js';
@@ -26,8 +27,11 @@ export interface UltrafixDeps {
     loadUltrafixMaxCycles: () => Promise<number>;
     loadUltrafixPauseSeconds: () => Promise<number>;
     loadPrReviewModel: () => Promise<string>;
-    startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
+    startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; workEpoch?: number }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
     clearState: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
+    hasAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<boolean>;
+    getAutomaticWorkEpoch: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
+    invalidateAutomaticWork: (redis: Redis, identity: { owner: string; repo: string; pr: number; sourceCommentId: number; sourceCommentRevision: string }) => Promise<{ workEpoch: number; hadAutomaticWork: boolean }>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
 
@@ -82,12 +86,18 @@ interface PRJobData extends CommentJobData {
 
 interface CommentContext { eventType: CommentEventType; prNumber: number; owner: string; repo: string }
 interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[] }
-interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta }
+interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; commentRevisionIdentity?: string }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta'> & { created_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
-type PRComment = { id: number; created_at: string; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+type PRComment = { id: number; created_at: string; updated_at: string; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+type ManualCommandTakeover = { workEpoch: number; hadAutomaticWork: boolean; commentRevisionIdentity: string };
+
+function getCommentRevisionIdentity(comment: Pick<PRComment, 'updated_at' | 'body'>, eventType: CommentEventType): string {
+    const contentDigest = createHash('sha256').update(`${eventType}\0${comment.body}`).digest('hex').slice(0, 12);
+    return `${comment.updated_at}:${contentDigest}`;
+}
 
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
     const result = await redisClient.set(key, Date.now().toString(), 'EX', 86400, 'NX');
@@ -156,7 +166,7 @@ export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequ
         const jobCommentIds = job.data.comments?.map(c => c.id) || [];
         if (jobCommentIds.includes(commentId)) {
             correlatedLogger.info({ jobId: job.id, pullRequestNumber: prNumber, repository: repoFullName }, 'Aborting job due to comment deletion');
-            const taskId = job.id?.startsWith('pr-comments-batch-') ? job.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') : `${owner}-${repo}-${prNumber}`;
+            const taskId = job.id ?? `${owner}-${repo}-${prNumber}`;
             await redisClient.set(`worker:abort:${taskId}`, JSON.stringify({ timestamp: new Date().toISOString(), reason: 'comment_deleted', commentId }), 'EX', 3600);
             await job.remove();
             correlatedLogger.info({ jobId: job.id, taskId }, 'Job aborted and removed from queue');
@@ -195,7 +205,7 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
 
     if (foundJob) {
         correlatedLogger.info({ jobId: foundJob.id, pullRequestNumber: prNumber, repository: repoFullName }, 'Aborting existing job due to comment edit');
-        const taskId = foundJob.id?.startsWith('pr-comments-batch-') ? foundJob.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') : `${owner}-${repo}-${prNumber}`;
+        const taskId = foundJob.id ?? `${owner}-${repo}-${prNumber}`;
         await redisClient.set(`worker:abort:${taskId}`, JSON.stringify({ timestamp: new Date().toISOString(), reason: 'comment_edited', commentId }), 'EX', 3600);
         await foundJob.remove();
     }
@@ -205,7 +215,7 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     if (processCommentEventFn) await processCommentEventFn(payload, eventType, correlationId, config);
 }
 
-interface SlashCommandComment { id: number; created_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }
+interface SlashCommandComment { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }
 
 interface SlashCommandHandlerOptions {
     parsedCommand: ReturnType<typeof parseSlashCommand> & object;
@@ -216,6 +226,30 @@ interface SlashCommandHandlerOptions {
     config: CommentEventConfig;
     correlationId: string;
     correlatedLogger: ReturnType<typeof logger.withCorrelation>;
+}
+
+type ManualCommandFenceOptions = Pick<SlashCommandHandlerOptions, 'comment' | 'eventContext' | 'config' | 'correlatedLogger'> & {
+    commandMeta: CommandMeta;
+};
+
+async function fenceManualCommand(opts: ManualCommandFenceOptions): Promise<ManualCommandTakeover | null> {
+    const { commandMeta, comment, eventContext, config, correlatedLogger } = opts;
+    if (commandMeta.mode !== 'fix' && commandMeta.mode !== 'review') return null;
+
+    const { owner, repo, prNumber } = eventContext;
+    const commentRevisionIdentity = getCommentRevisionIdentity(comment, eventContext.eventType);
+    const takeover = await loadUltrafixDeps().invalidateAutomaticWork(config.redisClient, {
+        owner,
+        repo,
+        pr: prNumber,
+        sourceCommentId: comment.id,
+        sourceCommentRevision: commentRevisionIdentity,
+    });
+    correlatedLogger.info(
+        { pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode, workEpoch: takeover.workEpoch },
+        'Manual command invalidated deferred and queued Ultrafix actions',
+    );
+    return { ...takeover, commentRevisionIdentity };
 }
 
 async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<void> {
@@ -261,20 +295,33 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         }
     }
 
+    const manualTakeover = await fenceManualCommand({ commandMeta, comment, eventContext, config, correlatedLogger });
+
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
     // Strip the slash command line from the comment body so the downstream job
     // only sees the user's instructions, not the control syntax (consistent with /switch).
     const strippedComment = { ...comment, body: commandMeta.instructions || '' };
 
-    // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
-    const existingJob = await checkExistingJob(prNumber, owner, repo);
-    if (existingJob) {
+    // Check for existing active/waiting jobs for this PR (batching/concurrency guard).
+    // The Redis loop state may already be inactive while its BullMQ job is still
+    // finishing, so the post-invalidation queue snapshot is also authoritative.
+    const existingJobs = await getExistingPRCommentJobs(prNumber, owner, repo);
+    const requiresIndependentTakeover = shouldEnqueueIndependentManualTakeover(existingJobs, manualTakeover);
+
+    if (existingJobs.length > 0 && !requiresIndependentTakeover) {
         await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
         return;
     }
 
-    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+    if (existingJobs.length > 0 && requiresIndependentTakeover) {
+        correlatedLogger.info(
+            { pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode },
+            'Manual Ultrafix takeover will run as an independent durable job',
+        );
+    }
+
+    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta, commentRevisionIdentity: manualTakeover?.commentRevisionIdentity });
 }
 
 type SwitchCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'switch' } };
@@ -365,12 +412,14 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
 
     // 1. Load configured defaults from settings, then override with command arguments
     const deps = loadUltrafixDeps();
-    const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel] = await Promise.all([
+    const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel, workEpoch] = await Promise.all([
         deps.loadUltrafixRatingGoal(),
         deps.loadUltrafixMaxCycles(),
         deps.loadUltrafixPauseSeconds(),
         deps.loadPrReviewModel(),
+        deps.getAutomaticWorkEpoch(redisClient, owner, repo, prNumber),
     ]);
+    const loopMeta: UltrafixCommandMeta = { ...commandMeta, workEpoch };
 
     // Command args override DB defaults; undefined means "not provided by user".
     const effectiveGoal = commandMeta.goal ?? dbGoal;
@@ -386,7 +435,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         // Store the original ultrafix meta so commandMode is 'ultrafix', not a provisional value.
         // The actual initial action (review vs fix) will be determined when the batch is processed.
         await storeCommentForBatch(
-            { ...strippedComment, ...buildPendingCommandFields(commandMeta), ultrafixMeta: commandMeta },
+            { ...strippedComment, ...buildPendingCommandFields(commandMeta), ultrafixMeta: loopMeta },
             commentAuthor,
             eventContext,
             { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },
@@ -436,6 +485,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             maxCycles: effectiveMaxCycles,
             pauseSeconds: effectivePauseSeconds,
             reviewModel: effectiveReviewModel,
+            workEpoch,
         }, hasPendingReview);
 
         correlatedLogger.info(
@@ -457,7 +507,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             correlationId,
             commandMeta: firstActionMeta,
             prefetchedPRData: prData,
-            ultrafixMeta: commandMeta,
+            ultrafixMeta: loopMeta,
         });
     } catch (error) {
         // Rollback: remove the ultrafix label if we added it, clear loop state, and post a failure comment.
@@ -619,6 +669,23 @@ async function getExistingPRCommentJobs(prNumber: number, owner: string, repo: s
     return existingJobs.filter(job => job.name === 'processPullRequestComment' && job.data.pullRequestNumber === prNumber && job.data.repoOwner === owner && job.data.repoName === repo);
 }
 
+function shouldEnqueueIndependentManualTakeover(
+    existingJobs: Job<PRJobData>[],
+    manualTakeover: ManualCommandTakeover | null,
+): boolean {
+    if (manualTakeover === null) return false;
+    const hasCurrentManualJob = existingJobs.some(job =>
+        !job.data.ultrafixMeta
+        && (job.data.commandMode === 'fix' || job.data.commandMode === 'review')
+    );
+    if (hasCurrentManualJob) return false;
+
+    return manualTakeover.hadAutomaticWork || existingJobs.some(job =>
+        job.data.ultrafixMeta != null
+        && (job.data.ultrafixMeta.workEpoch ?? 0) < manualTakeover.workEpoch
+    );
+}
+
 async function storeCommentForBatch(comment: BatchComment, commentAuthor: string, eventContext: CommentContext, config: StoreCommentConfig): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
     const { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS } = config;
@@ -733,9 +800,9 @@ function buildPendingCommandFields(commandMeta: CommandMeta): Pick<UnprocessedCo
     };
 }
 
-async function enqueueNewCommentJob(comment: { id: number; created_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
+async function enqueueNewCommentJob(comment: { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
-    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta } = options;
+    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta, commentRevisionIdentity } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { unprocessedComment, llmFromKeywords } = prepareComment(comment, commentAuthor, eventType, PR_FOLLOWUP_TRIGGER_KEYWORDS);
@@ -752,8 +819,11 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; b
         } : {}),
         ...(ultrafixMeta ? { ultrafixMeta } : {}),
     };
-    const timestamp = Date.now();
-    const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
+    const manualCommand = commandMeta?.mode === 'fix' || commandMeta?.mode === 'review';
+    const commentRevisionSlug = (commentRevisionIdentity ?? getCommentRevisionIdentity(comment, eventType)).replace(/[^a-zA-Z0-9_-]/g, '-');
+    const jobId = manualCommand
+        ? `pr-comments-batch-${owner}-${repo}-${prNumber}-${comment.id}-${commentRevisionSlug}`
+        : `pr-comments-batch-${owner}-${repo}-${prNumber}-${Date.now()}`;
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
 
     try {
@@ -764,11 +834,20 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; b
             attempts: 3,
             backoff: { type: 'exponential', delay: 10000 },  // 10s, 20s, 40s
         });
-        await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
-        correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {
         const err = error as Error;
-        if (err.message?.includes('Job already exists')) correlatedLogger.debug({ pullRequestNumber: prNumber }, 'PR comment job already in queue, skipping');
+        if (err.message?.includes('Job already exists')) correlatedLogger.warn({ pullRequestNumber: prNumber }, 'PR comment job ID already exists; surfacing enqueue failure');
         else handleError(error, `Failed to add PR comment to queue`, { correlationId });
+        throw error;
     }
+
+    try {
+        await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
+    } catch (error) {
+        // The queue insertion above is the durable handoff. Do not report it as
+        // failed (or skip takeover invalidation) merely because refreshing the
+        // comment-tracking TTL failed afterward.
+        handleError(error, 'PR comment job was queued but its tracking TTL could not be refreshed', { correlationId });
+    }
+    correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
 }

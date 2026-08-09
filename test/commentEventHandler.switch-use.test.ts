@@ -1,7 +1,17 @@
 import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
+import { createHash } from 'node:crypto';
 import type { IssueCommentEvent, Label } from '@octokit/webhooks-types';
 import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent, createMockLabel } from './testHelpers.js';
+
+function manualRevisionIdentity(updatedAt: string, body: string, eventType = 'issue_comment'): string {
+    const digest = createHash('sha256').update(`${eventType}\0${body}`).digest('hex').slice(0, 12);
+    return `${updatedAt}:${digest}`;
+}
+
+function manualRevisionSlug(updatedAt: string, body: string, eventType = 'issue_comment'): string {
+    return manualRevisionIdentity(updatedAt, body, eventType).replace(/[^a-zA-Z0-9_-]/g, '-');
+}
 
 // ========== Mocks ==========
 
@@ -169,7 +179,7 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 });
 
 // Import module under test AFTER mocks
-const { processCommentEvent, handleCommentDeleted } = await import(
+const { processCommentEvent, handleCommentDeleted, handleCommentEdited, setUltrafixDeps } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
@@ -177,6 +187,28 @@ const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js'
 const { applyPendingCommentCommandContext } = await import(
     '../src/jobs/prPendingComments.js'
 );
+
+const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
+const mockHasAutomaticWork = mock.fn(async () => false);
+setUltrafixDeps({
+    loadUltrafixRatingGoal: mock.fn(async () => 7),
+    loadUltrafixMaxCycles: mock.fn(async () => 5),
+    loadUltrafixPauseSeconds: mock.fn(async () => 60),
+    loadPrReviewModel: mock.fn(async () => ''),
+    startLoop: mock.fn(async () => ({ state: {}, initialAction: 'review' as const })),
+    clearState: mock.fn(async () => {}),
+    hasAutomaticWork: mockHasAutomaticWork,
+    getAutomaticWorkEpoch: mock.fn(async () => 0),
+    invalidateAutomaticWork: mockInvalidateAutomaticWork,
+    getPendingReviewState: mock.fn(async () => ({ hasPendingReview: false })),
+});
+
+beforeEach(() => {
+    mockInvalidateAutomaticWork.mock.resetCalls();
+    mockInvalidateAutomaticWork.mock.mockImplementation(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
+    mockHasAutomaticWork.mock.resetCalls();
+    mockHasAutomaticWork.mock.mockImplementation(async () => false);
+});
 
 after(async () => {
     await shutdownQueue();
@@ -925,6 +957,198 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(pendingComment.body, '');
         assert.strictEqual(pendingComment.commandMode, 'review');
         assert.deepStrictEqual(pendingComment.requestedModels, ['codex']);
+        assert.deepStrictEqual(
+            mockInvalidateAutomaticWork.mock.calls[0].arguments.slice(1),
+            [{ owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: event.comment.id, sourceCommentRevision: manualRevisionIdentity(event.comment.updated_at, event.comment.body) }],
+        );
+    });
+
+    test('tail-active automatic work gets a durable manual takeover after loop state becomes inactive', async () => {
+        const takeoverSteps: string[] = [];
+        mockQueueAdd.mock.mockImplementationOnce(async () => { takeoverSteps.push('enqueue'); });
+        mockInvalidateAutomaticWork.mock.mockImplementationOnce(async () => {
+            takeoverSteps.push('invalidate');
+            return { workEpoch: 1, hadAutomaticWork: false };
+        });
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+
+        const event = createPRCommentEvent('/review codex');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-ultrafix-takeover', config);
+
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.deepStrictEqual(jobData.requestedModels, ['codex']);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+        const revisionSlug = manualRevisionSlug(event.comment.updated_at, event.comment.body);
+        assert.strictEqual(
+            mockQueueAdd.mock.calls[0].arguments[2].jobId,
+            `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${revisionSlug}`,
+        );
+        assert.deepStrictEqual(takeoverSteps, ['invalidate', 'enqueue']);
+    });
+
+    test('failed manual takeover enqueue remains observable after automatic work is fenced', async () => {
+        const enqueueError = new Error('queue unavailable');
+        mockInvalidateAutomaticWork.mock.mockImplementationOnce(async () => ({ workEpoch: 1, hadAutomaticWork: true }));
+        mockQueueAdd.mock.mockImplementationOnce(async () => { throw enqueueError; });
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+
+        const event = createPRCommentEvent('/fix address the findings');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-ultrafix-takeover-failure', config),
+            enqueueError,
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+    });
+
+    test('tracking refresh failure preserves the fenced job and suppresses redelivery', async () => {
+        mockInvalidateAutomaticWork.mock.mockImplementation(async () => ({ workEpoch: 1, hadAutomaticWork: true }));
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+
+        const event = createPRCommentEvent('/fix address the findings');
+        const config = createTestConfig();
+        config.redisClient.setex.mock.mockImplementationOnce(async () => {
+            throw new Error('tracking write response lost');
+        });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-takeover-lost-response', config);
+        const redelivery = await processCommentEvent(event, 'issue_comment', 'corr-takeover-redelivery', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+        assert.deepStrictEqual(redelivery, { status: 'ignored', reason: 'duplicate_delivery' });
+        const revisionSlug = manualRevisionSlug(event.comment.updated_at, event.comment.body);
+        assert.strictEqual(
+            mockQueueAdd.mock.calls[0].arguments[2].jobId,
+            `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${revisionSlug}`,
+        );
+    });
+
+    test('an edited manual command fences and enqueues once under its new revision after the original job is terminal', async () => {
+        const event = createPRCommentEvent('/fix original instructions');
+        event.comment.id = 12345;
+        event.comment.updated_at = '2026-08-09T10:00:00Z';
+        const config = createTestConfig({ processCommentEvent });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-original-revision', config);
+
+        // No active/waiting/delayed job represents the original BullMQ job having
+        // reached a retained completed or failed state.
+        event.comment.body = '/fix edited instructions';
+        event.comment.updated_at = '2026-08-09T10:05:00Z';
+        await handleCommentEdited(event, 'issue_comment', 'corr-edited-revision', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
+        const originalRevision = manualRevisionIdentity('2026-08-09T10:00:00Z', '/fix original instructions');
+        const editedRevision = manualRevisionIdentity('2026-08-09T10:05:00Z', '/fix edited instructions');
+        assert.deepStrictEqual(
+            mockQueueAdd.mock.calls.map(call => call.arguments[2].jobId),
+            [
+                `pr-comments-batch-testowner-testrepo-42-12345-${originalRevision.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
+                `pr-comments-batch-testowner-testrepo-42-12345-${editedRevision.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
+            ],
+        );
+        assert.deepStrictEqual(
+            mockInvalidateAutomaticWork.mock.calls.map(call => call.arguments[1]),
+            [
+                { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: 12345, sourceCommentRevision: originalRevision },
+                { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: 12345, sourceCommentRevision: editedRevision },
+            ],
+        );
+    });
+
+    test('same-timestamp edits use distinct deterministic takeover and job identities', async () => {
+        const event = createPRCommentEvent('/fix original instructions');
+        event.comment.id = 12345;
+        event.comment.updated_at = '2026-08-09T10:00:00Z';
+        const config = createTestConfig({ processCommentEvent });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-same-second-original', config);
+        event.comment.body = '/fix edited within the same second';
+        await handleCommentEdited(event, 'issue_comment', 'corr-same-second-edit', config);
+
+        const jobIds = mockQueueAdd.mock.calls.map(call => call.arguments[2].jobId);
+        const takeoverIdentities = mockInvalidateAutomaticWork.mock.calls.map(call => call.arguments[1].sourceCommentRevision);
+        assert.strictEqual(jobIds.length, 2);
+        assert.notStrictEqual(jobIds[0], jobIds[1]);
+        assert.notStrictEqual(takeoverIdentities[0], takeoverIdentities[1]);
+        assert.match(jobIds[0] as string, /2026-08-09T10-00-00Z-[a-f0-9]{12}$/);
+        assert.match(jobIds[1] as string, /2026-08-09T10-00-00Z-[a-f0-9]{12}$/);
+    });
+
+    test('later manual commands resume normal batching after an Ultrafix takeover', async () => {
+        let workEpoch = 0;
+        mockInvalidateAutomaticWork.mock.mockImplementation(async () => {
+            workEpoch += 1;
+            return { workEpoch, hadAutomaticWork: workEpoch === 1 };
+        });
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+        const takeover = createPRCommentEvent('/review codex');
+        const laterCommand = createPRCommentEvent('/review codex');
+        laterCommand.comment.id = takeover.comment.id + 1;
+        const config = createTestConfig();
+
+        await processCommentEvent(takeover, 'issue_comment', 'corr-first-takeover', config);
+        mockActiveJobs = [
+            ...mockActiveJobs,
+            {
+                name: 'processPullRequestComment',
+                data: {
+                    pullRequestNumber: 42,
+                    repoOwner: 'testowner',
+                    repoName: 'testrepo',
+                    commandMode: 'review',
+                },
+            },
+        ];
+        await processCommentEvent(laterCommand, 'issue_comment', 'corr-later-batch', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        const pendingComment = JSON.parse(
+            config.redisClient.rpush.mock.calls[0].arguments[1] as string,
+        ) as Record<string, unknown>;
+        assert.strictEqual(pendingComment.commandMode, 'review');
     });
 
     test('batched slash commands on review comments preserve code-review context', async () => {
@@ -952,7 +1176,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
     });
 });
 
-describe('commentEventHandler — comment deletion queue cleanup', () => {
+describe('commentEventHandler — comment revision cancellation', () => {
     beforeEach(() => {
         mockLoggerInstance.info.mock.resetCalls();
         mockActiveJobs = [];
@@ -960,15 +1184,16 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
         mockDelayedJobs = [];
     });
 
-    test('removes delayed PR comment job when the source comment is deleted', async () => {
+    test('deleting an active revision-based manual job uses its exact worker abort key', async () => {
         const remove = mock.fn(async () => {});
-        mockDelayedJobs = [{
-            id: 'pr-comments-batch-testowner-testrepo-42-123',
+        mockActiveJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z',
             name: 'processPullRequestComment',
             data: {
                 pullRequestNumber: 42,
                 repoOwner: 'testowner',
                 repoName: 'testrepo',
+                commandMode: 'fix',
                 comments: [{ id: 123, body: 'please fix this', author: 'integry', type: 'issue' }],
             },
             remove,
@@ -980,11 +1205,37 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
         await handleCommentDeleted(event, 'issue_comment', 'corr-delete-delayed', config);
 
         assert.strictEqual(remove.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.set.mock.calls[0].arguments[0], 'worker:abort:pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z');
         assert.strictEqual(config.redisClient.del.mock.callCount(), 1);
         assert.strictEqual(
             config.redisClient.del.mock.calls[0].arguments[0],
             'pr-comment-processed:testowner:testrepo:42:123'
         );
+    });
+
+    test('editing an active revision-based manual job uses its exact worker abort key', async () => {
+        const remove = mock.fn(async () => {});
+        mockActiveJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z',
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                commandMode: 'review',
+                comments: [{ id: 123, body: 'please review this', author: 'integry', type: 'issue' }],
+            },
+            remove,
+        }];
+        const event = createPRCommentEvent('/review codex');
+        event.comment.id = 123;
+        const config = createTestConfig();
+
+        await handleCommentEdited(event, 'issue_comment', 'corr-edit-active-manual', config);
+
+        assert.strictEqual(remove.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.set.mock.calls[0].arguments[0], 'worker:abort:pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z');
+        assert.strictEqual(config.redisClient.del.mock.calls[0].arguments[0], 'pr-comment-processed:testowner:testrepo:42:123');
     });
 });
 
