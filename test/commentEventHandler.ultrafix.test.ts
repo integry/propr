@@ -272,6 +272,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
         mockStartLoop.mock.resetCalls();
+        mockClearState.mock.resetCalls();
         mockGetAutomaticWorkEpoch.mock.resetCalls();
         mockGetAutomaticWorkEpoch.mock.mockImplementation(async () => 0);
         mockInvalidateAutomaticWork.mock.resetCalls();
@@ -349,6 +350,27 @@ describe('commentEventHandler — /ultrafix command', () => {
             (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST')
         );
         assert.ok(postCalls.length > 0, 'Expected a POST request to create a comment');
+    });
+
+    test('tracking refresh failure after enqueue does not roll back Ultrafix startup', async () => {
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+        config.redisClient.setex.mock.mockImplementationOnce(async () => {
+            throw new Error('tracking write failed');
+        });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-tracking-failure', config);
+
+        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockClearState.mock.callCount(), 0);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+
+        const postBodies = mockOctokit.request.mock.calls
+            .filter((call: { arguments: unknown[] }) => (call.arguments[0] as string).includes('POST'))
+            .map((call: { arguments: unknown[] }) => (call.arguments[1] as { body: string }).body);
+        assert.ok(postBodies.some(body => body.includes('Ultrafix loop started')));
+        assert.ok(postBodies.every(body => !body.includes('Ultrafix loop failed to start')));
     });
 
     test('duplicate /ultrafix deliveries for the same comment initialize only one loop', async () => {
