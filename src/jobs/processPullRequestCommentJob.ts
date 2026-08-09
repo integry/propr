@@ -260,10 +260,11 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     }
 
     if (job.data.ultrafixMeta && selectedReviewComments.length > 0) {
-        await markFindingsSelected(redisClient, {
+        const selectedState = await markFindingsSelected(redisClient, {
             owner: repoOwner,
             repo: repoName,
             pr: pullRequestNumber,
+            generation: job.data.ultrafixMeta.generation,
             findings: selectedReviewComments.flatMap(comment =>
                 comment.actionableFindings.map(finding => ({
                     id: finding.id,
@@ -272,6 +273,11 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
                 })),
             ),
         });
+        if (!selectedState) {
+            correlatedLogger.info({ pullRequestNumber, generation: job.data.ultrafixMeta.generation },
+                'Skipping fix processing because the ultrafix loop was superseded while selecting findings');
+            return { status: 'skipped', reason: 'ultrafix_superseded', pullRequestNumber };
+        }
     }
 
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -304,6 +310,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
             repo: repoName,
             pr: pullRequestNumber,
             scope: originalTaskSpec,
+            generation: job.data.ultrafixMeta.generation,
         });
     }
     const localizedOriginalTaskSpec = originalTaskSpec

@@ -453,35 +453,26 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(jobData.commandMode, 'review');
     });
 
-    test('/ultrafix is batched when an existing job is active for the same PR', async () => {
-        // Simulate an active job for PR 42
+    test('/ultrafix supersedes active work with a concrete fix when findings are pending', async () => {
         mockActiveJobs = [{
             name: 'processPullRequestComment',
             data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
         }];
+        mockGetPendingReviewState.mock.mockImplementationOnce(async () => ({
+            unprocessedComments: [{ id: 1 }],
+            latestScore: 5,
+            hasPendingReview: true,
+        }));
 
         const event = createPRCommentEvent('/ultrafix');
         const config = createTestConfig();
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-batch', config);
 
-        // Should NOT enqueue a new job
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-        // Should store comment for batch via rpush
-        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
-        const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
-        // The batched comment should carry ultrafixMeta
-        assert.ok(pendingComment.ultrafixMeta, 'Batched comment should include ultrafixMeta');
-        // Preserve the command until the batch is processed; only then can the
-        // current review state safely select the first action.
-        assert.strictEqual(pendingComment.commandMode, 'ultrafix');
-
-        // Should NOT post label or circuit-breaker comment (batching guard fires before side effects)
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
-        const postCalls = mockOctokit.request.mock.calls.filter(
-            (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST')
-        );
-        assert.strictEqual(postCalls.length, 0, 'Should not post circuit-breaker comment when batched');
+        assert.strictEqual(mockStartLoop.mock.calls[0].arguments[2], true);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.calls[0].arguments[1].commandMode, 'fix');
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 
     test('/ultrafix does not add ultrafix label if it already exists', async () => {
@@ -508,8 +499,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
     });
 
-    test('/ultrafix is batched when a delayed job exists for the same PR', async () => {
-        // Simulate a delayed ultrafix job for PR 42
+    test('/ultrafix supersedes a delayed job with its own concrete job', async () => {
         mockDelayedJobs = [{
             name: 'processPullRequestComment',
             data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
@@ -520,14 +510,12 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-delayed', config);
 
-        // Should NOT enqueue a new job (batching guard)
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-        // Should store comment for batch via rpush
-        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.calls[0].arguments[1].commandMode, 'review');
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 
-    test('/ultrafix is batched when a waiting job exists for the same PR', async () => {
-        // Simulate a waiting job for PR 42
+    test('/ultrafix supersedes a waiting job with its own concrete job', async () => {
         mockWaitingJobs = [{
             name: 'processPullRequestComment',
             data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
@@ -538,8 +526,9 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-waiting', config);
 
-        // Should NOT enqueue a new job
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.calls[0].arguments[1].commandMode, 'review');
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 
     test('/ultrafix enqueued job carries correct ultrafixMeta fields', async () => {

@@ -389,22 +389,9 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     const effectivePauseSeconds = commandMeta.pauseSeconds ?? dbPauseSeconds;
     const effectiveReviewModel = commandMeta.reviewModel ?? dbReviewModel;
 
-    // 2. Check for existing active/waiting jobs (batching/concurrency guard) BEFORE
-    //    posting comments or mutating labels to avoid duplicate side effects.
+    // 2. A fresh loop supersedes older work, so it needs its own concrete job.
+    //    The per-PR worker lock serializes that job behind any active execution.
     const strippedComment = { ...comment, body: commandMeta.instructions || '' };
-    const existingJob = await checkExistingJob(prNumber, owner, repo);
-    if (existingJob) {
-        // Store the original ultrafix meta so commandMode is 'ultrafix', not a provisional value.
-        // The actual initial action (review vs fix) will be determined when the batch is processed.
-        await storeCommentForBatch(
-            { ...strippedComment, ...buildPendingCommandFields(commandMeta), ultrafixMeta: loopMeta },
-            commentAuthor,
-            eventContext,
-            { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },
-        );
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id }, '/ultrafix command: existing job found for PR, stored comment for batch processing');
-        return;
-    }
 
     // 3. Query pending review state to decide initial action
     const octokit = await getAuthenticatedOctokit();

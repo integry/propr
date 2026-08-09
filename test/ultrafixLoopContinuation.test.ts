@@ -62,6 +62,13 @@ function createMockRedis() {
         async del(key: string) { store.delete(key); return 1; },
         async eval(script: string, _keyCount: number, ...args: string[]) {
             const [generationKey, deferredKey] = args;
+            if (script.includes("redis.call('DEL', KEYS[3])")) {
+                if ((store.get(generationKey) ?? '0') !== args[3]) return 0;
+                store.set(generationKey, String(Number(args[3]) + 1));
+                store.delete(deferredKey);
+                store.delete(args[2]);
+                return 1;
+            }
             if (script.includes('return { deferred, generation }')) {
                 const deferred = store.get(deferredKey);
                 if (!deferred) return null;

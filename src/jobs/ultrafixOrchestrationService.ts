@@ -8,7 +8,12 @@
 
 import type { Redis } from 'ioredis';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
-import { clearDeferredContinuation, getUltrafixDeferredGenerationKey } from './ultrafixDeferredContinuationStore.js';
+import { clearDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
+import {
+    loadState,
+    saveState,
+    saveStateIfGenerationCurrent,
+} from './ultrafixLoopStateStore.js';
 
 export {
     claimDeferredContinuation,
@@ -25,6 +30,15 @@ export {
     deleteDeferredContinuationIfCurrent,
 } from './ultrafixDeferredContinuationStore.js';
 export type { UltrafixDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
+export {
+    clearState,
+    clearStateIfGenerationCurrent,
+    getUltrafixStateKey,
+    loadState,
+    retireLoopIfGenerationCurrent,
+    saveState,
+    saveStateIfGenerationCurrent,
+} from './ultrafixLoopStateStore.js';
 
 // --- Interfaces ---
 
@@ -117,34 +131,9 @@ export interface UltrafixCheckStatus {
 
 // --- Constants ---
 
-const KEY_PREFIX = 'ultrafix:state';
 const DEFAULT_GOAL = 7;
 const DEFAULT_MAX_CYCLES = 5;
 const DEFAULT_PAUSE_SECONDS = 60;
-
-const SAVE_STATE_IF_CURRENT_SCRIPT = `
-local current_generation = redis.call('GET', KEYS[1]) or '0'
-if current_generation ~= ARGV[1] then
-    return 0
-end
-redis.call('SET', KEYS[2], ARGV[2])
-return 1
-`;
-
-const CLEAR_STATE_IF_CURRENT_SCRIPT = `
-local current_generation = redis.call('GET', KEYS[1]) or '0'
-if current_generation ~= ARGV[1] then
-    return 0
-end
-redis.call('DEL', KEYS[2])
-return 1
-`;
-
-// --- Key helper ---
-
-export function getUltrafixStateKey(owner: string, repo: string, pr: number): string {
-    return `${KEY_PREFIX}:${owner}:${repo}:${pr}`;
-}
 
 // --- State defaults ---
 
@@ -263,52 +252,17 @@ export function determineNextAction(
     return { action: 'review', reason: 'Last action was fix, next is review' };
 }
 
-// --- Redis persistence ---
-
-export async function saveState(redis: Redis, state: UltrafixLoopState): Promise<void> {
-    const key = getUltrafixStateKey(state.owner, state.repo, state.pr);
-    await redis.set(key, JSON.stringify(state));
-}
-
-export async function loadState(redis: Redis, owner: string, repo: string, pr: number): Promise<UltrafixLoopState | null> {
-    const key = getUltrafixStateKey(owner, repo, pr);
-    const raw = await redis.get(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as UltrafixLoopState;
-}
-
-export async function clearState(redis: Redis, owner: string, repo: string, pr: number): Promise<void> {
-    const key = getUltrafixStateKey(owner, repo, pr);
-    await redis.del(key);
-}
-
-export async function saveStateIfGenerationCurrent(redis: Redis, state: UltrafixLoopState): Promise<boolean> {
-    const generationKey = getUltrafixDeferredGenerationKey(state.owner, state.repo, state.pr);
-    const stateKey = getUltrafixStateKey(state.owner, state.repo, state.pr);
-    return Number(await redis.eval(
-        SAVE_STATE_IF_CURRENT_SCRIPT,
-        2,
-        generationKey,
-        stateKey,
-        String(state.generation),
-        JSON.stringify(state),
-    )) === 1;
-}
-
-export async function clearStateIfGenerationCurrent(
+async function saveMutatedState(
     redis: Redis,
-    identity: { owner: string; repo: string; pr: number },
-    generation: number,
+    state: UltrafixLoopState,
+    generation: number | undefined,
 ): Promise<boolean> {
-    const generationKey = getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr);
-    const stateKey = getUltrafixStateKey(identity.owner, identity.repo, identity.pr);
-    return Number(await redis.eval(
-        CLEAR_STATE_IF_CURRENT_SCRIPT,
-        2,
-        generationKey,
-        stateKey,
-        String(generation),
-    )) === 1;
+    if (generation === undefined) {
+        await saveState(redis, state);
+        return true;
+    }
+    if (state.generation !== generation) return false;
+    return saveStateIfGenerationCurrent(redis, state);
 }
 
 // --- High-level helpers ---
@@ -354,22 +308,33 @@ export async function recordAction(redis: Redis, params: { owner: string; repo: 
         }
     }
 
-    await saveState(redis, state);
-    return state;
+    return await saveMutatedState(redis, state, params.generation) ? state : null;
 }
 
 /** Capture the original objective once; later cycles always receive this value. */
 export async function retainOriginalScope(
     redis: Redis,
-    params: { owner: string; repo: string; pr: number; scope: string },
+    params: { owner: string; repo: string; pr: number; scope: string; generation?: number },
 ): Promise<string> {
     const state = await loadState(redis, params.owner, params.repo, params.pr);
-    if (!state) return params.scope;
+    if (!state) {
+        if (params.generation !== undefined) {
+            throw new Error('Ultrafix loop was superseded before retaining its original scope');
+        }
+        return params.scope;
+    }
 
-    if (state.originalScopeCaptured === true) return state.originalScope ?? '';
+    if (state.originalScopeCaptured === true) {
+        if (!await saveMutatedState(redis, state, params.generation)) {
+            throw new Error('Ultrafix loop was superseded while reading its original scope');
+        }
+        return state.originalScope ?? '';
+    }
     // Preserve populated legacy state; an empty legacy placeholder was not captured.
     state.originalScope ||= params.scope;
-    await saveState(redis, { ...state, originalScopeCaptured: true });
+    if (!await saveMutatedState(redis, { ...state, originalScopeCaptured: true }, params.generation)) {
+        throw new Error('Ultrafix loop was superseded while retaining its original scope');
+    }
     return state.originalScope ?? '';
 }
 
@@ -380,6 +345,7 @@ export async function recordReviewFindings(
         owner: string;
         repo: string;
         pr: number;
+        generation?: number;
         findings: Array<{ id: string; sourceCommentId: number; title: string }>;
     },
 ): Promise<UltrafixLoopState | null> {
@@ -404,14 +370,13 @@ export async function recordReviewFindings(
         lifecycle[key].lastSeenCycle = state.cycleCount;
     }
     state.findingLifecycle = lifecycle;
-    await saveState(redis, state);
-    return state;
+    return await saveMutatedState(redis, state, params.generation) ? state : null;
 }
 
 /** Mark exactly the finding records selected for the next automatic fix. */
 export async function markFindingsSelected(
     redis: Redis,
-    params: { owner: string; repo: string; pr: number; findings: Array<{ id: string; sourceCommentId: number; title: string }> },
+    params: { owner: string; repo: string; pr: number; generation?: number; findings: Array<{ id: string; sourceCommentId: number; title: string }> },
 ): Promise<UltrafixLoopState | null> {
     const state = await loadState(redis, params.owner, params.repo, params.pr);
     if (!state) return null;
@@ -430,8 +395,7 @@ export async function markFindingsSelected(
         lifecycle[key].lastSeenCycle = state.cycleCount;
     }
     state.findingLifecycle = lifecycle;
-    await saveState(redis, state);
-    return state;
+    return await saveMutatedState(redis, state, params.generation) ? state : null;
 }
 
 /**
@@ -452,6 +416,7 @@ export async function completeLoop(
         owner: string;
         repo: string;
         pr: number;
+        generation?: number;
         completionStatus: 'succeeded' | 'failed';
         completionReason: string;
         finalScore: number | null;
@@ -466,8 +431,7 @@ export async function completeLoop(
     state.finalScore = params.finalScore;
     state.completedAt = new Date().toISOString();
 
-    await saveState(redis, state);
-    return state;
+    return await saveMutatedState(redis, state, params.generation) ? state : null;
 }
 
 // --- Readiness helpers (side-effect free, testable independently) ---

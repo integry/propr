@@ -35,6 +35,13 @@ function createMockRedis() {
         async del(key: string) { store.delete(key); return 1; },
         async eval(script: string, _keyCount: number, ...args: string[]) {
             const [generationKey, deferredKey] = args;
+            if (script.includes("redis.call('DEL', KEYS[3])")) {
+                if ((store.get(generationKey) ?? '0') !== args[3]) return 0;
+                store.set(generationKey, String(Number(args[3]) + 1));
+                store.delete(deferredKey);
+                store.delete(args[2]);
+                return 1;
+            }
             if (script.includes('return { deferred, generation }')) {
                 const deferred = store.get(deferredKey);
                 if (!deferred) return null;
@@ -438,6 +445,42 @@ describe('recordAction', () => {
         const redis = createMockRedis();
         const result = await recordAction(redis as any, { owner: 'no', repo: 'exist', pr: 99, action: 'fix' });
         assert.strictEqual(result, null);
+    });
+
+    test('stale action save cannot overwrite a newer loop started after its read', async () => {
+        const redis = createMockRedis();
+        const { state: olderState } = await startLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1,
+        }, false);
+        const originalEval = redis.eval.bind(redis);
+        let markPaused!: () => void;
+        let releaseSave!: () => void;
+        const paused = new Promise<void>((resolve) => { markPaused = resolve; });
+        const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+        let pauseOldMutation = true;
+        redis.eval = async (script: string, keyCount: number, ...args: string[]) => {
+            if (pauseOldMutation && script.includes("redis.call('SET', KEYS[2], ARGV[2])") && args[3]?.includes('"lastAction":"fix"')) {
+                pauseOldMutation = false;
+                markPaused();
+                await saveGate;
+            }
+            return originalEval(script, keyCount, ...args);
+        };
+
+        const staleMutation = recordAction(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, action: 'fix', generation: olderState.generation,
+        });
+        await paused;
+        const newerGeneration = await clearDeferredContinuation(redis as any, 'o', 'r', 1);
+        await startLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, goal: 9, generation: newerGeneration,
+        }, false);
+        releaseSave();
+
+        assert.strictEqual(await staleMutation, null);
+        const current = await loadState(redis as any, 'o', 'r', 1);
+        assert.strictEqual(current?.goal, 9);
+        assert.strictEqual(current?.generation, newerGeneration);
     });
 });
 
