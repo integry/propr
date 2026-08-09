@@ -475,6 +475,10 @@ describe('VibeAgent Docker args', () => {
         assert.match(script, /ensure_runtime_dirs/);
         assert.match(script, /chown -R node:node "\$RUNTIME_VIBE_HOME"/);
         assert.match(script, /bypass_tool_permissions = true/);
+        assert.match(
+            script,
+            /if \[ -n "\$VIBE_PROMPT_FILE_TO_INJECT" \]; then\s+exec env PROPR_VIBE_PROMPT_FILE="\$VIBE_PROMPT_FILE_TO_INJECT" "\$@"\s+fi\s+exec "\$@"/
+        );
         assert.doesNotMatch(script, /sudo -E -u node -H/);
     });
 

@@ -139,6 +139,7 @@ describe('agent version management', () => {
         assert.match(agentDockerfile, /link_npm_bin @anthropic-ai\/claude-code claude/);
         assert.match(agentDockerfile, /link_npm_bin @openai\/codex codex/);
         assert.match(agentDockerfile, /link_npm_bin opencode-ai opencode/);
+        assert.match(agentDockerfile, /ln -sf \/home\/node\/\.local\/bin\/agy \/usr\/local\/bin\/agy/);
         assert.match(agentDockerfile, /FROM agent-base AS claude-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS codex-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS antigravity-cli/);
