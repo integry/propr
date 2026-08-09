@@ -16,6 +16,30 @@ import { assertRepositoryClonePath } from './repositoryPaths.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
 
+/**
+ * Create a worktree branch without recording an upstream in the shared clone
+ * config. Parallel issue jobs use the same clone, so implicit tracking writes
+ * from `git worktree add` can race on `.git/config.lock` even though their
+ * branches and worktree directories are distinct.
+ */
+export async function addWorktreeWithoutTracking(
+    git: SimpleGit,
+    worktreePath: string,
+    branchName: string,
+    startPoint: string,
+    resetBranch = false,
+): Promise<string> {
+    return git.raw([
+        'worktree',
+        'add',
+        '--no-track',
+        resetBranch ? '-B' : '-b',
+        branchName,
+        worktreePath,
+        startPoint,
+    ]);
+}
+
 async function removeWorktreeForBranch(git: SimpleGit, worktreeLines: string[], branchName: string): Promise<void> {
     for (let i = 0; i < worktreeLines.length; i++) {
         const line = worktreeLines[i];
@@ -98,7 +122,13 @@ async function handleWorktreeConflict(git: SimpleGit, error: Error, worktreePath
             await git.raw(['worktree', 'remove', existingWorktreePath, '--force']);
             logger.info({ existingWorktreePath }, 'Successfully removed existing worktree');
 
-            const worktreeAddResult = await git.raw(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`]);
+            const worktreeAddResult = await addWorktreeWithoutTracking(
+                git,
+                worktreePath,
+                branchName,
+                `origin/${branchName}`,
+                true,
+            );
             logger.info({ branchName, worktreePath, gitOutput: worktreeAddResult.trim() }, 'Successfully created worktree after removing existing one');
         } catch (retryError) {
             logger.error({ branchName, existingWorktreePath, error: (retryError as Error).message }, 'Failed to handle existing worktree conflict');
@@ -155,7 +185,13 @@ async function createWorktreeFromRemote(git: SimpleGit, worktreePath: string, br
             logger.warn({ error: (listError as Error).message }, 'Failed to list existing worktrees');
         }
 
-        const worktreeAddResult = await git.raw(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`]);
+        const worktreeAddResult = await addWorktreeWithoutTracking(
+            git,
+            worktreePath,
+            branchName,
+            `origin/${branchName}`,
+            true,
+        );
         logger.info({ branchName, worktreePath, gitOutput: worktreeAddResult.trim() }, 'Git worktree add command completed');
 
     } catch (error) {
