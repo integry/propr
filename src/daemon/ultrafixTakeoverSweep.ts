@@ -165,18 +165,21 @@ async function recoverStage(
                     return false;
                 }
             }
+            await assertOwned();
             let completedGeneration = await deps.complete(
                 redis,
                 { owner: identity.owner, repo: identity.repo, pr: identity.pr },
                 commandSequence,
             );
             if (completedGeneration === null) {
+                await assertOwned();
                 const retryable = await deps.ensureFence(
                     redis,
                     { owner: identity.owner, repo: identity.repo, pr: identity.pr },
                     commandSequence,
                 );
                 if (retryable) {
+                    await assertOwned();
                     completedGeneration = await deps.complete(
                         redis,
                         { owner: identity.owner, repo: identity.repo, pr: identity.pr },
@@ -187,6 +190,7 @@ async function recoverStage(
                 // A false result atomically proves that this sequence was already
                 // applied or superseded by a newer applied/in-flight takeover.
             }
+            await assertOwned();
             await redis.eval(
                 DELETE_STAGE_IF_SEQUENCE_SCRIPT,
                 2,

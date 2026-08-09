@@ -125,6 +125,33 @@ test('daemon recovery enqueues a missing replacement from the durable takeover i
     assert.equal(strings.has(getManualTakeoverIntentKey(identity)), false);
 });
 
+test('daemon recovery does not commit after losing its lease during queue lookup', async () => {
+    const { redis, strings, stageKey } = createRedis(identity, 20);
+    let jobLookups = 0;
+    const { deps, complete } = createDeps(async () => {
+        jobLookups += 1;
+        return {};
+    });
+    let ownershipChecks = 0;
+    deps.withLease.mock.mockImplementationOnce(async (
+        _redis: unknown,
+        _identity: unknown,
+        _correlationId: string,
+        operation: (assertOwned: () => Promise<void>) => Promise<unknown>,
+    ) => operation(async () => {
+        ownershipChecks += 1;
+        if (ownershipChecks > 1) throw new Error('transition lease lost');
+    }));
+
+    await sweepManualUltrafixTakeovers(redis as never, deps as never);
+
+    assert.equal(jobLookups, 2);
+    assert.equal(ownershipChecks, 2);
+    assert.equal(complete.mock.callCount(), 0);
+    assert.equal(strings.get(stageKey), '20');
+    assert.equal(deps.warn.mock.callCount(), 1);
+});
+
 test('daemon recovery re-establishes a missing fence before deleting the stage', async () => {
     const { redis, strings, stageKey } = createRedis(identity, 16);
     const { deps, complete, ensureFence } = createDeps(async () => ({}));
