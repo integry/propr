@@ -16,6 +16,7 @@ import {
     getUltrafixStateKey,
     hasUltrafixAutomaticWork,
     invalidateUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWorkForComment,
     isUltrafixAutomaticWorkCurrent,
     parseDeferredKey,
     createDefaultState,
@@ -43,6 +44,31 @@ function createMockRedis() {
         },
         async eval(script: string, _keyCount: number, ...args: string[]) {
             const [epochKey, deferredKey] = args;
+            if (script.includes("local existing = redis.call('GET', KEYS[4])")) {
+                const [, , stateKey, takeoverKey, ttl] = args;
+                const existing = store.get(takeoverKey);
+                if (existing) return existing.split(':').map(Number);
+
+                const currentEpoch = Number(store.get(epochKey) ?? '0');
+                const rawState = store.get(stateKey);
+                let hadAutomaticWork = store.has(deferredKey);
+                if (!hadAutomaticWork && rawState) {
+                    try {
+                        const state = JSON.parse(rawState) as { active?: unknown; workEpoch?: unknown };
+                        const stateEpoch = typeof state.workEpoch === 'number' ? state.workEpoch : 0;
+                        hadAutomaticWork = state.active === true && stateEpoch === currentEpoch;
+                    } catch {
+                        hadAutomaticWork = currentEpoch === 0;
+                    }
+                }
+
+                const nextEpoch = currentEpoch + 1;
+                store.set(epochKey, String(nextEpoch));
+                store.delete(deferredKey);
+                store.set(takeoverKey, `${nextEpoch}:${hadAutomaticWork ? 1 : 0}`);
+                assert.strictEqual(ttl, String(24 * 60 * 60));
+                return [nextEpoch, hadAutomaticWork ? 1 : 0];
+            }
             if (script.includes("redis.call('INCR'")) {
                 const nextEpoch = Number(store.get(epochKey) ?? '0') + 1;
                 store.set(epochKey, String(nextEpoch));
@@ -308,6 +334,21 @@ describe('deferred continuation persistence', () => {
             await isUltrafixAutomaticWorkCurrent(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 0),
             false,
         );
+    });
+
+    test('manual invalidation is idempotent per source comment and preserves the takeover decision', async () => {
+        const stateKey = getUltrafixStateKey('acme', 'web', 42);
+        await redis.set(stateKey, JSON.stringify({ active: true, workEpoch: 0 }));
+
+        const identity = { owner: 'acme', repo: 'web', pr: 42, sourceCommentId: 9876 };
+        const first = await invalidateUltrafixAutomaticWorkForComment(redis as any, identity);
+        // Simulate the old worker persisting stale state before webhook redelivery.
+        await redis.set(stateKey, JSON.stringify({ active: true, workEpoch: 0 }));
+        const redelivery = await invalidateUltrafixAutomaticWorkForComment(redis as any, identity);
+
+        assert.deepStrictEqual(first, { workEpoch: 1, hadAutomaticWork: true });
+        assert.deepStrictEqual(redelivery, first);
+        assert.strictEqual(await getUltrafixAutomaticWorkEpoch(redis as any, 'acme', 'web', 42), 1);
     });
 
     test('automatic work detection covers active state and deferred transitions', async () => {

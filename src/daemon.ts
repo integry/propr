@@ -47,7 +47,7 @@ import {
     clearState,
     getUltrafixAutomaticWorkEpoch,
     hasUltrafixAutomaticWork,
-    invalidateUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWorkForComment,
     startLoop,
 } from './jobs/ultrafixOrchestrationService.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
@@ -183,7 +183,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearState,
         hasAutomaticWork: hasUltrafixAutomaticWork,
         getAutomaticWorkEpoch: getUltrafixAutomaticWorkEpoch,
-        invalidateAutomaticWork: invalidateUltrafixAutomaticWork,
+        invalidateAutomaticWork: invalidateUltrafixAutomaticWorkForComment,
         getPendingReviewState,
     });
 

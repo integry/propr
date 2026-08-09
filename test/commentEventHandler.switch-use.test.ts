@@ -178,7 +178,7 @@ const { applyPendingCommentCommandContext } = await import(
     '../src/jobs/prPendingComments.js'
 );
 
-const mockInvalidateAutomaticWork = mock.fn(async () => 1);
+const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
 const mockHasAutomaticWork = mock.fn(async () => false);
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -195,7 +195,7 @@ setUltrafixDeps({
 
 beforeEach(() => {
     mockInvalidateAutomaticWork.mock.resetCalls();
-    mockInvalidateAutomaticWork.mock.mockImplementation(async () => 1);
+    mockInvalidateAutomaticWork.mock.mockImplementation(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
     mockHasAutomaticWork.mock.resetCalls();
     mockHasAutomaticWork.mock.mockImplementation(async () => false);
 });
@@ -949,17 +949,16 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.deepStrictEqual(pendingComment.requestedModels, ['codex']);
         assert.deepStrictEqual(
             mockInvalidateAutomaticWork.mock.calls[0].arguments.slice(1),
-            ['testowner', 'testrepo', 42],
+            [{ owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: event.comment.id }],
         );
     });
 
     test('manual review takeover gets a durable job instead of being stranded behind active Ultrafix work', async () => {
         const takeoverSteps: string[] = [];
-        mockHasAutomaticWork.mock.mockImplementation(async () => true);
         mockQueueAdd.mock.mockImplementationOnce(async () => { takeoverSteps.push('enqueue'); });
         mockInvalidateAutomaticWork.mock.mockImplementationOnce(async () => {
             takeoverSteps.push('invalidate');
-            return 1;
+            return { workEpoch: 1, hadAutomaticWork: true };
         });
         mockActiveJobs = [{
             name: 'processPullRequestComment',
@@ -982,12 +981,13 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(jobData.commandMode, 'review');
         assert.deepStrictEqual(jobData.requestedModels, ['codex']);
         assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
-        assert.deepStrictEqual(takeoverSteps, ['enqueue', 'invalidate']);
+        assert.match(mockQueueAdd.mock.calls[0].arguments[2].jobId as string, new RegExp(`-${event.comment.id}$`));
+        assert.deepStrictEqual(takeoverSteps, ['invalidate', 'enqueue']);
     });
 
-    test('failed manual takeover enqueue remains observable and does not invalidate automatic work', async () => {
+    test('failed manual takeover enqueue remains observable after automatic work is fenced', async () => {
         const enqueueError = new Error('queue unavailable');
-        mockHasAutomaticWork.mock.mockImplementation(async () => true);
+        mockInvalidateAutomaticWork.mock.mockImplementationOnce(async () => ({ workEpoch: 1, hadAutomaticWork: true }));
         mockQueueAdd.mock.mockImplementationOnce(async () => { throw enqueueError; });
         mockActiveJobs = [{
             name: 'processPullRequestComment',
@@ -1008,13 +1008,47 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         );
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 0);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+    });
+
+    test('redelivery completes the same fenced takeover job after post-enqueue persistence fails', async () => {
+        mockInvalidateAutomaticWork.mock.mockImplementation(async () => ({ workEpoch: 1, hadAutomaticWork: true }));
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+
+        const event = createPRCommentEvent('/fix address the findings');
+        const config = createTestConfig();
+        config.redisClient.setex.mock.mockImplementationOnce(async () => {
+            throw new Error('tracking write response lost');
+        });
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-takeover-lost-response', config),
+            /tracking write response lost/,
+        );
+        await processCommentEvent(event, 'issue_comment', 'corr-takeover-redelivery', config);
+
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 2);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
+        const firstJobId = mockQueueAdd.mock.calls[0].arguments[2].jobId;
+        const retriedJobId = mockQueueAdd.mock.calls[1].arguments[2].jobId;
+        assert.strictEqual(retriedJobId, firstJobId);
+        assert.strictEqual(firstJobId, `pr-comments-batch-testowner-testrepo-42-${event.comment.id}`);
     });
 
     test('later manual commands resume normal batching after an Ultrafix takeover', async () => {
         let workEpoch = 0;
-        mockHasAutomaticWork.mock.mockImplementation(async () => workEpoch === 0);
-        mockInvalidateAutomaticWork.mock.mockImplementation(async () => ++workEpoch);
+        mockInvalidateAutomaticWork.mock.mockImplementation(async () => {
+            workEpoch += 1;
+            return { workEpoch, hadAutomaticWork: workEpoch === 1 };
+        });
         mockActiveJobs = [{
             name: 'processPullRequestComment',
             data: {

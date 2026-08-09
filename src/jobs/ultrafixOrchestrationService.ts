@@ -15,6 +15,7 @@ export {
     getUltrafixDeferredKey,
     hasUltrafixAutomaticWork,
     invalidateUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWorkForComment,
     isUltrafixAutomaticWorkCurrent,
 } from './ultrafixAutomaticWorkEpoch.js';
 export {

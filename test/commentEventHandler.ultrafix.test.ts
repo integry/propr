@@ -200,7 +200,7 @@ const mockGetPendingReviewState = mock.fn(async () => ({
 
 const mockClearState = mock.fn(async () => {});
 const mockGetAutomaticWorkEpoch = mock.fn(async () => 0);
-const mockInvalidateAutomaticWork = mock.fn(async () => 1);
+const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
 const mockHasAutomaticWork = mock.fn(async () => false);
 
 setUltrafixDeps({

@@ -4,7 +4,7 @@ import {
     clearState,
     getUltrafixAutomaticWorkEpoch,
     hasUltrafixAutomaticWork,
-    invalidateUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWorkForComment,
     startLoop,
 } from './ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
@@ -19,7 +19,7 @@ export function createUltrafixDeps(): UltrafixDeps {
         clearState,
         hasAutomaticWork: hasUltrafixAutomaticWork,
         getAutomaticWorkEpoch: getUltrafixAutomaticWorkEpoch,
-        invalidateAutomaticWork: invalidateUltrafixAutomaticWork,
+        invalidateAutomaticWork: invalidateUltrafixAutomaticWorkForComment,
         getPendingReviewState,
     };
 }

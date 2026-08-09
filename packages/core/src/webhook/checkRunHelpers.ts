@@ -515,9 +515,10 @@ export async function getUltrafixLoopState(
         const parsedState = JSON.parse(rawState) as { active?: unknown; completionStatus?: unknown; workEpoch?: unknown };
         const stateWorkEpoch = typeof parsedState.workEpoch === 'number' ? parsedState.workEpoch : 0;
         const currentWorkEpoch = Number(rawCurrentWorkEpoch ?? '0');
+        const isCurrentWorkEpoch = stateWorkEpoch === currentWorkEpoch;
         return {
-            active: parsedState.active === true && stateWorkEpoch === currentWorkEpoch,
-            completionStatus: parsedState.completionStatus === 'succeeded' || parsedState.completionStatus === 'failed'
+            active: parsedState.active === true && isCurrentWorkEpoch,
+            completionStatus: isCurrentWorkEpoch && (parsedState.completionStatus === 'succeeded' || parsedState.completionStatus === 'failed')
                 ? parsedState.completionStatus
                 : null
         };

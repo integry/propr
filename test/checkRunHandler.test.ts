@@ -609,6 +609,27 @@ describe('getPRAutoMergeInfo', () => {
         assert.strictEqual(result.ultrafixCompletionStatus, 'failed');
     });
 
+    for (const completionStatus of ['failed', 'succeeded'] as const) {
+        test(`ignores stale ${completionStatus} completion status from a superseded work epoch`, async () => {
+            resetMocks();
+            mockRedisGet.mock.mockImplementation(async (key: string) => key.startsWith('ultrafix:state:')
+                ? JSON.stringify({ active: false, completionStatus, workEpoch: 0 })
+                : '1');
+            mockOctokit.request.mock.mockImplementation(async () => ({
+                data: {
+                    labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                    draft: false,
+                    base: { ref: 'main' },
+                    head: { ref: 'feature-branch' }
+                }
+            }));
+
+            const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+            assert.strictEqual(result.hasActiveUltrafixLoop, false);
+            assert.strictEqual(result.ultrafixCompletionStatus, null);
+        });
+    }
+
     test('uses REDIS_URL for ultrafix state lookup when configured', async () => {
         resetMocks();
         const originalRedisUrl = process.env.REDIS_URL;
