@@ -69,6 +69,12 @@ function createMockRedis() {
         async get(key: string) { return store.get(key) ?? null; },
         async set(key: string, value: string) { store.set(key, value); return 'OK'; },
         async del(key: string) { return store.delete(key) ? 1 : 0; },
+        async eval(_script: string, _keyCount: number, ...args: string[]) {
+            const [epochKey, deferredKey, expectedEpoch, serializedDeferred] = args;
+            if ((store.get(epochKey) ?? '0') !== expectedEpoch) return 0;
+            store.set(deferredKey, serializedDeferred);
+            return 1;
+        },
         async llen(_key: string) { return 0; },
     };
 }
