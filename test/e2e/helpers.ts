@@ -20,6 +20,7 @@ import {
   implementIssue,
   type ImplementIssueResponse,
 } from "../../packages/cli/src/api/implement.js";
+import { findUnclaimedModelTask } from "./taskMatching.js";
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -177,32 +178,39 @@ export async function waitForTasks(
   client: ApiClient,
   timeoutPolls = 60,
 ): Promise<void> {
+  if (results.length === 0) return;
+
+  const claimedTaskIds = new Set(results.map((result) => result.taskId).filter(Boolean) as string[]);
   for (let poll = 0; poll < timeoutPolls; poll++) {
     await sleep(10_000);
-    const taskList = await listTasks({ repository: repo }, client);
+    const taskList = await listTasks({ repository: repo, limit: 1000 }, client);
 
     let allFound = true;
     for (const r of results) {
       if (r.taskId) continue;
-      const task = taskList.tasks.find(
-        (t) =>
-          t.issueNumber === r.issueNumber &&
-          (t.modelName === r.model_name || t.id.includes(r.model_name)),
-      );
-      if (task && !results.some((o) => o !== r && o.taskId === task.id)) {
+      const task = findUnclaimedModelTask(taskList.tasks, r, claimedTaskIds);
+      if (task) {
         r.taskId = task.id;
-        console.log(`    Task for #${r.issueNumber} (${r.model_name}): ${task.id.substring(0, 50)}...`);
+        claimedTaskIds.add(task.id);
+        console.log(`    Task for #${r.issueNumber} (${r.agent_alias}/${r.model_name}): ${task.id.substring(0, 50)}...`);
       } else {
         allFound = false;
       }
     }
-    if (allFound) break;
+    if (allFound) return;
 
     if (poll % 6 === 0) {
       const found = results.filter((r) => r.taskId).length;
       console.log(`    Tasks: ${found}/${results.length}`);
     }
   }
+
+  const missing = results.filter((result) => !result.taskId);
+  throw new Error(
+    `Timed out waiting for ${missing.length}/${results.length} model task(s): ${missing
+      .map((result) => `${result.agent_alias}/${result.model_name}`)
+      .join(", ")}`,
+  );
 }
 
 export async function pollTasksToCompletion(
