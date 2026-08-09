@@ -9,7 +9,8 @@ import {
   PlanIssueStatus,
   triggerNextPendingIssue,
   updatePlanIssueStatus,
-  resolveAgentTerminationReason
+  resolveAgentTerminationReason,
+  ErrorCategories
 } from '@propr/core';
 import type { CommitResult, ClaudeCodeResponse } from '@propr/core';
 import type { PostProcessingResult } from '../issueJobHelpers.js';
@@ -23,6 +24,47 @@ export function getTaskCompletionStatus(claudeResult: ClaudeCodeResponse | null,
     return 'claude_processing_failed';
   }
   return postProcessingResult?.pr ? 'complete_with_pr' : 'claude_success_no_changes';
+}
+
+type TerminalStateParams = Pick<
+  TaskCompletionParams,
+  'stateManager' | 'taskId' | 'claudeResult' | 'postProcessingResult' | 'commitResult'
+>;
+
+export async function markTaskTerminalState(params: TerminalStateParams): Promise<void> {
+  const { stateManager, taskId, claudeResult, postProcessingResult, commitResult } = params;
+  const status = getTaskCompletionStatus(claudeResult, postProcessingResult);
+  const commitResultData = commitResult
+    ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage }
+    : null;
+  const taskResult = {
+    status,
+    claudeSuccess: claudeResult?.success || false,
+    prCreated: !!postProcessingResult?.pr,
+    prNumber: postProcessingResult?.pr?.number ?? undefined,
+    prUrl: postProcessingResult?.pr?.url ?? undefined,
+    commitResult: commitResultData
+  };
+
+  if (status === 'claude_processing_failed') {
+    await stateManager.markTaskFailed(
+      taskId,
+      new Error(claudeResult?.error || 'Agent processing failed'),
+      {
+        errorCategory: ErrorCategories.CLAUDE_EXECUTION,
+        prResult: taskResult,
+        historyMetadata: {
+          pr: (taskResult.prUrl && taskResult.prNumber)
+            ? { number: taskResult.prNumber, url: taskResult.prUrl }
+            : null,
+          commitResult: commitResultData
+        }
+      }
+    );
+    return;
+  }
+
+  await stateManager.markTaskCompleted(taskId, taskResult);
 }
 
 function buildTaskUpdateFields(
@@ -80,26 +122,14 @@ async function closeFailedPlanIssueAndContinue(taskCompletionParams: TaskComplet
 }
 
 export async function markTaskComplete(taskCompletionParams: TaskCompletionParams): Promise<void> {
-  const { stateManager, taskId, claudeResult, postProcessingResult, commitResult, correlatedLogger } = taskCompletionParams;
+  const { taskId, postProcessingResult, commitResult, correlatedLogger } = taskCompletionParams;
   try {
-    const status = getTaskCompletionStatus(claudeResult, postProcessingResult);
-    const commitResultData = commitResult
-      ? { commitHash: commitResult.commitHash, commitMessage: commitResult.commitMessage }
-      : null;
-
-    await stateManager.markTaskCompleted(taskId, {
-      status,
-      claudeSuccess: claudeResult?.success || false,
-      prCreated: !!postProcessingResult?.pr,
-      prNumber: postProcessingResult?.pr?.number ?? undefined,
-      prUrl: postProcessingResult?.pr?.url ?? undefined,
-      commitResult: commitResultData
-    });
+    await markTaskTerminalState(taskCompletionParams);
 
     const updateFields = buildTaskUpdateFields(commitResult, postProcessingResult);
     await persistTaskUpdateFields(taskId, updateFields, correlatedLogger);
     await closeFailedPlanIssueAndContinue(taskCompletionParams);
   } catch (stateError) {
-    correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update task state to completed');
+    correlatedLogger.warn({ error: (stateError as Error).message }, 'Failed to update terminal task state');
   }
 }
