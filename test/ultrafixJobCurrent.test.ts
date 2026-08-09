@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import type { Job } from 'bullmq';
 import type { CommentJobData } from '@propr/core';
 
+const mockIssueQueueAdd = mock.fn(async () => ({}));
 await mock.module('@propr/core', {
     namedExports: {
         areAllChecksPassing: mock.fn(async () => true),
         getCurrentPRHead: mock.fn(async () => 'head-sha'),
         getPendingPrCommentsKey: (owner: string, repo: string, pr: number) => `pending-pr-comments:${owner}:${repo}:${pr}`,
+        issueQueue: { add: mockIssueQueueAdd },
     },
 });
 
@@ -107,10 +109,12 @@ describe('Ultrafix queued-work epoch guard', () => {
         assert.strictEqual(lists.has(pendingKey), false, 'stale automatic job won the destructive pickup race');
 
         const staleJob = makeJob(0);
+        const originalUltrafixMeta = staleJob.data.ultrafixMeta;
         assert.strictEqual(await restorePendingCommentsIfUltrafixJobSuperseded(
             staleJob,
             { ...params, redisClient: redis as never },
             stalePickup.pickedUpComments,
+            originalUltrafixMeta,
         ), true);
 
         const takeoverPickup = await pickUpPendingCommentsWithClaim([{
@@ -130,5 +134,38 @@ describe('Ultrafix queued-work epoch guard', () => {
             'durable takeover eventually processes the unrelated pending comment',
         );
         assert.strictEqual(lists.has(pendingKey), false);
+        assert.strictEqual(mockIssueQueueAdd.mock.callCount(), 1, 'restored comments get a durable follow-up job');
+    });
+
+    test('does not let pending model overrides erase stale automatic provenance', async () => {
+        for (const commandMode of ['switch', 'use'] as const) {
+            const staleJob = makeJob(0);
+            const originalUltrafixMeta = staleJob.data.ultrafixMeta;
+            staleJob.data.ultrafixMeta = undefined;
+            staleJob.data.commandMode = commandMode;
+
+            assert.strictEqual(await restorePendingCommentsIfUltrafixJobSuperseded(
+                staleJob,
+                { ...params, redisClient: makeRedis(1) as never },
+                [],
+                originalUltrafixMeta,
+            ), true);
+        }
+    });
+
+    test('allows an accepted pending manual takeover to replace a stale automatic job', async () => {
+        for (const commandMode of ['fix', 'review'] as const) {
+            const staleJob = makeJob(0);
+            const originalUltrafixMeta = staleJob.data.ultrafixMeta;
+            staleJob.data.ultrafixMeta = undefined;
+            staleJob.data.commandMode = commandMode;
+
+            assert.strictEqual(await restorePendingCommentsIfUltrafixJobSuperseded(
+                staleJob,
+                { ...params, redisClient: makeRedis(1) as never },
+                [],
+                originalUltrafixMeta,
+            ), false);
+        }
     });
 });

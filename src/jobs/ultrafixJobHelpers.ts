@@ -8,7 +8,7 @@
 import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
-import type { CommentJobData, UnprocessedComment } from '@propr/core';
+import { issueQueue, type CommentJobData, type UnprocessedComment } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
@@ -37,9 +37,33 @@ export async function restorePendingCommentsIfUltrafixJobSuperseded(
     job: Job<CommentJobData>,
     params: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis },
     pickedUpComments: UnprocessedComment[],
+    originalUltrafixMeta: CommentJobData['ultrafixMeta'] = job.data.ultrafixMeta,
 ): Promise<boolean> {
-    if (await isUltrafixJobCurrent(job, params)) return false;
+    if (!originalUltrafixMeta) return false;
+    const originCurrent = await isUltrafixAutomaticWorkCurrent(
+        params.redisClient,
+        { owner: params.repoOwner, repo: params.repoName, pr: params.pullRequestNumber },
+        originalUltrafixMeta.workEpoch,
+    );
+    if (originCurrent) return false;
+
+    const resolvedManualTakeover = !job.data.ultrafixMeta
+        && (job.data.commandMode === 'fix' || job.data.commandMode === 'review');
+    if (resolvedManualTakeover) return false;
+
     await restorePendingComments(pickedUpComments, params);
+    if (pickedUpComments.length > 0) {
+        await issueQueue.add('processPullRequestComment', {
+            pullRequestNumber: params.pullRequestNumber,
+            comments: [],
+            repoOwner: params.repoOwner,
+            repoName: params.repoName,
+            branchName: job.data.branchName,
+            llm: job.data.llm,
+            correlationId: job.data.correlationId,
+            reasoningLevel: job.data.reasoningLevel,
+        }, { delay: 3000 });
+    }
     return true;
 }
 
