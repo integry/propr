@@ -91,6 +91,15 @@ export async function enableAutoMerge(options: EnableAutoMergeOptions): Promise<
             pull_number: prNumber
         });
 
+        // Retried terminal finalization may arrive after GitHub already enabled
+        // auto-merge or merged the PR. Treat both states as an idempotent success.
+        if (prResponse.data.merged || prResponse.data.auto_merge) {
+            return {
+                success: true,
+                autoMergeEnabled: Boolean(prResponse.data.auto_merge),
+            };
+        }
+
         const pullRequestId = prResponse.data.node_id;
 
         // Build the GraphQL mutation

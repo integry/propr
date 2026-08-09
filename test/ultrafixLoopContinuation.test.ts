@@ -21,6 +21,8 @@ import {
 
 const enqueueNextStep = mock.fn(async () => {});
 const evaluateReadiness = mock.fn(async () => ({ ready: true, reasons: [] as string[] }));
+const maybeEnableAutoMerge = mock.fn(async () => true);
+const removeUltrafixLabel = mock.fn(async () => true);
 
 await mock.module('@propr/core', {
     namedExports: {
@@ -36,9 +38,9 @@ await mock.module('../src/jobs/ultrafixLoopContinuationHelpers.js', {
         enqueueNextStep,
         evaluateReadiness,
         hasUltrafixLabel: mock.fn(async () => true),
-        maybeEnableAutoMerge: mock.fn(async () => {}),
+        maybeEnableAutoMerge,
         postPrComment: mock.fn(async () => {}),
-        removeUltrafixLabel: mock.fn(async () => {}),
+        removeUltrafixLabel,
     },
 });
 
@@ -50,7 +52,10 @@ await mock.module('../src/jobs/reviewCommentGatherer.js', {
     namedExports: { getPendingReviewState: mock.fn() },
 });
 
-const { resumeDeferredContinuation } = await import('../src/jobs/ultrafixLoopContinuation.js');
+const {
+    resumeDeferredContinuation,
+    resumeTerminalUltrafixFinalization,
+} = await import('../src/jobs/ultrafixLoopContinuation.js');
 
 // --- Mock Redis ---
 
@@ -544,5 +549,69 @@ describe('claimed deferred continuation cancellation', () => {
         assert.strictEqual(enqueueNextStep.mock.callCount(), 0);
         assert.strictEqual(await loadDeferredContinuation(redis as never, 'acme', 'web', 42), null);
         assert.strictEqual((await loadState(redis as never, 'acme', 'web', 42))?.goal, 9);
+    });
+});
+
+describe('successful terminal finalization recovery', () => {
+    let redis: ReturnType<typeof createMockRedis>;
+    const logger = {
+        info: mock.fn(),
+        warn: mock.fn(),
+        error: mock.fn(),
+        debug: mock.fn(),
+    };
+
+    beforeEach(() => {
+        redis = createMockRedis();
+        removeUltrafixLabel.mock.resetCalls();
+        removeUltrafixLabel.mock.mockImplementation(async () => true);
+        maybeEnableAutoMerge.mock.resetCalls();
+        maybeEnableAutoMerge.mock.mockImplementation(async () => true);
+    });
+
+    async function seedSuccessfulTerminalState() {
+        const { state } = await startLoop(redis as never, {
+            owner: 'acme', repo: 'web', pr: 42,
+        }, false);
+        return completeLoop(redis as never, {
+            owner: 'acme', repo: 'web', pr: 42,
+            generation: state.generation,
+            completionStatus: 'succeeded',
+            completionReason: 'Goal reached',
+            finalScore: 9,
+        });
+    }
+
+    test('checkpoints completed side effects and resumes after a later sweep', async () => {
+        const terminal = await seedSuccessfulTerminalState();
+        assert.ok(terminal);
+        maybeEnableAutoMerge.mock.mockImplementationOnce(async () => false);
+
+        assert.equal(await resumeTerminalUltrafixFinalization(
+            { owner: 'acme', repo: 'web', pr: 42 }, redis as never, logger as never,
+        ), false);
+        const pending = await loadState(redis as never, 'acme', 'web', 42);
+        assert.deepEqual(pending?.terminalFinalization, {
+            labelRemoved: true,
+            autoMergeEvaluated: false,
+        });
+
+        assert.equal(await resumeTerminalUltrafixFinalization(
+            { owner: 'acme', repo: 'web', pr: 42 }, redis as never, logger as never,
+        ), true);
+        assert.equal(removeUltrafixLabel.mock.callCount(), 1);
+        assert.equal(maybeEnableAutoMerge.mock.callCount(), 2);
+        assert.equal(await loadState(redis as never, 'acme', 'web', 42), null);
+    });
+
+    test('leaves terminal ownership intact when label removal is unavailable', async () => {
+        await seedSuccessfulTerminalState();
+        removeUltrafixLabel.mock.mockImplementationOnce(async () => false);
+
+        assert.equal(await resumeTerminalUltrafixFinalization(
+            { owner: 'acme', repo: 'web', pr: 42 }, redis as never, logger as never,
+        ), false);
+        assert.equal(maybeEnableAutoMerge.mock.callCount(), 0);
+        assert.equal((await loadState(redis as never, 'acme', 'web', 42))?.completionStatus, 'succeeded');
     });
 });

@@ -8,6 +8,7 @@ const mockOctokit = {
 };
 
 const mockRedisGet = mock.fn(async () => null);
+const mockRedisDel = mock.fn(async () => 0);
 const redisConstructorCalls: unknown[][] = [];
 
 // Mock simple-git (transitive dependency)
@@ -26,6 +27,7 @@ await mock.module('ioredis', {
             return {
                 on: mock.fn(),
                 get: mockRedisGet,
+                del: mockRedisDel,
                 quit: mock.fn(async () => {}),
                 disconnect: mock.fn(),
             };
@@ -144,6 +146,8 @@ function resetMocks(): void {
     mockOctokit.request.mock.resetCalls();
     mockRedisGet.mock.resetCalls();
     mockRedisGet.mock.mockImplementation(async () => null);
+    mockRedisDel.mock.resetCalls();
+    mockRedisDel.mock.mockImplementation(async () => 0);
     redisConstructorCalls.length = 0;
     mockFindPlanIssueByRepoAndPR.mock.resetCalls();
     mockFindPlanIssueByRepoAndNumber.mock.resetCalls();
@@ -584,6 +588,28 @@ describe('getPRAutoMergeInfo', () => {
         const result = await getPRAutoMergeInfo('owner', 'repo', 42);
         assert.strictEqual(result.hasActiveUltrafixLoop, false);
         assert.strictEqual(result.ultrafixCompletionStatus, 'failed');
+    });
+
+    test('preserves successful terminal state after its label is removed', async () => {
+        resetMocks();
+        mockRedisGet.mock.mockImplementation(async () => JSON.stringify({
+            active: false,
+            completionStatus: 'succeeded',
+            terminalFinalization: { labelRemoved: true, autoMergeEvaluated: false },
+        }));
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                labels: [{ name: 'auto-merge' }],
+                draft: false,
+                base: { ref: 'main' },
+                head: { ref: 'feature-branch' },
+            },
+        }));
+
+        const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+
+        assert.strictEqual(result.ultrafixCompletionStatus, 'succeeded');
+        assert.strictEqual(mockRedisDel.mock.callCount(), 0);
     });
 
     test('uses REDIS_URL for ultrafix state lookup when configured', async () => {

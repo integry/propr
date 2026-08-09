@@ -543,7 +543,12 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
         const hasLabel = labels.some(label => label.name === 'auto-merge');
         const hasUltrafixLabel = labels.some(label => label.name === 'ultrafix');
         let ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
-        if (!hasUltrafixLabel && ultrafixState) {
+        // Successful terminal finalization removes the label before it retires
+        // state. Preserve that durable checkpoint so its daemon sweep can still
+        // finish auto-merge evaluation after a crash in between those steps.
+        if (!hasUltrafixLabel
+            && ultrafixState
+            && ultrafixState.completionStatus !== 'succeeded') {
             await clearUltrafixLoopState(owner, repoName, prNumber);
             ultrafixState = null;
         }

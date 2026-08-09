@@ -4,7 +4,6 @@ import type { Logger } from 'pino';
 import { parseTruthyEnvValue, resolveGithubEventIntakeMode } from '@propr/shared';
 import {
     getAuthenticatedOctokit,
-    getIssueQueue,
     generateCorrelationId,
     withErrorHandling,
     handleError,
@@ -30,7 +29,7 @@ import {
     AgentRegistry,
     runMigrations
 } from '@propr/core';
-import type { CommentPayload, CommentEventConfig, CommentEventType, CommentJobData, DeliveryDisposition, UnprocessedComment } from '@propr/core';
+import type { CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { logger } from '@propr/core';
 import { pollForPullRequestComments } from './polling/prCommentPolling.js';
 import {
@@ -53,18 +52,17 @@ import {
     commitFreshUltrafixLoop,
     completeManualUltrafixTakeover,
     reserveFreshUltrafixTransition,
-    listDeferredContinuationKeys,
-    parseDeferredKey,
 } from './jobs/ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
 import { withUltrafixTransitionLease } from './jobs/ultrafixTransitionLease.js';
-import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
+import {
+    setCheckRunDeps,
+    resumeDeferredContinuation,
+} from './jobs/ultrafixLoopContinuation.js';
 import { parseArgs } from './daemon/cliArgs.js';
 import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
 import { startEventIntake } from './daemon/eventIntakeStartup.js';
-import { scheduleUltrafixDeferredSweep } from './daemon/ultrafixDeferredSweep.js';
-import { scheduleFreshUltrafixReservationSweep } from './daemon/ultrafixFreshReservationSweep.js';
-import { scheduleManualUltrafixTakeoverSweep } from './daemon/ultrafixTakeoverSweep.js';
+import { scheduleUltrafixRecoverySweeps } from './daemon/ultrafixRecoverySweepStartup.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -210,51 +208,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         const log = logger.withCorrelation(generateCorrelationId());
         await resumeDeferredContinuation({ owner, repo, pr: prNumber }, redisClient, log as unknown as Logger);
     });
-    const ultrafixDeferredSweepInterval = await scheduleUltrafixDeferredSweep(redisClient, {
-        listKeys: listDeferredContinuationKeys,
-        parseKey: parseDeferredKey,
-        resume: resumeDeferredContinuation,
-        createLogger: () => logger.withCorrelation(generateCorrelationId()) as unknown as Logger,
-        warn: error => logger.warn({ error: error.message }, 'Ultrafix deferred continuation sweep failed'),
-    });
-    const ultrafixFreshReservationSweepInterval = await scheduleFreshUltrafixReservationSweep(redisClient, {
-        getJob: async jobId => (await getIssueQueue()).getJob(jobId),
-        withLease: withUltrafixTransitionLease,
-        createLogger: () => logger.withCorrelation(generateCorrelationId()) as unknown as Logger,
-        generateCorrelationId,
-        warn: error => logger.warn({ error: error.message }, 'Fresh Ultrafix reservation sweep failed'),
-    });
-    const ultrafixTakeoverSweepInterval = await scheduleManualUltrafixTakeoverSweep(redisClient, {
-        getJob: async jobId => (await getIssueQueue()).getJob(jobId),
-        enqueueReplacement: async (jobId, identity, comment: UnprocessedComment, correlationId) => {
-            const jobData: CommentJobData = {
-                pullRequestNumber: identity.pr,
-                comments: [comment],
-                repoOwner: identity.owner,
-                repoName: identity.repo,
-                correlationId,
-                commandMeta: comment.commandMeta,
-                commandMode: comment.commandMode,
-                requestedModels: comment.requestedModels,
-                commandInstructions: comment.commandInstructions,
-                commandCommentId: comment.id,
-                commandSequence: comment.commandSequence,
-                ultrafixMeta: comment.ultrafixMeta,
-                llm: comment.llmOverride,
-            };
-            await (await getIssueQueue()).add('processPullRequestComment', jobData, {
-                jobId,
-                delay: 3_000,
-                attempts: 3,
-                backoff: { type: 'exponential', delay: 10_000 },
-            });
-        },
-        complete: completeManualUltrafixTakeover,
-        withLease: withUltrafixTransitionLease,
-        createLogger: () => logger.withCorrelation(generateCorrelationId()) as unknown as Logger,
-        generateCorrelationId,
-        warn: error => logger.warn({ error: error.message }, 'Manual Ultrafix takeover sweep failed'),
-    });
+    const ultrafixRecoverySweepIntervals = await scheduleUltrafixRecoverySweeps(redisClient);
 
     const repos = getRepos();
 
@@ -452,9 +406,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
-        clearInterval(ultrafixDeferredSweepInterval);
-        clearInterval(ultrafixFreshReservationSweepInterval);
-        clearInterval(ultrafixTakeoverSweepInterval);
+        for (const interval of ultrafixRecoverySweepIntervals) clearInterval(interval);
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the

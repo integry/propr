@@ -20,7 +20,8 @@ import {
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
     isFreshUltrafixTransitionReserved,
-    isUltrafixGenerationCurrent,
+    isManualUltrafixCommandSequenceCurrent,
+    isUltrafixGenerationActive,
     loadState as loadUltrafixState,
     saveDeferredContinuation,
     type UltrafixAction,
@@ -41,7 +42,7 @@ export async function checkUltrafixGeneration(
         if (adopted) job.data.ultrafixMeta.generation = 0;
     }
     const generation = job.data.ultrafixMeta.generation;
-    const current = await isUltrafixGenerationCurrent(
+    const current = await isUltrafixGenerationActive(
         redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber }, generation,
     );
     if (!current) {
@@ -53,10 +54,39 @@ export async function checkUltrafixGeneration(
     return current;
 }
 
+async function checkManualCommandSequence(
+    job: Job<CommentJobData>,
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis },
+): Promise<boolean> {
+    if (job.data.ultrafixMeta
+        || (job.data.commandMode !== 'fix' && job.data.commandMode !== 'review')
+        || job.data.commandSequence === undefined) {
+        return true;
+    }
+    const current = await isManualUltrafixCommandSequenceCurrent(
+        params.redisClient,
+        { owner: params.repoOwner, repo: params.repoName, pr: params.pullRequestNumber },
+        job.data.commandSequence,
+    );
+    if (!current) {
+        params.correlatedLogger.info(
+            {
+                pullRequestNumber: params.pullRequestNumber,
+                commandSequence: job.data.commandSequence,
+            },
+            'Manual command job belongs to a superseded comment revision, cancelling before execution',
+        );
+    }
+    return current;
+}
+
 export async function guardUltrafixJobExecution(
     job: Job<CommentJobData>,
     params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis },
 ): Promise<JobResult | null> {
+    if (!await checkManualCommandSequence(job, params)) {
+        return { status: 'cancelled', reason: 'manual_command_superseded' };
+    }
     if (!await checkUltrafixGeneration(job, params)) {
         const generation = job.data.ultrafixMeta?.generation;
         const reserved = generation !== undefined && await isFreshUltrafixTransitionReserved(

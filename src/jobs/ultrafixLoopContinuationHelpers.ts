@@ -57,14 +57,14 @@ export async function removeUltrafixLabel(
     repo: string,
     pullRequestNumber: number,
     correlatedLogger: Logger,
-): Promise<void> {
+): Promise<boolean> {
     try {
         const octokit = await withRetry(
             () => getAuthenticatedOctokit(),
             { ...retryConfigs.githubApi },
             'get_authenticated_octokit_ultrafix_label_remove',
         );
-        await safeRemoveLabel(
+        return await safeRemoveLabel(
             { octokit, owner, repo, issueNumber: pullRequestNumber, logger: correlatedLogger },
             'ultrafix',
         );
@@ -73,6 +73,7 @@ export async function removeUltrafixLabel(
             { error: (err as Error).message, pullRequestNumber },
             'Failed to remove ultrafix label',
         );
+        return false;
     }
 }
 
@@ -106,11 +107,11 @@ export async function maybeEnableAutoMerge(
     repo: string,
     pullRequestNumber: number,
     correlatedLogger: Logger,
-): Promise<void> {
+): Promise<boolean> {
     try {
         const repository = `${owner}/${repo}`;
         const planIssue = await findPlanIssueByRepoAndPR(repository, pullRequestNumber);
-        if (!planIssue) return;
+        if (!planIssue) return true;
 
         const octokit = await withRetry(
             () => getAuthenticatedOctokit(),
@@ -124,14 +125,17 @@ export async function maybeEnableAutoMerge(
         });
         const labels = (issueResponse.data.labels as Array<{ name?: string } | string>)
             .map((label) => typeof label === 'string' ? label : (label.name || ''));
-        if (!labels.includes('auto-merge')) return;
+        if (!labels.includes('auto-merge')) return true;
 
         const result = await enableAutoMerge({ owner, repoName: repo, prNumber: pullRequestNumber });
         if (!result.success) {
             correlatedLogger.warn({ pullRequestNumber, error: result.error }, 'Failed to enable auto-merge after ultrafix success');
+            return false;
         }
+        return true;
     } catch (err) {
         correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Failed to evaluate auto-merge re-enable after ultrafix success');
+        return false;
     }
 }
 

@@ -93,6 +93,16 @@ redis.call('DEL', KEYS[1])
 return 1
 `;
 
+const IS_MANUAL_COMMAND_SEQUENCE_CURRENT_SCRIPT = `
+local applied = tonumber(redis.call('GET', KEYS[1]) or '0')
+local fenced = tonumber(redis.call('GET', KEYS[2]) or '0')
+local incoming = tonumber(ARGV[1])
+if incoming < applied or incoming < fenced then
+    return 0
+end
+return 1
+`;
+
 const COMPLETE_MANUAL_TAKEOVER_SCRIPT = `
 if redis.call('GET', KEYS[2]) ~= ARGV[1] then
     return nil
@@ -227,6 +237,23 @@ export async function getActiveUltrafixTakeoverSequence(
     const key = getUltrafixTakeoverFenceKey(identity.owner, identity.repo, identity.pr);
     const value = await redis.get(key);
     return value === null ? null : Number(value);
+}
+
+/** Reject a manual command revision superseded by an applied or in-flight takeover. */
+export async function isManualUltrafixCommandSequenceCurrent(
+    redis: Redis,
+    identity: UltrafixIdentity,
+    commandSequence: number,
+): Promise<boolean> {
+    const orderKey = getUltrafixTransitionOrderKey(identity.owner, identity.repo, identity.pr);
+    const fenceKey = getUltrafixTakeoverFenceKey(identity.owner, identity.repo, identity.pr);
+    return Number(await redis.eval(
+        IS_MANUAL_COMMAND_SEQUENCE_CURRENT_SCRIPT,
+        2,
+        orderKey,
+        fenceKey,
+        String(commandSequence),
+    )) === 1;
 }
 
 /** Establish a sequence-valued fence before a manual replacement is scheduled. */

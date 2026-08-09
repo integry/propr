@@ -4,7 +4,8 @@ import { beforeEach, mock, test } from 'node:test';
 const getCurrentPRHead = mock.fn(async () => 'head-sha' as string | null);
 const areAllChecksPassing = mock.fn(async () => true);
 const saveDeferredContinuation = mock.fn(async () => {});
-const isUltrafixGenerationCurrent = mock.fn(async () => true);
+const isUltrafixGenerationActive = mock.fn(async () => true);
+const isManualUltrafixCommandSequenceCurrent = mock.fn(async () => true);
 const getActiveUltrafixTakeoverSequence = mock.fn(async () => null as number | null);
 const adoptLegacyUltrafixGeneration = mock.fn(async () => true);
 const isFreshUltrafixTransitionReserved = mock.fn(async () => false);
@@ -38,7 +39,8 @@ await mock.module('../src/jobs/ultrafixOrchestrationService.js', {
     namedExports: {
         loadState: mock.fn(),
         saveDeferredContinuation,
-        isUltrafixGenerationCurrent,
+        isUltrafixGenerationActive,
+        isManualUltrafixCommandSequenceCurrent,
         getActiveUltrafixTakeoverSequence,
         adoptLegacyUltrafixGeneration,
         isFreshUltrafixTransitionReserved,
@@ -75,14 +77,23 @@ function job(commandMode: 'fix' | 'review') {
     };
 }
 
+function manualJob(commandMode: 'fix' | 'review', commandSequence: number) {
+    return {
+        name: 'processPullRequestComment',
+        data: { commandMode, commandSequence },
+    };
+}
+
 beforeEach(() => {
     getCurrentPRHead.mock.resetCalls();
     getCurrentPRHead.mock.mockImplementation(async () => 'head-sha');
     areAllChecksPassing.mock.resetCalls();
     areAllChecksPassing.mock.mockImplementation(async () => true);
     saveDeferredContinuation.mock.resetCalls();
-    isUltrafixGenerationCurrent.mock.resetCalls();
-    isUltrafixGenerationCurrent.mock.mockImplementation(async () => true);
+    isUltrafixGenerationActive.mock.resetCalls();
+    isUltrafixGenerationActive.mock.mockImplementation(async () => true);
+    isManualUltrafixCommandSequenceCurrent.mock.resetCalls();
+    isManualUltrafixCommandSequenceCurrent.mock.mockImplementation(async () => true);
     getActiveUltrafixTakeoverSequence.mock.resetCalls();
     getActiveUltrafixTakeoverSequence.mock.mockImplementation(async () => null);
     adoptLegacyUltrafixGeneration.mock.resetCalls();
@@ -107,15 +118,41 @@ beforeEach(() => {
 
 test('allows a queued Ultrafix job only while its generation is current', async () => {
     assert.equal(await checkUltrafixGeneration(job('review') as never, params as never), true);
-    assert.deepEqual(isUltrafixGenerationCurrent.mock.calls[0].arguments.slice(1), [
+    assert.deepEqual(isUltrafixGenerationActive.mock.calls[0].arguments.slice(1), [
         { owner: 'owner', repo: 'repo', pr: 42 }, 3,
     ]);
 });
 
 test('rejects both queued review and fix work from a superseded generation', async () => {
-    isUltrafixGenerationCurrent.mock.mockImplementation(async () => false);
+    isUltrafixGenerationActive.mock.mockImplementation(async () => false);
     assert.equal(await checkUltrafixGeneration(job('review') as never, params as never), false);
     assert.equal(await checkUltrafixGeneration(job('fix') as never, params as never), false);
+});
+
+test('rejects queued Ultrafix work after its current generation becomes inactive', async () => {
+    isUltrafixGenerationActive.mock.mockImplementationOnce(async () => false);
+
+    assert.deepEqual(await guardUltrafixJobExecution(job('fix') as never, params as never), {
+        status: 'cancelled',
+        reason: 'ultrafix_superseded',
+    });
+});
+
+test('cancels an older edited manual command before execution', async () => {
+    isManualUltrafixCommandSequenceCurrent.mock.mockImplementationOnce(async () => false);
+
+    assert.deepEqual(await guardUltrafixJobExecution(manualJob('fix', 14) as never, params as never), {
+        status: 'cancelled',
+        reason: 'manual_command_superseded',
+    });
+    assert.deepEqual(isManualUltrafixCommandSequenceCurrent.mock.calls[0].arguments.slice(1), [
+        { owner: 'owner', repo: 'repo', pr: 42 }, 14,
+    ]);
+});
+
+test('allows the authoritative manual command revision', async () => {
+    assert.equal(await guardUltrafixJobExecution(manualJob('review', 15) as never, params as never), null);
+    assert.equal(isManualUltrafixCommandSequenceCurrent.mock.callCount(), 1);
 });
 
 test('adopts a generation-less queued job as legacy generation zero', async () => {
@@ -125,12 +162,12 @@ test('adopts a generation-less queued job as legacy generation zero', async () =
     assert.equal(await checkUltrafixGeneration(legacyJob as never, params as never), true);
     assert.equal(legacyJob.data.ultrafixMeta.generation, 0);
     assert.equal(adoptLegacyUltrafixGeneration.mock.callCount(), 1);
-    assert.equal(isUltrafixGenerationCurrent.mock.calls[0].arguments[2], 0);
+    assert.equal(isUltrafixGenerationActive.mock.calls[0].arguments[2], 0);
 });
 
 test('publishes a reserved generation from the durable startup job after intake exits', async () => {
     let generationChecks = 0;
-    isUltrafixGenerationCurrent.mock.mockImplementation(async () => ++generationChecks > 1);
+    isUltrafixGenerationActive.mock.mockImplementation(async () => ++generationChecks > 1);
     isFreshUltrafixTransitionReserved.mock.mockImplementationOnce(async () => true);
     const startupJob = job('fix');
     startupJob.data.ultrafixStartupRecovery = {
@@ -161,7 +198,7 @@ test('publishes a reserved generation from the durable startup job after intake 
 });
 
 test('cancels a reserved startup job without matching recovery data instead of retrying forever', async () => {
-    isUltrafixGenerationCurrent.mock.mockImplementationOnce(async () => false);
+    isUltrafixGenerationActive.mock.mockImplementationOnce(async () => false);
     isFreshUltrafixTransitionReserved.mock.mockImplementationOnce(async () => true);
 
     assert.deepEqual(await guardUltrafixJobExecution(job('review') as never, params as never), {
@@ -173,8 +210,8 @@ test('cancels a reserved startup job without matching recovery data instead of r
 
 test('treats a readiness save rejected by a concurrent takeover as cancelled', async () => {
     getCurrentPRHead.mock.mockImplementationOnce(async () => null);
-    isUltrafixGenerationCurrent.mock.mockImplementationOnce(async () => true);
-    isUltrafixGenerationCurrent.mock.mockImplementationOnce(async () => false);
+    isUltrafixGenerationActive.mock.mockImplementationOnce(async () => true);
+    isUltrafixGenerationActive.mock.mockImplementationOnce(async () => false);
 
     assert.deepEqual(await guardUltrafixJobExecution(job('review') as never, params as never), {
         status: 'cancelled',

@@ -24,6 +24,7 @@ import {
     determineNextAction,
     hasReviewReachedGoal,
     recordReviewFindings,
+    recordTerminalFinalizationStep,
     saveDeferredContinuation,
     deleteDeferredContinuationIfCurrent,
     getActiveUltrafixTakeoverSequence,
@@ -92,6 +93,71 @@ export interface ContinuationResult {
 }
 
 type FinishUltrafixDetails = { state: UltrafixLoopState; latestScore: number | null; reviewStatus: ReviewOutputStatus; completionReason: string };
+
+async function finalizeSuccessfulLoopWithLease(
+    params: Pick<UltrafixContinuationParams, 'owner' | 'repo' | 'pullRequestNumber' | 'redisClient' | 'correlatedLogger'> & {
+        generation: number;
+    },
+    initialState: UltrafixLoopState,
+    assertTransitionOwned: () => Promise<void>,
+): Promise<boolean> {
+    const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, generation } = params;
+    let state = initialState;
+    if (state.active || state.completionStatus !== 'succeeded' || state.generation !== generation) return false;
+
+    if (!state.terminalFinalization?.labelRemoved) {
+        await assertTransitionOwned();
+        if (!await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger)) return false;
+        const updated = await recordTerminalFinalizationStep(redisClient, {
+            owner, repo, pr: pullRequestNumber, generation, step: 'labelRemoved',
+        });
+        if (!updated) return false;
+        state = updated;
+    }
+
+    if (!state.terminalFinalization?.autoMergeEvaluated) {
+        await assertTransitionOwned();
+        if (!await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger)) return false;
+        const updated = await recordTerminalFinalizationStep(redisClient, {
+            owner, repo, pr: pullRequestNumber, generation, step: 'autoMergeEvaluated',
+        });
+        if (!updated) return false;
+    }
+
+    await assertTransitionOwned();
+    return retireLoopIfGenerationCurrent(
+        redisClient, { owner, repo, pr: pullRequestNumber }, generation,
+    );
+}
+
+/** Resume successful terminal side effects without rerunning review or fix work. */
+export async function resumeTerminalUltrafixFinalization(
+    identity: { owner: string; repo: string; pr: number },
+    redisClient: Redis,
+    correlatedLogger: Logger,
+): Promise<boolean> {
+    const candidate = await loadState(redisClient, identity.owner, identity.repo, identity.pr);
+    if (!candidate || candidate.active || candidate.completionStatus !== 'succeeded') return false;
+    if (!await isUltrafixGenerationCurrent(redisClient, identity, candidate.generation)) return false;
+    return withUltrafixTransitionLease(
+        redisClient,
+        identity,
+        generateCorrelationId(),
+        async assertTransitionOwned => {
+            const state = await loadState(redisClient, identity.owner, identity.repo, identity.pr);
+            if (!state || state.active || state.completionStatus !== 'succeeded') return false;
+            if (!await isUltrafixGenerationCurrent(redisClient, identity, state.generation)) return false;
+            return finalizeSuccessfulLoopWithLease({
+                owner: identity.owner,
+                repo: identity.repo,
+                pullRequestNumber: identity.pr,
+                redisClient,
+                correlatedLogger,
+                generation: state.generation,
+            }, state, assertTransitionOwned);
+        },
+    );
+}
 
 async function loadCurrentLoopState(
     params: UltrafixContinuationParams,
@@ -190,14 +256,26 @@ async function finishUltrafixLoopWithLease(
     if (!completedState) return { continued: false, reason: 'ultrafix_superseded' };
 
     if (goalReached) {
-        const retired = await retireLoopIfGenerationCurrent(
-            redisClient, { owner, repo, pr: pullRequestNumber }, generation!,
-        );
-        if (!retired) return { continued: false, reason: 'ultrafix_superseded' };
-        await assertTransitionOwned();
-        await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
-        await assertTransitionOwned();
-        await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
+        const finalized = await finalizeSuccessfulLoopWithLease({
+            owner,
+            repo,
+            pullRequestNumber,
+            redisClient,
+            correlatedLogger,
+            generation: generation!,
+        }, completedState, assertTransitionOwned);
+        if (!finalized) {
+            correlatedLogger.warn(
+                { pullRequestNumber, generation },
+                'Ultrafix terminal side effects remain pending for daemon recovery',
+            );
+            return {
+                continued: false,
+                reason: 'terminal_finalization_pending',
+                score: latestScore,
+                cycleCount: state.cycleCount,
+            };
+        }
     } else {
         const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
         const manualReason = cleanReviewMissedGoal

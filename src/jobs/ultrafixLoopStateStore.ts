@@ -26,6 +26,22 @@ redis.call('DEL', KEYS[2])
 return 1
 `;
 
+const IS_ACTIVE_GENERATION_SCRIPT = `
+local current_generation = redis.call('GET', KEYS[1]) or '0'
+if current_generation ~= ARGV[1] then
+    return 0
+end
+local serialized_state = redis.call('GET', KEYS[2])
+if not serialized_state then
+    return 0
+end
+local decoded, state = pcall(cjson.decode, serialized_state)
+if not decoded or state.active ~= true or tonumber(state.generation) ~= tonumber(ARGV[1]) then
+    return 0
+end
+return 1
+`;
+
 const ADOPT_LEGACY_GENERATION_SCRIPT = `
 local current_generation = redis.call('GET', KEYS[1])
 if current_generation and current_generation ~= '0' then
@@ -81,6 +97,30 @@ export async function loadState(redis: Redis, owner: string, repo: string, pr: n
     return JSON.parse(raw) as UltrafixLoopState;
 }
 
+export async function listUltrafixStateKeys(redis: Redis): Promise<string[]> {
+    const keys: string[] = [];
+    let cursor = '0';
+    do {
+        const [nextCursor, batch] = await redis.scan(
+            cursor, 'MATCH', `${KEY_PREFIX}:*`, 'COUNT', '100',
+        );
+        cursor = nextCursor;
+        keys.push(...batch);
+    } while (cursor !== '0');
+    return keys;
+}
+
+export function parseUltrafixStateKey(
+    key: string,
+): { owner: string; repo: string; pr: number } | null {
+    const prefix = `${KEY_PREFIX}:`;
+    if (!key.startsWith(prefix)) return null;
+    const [owner, repo, rawPr, ...extra] = key.slice(prefix.length).split(':');
+    const pr = Number(rawPr);
+    if (!owner || !repo || extra.length > 0 || !Number.isInteger(pr)) return null;
+    return { owner, repo, pr };
+}
+
 export async function clearState(redis: Redis, owner: string, repo: string, pr: number): Promise<void> {
     const key = getUltrafixStateKey(owner, repo, pr);
     await redis.del(key);
@@ -97,6 +137,75 @@ export async function saveStateIfGenerationCurrent(redis: Redis, state: Ultrafix
         String(state.generation),
         JSON.stringify(state),
     )) === 1;
+}
+
+/** Atomically require both current generation ownership and an active loop state. */
+export async function isUltrafixGenerationActive(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    generation: number | undefined,
+): Promise<boolean> {
+    if (generation === undefined) return false;
+    const generationKey = getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr);
+    const stateKey = getUltrafixStateKey(identity.owner, identity.repo, identity.pr);
+    return Number(await redis.eval(
+        IS_ACTIVE_GENERATION_SCRIPT,
+        2,
+        generationKey,
+        stateKey,
+        String(generation),
+    )) === 1;
+}
+
+/** Persist one idempotent successful-loop finalization step under generation ownership. */
+export async function recordTerminalFinalizationStep(
+    redis: Redis,
+    params: {
+        owner: string;
+        repo: string;
+        pr: number;
+        generation: number;
+        step: 'labelRemoved' | 'autoMergeEvaluated';
+    },
+): Promise<UltrafixLoopState | null> {
+    const state = await loadState(redis, params.owner, params.repo, params.pr);
+    if (!state
+        || state.active
+        || state.completionStatus !== 'succeeded'
+        || state.generation !== params.generation) {
+        return null;
+    }
+    state.terminalFinalization ??= { labelRemoved: false, autoMergeEvaluated: false };
+    state.terminalFinalization[params.step] = true;
+    return await saveStateIfGenerationCurrent(redis, state) ? state : null;
+}
+
+export async function completeLoop(
+    redis: Redis,
+    params: {
+        owner: string;
+        repo: string;
+        pr: number;
+        generation?: number;
+        completionStatus: 'succeeded' | 'failed';
+        completionReason: string;
+        finalScore: number | null;
+    },
+): Promise<UltrafixLoopState | null> {
+    const state = await loadState(redis, params.owner, params.repo, params.pr);
+    if (!state) return null;
+    state.active = false;
+    state.completionStatus = params.completionStatus;
+    state.completionReason = params.completionReason;
+    state.finalScore = params.finalScore;
+    state.completedAt = new Date().toISOString();
+    state.terminalFinalization = params.completionStatus === 'succeeded'
+        ? { labelRemoved: false, autoMergeEvaluated: false }
+        : undefined;
+    const saved = params.generation === undefined
+        ? await saveState(redis, state).then(() => true)
+        : await saveStateIfGenerationCurrent(redis, state);
+    return saved ? state : null;
 }
 
 export async function clearStateIfGenerationCurrent(

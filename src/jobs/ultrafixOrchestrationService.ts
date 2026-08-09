@@ -19,6 +19,7 @@ export {
     getUltrafixDeferredKey,
     getUltrafixGeneration,
     isDeferredContinuationCurrent,
+    isManualUltrafixCommandSequenceCurrent,
     isUltrafixGenerationCurrent,
     listDeferredContinuationKeys,
     loadDeferredContinuation,
@@ -42,8 +43,13 @@ export {
     adoptLegacyUltrafixGeneration,
     clearState,
     clearStateIfGenerationCurrent,
+    completeLoop,
     getUltrafixStateKey,
+    isUltrafixGenerationActive,
+    listUltrafixStateKeys,
     loadState,
+    parseUltrafixStateKey,
+    recordTerminalFinalizationStep,
     retireLoopIfGenerationCurrent,
     saveState,
     saveStateIfGenerationCurrent,
@@ -90,6 +96,8 @@ export interface UltrafixLoopState {
     finalScore: number | null;
     /** ISO timestamp when the loop reached a terminal state. */
     completedAt: string | null;
+    /** Durable progress for successful terminal GitHub side effects. */
+    terminalFinalization?: { labelRemoved: boolean; autoMergeEvaluated: boolean };
     /** Original PR/issue objective captured once and reused unchanged. */
     originalScope?: string;
     /** Whether originalScope has been captured, including when it was empty. */
@@ -438,30 +446,6 @@ export async function stopLoop(redis: Redis, owner: string, repo: string, pr: nu
     state.active = false;
     await saveState(redis, state);
     return state;
-}
-
-export async function completeLoop(
-    redis: Redis,
-    params: {
-        owner: string;
-        repo: string;
-        pr: number;
-        generation?: number;
-        completionStatus: 'succeeded' | 'failed';
-        completionReason: string;
-        finalScore: number | null;
-    },
-): Promise<UltrafixLoopState | null> {
-    const state = await loadState(redis, params.owner, params.repo, params.pr);
-    if (!state) return null;
-
-    state.active = false;
-    state.completionStatus = params.completionStatus;
-    state.completionReason = params.completionReason;
-    state.finalScore = params.finalScore;
-    state.completedAt = new Date().toISOString();
-
-    return await saveMutatedState(redis, state, params.generation) ? state : null;
 }
 
 // --- Readiness helpers (side-effect free, testable independently) ---

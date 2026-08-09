@@ -10,6 +10,7 @@ import {
     getUltrafixGenerationAllocationKey,
     getUltrafixTakeoverFenceKey,
     getUltrafixTransitionOrderKey,
+    isManualUltrafixCommandSequenceCurrent,
 } from '../src/jobs/ultrafixDeferredContinuationStore.js';
 import {
     abortFreshUltrafixTransition,
@@ -17,7 +18,11 @@ import {
     loadFreshUltrafixReservation,
     reserveFreshUltrafixTransition,
 } from '../src/jobs/ultrafixFreshTransitionStore.js';
-import { adoptLegacyUltrafixGeneration, getUltrafixStateKey } from '../src/jobs/ultrafixLoopStateStore.js';
+import {
+    adoptLegacyUltrafixGeneration,
+    getUltrafixStateKey,
+    isUltrafixGenerationActive,
+} from '../src/jobs/ultrafixLoopStateStore.js';
 
 test('fresh Ultrafix publication preserves its predecessor and never reuses an aborted generation', async t => {
     const redis = new Redis({
@@ -107,7 +112,11 @@ test('fresh Ultrafix publication preserves its predecessor and never reuses an a
         }), true);
         assert.equal(await redis.get(manualStageKey), '3');
         assert.equal(await redis.get(manualIntentKey), serializedManualComment);
+        assert.equal(await isManualUltrafixCommandSequenceCurrent(redis, identity, 2), false);
+        assert.equal(await isManualUltrafixCommandSequenceCurrent(redis, identity, 3), true);
         assert.equal(await completeManualUltrafixTakeover(redis, identity, 3), 11);
+        assert.equal(await isManualUltrafixCommandSequenceCurrent(redis, identity, 2), false);
+        assert.equal(await isManualUltrafixCommandSequenceCurrent(redis, identity, 3), true);
         assert.equal(await commitFreshUltrafixTransitionState(redis, {
             identity,
             commandSequence: 2,
@@ -118,6 +127,11 @@ test('fresh Ultrafix publication preserves its predecessor and never reuses an a
         }), false);
         assert.equal(await redis.get(generationKey), '11');
         assert.equal(await redis.get(stateKey), 'new-state');
+        await redis.set(stateKey, JSON.stringify({ active: true, generation: 11 }));
+        assert.equal(await isUltrafixGenerationActive(redis, identity, 11), true);
+        await redis.set(stateKey, JSON.stringify({ active: false, generation: 11 }));
+        assert.equal(await isUltrafixGenerationActive(redis, identity, 11), false);
+        assert.equal(await isUltrafixGenerationActive(redis, identity, 10), false);
     } finally {
         await redis.del(...keys);
         redis.disconnect();
