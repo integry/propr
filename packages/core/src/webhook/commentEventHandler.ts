@@ -744,7 +744,7 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
 
     const jobData: CommentJobData = {
         pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),
-        ...(commandMeta ? buildCommandJobFields(commandMeta) : {}),
+        ...(commandMeta ? { ...buildCommandJobFields(commandMeta), commandCommentId: comment.id } : {}),
         ...(ultrafixMeta ? { ultrafixMeta } : {}),
     };
     const timestamp = Date.now();

@@ -986,12 +986,44 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
 });
 
 describe('applyPendingCommentCommandContext', () => {
+    test('does not let an older pending command override a newer queued command', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-order',
+            comments: [{ id: 200, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 200,
+            commandMode: 'review' as const,
+            ultrafixMeta: { mode: 'ultrafix' as const, instructions: '', generation: 3 },
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 199,
+                body: 'Fix F7',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'Fix F7',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(jobData.ultrafixMeta.generation, 3);
+        assert.strictEqual(commentsToProcess.some(comment => comment.id === 199), true);
+    });
+
     test('clears inherited Ultrafix metadata when a manual command takes over', () => {
         const jobData = {
             pullRequestNumber: 42,
             repoOwner: 'testowner',
             repoName: 'testrepo',
             correlationId: 'corr-pending-manual',
+            comments: [{ id: 98, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 98,
             commandMode: 'review' as const,
             ultrafixMeta: { mode: 'ultrafix' as const, instructions: '', generation: 2 },
         };
@@ -1008,6 +1040,7 @@ describe('applyPendingCommentCommandContext', () => {
 
         assert.strictEqual(jobData.commandMode, 'fix');
         assert.strictEqual(jobData.ultrafixMeta, undefined);
+        assert.strictEqual(jobData.commandCommentId, 99);
     });
 
     test('keeps an earlier /use llm override when a later pending /fix becomes the active command', () => {

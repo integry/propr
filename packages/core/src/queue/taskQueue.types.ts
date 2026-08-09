@@ -61,6 +61,8 @@ export interface CommentJobData {
     requestedModels?: string[];
     /** Extra instructions from the slash command body */
     commandInstructions?: string;
+    /** GitHub comment that established the queued command context. */
+    commandCommentId?: number;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
     /** Reasoning level override resolved from PR or linked issue level-* labels. */

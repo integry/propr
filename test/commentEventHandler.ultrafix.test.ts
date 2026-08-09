@@ -184,6 +184,7 @@ const { processCommentEvent, setUltrafixDeps } = await import(
 );
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
+const { applyPendingCommentCommandContext } = await import('../src/jobs/prPendingComments.js');
 
 // ========== Ultrafix Deps Mock ==========
 
@@ -473,6 +474,45 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         assert.strictEqual(mockQueueAdd.mock.calls[0].arguments[1].commandMode, 'fix');
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
+    });
+
+    test('older batched /fix cannot take ownership from a fresh /ultrafix job', async () => {
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+        const config = createTestConfig();
+        const fixEvent = createPRCommentEvent('/fix F1');
+        fixEvent.comment.id = 100;
+
+        await processCommentEvent(fixEvent, 'issue_comment', 'corr-old-fix', config);
+
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        mockGetPendingReviewState.mock.mockImplementationOnce(async () => ({
+            unprocessedComments: [{ id: 1 }],
+            latestScore: 5,
+            hasPendingReview: true,
+        }));
+        const ultrafixEvent = createPRCommentEvent('/ultrafix');
+        ultrafixEvent.comment.id = 101;
+
+        await processCommentEvent(ultrafixEvent, 'issue_comment', 'corr-new-ultrafix', config);
+
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        const pendingFix = JSON.parse(
+            config.redisClient.rpush.mock.calls[0].arguments[1] as string,
+        ) as Record<string, unknown>;
+        const commentsToProcess = [
+            ...(jobData.comments as Array<Record<string, unknown>>),
+            pendingFix,
+        ];
+        applyPendingCommentCommandContext(jobData as never, commentsToProcess as never, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandCommentId, 101);
+        assert.strictEqual(jobData.commandMode, 'fix');
+        assert.strictEqual((jobData.ultrafixMeta as Record<string, unknown>).generation, 1);
+        assert.strictEqual(commentsToProcess.some(comment => comment.id === 100), true);
     });
 
     test('/ultrafix does not add ultrafix label if it already exists', async () => {
