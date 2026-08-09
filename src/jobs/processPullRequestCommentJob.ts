@@ -178,6 +178,8 @@ interface ExecuteProcessingParams {
     lockToken: string;
 }
 
+function getUltrafixWorkEpoch(ultrafixMeta: NonNullable<CommentJobData['ultrafixMeta']>): number { return ultrafixMeta.workEpoch ?? 0; }
+
 function checkTerminalStateAfterExecution(currentState: { state: string } | null, taskId: string, correlatedLogger: Logger): void {
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     if (currentState && TERMINAL_STATES.includes(currentState.state)) {
@@ -189,9 +191,7 @@ function checkTerminalStateAfterExecution(currentState: { state: string } | null
     }
 }
 
-function getWebUiUrl(): string {
-    return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev';
-}
+function getWebUiUrl(): string { return process.env.WEB_UI_URL || process.env.FRONTEND_URL || 'https://gitfix.dev'; }
 
 function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: UnprocessedComment[], taskUrl: string): string {
     const realComments = filterRealComments(unprocessedComments);
@@ -272,7 +272,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         await markFindingsSelected(redisClient, {
             owner: repoOwner,
             repo: repoName,
-            pr: pullRequestNumber, workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
+            pr: pullRequestNumber, workEpoch: getUltrafixWorkEpoch(job.data.ultrafixMeta),
             findings: selectedReviewComments.flatMap(comment =>
                 comment.actionableFindings.map(finding => ({
                     id: finding.id,
@@ -311,7 +311,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         originalTaskSpec = await retainOriginalScope(redisClient, {
             owner: repoOwner,
             repo: repoName,
-            pr: pullRequestNumber, workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
+            pr: pullRequestNumber, workEpoch: getUltrafixWorkEpoch(job.data.ultrafixMeta),
             scope: originalTaskSpec,
         });
     }

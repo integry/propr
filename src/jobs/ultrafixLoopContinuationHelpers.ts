@@ -13,13 +13,21 @@ import { enableAutoMerge } from '../github/autoMergeOperations.js';
 import {
     checkReadiness,
     areChecksReadyForUltrafix,
+    clearDeferredContinuationIfCurrent,
+    clearUltrafixStateIfCurrent,
+    completeLoop,
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
+    hasReviewReachedGoal,
+    isUltrafixAutomaticWorkCurrent,
+    type UltrafixLoopState,
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
+import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import { requiresPassingChecks } from './ultrafixReadinessPolicy.js';
 import type {
+    ContinuationResult,
     UltrafixContinuationParams,
     ChecksPassingFn,
     GetPRHeadFn,
@@ -161,6 +169,81 @@ export async function maybeEnableAutoMerge(
     } catch (err) {
         correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Failed to evaluate auto-merge re-enable after ultrafix success');
     }
+}
+
+export async function finishUltrafixLoop(input: {
+    params: UltrafixContinuationParams;
+    workEpoch: number;
+    state: UltrafixLoopState;
+    decisionReason: string;
+    latestScore: number | null;
+    reviewStatus: ReviewOutputStatus;
+}): Promise<ContinuationResult> {
+    const { params, workEpoch, state, decisionReason, latestScore, reviewStatus } = input;
+    const { owner, repo, pullRequestNumber, completedAction, redisClient, correlatedLogger } = params;
+    if (!await isUltrafixAutomaticWorkCurrent(
+        redisClient,
+        { owner, repo, pr: pullRequestNumber },
+        workEpoch,
+    )) {
+        return { continued: false, reason: 'ultrafix_superseded' };
+    }
+
+    const goalReached = completedAction === 'review'
+        && hasReviewReachedGoal(reviewStatus, latestScore, state.goal);
+    const completedState = await completeLoop(redisClient, {
+        owner,
+        repo,
+        pr: pullRequestNumber,
+        completionStatus: goalReached ? 'succeeded' : 'failed',
+        completionReason: decisionReason,
+        finalScore: latestScore,
+        workEpoch,
+    });
+    if (!completedState) return { continued: false, reason: 'ultrafix_superseded' };
+
+    if (goalReached) {
+        await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+        const stateCleared = await clearUltrafixStateIfCurrent(
+            redisClient,
+            { owner, repo, pr: pullRequestNumber },
+            workEpoch,
+        );
+        if (!stateCleared) {
+            await ensureUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+            return { continued: false, reason: 'ultrafix_superseded' };
+        }
+        await clearDeferredContinuationIfCurrent(
+            redisClient,
+            { owner, repo, pr: pullRequestNumber },
+            workEpoch,
+        );
+        await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
+    } else {
+        const stoppedBecauseCleanReviewMissedGoal = completedAction === 'review'
+            && reviewStatus === 'valid_clean';
+        const manualReason = stoppedBecauseCleanReviewMissedGoal
+            ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
+            : 'Max cycles were exhausted, so manual review and merge are now required.';
+        await postPrComment({
+            owner,
+            repo,
+            pullRequestNumber,
+            body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${state.goal}/10. Last score: ${latestScore ?? 'unknown'}. ${manualReason}`,
+            correlatedLogger,
+        });
+    }
+
+    correlatedLogger.info(
+        { pullRequestNumber, reason: decisionReason, cycleCount: state.cycleCount, goalReached },
+        'Ultrafix loop: loop finished',
+    );
+    return {
+        continued: false,
+        reason: decisionReason,
+        score: latestScore,
+        cycleCount: state.cycleCount,
+    };
 }
 
 export async function enqueueNextStep(

@@ -19,9 +19,7 @@ import {
     claimDeferredContinuation,
     recordAction,
     clearUltrafixStateIfCurrent,
-    completeLoop,
     determineNextAction,
-    hasReviewReachedGoal,
     recordReviewFindings,
     saveDeferredContinuation,
     clearDeferredContinuationIfCurrent,
@@ -34,11 +32,8 @@ import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import {
     enqueueNextStep,
     evaluateReadiness,
-    ensureUltrafixLabel,
+    finishUltrafixLoop,
     hasUltrafixLabel,
-    maybeEnableAutoMerge,
-    postPrComment,
-    removeUltrafixLabel,
 } from './ultrafixLoopContinuationHelpers.js';
 
 export interface UltrafixContinuationParams {
@@ -295,66 +290,14 @@ export async function continueUltrafixLoop(
 
     // 6. If loop should stop, clean up
     if (decision.action === null) {
-        if (!await isUltrafixAutomaticWorkCurrent(
-            redisClient,
-            { owner, repo, pr: pullRequestNumber },
+        return finishUltrafixLoop({
+            params,
             workEpoch,
-        )) {
-            return { continued: false, reason: 'ultrafix_superseded' };
-        }
-        const goalReached = completedAction === 'review'
-            && hasReviewReachedGoal(reviewStatus, latestScore, updatedState.goal);
-        const completedState = await completeLoop(redisClient, {
-            owner,
-            repo,
-            pr: pullRequestNumber,
-            completionStatus: goalReached ? 'succeeded' : 'failed',
-            completionReason: decision.reason,
-            finalScore: latestScore,
-            workEpoch,
+            state: updatedState,
+            decisionReason: decision.reason,
+            latestScore,
+            reviewStatus,
         });
-        if (!completedState) return { continued: false, reason: 'ultrafix_superseded' };
-        if (goalReached) {
-            await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
-            const stateCleared = await clearUltrafixStateIfCurrent(
-                redisClient,
-                { owner, repo, pr: pullRequestNumber },
-                workEpoch,
-            );
-            if (!stateCleared) {
-                await ensureUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
-                return { continued: false, reason: 'ultrafix_superseded' };
-            }
-            await clearDeferredContinuationIfCurrent(
-                redisClient,
-                { owner, repo, pr: pullRequestNumber },
-                workEpoch,
-            );
-            await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
-        } else {
-            const stoppedBecauseCleanReviewMissedGoal = completedAction === 'review'
-                && reviewStatus === 'valid_clean';
-            const manualReason = stoppedBecauseCleanReviewMissedGoal
-                ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
-                : 'Max cycles were exhausted, so manual review and merge are now required.';
-            await postPrComment({
-                owner,
-                repo,
-                pullRequestNumber,
-                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${updatedState.goal}/10. Last score: ${latestScore ?? 'unknown'}. ${manualReason}`,
-                correlatedLogger,
-            });
-        }
-        correlatedLogger.info(
-            { pullRequestNumber, reason: decision.reason, cycleCount: updatedState.cycleCount, goalReached },
-            'Ultrafix loop: loop finished',
-        );
-        return {
-            continued: false,
-            reason: decision.reason,
-            score: latestScore,
-            cycleCount: updatedState.cycleCount,
-        };
     }
 
     // 7. Readiness gating — verify all conditions before enqueueing
