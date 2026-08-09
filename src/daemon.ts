@@ -45,13 +45,20 @@ import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { sweepDraftContext } from './daemon/draftContextSweep.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
-import { startLoop, clearStateIfGenerationCurrent, clearDeferredContinuation } from './jobs/ultrafixOrchestrationService.js';
+import {
+    startLoop,
+    clearStateIfGenerationCurrent,
+    clearDeferredContinuation,
+    listDeferredContinuationKeys,
+    parseDeferredKey,
+} from './jobs/ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
 import { withUltrafixTransitionLease } from './jobs/ultrafixTransitionLease.js';
 import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
 import { parseArgs } from './daemon/cliArgs.js';
 import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
 import { startEventIntake } from './daemon/eventIntakeStartup.js';
+import { scheduleUltrafixDeferredSweep } from './daemon/ultrafixDeferredSweep.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -193,6 +200,13 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     setUltrafixCheckRunHook(async (owner: string, repo: string, prNumber: number, _headSha: string) => {
         const log = logger.withCorrelation(generateCorrelationId());
         await resumeDeferredContinuation({ owner, repo, pr: prNumber }, redisClient, log as unknown as Logger);
+    });
+    const ultrafixDeferredSweepInterval = await scheduleUltrafixDeferredSweep(redisClient, {
+        listKeys: listDeferredContinuationKeys,
+        parseKey: parseDeferredKey,
+        resume: resumeDeferredContinuation,
+        createLogger: () => logger.withCorrelation(generateCorrelationId()) as unknown as Logger,
+        warn: error => logger.warn({ error: error.message }, 'Ultrafix deferred continuation sweep failed'),
     });
 
     const repos = getRepos();
@@ -391,6 +405,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearInterval(configReloadInterval);
         clearInterval(heartbeatInterval);
         clearInterval(draftContextSweepInterval);
+        clearInterval(ultrafixDeferredSweepInterval);
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the

@@ -19,6 +19,21 @@ function inferQueuedCommandCommentId(jobData: CommentJobData): number | undefine
     return commentIds.length > 0 ? Math.max(...commentIds) : undefined;
 }
 
+function applyLatestCommand(jobData: CommentJobData, comment: UnprocessedComment): void {
+    const preservesUltrafixAction = !!jobData.ultrafixMeta
+        && (comment.commandMode === 'use' || comment.commandMode === 'switch');
+    if (!preservesUltrafixAction) {
+        jobData.commandMeta = comment.commandMeta;
+        jobData.commandMode = comment.commandMode;
+        jobData.requestedModels = comment.requestedModels;
+        jobData.commandInstructions = comment.commandInstructions;
+        jobData.ultrafixMeta = comment.ultrafixMeta;
+    } else if (comment.requestedModels?.length) {
+        jobData.requestedModels = comment.requestedModels;
+    }
+    jobData.commandCommentId = comment.id;
+}
+
 export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): void {
     const queuedCommandCommentId = inferQueuedCommandCommentId(jobData);
     const latestCommandComment = findLatestComment(commentsToProcess, comment =>
@@ -32,12 +47,7 @@ export function applyPendingCommentCommandContext(jobData: CommentJobData, comme
     if (!latestCommandComment && !latestOverrideComment) return;
 
     if (latestCommandComment) {
-        jobData.commandMeta = latestCommandComment.commandMeta;
-        jobData.commandMode = latestCommandComment.commandMode;
-        jobData.requestedModels = latestCommandComment.requestedModels;
-        jobData.commandInstructions = latestCommandComment.commandInstructions;
-        jobData.commandCommentId = latestCommandComment.id;
-        jobData.ultrafixMeta = latestCommandComment.ultrafixMeta;
+        applyLatestCommand(jobData, latestCommandComment);
     }
 
     if (latestOverrideComment?.llmOverride !== undefined) {

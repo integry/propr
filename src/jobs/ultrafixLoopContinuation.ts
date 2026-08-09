@@ -88,12 +88,7 @@ export interface ContinuationResult {
     deferred?: boolean;
 }
 
-interface FinishUltrafixDetails {
-    state: UltrafixLoopState;
-    latestScore: number | null;
-    reviewStatus: ReviewOutputStatus;
-    completionReason: string;
-}
+type FinishUltrafixDetails = { state: UltrafixLoopState; latestScore: number | null; reviewStatus: ReviewOutputStatus; completionReason: string };
 
 async function loadCurrentLoopState(
     params: UltrafixContinuationParams,
@@ -159,19 +154,21 @@ async function finishUltrafixLoop(
         params.redisClient,
         { owner: params.owner, repo: params.repo, pr: params.pullRequestNumber },
         params.correlationId,
-        () => finishUltrafixLoopWithLease(params, details),
+        assertOwned => finishUltrafixLoopWithLease(params, details, assertOwned),
     );
 }
 
 async function finishUltrafixLoopWithLease(
     params: UltrafixContinuationParams,
     details: FinishUltrafixDetails,
+    assertTransitionOwned: () => Promise<void>,
 ): Promise<ContinuationResult> {
     const { state, latestScore, reviewStatus, completionReason } = details;
     const { owner, repo, pullRequestNumber, completedAction, redisClient, correlatedLogger } = params;
     const generation = params.ultrafixMeta?.generation;
     const goalReached = completedAction === 'review'
         && hasReviewReachedGoal(reviewStatus, latestScore, state.goal);
+    await assertTransitionOwned();
     const completedState = await completeLoop(redisClient, {
         owner,
         repo,
@@ -188,13 +185,16 @@ async function finishUltrafixLoopWithLease(
             redisClient, { owner, repo, pr: pullRequestNumber }, generation!,
         );
         if (!retired) return { continued: false, reason: 'ultrafix_superseded' };
+        await assertTransitionOwned();
         await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+        await assertTransitionOwned();
         await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
     } else {
         const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
         const manualReason = cleanReviewMissedGoal
             ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
             : 'Max cycles were exhausted, so manual review and merge are now required.';
+        await assertTransitionOwned();
         await postPrComment({
             owner,
             repo,

@@ -4,6 +4,7 @@ import {
     acquirePRProcessingLock,
     createPRProcessingLockToken,
     releasePRProcessingLock,
+    renewPRProcessingLock,
     startPRProcessingLockHeartbeat,
 } from './prProcessingLock.js';
 
@@ -27,7 +28,7 @@ export async function withUltrafixTransitionLease<T>(
     redisClient: Redis,
     identity: UltrafixIdentity,
     correlationId: string,
-    operation: () => Promise<T>,
+    operation: (assertOwned: () => Promise<void>) => Promise<T>,
 ): Promise<T> {
     const lockKey = getUltrafixTransitionLeaseKey(identity);
     const lockToken = createPRProcessingLockToken(correlationId);
@@ -42,6 +43,18 @@ export async function withUltrafixTransitionLease<T>(
     }
 
     let leaseLost = false;
+    const assertOwned = async (): Promise<void> => {
+        const ownershipWasUncertain = leaseLost;
+        const renewed = await renewPRProcessingLock(
+            redisClient, lockKey, lockToken, TRANSITION_LEASE_TTL_SECONDS,
+        ).catch(() => false);
+        if (!renewed) {
+            leaseLost = true;
+            const detail = ownershipWasUncertain ? ' after heartbeat ownership became uncertain' : '';
+            throw new Error(`Lost Ultrafix transition lease for PR #${identity.pr}${detail}`);
+        }
+        leaseLost = false;
+    };
     const stopHeartbeat = startPRProcessingLockHeartbeat({
         redisClient,
         lockKey,
@@ -49,13 +62,14 @@ export async function withUltrafixTransitionLease<T>(
         ttlSeconds: TRANSITION_LEASE_TTL_SECONDS,
         intervalMs: TRANSITION_LEASE_RENEW_INTERVAL_MS,
         onLockLost: () => { leaseLost = true; },
+        onError: () => { leaseLost = true; },
     });
     let heartbeatStopped = false;
     try {
-        const result = await operation();
+        const result = await operation(assertOwned);
         await stopHeartbeat();
         heartbeatStopped = true;
-        if (leaseLost) throw new Error(`Lost Ultrafix transition lease for PR #${identity.pr}`);
+        await assertOwned();
         return result;
     } finally {
         if (!heartbeatStopped) await stopHeartbeat();

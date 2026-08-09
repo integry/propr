@@ -205,8 +205,8 @@ const mockWithTransitionLease = mock.fn(async (
     _redis: unknown,
     _identity: unknown,
     _correlationId: string,
-    operation: () => Promise<unknown>,
-) => operation());
+    operation: (assertOwned: () => Promise<void>) => Promise<unknown>,
+) => operation(async () => {}));
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),

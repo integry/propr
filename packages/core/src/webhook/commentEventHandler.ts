@@ -29,7 +29,7 @@ export interface UltrafixDeps {
     startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; generation?: number }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
     clearStateIfGenerationCurrent: (redis: Redis, identity: { owner: string; repo: string; pr: number }, generation: number) => Promise<boolean>;
     clearDeferredContinuation: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
-    withTransitionLease: <T>(redis: Redis, identity: { owner: string; repo: string; pr: number }, correlationId: string, operation: () => Promise<T>) => Promise<T>;
+    withTransitionLease: <T>(redis: Redis, identity: { owner: string; repo: string; pr: number }, correlationId: string, operation: (assertOwned: () => Promise<void>) => Promise<T>) => Promise<T>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
 
@@ -268,7 +268,10 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
             redisClient,
             { owner, repo, pr: prNumber },
             correlationId,
-            () => _ultrafixDeps!.clearDeferredContinuation(redisClient, owner, repo, prNumber),
+            async assertOwned => {
+                await assertOwned();
+                return _ultrafixDeps!.clearDeferredContinuation(redisClient, owner, repo, prNumber);
+            },
         );
         correlatedLogger.info(
             { pullRequestNumber: prNumber, command: commandMeta.mode },
@@ -378,11 +381,15 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         config.redisClient,
         { owner: eventContext.owner, repo: eventContext.repo, pr: eventContext.prNumber },
         correlationId,
-        () => handleUltrafixCommandWithLease(opts, deps),
+        assertOwned => handleUltrafixCommandWithLease(opts, deps, assertOwned),
     );
 }
 
-async function handleUltrafixCommandWithLease(opts: UltrafixCommandOptions, deps: UltrafixDeps): Promise<void> {
+async function handleUltrafixCommandWithLease(
+    opts: UltrafixCommandOptions,
+    deps: UltrafixDeps,
+    assertTransitionOwned: () => Promise<void>,
+): Promise<void> {
     const { commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
     const { eventType, prNumber, owner, repo } = eventContext;
     const { redisClient } = config;
@@ -390,6 +397,7 @@ async function handleUltrafixCommandWithLease(opts: UltrafixCommandOptions, deps
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/ultrafix command detected, initializing loop');
 
     // 1. Load configured defaults from settings, then override with command arguments
+    await assertTransitionOwned();
     const generation = await deps.clearDeferredContinuation(redisClient, owner, repo, prNumber);
     const loopMeta: UltrafixCommandMeta = { ...commandMeta, generation };
     const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel] = await Promise.all([
@@ -427,6 +435,7 @@ async function handleUltrafixCommandWithLease(opts: UltrafixCommandOptions, deps
     const hasUltrafixLabel = prData.prLabels.some(l => l.name === 'ultrafix');
     const labelWasAdded = !hasUltrafixLabel;
     if (labelWasAdded) {
+        await assertTransitionOwned();
         await safeUpdateLabels(
             { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
             [],
@@ -442,6 +451,7 @@ async function handleUltrafixCommandWithLease(opts: UltrafixCommandOptions, deps
     //    committed, the loop is live and we must NOT roll them back — even if the
     //    subsequent "started" comment post fails.
     try {
+        await assertTransitionOwned();
         await deps.startLoop(redisClient, {
             owner,
             repo,
@@ -464,6 +474,7 @@ async function handleUltrafixCommandWithLease(opts: UltrafixCommandOptions, deps
             : { mode: 'fix', instructions: commandMeta.instructions };
 
         // 8. Enqueue the first step with ultrafix metadata
+        await assertTransitionOwned();
         await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
             payload,
             redisClient,
@@ -484,6 +495,7 @@ async function handleUltrafixCommandWithLease(opts: UltrafixCommandOptions, deps
             );
 
             if (labelWasAdded && rollbackOwned) {
+                await assertTransitionOwned();
                 await safeUpdateLabels(
                     { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
                     ['ultrafix'],
@@ -493,6 +505,7 @@ async function handleUltrafixCommandWithLease(opts: UltrafixCommandOptions, deps
             const labelNote = labelWasAdded && rollbackOwned
                 ? 'The ultrafix label has been removed.'
                 : 'The ultrafix label was left in place because a newer command may own it — remove it manually if you do not want further ultrafix cycles.';
+            await assertTransitionOwned();
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner,
                 repo,
@@ -509,6 +522,7 @@ async function handleUltrafixCommandWithLease(opts: UltrafixCommandOptions, deps
     //    so treat a comment-post failure as non-fatal — the loop will proceed
     //    regardless and the user can still stop it by removing the label.
     try {
+        await assertTransitionOwned();
         await withRetry(
             () => octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner,

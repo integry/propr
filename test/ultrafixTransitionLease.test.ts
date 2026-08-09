@@ -63,3 +63,25 @@ test('terminal side effects finish before a fresh loop can take transition owner
     ]);
     assert.equal(redis.store.has(getUltrafixTransitionLeaseKey(identity)), false);
 });
+
+test('ownership assertion fences side effects after the lease token is lost', async () => {
+    const redis = createLockRedis();
+    const identity = { owner: 'integry', repo: 'propr', pr: 1806 };
+    let sideEffectRan = false;
+
+    await assert.rejects(
+        withUltrafixTransitionLease(
+            redis as never,
+            identity,
+            'losing-generation',
+            async assertOwned => {
+                redis.store.delete(getUltrafixTransitionLeaseKey(identity));
+                await assertOwned();
+                sideEffectRan = true;
+            },
+        ),
+        /Lost Ultrafix transition lease/,
+    );
+
+    assert.equal(sideEffectRan, false);
+});

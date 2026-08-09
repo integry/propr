@@ -1043,6 +1043,68 @@ describe('applyPendingCommentCommandContext', () => {
         assert.strictEqual(jobData.commandCommentId, 99);
     });
 
+    test('applies a newer /use model without detaching the active Ultrafix action', () => {
+        const ultrafixMeta = { mode: 'ultrafix' as const, instructions: '', generation: 4 };
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-ultrafix-use',
+            comments: [{ id: 100, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 100,
+            commandMode: 'fix' as const,
+            ultrafixMeta,
+            llm: 'claude-sonnet-4-6',
+        };
+        const commentsToProcess = [{
+            id: 101,
+            body: '',
+            author: 'alice',
+            type: 'issue' as const,
+            commandMode: 'use' as const,
+            requestedModels: ['claude-opus-4-6'],
+            llmOverride: 'claude-opus-4-6',
+        }];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'fix');
+        assert.strictEqual(jobData.ultrafixMeta, ultrafixMeta);
+        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.deepStrictEqual(jobData.requestedModels, ['claude-opus-4-6']);
+        assert.strictEqual(jobData.commandCommentId, 101);
+    });
+
+    test('applies a newer /switch override without detaching the active Ultrafix action', () => {
+        const ultrafixMeta = { mode: 'ultrafix' as const, instructions: '', generation: 5 };
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-ultrafix-switch',
+            comments: [{ id: 110, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 110,
+            commandMode: 'review' as const,
+            ultrafixMeta,
+            llm: 'claude-sonnet-4-6',
+        };
+        const commentsToProcess = [{
+            id: 111,
+            body: 'Keep reviewing',
+            author: 'alice',
+            type: 'issue' as const,
+            commandMode: 'switch' as const,
+            llmOverride: 'claude-opus-4-6',
+        }];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(jobData.ultrafixMeta, ultrafixMeta);
+        assert.strictEqual(jobData.llm, 'claude-opus-4-6');
+        assert.strictEqual(jobData.commandCommentId, 111);
+    });
+
     test('keeps an earlier /use llm override when a later pending /fix becomes the active command', () => {
         const jobData = {
             pullRequestNumber: 42,
