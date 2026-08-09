@@ -300,6 +300,29 @@ describe('Ultrafix loop continuation logic', () => {
     });
 
     describe('terminal conditions: state persisted', () => {
+        test('stale terminal completion cannot deactivate a successor generation', async () => {
+            const predecessor = await startLoop(redis as any, {
+                owner: 'acme', repo: 'web', pr: 42,
+            }, false);
+            const successor = await startLoop(redis as any, {
+                owner: 'acme', repo: 'web', pr: 42, goal: 9,
+            }, false);
+
+            const completed = await completeLoop(redis as any, {
+                owner: 'acme', repo: 'web', pr: 42,
+                generation: predecessor.state.generation,
+                completionStatus: 'failed',
+                completionReason: 'Stale predecessor completion',
+                finalScore: 4,
+            });
+
+            assert.strictEqual(completed, null);
+            const current = await loadState(redis as any, 'acme', 'web', 42);
+            assert.strictEqual(current?.generation, successor.state.generation);
+            assert.strictEqual(current?.active, true);
+            assert.strictEqual(current?.goal, 9);
+        });
+
         test('failed terminal state is persisted when max cycles are reached', async () => {
             const { determineNextAction } = await import('../src/jobs/ultrafixOrchestrationService.js');
             const state = makeState({ lastAction: 'fix', cycleCount: 5, reviewCount: 5, fixCount: 5, maxCycles: 5 });

@@ -193,7 +193,9 @@ export async function completeLoop(
     },
 ): Promise<UltrafixLoopState | null> {
     const state = await loadState(redis, params.owner, params.repo, params.pr);
-    if (!state) return null;
+    if (!state || (params.generation !== undefined && state.generation !== params.generation)) {
+        return null;
+    }
     state.active = false;
     state.completionStatus = params.completionStatus;
     state.completionReason = params.completionReason;
