@@ -539,6 +539,31 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(jobData.commandMode, 'review');
     });
 
+    test('/ultrafix starts with review when automatic work exists without a queue job', async () => {
+        mockGetPendingReviewState.mock.mockImplementation(async () => ({
+            unprocessedComments: [{ id: 1, body: 'Review feedback' }],
+            latestScore: 4,
+            hasPendingReview: true,
+        }));
+        // Models either current loop state or a deferred continuation in Redis.
+        mockHasAutomaticWork.mock.mockImplementation(async () => true);
+        mockReserveAutomaticWork.mock.mockImplementation(async () => {
+            assert.strictEqual(mockHasAutomaticWork.mock.callCount(), 1, 'automatic work must be checked before reservation');
+            return 1;
+        });
+
+        await processCommentEvent(
+            createPRCommentEvent('/ultrafix'),
+            'issue_comment',
+            'corr-uf-automatic-work',
+            createTestConfig(),
+        );
+
+        assert.strictEqual(mockStartLoop.mock.calls[0].arguments[2], false);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'review');
+    });
+
     test('/ultrafix reasserts the ultrafix label even when the PR snapshot contains it', async () => {
         mockOctokit.request.mock.mockImplementation(async (url: string) => {
             if (url.includes('/comments')) {

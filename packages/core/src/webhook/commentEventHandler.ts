@@ -463,11 +463,13 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             // from one introduced by this startup.
             prData = await getLivePRBranchAndLabels({ owner, repo, prNumber });
             const labelWasPresent = prData.prLabels.some(label => label.name === 'ultrafix');
+            // Snapshot live or deferred work before reservation invalidates it.
+            const hadAutomaticWork = await deps.hasAutomaticWork(redisClient, owner, repo, prNumber);
             workEpoch = await deps.reserveAutomaticWork(redisClient, owner, repo, prNumber);
             loopMeta = { ...commandMeta, workEpoch };
             // Close the gap between the first queue snapshot and reservation. Work
             // that appeared in that interval must settle before this loop reviews it.
-            olderPrWorkExists = Boolean(existingJob || await checkExistingJob(prNumber, owner, repo));
+            olderPrWorkExists = Boolean(hadAutomaticWork || existingJob || await checkExistingJob(prNumber, owner, repo));
             const startWithPendingReview = !olderPrWorkExists && hasPendingReview;
             initialAction = startWithPendingReview ? 'fix' : 'review';
 
