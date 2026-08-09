@@ -169,7 +169,7 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 });
 
 // Import module under test AFTER mocks
-const { processCommentEvent, handleCommentDeleted } = await import(
+const { processCommentEvent, handleCommentDeleted, setUltrafixDeps } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
@@ -177,6 +177,27 @@ const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js'
 const { applyPendingCommentCommandContext } = await import(
     '../src/jobs/prPendingComments.js'
 );
+
+const mockInvalidateAutomaticWork = mock.fn(async () => 1);
+const mockHasAutomaticWork = mock.fn(async () => false);
+setUltrafixDeps({
+    loadUltrafixRatingGoal: mock.fn(async () => 7),
+    loadUltrafixMaxCycles: mock.fn(async () => 5),
+    loadUltrafixPauseSeconds: mock.fn(async () => 60),
+    loadPrReviewModel: mock.fn(async () => ''),
+    startLoop: mock.fn(async () => ({ state: {}, initialAction: 'review' as const })),
+    clearState: mock.fn(async () => {}),
+    hasAutomaticWork: mockHasAutomaticWork,
+    getAutomaticWorkEpoch: mock.fn(async () => 0),
+    invalidateAutomaticWork: mockInvalidateAutomaticWork,
+    getPendingReviewState: mock.fn(async () => ({ hasPendingReview: false })),
+});
+
+beforeEach(() => {
+    mockInvalidateAutomaticWork.mock.resetCalls();
+    mockHasAutomaticWork.mock.resetCalls();
+    mockHasAutomaticWork.mock.mockImplementation(async () => false);
+});
 
 after(async () => {
     await shutdownQueue();
@@ -925,6 +946,35 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(pendingComment.body, '');
         assert.strictEqual(pendingComment.commandMode, 'review');
         assert.deepStrictEqual(pendingComment.requestedModels, ['codex']);
+        assert.deepStrictEqual(
+            mockInvalidateAutomaticWork.mock.calls[0].arguments.slice(1),
+            ['testowner', 'testrepo', 42],
+        );
+    });
+
+    test('manual review takeover gets a durable job instead of being stranded behind active Ultrafix work', async () => {
+        mockHasAutomaticWork.mock.mockImplementation(async () => true);
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+
+        const event = createPRCommentEvent('/review codex');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-ultrafix-takeover', config);
+
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.deepStrictEqual(jobData.requestedModels, ['codex']);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
     });
 
     test('batched slash commands on review comments preserve code-review context', async () => {

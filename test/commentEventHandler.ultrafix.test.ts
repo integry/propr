@@ -199,6 +199,9 @@ const mockGetPendingReviewState = mock.fn(async () => ({
 }));
 
 const mockClearState = mock.fn(async () => {});
+const mockGetAutomaticWorkEpoch = mock.fn(async () => 0);
+const mockInvalidateAutomaticWork = mock.fn(async () => 1);
+const mockHasAutomaticWork = mock.fn(async () => false);
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -207,6 +210,9 @@ setUltrafixDeps({
     loadPrReviewModel: mock.fn(async () => ''),
     startLoop: mockStartLoop,
     clearState: mockClearState,
+    hasAutomaticWork: mockHasAutomaticWork,
+    getAutomaticWorkEpoch: mockGetAutomaticWorkEpoch,
+    invalidateAutomaticWork: mockInvalidateAutomaticWork,
     getPendingReviewState: mockGetPendingReviewState,
 });
 
@@ -266,6 +272,11 @@ describe('commentEventHandler — /ultrafix command', () => {
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
         mockStartLoop.mock.resetCalls();
+        mockGetAutomaticWorkEpoch.mock.resetCalls();
+        mockGetAutomaticWorkEpoch.mock.mockImplementation(async () => 0);
+        mockInvalidateAutomaticWork.mock.resetCalls();
+        mockHasAutomaticWork.mock.resetCalls();
+        mockHasAutomaticWork.mock.mockImplementation(async () => false);
         mockGetPendingReviewState.mock.resetCalls();
         mockFilterCommentByAuthor.mock.resetCalls();
         mockActiveJobs = [];
@@ -330,6 +341,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         const ultrafixMeta = jobData.ultrafixMeta as Record<string, unknown>;
         assert.ok(ultrafixMeta, 'Job data should include ultrafixMeta');
         assert.strictEqual(ultrafixMeta.mode, 'ultrafix');
+        assert.strictEqual(ultrafixMeta.workEpoch, 0);
 
         // Should have posted a circuit-breaker comment (Octokit request for POST comments)
         const postCalls = mockOctokit.request.mock.calls.filter(

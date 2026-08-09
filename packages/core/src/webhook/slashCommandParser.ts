@@ -56,6 +56,8 @@ export interface UseCommandMeta {
 
 export interface UltrafixCommandMeta {
     mode: 'ultrafix';
+    /** Epoch binding this automatic action to the latest manual takeover. */
+    workEpoch?: number;
     /** Target number of passing review cycles (undefined = not provided, use DB default) */
     goal?: number;
     /** Maximum fix cycles before giving up (undefined = not provided, use DB default) */

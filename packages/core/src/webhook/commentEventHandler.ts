@@ -28,6 +28,9 @@ export interface UltrafixDeps {
     loadPrReviewModel: () => Promise<string>;
     startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
     clearState: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
+    hasAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<boolean>;
+    getAutomaticWorkEpoch: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
+    invalidateAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
 
@@ -261,6 +264,17 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         }
     }
 
+    const manualCommand = commandMeta.mode === 'fix' || commandMeta.mode === 'review';
+    const manualTakeover = manualCommand
+        && await loadUltrafixDeps().hasAutomaticWork(redisClient, owner, repo, prNumber);
+    if (manualCommand) {
+        await loadUltrafixDeps().invalidateAutomaticWork(redisClient, owner, repo, prNumber);
+        correlatedLogger.info(
+            { pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode },
+            'Manual command invalidated deferred and queued Ultrafix actions',
+        );
+    }
+
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
     // Strip the slash command line from the comment body so the downstream job
     // only sees the user's instructions, not the control syntax (consistent with /switch).
@@ -268,10 +282,17 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
 
     // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
     const existingJob = await checkExistingJob(prNumber, owner, repo);
-    if (existingJob) {
+    if (existingJob && !manualTakeover) {
         await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
         return;
+    }
+
+    if (existingJob && manualTakeover) {
+        correlatedLogger.info(
+            { pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode },
+            'Manual Ultrafix takeover will run as an independent durable job',
+        );
     }
 
     await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
@@ -365,12 +386,14 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
 
     // 1. Load configured defaults from settings, then override with command arguments
     const deps = loadUltrafixDeps();
-    const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel] = await Promise.all([
+    const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel, workEpoch] = await Promise.all([
         deps.loadUltrafixRatingGoal(),
         deps.loadUltrafixMaxCycles(),
         deps.loadUltrafixPauseSeconds(),
         deps.loadPrReviewModel(),
+        deps.getAutomaticWorkEpoch(redisClient, owner, repo, prNumber),
     ]);
+    const loopMeta: UltrafixCommandMeta = { ...commandMeta, workEpoch };
 
     // Command args override DB defaults; undefined means "not provided by user".
     const effectiveGoal = commandMeta.goal ?? dbGoal;
@@ -386,7 +409,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         // Store the original ultrafix meta so commandMode is 'ultrafix', not a provisional value.
         // The actual initial action (review vs fix) will be determined when the batch is processed.
         await storeCommentForBatch(
-            { ...strippedComment, ...buildPendingCommandFields(commandMeta), ultrafixMeta: commandMeta },
+            { ...strippedComment, ...buildPendingCommandFields(commandMeta), ultrafixMeta: loopMeta },
             commentAuthor,
             eventContext,
             { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },
@@ -457,7 +480,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             correlationId,
             commandMeta: firstActionMeta,
             prefetchedPRData: prData,
-            ultrafixMeta: commandMeta,
+            ultrafixMeta: loopMeta,
         });
     } catch (error) {
         // Rollback: remove the ultrafix label if we added it, clear loop state, and post a failure comment.

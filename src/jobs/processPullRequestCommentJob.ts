@@ -30,7 +30,7 @@ import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName
 import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
 import { markFindingsSelected, retainOriginalScope } from './ultrafixOrchestrationService.js';
-import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
+import { handleUltrafixContinuation, isUltrafixJobCurrent } from './ultrafixJobHelpers.js';
 import { handleNoAuthorizedFindings } from './prCommentNoAuthorizedFindings.js';
 import { handlePostExecution } from './prCommentPostExecution.js';
 import {
@@ -397,8 +397,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     const context = await initializePRJobContext(job);
-    const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
-    correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
+    const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, llm } = context;
+    if (!await isUltrafixJobCurrent(job, { repoOwner, repoName, pullRequestNumber, redisClient })) return { status: 'cancelled', reason: 'ultrafix_superseded' };
 
     const modelName = await resolvePRCommentModelName(llm, correlatedLogger);
 

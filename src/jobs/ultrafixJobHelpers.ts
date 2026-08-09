@@ -12,7 +12,24 @@ import type { CommentJobData } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
-import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import {
+    isUltrafixAutomaticWorkCurrent,
+    loadState as loadUltrafixState,
+    type UltrafixAction,
+} from './ultrafixOrchestrationService.js';
+
+/** Reject delayed or retried automatic jobs superseded by a manual command. */
+export async function isUltrafixJobCurrent(
+    job: Job<CommentJobData>,
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis },
+): Promise<boolean> {
+    if (!job.data.ultrafixMeta) return true;
+    return isUltrafixAutomaticWorkCurrent(
+        params.redisClient,
+        { owner: params.repoOwner, repo: params.repoName, pr: params.pullRequestNumber },
+        job.data.ultrafixMeta.workEpoch,
+    );
+}
 
 export async function handleUltrafixContinuation(
     action: UltrafixAction,

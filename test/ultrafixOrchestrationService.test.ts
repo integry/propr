@@ -29,6 +29,18 @@ function createMockRedis() {
         async get(key: string) { return store.get(key) ?? null; },
         async set(key: string, value: string) { store.set(key, value); return 'OK'; },
         async del(key: string) { store.delete(key); return 1; },
+        async eval(script: string, _keyCount: number, ...args: string[]) {
+            const [epochKey, deferredKey] = args;
+            if (script.includes("redis.call('INCR'")) {
+                const nextEpoch = Number(store.get(epochKey) ?? '0') + 1;
+                store.set(epochKey, String(nextEpoch));
+                store.delete(deferredKey);
+                return nextEpoch;
+            }
+            if ((store.get(epochKey) ?? '0') !== args[2]) return 0;
+            store.set(deferredKey, args[3]);
+            return 1;
+        },
     };
 }
 

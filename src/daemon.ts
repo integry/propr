@@ -43,9 +43,15 @@ import {
 } from '@propr/core';
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { sweepDraftContext } from './daemon/draftContextSweep.js';
+import {
+    clearState,
+    getUltrafixAutomaticWorkEpoch,
+    hasUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWork,
+    startLoop,
+} from './jobs/ultrafixOrchestrationService.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
-import { startLoop, clearState } from './jobs/ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
 import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
 import { parseArgs } from './daemon/cliArgs.js';
@@ -175,6 +181,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         loadPrReviewModel,
         startLoop,
         clearState,
+        hasAutomaticWork: hasUltrafixAutomaticWork,
+        getAutomaticWorkEpoch: getUltrafixAutomaticWorkEpoch,
+        invalidateAutomaticWork: invalidateUltrafixAutomaticWork,
         getPendingReviewState,
     });
 

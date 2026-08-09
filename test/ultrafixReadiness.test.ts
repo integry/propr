@@ -8,8 +8,14 @@ import {
     checkReadiness,
     saveDeferredContinuation,
     loadDeferredContinuation,
+    claimDeferredContinuation,
     clearDeferredContinuation,
     getUltrafixDeferredKey,
+    getUltrafixAutomaticWorkEpoch,
+    getUltrafixStateKey,
+    hasUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWork,
+    isUltrafixAutomaticWorkCurrent,
     parseDeferredKey,
     createDefaultState,
     areChecksReadyForUltrafix,
@@ -29,6 +35,23 @@ function createMockRedis() {
         async get(key: string) { return store.get(key) ?? null; },
         async set(key: string, value: string) { store.set(key, value); return 'OK'; },
         async del(key: string) { store.delete(key); lists.delete(key); return 1; },
+        async getdel(key: string) {
+            const value = store.get(key) ?? null;
+            store.delete(key);
+            return value;
+        },
+        async eval(script: string, _keyCount: number, ...args: string[]) {
+            const [epochKey, deferredKey] = args;
+            if (script.includes("redis.call('INCR'")) {
+                const nextEpoch = Number(store.get(epochKey) ?? '0') + 1;
+                store.set(epochKey, String(nextEpoch));
+                store.delete(deferredKey);
+                return nextEpoch;
+            }
+            if ((store.get(epochKey) ?? '0') !== args[2]) return 0;
+            store.set(deferredKey, args[3]);
+            return 1;
+        },
         async llen(key: string) { return (lists.get(key) ?? []).length; },
         async lpush(key: string, ...values: string[]) {
             if (!lists.has(key)) lists.set(key, []);
@@ -262,6 +285,80 @@ describe('deferred continuation persistence', () => {
         await clearDeferredContinuation(redis as any, 'acme', 'web', 42);
         const loaded = await loadDeferredContinuation(redis as any, 'acme', 'web', 42);
         assert.strictEqual(loaded, null);
+    });
+
+    test('manual invalidation atomically advances the epoch and removes deferred work', async () => {
+        await saveDeferredContinuation(redis as any, {
+            owner: 'acme', repo: 'web', pr: 42,
+            nextAction: 'fix', savedAt: new Date().toISOString(), reason: 'checks_not_passing',
+            workEpoch: 0,
+        });
+
+        const epoch = await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+
+        assert.strictEqual(epoch, 1);
+        assert.strictEqual(await getUltrafixAutomaticWorkEpoch(redis as any, 'acme', 'web', 42), 1);
+        assert.strictEqual(await loadDeferredContinuation(redis as any, 'acme', 'web', 42), null);
+        assert.strictEqual(
+            await isUltrafixAutomaticWorkCurrent(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, 0),
+            false,
+        );
+    });
+
+    test('automatic work detection covers active state and deferred transitions', async () => {
+        assert.strictEqual(await hasUltrafixAutomaticWork(redis as any, 'acme', 'web', 42), false);
+
+        await redis.set(getUltrafixStateKey('acme', 'web', 42), JSON.stringify({ active: true }));
+        assert.strictEqual(await hasUltrafixAutomaticWork(redis as any, 'acme', 'web', 42), true);
+
+        await redis.set(getUltrafixStateKey('acme', 'web', 42), JSON.stringify({ active: false }));
+        await saveDeferredContinuation(redis as any, {
+            owner: 'acme', repo: 'web', pr: 42,
+            nextAction: 'review', savedAt: new Date().toISOString(), reason: 'checks_not_passing',
+            workEpoch: 0,
+        });
+        assert.strictEqual(await hasUltrafixAutomaticWork(redis as any, 'acme', 'web', 42), true);
+    });
+
+    test('a superseded action cannot restore its deferred record', async () => {
+        await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+
+        const staleSaved = await saveDeferredContinuation(redis as any, {
+            owner: 'acme', repo: 'web', pr: 42,
+            nextAction: 'fix', savedAt: new Date().toISOString(), reason: 'stale_action',
+            workEpoch: 0,
+        });
+        const currentSaved = await saveDeferredContinuation(redis as any, {
+            owner: 'acme', repo: 'web', pr: 42,
+            nextAction: 'review', savedAt: new Date().toISOString(), reason: 'current_action',
+            workEpoch: 1,
+        });
+
+        assert.strictEqual(staleSaved, false);
+        assert.strictEqual(currentSaved, true);
+        assert.strictEqual(
+            (await loadDeferredContinuation(redis as any, 'acme', 'web', 42))?.nextAction,
+            'review',
+        );
+    });
+
+    test('manual takeover fences a continuation that already claimed deferred work', async () => {
+        await saveDeferredContinuation(redis as any, {
+            owner: 'acme', repo: 'web', pr: 42,
+            nextAction: 'fix', savedAt: new Date().toISOString(), reason: 'checks_not_passing',
+            workEpoch: 0,
+        });
+        const claimed = await claimDeferredContinuation(redis as any, 'acme', 'web', 42);
+        assert.ok(claimed);
+
+        await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+
+        assert.strictEqual(
+            await isUltrafixAutomaticWorkCurrent(redis as any, { owner: 'acme', repo: 'web', pr: 42 }, claimed.workEpoch),
+            false,
+        );
+        assert.strictEqual(await saveDeferredContinuation(redis as any, claimed), false);
+        assert.strictEqual(await loadDeferredContinuation(redis as any, 'acme', 'web', 42), null);
     });
 });
 

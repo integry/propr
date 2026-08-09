@@ -1,6 +1,12 @@
 import type { UltrafixDeps } from '@propr/core';
 import { loadUltrafixRatingGoal, loadUltrafixMaxCycles, loadUltrafixPauseSeconds, loadPrReviewModel } from '@propr/core';
-import { startLoop, clearState } from './ultrafixOrchestrationService.js';
+import {
+    clearState,
+    getUltrafixAutomaticWorkEpoch,
+    hasUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWork,
+    startLoop,
+} from './ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
 
 export function createUltrafixDeps(): UltrafixDeps {
@@ -11,6 +17,9 @@ export function createUltrafixDeps(): UltrafixDeps {
         loadPrReviewModel,
         startLoop,
         clearState,
+        hasAutomaticWork: hasUltrafixAutomaticWork,
+        getAutomaticWorkEpoch: getUltrafixAutomaticWorkEpoch,
+        invalidateAutomaticWork: invalidateUltrafixAutomaticWork,
         getPendingReviewState,
     };
 }
