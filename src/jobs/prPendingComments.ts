@@ -1,7 +1,9 @@
 import type { Logger } from 'pino';
-import type { CommentJobData, UnprocessedComment } from '@propr/core';
+import type { UnprocessedComment } from '@propr/core';
 import { getPendingPrCommentsKey } from '@propr/core';
 import type { Redis } from 'ioredis';
+
+export { applyPendingCommentCommandContext } from './prCommentCommandContext.js';
 
 export function parsePendingComment(commentJson: string, correlatedLogger: Logger): UnprocessedComment | null {
     try {
@@ -19,44 +21,6 @@ export function processPendingComments(commentsToProcess: UnprocessedComment[], 
             commentsToProcess.push(pendingComment);
         }
     }
-}
-
-export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): void {
-    const latestCommandComment = [...commentsToProcess]
-        .reverse()
-        .find(comment => comment.commandMode && comment.commandMode !== 'default');
-    const latestOverrideComment = [...commentsToProcess]
-        .reverse()
-        .find(comment => comment.llmOverride !== undefined);
-
-    if (!latestCommandComment && !latestOverrideComment) return;
-
-    if (latestCommandComment) {
-        jobData.commandMeta = latestCommandComment.commandMeta;
-        jobData.commandMode = latestCommandComment.commandMode;
-        jobData.requestedModels = latestCommandComment.requestedModels;
-        jobData.commandInstructions = latestCommandComment.commandInstructions;
-    }
-
-    if (latestOverrideComment?.llmOverride !== undefined) {
-        jobData.llm = latestOverrideComment.llmOverride;
-    }
-    if (
-        latestCommandComment?.commandMode === 'review'
-        && !latestCommandComment.requestedModels?.length
-        && latestOverrideComment?.commandMode === 'use'
-        && latestOverrideComment.llmOverride
-    ) {
-        jobData.requestedModels = [latestOverrideComment.llmOverride];
-    }
-
-    correlatedLogger.info({
-        commandMode: jobData.commandMode,
-        requestedModels: jobData.requestedModels,
-        llmOverride: latestOverrideComment?.llmOverride,
-        commandCommentId: latestCommandComment?.id,
-        overrideCommentId: latestOverrideComment?.id,
-    }, 'Applied command context from pending batched comment');
 }
 
 export async function pickUpPendingComments(commentsToProcess: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }): Promise<UnprocessedComment[]> {

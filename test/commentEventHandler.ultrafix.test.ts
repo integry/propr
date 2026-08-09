@@ -324,6 +324,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual(jobData.commandCommentId, event.comment.id);
 
         // Should carry ultrafixMeta
         const ultrafixMeta = jobData.ultrafixMeta as Record<string, unknown>;

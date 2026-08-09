@@ -986,6 +986,93 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
 });
 
 describe('applyPendingCommentCommandContext', () => {
+    test('does not let an older pending command override a newer queued command', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-order',
+            comments: [{ id: 200, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 200,
+            commandMode: 'review' as const,
+            ultrafixMeta: { mode: 'ultrafix' as const, instructions: '' },
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 199,
+                body: 'Fix F7',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'Fix F7',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.ok(jobData.ultrafixMeta);
+    });
+
+    test('does not let an older model override replace a newer queued command model', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-model-order',
+            comments: [{ id: 200, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 200,
+            commandMode: 'review' as const,
+            llm: 'codex:gpt-5.6-sol',
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 199,
+                body: '',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'use' as const,
+                llmOverride: 'claude-opus-4-6',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.llm, 'codex:gpt-5.6-sol');
+    });
+
+    test('latest manual command clears inherited Ultrafix metadata', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-pending-manual',
+            comments: [{ id: 98, body: '', author: 'alice', type: 'issue' as const }],
+            commandCommentId: 98,
+            commandMode: 'review' as const,
+            ultrafixMeta: { mode: 'ultrafix' as const, instructions: '' },
+        };
+        const commentsToProcess = [
+            ...jobData.comments,
+            {
+                id: 99,
+                body: 'Fix F3',
+                author: 'alice',
+                type: 'issue' as const,
+                commandMode: 'fix' as const,
+                commandInstructions: 'Fix F3',
+            },
+        ];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'fix');
+        assert.strictEqual(jobData.ultrafixMeta, undefined);
+        assert.strictEqual(jobData.commandCommentId, 99);
+    });
+
     test('keeps an earlier /use llm override when a later pending /fix becomes the active command', () => {
         const jobData = {
             pullRequestNumber: 42,
