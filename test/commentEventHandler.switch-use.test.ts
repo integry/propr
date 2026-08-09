@@ -1,7 +1,17 @@
 import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
+import { createHash } from 'node:crypto';
 import type { IssueCommentEvent, Label } from '@octokit/webhooks-types';
 import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent, createMockLabel } from './testHelpers.js';
+
+function manualRevisionIdentity(updatedAt: string, body: string, eventType = 'issue_comment'): string {
+    const digest = createHash('sha256').update(`${eventType}\0${body}`).digest('hex').slice(0, 12);
+    return `${updatedAt}:${digest}`;
+}
+
+function manualRevisionSlug(updatedAt: string, body: string, eventType = 'issue_comment'): string {
+    return manualRevisionIdentity(updatedAt, body, eventType).replace(/[^a-zA-Z0-9_-]/g, '-');
+}
 
 // ========== Mocks ==========
 
@@ -949,7 +959,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.deepStrictEqual(pendingComment.requestedModels, ['codex']);
         assert.deepStrictEqual(
             mockInvalidateAutomaticWork.mock.calls[0].arguments.slice(1),
-            [{ owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: event.comment.id, sourceCommentRevision: event.comment.updated_at }],
+            [{ owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: event.comment.id, sourceCommentRevision: manualRevisionIdentity(event.comment.updated_at, event.comment.body) }],
         );
     });
 
@@ -981,7 +991,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(jobData.commandMode, 'review');
         assert.deepStrictEqual(jobData.requestedModels, ['codex']);
         assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
-        const revisionSlug = event.comment.updated_at.replace(/[^a-zA-Z0-9_-]/g, '-');
+        const revisionSlug = manualRevisionSlug(event.comment.updated_at, event.comment.body);
         assert.strictEqual(
             mockQueueAdd.mock.calls[0].arguments[2].jobId,
             `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${revisionSlug}`,
@@ -1039,7 +1049,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
         assert.deepStrictEqual(redelivery, { status: 'ignored', reason: 'duplicate_delivery' });
-        const revisionSlug = event.comment.updated_at.replace(/[^a-zA-Z0-9_-]/g, '-');
+        const revisionSlug = manualRevisionSlug(event.comment.updated_at, event.comment.body);
         assert.strictEqual(
             mockQueueAdd.mock.calls[0].arguments[2].jobId,
             `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${revisionSlug}`,
@@ -1061,20 +1071,41 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         await handleCommentEdited(event, 'issue_comment', 'corr-edited-revision', config);
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
+        const originalRevision = manualRevisionIdentity('2026-08-09T10:00:00Z', '/fix original instructions');
+        const editedRevision = manualRevisionIdentity('2026-08-09T10:05:00Z', '/fix edited instructions');
         assert.deepStrictEqual(
             mockQueueAdd.mock.calls.map(call => call.arguments[2].jobId),
             [
-                'pr-comments-batch-testowner-testrepo-42-12345-2026-08-09T10-00-00Z',
-                'pr-comments-batch-testowner-testrepo-42-12345-2026-08-09T10-05-00Z',
+                `pr-comments-batch-testowner-testrepo-42-12345-${originalRevision.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
+                `pr-comments-batch-testowner-testrepo-42-12345-${editedRevision.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
             ],
         );
         assert.deepStrictEqual(
             mockInvalidateAutomaticWork.mock.calls.map(call => call.arguments[1]),
             [
-                { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: 12345, sourceCommentRevision: '2026-08-09T10:00:00Z' },
-                { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: 12345, sourceCommentRevision: '2026-08-09T10:05:00Z' },
+                { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: 12345, sourceCommentRevision: originalRevision },
+                { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: 12345, sourceCommentRevision: editedRevision },
             ],
         );
+    });
+
+    test('same-timestamp edits use distinct deterministic takeover and job identities', async () => {
+        const event = createPRCommentEvent('/fix original instructions');
+        event.comment.id = 12345;
+        event.comment.updated_at = '2026-08-09T10:00:00Z';
+        const config = createTestConfig({ processCommentEvent });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-same-second-original', config);
+        event.comment.body = '/fix edited within the same second';
+        await handleCommentEdited(event, 'issue_comment', 'corr-same-second-edit', config);
+
+        const jobIds = mockQueueAdd.mock.calls.map(call => call.arguments[2].jobId);
+        const takeoverIdentities = mockInvalidateAutomaticWork.mock.calls.map(call => call.arguments[1].sourceCommentRevision);
+        assert.strictEqual(jobIds.length, 2);
+        assert.notStrictEqual(jobIds[0], jobIds[1]);
+        assert.notStrictEqual(takeoverIdentities[0], takeoverIdentities[1]);
+        assert.match(jobIds[0] as string, /2026-08-09T10-00-00Z-[a-f0-9]{12}$/);
+        assert.match(jobIds[1] as string, /2026-08-09T10-00-00Z-[a-f0-9]{12}$/);
     });
 
     test('later manual commands resume normal batching after an Ultrafix takeover', async () => {

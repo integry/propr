@@ -4,12 +4,20 @@ import type { Job } from 'bullmq';
 import type { CommentJobData } from '@propr/core';
 
 const mockIssueQueueAdd = mock.fn(async () => ({}));
+let mockActiveQueueJobs: Array<Job<CommentJobData>> = [];
+let mockWaitingQueueJobs: Array<Job<CommentJobData>> = [];
+let mockDelayedQueueJobs: Array<Job<CommentJobData>> = [];
 await mock.module('@propr/core', {
     namedExports: {
         areAllChecksPassing: mock.fn(async () => true),
         getCurrentPRHead: mock.fn(async () => 'head-sha'),
         getPendingPrCommentsKey: (owner: string, repo: string, pr: number) => `pending-pr-comments:${owner}:${repo}:${pr}`,
-        issueQueue: { add: mockIssueQueueAdd },
+        issueQueue: {
+            add: mockIssueQueueAdd,
+            getActive: async () => mockActiveQueueJobs,
+            getWaiting: async () => mockWaitingQueueJobs,
+            getDelayed: async () => mockDelayedQueueJobs,
+        },
     },
 });
 
@@ -166,6 +174,50 @@ describe('Ultrafix queued-work epoch guard', () => {
                 [],
                 originalUltrafixMeta,
             ), false);
+        }
+    });
+
+    test('does not let a stale automatic job steal pending work from a current manual owner', async () => {
+        mockIssueQueueAdd.mock.resetCalls();
+        const restored: string[] = [];
+        const staleJob = makeJob(0);
+        staleJob.id = 'stale-automatic-job';
+        staleJob.name = 'processPullRequestComment';
+        const originalUltrafixMeta = staleJob.data.ultrafixMeta;
+        staleJob.data.ultrafixMeta = undefined;
+        staleJob.data.commandMode = 'fix';
+        mockActiveQueueJobs = [{
+            id: 'current-manual-owner',
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'acme',
+                repoName: 'web',
+                correlationId: 'manual-owner',
+                commandMode: 'fix',
+            },
+        } as Job<CommentJobData>];
+        const redis = {
+            async get() { return '1'; },
+            async lpush(_key: string, ...values: string[]) { restored.push(...values); return restored.length; },
+            async expire() { return 1; },
+        };
+        const pending = [{ id: 702, body: 'later manual fix', author: 'alice', type: 'issue' as const }];
+
+        try {
+            assert.strictEqual(await restorePendingCommentsIfUltrafixJobSuperseded(
+                staleJob,
+                { ...params, redisClient: redis as never },
+                pending,
+                originalUltrafixMeta,
+            ), true);
+            assert.strictEqual(restored.length, 1);
+            assert.strictEqual(JSON.parse(restored[0]).id, 702);
+            assert.strictEqual(mockIssueQueueAdd.mock.callCount(), 1);
+        } finally {
+            mockActiveQueueJobs = [];
+            mockWaitingQueueJobs = [];
+            mockDelayedQueueJobs = [];
         }
     });
 });

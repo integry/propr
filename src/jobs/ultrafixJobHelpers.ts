@@ -49,7 +49,7 @@ export async function restorePendingCommentsIfUltrafixJobSuperseded(
 
     const resolvedManualTakeover = !job.data.ultrafixMeta
         && (job.data.commandMode === 'fix' || job.data.commandMode === 'review');
-    if (resolvedManualTakeover) return false;
+    if (resolvedManualTakeover && !await hasOtherCurrentManualOwner(job, params)) return false;
 
     await restorePendingComments(pickedUpComments, params);
     if (pickedUpComments.length > 0) {
@@ -65,6 +65,27 @@ export async function restorePendingCommentsIfUltrafixJobSuperseded(
         }, { delay: 3000 });
     }
     return true;
+}
+
+async function hasOtherCurrentManualOwner(
+    staleJob: Job<CommentJobData>,
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number },
+): Promise<boolean> {
+    const jobs = (await Promise.all([
+        issueQueue.getActive(),
+        issueQueue.getWaiting(),
+        issueQueue.getDelayed(),
+    ])).flat();
+    return jobs.some(candidate => {
+        if (candidate.name !== 'processPullRequestComment' || !('pullRequestNumber' in candidate.data)) return false;
+        const data = candidate.data as CommentJobData;
+        return candidate.id !== staleJob.id
+            && data.repoOwner === params.repoOwner
+            && data.repoName === params.repoName
+            && data.pullRequestNumber === params.pullRequestNumber
+            && !data.ultrafixMeta
+            && (data.commandMode === 'fix' || data.commandMode === 'review');
+    });
 }
 
 export async function handleUltrafixContinuation(
