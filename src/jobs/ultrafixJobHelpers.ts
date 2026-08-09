@@ -8,7 +8,7 @@
 import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
-import type { CommentJobData } from '@propr/core';
+import type { CommentJobData, UnprocessedComment } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
@@ -17,6 +17,7 @@ import {
     loadState as loadUltrafixState,
     type UltrafixAction,
 } from './ultrafixOrchestrationService.js';
+import { restorePendingComments } from './prPendingComments.js';
 
 /** Reject delayed or retried automatic jobs superseded by a manual command. */
 export async function isUltrafixJobCurrent(
@@ -29,6 +30,17 @@ export async function isUltrafixJobCurrent(
         { owner: params.repoOwner, repo: params.repoName, pr: params.pullRequestNumber },
         job.data.ultrafixMeta.workEpoch,
     );
+}
+
+/** Preserve comments destructively claimed by an automatic job that is now stale. */
+export async function restorePendingCommentsIfUltrafixJobSuperseded(
+    job: Job<CommentJobData>,
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis },
+    pickedUpComments: UnprocessedComment[],
+): Promise<boolean> {
+    if (await isUltrafixJobCurrent(job, params)) return false;
+    await restorePendingComments(pickedUpComments, params);
+    return true;
 }
 
 export async function handleUltrafixContinuation(

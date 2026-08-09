@@ -16,6 +16,7 @@ export interface UltrafixManualTakeoverIdentity {
     repo: string;
     pr: number;
     sourceCommentId: number;
+    sourceCommentRevision: string;
 }
 
 const SAVE_DEFERRED_IF_CURRENT_SCRIPT = `
@@ -82,8 +83,9 @@ export function getUltrafixAutomaticWorkEpochKey(owner: string, repo: string, pr
     return `${AUTOMATIC_WORK_EPOCH_KEY_PREFIX}:${owner}:${repo}:${pr}`;
 }
 
-function getUltrafixManualTakeoverKey(owner: string, repo: string, pr: number, sourceCommentId: number): string {
-    return `${MANUAL_TAKEOVER_KEY_PREFIX}:${owner}:${repo}:${pr}:${sourceCommentId}`;
+function getUltrafixManualTakeoverKey(identity: UltrafixManualTakeoverIdentity): string {
+    const { owner, repo, pr, sourceCommentId, sourceCommentRevision } = identity;
+    return `${MANUAL_TAKEOVER_KEY_PREFIX}:${owner}:${repo}:${pr}:${sourceCommentId}:${sourceCommentRevision}`;
 }
 
 /** Whether a manual command must be queued independently to take over live automatic work. */
@@ -151,19 +153,19 @@ export async function invalidateUltrafixAutomaticWork(
     return Number(nextEpoch);
 }
 
-/** Idempotently fence automatic actions for one source comment and preserve its takeover decision. */
+/** Idempotently fence automatic actions for one source comment revision and preserve its takeover decision. */
 export async function invalidateUltrafixAutomaticWorkForComment(
     redis: Redis,
     identity: UltrafixManualTakeoverIdentity,
 ): Promise<UltrafixManualTakeover> {
-    const { owner, repo, pr, sourceCommentId } = identity;
+    const { owner, repo, pr } = identity;
     const result = await redis.eval(
         INVALIDATE_AUTOMATIC_WORK_ONCE_SCRIPT,
         4,
         getUltrafixAutomaticWorkEpochKey(owner, repo, pr),
         getUltrafixDeferredKey(owner, repo, pr),
         `${ULTRAFIX_STATE_KEY_PREFIX}:${owner}:${repo}:${pr}`,
-        getUltrafixManualTakeoverKey(owner, repo, pr, sourceCommentId),
+        getUltrafixManualTakeoverKey(identity),
         String(MANUAL_TAKEOVER_TTL_SECONDS),
     ) as [number | string, number | string];
     return {

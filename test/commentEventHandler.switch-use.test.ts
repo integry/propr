@@ -169,7 +169,7 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 });
 
 // Import module under test AFTER mocks
-const { processCommentEvent, handleCommentDeleted, setUltrafixDeps } = await import(
+const { processCommentEvent, handleCommentDeleted, handleCommentEdited, setUltrafixDeps } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
@@ -949,7 +949,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.deepStrictEqual(pendingComment.requestedModels, ['codex']);
         assert.deepStrictEqual(
             mockInvalidateAutomaticWork.mock.calls[0].arguments.slice(1),
-            [{ owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: event.comment.id }],
+            [{ owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: event.comment.id, sourceCommentRevision: event.comment.updated_at }],
         );
     });
 
@@ -981,7 +981,11 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(jobData.commandMode, 'review');
         assert.deepStrictEqual(jobData.requestedModels, ['codex']);
         assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
-        assert.match(mockQueueAdd.mock.calls[0].arguments[2].jobId as string, new RegExp(`-${event.comment.id}$`));
+        const revisionSlug = event.comment.updated_at.replace(/[^a-zA-Z0-9_-]/g, '-');
+        assert.strictEqual(
+            mockQueueAdd.mock.calls[0].arguments[2].jobId,
+            `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${revisionSlug}`,
+        );
         assert.deepStrictEqual(takeoverSteps, ['invalidate', 'enqueue']);
     });
 
@@ -1040,7 +1044,39 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         const firstJobId = mockQueueAdd.mock.calls[0].arguments[2].jobId;
         const retriedJobId = mockQueueAdd.mock.calls[1].arguments[2].jobId;
         assert.strictEqual(retriedJobId, firstJobId);
-        assert.strictEqual(firstJobId, `pr-comments-batch-testowner-testrepo-42-${event.comment.id}`);
+        const revisionSlug = event.comment.updated_at.replace(/[^a-zA-Z0-9_-]/g, '-');
+        assert.strictEqual(firstJobId, `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${revisionSlug}`);
+    });
+
+    test('an edited manual command fences and enqueues once under its new revision after the original job is terminal', async () => {
+        const event = createPRCommentEvent('/fix original instructions');
+        event.comment.id = 12345;
+        event.comment.updated_at = '2026-08-09T10:00:00Z';
+        const config = createTestConfig({ processCommentEvent });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-original-revision', config);
+
+        // No active/waiting/delayed job represents the original BullMQ job having
+        // reached a retained completed or failed state.
+        event.comment.body = '/fix edited instructions';
+        event.comment.updated_at = '2026-08-09T10:05:00Z';
+        await handleCommentEdited(event, 'issue_comment', 'corr-edited-revision', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
+        assert.deepStrictEqual(
+            mockQueueAdd.mock.calls.map(call => call.arguments[2].jobId),
+            [
+                'pr-comments-batch-testowner-testrepo-42-12345-2026-08-09T10-00-00Z',
+                'pr-comments-batch-testowner-testrepo-42-12345-2026-08-09T10-05-00Z',
+            ],
+        );
+        assert.deepStrictEqual(
+            mockInvalidateAutomaticWork.mock.calls.map(call => call.arguments[1]),
+            [
+                { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: 12345, sourceCommentRevision: '2026-08-09T10:00:00Z' },
+                { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: 12345, sourceCommentRevision: '2026-08-09T10:05:00Z' },
+            ],
+        );
     });
 
     test('later manual commands resume normal batching after an Ultrafix takeover', async () => {

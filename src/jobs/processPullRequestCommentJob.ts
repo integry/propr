@@ -24,13 +24,13 @@ import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildPrompt,
     handleJobError, cleanupJob, toClaudeResult
 } from './prCommentJobUtils.js';
-import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPendingComments.js';
+import { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
 import { markFindingsSelected, retainOriginalScope } from './ultrafixOrchestrationService.js';
-import { handleUltrafixContinuation, isUltrafixJobCurrent } from './ultrafixJobHelpers.js';
+import { handleUltrafixContinuation, restorePendingCommentsIfUltrafixJobSuperseded } from './ultrafixJobHelpers.js';
 import { handleNoAuthorizedFindings } from './prCommentNoAuthorizedFindings.js';
 import { handlePostExecution } from './prCommentPostExecution.js';
 import {
@@ -115,7 +115,7 @@ async function getPrimaryLabels(): Promise<string[]> {
     return [process.env.PR_LABEL || 'propr'];
 }
 
-async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobContext> {
+async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobContext & { pickedUpComments: UnprocessedComment[] }> {
     const { pullRequestNumber, commentId, commentBody, commentAuthor, comments, repoOwner, repoName, correlationId } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
@@ -128,11 +128,11 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
 
     const primaryProcessingLabels = await getPrimaryLabels();
     const isBatchJob = !!comments && Array.isArray(comments);
-    let commentsToProcess: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
-    commentsToProcess = await pickUpPendingComments(commentsToProcess, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
+    const initialComments: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
+    const { commentsToProcess, pickedUpComments } = await pickUpPendingCommentsWithClaim(initialComments, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
     applyPendingCommentCommandContext(job.data, commentsToProcess, correlatedLogger);
     const { branchName: jobBranchName, llm: jobLlm } = job.data;
-    return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess };
+    return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess, pickedUpComments };
 }
 
 async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
@@ -398,7 +398,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     const context = await initializePRJobContext(job);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, llm } = context;
-    if (!await isUltrafixJobCurrent(job, { repoOwner, repoName, pullRequestNumber, redisClient })) return { status: 'cancelled', reason: 'ultrafix_superseded' };
+    if (await restorePendingCommentsIfUltrafixJobSuperseded(job, { repoOwner, repoName, pullRequestNumber, redisClient }, context.pickedUpComments)) return { status: 'cancelled', reason: 'ultrafix_superseded' };
 
     const modelName = await resolvePRCommentModelName(llm, correlatedLogger);
 

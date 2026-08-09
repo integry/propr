@@ -336,11 +336,11 @@ describe('deferred continuation persistence', () => {
         );
     });
 
-    test('manual invalidation is idempotent per source comment and preserves the takeover decision', async () => {
+    test('manual invalidation is idempotent per comment revision and a later edit fences newer automatic work', async () => {
         const stateKey = getUltrafixStateKey('acme', 'web', 42);
         await redis.set(stateKey, JSON.stringify({ active: true, workEpoch: 0 }));
 
-        const identity = { owner: 'acme', repo: 'web', pr: 42, sourceCommentId: 9876 };
+        const identity = { owner: 'acme', repo: 'web', pr: 42, sourceCommentId: 9876, sourceCommentRevision: '2026-08-09T10:00:00Z' };
         const first = await invalidateUltrafixAutomaticWorkForComment(redis as any, identity);
         // Simulate the old worker persisting stale state before webhook redelivery.
         await redis.set(stateKey, JSON.stringify({ active: true, workEpoch: 0 }));
@@ -349,6 +349,17 @@ describe('deferred continuation persistence', () => {
         assert.deepStrictEqual(first, { workEpoch: 1, hadAutomaticWork: true });
         assert.deepStrictEqual(redelivery, first);
         assert.strictEqual(await getUltrafixAutomaticWorkEpoch(redis as any, 'acme', 'web', 42), 1);
+
+        // A new loop can start after the original command. Editing that same
+        // GitHub comment is a new accepted command revision and must fence it.
+        await redis.set(stateKey, JSON.stringify({ active: true, workEpoch: 1 }));
+        const editedIdentity = { ...identity, sourceCommentRevision: '2026-08-09T10:05:00Z' };
+        const edited = await invalidateUltrafixAutomaticWorkForComment(redis as any, editedIdentity);
+        const editedRedelivery = await invalidateUltrafixAutomaticWorkForComment(redis as any, editedIdentity);
+
+        assert.deepStrictEqual(edited, { workEpoch: 2, hadAutomaticWork: true });
+        assert.deepStrictEqual(editedRedelivery, edited);
+        assert.strictEqual(await getUltrafixAutomaticWorkEpoch(redis as any, 'acme', 'web', 42), 2);
     });
 
     test('automatic work detection covers active state and deferred transitions', async () => {

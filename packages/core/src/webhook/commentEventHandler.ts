@@ -30,7 +30,7 @@ export interface UltrafixDeps {
     clearState: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
     hasAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<boolean>;
     getAutomaticWorkEpoch: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
-    invalidateAutomaticWork: (redis: Redis, identity: { owner: string; repo: string; pr: number; sourceCommentId: number }) => Promise<{ workEpoch: number; hadAutomaticWork: boolean }>;
+    invalidateAutomaticWork: (redis: Redis, identity: { owner: string; repo: string; pr: number; sourceCommentId: number; sourceCommentRevision: string }) => Promise<{ workEpoch: number; hadAutomaticWork: boolean }>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
 
@@ -90,7 +90,7 @@ interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta'> & { created_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
-type PRComment = { id: number; created_at: string; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+type PRComment = { id: number; created_at: string; updated_at: string; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
     const result = await redisClient.set(key, Date.now().toString(), 'EX', 86400, 'NX');
@@ -208,7 +208,7 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
     if (processCommentEventFn) await processCommentEventFn(payload, eventType, correlationId, config);
 }
 
-interface SlashCommandComment { id: number; created_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }
+interface SlashCommandComment { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }
 
 interface SlashCommandHandlerOptions {
     parsedCommand: ReturnType<typeof parseSlashCommand> & object;
@@ -235,6 +235,7 @@ async function fenceManualCommand(opts: ManualCommandFenceOptions): Promise<bool
         repo,
         pr: prNumber,
         sourceCommentId: comment.id,
+        sourceCommentRevision: comment.updated_at,
     });
     correlatedLogger.info(
         { pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode, workEpoch: takeover.workEpoch },
@@ -770,7 +771,7 @@ function buildPendingCommandFields(commandMeta: CommandMeta): Pick<UnprocessedCo
     };
 }
 
-async function enqueueNewCommentJob(comment: { id: number; created_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
+async function enqueueNewCommentJob(comment: { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
     const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
@@ -790,8 +791,9 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; b
         ...(ultrafixMeta ? { ultrafixMeta } : {}),
     };
     const manualCommand = commandMeta?.mode === 'fix' || commandMeta?.mode === 'review';
+    const commentRevisionSlug = comment.updated_at.replace(/[^a-zA-Z0-9_-]/g, '-');
     const jobId = manualCommand
-        ? `pr-comments-batch-${owner}-${repo}-${prNumber}-${comment.id}`
+        ? `pr-comments-batch-${owner}-${repo}-${prNumber}-${comment.id}-${commentRevisionSlug}`
         : `pr-comments-batch-${owner}-${repo}-${prNumber}-${Date.now()}`;
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
 
