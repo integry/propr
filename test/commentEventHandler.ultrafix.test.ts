@@ -657,7 +657,13 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
-    test('manual /fix cancels a deferred ultrafix transition before enqueueing', async () => {
+    test('manual /fix enqueues its replacement before cancelling a deferred transition', async () => {
+        const operations: string[] = [];
+        mockQueueAdd.mock.mockImplementationOnce(async () => { operations.push('enqueue'); });
+        mockClearDeferredContinuation.mock.mockImplementationOnce(async () => {
+            operations.push('cancel');
+            return 2;
+        });
         const event = createPRCommentEvent('/fix F1');
         const config = createTestConfig();
 
@@ -669,20 +675,63 @@ describe('commentEventHandler — /ultrafix command', () => {
             ['testowner', 'testrepo', 42],
         );
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.deepStrictEqual(operations, ['enqueue', 'cancel']);
     });
 
-    test('manual /review cancels a deferred ultrafix transition before batching', async () => {
+    test('manual /fix preserves deferred ultrafix when replacement enqueue fails', async () => {
+        mockQueueAdd.mock.mockImplementationOnce(async () => {
+            throw new Error('queue unavailable');
+        });
+        const event = createPRCommentEvent('/fix F1');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-manual-fix-enqueue-failure', config),
+            /queue unavailable/,
+        );
+
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
+    });
+
+    test('manual /review stores its replacement before cancelling a deferred transition', async () => {
+        const operations: string[] = [];
         mockActiveJobs = [{
             name: 'processPullRequestComment',
             data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
         }];
         const event = createPRCommentEvent('/review');
         const config = createTestConfig();
+        config.redisClient.rpush.mock.mockImplementationOnce(async () => { operations.push('store'); });
+        mockClearDeferredContinuation.mock.mockImplementationOnce(async () => {
+            operations.push('cancel');
+            return 2;
+        });
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-manual-review', config);
 
         assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        assert.deepStrictEqual(operations, ['store', 'cancel']);
+    });
+
+    test('manual /review preserves deferred ultrafix when pending storage fails', async () => {
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+        const event = createPRCommentEvent('/review');
+        const config = createTestConfig();
+        config.redisClient.rpush.mock.mockImplementationOnce(async () => {
+            throw new Error('redis unavailable');
+        });
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-manual-review-store-failure', config),
+            /redis unavailable/,
+        );
+
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 });

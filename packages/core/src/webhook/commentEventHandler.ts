@@ -263,21 +263,9 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         }
     }
 
-    if ((commandMeta.mode === 'fix' || commandMeta.mode === 'review') && _ultrafixDeps) {
-        await _ultrafixDeps.withTransitionLease(
-            redisClient,
-            { owner, repo, pr: prNumber },
-            correlationId,
-            async assertOwned => {
-                await assertOwned();
-                return _ultrafixDeps!.clearDeferredContinuation(redisClient, owner, repo, prNumber);
-            },
-        );
-        correlatedLogger.info(
-            { pullRequestNumber: prNumber, command: commandMeta.mode },
-            'Manual command cancelled any deferred ultrafix transition',
-        );
-    }
+    const takeoverDeps = (commandMeta.mode === 'fix' || commandMeta.mode === 'review')
+        ? _ultrafixDeps
+        : null;
 
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
     // Strip the slash command line from the comment body so the downstream job
@@ -288,11 +276,52 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     const existingJob = await checkExistingJob(prNumber, owner, repo);
     if (existingJob) {
         await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
+        if (takeoverDeps) {
+            await cancelDeferredUltrafixTransition(
+                takeoverDeps, redisClient, { owner, repo, prNumber }, correlationId, correlatedLogger,
+            );
+        }
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
         return;
     }
 
-    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta });
+    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
+        payload,
+        redisClient,
+        PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+        MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN,
+        correlationId,
+        commandMeta,
+        throwOnQueueFailure: !!takeoverDeps,
+    });
+    if (takeoverDeps) {
+        await cancelDeferredUltrafixTransition(
+            takeoverDeps, redisClient, { owner, repo, prNumber }, correlationId, correlatedLogger,
+        );
+    }
+}
+
+async function cancelDeferredUltrafixTransition(
+    deps: UltrafixDeps,
+    redisClient: Redis,
+    identity: { owner: string; repo: string; prNumber: number },
+    correlationId: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>,
+): Promise<void> {
+    const { owner, repo, prNumber } = identity;
+    await deps.withTransitionLease(
+        redisClient,
+        { owner, repo, pr: prNumber },
+        correlationId,
+        async assertOwned => {
+            await assertOwned();
+            return deps.clearDeferredContinuation(redisClient, owner, repo, prNumber);
+        },
+    );
+    correlatedLogger.info(
+        { pullRequestNumber: prNumber },
+        'Durably scheduled manual command and cancelled any deferred ultrafix transition',
+    );
 }
 
 type SwitchCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'switch' } };

@@ -1,16 +1,6 @@
 import type { Logger } from 'pino';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
 
-function findLatestComment(
-    comments: UnprocessedComment[],
-    predicate: (comment: UnprocessedComment) => boolean,
-): UnprocessedComment | undefined {
-    return comments.reduce<UnprocessedComment | undefined>((latest, comment) => {
-        if (!predicate(comment)) return latest;
-        return !latest || comment.id > latest.id ? comment : latest;
-    }, undefined);
-}
-
 function inferQueuedCommandCommentId(jobData: CommentJobData): number | undefined {
     if (jobData.commandCommentId !== undefined) return jobData.commandCommentId;
     if (!jobData.commandMode || jobData.commandMode === 'default') return undefined;
@@ -20,44 +10,44 @@ function inferQueuedCommandCommentId(jobData: CommentJobData): number | undefine
 }
 
 function applyLatestCommand(jobData: CommentJobData, comment: UnprocessedComment): void {
-    const preservesUltrafixAction = !!jobData.ultrafixMeta
-        && (comment.commandMode === 'use' || comment.commandMode === 'switch');
-    if (!preservesUltrafixAction) {
+    const isModelModifier = comment.commandMode === 'use' || comment.commandMode === 'switch';
+    const preservesConcreteAction = isModelModifier
+        && (jobData.commandMode === 'fix' || jobData.commandMode === 'review');
+    if (!preservesConcreteAction) {
         jobData.commandMeta = comment.commandMeta;
         jobData.commandMode = comment.commandMode;
         jobData.requestedModels = comment.requestedModels;
         jobData.commandInstructions = comment.commandInstructions;
         jobData.ultrafixMeta = comment.ultrafixMeta;
-    } else if (comment.requestedModels?.length) {
-        jobData.requestedModels = comment.requestedModels;
+    } else {
+        const modifierModels = comment.requestedModels?.length
+            ? comment.requestedModels
+            : comment.llmOverride ? [comment.llmOverride] : undefined;
+        if (modifierModels) jobData.requestedModels = modifierModels;
     }
+    if (comment.llmOverride !== undefined) jobData.llm = comment.llmOverride;
     jobData.commandCommentId = comment.id;
 }
 
 export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): void {
     const queuedCommandCommentId = inferQueuedCommandCommentId(jobData);
-    const latestCommandComment = findLatestComment(commentsToProcess, comment =>
-        !!comment.commandMode
-        && comment.commandMode !== 'default'
-        && (queuedCommandCommentId === undefined || comment.id > queuedCommandCommentId));
-    const latestOverrideComment = findLatestComment(
-        commentsToProcess, comment => comment.llmOverride !== undefined,
+    const newerCommands = commentsToProcess
+        .filter(comment => !!comment.commandMode
+            && comment.commandMode !== 'default'
+            && (queuedCommandCommentId === undefined || comment.id > queuedCommandCommentId))
+        .sort((left, right) => left.id - right.id);
+    if (newerCommands.length === 0) return;
+
+    for (const comment of newerCommands) applyLatestCommand(jobData, comment);
+
+    const latestCommandComment = newerCommands.at(-1)!;
+    const latestOverrideComment = [...newerCommands].reverse().find(
+        comment => comment.llmOverride !== undefined,
     );
-
-    if (!latestCommandComment && !latestOverrideComment) return;
-
-    if (latestCommandComment) {
-        applyLatestCommand(jobData, latestCommandComment);
-    }
-
-    if (latestOverrideComment?.llmOverride !== undefined) {
-        jobData.llm = latestOverrideComment.llmOverride;
-    }
     if (
-        latestCommandComment?.commandMode === 'review'
-        && !latestCommandComment.requestedModels?.length
-        && latestOverrideComment?.commandMode === 'use'
-        && latestOverrideComment.llmOverride
+        jobData.commandMode === 'review'
+        && !jobData.requestedModels?.length
+        && latestOverrideComment?.llmOverride
     ) {
         jobData.requestedModels = [latestOverrideComment.llmOverride];
     }
