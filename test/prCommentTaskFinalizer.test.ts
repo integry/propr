@@ -94,6 +94,7 @@ test('completed PR comment results close nonterminal task states', async (t) => 
         { status: 'partial', expected: TaskStates.COMPLETED },
         { status: 'skipped', expected: TaskStates.COMPLETED },
         { status: 'cancelled', expected: TaskStates.CANCELLED },
+        { status: 'deferred', expected: TaskStates.CANCELLED },
         { status: 'requeued', expected: TaskStates.CANCELLED },
         { status: 'rescheduled', expected: TaskStates.CANCELLED },
         { status: 'failed', expected: TaskStates.FAILED },

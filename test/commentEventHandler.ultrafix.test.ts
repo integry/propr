@@ -201,6 +201,12 @@ const mockGetPendingReviewState = mock.fn(async () => ({
 
 const mockClearStateIfGenerationCurrent = mock.fn(async () => true);
 const mockClearDeferredContinuation = mock.fn(async () => 1);
+const mockWithTransitionLease = mock.fn(async (
+    _redis: unknown,
+    _identity: unknown,
+    _correlationId: string,
+    operation: () => Promise<unknown>,
+) => operation());
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -210,6 +216,7 @@ setUltrafixDeps({
     startLoop: mockStartLoop,
     clearStateIfGenerationCurrent: mockClearStateIfGenerationCurrent,
     clearDeferredContinuation: mockClearDeferredContinuation,
+    withTransitionLease: mockWithTransitionLease,
     getPendingReviewState: mockGetPendingReviewState,
 });
 
@@ -272,6 +279,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         mockClearStateIfGenerationCurrent.mock.resetCalls();
         mockClearStateIfGenerationCurrent.mock.mockImplementation(async () => true);
         mockClearDeferredContinuation.mock.resetCalls();
+        mockWithTransitionLease.mock.resetCalls();
         mockGetPendingReviewState.mock.resetCalls();
         mockFilterCommentByAuthor.mock.resetCalls();
         mockActiveJobs = [];
@@ -315,6 +323,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         // Should call startLoop
         assert.strictEqual(mockStartLoop.mock.callCount(), 1);
         assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
+        assert.strictEqual(mockWithTransitionLease.mock.callCount(), 1);
         const loopOptions = mockStartLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
         // DB defaults are used when command args match parser defaults
         assert.strictEqual(loopOptions.goal, 7);       // DB default
@@ -509,6 +518,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         ];
         applyPendingCommentCommandContext(jobData as never, commentsToProcess as never, mockLoggerInstance as never);
 
+        assert.strictEqual(mockWithTransitionLease.mock.callCount(), 2);
         assert.strictEqual(jobData.commandCommentId, 101);
         assert.strictEqual(jobData.commandMode, 'fix');
         assert.strictEqual((jobData.ultrafixMeta as Record<string, unknown>).generation, 1);

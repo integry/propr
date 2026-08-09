@@ -32,6 +32,7 @@ import type { UltrafixAction, UltrafixLoopState } from './ultrafixOrchestrationS
 import { fetchAllComments } from './prCommentJobUtils.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
+import { withUltrafixTransitionLease } from './ultrafixTransitionLease.js';
 import {
     enqueueNextStep,
     evaluateReadiness,
@@ -85,6 +86,13 @@ export interface ContinuationResult {
     score?: number | null;
     cycleCount?: number;
     deferred?: boolean;
+}
+
+interface FinishUltrafixDetails {
+    state: UltrafixLoopState;
+    latestScore: number | null;
+    reviewStatus: ReviewOutputStatus;
+    completionReason: string;
 }
 
 async function loadCurrentLoopState(
@@ -145,12 +153,19 @@ async function deferCurrentTransition(
 
 async function finishUltrafixLoop(
     params: UltrafixContinuationParams,
-    details: {
-        state: UltrafixLoopState;
-        latestScore: number | null;
-        reviewStatus: ReviewOutputStatus;
-        completionReason: string;
-    },
+    details: FinishUltrafixDetails,
+): Promise<ContinuationResult> {
+    return withUltrafixTransitionLease(
+        params.redisClient,
+        { owner: params.owner, repo: params.repo, pr: params.pullRequestNumber },
+        params.correlationId,
+        () => finishUltrafixLoopWithLease(params, details),
+    );
+}
+
+async function finishUltrafixLoopWithLease(
+    params: UltrafixContinuationParams,
+    details: FinishUltrafixDetails,
 ): Promise<ContinuationResult> {
     const { state, latestScore, reviewStatus, completionReason } = details;
     const { owner, repo, pullRequestNumber, completedAction, redisClient, correlatedLogger } = params;

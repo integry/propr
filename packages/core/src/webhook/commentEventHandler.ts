@@ -29,6 +29,7 @@ export interface UltrafixDeps {
     startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; generation?: number }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
     clearStateIfGenerationCurrent: (redis: Redis, identity: { owner: string; repo: string; pr: number }, generation: number) => Promise<boolean>;
     clearDeferredContinuation: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
+    withTransitionLease: <T>(redis: Redis, identity: { owner: string; repo: string; pr: number }, correlationId: string, operation: () => Promise<T>) => Promise<T>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
 
@@ -263,7 +264,12 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     }
 
     if ((commandMeta.mode === 'fix' || commandMeta.mode === 'review') && _ultrafixDeps) {
-        await _ultrafixDeps.clearDeferredContinuation(redisClient, owner, repo, prNumber);
+        await _ultrafixDeps.withTransitionLease(
+            redisClient,
+            { owner, repo, pr: prNumber },
+            correlationId,
+            () => _ultrafixDeps!.clearDeferredContinuation(redisClient, owner, repo, prNumber),
+        );
         correlatedLogger.info(
             { pullRequestNumber: prNumber, command: commandMeta.mode },
             'Manual command cancelled any deferred ultrafix transition',
@@ -366,6 +372,17 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
 type UltrafixCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: UltrafixCommandMeta };
 
 async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void> {
+    const { config, correlationId, eventContext } = opts;
+    const deps = loadUltrafixDeps();
+    await deps.withTransitionLease(
+        config.redisClient,
+        { owner: eventContext.owner, repo: eventContext.repo, pr: eventContext.prNumber },
+        correlationId,
+        () => handleUltrafixCommandWithLease(opts, deps),
+    );
+}
+
+async function handleUltrafixCommandWithLease(opts: UltrafixCommandOptions, deps: UltrafixDeps): Promise<void> {
     const { commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
     const { eventType, prNumber, owner, repo } = eventContext;
     const { redisClient } = config;
@@ -373,7 +390,6 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/ultrafix command detected, initializing loop');
 
     // 1. Load configured defaults from settings, then override with command arguments
-    const deps = loadUltrafixDeps();
     const generation = await deps.clearDeferredContinuation(redisClient, owner, repo, prNumber);
     const loopMeta: UltrafixCommandMeta = { ...commandMeta, generation };
     const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel] = await Promise.all([

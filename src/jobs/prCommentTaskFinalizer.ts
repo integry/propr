@@ -86,6 +86,7 @@ function completedTransition(result: JobResult | undefined): FinalTransition {
                 },
             };
         case 'cancelled':
+        case 'deferred':
         case 'requeued':
         case 'rescheduled':
             return {

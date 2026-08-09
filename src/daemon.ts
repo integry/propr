@@ -47,6 +47,7 @@ import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetectio
 import type { DetectedIssue } from './daemon/issueDetection.js';
 import { startLoop, clearStateIfGenerationCurrent, clearDeferredContinuation } from './jobs/ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './jobs/reviewCommentGatherer.js';
+import { withUltrafixTransitionLease } from './jobs/ultrafixTransitionLease.js';
 import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoopContinuation.js';
 import { parseArgs } from './daemon/cliArgs.js';
 import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
@@ -176,6 +177,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         startLoop,
         clearStateIfGenerationCurrent,
         clearDeferredContinuation,
+        withTransitionLease: withUltrafixTransitionLease,
         getPendingReviewState,
     });
 
