@@ -1,6 +1,7 @@
 export interface AgentModelMatrixEntry {
   alias: string;
   supportedModels: string[];
+  defaultModel?: string;
 }
 
 export interface SelectedAgentModelPair {
@@ -21,19 +22,24 @@ export function selectAgentModelPairs(
 ): SelectedAgentModelPair[] {
   const pairsByAgent = [...agents]
     .sort((left, right) => left.alias.localeCompare(right.alias))
-    .map((agent) => ({
-      alias: agent.alias,
-      models: [...new Set(agent.supportedModels)].sort(),
-    }))
+    .map((agent) => {
+      const models = [...new Set(agent.supportedModels)].sort();
+      const representativeModel = agent.defaultModel && models.includes(agent.defaultModel)
+        ? agent.defaultModel
+        : models[0]!;
+      return { alias: agent.alias, models, representativeModel };
+    })
     .filter((agent) => agent.models.length > 0);
   const representatives = pairsByAgent.map((agent) => ({
     agent_alias: agent.alias,
-    model_name: agent.models[0],
+    model_name: agent.representativeModel,
   }));
-  const remaining = pairsByAgent.flatMap((agent) => agent.models.slice(1).map((model) => ({
-    agent_alias: agent.alias,
-    model_name: model,
-  })));
+  const remaining = pairsByAgent.flatMap((agent) => agent.models
+    .filter((model) => model !== agent.representativeModel)
+    .map((model) => ({
+      agent_alias: agent.alias,
+      model_name: model,
+    })));
   const ordered = [...representatives, ...remaining];
   return maxPairs === 0 ? ordered : ordered.slice(0, maxPairs);
 }
