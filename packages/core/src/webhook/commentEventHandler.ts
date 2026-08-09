@@ -26,7 +26,7 @@ export interface UltrafixDeps {
     loadUltrafixMaxCycles: () => Promise<number>;
     loadUltrafixPauseSeconds: () => Promise<number>;
     loadPrReviewModel: () => Promise<string>;
-    startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
+    startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; workEpoch?: number }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
     clearState: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
     hasAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<boolean>;
     getAutomaticWorkEpoch: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
@@ -459,6 +459,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             maxCycles: effectiveMaxCycles,
             pauseSeconds: effectivePauseSeconds,
             reviewModel: effectiveReviewModel,
+            workEpoch,
         }, hasPendingReview);
 
         correlatedLogger.info(

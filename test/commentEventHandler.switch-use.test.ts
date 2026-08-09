@@ -195,6 +195,7 @@ setUltrafixDeps({
 
 beforeEach(() => {
     mockInvalidateAutomaticWork.mock.resetCalls();
+    mockInvalidateAutomaticWork.mock.mockImplementation(async () => 1);
     mockHasAutomaticWork.mock.resetCalls();
     mockHasAutomaticWork.mock.mockImplementation(async () => false);
 });
@@ -975,6 +976,35 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(jobData.commandMode, 'review');
         assert.deepStrictEqual(jobData.requestedModels, ['codex']);
         assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+    });
+
+    test('later manual commands resume normal batching after an Ultrafix takeover', async () => {
+        let workEpoch = 0;
+        mockHasAutomaticWork.mock.mockImplementation(async () => workEpoch === 0);
+        mockInvalidateAutomaticWork.mock.mockImplementation(async () => ++workEpoch);
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+        const takeover = createPRCommentEvent('/review codex');
+        const laterCommand = createPRCommentEvent('/review codex');
+        laterCommand.comment.id = takeover.comment.id + 1;
+        const config = createTestConfig();
+
+        await processCommentEvent(takeover, 'issue_comment', 'corr-first-takeover', config);
+        await processCommentEvent(laterCommand, 'issue_comment', 'corr-later-batch', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        const pendingComment = JSON.parse(
+            config.redisClient.rpush.mock.calls[0].arguments[1] as string,
+        ) as Record<string, unknown>;
+        assert.strictEqual(pendingComment.commandMode, 'review');
     });
 
     test('batched slash commands on review comments preserve code-review context', async () => {

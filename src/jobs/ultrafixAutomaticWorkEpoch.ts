@@ -13,6 +13,15 @@ redis.call('SET', KEYS[2], ARGV[2])
 return 1
 `;
 
+const CLEAR_DEFERRED_IF_CURRENT_SCRIPT = `
+local current_epoch = redis.call('GET', KEYS[1]) or '0'
+if current_epoch ~= ARGV[1] then
+    return 0
+end
+redis.call('DEL', KEYS[2])
+return 1
+`;
+
 const INVALIDATE_AUTOMATIC_WORK_SCRIPT = `
 local epoch = redis.call('INCR', KEYS[1])
 redis.call('DEL', KEYS[2])
@@ -34,16 +43,21 @@ export async function hasUltrafixAutomaticWork(
     repo: string,
     pr: number,
 ): Promise<boolean> {
-    const [rawState, deferred] = await Promise.all([
+    const [rawState, deferred, currentEpoch] = await Promise.all([
         redis.get(`${ULTRAFIX_STATE_KEY_PREFIX}:${owner}:${repo}:${pr}`),
         redis.get(getUltrafixDeferredKey(owner, repo, pr)),
+        getUltrafixAutomaticWorkEpoch(redis, owner, repo, pr),
     ]);
     if (deferred !== null) return true;
     if (rawState === null) return false;
     try {
-        return (JSON.parse(rawState) as { active?: unknown }).active === true;
+        const state = JSON.parse(rawState) as { active?: unknown; workEpoch?: unknown };
+        const stateEpoch = typeof state.workEpoch === 'number' ? state.workEpoch : 0;
+        return state.active === true && stateEpoch === currentEpoch;
     } catch {
-        return true;
+        // Legacy state belongs to epoch zero. Once a takeover has advanced the
+        // epoch, malformed or otherwise unversioned state must not stay live.
+        return currentEpoch === 0;
     }
 }
 
@@ -102,4 +116,19 @@ export async function saveDeferredContinuationIfCurrent(
         serializedDeferred,
     );
     return Number(saved) === 1;
+}
+
+export async function clearDeferredContinuationIfCurrent(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    workEpoch: number,
+): Promise<boolean> {
+    const cleared = await redis.eval(
+        CLEAR_DEFERRED_IF_CURRENT_SCRIPT,
+        2,
+        getUltrafixAutomaticWorkEpochKey(identity.owner, identity.repo, identity.pr),
+        getUltrafixDeferredKey(identity.owner, identity.repo, identity.pr),
+        String(workEpoch),
+    );
+    return Number(cleared) === 1;
 }

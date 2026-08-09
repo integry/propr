@@ -325,6 +325,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(loopOptions.maxCycles, 5);   // DB default
         assert.strictEqual(loopOptions.pauseSeconds, 60); // DB default
         assert.strictEqual(loopOptions.reviewModel, ''); // DB default
+        assert.strictEqual(loopOptions.workEpoch, 0);
 
         // Should add ultrafix label
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);

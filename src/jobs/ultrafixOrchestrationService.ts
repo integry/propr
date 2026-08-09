@@ -9,6 +9,7 @@
 import type { Redis } from 'ioredis';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 export {
+    clearDeferredContinuationIfCurrent,
     getUltrafixAutomaticWorkEpoch,
     getUltrafixAutomaticWorkEpochKey,
     getUltrafixDeferredKey,
@@ -57,6 +58,8 @@ export interface UltrafixLoopState {
     lastActionTimestamp: string | null;
     /** Whether the loop is currently active */
     active: boolean;
+    /** Automatic-work epoch that owns this loop state. */
+    workEpoch: number;
     /** Terminal result once the loop has stopped. */
     completionStatus: 'succeeded' | 'failed' | null;
     /** Why the loop stopped. */
@@ -97,6 +100,7 @@ export interface StartLoopOptions {
     maxCycles?: number;
     pauseSeconds?: number;
     reviewModel?: string;
+    workEpoch?: number;
 }
 
 export interface UltrafixReadinessResult {
@@ -141,6 +145,7 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         lastAction: null,
         lastActionTimestamp: null,
         active: true,
+        workEpoch: options.workEpoch ?? 0,
         completionStatus: null,
         completionReason: null,
         finalScore: null,

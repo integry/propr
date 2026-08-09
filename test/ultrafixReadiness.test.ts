@@ -10,6 +10,7 @@ import {
     loadDeferredContinuation,
     claimDeferredContinuation,
     clearDeferredContinuation,
+    clearDeferredContinuationIfCurrent,
     getUltrafixDeferredKey,
     getUltrafixAutomaticWorkEpoch,
     getUltrafixStateKey,
@@ -49,6 +50,10 @@ function createMockRedis() {
                 return nextEpoch;
             }
             if ((store.get(epochKey) ?? '0') !== args[2]) return 0;
+            if (script.includes("redis.call('DEL', KEYS[2])")) {
+                store.delete(deferredKey);
+                return 1;
+            }
             store.set(deferredKey, args[3]);
             return 1;
         },
@@ -308,7 +313,7 @@ describe('deferred continuation persistence', () => {
     test('automatic work detection covers active state and deferred transitions', async () => {
         assert.strictEqual(await hasUltrafixAutomaticWork(redis as any, 'acme', 'web', 42), false);
 
-        await redis.set(getUltrafixStateKey('acme', 'web', 42), JSON.stringify({ active: true }));
+        await redis.set(getUltrafixStateKey('acme', 'web', 42), JSON.stringify({ active: true, workEpoch: 0 }));
         assert.strictEqual(await hasUltrafixAutomaticWork(redis as any, 'acme', 'web', 42), true);
 
         await redis.set(getUltrafixStateKey('acme', 'web', 42), JSON.stringify({ active: false }));
@@ -318,6 +323,18 @@ describe('deferred continuation persistence', () => {
             workEpoch: 0,
         });
         assert.strictEqual(await hasUltrafixAutomaticWork(redis as any, 'acme', 'web', 42), true);
+    });
+
+    test('manual takeover makes stale active state invisible to later commands', async () => {
+        const stateKey = getUltrafixStateKey('acme', 'web', 42);
+        await redis.set(stateKey, JSON.stringify({ active: true, workEpoch: 0 }));
+        assert.strictEqual(await hasUltrafixAutomaticWork(redis as any, 'acme', 'web', 42), true);
+
+        await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+        // A superseded worker may persist its old state again after takeover.
+        await redis.set(stateKey, JSON.stringify({ active: true, workEpoch: 0 }));
+
+        assert.strictEqual(await hasUltrafixAutomaticWork(redis as any, 'acme', 'web', 42), false);
     });
 
     test('a superseded action cannot restore its deferred record', async () => {
@@ -339,6 +356,35 @@ describe('deferred continuation persistence', () => {
         assert.strictEqual(
             (await loadDeferredContinuation(redis as any, 'acme', 'web', 42))?.nextAction,
             'review',
+        );
+    });
+
+    test('a stale continuation cannot delete deferred work from a newer epoch', async () => {
+        assert.strictEqual(
+            await isUltrafixAutomaticWorkCurrent(
+                redis as any,
+                { owner: 'acme', repo: 'web', pr: 42 },
+                0,
+            ),
+            true,
+        );
+        await invalidateUltrafixAutomaticWork(redis as any, 'acme', 'web', 42);
+        await saveDeferredContinuation(redis as any, {
+            owner: 'acme', repo: 'web', pr: 42,
+            nextAction: 'review', savedAt: new Date().toISOString(), reason: 'new_epoch',
+            workEpoch: 1,
+        });
+
+        const cleared = await clearDeferredContinuationIfCurrent(
+            redis as any,
+            { owner: 'acme', repo: 'web', pr: 42 },
+            0,
+        );
+
+        assert.strictEqual(cleared, false);
+        assert.strictEqual(
+            (await loadDeferredContinuation(redis as any, 'acme', 'web', 42))?.reason,
+            'new_epoch',
         );
     });
 

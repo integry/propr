@@ -25,6 +25,7 @@ import {
     recordReviewFindings,
     saveDeferredContinuation,
     clearDeferredContinuation,
+    clearDeferredContinuationIfCurrent,
     isUltrafixAutomaticWorkCurrent,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
@@ -134,13 +135,12 @@ async function enqueueCurrentNextAction(
 ): Promise<ContinuationResult> {
     const { params, nextAction, decisionReason, latestScore, cycleCount, pauseSeconds } = input;
     const { owner, repo, pullRequestNumber, redisClient } = params;
-    const current = await isUltrafixAutomaticWorkCurrent(
+    const cleared = await clearDeferredContinuationIfCurrent(
         redisClient,
         { owner, repo, pr: pullRequestNumber },
-        params.ultrafixMeta?.workEpoch,
+        params.ultrafixMeta?.workEpoch ?? 0,
     );
-    if (!current) return { continued: false, reason: 'ultrafix_superseded' };
-    await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
+    if (!cleared) return { continued: false, reason: 'ultrafix_superseded' };
     await enqueueNextStep(params, nextAction, (pauseSeconds || 60) * 1000);
     return {
         continued: true,
