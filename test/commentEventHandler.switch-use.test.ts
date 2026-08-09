@@ -1015,7 +1015,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
     });
 
-    test('redelivery completes the same fenced takeover job after post-enqueue persistence fails', async () => {
+    test('tracking refresh failure preserves the fenced job and suppresses redelivery', async () => {
         mockInvalidateAutomaticWork.mock.mockImplementation(async () => ({ workEpoch: 1, hadAutomaticWork: true }));
         mockActiveJobs = [{
             name: 'processPullRequestComment',
@@ -1033,19 +1033,17 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
             throw new Error('tracking write response lost');
         });
 
-        await assert.rejects(
-            processCommentEvent(event, 'issue_comment', 'corr-takeover-lost-response', config),
-            /tracking write response lost/,
-        );
-        await processCommentEvent(event, 'issue_comment', 'corr-takeover-redelivery', config);
+        await processCommentEvent(event, 'issue_comment', 'corr-takeover-lost-response', config);
+        const redelivery = await processCommentEvent(event, 'issue_comment', 'corr-takeover-redelivery', config);
 
-        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 2);
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
-        const firstJobId = mockQueueAdd.mock.calls[0].arguments[2].jobId;
-        const retriedJobId = mockQueueAdd.mock.calls[1].arguments[2].jobId;
-        assert.strictEqual(retriedJobId, firstJobId);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+        assert.deepStrictEqual(redelivery, { status: 'ignored', reason: 'duplicate_delivery' });
         const revisionSlug = event.comment.updated_at.replace(/[^a-zA-Z0-9_-]/g, '-');
-        assert.strictEqual(firstJobId, `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${revisionSlug}`);
+        assert.strictEqual(
+            mockQueueAdd.mock.calls[0].arguments[2].jobId,
+            `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${revisionSlug}`,
+        );
     });
 
     test('an edited manual command fences and enqueues once under its new revision after the original job is terminal', async () => {

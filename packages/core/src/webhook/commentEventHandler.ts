@@ -805,12 +805,20 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
             attempts: 3,
             backoff: { type: 'exponential', delay: 10000 },  // 10s, 20s, 40s
         });
-        await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
-        correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {
         const err = error as Error;
         if (err.message?.includes('Job already exists')) correlatedLogger.warn({ pullRequestNumber: prNumber }, 'PR comment job ID already exists; surfacing enqueue failure');
         else handleError(error, `Failed to add PR comment to queue`, { correlationId });
         throw error;
     }
+
+    try {
+        await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
+    } catch (error) {
+        // The queue insertion above is the durable handoff. Do not report it as
+        // failed (or skip takeover invalidation) merely because refreshing the
+        // comment-tracking TTL failed afterward.
+        handleError(error, 'PR comment job was queued but its tracking TTL could not be refreshed', { correlationId });
+    }
+    correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
 }
