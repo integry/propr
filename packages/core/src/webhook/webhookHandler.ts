@@ -249,6 +249,7 @@ async function clearStateForCurrentUltrafixLabelRemoval(
             { owner, repo, prNumber, error: (verificationError as Error | undefined)?.message },
             'Failed to verify current Ultrafix label state; preserving loop state',
         );
+        throw verificationError ?? new Error('Failed to verify current Ultrafix label state');
     }
     return result === 'cleared';
 }
