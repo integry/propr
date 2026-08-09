@@ -8,7 +8,7 @@
 import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
-import { getCurrentPRHead, areAllChecksPassing, getIssueQueue } from '@propr/core';
+import { getCurrentPRHead, areAllChecksPassing, getIssueQueue, getPendingPrCommentsKey } from '@propr/core';
 import type { CommentJobData, JobResult } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
@@ -16,6 +16,8 @@ import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuat
 import {
     adoptLegacyUltrafixGeneration,
     getActiveUltrafixTakeoverSequence,
+    hasFollowUpJobsForPR,
+    hasPendingBatchedComments,
     isFreshUltrafixTransitionReserved,
     isUltrafixGenerationCurrent,
     loadState as loadUltrafixState,
@@ -111,7 +113,7 @@ export async function checkUltrafixReadiness(
     params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }
 ): Promise<boolean> {
     if (!job.data.ultrafixMeta) return true;
-    const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = params;
+    const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = params;
     const nextAction: UltrafixAction = job.data.commandMode === 'fix' ? 'fix' : 'review';
     try {
         const takeoverSequence = await getActiveUltrafixTakeoverSequence(
@@ -132,6 +134,38 @@ export async function checkUltrafixReadiness(
             'Ultrafix pre-check: could not inspect manual takeover fence, deferring',
         );
         await deferUltrafixJob(job, params, nextAction, 'manual_takeover_fence_unavailable');
+        return false;
+    }
+    try {
+        const followUpJobsExist = await hasFollowUpJobsForPR(
+            repoOwner, repoName, pullRequestNumber,
+            async () => {
+                const jobs = await (await getIssueQueue()).getJobs(['waiting', 'active', 'delayed']);
+                return jobs.filter(candidate => candidate.id !== job.id);
+            },
+        );
+        if (followUpJobsExist) {
+            correlatedLogger.info({ pullRequestNumber, nextAction }, 'Ultrafix pre-check: follow-up job still queued, deferring');
+            await deferUltrafixJob(job, params, nextAction, 'pre_execution_followup_job');
+            return false;
+        }
+    } catch (err) {
+        correlatedLogger.warn({ pullRequestNumber, error: (err as Error).message }, 'Ultrafix pre-check: could not inspect follow-up jobs, deferring');
+        await deferUltrafixJob(job, params, nextAction, 'pre_execution_queue_unavailable');
+        return false;
+    }
+    try {
+        const pendingComments = await hasPendingBatchedComments(
+            redisClient, getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber),
+        );
+        if (pendingComments) {
+            correlatedLogger.info({ pullRequestNumber, nextAction }, 'Ultrafix pre-check: pending batched comments remain, deferring');
+            await deferUltrafixJob(job, params, nextAction, 'pre_execution_pending_comments');
+            return false;
+        }
+    } catch (err) {
+        correlatedLogger.warn({ pullRequestNumber, error: (err as Error).message }, 'Ultrafix pre-check: could not inspect pending comments, deferring');
+        await deferUltrafixJob(job, params, nextAction, 'pre_execution_pending_comments_unavailable');
         return false;
     }
     if (!requiresPassingChecks(nextAction)) {

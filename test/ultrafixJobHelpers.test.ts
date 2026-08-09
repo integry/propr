@@ -9,10 +9,19 @@ const getActiveUltrafixTakeoverSequence = mock.fn(async () => null as number | n
 const adoptLegacyUltrafixGeneration = mock.fn(async () => true);
 const isFreshUltrafixTransitionReserved = mock.fn(async () => false);
 const queueAdd = mock.fn(async () => {});
-const getIssueQueue = mock.fn(async () => ({ add: queueAdd }));
+const queueGetJobs = mock.fn(async () => [] as Array<{ id?: string; data: Record<string, unknown> }>);
+const getIssueQueue = mock.fn(async () => ({ add: queueAdd, getJobs: queueGetJobs }));
+const getPendingPrCommentsKey = mock.fn(() => 'pending-comments-key');
+const hasFollowUpJobsForPR = mock.fn(async (
+    _owner: string,
+    _repo: string,
+    _pr: number,
+    getJobs: () => Promise<unknown[]>,
+) => (await getJobs()).length > 0);
+const hasPendingBatchedComments = mock.fn(async () => false);
 
 await mock.module('@propr/core', {
-    namedExports: { getCurrentPRHead, areAllChecksPassing, getIssueQueue },
+    namedExports: { getCurrentPRHead, areAllChecksPassing, getIssueQueue, getPendingPrCommentsKey },
 });
 await mock.module('../src/jobs/ultrafixLoopContinuation.js', {
     namedExports: { continueUltrafixLoop: mock.fn() },
@@ -32,6 +41,8 @@ await mock.module('../src/jobs/ultrafixOrchestrationService.js', {
         getActiveUltrafixTakeoverSequence,
         adoptLegacyUltrafixGeneration,
         isFreshUltrafixTransitionReserved,
+        hasFollowUpJobsForPR,
+        hasPendingBatchedComments,
     },
 });
 
@@ -77,6 +88,17 @@ beforeEach(() => {
     isFreshUltrafixTransitionReserved.mock.resetCalls();
     isFreshUltrafixTransitionReserved.mock.mockImplementation(async () => false);
     queueAdd.mock.resetCalls();
+    queueGetJobs.mock.resetCalls();
+    queueGetJobs.mock.mockImplementation(async () => []);
+    hasFollowUpJobsForPR.mock.resetCalls();
+    hasFollowUpJobsForPR.mock.mockImplementation(async (
+        _owner,
+        _repo,
+        _pr,
+        getJobs,
+    ) => (await getJobs()).length > 0);
+    hasPendingBatchedComments.mock.resetCalls();
+    hasPendingBatchedComments.mock.mockImplementation(async () => false);
 });
 
 test('allows a queued Ultrafix job only while its generation is current', async () => {
@@ -131,6 +153,25 @@ test('allows an Ultrafix fix without consulting CI', async () => {
     assert.equal(await checkUltrafixReadiness(job('fix') as never, params as never), true);
     assert.equal(getCurrentPRHead.mock.callCount(), 0);
     assert.equal(saveDeferredContinuation.mock.callCount(), 0);
+});
+
+test('defers an Ultrafix fix when another follow-up job is still queued', async () => {
+    queueGetJobs.mock.mockImplementationOnce(async () => [{
+        id: 'other-job',
+        data: { repoOwner: 'owner', repoName: 'repo', pullRequestNumber: 42, ultrafixMeta: {} },
+    }]);
+
+    assert.equal(await checkUltrafixReadiness(job('fix') as never, params as never), false);
+    assert.equal(saveDeferredContinuation.mock.calls[0].arguments[1].reason, 'pre_execution_followup_job');
+    assert.equal(getCurrentPRHead.mock.callCount(), 0);
+});
+
+test('defers an Ultrafix fix while pending batched comments remain', async () => {
+    hasPendingBatchedComments.mock.mockImplementationOnce(async () => true);
+
+    assert.equal(await checkUltrafixReadiness(job('fix') as never, params as never), false);
+    assert.equal(saveDeferredContinuation.mock.calls[0].arguments[1].reason, 'pre_execution_pending_comments');
+    assert.equal(getCurrentPRHead.mock.callCount(), 0);
 });
 
 test('defers stale Ultrafix work while a manual takeover is being scheduled', async () => {

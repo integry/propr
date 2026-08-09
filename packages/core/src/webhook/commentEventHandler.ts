@@ -119,10 +119,30 @@ redis.call('EXPIRE', KEYS[1], ARGV[2])
 redis.call('SET', KEYS[2], ARGV[4], 'EX', ARGV[3])
 return 1
 `;
+const DELETE_TAKEOVER_STAGE_IF_SEQUENCE_SCRIPT = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+    return 0
+end
+redis.call('DEL', KEYS[1])
+return 1
+`;
 
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
     const result = await redisClient.set(key, Date.now().toString(), 'EX', 86400, 'NX');
     return result === 'OK';
+}
+
+async function deleteTakeoverStageIfSequence(
+    redisClient: Redis,
+    stageKey: string,
+    commandSequence: number,
+): Promise<boolean> {
+    return Number(await redisClient.eval(
+        DELETE_TAKEOVER_STAGE_IF_SEQUENCE_SCRIPT,
+        1,
+        stageKey,
+        String(commandSequence),
+    )) === 1;
 }
 
 async function getOrAssignCommandSequence(
@@ -375,20 +395,31 @@ async function handleQueuedSlashCommand(
         ? await redisClient.get(takeoverStageKey)
         : null;
     const takeoverIdentity = { owner, repo, prNumber, eventType, commentId: comment.id };
-    if (takeoverDeps && takeoverStageKey && stagedSequence && await hasDurableManualTakeoverReplacement(
-        redisClient, takeoverIdentity, Number(stagedSequence),
-    )) {
-        await cancelDeferredUltrafixTransition(takeoverDeps, {
-            redisClient, owner, repo, prNumber, correlationId, correlatedLogger,
-            takeoverStageKey, commandSequence: Number(stagedSequence),
-        });
-        correlatedLogger.info(
-            { pullRequestNumber: prNumber, commentId: comment.id },
-            'Resumed cancellation for an already scheduled manual takeover',
-        );
-        return;
-    }
     const commandSequence = comment.commandSequence ?? 0;
+    if (takeoverDeps && takeoverStageKey && stagedSequence) {
+        const stagedCommandSequence = Number(stagedSequence);
+        if (stagedCommandSequence > commandSequence) {
+            correlatedLogger.info(
+                { pullRequestNumber: prNumber, commentId: comment.id, commandSequence, stagedCommandSequence },
+                'Ignored command revision superseded by a newer staged takeover',
+            );
+            return;
+        }
+        const durable = await hasDurableManualTakeoverReplacement(
+            redisClient, takeoverIdentity, stagedCommandSequence,
+        );
+        if (durable) {
+            await cancelDeferredUltrafixTransition(takeoverDeps, {
+                redisClient, owner, repo, prNumber, correlationId, correlatedLogger,
+                takeoverStageKey, commandSequence: stagedCommandSequence,
+            });
+            correlatedLogger.info(
+                { pullRequestNumber: prNumber, commentId: comment.id, stagedCommandSequence },
+                'Resumed cancellation for an already scheduled manual takeover',
+            );
+            if (stagedCommandSequence === commandSequence) return;
+        }
+    }
     if (!takeoverDeps || !takeoverStageKey) {
         await scheduleQueuedSlashCommand(opts, commandMeta);
         return;
@@ -426,7 +457,6 @@ async function handleQueuedSlashCommand(
             });
         },
     );
-    await redisClient.del(takeoverStageKey);
 }
 
 async function scheduleQueuedSlashCommand(
@@ -514,7 +544,9 @@ async function scheduleQueuedSlashCommand(
         if (takeover) {
             await abortUnscheduledManualTakeover(takeover, {
                 redisClient, owner, repo, prNumber, correlatedLogger,
-                deterministicJobId, replacementScheduled,
+                eventType: eventContext.eventType,
+                commentId: comment.id,
+                replacementScheduled,
             });
         }
         throw error;
@@ -526,28 +558,37 @@ async function abortUnscheduledManualTakeover(
     options: {
         redisClient: Redis; owner: string; repo: string; prNumber: number;
         correlatedLogger: ReturnType<typeof logger.withCorrelation>;
-        deterministicJobId?: string;
+        eventType: CommentEventType;
+        commentId: number;
         replacementScheduled: boolean;
     },
 ): Promise<void> {
     const {
         redisClient, owner, repo, prNumber, correlatedLogger,
-        deterministicJobId, replacementScheduled,
+        replacementScheduled,
     } = options;
     if (replacementScheduled) return;
     try {
-        const durable = deterministicJobId
-            ? await (await getIssueQueue()).getJob(deterministicJobId)
-            : null;
+        const durable = await hasDurableManualTakeoverReplacement(
+            redisClient,
+            {
+                owner,
+                repo,
+                prNumber,
+                eventType: options.eventType,
+                commentId: options.commentId,
+            },
+            takeover.commandSequence,
+        );
         if (durable) return;
     } catch (stageError) {
         correlatedLogger.warn({ stageError, prNumber }, 'Could not verify manual takeover stage; preserving fence');
         return;
     }
     await takeover.assertTransitionOwned();
-    if (await redisClient.get(takeover.takeoverStageKey) === String(takeover.commandSequence)) {
-        await redisClient.del(takeover.takeoverStageKey);
-    }
+    await deleteTakeoverStageIfSequence(
+        redisClient, takeover.takeoverStageKey, takeover.commandSequence,
+    );
     await takeover.deps.abortManualTakeover(
         redisClient, { owner, repo, pr: prNumber }, takeover.commandSequence,
     );
@@ -564,6 +605,9 @@ async function finalizeManualUltrafixTakeover(
     await takeover.assertTransitionOwned();
     const generation = await takeover.deps.completeManualTakeover(
         redisClient, { owner, repo, pr: prNumber }, takeover.commandSequence,
+    );
+    await deleteTakeoverStageIfSequence(
+        redisClient, takeover.takeoverStageKey, takeover.commandSequence,
     );
     logManualTakeoverResult(generation, takeover.commandSequence, prNumber, correlatedLogger);
 }
@@ -588,12 +632,17 @@ async function cancelDeferredUltrafixTransition(
         correlationId,
         async assertOwned => {
             await assertOwned();
-            return deps.completeManualTakeover(
+            const completedGeneration = await deps.completeManualTakeover(
                 redisClient, { owner, repo, pr: prNumber }, commandSequence,
             );
+            if (options.takeoverStageKey) {
+                await deleteTakeoverStageIfSequence(
+                    redisClient, options.takeoverStageKey, commandSequence,
+                );
+            }
+            return completedGeneration;
         },
     );
-    if (options.takeoverStageKey) await redisClient.del(options.takeoverStageKey);
     logManualTakeoverResult(generation, commandSequence, prNumber, correlatedLogger);
 }
 

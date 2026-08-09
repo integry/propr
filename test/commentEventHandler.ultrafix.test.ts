@@ -282,6 +282,11 @@ function createMockRedis() {
             _stageTtl: string,
             takeoverSequence: string,
         ) => {
+            if (script.includes("if redis.call('GET', KEYS[1]) ~= ARGV[1]")) {
+                if (store.get(pendingKey) !== stageKey) return 0;
+                store.delete(pendingKey);
+                return 1;
+            }
             if (script.includes("local existing = redis.call('GET', KEYS[1])")) {
                 const existing = store.get(pendingKey);
                 if (existing) return Number(existing);
@@ -898,6 +903,44 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.ok(jobIds[1].endsWith('-700-2'));
     });
 
+    test('an edit retires an older durable recovery stage before scheduling its new revision', async () => {
+        const durableJobIds = new Set<string>();
+        mockQueueAdd.mock.mockImplementation(async (_name: string, _data: unknown, options: { jobId?: string }) => {
+            if (options.jobId) durableJobIds.add(options.jobId);
+        });
+        mockQueueGetJob.mock.mockImplementation(async (jobId: string) => durableJobIds.has(jobId) ? {} : null);
+        mockClearDeferredContinuation.mock.mockImplementationOnce(async () => {
+            throw new Error('first transition commit interrupted');
+        });
+        const original = createPRCommentEvent('/fix F1');
+        original.comment.id = 701;
+        original.comment.updated_at = '2026-08-09T01:00:00Z';
+        const config = createTestConfig();
+        config.processCommentEvent = (
+            payload: Parameters<typeof processCommentEvent>[0],
+            eventType: Parameters<typeof processCommentEvent>[1],
+            correlationId: string,
+        ) => processCommentEvent(payload, eventType, correlationId, config);
+
+        await assert.rejects(
+            processCommentEvent(original, 'issue_comment', 'corr-interrupted-original', config),
+            /first transition commit interrupted/,
+        );
+
+        const edited = createPRCommentEvent('/fix F2');
+        edited.comment.id = original.comment.id;
+        edited.comment.updated_at = '2026-08-09T01:01:00Z';
+        await handleCommentEdited(edited, 'issue_comment', 'corr-new-revision', config);
+
+        assert.deepStrictEqual(
+            mockClearDeferredContinuation.mock.calls.map(call => call.arguments[2]),
+            [1, 1, 2],
+        );
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
+        assert.ok((mockQueueAdd.mock.calls[1].arguments[2].jobId as string).endsWith('-701-2'));
+        assert.strictEqual(mockQueueAdd.mock.calls[1].arguments[1].commandInstructions, 'F2');
+    });
+
     test('manual /fix preserves deferred ultrafix when replacement enqueue fails', async () => {
         mockQueueAdd.mock.mockImplementationOnce(async () => {
             throw new Error('queue unavailable');
@@ -1019,6 +1062,72 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('ambiguous pending-batch acknowledgement preserves the manual takeover fence', async () => {
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+        const event = createPRCommentEvent('/review');
+        const config = createTestConfig();
+        config.redisClient.eval.mock.mockImplementation(async (
+            script: string,
+            _keyCount: number,
+            ...args: string[]
+        ) => {
+            if (script.includes("local existing = redis.call('GET', KEYS[1])")) {
+                const [sequenceKey, counterKey] = args;
+                const existing = config.redisClient._store.get(sequenceKey);
+                if (existing) return Number(existing);
+                const next = Number(config.redisClient._store.get(counterKey) ?? '0') + 1;
+                config.redisClient._store.set(counterKey, String(next));
+                config.redisClient._store.set(sequenceKey, String(next));
+                return next;
+            }
+            if (script.includes("redis.call('RPUSH', KEYS[1]")) {
+                const [pendingKey, stageKey, serializedComment, , , sequence] = args;
+                const list = config.redisClient._lists.get(pendingKey) ?? [];
+                list.push(serializedComment);
+                config.redisClient._lists.set(pendingKey, list);
+                config.redisClient._store.set(stageKey, sequence);
+                throw new Error('connection lost after Redis accepted batch');
+            }
+            throw new Error('unexpected script');
+        });
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-ambiguous-batch', config),
+            /connection lost after Redis accepted batch/,
+        );
+
+        assert.strictEqual(mockAbortManualTakeover.mock.callCount(), 0);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
+        assert.strictEqual(
+            [...config.redisClient._store.entries()].some(([key, value]) =>
+                key.startsWith('pr-command-takeover:') && value === '1'),
+            true,
+        );
+    });
+
+    test('an older handler cannot delete a stage now owned by a newer sequence', async () => {
+        const event = createPRCommentEvent('/fix F1');
+        event.comment.id = 702;
+        const config = createTestConfig();
+        mockClearDeferredContinuation.mock.mockImplementationOnce(async () => {
+            const stageKey = [...config.redisClient._store.keys()].find(key =>
+                key.startsWith('pr-command-takeover:'))!;
+            config.redisClient._store.set(stageKey, '2');
+            return 2;
+        });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-stage-owner', config);
+
+        assert.strictEqual(
+            [...config.redisClient._store.entries()].some(([key, value]) =>
+                key.startsWith('pr-command-takeover:') && value === '2'),
+            true,
+        );
     });
 
     test('manual /review redelivery resumes failed cancellation without batching twice', async () => {
