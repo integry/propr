@@ -12,6 +12,7 @@ import {
     clearState,
     clearUltrafixStateIfCurrent,
     invalidateUltrafixAutomaticWork,
+    withUltrafixLabelTransition,
     startLoop,
     recordAction,
     retainOriginalScope,
@@ -545,5 +546,42 @@ describe('Serialization', () => {
         assert.strictEqual(restored.reviewModel, 'claude-opus-4-6');
         assert.strictEqual(restored.active, true);
         assert.strictEqual(typeof restored.lastActionTimestamp, 'string');
+    });
+});
+
+describe('shared label transition ownership', () => {
+    test('serializes startup and teardown transitions for the same PR', async () => {
+        const store = new Map<string, string>();
+        const redis = {
+            async set(key: string, value: string, _mode: string, _ttl: number, condition: string) {
+                if (condition === 'NX' && store.has(key)) return null;
+                store.set(key, value);
+                return 'OK';
+            },
+            async eval(_script: string, _keyCount: number, key: string, token: string) {
+                if (store.get(key) !== token) return 0;
+                store.delete(key);
+                return 1;
+            },
+        };
+        const identity = { owner: 'acme', repo: 'web', pr: 42 };
+        const order: string[] = [];
+        let releaseFirst!: () => void;
+        const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+
+        const first = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('first-start');
+            await firstGate;
+            order.push('first-end');
+        });
+        const second = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('second');
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 20));
+        assert.deepStrictEqual(order, ['first-start']);
+        releaseFirst();
+        await Promise.all([first, second]);
+        assert.deepStrictEqual(order, ['first-start', 'first-end', 'second']);
     });
 });

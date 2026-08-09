@@ -202,6 +202,7 @@ const mockClearStateIfCurrent = mock.fn(async () => true);
 const mockReserveAutomaticWork = mock.fn(async () => 1);
 const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
 const mockHasAutomaticWork = mock.fn(async () => false);
+const mockWithLabelTransition = mock.fn(async (_redis: unknown, _identity: unknown, operation: () => Promise<unknown>) => operation());
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -212,6 +213,7 @@ setUltrafixDeps({
     clearStateIfCurrent: mockClearStateIfCurrent,
     hasAutomaticWork: mockHasAutomaticWork,
     reserveAutomaticWork: mockReserveAutomaticWork,
+    withLabelTransition: mockWithLabelTransition,
     invalidateAutomaticWork: mockInvalidateAutomaticWork,
     getPendingReviewState: mockGetPendingReviewState,
 });
@@ -266,6 +268,7 @@ function createPRCommentEvent(body: string, labels: Label[] = []) {
 
 describe('commentEventHandler — /ultrafix command', () => {
     beforeEach(() => {
+        mockWithLabelTransition.mock.resetCalls();
         mockSafeUpdateLabels.mock.resetCalls();
         mockSafeUpdateLabels.mock.mockImplementation(async (_context: unknown, labelsToRemove: string[] = [], labelsToAdd: string[] = []) => ({
             success: true,
@@ -358,6 +361,21 @@ describe('commentEventHandler — /ultrafix command', () => {
             (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST')
         );
         assert.ok(postCalls.length > 0, 'Expected a POST request to create a comment');
+    });
+
+    test('asserts the circuit-breaker label before publishing active loop state', async () => {
+        mockSafeUpdateLabels.mock.mockImplementation(async (_context: unknown, labelsToRemove: string[] = [], labelsToAdd: string[] = []) => {
+            assert.strictEqual(mockStartLoop.mock.callCount(), 0);
+            return { success: true, removed: [...labelsToRemove], added: [...labelsToAdd], errors: [] };
+        });
+        mockStartLoop.mock.mockImplementation(async () => {
+            assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+            return { state: {}, initialAction: 'review' as const };
+        });
+
+        await processCommentEvent(createPRCommentEvent('/ultrafix'), 'issue_comment', 'corr-uf-label-first', createTestConfig());
+
+        assert.strictEqual(mockWithLabelTransition.mock.callCount(), 1);
     });
 
     test('tracking refresh failure after enqueue does not roll back Ultrafix startup', async () => {

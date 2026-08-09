@@ -292,11 +292,10 @@ export async function continueUltrafixLoop(
     if (decision.action === null) {
         return finishUltrafixLoop({
             params,
-            workEpoch,
             state: updatedState,
-            decisionReason: decision.reason,
             latestScore,
             reviewStatus,
+            decisionReason: decision.reason,
         });
     }
 

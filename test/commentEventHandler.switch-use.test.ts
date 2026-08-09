@@ -199,6 +199,7 @@ setUltrafixDeps({
     clearStateIfCurrent: mock.fn(async () => true),
     hasAutomaticWork: mockHasAutomaticWork,
     reserveAutomaticWork: mock.fn(async () => 1),
+    withLabelTransition: async (_redis, _identity, operation) => operation(),
     invalidateAutomaticWork: mockInvalidateAutomaticWork,
     getPendingReviewState: mock.fn(async () => ({ hasPendingReview: false })),
 });

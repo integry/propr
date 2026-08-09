@@ -31,6 +31,7 @@ export interface UltrafixDeps {
     clearStateIfCurrent: (redis: Redis, identity: { owner: string; repo: string; pr: number }, workEpoch: number) => Promise<boolean>;
     hasAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<boolean>;
     reserveAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
+    withLabelTransition: <T>(redis: Redis, identity: { owner: string; repo: string; pr: number }, operation: () => Promise<T>) => Promise<T>;
     invalidateAutomaticWork: (redis: Redis, identity: { owner: string; repo: string; pr: number; sourceCommentId: number; sourceCommentRevision: string }) => Promise<{ workEpoch: number; hadAutomaticWork: boolean }>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
@@ -446,39 +447,47 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     }
 
     const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
-    const workEpoch = await deps.reserveAutomaticWork(redisClient, owner, repo, prNumber);
-    const loopMeta: UltrafixCommandMeta = { ...commandMeta, workEpoch };
+    const identity = { owner, repo, pr: prNumber };
+    let workEpoch = 0;
+    let loopMeta: UltrafixCommandMeta = commandMeta;
     let initialAction: 'review' | 'fix' = 'review';
     let labelApplied = false;
 
     // The reserved epoch fences older queued, deferred, and in-flight automatic
     // continuations. State commit and rollback are both conditional on ownership.
     try {
-        // Close the gap between the first queue snapshot and reservation. Work
-        // that appeared in that interval must settle before this loop reviews it.
-        const olderPrWorkExists = existingJob || await checkExistingJob(prNumber, owner, repo);
-        const startWithPendingReview = !olderPrWorkExists && hasPendingReview;
-        initialAction = startWithPendingReview ? 'fix' : 'review';
-        await deps.startLoop(redisClient, {
-            owner,
-            repo,
-            pr: prNumber,
-            goal: effectiveGoal,
-            maxCycles: effectiveMaxCycles,
-            pauseSeconds: effectivePauseSeconds,
-            reviewModel: effectiveReviewModel,
-            workEpoch,
-        }, startWithPendingReview);
+        let olderPrWorkExists = false;
+        await deps.withLabelTransition(redisClient, identity, async () => {
+            workEpoch = await deps.reserveAutomaticWork(redisClient, owner, repo, prNumber);
+            loopMeta = { ...commandMeta, workEpoch };
+            // Close the gap between the first queue snapshot and reservation. Work
+            // that appeared in that interval must settle before this loop reviews it.
+            olderPrWorkExists = Boolean(existingJob || await checkExistingJob(prNumber, owner, repo));
+            const startWithPendingReview = !olderPrWorkExists && hasPendingReview;
+            initialAction = startWithPendingReview ? 'fix' : 'review';
 
-        // Always assert the circuit-breaker label after reserving ownership. An
-        // older loop may concurrently remove a label seen in the PR snapshot.
-        const labelResult = await safeUpdateLabels(
-            { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
-            [],
-            ['ultrafix'],
-        );
-        labelApplied = labelResult.added.includes('ultrafix');
-        if (!labelApplied) throw new Error('Failed to add the ultrafix circuit-breaker label');
+            // Publish the circuit breaker before the active state. Terminal label
+            // removal uses this same transition lock, so no stale teardown can
+            // open a label gap around a newer epoch.
+            const labelResult = await safeUpdateLabels(
+                { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
+                [],
+                ['ultrafix'],
+            );
+            labelApplied = labelResult.added.includes('ultrafix');
+            if (!labelApplied) throw new Error('Failed to add the ultrafix circuit-breaker label');
+
+            await deps.startLoop(redisClient, {
+                owner,
+                repo,
+                pr: prNumber,
+                goal: effectiveGoal,
+                maxCycles: effectiveMaxCycles,
+                pauseSeconds: effectivePauseSeconds,
+                reviewModel: effectiveReviewModel,
+                workEpoch,
+            }, startWithPendingReview);
+        });
 
         correlatedLogger.info(
             { pullRequestNumber: prNumber, initialAction, olderPrWorkExists, workEpoch, effectiveGoal, effectiveMaxCycles, effectivePauseSeconds, effectiveReviewModel },
@@ -504,20 +513,22 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     } catch (error) {
         correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed before job enqueue, rolling back');
         try {
-            const cleared = await deps.clearStateIfCurrent(
-                redisClient,
-                { owner, repo, pr: prNumber },
-                workEpoch,
-            );
             let labelRemoved = false;
-            if (cleared && labelApplied) {
-                const labelResult = await safeUpdateLabels(
-                    { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
-                    ['ultrafix'],
-                    [],
+            await deps.withLabelTransition(redisClient, identity, async () => {
+                const cleared = await deps.clearStateIfCurrent(
+                    redisClient,
+                    identity,
+                    workEpoch,
                 );
-                labelRemoved = labelResult.removed.includes('ultrafix');
-            }
+                if (cleared && labelApplied) {
+                    const labelResult = await safeUpdateLabels(
+                        { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
+                        ['ultrafix'],
+                        [],
+                    );
+                    labelRemoved = labelResult.removed.includes('ultrafix');
+                }
+            });
             const labelNote = labelRemoved
                 ? 'The ultrafix label has been removed.'
                 : 'No newer Ultrafix state or label was removed.';

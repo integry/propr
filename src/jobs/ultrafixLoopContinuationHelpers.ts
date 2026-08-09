@@ -16,16 +16,17 @@ import {
     clearDeferredContinuationIfCurrent,
     clearUltrafixStateIfCurrent,
     completeLoop,
+    hasReviewReachedGoal,
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
-    hasReviewReachedGoal,
     isUltrafixAutomaticWorkCurrent,
+    withUltrafixLabelTransition,
     type UltrafixLoopState,
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
-import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import { requiresPassingChecks } from './ultrafixReadinessPolicy.js';
+import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import type {
     ContinuationResult,
     UltrafixContinuationParams,
@@ -81,33 +82,6 @@ export async function removeUltrafixLabel(
         correlatedLogger.warn(
             { error: (err as Error).message, pullRequestNumber },
             'Failed to remove ultrafix label',
-        );
-    }
-}
-
-/** Restore the shared circuit-breaker label when newer work wins a cleanup race. */
-export async function ensureUltrafixLabel(
-    owner: string,
-    repo: string,
-    pullRequestNumber: number,
-    correlatedLogger: Logger,
-): Promise<void> {
-    try {
-        const octokit = await withRetry(
-            () => getAuthenticatedOctokit(),
-            { ...retryConfigs.githubApi },
-            'get_authenticated_octokit_ultrafix_label_restore',
-        );
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
-            owner,
-            repo,
-            issue_number: pullRequestNumber,
-            labels: ['ultrafix'],
-        });
-    } catch (err) {
-        correlatedLogger.warn(
-            { error: (err as Error).message, pullRequestNumber },
-            'Failed to restore ultrafix label for newer loop',
         );
     }
 }
@@ -171,58 +145,46 @@ export async function maybeEnableAutoMerge(
     }
 }
 
+/** Finish a loop without allowing an older automatic job to clean up newer work. */
 export async function finishUltrafixLoop(input: {
     params: UltrafixContinuationParams;
-    workEpoch: number;
     state: UltrafixLoopState;
-    decisionReason: string;
     latestScore: number | null;
     reviewStatus: ReviewOutputStatus;
+    decisionReason: string;
 }): Promise<ContinuationResult> {
-    const { params, workEpoch, state, decisionReason, latestScore, reviewStatus } = input;
+    const { params, state, latestScore, reviewStatus, decisionReason } = input;
     const { owner, repo, pullRequestNumber, completedAction, redisClient, correlatedLogger } = params;
-    if (!await isUltrafixAutomaticWorkCurrent(
-        redisClient,
-        { owner, repo, pr: pullRequestNumber },
-        workEpoch,
-    )) {
-        return { continued: false, reason: 'ultrafix_superseded' };
-    }
+    const workEpoch = params.ultrafixMeta?.workEpoch ?? 0;
+    const identity = { owner, repo, pr: pullRequestNumber };
 
     const goalReached = completedAction === 'review'
         && hasReviewReachedGoal(reviewStatus, latestScore, state.goal);
-    const completedState = await completeLoop(redisClient, {
-        owner,
-        repo,
-        pr: pullRequestNumber,
-        completionStatus: goalReached ? 'succeeded' : 'failed',
-        completionReason: decisionReason,
-        finalScore: latestScore,
-        workEpoch,
+    const finishResult = await withUltrafixLabelTransition(redisClient, identity, async () => {
+        if (!await isUltrafixAutomaticWorkCurrent(redisClient, identity, workEpoch)) return false;
+        const completedState = await completeLoop(redisClient, {
+            ...identity,
+            completionStatus: goalReached ? 'succeeded' : 'failed',
+            completionReason: decisionReason,
+            finalScore: latestScore,
+            workEpoch,
+        });
+        if (!completedState) return false;
+        if (!goalReached) return true;
+
+        const stateCleared = await clearUltrafixStateIfCurrent(redisClient, identity, workEpoch);
+        if (!stateCleared) return false;
+        await clearDeferredContinuationIfCurrent(redisClient, identity, workEpoch);
+        await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+        return true;
     });
-    if (!completedState) return { continued: false, reason: 'ultrafix_superseded' };
+    if (!finishResult) return { continued: false, reason: 'ultrafix_superseded' };
 
     if (goalReached) {
-        await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
-        const stateCleared = await clearUltrafixStateIfCurrent(
-            redisClient,
-            { owner, repo, pr: pullRequestNumber },
-            workEpoch,
-        );
-        if (!stateCleared) {
-            await ensureUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
-            return { continued: false, reason: 'ultrafix_superseded' };
-        }
-        await clearDeferredContinuationIfCurrent(
-            redisClient,
-            { owner, repo, pr: pullRequestNumber },
-            workEpoch,
-        );
         await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
     } else {
-        const stoppedBecauseCleanReviewMissedGoal = completedAction === 'review'
-            && reviewStatus === 'valid_clean';
-        const manualReason = stoppedBecauseCleanReviewMissedGoal
+        const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
+        const manualReason = cleanReviewMissedGoal
             ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
             : 'Max cycles were exhausted, so manual review and merge are now required.';
         await postPrComment({
