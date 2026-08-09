@@ -202,7 +202,6 @@ const mockClearStateIfCurrent = mock.fn(async () => true);
 const mockReserveAutomaticWork = mock.fn(async () => 1);
 const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
 const mockHasAutomaticWork = mock.fn(async () => false);
-const mockWithLabelTransition = mock.fn(async (_redis: unknown, _identity: unknown, operation: () => Promise<unknown>) => operation());
 
 setUltrafixDeps({
     loadUltrafixRatingGoal: mock.fn(async () => 7),
@@ -213,7 +212,6 @@ setUltrafixDeps({
     clearStateIfCurrent: mockClearStateIfCurrent,
     hasAutomaticWork: mockHasAutomaticWork,
     reserveAutomaticWork: mockReserveAutomaticWork,
-    withLabelTransition: mockWithLabelTransition,
     invalidateAutomaticWork: mockInvalidateAutomaticWork,
     getPendingReviewState: mockGetPendingReviewState,
 });
@@ -239,6 +237,11 @@ function createMockRedis() {
         }),
         del: mock.fn(async (key: string) => {
             store.delete(key);
+        }),
+        eval: mock.fn(async (_script: string, _keyCount: number, key: string, token: string) => {
+            if (store.get(key) !== token) return 0;
+            store.delete(key);
+            return 1;
         }),
         rpush: mock.fn(async () => {}),
         expire: mock.fn(async () => {}),
@@ -268,7 +271,6 @@ function createPRCommentEvent(body: string, labels: Label[] = []) {
 
 describe('commentEventHandler — /ultrafix command', () => {
     beforeEach(() => {
-        mockWithLabelTransition.mock.resetCalls();
         mockSafeUpdateLabels.mock.resetCalls();
         mockSafeUpdateLabels.mock.mockImplementation(async (_context: unknown, labelsToRemove: string[] = [], labelsToAdd: string[] = []) => ({
             success: true,
@@ -375,7 +377,6 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(createPRCommentEvent('/ultrafix'), 'issue_comment', 'corr-uf-label-first', createTestConfig());
 
-        assert.strictEqual(mockWithLabelTransition.mock.callCount(), 1);
     });
 
     test('tracking refresh failure after enqueue does not roll back Ultrafix startup', async () => {

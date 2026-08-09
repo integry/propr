@@ -10,6 +10,7 @@ import { withRetry } from '../utils/retryHandler.js';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import { createHash } from 'node:crypto';
+import { withUltrafixLabelTransition } from '../utils/ultrafixLabelTransition.js';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
 import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels, modelLabelPrefix } from './commentEventHelpers.js';
 import { handleMergeCommand } from './mergeConflictDetector.js';
@@ -31,7 +32,6 @@ export interface UltrafixDeps {
     clearStateIfCurrent: (redis: Redis, identity: { owner: string; repo: string; pr: number }, workEpoch: number) => Promise<boolean>;
     hasAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<boolean>;
     reserveAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
-    withLabelTransition: <T>(redis: Redis, identity: { owner: string; repo: string; pr: number }, operation: () => Promise<T>) => Promise<T>;
     invalidateAutomaticWork: (redis: Redis, identity: { owner: string; repo: string; pr: number; sourceCommentId: number; sourceCommentRevision: string }) => Promise<{ workEpoch: number; hadAutomaticWork: boolean }>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
@@ -457,7 +457,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     // continuations. State commit and rollback are both conditional on ownership.
     try {
         let olderPrWorkExists = false;
-        await deps.withLabelTransition(redisClient, identity, async () => {
+        await withUltrafixLabelTransition(redisClient, identity, async () => {
             workEpoch = await deps.reserveAutomaticWork(redisClient, owner, repo, prNumber);
             loopMeta = { ...commandMeta, workEpoch };
             // Close the gap between the first queue snapshot and reservation. Work
@@ -514,7 +514,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed before job enqueue, rolling back');
         try {
             let labelRemoved = false;
-            await deps.withLabelTransition(redisClient, identity, async () => {
+            await withUltrafixLabelTransition(redisClient, identity, async () => {
                 const cleared = await deps.clearStateIfCurrent(
                     redisClient,
                     identity,

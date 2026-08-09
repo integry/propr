@@ -1,14 +1,10 @@
-import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 
 export const ULTRAFIX_DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
 const AUTOMATIC_WORK_EPOCH_KEY_PREFIX = 'ultrafix:automatic-work-epoch';
 const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
 const MANUAL_TAKEOVER_KEY_PREFIX = 'ultrafix:manual-takeover';
-const LABEL_TRANSITION_LOCK_KEY_PREFIX = 'ultrafix:label-transition';
 const MANUAL_TAKEOVER_TTL_SECONDS = 24 * 60 * 60;
-const LABEL_TRANSITION_LOCK_TTL_MS = 2 * 60 * 1000;
-const LABEL_TRANSITION_WAIT_MS = 60 * 1000;
 
 export interface UltrafixManualTakeover {
     workEpoch: number;
@@ -97,13 +93,6 @@ redis.call('SET', KEYS[4], tostring(epoch) .. ':' .. tostring(had_automatic_work
 return { epoch, had_automatic_work }
 `;
 
-const RELEASE_LABEL_TRANSITION_LOCK_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return redis.call('DEL', KEYS[1])
-end
-return 0
-`;
-
 export function getUltrafixDeferredKey(owner: string, repo: string, pr: number): string {
     return `${ULTRAFIX_DEFERRED_KEY_PREFIX}:${owner}:${repo}:${pr}`;
 }
@@ -115,30 +104,6 @@ export function getUltrafixAutomaticWorkEpochKey(owner: string, repo: string, pr
 function getUltrafixManualTakeoverKey(identity: UltrafixManualTakeoverIdentity): string {
     const { owner, repo, pr, sourceCommentId, sourceCommentRevision } = identity;
     return `${MANUAL_TAKEOVER_KEY_PREFIX}:${owner}:${repo}:${pr}:${sourceCommentId}:${sourceCommentRevision}`;
-}
-
-function getUltrafixLabelTransitionLockKey(identity: { owner: string; repo: string; pr: number }): string {
-    return `${LABEL_TRANSITION_LOCK_KEY_PREFIX}:${identity.owner}:${identity.repo}:${identity.pr}`;
-}
-
-/** Serialize the shared GitHub label with epoch state publication and cleanup. */
-export async function withUltrafixLabelTransition<T>(
-    redis: Redis,
-    identity: { owner: string; repo: string; pr: number },
-    operation: () => Promise<T>,
-): Promise<T> {
-    const key = getUltrafixLabelTransitionLockKey(identity);
-    const token = randomUUID();
-    const deadline = Date.now() + LABEL_TRANSITION_WAIT_MS;
-    while (await redis.set(key, token, 'PX', LABEL_TRANSITION_LOCK_TTL_MS, 'NX') !== 'OK') {
-        if (Date.now() >= deadline) throw new Error('Timed out waiting for Ultrafix label transition');
-        await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    try {
-        return await operation();
-    } finally {
-        await redis.eval(RELEASE_LABEL_TRANSITION_LOCK_SCRIPT, 1, key, token);
-    }
 }
 
 /** Whether a manual command must be queued independently to take over live automatic work. */

@@ -199,7 +199,6 @@ setUltrafixDeps({
     clearStateIfCurrent: mock.fn(async () => true),
     hasAutomaticWork: mockHasAutomaticWork,
     reserveAutomaticWork: mock.fn(async () => 1),
-    withLabelTransition: async (_redis, _identity, operation) => operation(),
     invalidateAutomaticWork: mockInvalidateAutomaticWork,
     getPendingReviewState: mock.fn(async () => ({ hasPendingReview: false })),
 });
@@ -232,6 +231,11 @@ function createMockRedis() {
         }),
         del: mock.fn(async (key: string) => {
             store.delete(key);
+        }),
+        eval: mock.fn(async (_script: string, _keyCount: number, key: string, token: string) => {
+            if (store.get(key) !== token) return 0;
+            store.delete(key);
+            return 1;
         }),
         rpush: mock.fn(async () => {}),
         expire: mock.fn(async () => {}),

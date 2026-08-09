@@ -49,7 +49,6 @@ import {
     invalidateUltrafixAutomaticWork,
     invalidateUltrafixAutomaticWorkForComment,
     startLoop,
-    withUltrafixLabelTransition,
 } from './jobs/ultrafixOrchestrationService.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
@@ -184,7 +183,6 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         clearStateIfCurrent: clearUltrafixStateIfCurrent,
         hasAutomaticWork: hasUltrafixAutomaticWork,
         reserveAutomaticWork: invalidateUltrafixAutomaticWork,
-        withLabelTransition: withUltrafixLabelTransition,
         invalidateAutomaticWork: invalidateUltrafixAutomaticWorkForComment,
         getPendingReviewState,
     });

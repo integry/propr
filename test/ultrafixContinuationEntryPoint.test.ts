@@ -27,6 +27,7 @@ await mock.module('@propr/core', {
         },
         retryConfigs: { githubApi: {} },
         safeRemoveLabel: mock.fn(async () => undefined),
+        withUltrafixLabelTransition: async (_redis: unknown, _identity: unknown, operation: () => Promise<unknown>) => operation(),
         withRetry: async (operation: () => Promise<unknown>) => operation(),
     },
 });

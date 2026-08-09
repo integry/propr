@@ -7,6 +7,7 @@ import {
     issueQueue,
     retryConfigs,
     safeRemoveLabel,
+    withUltrafixLabelTransition,
     withRetry,
 } from '@propr/core';
 import { enableAutoMerge } from '../github/autoMergeOperations.js';
@@ -20,7 +21,6 @@ import {
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
     isUltrafixAutomaticWorkCurrent,
-    withUltrafixLabelTransition,
     type UltrafixLoopState,
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';

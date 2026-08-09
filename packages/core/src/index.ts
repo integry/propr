@@ -2,6 +2,8 @@ export { default as logger, generateCorrelationId, createCorrelatedLogger } from
 export { handleError, withErrorHandling, safeAsync, makeIdempotent, categorizeError, ErrorCategories } from './utils/errorHandler.js';
 export type { ErrorCategory, ErrorDetails, ErrorHandlerOptions, IssueRef as ErrorIssueRef } from './utils/errorHandler.js';
 export { withRetry, retryConfigs, calculateDelay } from './utils/retryHandler.js';
+export { clearUltrafixStateForLabelRemoval, withUltrafixLabelTransition } from './utils/ultrafixLabelTransition.js';
+export type { UltrafixLabelRemovalResult } from './utils/ultrafixLabelTransition.js';
 export type { RetryConfig, RetryOptions } from './utils/retryHandler.js';
 export * from './utils/constants.js';
 export { recordLLMMetrics, getLLMMetricsSummary, getLLMMetricsByCorrelationId, shouldEnqueueExecutionAnalysis } from './utils/llmMetrics.js';

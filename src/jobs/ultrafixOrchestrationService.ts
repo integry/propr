@@ -20,7 +20,6 @@ export {
     invalidateUltrafixAutomaticWorkForComment,
     isUltrafixAutomaticWorkCurrent,
     saveUltrafixStateIfCurrent,
-    withUltrafixLabelTransition,
 } from './ultrafixAutomaticWorkEpoch.js';
 export {
     claimDeferredContinuation,

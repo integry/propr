@@ -12,7 +12,6 @@ import {
     clearState,
     clearUltrafixStateIfCurrent,
     invalidateUltrafixAutomaticWork,
-    withUltrafixLabelTransition,
     startLoop,
     recordAction,
     retainOriginalScope,
@@ -22,6 +21,10 @@ import {
     type UltrafixLoopState,
     type StartLoopOptions,
 } from '../src/jobs/ultrafixOrchestrationService.js';
+import {
+    clearUltrafixStateForLabelRemoval,
+    withUltrafixLabelTransition,
+} from '../packages/core/src/utils/ultrafixLabelTransition.js';
 
 // --- Mock Redis ---
 
@@ -550,9 +553,10 @@ describe('Serialization', () => {
 });
 
 describe('shared label transition ownership', () => {
-    test('serializes startup and teardown transitions for the same PR', async () => {
+    function createTransitionRedis() {
         const store = new Map<string, string>();
-        const redis = {
+        return {
+            store,
             async set(key: string, value: string, _mode: string, _ttl: number, condition: string) {
                 if (condition === 'NX' && store.has(key)) return null;
                 store.set(key, value);
@@ -564,6 +568,10 @@ describe('shared label transition ownership', () => {
                 return 1;
             },
         };
+    }
+
+    test('serializes startup and teardown transitions for the same PR', async () => {
+        const redis = createTransitionRedis();
         const identity = { owner: 'acme', repo: 'web', pr: 42 };
         const order: string[] = [];
         let releaseFirst!: () => void;
@@ -583,5 +591,40 @@ describe('shared label transition ownership', () => {
         releaseFirst();
         await Promise.all([first, second]);
         assert.deepStrictEqual(order, ['first-start', 'first-end', 'second']);
+    });
+
+    test('a delayed removal event preserves state after a newer startup re-adds the label', async () => {
+        const redis = createTransitionRedis();
+        let cleared = false;
+        const result = await clearUltrafixStateForLabelRemoval(
+            redis as any,
+            { owner: 'acme', repo: 'web', pr: 42 },
+            async () => true,
+            async () => { cleared = true; },
+        );
+
+        assert.strictEqual(result, 'label_present');
+        assert.strictEqual(cleared, false);
+    });
+
+    test('confirmed current label removal clears state, while failed verification preserves it', async () => {
+        const redis = createTransitionRedis();
+        let clearCount = 0;
+        const clearedResult = await clearUltrafixStateForLabelRemoval(
+            redis as any,
+            { owner: 'acme', repo: 'web', pr: 42 },
+            async () => false,
+            async () => { clearCount += 1; },
+        );
+        const unverifiedResult = await clearUltrafixStateForLabelRemoval(
+            redis as any,
+            { owner: 'acme', repo: 'web', pr: 42 },
+            async () => { throw new Error('GitHub unavailable'); },
+            async () => { clearCount += 1; },
+        );
+
+        assert.strictEqual(clearedResult, 'cleared');
+        assert.strictEqual(unverifiedResult, 'unverified');
+        assert.strictEqual(clearCount, 1);
     });
 });

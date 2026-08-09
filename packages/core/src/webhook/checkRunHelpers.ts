@@ -442,7 +442,7 @@ export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions
     return { options: redisOptions };
 }
 
-function getUltrafixStateRedis(): Redis {
+export function getUltrafixStateRedis(): Redis {
     if (!ultrafixStateRedis) {
         const { url, options } = buildRedisRuntimeConfig();
         ultrafixStateRedis = url ? new Redis(url, options) : new Redis(options);

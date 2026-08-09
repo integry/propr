@@ -6,7 +6,10 @@ import {
     type CommentEventType
 } from './planIssueTracking.js';
 import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
-import { clearUltrafixLoopState } from './checkRunHelpers.js';
+import { clearUltrafixLoopState, getUltrafixStateRedis } from './checkRunHelpers.js';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { retryConfigs, withRetry } from '../utils/retryHandler.js';
+import { clearUltrafixStateForLabelRemoval } from '../utils/ultrafixLabelTransition.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
 import type {
@@ -181,9 +184,10 @@ async function handleUltrafixLabelRemoval(
         const owner = payload.repository.owner.login;
         const repo = payload.repository.name;
         const prNumber = payload.pull_request.number;
-        await clearUltrafixLoopState(owner, repo, prNumber);
-        await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
-        log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after PR ultrafix label removal');
+        if (await clearStateForCurrentUltrafixLabelRemoval(owner, repo, prNumber, log)) {
+            await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
+            log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after PR ultrafix label removal');
+        }
         return;
     }
 
@@ -194,10 +198,59 @@ async function handleUltrafixLabelRemoval(
         const owner = payload.repository.owner.login;
         const repo = payload.repository.name;
         const prNumber = payload.issue.number;
-        await clearUltrafixLoopState(owner, repo, prNumber);
-        await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
-        log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after issue ultrafix label removal');
+        if (await clearStateForCurrentUltrafixLabelRemoval(owner, repo, prNumber, log)) {
+            await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
+            log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after issue ultrafix label removal');
+        }
     }
+}
+
+async function clearStateForCurrentUltrafixLabelRemoval(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    log: ReturnType<typeof logger.withCorrelation>,
+): Promise<boolean> {
+    let verificationError: unknown;
+    const result = await clearUltrafixStateForLabelRemoval(
+        webhookRedisClient ?? getUltrafixStateRedis(),
+        { owner, repo, pr: prNumber },
+        async () => {
+            try {
+                const octokit = await getAuthenticatedOctokit();
+                const response = await withRetry(
+                    () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                        owner,
+                        repo,
+                        issue_number: prNumber,
+                    }),
+                    retryConfigs.githubApi,
+                    'verify_ultrafix_label_removal',
+                );
+                const labels = response.data.labels as Array<string | { name?: string }>;
+                const labelPresent = labels.some(label =>
+                    (typeof label === 'string' ? label : label.name) === 'ultrafix',
+                );
+                return labelPresent;
+            } catch (error) {
+                verificationError = error;
+                throw error;
+            }
+        },
+        () => clearUltrafixLoopState(owner, repo, prNumber),
+    );
+    if (result === 'label_present') {
+        log.info(
+            { owner, repo, prNumber },
+            'Ignoring stale Ultrafix label-removal event after label was re-added',
+        );
+    } else if (result === 'unverified') {
+        log.warn(
+            { owner, repo, prNumber, error: (verificationError as Error | undefined)?.message },
+            'Failed to verify current Ultrafix label state; preserving loop state',
+        );
+    }
+    return result === 'cleared';
 }
 
 async function handleIssueCommentEvent(
