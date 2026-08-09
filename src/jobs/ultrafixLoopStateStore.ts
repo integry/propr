@@ -3,6 +3,7 @@ import type { UltrafixLoopState } from './ultrafixOrchestrationService.js';
 import {
     getUltrafixDeferredGenerationKey,
     getUltrafixDeferredKey,
+    getUltrafixGenerationAllocationKey,
 } from './ultrafixDeferredContinuationStore.js';
 
 const KEY_PREFIX = 'ultrafix:state';
@@ -30,7 +31,14 @@ local current_generation = redis.call('GET', KEYS[1]) or '0'
 if current_generation ~= ARGV[1] then
     return 0
 end
-redis.call('INCR', KEYS[1])
+local allocated_generation = tonumber(redis.call('GET', KEYS[4]) or current_generation)
+local numeric_current_generation = tonumber(current_generation)
+if allocated_generation < numeric_current_generation then
+    allocated_generation = numeric_current_generation
+end
+local generation = allocated_generation + 1
+redis.call('SET', KEYS[4], generation)
+redis.call('SET', KEYS[1], generation)
 redis.call('DEL', KEYS[2])
 redis.call('DEL', KEYS[3])
 return 1
@@ -95,12 +103,14 @@ export async function retireLoopIfGenerationCurrent(
     const generationKey = getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr);
     const deferredKey = getUltrafixDeferredKey(identity.owner, identity.repo, identity.pr);
     const stateKey = getUltrafixStateKey(identity.owner, identity.repo, identity.pr);
+    const allocationKey = getUltrafixGenerationAllocationKey(identity.owner, identity.repo, identity.pr);
     return Number(await redis.eval(
         RETIRE_LOOP_IF_CURRENT_SCRIPT,
-        3,
+        4,
         generationKey,
         deferredKey,
         stateKey,
+        allocationKey,
         String(generation),
     )) === 1;
 }

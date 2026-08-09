@@ -20,8 +20,10 @@ export type UltrafixIdentity = Pick<UltrafixDeferredContinuation, 'owner' | 'rep
 
 const DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
 const DEFERRED_GENERATION_KEY_PREFIX = 'ultrafix:deferred-generation';
+const GENERATION_ALLOCATION_KEY_PREFIX = 'ultrafix:generation-allocation';
 const TRANSITION_ORDER_KEY_PREFIX = 'ultrafix:transition-order';
 const TAKEOVER_FENCE_KEY_PREFIX = 'ultrafix:takeover-fence';
+const FRESH_RESERVATION_KEY_PREFIX = 'ultrafix:fresh-reservation';
 const TAKEOVER_FENCE_TTL_SECONDS = 86400;
 
 export function getUltrafixDeferredKey(owner: string, repo: string, pr: number): string {
@@ -32,12 +34,20 @@ export function getUltrafixDeferredGenerationKey(owner: string, repo: string, pr
     return `${DEFERRED_GENERATION_KEY_PREFIX}:${owner}:${repo}:${pr}`;
 }
 
+export function getUltrafixGenerationAllocationKey(owner: string, repo: string, pr: number): string {
+    return `${GENERATION_ALLOCATION_KEY_PREFIX}:${owner}:${repo}:${pr}`;
+}
+
 export function getUltrafixTransitionOrderKey(owner: string, repo: string, pr: number): string {
     return `${TRANSITION_ORDER_KEY_PREFIX}:${owner}:${repo}:${pr}`;
 }
 
 export function getUltrafixTakeoverFenceKey(owner: string, repo: string, pr: number): string {
     return `${TAKEOVER_FENCE_KEY_PREFIX}:${owner}:${repo}:${pr}`;
+}
+
+export function getUltrafixFreshReservationKey(owner: string, repo: string, pr: number): string {
+    return `${FRESH_RESERVATION_KEY_PREFIX}:${owner}:${repo}:${pr}`;
 }
 
 const BEGIN_MANUAL_TAKEOVER_SCRIPT = `
@@ -74,24 +84,19 @@ if incoming <= applied then
 end
 redis.call('SET', KEYS[1], ARGV[1])
 redis.call('DEL', KEYS[2])
-local generation = redis.call('INCR', KEYS[3])
+local current_generation = tonumber(redis.call('GET', KEYS[3]) or '0')
+local allocated_generation = tonumber(redis.call('GET', KEYS[5]) or tostring(current_generation))
+if allocated_generation < current_generation then
+    allocated_generation = current_generation
+end
+local generation = allocated_generation + 1
+redis.call('SET', KEYS[5], generation)
+redis.call('SET', KEYS[3], generation)
 redis.call('DEL', KEYS[4])
+redis.call('DEL', KEYS[6])
 return generation
 `;
 
-const START_FRESH_ULTRAFIX_SCRIPT = `
-local applied = tonumber(redis.call('GET', KEYS[1]) or '0')
-local fenced = tonumber(redis.call('GET', KEYS[2]) or '0')
-local incoming = tonumber(ARGV[1])
-if incoming <= applied or incoming <= fenced then
-    return nil
-end
-redis.call('SET', KEYS[1], ARGV[1])
-redis.call('DEL', KEYS[2])
-local generation = redis.call('INCR', KEYS[3])
-redis.call('DEL', KEYS[4])
-return generation
-`;
 
 const SAVE_DEFERRED_IF_CURRENT_SCRIPT = `
 local current_generation = redis.call('GET', KEYS[1]) or '0'
@@ -113,7 +118,14 @@ return { deferred, generation }
 `;
 
 const CANCEL_DEFERRED_SCRIPT = `
-local generation = redis.call('INCR', KEYS[1])
+local current_generation = tonumber(redis.call('GET', KEYS[1]) or '0')
+local allocated_generation = tonumber(redis.call('GET', KEYS[3]) or tostring(current_generation))
+if allocated_generation < current_generation then
+    allocated_generation = current_generation
+end
+local generation = allocated_generation + 1
+redis.call('SET', KEYS[3], generation)
+redis.call('SET', KEYS[1], generation)
 redis.call('DEL', KEYS[2])
 return generation
 `;
@@ -239,35 +251,17 @@ export async function completeManualUltrafixTakeover(
     const fenceKey = getUltrafixTakeoverFenceKey(identity.owner, identity.repo, identity.pr);
     const generationKey = getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr);
     const deferredKey = getUltrafixDeferredKey(identity.owner, identity.repo, identity.pr);
+    const allocationKey = getUltrafixGenerationAllocationKey(identity.owner, identity.repo, identity.pr);
+    const reservationKey = getUltrafixFreshReservationKey(identity.owner, identity.repo, identity.pr);
     const result = await redis.eval(
         COMPLETE_MANUAL_TAKEOVER_SCRIPT,
-        4,
+        6,
         orderKey,
         fenceKey,
         generationKey,
         deferredKey,
-        String(commandSequence),
-    );
-    return result === null ? null : Number(result);
-}
-
-/** Start a fresh loop only if no newer action or takeover fence owns the PR. */
-export async function startFreshUltrafixTransition(
-    redis: Redis,
-    identity: UltrafixIdentity,
-    commandSequence: number,
-): Promise<number | null> {
-    const orderKey = getUltrafixTransitionOrderKey(identity.owner, identity.repo, identity.pr);
-    const fenceKey = getUltrafixTakeoverFenceKey(identity.owner, identity.repo, identity.pr);
-    const generationKey = getUltrafixDeferredGenerationKey(identity.owner, identity.repo, identity.pr);
-    const deferredKey = getUltrafixDeferredKey(identity.owner, identity.repo, identity.pr);
-    const result = await redis.eval(
-        START_FRESH_ULTRAFIX_SCRIPT,
-        4,
-        orderKey,
-        fenceKey,
-        generationKey,
-        deferredKey,
+        allocationKey,
+        reservationKey,
         String(commandSequence),
     );
     return result === null ? null : Number(result);
@@ -290,7 +284,8 @@ export async function clearDeferredContinuation(
 ): Promise<number> {
     const key = getUltrafixDeferredKey(owner, repo, pr);
     const generationKey = getUltrafixDeferredGenerationKey(owner, repo, pr);
-    return Number(await redis.eval(CANCEL_DEFERRED_SCRIPT, 2, generationKey, key));
+    const allocationKey = getUltrafixGenerationAllocationKey(owner, repo, pr);
+    return Number(await redis.eval(CANCEL_DEFERRED_SCRIPT, 3, generationKey, key, allocationKey));
 }
 
 export async function deleteDeferredContinuationIfCurrent(

@@ -46,12 +46,12 @@ import { sweepDraftContext } from './daemon/draftContextSweep.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
 import {
-    startLoop,
-    clearStateIfGenerationCurrent,
     abortManualUltrafixTakeover,
+    abortFreshUltrafixTransition,
     beginManualUltrafixTakeover,
+    commitFreshUltrafixLoop,
     completeManualUltrafixTakeover,
-    startFreshUltrafixTransition,
+    reserveFreshUltrafixTransition,
     listDeferredContinuationKeys,
     parseDeferredKey,
 } from './jobs/ultrafixOrchestrationService.js';
@@ -184,12 +184,12 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         loadUltrafixMaxCycles,
         loadUltrafixPauseSeconds,
         loadPrReviewModel,
-        startLoop,
-        clearStateIfGenerationCurrent,
         beginManualTakeover: beginManualUltrafixTakeover,
         abortManualTakeover: abortManualUltrafixTakeover,
         completeManualTakeover: completeManualUltrafixTakeover,
-        startFreshTransition: startFreshUltrafixTransition,
+        reserveFreshTransition: reserveFreshUltrafixTransition,
+        commitFreshLoop: commitFreshUltrafixLoop,
+        abortFreshTransition: abortFreshUltrafixTransition,
         withTransitionLease: withUltrafixTransitionLease,
         getPendingReviewState,
     });

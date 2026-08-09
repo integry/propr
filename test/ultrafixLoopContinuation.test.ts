@@ -76,9 +76,20 @@ function createMockRedis() {
                 return 1;
             }
             const [generationKey, deferredKey] = args;
+            if (_keyCount === 3 && script.includes('local allocated_generation')) {
+                const current = Number(store.get(generationKey) ?? '0');
+                const allocated = Math.max(current, Number(store.get(args[2]) ?? current));
+                const generation = allocated + 1;
+                store.set(args[2], String(generation));
+                store.set(generationKey, String(generation));
+                store.delete(deferredKey);
+                return generation;
+            }
             if (script.includes("redis.call('DEL', KEYS[3])")) {
-                if ((store.get(generationKey) ?? '0') !== args[3]) return 0;
-                store.set(generationKey, String(Number(args[3]) + 1));
+                if ((store.get(generationKey) ?? '0') !== args[4]) return 0;
+                const generation = Math.max(Number(args[4]), Number(store.get(args[3]) ?? '0')) + 1;
+                store.set(args[3], String(generation));
+                store.set(generationKey, String(generation));
                 store.delete(deferredKey);
                 store.delete(args[2]);
                 return 1;

@@ -2,11 +2,11 @@ import type { UltrafixDeps } from '@propr/core';
 import { loadUltrafixRatingGoal, loadUltrafixMaxCycles, loadUltrafixPauseSeconds, loadPrReviewModel } from '@propr/core';
 import {
     abortManualUltrafixTakeover,
+    abortFreshUltrafixTransition,
     beginManualUltrafixTakeover,
-    clearStateIfGenerationCurrent,
+    commitFreshUltrafixLoop,
     completeManualUltrafixTakeover,
-    startFreshUltrafixTransition,
-    startLoop,
+    reserveFreshUltrafixTransition,
 } from './ultrafixOrchestrationService.js';
 import { getPendingReviewState } from './reviewCommentGatherer.js';
 import { withUltrafixTransitionLease } from './ultrafixTransitionLease.js';
@@ -17,12 +17,12 @@ export function createUltrafixDeps(): UltrafixDeps {
         loadUltrafixMaxCycles,
         loadUltrafixPauseSeconds,
         loadPrReviewModel,
-        startLoop,
-        clearStateIfGenerationCurrent,
         beginManualTakeover: beginManualUltrafixTakeover,
         abortManualTakeover: abortManualUltrafixTakeover,
         completeManualTakeover: completeManualUltrafixTakeover,
-        startFreshTransition: startFreshUltrafixTransition,
+        reserveFreshTransition: reserveFreshUltrafixTransition,
+        commitFreshLoop: commitFreshUltrafixLoop,
+        abortFreshTransition: abortFreshUltrafixTransition,
         withTransitionLease: withUltrafixTransitionLease,
         getPendingReviewState,
     };

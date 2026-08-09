@@ -9,11 +9,8 @@
 import type { Redis } from 'ioredis';
 import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import { clearDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
-import {
-    loadState,
-    saveState,
-    saveStateIfGenerationCurrent,
-} from './ultrafixLoopStateStore.js';
+import { getUltrafixStateKey, loadState, saveState, saveStateIfGenerationCurrent } from './ultrafixLoopStateStore.js';
+import { commitFreshUltrafixTransitionState } from './ultrafixFreshTransitionStore.js';
 
 export {
     claimDeferredContinuation,
@@ -34,9 +31,12 @@ export {
     getActiveUltrafixTakeoverSequence,
     getUltrafixTakeoverFenceKey,
     getUltrafixTransitionOrderKey,
-    startFreshUltrafixTransition,
 } from './ultrafixDeferredContinuationStore.js';
 export type { UltrafixDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
+export {
+    abortFreshUltrafixTransition,
+    reserveFreshUltrafixTransition,
+} from './ultrafixFreshTransitionStore.js';
 export {
     clearState,
     clearStateIfGenerationCurrent,
@@ -290,6 +290,27 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
         throw new Error('Ultrafix loop startup was superseded by a newer command');
     }
     return { state, initialAction };
+}
+
+export async function commitFreshUltrafixLoop(
+    redis: Redis,
+    options: StartLoopOptions & { commandSequence: number; generation: number; baseGeneration: number },
+    hasPendingReviews: boolean,
+): Promise<{ state: UltrafixLoopState; initialAction: UltrafixAction } | null> {
+    const state = createDefaultState(options);
+    const initialAction = determineInitialAction(hasPendingReviews);
+    state.lastAction = initialAction;
+    state.lastActionTimestamp = new Date().toISOString();
+    const identity = { owner: options.owner, repo: options.repo, pr: options.pr };
+    const committed = await commitFreshUltrafixTransitionState(redis, {
+        identity,
+        commandSequence: options.commandSequence,
+        generation: options.generation,
+        baseGeneration: options.baseGeneration,
+        stateKey: getUltrafixStateKey(options.owner, options.repo, options.pr),
+        serializedState: JSON.stringify(state),
+    });
+    return committed ? { state, initialAction } : null;
 }
 
 /**

@@ -190,10 +190,12 @@ const { applyPendingCommentCommandContext } = await import('../src/jobs/prPendin
 
 // ========== Ultrafix Deps Mock ==========
 
-const mockStartLoop = mock.fn(async (_redis: unknown, _options: unknown, hasPendingReviews: boolean) => ({
+const mockCommitFreshLoop = mock.fn(async (_redis: unknown, _options: unknown, hasPendingReviews: boolean) => ({
     state: {},
     initialAction: (hasPendingReviews ? 'fix' : 'review') as 'review' | 'fix',
 }));
+const mockReserveFreshTransition = mock.fn(async () => ({ generation: 1, baseGeneration: 0 }));
+const mockAbortFreshTransition = mock.fn(async () => true);
 
 const mockGetPendingReviewState = mock.fn(async () => ({
     unprocessedComments: [],
@@ -201,7 +203,6 @@ const mockGetPendingReviewState = mock.fn(async () => ({
     hasPendingReview: false,
 }));
 
-const mockClearStateIfGenerationCurrent = mock.fn(async () => true);
 const mockClearDeferredContinuation = mock.fn(async () => 1);
 const mockBeginManualTakeover = mock.fn(async () => true);
 const mockAbortManualTakeover = mock.fn(async () => true);
@@ -212,20 +213,24 @@ const mockWithTransitionLease = mock.fn(async (
     operation: (assertOwned: () => Promise<void>) => Promise<unknown>,
 ) => operation(async () => {}));
 
-setUltrafixDeps({
-    loadUltrafixRatingGoal: mock.fn(async () => 7),
-    loadUltrafixMaxCycles: mock.fn(async () => 5),
-    loadUltrafixPauseSeconds: mock.fn(async () => 60),
-    loadPrReviewModel: mock.fn(async () => ''),
-    startLoop: mockStartLoop,
-    clearStateIfGenerationCurrent: mockClearStateIfGenerationCurrent,
-    beginManualTakeover: mockBeginManualTakeover,
-    abortManualTakeover: mockAbortManualTakeover,
-    completeManualTakeover: mockClearDeferredContinuation,
-    startFreshTransition: mockClearDeferredContinuation,
-    withTransitionLease: mockWithTransitionLease,
-    getPendingReviewState: mockGetPendingReviewState,
-});
+function createUltrafixDepsForTest() {
+    return {
+        loadUltrafixRatingGoal: mock.fn(async () => 7),
+        loadUltrafixMaxCycles: mock.fn(async () => 5),
+        loadUltrafixPauseSeconds: mock.fn(async () => 60),
+        loadPrReviewModel: mock.fn(async () => ''),
+        beginManualTakeover: mockBeginManualTakeover,
+        abortManualTakeover: mockAbortManualTakeover,
+        completeManualTakeover: mockClearDeferredContinuation,
+        reserveFreshTransition: mockReserveFreshTransition,
+        commitFreshLoop: mockCommitFreshLoop,
+        abortFreshTransition: mockAbortFreshTransition,
+        withTransitionLease: mockWithTransitionLease,
+        getPendingReviewState: mockGetPendingReviewState,
+    };
+}
+
+setUltrafixDeps(createUltrafixDepsForTest());
 
 after(async () => {
     await shutdownQueue();
@@ -307,20 +312,23 @@ function createPRCommentEvent(body: string, labels: Label[] = []) {
 
 describe('commentEventHandler — /ultrafix command', () => {
     beforeEach(() => {
+        setUltrafixDeps(createUltrafixDepsForTest());
         mockSafeUpdateLabels.mock.resetCalls();
         mockQueueAdd.mock.resetCalls();
         mockOctokit.request.mock.resetCalls();
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
-        mockStartLoop.mock.resetCalls();
-        mockStartLoop.mock.mockImplementation(async (_redis, _options, hasPendingReviews) => ({
+        mockCommitFreshLoop.mock.resetCalls();
+        mockCommitFreshLoop.mock.mockImplementation(async (_redis, _options, hasPendingReviews) => ({
             state: {},
             initialAction: hasPendingReviews ? 'fix' : 'review',
         }));
-        mockClearStateIfGenerationCurrent.mock.resetCalls();
-        mockClearStateIfGenerationCurrent.mock.mockImplementation(async () => true);
         mockClearDeferredContinuation.mock.resetCalls();
         mockClearDeferredContinuation.mock.mockImplementation(async () => 1);
+        mockReserveFreshTransition.mock.resetCalls();
+        mockReserveFreshTransition.mock.mockImplementation(async () => ({ generation: 1, baseGeneration: 0 }));
+        mockAbortFreshTransition.mock.resetCalls();
+        mockAbortFreshTransition.mock.mockImplementation(async () => true);
         mockBeginManualTakeover.mock.resetCalls();
         mockBeginManualTakeover.mock.mockImplementation(async () => true);
         mockAbortManualTakeover.mock.resetCalls();
@@ -365,8 +373,8 @@ describe('commentEventHandler — /ultrafix command', () => {
             hasPendingReview: false,
         }));
 
-        // Default: startLoop returns review as initial action
-        mockStartLoop.mock.mockImplementation(async (_redis: unknown, _options: unknown, hasPendingReviews: boolean) => ({
+        // Default: fresh-loop commit returns review as initial action
+        mockCommitFreshLoop.mock.mockImplementation(async (_redis: unknown, _options: unknown, hasPendingReviews: boolean) => ({
             state: {},
             initialAction: (hasPendingReviews ? 'fix' : 'review') as 'review' | 'fix',
         }));
@@ -379,10 +387,10 @@ describe('commentEventHandler — /ultrafix command', () => {
         await processCommentEvent(event, 'issue_comment', 'corr-uf-1', config);
 
         // Should call startLoop
-        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
-        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
+        assert.strictEqual(mockCommitFreshLoop.mock.callCount(), 1);
+        assert.strictEqual(mockReserveFreshTransition.mock.callCount(), 1);
         assert.strictEqual(mockWithTransitionLease.mock.callCount(), 1);
-        const loopOptions = mockStartLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
+        const loopOptions = mockCommitFreshLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
         // DB defaults are used when command args match parser defaults
         assert.strictEqual(loopOptions.goal, 7);       // DB default
         assert.strictEqual(loopOptions.maxCycles, 5);   // DB default
@@ -399,6 +407,9 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(jobData.commandMode, 'review');
+        const jobOptions = mockQueueAdd.mock.calls[0].arguments[2] as Record<string, unknown>;
+        assert.strictEqual(jobOptions.delay, 30_000);
+        assert.match(String(jobOptions.jobId), /-1$/);
 
         // Should carry ultrafixMeta
         const ultrafixMeta = jobData.ultrafixMeta as Record<string, unknown>;
@@ -414,10 +425,10 @@ describe('commentEventHandler — /ultrafix command', () => {
     });
 
     test('stale startup rollback preserves a label that may belong to a newer loop', async () => {
-        mockStartLoop.mock.mockImplementationOnce(async () => {
+        mockCommitFreshLoop.mock.mockImplementationOnce(async () => {
             throw new Error('Ultrafix loop startup was superseded by a newer command');
         });
-        mockClearStateIfGenerationCurrent.mock.mockImplementationOnce(async () => false);
+        mockAbortFreshTransition.mock.mockImplementationOnce(async () => false);
         const event = createPRCommentEvent('/ultrafix');
         const config = createTestConfig();
 
@@ -426,8 +437,8 @@ describe('commentEventHandler — /ultrafix command', () => {
             /superseded/,
         );
 
-        assert.strictEqual(mockClearStateIfGenerationCurrent.mock.callCount(), 1);
-        assert.deepStrictEqual(mockClearStateIfGenerationCurrent.mock.calls[0].arguments.slice(1), [
+        assert.strictEqual(mockAbortFreshTransition.mock.callCount(), 1);
+        assert.deepStrictEqual(mockAbortFreshTransition.mock.calls[0].arguments.slice(1), [
             { owner: 'testowner', repo: 'testrepo', pr: 42 }, 1,
         ]);
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
@@ -446,9 +457,9 @@ describe('commentEventHandler — /ultrafix command', () => {
             /queue unavailable/,
         );
 
-        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
-        assert.strictEqual(mockClearStateIfGenerationCurrent.mock.callCount(), 1);
-        assert.deepStrictEqual(mockClearStateIfGenerationCurrent.mock.calls[0].arguments.slice(1), [
+        assert.strictEqual(mockCommitFreshLoop.mock.callCount(), 0);
+        assert.strictEqual(mockAbortFreshTransition.mock.callCount(), 1);
+        assert.deepStrictEqual(mockAbortFreshTransition.mock.calls[0].arguments.slice(1), [
             { owner: 'testowner', repo: 'testrepo', pr: 42 }, 1,
         ]);
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
@@ -463,6 +474,92 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(failureComments.length, 1);
     });
 
+    test('settings failure aborts the reservation before any generation is published', async () => {
+        const failingDeps = {
+            ...createUltrafixDepsForTest(),
+            loadUltrafixRatingGoal: mock.fn(async () => { throw new Error('settings unavailable'); }),
+        };
+        setUltrafixDeps(failingDeps);
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-settings-failure', config),
+            /settings unavailable/,
+        );
+
+        assert.strictEqual(mockReserveFreshTransition.mock.callCount(), 1);
+        assert.strictEqual(mockAbortFreshTransition.mock.callCount(), 1);
+        assert.strictEqual(mockCommitFreshLoop.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        setUltrafixDeps(createUltrafixDepsForTest());
+    });
+
+    test('publishes the new generation only after its first job is durable', async () => {
+        const operations: string[] = [];
+        mockReserveFreshTransition.mock.mockImplementationOnce(async () => {
+            operations.push('reserve');
+            return { generation: 1, baseGeneration: 0 };
+        });
+        mockQueueAdd.mock.mockImplementationOnce(async () => { operations.push('enqueue'); });
+        mockCommitFreshLoop.mock.mockImplementationOnce(async () => {
+            operations.push('commit');
+            return { state: {}, initialAction: 'review' };
+        });
+
+        await processCommentEvent(
+            createPRCommentEvent('/ultrafix'), 'issue_comment', 'corr-uf-publish-order', createTestConfig(),
+        );
+
+        assert.deepStrictEqual(operations, ['reserve', 'enqueue', 'commit']);
+    });
+
+    test('accepts an ambiguously acknowledged deterministic startup job before publishing', async () => {
+        let lookupCount = 0;
+        mockQueueAdd.mock.mockImplementationOnce(async () => { throw new Error('queue response lost'); });
+        mockQueueGetJob.mock.mockImplementation(async () => {
+            lookupCount += 1;
+            return lookupCount === 1 ? null : {};
+        });
+
+        await processCommentEvent(
+            createPRCommentEvent('/ultrafix'), 'issue_comment', 'corr-uf-ambiguous-enqueue', createTestConfig(),
+        );
+
+        assert.strictEqual(mockCommitFreshLoop.mock.callCount(), 1);
+        assert.strictEqual(mockAbortFreshTransition.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+    });
+
+    test('a failed publication retry uses a new generation and job identity', async () => {
+        let reservationCount = 0;
+        mockReserveFreshTransition.mock.mockImplementation(async () => ({
+            generation: ++reservationCount,
+            baseGeneration: 0,
+        }));
+        let commitCount = 0;
+        mockCommitFreshLoop.mock.mockImplementation(async () => {
+            if (++commitCount === 1) throw new Error('redis response lost');
+            return { state: {}, initialAction: 'review' };
+        });
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-publish-failure', config),
+            /redis response lost/,
+        );
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-publish-retry', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
+        const firstOptions = mockQueueAdd.mock.calls[0].arguments[2] as Record<string, unknown>;
+        const secondOptions = mockQueueAdd.mock.calls[1].arguments[2] as Record<string, unknown>;
+        assert.notStrictEqual(firstOptions.jobId, secondOptions.jobId);
+        assert.strictEqual((mockQueueAdd.mock.calls[0].arguments[1].ultrafixMeta as Record<string, unknown>).generation, 1);
+        assert.strictEqual((mockQueueAdd.mock.calls[1].arguments[1].ultrafixMeta as Record<string, unknown>).generation, 2);
+        assert.deepStrictEqual(mockReserveFreshTransition.mock.calls.map(call => call.arguments[2]), [1, 1]);
+    });
+
     test('duplicate /ultrafix deliveries for the same comment initialize only one loop', async () => {
         const event = createPRCommentEvent('/ultrafix goal=8 max=4');
         const config = createTestConfig();
@@ -472,7 +569,7 @@ describe('commentEventHandler — /ultrafix command', () => {
             processCommentEvent(event, 'issue_comment', 'corr-uf-dupe-2', config),
         ]);
 
-        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
+        assert.strictEqual(mockCommitFreshLoop.mock.callCount(), 1);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const postCalls = mockOctokit.request.mock.calls.filter(
             (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST') && (c.arguments[0] as string).includes('comments')
@@ -486,8 +583,8 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-2', config);
 
-        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
-        const loopOptions = mockStartLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(mockCommitFreshLoop.mock.callCount(), 1);
+        const loopOptions = mockCommitFreshLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
         // Goal should be overridden from command arg
         assert.strictEqual(loopOptions.goal, 8);
         // Other settings use DB defaults
@@ -501,8 +598,8 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-3', config);
 
-        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
-        const loopOptions = mockStartLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(mockCommitFreshLoop.mock.callCount(), 1);
+        const loopOptions = mockCommitFreshLoop.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(loopOptions.goal, 9);
         assert.strictEqual(loopOptions.maxCycles, 3);
         assert.strictEqual(loopOptions.pauseSeconds, 30);
@@ -523,8 +620,8 @@ describe('commentEventHandler — /ultrafix command', () => {
         await processCommentEvent(event, 'issue_comment', 'corr-uf-4', config);
 
         // startLoop should receive hasPendingReviews = true
-        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
-        const hasPendingReviews = mockStartLoop.mock.calls[0].arguments[2] as boolean;
+        assert.strictEqual(mockCommitFreshLoop.mock.callCount(), 1);
+        const hasPendingReviews = mockCommitFreshLoop.mock.calls[0].arguments[2] as boolean;
         assert.strictEqual(hasPendingReviews, true);
 
         // Job should be enqueued with commandMode 'fix'
@@ -540,8 +637,8 @@ describe('commentEventHandler — /ultrafix command', () => {
         await processCommentEvent(event, 'issue_comment', 'corr-uf-5', config);
 
         // startLoop should receive hasPendingReviews = false
-        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
-        const hasPendingReviews = mockStartLoop.mock.calls[0].arguments[2] as boolean;
+        assert.strictEqual(mockCommitFreshLoop.mock.callCount(), 1);
+        const hasPendingReviews = mockCommitFreshLoop.mock.calls[0].arguments[2] as boolean;
         assert.strictEqual(hasPendingReviews, false);
 
         // Job should be enqueued with commandMode 'review'
@@ -566,7 +663,7 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-batch', config);
 
-        assert.strictEqual(mockStartLoop.mock.calls[0].arguments[2], true);
+        assert.strictEqual(mockCommitFreshLoop.mock.calls[0].arguments[2], true);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         assert.strictEqual(mockQueueAdd.mock.calls[0].arguments[1].commandMode, 'fix');
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
@@ -711,7 +808,7 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-system-bot', config);
 
-        assert.strictEqual(mockStartLoop.mock.callCount(), 0);
+        assert.strictEqual(mockCommitFreshLoop.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -935,7 +1032,11 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         assert.deepStrictEqual(
             mockClearDeferredContinuation.mock.calls.map(call => call.arguments[2]),
-            [1, 2, 1],
+            [1, 1],
+        );
+        assert.deepStrictEqual(
+            mockReserveFreshTransition.mock.calls.map(call => call.arguments[2]),
+            [2],
         );
     });
 });
