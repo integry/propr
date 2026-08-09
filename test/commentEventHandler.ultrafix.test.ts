@@ -652,6 +652,33 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(config.redisClient.del.mock.callCount(), 1, 'slash-command claim should be released for retry');
     });
 
+    test('queue failure preserves a pre-existing ultrafix label', async () => {
+        mockQueueAdd.mock.mockImplementation(async () => {
+            throw new Error('queue unavailable');
+        });
+        mockOctokit.request.mock.mockImplementation(async (url: string) => {
+            if (url.includes('/comments')) return { data: [] };
+            return {
+                data: {
+                    head: { ref: 'feature-branch' },
+                    labels: [
+                        { id: 1, name: 'ultrafix', color: '000', default: false, description: null, node_id: 'L_1', url: '' },
+                    ],
+                },
+            };
+        });
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(createPRCommentEvent('/ultrafix'), 'issue_comment', 'corr-uf-existing-label-queue-failure', config),
+            /queue unavailable/,
+        );
+
+        assert.strictEqual(mockClearStateIfCurrent.mock.callCount(), 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1, 'must not remove a label inherited by this startup');
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['ultrafix'], 'startup should still reassert the label');
+    });
+
     test('lock acquisition failure cannot clear an unowned epoch-zero state', async () => {
         const event = createPRCommentEvent('/ultrafix');
         const config = createTestConfig();

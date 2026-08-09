@@ -406,7 +406,7 @@ type UltrafixCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> 
 
 async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void> {
     const { commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
-    const { eventType, prNumber, owner, repo } = eventContext;
+    const { prNumber, owner, repo } = eventContext;
     const { redisClient } = config;
 
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/ultrafix command detected, initializing loop');
@@ -446,18 +446,23 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
         ));
     }
 
-    const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     const identity = { owner, repo, pr: prNumber };
+    let prData: PRBranchAndLabels | undefined;
     let workEpoch: number | undefined;
     let loopMeta: UltrafixCommandMeta = commandMeta;
     let initialAction: 'review' | 'fix' = 'review';
-    let labelApplied = false;
+    let labelIntroduced = false;
 
     // The reserved epoch fences older queued, deferred, and in-flight automatic
     // continuations. State commit and rollback are both conditional on ownership.
     try {
         let olderPrWorkExists = false;
         await withUltrafixLabelTransition(redisClient, identity, async () => {
+            // Read live label state while holding the same lease used by label
+            // cleanup so rollback can distinguish an inherited circuit breaker
+            // from one introduced by this startup.
+            prData = await getLivePRBranchAndLabels({ owner, repo, prNumber });
+            const labelWasPresent = prData.prLabels.some(label => label.name === 'ultrafix');
             workEpoch = await deps.reserveAutomaticWork(redisClient, owner, repo, prNumber);
             loopMeta = { ...commandMeta, workEpoch };
             // Close the gap between the first queue snapshot and reservation. Work
@@ -474,8 +479,9 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
                 [],
                 ['ultrafix'],
             );
-            labelApplied = labelResult.added.includes('ultrafix');
-            if (!labelApplied) throw new Error('Failed to add the ultrafix circuit-breaker label');
+            const labelAsserted = labelResult.added.includes('ultrafix');
+            if (!labelAsserted) throw new Error('Failed to add the ultrafix circuit-breaker label');
+            labelIntroduced = !labelWasPresent;
 
             await deps.startLoop(redisClient, {
                 owner,
@@ -522,7 +528,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
                         identity,
                         reservedWorkEpoch,
                     );
-                    if (cleared && labelApplied) {
+                    if (cleared && labelIntroduced) {
                         const labelResult = await safeUpdateLabels(
                             { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
                             ['ultrafix'],
@@ -727,19 +733,23 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
 }
 
 async function getPRBranchAndLabels(eventType: CommentEventType, payload: IssueCommentEvent | PullRequestReviewCommentEvent, repoContext: RepoContext): Promise<PRBranchAndLabels> {
-    const { owner, repo, prNumber } = repoContext;
     if (eventType === 'issue_comment') {
-        const octokit = await getAuthenticatedOctokit();
-        // Retry up to ~1 minute: 3s + 6s + 12s + 20s + 20s = 61s total
-        const { data: pr } = await withRetry(
-            () => octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber }),
-            { maxAttempts: 6, baseDelay: 3000, maxDelay: 20000, exponentialBase: 2 },
-            `get_pr_details_${owner}_${repo}_${prNumber}`
-        );
-        return { branchName: pr.head.ref, prLabels: pr.labels || [] };
+        return getLivePRBranchAndLabels(repoContext);
     }
     const prPayload = payload as PullRequestReviewCommentEvent;
     return { branchName: prPayload.pull_request.head.ref, prLabels: prPayload.pull_request.labels || [] };
+}
+
+async function getLivePRBranchAndLabels(repoContext: RepoContext): Promise<PRBranchAndLabels> {
+    const { owner, repo, prNumber } = repoContext;
+    const octokit = await getAuthenticatedOctokit();
+    // Retry up to ~1 minute: 3s + 6s + 12s + 20s + 20s = 61s total
+    const { data: pr } = await withRetry(
+        () => octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber }),
+        { maxAttempts: 6, baseDelay: 3000, maxDelay: 20000, exponentialBase: 2 },
+        `get_pr_details_${owner}_${repo}_${prNumber}`
+    );
+    return { branchName: pr.head.ref, prLabels: pr.labels || [] };
 }
 
 function prepareComment(comment: { id: number; created_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventType: CommentEventType, keywords: string[]): { enhancedBody: string; unprocessedComment: UnprocessedComment; llmFromKeywords: string | null } {
