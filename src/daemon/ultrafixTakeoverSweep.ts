@@ -34,6 +34,12 @@ interface ManualTakeoverSweepDeps {
         identity: { owner: string; repo: string; pr: number },
         commandSequence: number,
     ) => Promise<number | null>;
+    /** True re-establishes this sequence's fence; false proves it is applied or superseded. */
+    ensureFence: (
+        redis: Redis,
+        identity: { owner: string; repo: string; pr: number },
+        commandSequence: number,
+    ) => Promise<boolean>;
     withLease: <T>(
         redis: Redis,
         identity: { owner: string; repo: string; pr: number },
@@ -159,11 +165,28 @@ async function recoverStage(
                     return false;
                 }
             }
-            await deps.complete(
+            let completedGeneration = await deps.complete(
                 redis,
                 { owner: identity.owner, repo: identity.repo, pr: identity.pr },
                 commandSequence,
             );
+            if (completedGeneration === null) {
+                const retryable = await deps.ensureFence(
+                    redis,
+                    { owner: identity.owner, repo: identity.repo, pr: identity.pr },
+                    commandSequence,
+                );
+                if (retryable) {
+                    completedGeneration = await deps.complete(
+                        redis,
+                        { owner: identity.owner, repo: identity.repo, pr: identity.pr },
+                        commandSequence,
+                    );
+                    if (completedGeneration === null) return false;
+                }
+                // A false result atomically proves that this sequence was already
+                // applied or superseded by a newer applied/in-flight takeover.
+            }
             await redis.eval(
                 DELETE_STAGE_IF_SEQUENCE_SCRIPT,
                 2,
@@ -180,8 +203,16 @@ export async function sweepManualUltrafixTakeovers(
     redis: Redis,
     deps: ManualTakeoverSweepDeps,
 ): Promise<void> {
+    let keys: string[];
     try {
-        for (const key of await listManualTakeoverStageKeys(redis)) {
+        keys = await listManualTakeoverStageKeys(redis);
+    } catch (error) {
+        deps.warn(error as Error);
+        return;
+    }
+
+    for (const key of keys) {
+        try {
             const identity = parseManualTakeoverStageKey(key);
             if (!identity) continue;
             const recovered = await recoverStage(redis, key, identity, deps);
@@ -191,9 +222,9 @@ export async function sweepManualUltrafixTakeovers(
                     'Recovered a durably scheduled manual Ultrafix takeover',
                 );
             }
+        } catch (error) {
+            deps.warn(error as Error);
         }
-    } catch (error) {
-        deps.warn(error as Error);
     }
 }
 

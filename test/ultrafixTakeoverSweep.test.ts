@@ -33,16 +33,19 @@ function createRedis(identity: ManualTakeoverStageIdentity, sequence: number, in
 
 function createDeps(getJob: (jobId: string) => Promise<unknown | null>) {
     const complete = mock.fn(async () => 4 as number | null);
+    const ensureFence = mock.fn(async () => true);
     const enqueueReplacement = mock.fn(async () => {});
     const info = mock.fn();
     return {
         complete,
+        ensureFence,
         enqueueReplacement,
         info,
         deps: {
             getJob,
             enqueueReplacement,
             complete,
+            ensureFence,
             withLease: mock.fn(async (
                 _redis: unknown,
                 _identity: unknown,
@@ -120,4 +123,59 @@ test('daemon recovery enqueues a missing replacement from the durable takeover i
     assert.equal(complete.mock.callCount(), 1);
     assert.equal(strings.has(stageKey), false);
     assert.equal(strings.has(getManualTakeoverIntentKey(identity)), false);
+});
+
+test('daemon recovery re-establishes a missing fence before deleting the stage', async () => {
+    const { redis, strings, stageKey } = createRedis(identity, 16);
+    const { deps, complete, ensureFence } = createDeps(async () => ({}));
+    complete.mock.mockImplementationOnce(async () => null);
+
+    await sweepManualUltrafixTakeovers(redis as never, deps as never);
+
+    assert.equal(ensureFence.mock.callCount(), 1);
+    assert.equal(complete.mock.callCount(), 2);
+    assert.equal(strings.has(stageKey), false);
+});
+
+test('daemon recovery removes a stage only after a newer sequence is proven', async () => {
+    const { redis, strings, stageKey } = createRedis(identity, 17);
+    const { deps, complete, ensureFence } = createDeps(async () => ({}));
+    complete.mock.mockImplementationOnce(async () => null);
+    ensureFence.mock.mockImplementationOnce(async () => false);
+
+    await sweepManualUltrafixTakeovers(redis as never, deps as never);
+
+    assert.equal(complete.mock.callCount(), 1);
+    assert.equal(ensureFence.mock.callCount(), 1);
+    assert.equal(strings.has(stageKey), false);
+});
+
+test('one failed takeover recovery does not starve later PRs', async () => {
+    const secondIdentity = { ...identity, pr: 1807, commentId: 901 };
+    const firstKey = getManualTakeoverStageKey(identity);
+    const secondKey = getManualTakeoverStageKey(secondIdentity);
+    const strings = new Map([[firstKey, '18'], [secondKey, '19']]);
+    const redis = {
+        scan: mock.fn(async () => ['0', [firstKey, secondKey]]),
+        get: mock.fn(async (key: string) => strings.get(key) ?? null),
+        lrange: mock.fn(async () => []),
+        eval: mock.fn(async (_script: string, _count: number, key: string) => {
+            strings.delete(key);
+            return 1;
+        }),
+    };
+    const attempted: number[] = [];
+    const { deps } = createDeps(async jobId => {
+        const pr = jobId.includes('-1806-') ? 1806 : 1807;
+        attempted.push(pr);
+        if (pr === 1806) throw new Error('broken first recovery');
+        return {};
+    });
+
+    await sweepManualUltrafixTakeovers(redis as never, deps as never);
+
+    assert.equal(attempted[0], 1806);
+    assert.ok(attempted.slice(1).every(pr => pr === 1807));
+    assert.equal(deps.warn.mock.callCount(), 1);
+    assert.equal(strings.has(secondKey), false);
 });

@@ -20,9 +20,16 @@ export async function sweepDeferredUltrafixContinuations(
     redisClient: Redis,
     deps: UltrafixDeferredSweepDeps,
 ): Promise<void> {
+    let keys: string[];
     try {
-        const keys = await deps.listKeys(redisClient);
-        for (const key of keys) {
+        keys = await deps.listKeys(redisClient);
+    } catch (error) {
+        deps.warn(error as Error);
+        return;
+    }
+
+    for (const key of keys) {
+        try {
             const parsed = deps.parseKey(key);
             if (!parsed) continue;
             const log = deps.createLogger();
@@ -30,9 +37,9 @@ export async function sweepDeferredUltrafixContinuations(
             if (result.continued) {
                 log.info({ ...parsed, result }, 'Ultrafix deferred continuation resumed by daemon sweep');
             }
+        } catch (error) {
+            deps.warn(error as Error);
         }
-    } catch (error) {
-        deps.warn(error as Error);
     }
 }
 

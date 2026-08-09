@@ -8,6 +8,7 @@ import {
     type UnprocessedComment,
 } from '@propr/core';
 import {
+    beginManualUltrafixTakeover,
     completeManualUltrafixTakeover,
     listDeferredContinuationKeys,
     listUltrafixStateKeys,
@@ -69,6 +70,7 @@ export async function scheduleUltrafixRecoverySweeps(redis: Redis): Promise<Node
             });
         },
         complete: completeManualUltrafixTakeover,
+        ensureFence: beginManualUltrafixTakeover,
         withLease: withUltrafixTransitionLease,
         createLogger,
         generateCorrelationId,

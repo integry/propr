@@ -1,6 +1,9 @@
-import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { scheduleUltrafixDeferredSweep } from '../src/daemon/ultrafixDeferredSweep.js';
+import { mock, test } from 'node:test';
+import {
+    scheduleUltrafixDeferredSweep,
+    sweepDeferredUltrafixContinuations,
+} from '../src/daemon/ultrafixDeferredSweep.js';
 
 test('daemon sweep retries deferred continuations periodically without check events', async () => {
     const resumed: number[] = [];
@@ -27,4 +30,25 @@ test('daemon sweep retries deferred continuations periodically without check eve
     } finally {
         clearInterval(interval);
     }
+});
+
+test('one failed deferred recovery does not starve later PRs', async () => {
+    const attempted: number[] = [];
+    const warn = mock.fn();
+    const info = mock.fn();
+    await sweepDeferredUltrafixContinuations({} as never, {
+        listKeys: mock.fn(async () => ['deferred:1', 'deferred:2']),
+        parseKey: key => ({ owner: 'integry', repo: 'propr', pr: Number(key.split(':')[1]) }),
+        resume: mock.fn(async identity => {
+            attempted.push(identity.pr);
+            if (identity.pr === 1) throw new Error('malformed first continuation');
+            return { continued: true, reason: 'resumed' };
+        }),
+        createLogger: () => ({ info }) as never,
+        warn,
+    });
+
+    assert.deepEqual(attempted, [1, 2]);
+    assert.equal(info.mock.callCount(), 1);
+    assert.equal(warn.mock.callCount(), 1);
 });
