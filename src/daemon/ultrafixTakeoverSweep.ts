@@ -1,5 +1,6 @@
 import type { Redis } from 'ioredis';
 import type { Logger } from 'pino';
+import type { UnprocessedComment } from '@propr/core';
 import { getPendingPrCommentsKey } from '../../packages/core/src/utils/constants.js';
 
 const TAKEOVER_STAGE_PREFIX = 'pr-command-takeover';
@@ -8,6 +9,7 @@ if redis.call('GET', KEYS[1]) ~= ARGV[1] then
     return 0
 end
 redis.call('DEL', KEYS[1])
+redis.call('DEL', KEYS[2])
 return 1
 `;
 
@@ -21,6 +23,12 @@ export interface ManualTakeoverStageIdentity {
 
 interface ManualTakeoverSweepDeps {
     getJob: (jobId: string) => Promise<unknown | null | undefined>;
+    enqueueReplacement: (
+        jobId: string,
+        identity: ManualTakeoverStageIdentity,
+        comment: UnprocessedComment,
+        correlationId: string,
+    ) => Promise<void>;
     complete: (
         redis: Redis,
         identity: { owner: string; repo: string; pr: number },
@@ -39,6 +47,10 @@ interface ManualTakeoverSweepDeps {
 
 export function getManualTakeoverStageKey(identity: ManualTakeoverStageIdentity): string {
     return `${TAKEOVER_STAGE_PREFIX}:${identity.owner}:${identity.repo}:${identity.pr}:${identity.eventType}:${identity.commentId}`;
+}
+
+export function getManualTakeoverIntentKey(identity: ManualTakeoverStageIdentity): string {
+    return `${getManualTakeoverStageKey(identity)}:intent`;
 }
 
 export function getManualTakeoverReplacementJobId(
@@ -90,6 +102,21 @@ async function hasPendingReplacement(
     });
 }
 
+async function loadRecoveryIntent(
+    redis: Redis,
+    identity: ManualTakeoverStageIdentity,
+    commandSequence: number,
+): Promise<UnprocessedComment | null> {
+    const serialized = await redis.get(getManualTakeoverIntentKey(identity));
+    if (!serialized) return null;
+    try {
+        const comment = JSON.parse(serialized) as UnprocessedComment;
+        return comment.commandSequence === commandSequence ? comment : null;
+    } catch {
+        return null;
+    }
+}
+
 async function hasDurableReplacement(
     redis: Redis,
     identity: ManualTakeoverStageIdentity,
@@ -110,7 +137,10 @@ async function recoverStage(
     if (rawSequence === null) return false;
     const commandSequence = Number(rawSequence);
     if (!Number.isInteger(commandSequence)) return false;
-    if (!await hasDurableReplacement(redis, identity, commandSequence, deps.getJob)) return false;
+    const recoveryIntent = await loadRecoveryIntent(redis, identity, commandSequence);
+    if (!recoveryIntent && !await hasDurableReplacement(redis, identity, commandSequence, deps.getJob)) {
+        return false;
+    }
 
     return deps.withLease(
         redis,
@@ -119,13 +149,28 @@ async function recoverStage(
         async assertOwned => {
             await assertOwned();
             if (await redis.get(stageKey) !== rawSequence) return false;
-            if (!await hasDurableReplacement(redis, identity, commandSequence, deps.getJob)) return false;
+            const jobId = getManualTakeoverReplacementJobId(identity, commandSequence);
+            if (!await deps.getJob(jobId)) {
+                const intent = await loadRecoveryIntent(redis, identity, commandSequence) ?? recoveryIntent;
+                if (intent) {
+                    await deps.enqueueReplacement(jobId, identity, intent, deps.generateCorrelationId());
+                    if (!await deps.getJob(jobId)) return false;
+                } else if (!await hasPendingReplacement(redis, identity, commandSequence)) {
+                    return false;
+                }
+            }
             await deps.complete(
                 redis,
                 { owner: identity.owner, repo: identity.repo, pr: identity.pr },
                 commandSequence,
             );
-            await redis.eval(DELETE_STAGE_IF_SEQUENCE_SCRIPT, 1, stageKey, rawSequence);
+            await redis.eval(
+                DELETE_STAGE_IF_SEQUENCE_SCRIPT,
+                2,
+                stageKey,
+                getManualTakeoverIntentKey(identity),
+                rawSequence,
+            );
             return true;
         },
     );

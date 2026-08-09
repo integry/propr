@@ -27,10 +27,20 @@ export interface UltrafixDeps {
     loadUltrafixMaxCycles: () => Promise<number>;
     loadUltrafixPauseSeconds: () => Promise<number>;
     loadPrReviewModel: () => Promise<string>;
-    beginManualTakeover: (redis: Redis, identity: { owner: string; repo: string; pr: number }, commandSequence: number) => Promise<boolean>;
+    beginManualTakeover: (
+        redis: Redis,
+        identity: { owner: string; repo: string; pr: number },
+        commandSequence: number,
+        recovery?: {
+            stageKey: string;
+            intentKey: string;
+            serializedComment: string;
+            ttlSeconds: number;
+        },
+    ) => Promise<boolean>;
     abortManualTakeover: (redis: Redis, identity: { owner: string; repo: string; pr: number }, commandSequence: number) => Promise<boolean>;
     completeManualTakeover: (redis: Redis, identity: { owner: string; repo: string; pr: number }, commandSequence: number) => Promise<number | null>;
-    reserveFreshTransition: (redis: Redis, identity: { owner: string; repo: string; pr: number }, commandSequence: number) => Promise<{ generation: number; baseGeneration: number } | null>;
+    reserveFreshTransition: (redis: Redis, identity: { owner: string; repo: string; pr: number }, commandSequence: number, startupJobId: string) => Promise<{ generation: number; baseGeneration: number } | null>;
     commitFreshLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; commandSequence: number; generation: number; baseGeneration: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' } | null>;
     abortFreshTransition: (redis: Redis, identity: { owner: string; repo: string; pr: number }, commandSequence: number) => Promise<boolean>;
     withTransitionLease: <T>(redis: Redis, identity: { owner: string; repo: string; pr: number }, correlationId: string, operation: (assertOwned: () => Promise<void>) => Promise<T>) => Promise<T>;
@@ -87,13 +97,14 @@ interface PRJobData extends CommentJobData {
 }
 
 interface CommentContext { eventType: CommentEventType; prNumber: number; owner: string; repo: string }
-interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; takeoverStageKey?: string; takeoverSequence?: number }
-interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; throwOnQueueFailure?: boolean; idempotentJobId?: string; delayMs?: number }
+interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[] }
+interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; ultrafixStartupRecovery?: CommentJobData['ultrafixStartupRecovery']; throwOnQueueFailure?: boolean; idempotentJobId?: string; delayMs?: number }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 interface ManualTakeoverContext {
     deps: UltrafixDeps;
     takeoverStageKey: string;
+    takeoverIntentKey: string;
     commandSequence: number;
     assertTransitionOwned: () => Promise<void>;
 }
@@ -113,17 +124,14 @@ local sequence = redis.call('INCR', KEYS[2])
 redis.call('SET', KEYS[1], sequence, 'EX', ARGV[1])
 return sequence
 `;
-const STORE_PENDING_TAKEOVER_SCRIPT = `
-redis.call('RPUSH', KEYS[1], ARGV[1])
-redis.call('EXPIRE', KEYS[1], ARGV[2])
-redis.call('SET', KEYS[2], ARGV[4], 'EX', ARGV[3])
-return 1
-`;
 const DELETE_TAKEOVER_STAGE_IF_SEQUENCE_SCRIPT = `
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then
     return 0
 end
 redis.call('DEL', KEYS[1])
+if #KEYS > 1 then
+    redis.call('DEL', KEYS[2])
+end
 return 1
 `;
 
@@ -132,15 +140,17 @@ async function claimCommentForProcessing(redisClient: Redis, key: string): Promi
     return result === 'OK';
 }
 
-async function deleteTakeoverStageIfSequence(
+async function deleteTakeoverRecoveryIfSequence(
     redisClient: Redis,
     stageKey: string,
+    intentKey: string,
     commandSequence: number,
 ): Promise<boolean> {
     return Number(await redisClient.eval(
         DELETE_TAKEOVER_STAGE_IF_SEQUENCE_SCRIPT,
-        1,
+        2,
         stageKey,
+        intentKey,
         String(commandSequence),
     )) === 1;
 }
@@ -382,7 +392,7 @@ async function handleQueuedSlashCommand(
     opts: SlashCommandHandlerOptions,
     commandMeta: QueuedCommandMeta,
 ): Promise<void> {
-    const { comment, eventContext, config, correlationId, correlatedLogger } = opts;
+    const { comment, commentAuthor, eventContext, config, correlationId, correlatedLogger } = opts;
     const { prNumber, owner, repo, eventType } = eventContext;
     const { redisClient } = config;
     const takeoverDeps = (commandMeta.mode === 'fix' || commandMeta.mode === 'review')
@@ -391,12 +401,13 @@ async function handleQueuedSlashCommand(
     const takeoverStageKey = takeoverDeps
         ? getTakeoverStageKey({ owner, repo, prNumber, eventType, commentId: comment.id })
         : undefined;
+    const takeoverIntentKey = takeoverStageKey ? `${takeoverStageKey}:intent` : undefined;
     const stagedSequence = takeoverStageKey
         ? await redisClient.get(takeoverStageKey)
         : null;
     const takeoverIdentity = { owner, repo, prNumber, eventType, commentId: comment.id };
     const commandSequence = comment.commandSequence ?? 0;
-    if (takeoverDeps && takeoverStageKey && stagedSequence) {
+    if (takeoverDeps && takeoverStageKey && takeoverIntentKey && stagedSequence) {
         const stagedCommandSequence = Number(stagedSequence);
         if (stagedCommandSequence > commandSequence) {
             correlatedLogger.info(
@@ -411,7 +422,7 @@ async function handleQueuedSlashCommand(
         if (durable) {
             await cancelDeferredUltrafixTransition(takeoverDeps, {
                 redisClient, owner, repo, prNumber, correlationId, correlatedLogger,
-                takeoverStageKey, commandSequence: stagedCommandSequence,
+                takeoverStageKey, takeoverIntentKey, commandSequence: stagedCommandSequence,
             });
             correlatedLogger.info(
                 { pullRequestNumber: prNumber, commentId: comment.id, stagedCommandSequence },
@@ -420,10 +431,16 @@ async function handleQueuedSlashCommand(
             if (stagedCommandSequence === commandSequence) return;
         }
     }
-    if (!takeoverDeps || !takeoverStageKey) {
+    if (!takeoverDeps || !takeoverStageKey || !takeoverIntentKey) {
         await scheduleQueuedSlashCommand(opts, commandMeta);
         return;
     }
+    const pendingTakeoverComment = createPendingComment(
+        { ...comment, body: commandMeta.instructions || '', ...buildPendingCommandFields(commandMeta) },
+        commentAuthor,
+        eventContext,
+        config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+    );
 
     await takeoverDeps.withTransitionLease(
         redisClient,
@@ -433,6 +450,12 @@ async function handleQueuedSlashCommand(
             await assertTransitionOwned();
             if (!await takeoverDeps.beginManualTakeover(
                 redisClient, { owner, repo, pr: prNumber }, commandSequence,
+                {
+                    stageKey: takeoverStageKey,
+                    intentKey: takeoverIntentKey,
+                    serializedComment: JSON.stringify(pendingTakeoverComment),
+                    ttlSeconds: TAKEOVER_STAGE_TTL_SECONDS,
+                },
             )) {
                 correlatedLogger.info(
                     { pullRequestNumber: prNumber, commentId: comment.id, commandSequence },
@@ -440,18 +463,10 @@ async function handleQueuedSlashCommand(
                 );
                 return;
             }
-            // Persist the recovery marker before scheduling. A daemon sweep can
-            // now finish the generation takeover after a process exit by
-            // verifying the deterministic queue job or pending batch entry.
-            await redisClient.set(
-                takeoverStageKey,
-                String(commandSequence),
-                'EX',
-                TAKEOVER_STAGE_TTL_SECONDS,
-            );
             await scheduleQueuedSlashCommand(opts, commandMeta, {
                 deps: takeoverDeps,
                 takeoverStageKey,
+                takeoverIntentKey,
                 commandSequence,
                 assertTransitionOwned,
             });
@@ -510,8 +525,6 @@ async function scheduleQueuedSlashCommand(
                 {
                     redisClient,
                     PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
-                    takeoverStageKey: takeover?.takeoverStageKey,
-                    takeoverSequence: takeover?.commandSequence,
                 },
             );
             replacementScheduled = true;
@@ -569,6 +582,16 @@ async function abortUnscheduledManualTakeover(
     } = options;
     if (replacementScheduled) return;
     try {
+        const serializedIntent = await redisClient.get(takeover.takeoverIntentKey);
+        if (serializedIntent) {
+            const intent = JSON.parse(serializedIntent) as { commandSequence?: number };
+            if (intent.commandSequence === takeover.commandSequence) return;
+        }
+    } catch (intentError) {
+        correlatedLogger.warn({ intentError, prNumber }, 'Could not verify manual takeover intent; preserving fence');
+        return;
+    }
+    try {
         const durable = await hasDurableManualTakeoverReplacement(
             redisClient,
             {
@@ -586,8 +609,8 @@ async function abortUnscheduledManualTakeover(
         return;
     }
     await takeover.assertTransitionOwned();
-    await deleteTakeoverStageIfSequence(
-        redisClient, takeover.takeoverStageKey, takeover.commandSequence,
+    await deleteTakeoverRecoveryIfSequence(
+        redisClient, takeover.takeoverStageKey, takeover.takeoverIntentKey, takeover.commandSequence,
     );
     await takeover.deps.abortManualTakeover(
         redisClient, { owner, repo, pr: prNumber }, takeover.commandSequence,
@@ -606,8 +629,8 @@ async function finalizeManualUltrafixTakeover(
     const generation = await takeover.deps.completeManualTakeover(
         redisClient, { owner, repo, pr: prNumber }, takeover.commandSequence,
     );
-    await deleteTakeoverStageIfSequence(
-        redisClient, takeover.takeoverStageKey, takeover.commandSequence,
+    await deleteTakeoverRecoveryIfSequence(
+        redisClient, takeover.takeoverStageKey, takeover.takeoverIntentKey, takeover.commandSequence,
     );
     logManualTakeoverResult(generation, takeover.commandSequence, prNumber, correlatedLogger);
 }
@@ -622,6 +645,7 @@ async function cancelDeferredUltrafixTransition(
         correlationId: string;
         correlatedLogger: ReturnType<typeof logger.withCorrelation>;
         takeoverStageKey?: string;
+        takeoverIntentKey?: string;
         commandSequence: number;
     },
 ): Promise<void> {
@@ -635,9 +659,9 @@ async function cancelDeferredUltrafixTransition(
             const completedGeneration = await deps.completeManualTakeover(
                 redisClient, { owner, repo, pr: prNumber }, commandSequence,
             );
-            if (options.takeoverStageKey) {
-                await deleteTakeoverStageIfSequence(
-                    redisClient, options.takeoverStageKey, commandSequence,
+            if (options.takeoverStageKey && options.takeoverIntentKey) {
+                await deleteTakeoverRecoveryIfSequence(
+                    redisClient, options.takeoverStageKey, options.takeoverIntentKey, commandSequence,
                 );
             }
             return completedGeneration;
@@ -743,7 +767,7 @@ async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
 }
 
 type UltrafixCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: UltrafixCommandMeta };
-type FreshUltrafixReservation = { generation: number; baseGeneration: number };
+type FreshUltrafixReservation = { generation: number; baseGeneration: number; startupJobId: string };
 type AuthenticatedOctokit = Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
 
 interface FreshUltrafixStartup {
@@ -780,8 +804,9 @@ async function handleUltrafixCommandWithLease(
     // 1. Load configured defaults from settings, then override with command arguments
     await assertTransitionOwned();
     const commandSequence = comment.commandSequence ?? 0;
+    const startupJobIdPrefix = `pr-comments-ultrafix-${owner}-${repo}-${prNumber}-${eventContext.eventType}-${comment.id}-`;
     const reservation = await deps.reserveFreshTransition(
-        redisClient, { owner, repo, pr: prNumber }, commandSequence,
+        redisClient, { owner, repo, pr: prNumber }, commandSequence, startupJobIdPrefix,
     );
     if (reservation === null) {
         correlatedLogger.info(
@@ -790,7 +815,12 @@ async function handleUltrafixCommandWithLease(
         );
         return;
     }
-    const startup = await initializeReservedUltrafixLoop(opts, deps, assertTransitionOwned, reservation);
+    const startup = await initializeReservedUltrafixLoop(
+        opts,
+        deps,
+        assertTransitionOwned,
+        { ...reservation, startupJobId: `${startupJobIdPrefix}${reservation.generation}` },
+    );
     const { octokit, initialAction, effectiveGoal, effectiveMaxCycles, effectivePauseSeconds, effectiveReviewModel } = startup;
     correlatedLogger.info(
         { pullRequestNumber: prNumber, initialAction, effectiveGoal, effectiveMaxCycles, effectivePauseSeconds, effectiveReviewModel },
@@ -827,7 +857,7 @@ async function initializeReservedUltrafixLoop(
     const { eventType, prNumber, owner, repo } = eventContext;
     const { redisClient } = config;
     const commandSequence = comment.commandSequence ?? 0;
-    const { generation, baseGeneration } = reservation;
+    const { generation, baseGeneration, startupJobId } = reservation;
     let octokit: AuthenticatedOctokit | null = null;
     let labelWasAdded = false;
 
@@ -867,10 +897,16 @@ async function initializeReservedUltrafixLoop(
         const firstActionMeta: CommandMeta = initialAction === 'review'
             ? { mode: 'review', models: effectiveReviewModel ? [effectiveReviewModel] : [], instructions: commandMeta.instructions }
             : { mode: 'fix', instructions: commandMeta.instructions };
-        const loopMeta: UltrafixCommandMeta = { ...commandMeta, generation };
-        const startupJobId = `pr-comments-ultrafix-${owner}-${repo}-${prNumber}-${eventType}-${comment.id}-${generation}`;
+        const loopMeta: UltrafixCommandMeta = {
+            ...commandMeta,
+            generation,
+            goal: effectiveGoal,
+            maxCycles: effectiveMaxCycles,
+            pauseSeconds: effectivePauseSeconds,
+            reviewModel: effectiveReviewModel,
+        };
         await assertTransitionOwned();
-        await ensureFreshUltrafixStartupJob(startupJobId, async () => {
+        await ensureFreshUltrafixStartupJob(startupJobId, generation, async () => {
             await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
                 payload,
                 redisClient,
@@ -880,6 +916,16 @@ async function initializeReservedUltrafixLoop(
                 commandMeta: firstActionMeta,
                 prefetchedPRData: prData,
                 ultrafixMeta: loopMeta,
+                ultrafixStartupRecovery: {
+                    commandSequence,
+                    generation,
+                    baseGeneration,
+                    goal: effectiveGoal,
+                    maxCycles: effectiveMaxCycles,
+                    pauseSeconds: effectivePauseSeconds,
+                    reviewModel: effectiveReviewModel,
+                    initialAction,
+                },
                 throwOnQueueFailure: true,
                 idempotentJobId: startupJobId,
                 delayMs: FRESH_STARTUP_JOB_DELAY_MS,
@@ -955,13 +1001,17 @@ async function rollbackFreshUltrafixStartup(options: FreshUltrafixRollbackOption
 
 async function ensureFreshUltrafixStartupJob(
     jobId: string,
+    generation: number,
     enqueue: () => Promise<void>,
 ): Promise<void> {
     const queue = await getIssueQueue();
     const existingJob = await queue.getJob(jobId);
     if (existingJob) {
         const state = await existingJob.getState();
-        if (state === 'waiting' || state === 'delayed' || state === 'waiting-children') return;
+        const existingGeneration = (existingJob.data as CommentJobData).ultrafixMeta?.generation;
+        if (existingGeneration === generation && (
+            state === 'waiting' || state === 'delayed' || state === 'waiting-children'
+        )) return;
         if (state === 'active') throw new Error('Reserved Ultrafix startup job is still active');
         await existingJob.remove();
     }
@@ -1107,10 +1157,26 @@ async function getExistingPRCommentJobs(prNumber: number, owner: string, repo: s
 }
 
 async function storeCommentForBatch(comment: BatchComment, commentAuthor: string, eventContext: CommentContext, config: StoreCommentConfig): Promise<void> {
-    const { eventType, prNumber, owner, repo } = eventContext;
+    const { prNumber, owner, repo } = eventContext;
     const { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS } = config;
     const pendingCommentsKey = getPendingPrCommentsKey(owner, repo, prNumber);
-    const strippedCommentBody = PR_FOLLOWUP_TRIGGER_KEYWORDS.length > 0 ? stripKeywordsFromBody(comment.body, PR_FOLLOWUP_TRIGGER_KEYWORDS) : comment.body;
+    const pendingComment = createPendingComment(
+        comment, commentAuthor, eventContext, PR_FOLLOWUP_TRIGGER_KEYWORDS,
+    );
+    await redisClient.rpush(pendingCommentsKey, JSON.stringify(pendingComment));
+    await redisClient.expire(pendingCommentsKey, 3600);
+}
+
+function createPendingComment(
+    comment: BatchComment,
+    commentAuthor: string,
+    eventContext: CommentContext,
+    followUpTriggerKeywords: string[],
+): UnprocessedComment {
+    const { eventType } = eventContext;
+    const strippedCommentBody = followUpTriggerKeywords.length > 0
+        ? stripKeywordsFromBody(comment.body, followUpTriggerKeywords)
+        : comment.body;
     const reviewComment = isReviewComment(comment, eventType);
     let pendingCommentBody = strippedCommentBody;
 
@@ -1119,7 +1185,7 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
         if (codeContext.length > 0) pendingCommentBody = `${pendingCommentBody}\n\n--- Review Comment Context ---\n${codeContext.join('\n')}`;
     }
 
-    const pendingComment: UnprocessedComment = {
+    return {
         id: comment.id,
         body: pendingCommentBody,
         author: commentAuthor,
@@ -1133,23 +1199,6 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
         ultrafixMeta: comment.ultrafixMeta,
         commandSequence: comment.commandSequence,
     };
-    const serializedComment = JSON.stringify(pendingComment);
-    if (config.takeoverStageKey) {
-        const stored = await redisClient.eval(
-            STORE_PENDING_TAKEOVER_SCRIPT,
-            2,
-            pendingCommentsKey,
-            config.takeoverStageKey,
-            serializedComment,
-            '3600',
-            String(TAKEOVER_STAGE_TTL_SECONDS),
-            String(config.takeoverSequence ?? 0),
-        );
-        if (Number(stored) !== 1) throw new Error('Failed to durably stage manual takeover');
-        return;
-    }
-    await redisClient.rpush(pendingCommentsKey, serializedComment);
-    await redisClient.expire(pendingCommentsKey, 3600);
 }
 
 async function getPRBranchAndLabels(eventType: CommentEventType, payload: IssueCommentEvent | PullRequestReviewCommentEvent, repoContext: RepoContext): Promise<PRBranchAndLabels> {
@@ -1237,7 +1286,7 @@ function buildPendingCommandFields(commandMeta: CommandMeta): Pick<UnprocessedCo
 
 async function enqueueNewCommentJob(comment: { id: number; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number; commandSequence?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
-    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta } = options;
+    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta, ultrafixStartupRecovery } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { unprocessedComment, llmFromKeywords } = prepareComment(comment, commentAuthor, eventType, PR_FOLLOWUP_TRIGGER_KEYWORDS);
@@ -1248,6 +1297,7 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
         pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),
         ...(commandMeta ? { ...buildCommandJobFields(commandMeta), commandCommentId: comment.id, commandSequence: comment.commandSequence } : {}),
         ...(ultrafixMeta ? { ultrafixMeta } : {}),
+        ...(ultrafixStartupRecovery ? { ultrafixStartupRecovery } : {}),
     };
     const timestamp = Date.now();
     const jobId = options.idempotentJobId

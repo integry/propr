@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
 import { mock, test } from 'node:test';
 import {
+    getManualTakeoverIntentKey,
     getManualTakeoverStageKey,
     sweepManualUltrafixTakeovers,
     type ManualTakeoverStageIdentity,
 } from '../src/daemon/ultrafixTakeoverSweep.js';
 import { getPendingPrCommentsKey } from '../packages/core/src/utils/constants.js';
 
-function createRedis(identity: ManualTakeoverStageIdentity, sequence: number) {
+function createRedis(identity: ManualTakeoverStageIdentity, sequence: number, intent?: Record<string, unknown>) {
     const stageKey = getManualTakeoverStageKey(identity);
     const strings = new Map([[stageKey, String(sequence)]]);
+    if (intent) strings.set(getManualTakeoverIntentKey(identity), JSON.stringify(intent));
     const lists = new Map<string, string[]>();
     return {
         stageKey,
@@ -19,9 +21,10 @@ function createRedis(identity: ManualTakeoverStageIdentity, sequence: number) {
             scan: mock.fn(async () => ['0', [...strings.keys()]]),
             get: mock.fn(async (key: string) => strings.get(key) ?? null),
             lrange: mock.fn(async (key: string) => lists.get(key) ?? []),
-            eval: mock.fn(async (_script: string, _count: number, key: string, expected: string) => {
+            eval: mock.fn(async (_script: string, _count: number, key: string, intentKey: string, expected: string) => {
                 if (strings.get(key) !== expected) return 0;
                 strings.delete(key);
+                strings.delete(intentKey);
                 return 1;
             }),
         },
@@ -30,12 +33,15 @@ function createRedis(identity: ManualTakeoverStageIdentity, sequence: number) {
 
 function createDeps(getJob: (jobId: string) => Promise<unknown | null>) {
     const complete = mock.fn(async () => 4 as number | null);
+    const enqueueReplacement = mock.fn(async () => {});
     const info = mock.fn();
     return {
         complete,
+        enqueueReplacement,
         info,
         deps: {
             getJob,
+            enqueueReplacement,
             complete,
             withLease: mock.fn(async (
                 _redis: unknown,
@@ -90,4 +96,28 @@ test('daemon recovery accepts an atomically staged pending batch as durable evid
 
     assert.equal(complete.mock.callCount(), 1);
     assert.equal(strings.has(stageKey), false);
+});
+
+test('daemon recovery enqueues a missing replacement from the durable takeover intent', async () => {
+    const pendingComment = {
+        id: identity.commentId,
+        body: 'F31',
+        author: 'integry',
+        type: 'issue',
+        commandMode: 'fix',
+        commandSequence: 15,
+    };
+    const { redis, strings, stageKey } = createRedis(identity, 15, pendingComment);
+    let queued = false;
+    const { deps, complete, enqueueReplacement } = createDeps(async () => queued ? {} : null);
+    enqueueReplacement.mock.mockImplementationOnce(async () => { queued = true; });
+
+    await sweepManualUltrafixTakeovers(redis as never, deps as never);
+
+    assert.equal(enqueueReplacement.mock.callCount(), 1);
+    assert.deepEqual(enqueueReplacement.mock.calls[0].arguments[1], identity);
+    assert.deepEqual(enqueueReplacement.mock.calls[0].arguments[2], pendingComment);
+    assert.equal(complete.mock.callCount(), 1);
+    assert.equal(strings.has(stageKey), false);
+    assert.equal(strings.has(getManualTakeoverIntentKey(identity)), false);
 });

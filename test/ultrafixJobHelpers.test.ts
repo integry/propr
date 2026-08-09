@@ -8,6 +8,7 @@ const isUltrafixGenerationCurrent = mock.fn(async () => true);
 const getActiveUltrafixTakeoverSequence = mock.fn(async () => null as number | null);
 const adoptLegacyUltrafixGeneration = mock.fn(async () => true);
 const isFreshUltrafixTransitionReserved = mock.fn(async () => false);
+const commitFreshUltrafixLoop = mock.fn(async () => ({ state: {}, initialAction: 'review' as const }));
 const queueAdd = mock.fn(async () => {});
 const queueGetJobs = mock.fn(async () => [] as Array<{ id?: string; data: Record<string, unknown> }>);
 const getIssueQueue = mock.fn(async () => ({ add: queueAdd, getJobs: queueGetJobs }));
@@ -41,6 +42,7 @@ await mock.module('../src/jobs/ultrafixOrchestrationService.js', {
         getActiveUltrafixTakeoverSequence,
         adoptLegacyUltrafixGeneration,
         isFreshUltrafixTransitionReserved,
+        commitFreshUltrafixLoop,
         hasFollowUpJobsForPR,
         hasPendingBatchedComments,
     },
@@ -87,6 +89,8 @@ beforeEach(() => {
     adoptLegacyUltrafixGeneration.mock.mockImplementation(async () => true);
     isFreshUltrafixTransitionReserved.mock.resetCalls();
     isFreshUltrafixTransitionReserved.mock.mockImplementation(async () => false);
+    commitFreshUltrafixLoop.mock.resetCalls();
+    commitFreshUltrafixLoop.mock.mockImplementation(async () => ({ state: {}, initialAction: 'review' }));
     queueAdd.mock.resetCalls();
     queueGetJobs.mock.resetCalls();
     queueGetJobs.mock.mockImplementation(async () => []);
@@ -124,18 +128,47 @@ test('adopts a generation-less queued job as legacy generation zero', async () =
     assert.equal(isUltrafixGenerationCurrent.mock.calls[0].arguments[2], 0);
 });
 
-test('reschedules when the startup delay elapses before its reserved generation is published', async () => {
+test('publishes a reserved generation from the durable startup job after intake exits', async () => {
+    let generationChecks = 0;
+    isUltrafixGenerationCurrent.mock.mockImplementation(async () => ++generationChecks > 1);
+    isFreshUltrafixTransitionReserved.mock.mockImplementationOnce(async () => true);
+    const startupJob = job('fix');
+    startupJob.data.ultrafixStartupRecovery = {
+        commandSequence: 9,
+        generation: 3,
+        baseGeneration: 2,
+        goal: 8,
+        maxCycles: 5,
+        pauseSeconds: 60,
+        reviewModel: 'codex:gpt-5.6-sol',
+        initialAction: 'fix',
+    };
+
+    assert.equal(await guardUltrafixJobExecution(startupJob as never, params as never), null);
+    assert.deepEqual(commitFreshUltrafixLoop.mock.calls[0].arguments.slice(1), [{
+        owner: 'owner',
+        repo: 'repo',
+        pr: 42,
+        commandSequence: 9,
+        generation: 3,
+        baseGeneration: 2,
+        goal: 8,
+        maxCycles: 5,
+        pauseSeconds: 60,
+        reviewModel: 'codex:gpt-5.6-sol',
+    }, true]);
+    assert.equal(queueAdd.mock.callCount(), 0);
+});
+
+test('cancels a reserved startup job without matching recovery data instead of retrying forever', async () => {
     isUltrafixGenerationCurrent.mock.mockImplementationOnce(async () => false);
     isFreshUltrafixTransitionReserved.mock.mockImplementationOnce(async () => true);
 
-    assert.deepEqual(await guardUltrafixJobExecution(job('fix') as never, params as never), {
-        status: 'rescheduled',
-        reason: 'ultrafix_startup_pending',
+    assert.deepEqual(await guardUltrafixJobExecution(job('review') as never, params as never), {
+        status: 'cancelled',
+        reason: 'ultrafix_startup_unrecoverable',
     });
-    assert.equal(queueAdd.mock.callCount(), 1);
-    assert.equal(queueAdd.mock.calls[0].arguments[2].delay, 5_000);
-    assert.equal(queueAdd.mock.calls[0].arguments[2].jobId, 'pr-comments-ultrafix-wait-owner-repo-42-3-1');
-    assert.equal(queueAdd.mock.calls[0].arguments[1].ultrafixStartupWaitCount, 1);
+    assert.equal(queueAdd.mock.callCount(), 0);
 });
 
 test('treats a readiness save rejected by a concurrent takeover as cancelled', async () => {

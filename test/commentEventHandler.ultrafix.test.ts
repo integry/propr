@@ -204,7 +204,22 @@ const mockGetPendingReviewState = mock.fn(async () => ({
 }));
 
 const mockClearDeferredContinuation = mock.fn(async () => 1);
-const mockBeginManualTakeover = mock.fn(async () => true);
+async function stageMockManualTakeover(
+    redis: unknown,
+    _identity: unknown,
+    commandSequence: number,
+    recovery?: { stageKey: string; intentKey: string; serializedComment: string },
+): Promise<boolean> {
+    if (recovery) {
+        const client = redis as {
+            set: (key: string, value: string) => Promise<unknown>;
+        };
+        await client.set(recovery.stageKey, String(commandSequence));
+        await client.set(recovery.intentKey, recovery.serializedComment);
+    }
+    return true;
+}
+const mockBeginManualTakeover = mock.fn(stageMockManualTakeover);
 const mockAbortManualTakeover = mock.fn(async () => true);
 const mockWithTransitionLease = mock.fn(async (
     _redis: unknown,
@@ -274,31 +289,25 @@ function createMockRedis() {
         expire,
         eval: mock.fn(async (
             script: string,
-            _keyCount: number,
-            pendingKey: string,
-            stageKey: string,
-            serializedComment: string,
-            _pendingTtl: string,
-            _stageTtl: string,
-            takeoverSequence: string,
+            keyCount: number,
+            ...args: string[]
         ) => {
             if (script.includes("if redis.call('GET', KEYS[1]) ~= ARGV[1]")) {
-                if (store.get(pendingKey) !== stageKey) return 0;
-                store.delete(pendingKey);
+                const expectedSequence = args[keyCount];
+                if (store.get(args[0]) !== expectedSequence) return 0;
+                for (const key of args.slice(0, keyCount)) store.delete(key);
                 return 1;
             }
             if (script.includes("local existing = redis.call('GET', KEYS[1])")) {
-                const existing = store.get(pendingKey);
+                const [sequenceKey, counterKey] = args;
+                const existing = store.get(sequenceKey);
                 if (existing) return Number(existing);
-                const next = Number(store.get(stageKey) ?? '0') + 1;
-                store.set(stageKey, String(next));
-                store.set(pendingKey, String(next));
+                const next = Number(store.get(counterKey) ?? '0') + 1;
+                store.set(counterKey, String(next));
+                store.set(sequenceKey, String(next));
                 return next;
             }
-            await rpush(pendingKey, serializedComment);
-            await expire(pendingKey, 3600);
-            store.set(stageKey, takeoverSequence);
-            return 1;
+            throw new Error('unexpected Redis script');
         }),
         _store: store,
         _lists: lists,
@@ -345,7 +354,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         mockAbortFreshTransition.mock.resetCalls();
         mockAbortFreshTransition.mock.mockImplementation(async () => true);
         mockBeginManualTakeover.mock.resetCalls();
-        mockBeginManualTakeover.mock.mockImplementation(async () => true);
+        mockBeginManualTakeover.mock.mockImplementation(stageMockManualTakeover);
         mockAbortManualTakeover.mock.resetCalls();
         mockAbortManualTakeover.mock.mockImplementation(async () => true);
         mockWithTransitionLease.mock.resetCalls();
@@ -840,9 +849,9 @@ describe('commentEventHandler — /ultrafix command', () => {
             operations.push('lease-end');
             return result;
         });
-        mockBeginManualTakeover.mock.mockImplementationOnce(async () => {
+        mockBeginManualTakeover.mock.mockImplementationOnce(async (...args) => {
             operations.push('fence');
-            return true;
+            return stageMockManualTakeover(...args);
         });
         mockQueueAdd.mock.mockImplementationOnce(async () => { operations.push('enqueue'); });
         mockClearDeferredContinuation.mock.mockImplementationOnce(async () => {
@@ -856,7 +865,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         ) => {
             if (args.includes('NX') && config.redisClient._store.has(key)) return null;
             config.redisClient._store.set(key, value);
-            if (key.startsWith('pr-command-takeover:')) operations.push('stage');
+            if (key.startsWith('pr-command-takeover:') && !key.endsWith(':intent')) operations.push('stage');
             return 'OK';
         });
 
@@ -1062,43 +1071,23 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(
+            [...config.redisClient._store.keys()].some(key => key.endsWith(':intent')),
+            true,
+        );
     });
 
-    test('ambiguous pending-batch acknowledgement preserves the manual takeover fence', async () => {
-        mockActiveJobs = [{
-            name: 'processPullRequestComment',
-            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
-        }];
+    test('ambiguous atomic takeover acknowledgement preserves its recovery intent', async () => {
         const event = createPRCommentEvent('/review');
         const config = createTestConfig();
-        config.redisClient.eval.mock.mockImplementation(async (
-            script: string,
-            _keyCount: number,
-            ...args: string[]
-        ) => {
-            if (script.includes("local existing = redis.call('GET', KEYS[1])")) {
-                const [sequenceKey, counterKey] = args;
-                const existing = config.redisClient._store.get(sequenceKey);
-                if (existing) return Number(existing);
-                const next = Number(config.redisClient._store.get(counterKey) ?? '0') + 1;
-                config.redisClient._store.set(counterKey, String(next));
-                config.redisClient._store.set(sequenceKey, String(next));
-                return next;
-            }
-            if (script.includes("redis.call('RPUSH', KEYS[1]")) {
-                const [pendingKey, stageKey, serializedComment, , , sequence] = args;
-                const list = config.redisClient._lists.get(pendingKey) ?? [];
-                list.push(serializedComment);
-                config.redisClient._lists.set(pendingKey, list);
-                config.redisClient._store.set(stageKey, sequence);
-                throw new Error('connection lost after Redis accepted batch');
-            }
-            throw new Error('unexpected script');
+        mockBeginManualTakeover.mock.mockImplementationOnce(async (...args) => {
+            await stageMockManualTakeover(...args);
+            throw new Error('connection lost after Redis accepted takeover');
         });
 
         await assert.rejects(
             processCommentEvent(event, 'issue_comment', 'corr-ambiguous-batch', config),
-            /connection lost after Redis accepted batch/,
+            /connection lost after Redis accepted takeover/,
         );
 
         assert.strictEqual(mockAbortManualTakeover.mock.callCount(), 0);
@@ -1106,6 +1095,10 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(
             [...config.redisClient._store.entries()].some(([key, value]) =>
                 key.startsWith('pr-command-takeover:') && value === '1'),
+            true,
+        );
+        assert.strictEqual(
+            [...config.redisClient._store.keys()].some(key => key.endsWith(':intent')),
             true,
         );
     });

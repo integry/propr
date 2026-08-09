@@ -18,6 +18,13 @@ export interface UltrafixDeferredContinuation {
 
 export type UltrafixIdentity = Pick<UltrafixDeferredContinuation, 'owner' | 'repo' | 'pr'>;
 
+export interface ManualUltrafixTakeoverRecovery {
+    stageKey: string;
+    intentKey: string;
+    serializedComment: string;
+    ttlSeconds: number;
+}
+
 const DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
 const DEFERRED_GENERATION_KEY_PREFIX = 'ultrafix:deferred-generation';
 const GENERATION_ALLOCATION_KEY_PREFIX = 'ultrafix:generation-allocation';
@@ -51,6 +58,17 @@ export function getUltrafixFreshReservationKey(owner: string, repo: string, pr: 
 }
 
 const BEGIN_MANUAL_TAKEOVER_SCRIPT = `
+local function stage_recovery()
+    if #KEYS < 4 then
+        return
+    end
+    if redis.call('GET', KEYS[3]) ~= ARGV[1] then
+        redis.call('SET', KEYS[3], ARGV[1], 'EX', ARGV[2])
+    else
+        redis.call('EXPIRE', KEYS[3], ARGV[2])
+    end
+    redis.call('SET', KEYS[4], ARGV[3], 'EX', ARGV[2])
+end
 local applied = tonumber(redis.call('GET', KEYS[1]) or '0')
 local fenced = tonumber(redis.call('GET', KEYS[2]) or '0')
 local incoming = tonumber(ARGV[1])
@@ -58,9 +76,12 @@ if incoming <= applied or incoming < fenced then
     return 0
 end
 if incoming == fenced then
+    redis.call('EXPIRE', KEYS[2], ARGV[2])
+    stage_recovery()
     return 1
 end
 redis.call('SET', KEYS[2], ARGV[1], 'EX', ARGV[2])
+stage_recovery()
 return 1
 `;
 
@@ -213,16 +234,20 @@ export async function beginManualUltrafixTakeover(
     redis: Redis,
     identity: UltrafixIdentity,
     commandSequence: number,
+    recovery?: ManualUltrafixTakeoverRecovery,
 ): Promise<boolean> {
     const orderKey = getUltrafixTransitionOrderKey(identity.owner, identity.repo, identity.pr);
     const fenceKey = getUltrafixTakeoverFenceKey(identity.owner, identity.repo, identity.pr);
+    const keys = recovery
+        ? [orderKey, fenceKey, recovery.stageKey, recovery.intentKey]
+        : [orderKey, fenceKey];
     return Number(await redis.eval(
         BEGIN_MANUAL_TAKEOVER_SCRIPT,
-        2,
-        orderKey,
-        fenceKey,
+        keys.length,
+        ...keys,
         String(commandSequence),
-        String(TAKEOVER_FENCE_TTL_SECONDS),
+        String(recovery?.ttlSeconds ?? TAKEOVER_FENCE_TTL_SECONDS),
+        recovery?.serializedComment ?? '',
     )) === 1;
 }
 

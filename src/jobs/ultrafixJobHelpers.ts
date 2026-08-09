@@ -15,6 +15,7 @@ import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
 import {
     adoptLegacyUltrafixGeneration,
+    commitFreshUltrafixLoop,
     getActiveUltrafixTakeoverSequence,
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
@@ -64,21 +65,36 @@ export async function guardUltrafixJobExecution(
             generation,
         );
         if (reserved) {
-            const waitCount = (job.data.ultrafixStartupWaitCount ?? 0) + 1;
-            const retryData = { ...job.data, ultrafixStartupWaitCount: waitCount };
-            await (await getIssueQueue()).add(job.name, retryData, {
-                jobId: `pr-comments-ultrafix-wait-${params.repoOwner}-${params.repoName}-${params.pullRequestNumber}-${generation}-${waitCount}`,
-                delay: 5_000,
-                attempts: 3,
-                backoff: { type: 'exponential', delay: 10_000 },
-            });
+            const recovery = job.data.ultrafixStartupRecovery;
+            if (!recovery || recovery.generation !== generation) {
+                params.correlatedLogger.warn(
+                    { pullRequestNumber: params.pullRequestNumber, generation },
+                    'Reserved Ultrafix startup job has no matching recovery data; cancelling safely',
+                );
+                return { status: 'cancelled', reason: 'ultrafix_startup_unrecoverable' };
+            }
+            const committed = await commitFreshUltrafixLoop(params.redisClient, {
+                owner: params.repoOwner,
+                repo: params.repoName,
+                pr: params.pullRequestNumber,
+                commandSequence: recovery.commandSequence,
+                generation: recovery.generation,
+                baseGeneration: recovery.baseGeneration,
+                goal: recovery.goal,
+                maxCycles: recovery.maxCycles,
+                pauseSeconds: recovery.pauseSeconds,
+                reviewModel: recovery.reviewModel,
+            }, recovery.initialAction === 'fix');
+            if (!committed || !await checkUltrafixGeneration(job, params)) {
+                return { status: 'cancelled', reason: 'ultrafix_startup_superseded' };
+            }
             params.correlatedLogger.info(
                 { pullRequestNumber: params.pullRequestNumber, generation },
-                'Ultrafix startup publication is pending; rescheduled reserved job',
+                'Recovered and published reserved Ultrafix startup from its durable first job',
             );
-            return { status: 'rescheduled', reason: 'ultrafix_startup_pending' };
+        } else {
+            return { status: 'cancelled', reason: 'ultrafix_superseded' };
         }
-        return { status: 'cancelled', reason: 'ultrafix_superseded' };
     }
     if (!await checkUltrafixReadiness(job, params)) {
         if (!await checkUltrafixGeneration(job, params)) {

@@ -67,12 +67,23 @@ export interface CommentJobData {
     commandSequence?: number;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
-    /** Deterministic retry ordinal while a fresh Ultrafix generation is reserved but unpublished. */
-    ultrafixStartupWaitCount?: number;
+    /** Durable data that lets the first job publish a reserved fresh loop after intake crashes. */
+    ultrafixStartupRecovery?: UltrafixStartupRecovery;
     /** Reasoning level override resolved from PR or linked issue level-* labels. */
     reasoningLevel?: ReasoningLevel;
     /** Internal lease token persisted across BullMQ redelivery and rescheduling. */
     prProcessingLockToken?: string;
+}
+
+export interface UltrafixStartupRecovery {
+    commandSequence: number;
+    generation: number;
+    baseGeneration: number;
+    goal: number;
+    maxCycles: number;
+    pauseSeconds: number;
+    reviewModel: string;
+    initialAction: 'review' | 'fix';
 }
 
 export interface UnprocessedComment {
