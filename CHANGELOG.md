@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.6] - 2026-08-03
+## [0.8.6] - 2026-08-09
 
 ### Added
 
@@ -19,17 +19,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host path. Managed credentials live below ProPR's credential root and allow
   multiple accounts from the same provider; existing host config remains an
   explicit alternative.
+- **Review and PR decomposition workflows**: `/split` can create an authorized,
+  idempotent PR-splitting operation, while model-aware context scouting enriches
+  reviews within a configurable context budget and can be disabled per instance.
+- **Instance administration**: explicit administrator roles separate privileged
+  instance management from ordinary authenticated access.
 - **Documentation**: security overview (trust boundaries, isolation, network
   surface, user-whitelist gating), evaluator FAQ, glossary, consolidated
   configuration reference (shipped vs code defaults), and a symptom-organized
   troubleshooting guide; intro gains a "First 15 Minutes" panel and the
   hosted-UI-tunnel docs are canonicalized to the deployment guide.
 
+### Changed
+
+- **Focused AI reviews**: reviews now evaluate the stated PR scope, keep
+  suggestions separate from `/fix`, assign durable incremental finding IDs,
+  explain blockers and suggestions in human-readable sections, and acknowledge
+  implementation strengths without inflating the score.
+- **Scope-safe Ultrafix cycles**: follow-up reviews and fixes retain the original
+  PR objective, consume only current actionable findings, and preserve command
+  ownership when comments are batched or superseded.
+
 ### Fixed
 
 - **Fail-closed runtime safety**: webhook and merge checks require verified
   signals, configuration writes reconcile post-commit failures, and planner
   cancellation/live progress are isolated by generation run ID.
+- **Task lifecycle ownership**: revision-ordered socket updates, fenced Docker
+  execution and teardown, stale-task reconciliation, and reliable PR-comment
+  finalization prevent older work from overwriting or terminating newer work.
+- **Ultrafix orchestration**: CI readiness is action-aware (failed checks may be
+  fixed, while reviews wait for a settled exact head); manual commands cancel
+  superseded automatic jobs; fresh-loop startup, label teardown, terminal side
+  effects, and deferred work are protected by renewable ownership and epochs.
+- **Release and agent reliability**: nightly model coverage is deterministically
+  bounded, immutable artifacts are preflighted, production image smoke coverage
+  is restored, failed unified-agent image builds recover cleanly, and remote
+  downloads plus Antigravity release artifacts are verified and pinned.
+- **Event delivery and CI reporting**: routing WebSocket health requires an
+  application heartbeat, direct webhook traffic is rate-limited, and CI creates
+  a fresh failure comment only when a check actually fails.
 - **Web UI**: dead `/agents` link in the no-models helper (now `/ai-agents`)
   plus a catch-all 404 route; "Planner Studio" tab title; Agent Tank banner
   reframed to rate-limit capacity; human-readable API error messages;
@@ -48,6 +77,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authenticated agent-login containers. Docker-socket access is root-equivalent
   host access; deployment and security documentation now call out this trust
   boundary explicitly.
+- OAuth state is validated, strong session secrets are mandatory, WebSocket
+  subscriptions are authenticated, public API and webhook routes are
+  rate-limited, and direct API runs bind to loopback by default.
+- Untrusted input parsing and repository filesystem paths are bounded and
+  contained; subprocesses execute without a shell; failed uploads are cleaned
+  up; agent containers receive explicit resource limits; and local CLI state is
+  created with private permissions.
+- CodeQL and dependency-review gates now run in CI, preview checkouts are pinned,
+  vulnerable transitive dependencies were refreshed, and a security policy was
+  added.
 
 ## [0.8.5] - 2026-06-30
 
