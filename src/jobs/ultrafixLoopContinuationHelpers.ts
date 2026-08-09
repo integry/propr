@@ -18,6 +18,7 @@ import {
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
+import { requiresPassingChecks } from './ultrafixReadinessPolicy.js';
 import type {
     UltrafixContinuationParams,
     ChecksPassingFn,
@@ -177,14 +178,23 @@ export async function enqueueNextStep(
 }
 
 export async function evaluateCIChecksPassing(
-    params: Pick<UltrafixContinuationParams, 'owner' | 'repo' | 'pullRequestNumber' | 'completedAction' | 'correlatedLogger'>,
+    params: Pick<UltrafixContinuationParams, 'owner' | 'repo' | 'pullRequestNumber' | 'completedAction' | 'correlatedLogger'> & {
+        nextAction: UltrafixAction;
+    },
     deps: {
         areAllChecksPassing: ChecksPassingFn | null;
         getCurrentPRHead: GetPRHeadFn | null;
         getCheckRunsStatus: GetCheckRunsStatusFn | null;
     },
 ): Promise<boolean> {
-    const { owner, repo, pullRequestNumber, completedAction, correlatedLogger } = params;
+    const { owner, repo, pullRequestNumber, completedAction, nextAction, correlatedLogger } = params;
+    if (!requiresPassingChecks(nextAction)) {
+        correlatedLogger.debug(
+            { pullRequestNumber, completedAction, nextAction },
+            'Ultrafix readiness: allowing fix transition without passing CI checks',
+        );
+        return true;
+    }
     if (!deps.getCurrentPRHead) {
         correlatedLogger.warn({ pullRequestNumber }, 'Ultrafix readiness: check_run deps not wired, assuming checks NOT passing');
         return false;
@@ -207,6 +217,7 @@ export async function evaluateCIChecksPassing(
 
 export async function evaluateReadiness(
     params: UltrafixContinuationParams,
+    nextAction: UltrafixAction,
     deps: {
         areAllChecksPassing: ChecksPassingFn | null;
         getCurrentPRHead: GetPRHeadFn | null;
@@ -215,7 +226,7 @@ export async function evaluateReadiness(
 ): Promise<UltrafixReadinessResult> {
     const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, currentJobId, completedAction } = params;
     const allChecksPassing = await evaluateCIChecksPassing(
-        { owner, repo, pullRequestNumber, completedAction, correlatedLogger },
+        { owner, repo, pullRequestNumber, completedAction, nextAction, correlatedLogger },
         deps,
     );
 

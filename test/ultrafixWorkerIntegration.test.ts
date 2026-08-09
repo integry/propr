@@ -41,6 +41,7 @@ import {
     type UltrafixAction,
     type UltrafixDeferredContinuation,
 } from '../src/jobs/ultrafixOrchestrationService.js';
+import { requiresPassingChecks } from '../src/jobs/ultrafixReadinessPolicy.js';
 import type { ReviewOutputStatus } from '../src/jobs/reviewCommentGatherer.js';
 
 // --- Mock Redis ---
@@ -138,7 +139,11 @@ async function simulateContinuation(input: SimulatedContinuationInput): Promise<
     }
 
     // 7. Readiness gating
-    const readiness = checkReadiness({ allChecksPassing, hasFollowUpJobs, hasPendingComments });
+    const readiness = checkReadiness({
+        allChecksPassing: !requiresPassingChecks(decision.action) || allChecksPassing,
+        hasFollowUpJobs,
+        hasPendingComments,
+    });
 
     if (!readiness.ready) {
         await saveDeferredContinuation(redis as any, {
@@ -440,7 +445,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
 
     // --- Readiness gating ---
 
-    test('defers when checks are not passing', async () => {
+    test('continues review-to-fix when checks are not passing', async () => {
         await startLoop(redis as any, { owner: O, repo: R, pr: PR, goal: 8 }, false);
 
         const result = await simulateContinuation({
@@ -453,14 +458,29 @@ describe('Ultrafix worker integration — full continuation flow', () => {
             hasPendingComments: false,
         });
 
+        assert.strictEqual(result.continued, true);
+        assert.strictEqual(result.nextAction, 'fix');
+        assert.strictEqual(result.deferred, undefined);
+        assert.strictEqual(await loadDeferredContinuation(redis as any, O, R, PR), null);
+    });
+
+    test('defers fix-to-review when checks are not passing', async () => {
+        await startLoop(redis as any, { owner: O, repo: R, pr: PR, goal: 8 }, false);
+
+        const result = await simulateContinuation({
+            redis, owner: O, repo: R, pr: PR,
+            completedAction: 'fix',
+            labelPresent: true,
+            latestScore: null,
+            allChecksPassing: false,
+            hasFollowUpJobs: false,
+            hasPendingComments: false,
+        });
+
         assert.strictEqual(result.continued, false);
         assert.strictEqual(result.deferred, true);
         assert.ok(result.reason.includes('checks_not_passing'));
-
-        // Deferred record should exist
-        const deferred = await loadDeferredContinuation(redis as any, O, R, PR);
-        assert.ok(deferred);
-        assert.strictEqual(deferred!.nextAction, 'fix');
+        assert.strictEqual((await loadDeferredContinuation(redis as any, O, R, PR))?.nextAction, 'review');
     });
 
     test('defers when follow-up jobs exist', async () => {
@@ -513,7 +533,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
         });
 
         assert.strictEqual(result.deferred, true);
-        assert.ok(result.reason.includes('checks_not_passing'));
+        assert.ok(!result.reason.includes('checks_not_passing'));
         assert.ok(result.reason.includes('follow_up_jobs_active'));
         assert.ok(result.reason.includes('pending_comments_exist'));
     });
@@ -531,7 +551,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
             latestScore: 5,
             allChecksPassing: false,
             hasFollowUpJobs: false,
-            hasPendingComments: false,
+            hasPendingComments: true,
         });
 
         const deferred = await loadDeferredContinuation(redis as any, O, R, PR);
@@ -564,7 +584,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
     test('deferred record is cleared when continuation proceeds', async () => {
         await startLoop(redis as any, { owner: O, repo: R, pr: PR, goal: 8 }, false);
 
-        // First: defer due to checks failing
+        // First: defer due to pending batched comments
         await simulateContinuation({
             redis, owner: O, repo: R, pr: PR,
             completedAction: 'review',
@@ -572,7 +592,7 @@ describe('Ultrafix worker integration — full continuation flow', () => {
             latestScore: 5,
             allChecksPassing: false,
             hasFollowUpJobs: false,
-            hasPendingComments: false,
+            hasPendingComments: true,
         });
 
         // Deferred should exist
