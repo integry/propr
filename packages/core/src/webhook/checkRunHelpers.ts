@@ -553,11 +553,7 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
         const labels = prResponse.data.labels as Array<{ name: string }>;
         const hasLabel = labels.some(label => label.name === 'auto-merge');
         const hasUltrafixLabel = labels.some(label => label.name === 'ultrafix');
-        let ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
-        if (!hasUltrafixLabel && ultrafixState) {
-            await clearUltrafixLoopState(owner, repoName, prNumber);
-            ultrafixState = null;
-        }
+        const ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;
