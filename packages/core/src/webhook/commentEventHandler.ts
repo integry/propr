@@ -278,7 +278,8 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
         if (takeoverDeps) {
             await cancelDeferredUltrafixTransition(
-                takeoverDeps, redisClient, { owner, repo, prNumber }, correlationId, correlatedLogger,
+                takeoverDeps,
+                { redisClient, owner, repo, prNumber, correlationId, correlatedLogger },
             );
         }
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
@@ -296,19 +297,24 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     });
     if (takeoverDeps) {
         await cancelDeferredUltrafixTransition(
-            takeoverDeps, redisClient, { owner, repo, prNumber }, correlationId, correlatedLogger,
+            takeoverDeps,
+            { redisClient, owner, repo, prNumber, correlationId, correlatedLogger },
         );
     }
 }
 
 async function cancelDeferredUltrafixTransition(
     deps: UltrafixDeps,
-    redisClient: Redis,
-    identity: { owner: string; repo: string; prNumber: number },
-    correlationId: string,
-    correlatedLogger: ReturnType<typeof logger.withCorrelation>,
+    options: {
+        redisClient: Redis;
+        owner: string;
+        repo: string;
+        prNumber: number;
+        correlationId: string;
+        correlatedLogger: ReturnType<typeof logger.withCorrelation>;
+    },
 ): Promise<void> {
-    const { owner, repo, prNumber } = identity;
+    const { redisClient, owner, repo, prNumber, correlationId, correlatedLogger } = options;
     await deps.withTransitionLease(
         redisClient,
         { owner, repo, pr: prNumber },
