@@ -170,31 +170,29 @@ export async function finishUltrafixLoop(input: {
             workEpoch,
         });
         if (!completedState) return false;
-        if (!goalReached) return true;
+        if (!goalReached) {
+            const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
+            const manualReason = cleanReviewMissedGoal
+                ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
+                : 'Max cycles were exhausted, so manual review and merge are now required.';
+            await postPrComment({
+                owner,
+                repo,
+                pullRequestNumber,
+                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${state.goal}/10. Last score: ${latestScore ?? 'unknown'}. ${manualReason}`,
+                correlatedLogger,
+            });
+            return true;
+        }
 
         const stateCleared = await clearUltrafixStateIfCurrent(redisClient, identity, workEpoch);
         if (!stateCleared) return false;
         await clearDeferredContinuationIfCurrent(redisClient, identity, workEpoch);
         await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+        await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
         return true;
     });
     if (!finishResult) return { continued: false, reason: 'ultrafix_superseded' };
-
-    if (goalReached) {
-        await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
-    } else {
-        const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
-        const manualReason = cleanReviewMissedGoal
-            ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
-            : 'Max cycles were exhausted, so manual review and merge are now required.';
-        await postPrComment({
-            owner,
-            repo,
-            pullRequestNumber,
-            body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${state.goal}/10. Last score: ${latestScore ?? 'unknown'}. ${manualReason}`,
-            correlatedLogger,
-        });
-    }
 
     correlatedLogger.info(
         { pullRequestNumber, reason: decisionReason, cycleCount: state.cycleCount, goalReached },
