@@ -226,7 +226,7 @@ export async function continueUltrafixLoop(
     }
 
     // 7. Readiness gating — verify all conditions before enqueueing
-    const readiness = await evaluateReadiness(params, {
+    const readiness = await evaluateReadiness(params, decision.action, {
         areAllChecksPassing: _areAllChecksPassing,
         getCurrentPRHead: _getCurrentPRHead,
         getCheckRunsStatus: _getCheckRunsStatus,
@@ -322,7 +322,7 @@ export async function resumeDeferredContinuation(
         correlationId,
     };
 
-    const readiness = await evaluateReadiness(params, {
+    const readiness = await evaluateReadiness(params, deferred.nextAction, {
         areAllChecksPassing: _areAllChecksPassing,
         getCurrentPRHead: _getCurrentPRHead,
         getCheckRunsStatus: _getCheckRunsStatus,

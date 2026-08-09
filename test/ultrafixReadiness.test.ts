@@ -16,6 +16,7 @@ import {
     type UltrafixLoopState,
     type UltrafixDeferredContinuation,
 } from '../src/jobs/ultrafixOrchestrationService.js';
+import { requiresPassingChecks } from '../src/jobs/ultrafixReadinessPolicy.js';
 
 // --- Mock Redis ---
 
@@ -91,6 +92,13 @@ describe('areChecksReadyForUltrafix', () => {
         });
 
         assert.strictEqual(result, true);
+    });
+});
+
+describe('action-aware CI readiness', () => {
+    test('requires passing checks only for the concrete review action', () => {
+        assert.strictEqual(requiresPassingChecks('fix'), false);
+        assert.strictEqual(requiresPassingChecks('review'), true);
     });
 });
 
