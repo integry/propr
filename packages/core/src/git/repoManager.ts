@@ -12,7 +12,11 @@ import {
     addToSafeDirectories,
     getWorktreePath
 } from './worktreeOperations.js';
-import { cleanupExistingBranch, createWorktreeFromExistingBranch } from './worktreeCreation.js';
+import {
+    addWorktreeWithoutTracking,
+    cleanupExistingBranch,
+    createWorktreeFromExistingBranch,
+} from './worktreeCreation.js';
 import { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch, redactAuthenticatedGitUrl } from './repoBranching.js';
 import { commitChanges } from './commitOperations.js';
 import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations } from './branchConfig.js';
@@ -282,7 +286,12 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
             throw fetchError;
         }
 
-        await git.raw(['worktree', 'add', worktreePath, '-b', branchName, `origin/${resolvedBaseBranch}`]);
+        await addWorktreeWithoutTracking(
+            git,
+            worktreePath,
+            branchName,
+            { startPoint: `origin/${resolvedBaseBranch}` },
+        );
         await setupWorktreePermissions(worktreePath, branchName, issueId);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId });
 

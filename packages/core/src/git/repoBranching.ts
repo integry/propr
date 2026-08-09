@@ -73,7 +73,10 @@ export async function ensureBranchAndPush(worktreePath: string, branchName: stri
             logger.debug({ error: (diffError as Error).message }, 'Could not check diff, proceeding anyway');
         }
 
-        await git.push(['--set-upstream', 'origin', branchName]);
+        // Every ProPR push names its remote and branch explicitly. Avoid
+        // writing branch tracking state into the shared clone config, where
+        // parallel worktrees would contend on `.git/config.lock`.
+        await git.push(['origin', branchName]);
         logger.info({ branchName, baseBranch, worktreePath }, 'Branch successfully pushed to remote');
     };
 
@@ -170,7 +173,7 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
             logger.warn({ error: (branchCheckError as Error).message }, 'Failed to verify current branch, proceeding with push anyway');
         }
 
-        await git.push([remote, branchName, '--set-upstream']);
+        await git.push([remote, branchName]);
     };
 
     const rebaseOntoRemoteAndPush = async (token: string | undefined, originalError: unknown): Promise<PushBranchResult> => {
