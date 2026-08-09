@@ -52,8 +52,7 @@ import {
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
     port: parseInt(process.env.REDIS_PORT || '6379', 10),
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
+    maxRetriesPerRequest: null, enableReadyCheck: false,
 });
 
 interface PRData { data: { head: { ref: string; sha?: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
@@ -397,7 +396,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     if (await shouldDeferUltrafixReview(job, redisClient, logger.withCorrelation(job.data.correlationId))) return { status: 'deferred', reason: 'ultrafix_waiting_for_exact_head_checks' };
     const context = await initializePRJobContext(job);
-    const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, llm } = context;
+    const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
+    correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
     if (await restorePendingCommentsIfUltrafixJobSuperseded(job, { repoOwner, repoName, pullRequestNumber, redisClient }, context.pickedUpComments, context.originalUltrafixMeta)) return { status: 'cancelled', reason: 'ultrafix_superseded' };
 
     const modelName = await resolvePRCommentModelName(llm, correlatedLogger);
