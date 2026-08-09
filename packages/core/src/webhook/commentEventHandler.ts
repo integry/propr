@@ -10,6 +10,7 @@ import { withRetry } from '../utils/retryHandler.js';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import { createHash } from 'node:crypto';
+import { withUltrafixLabelTransition } from '../utils/ultrafixLabelTransition.js';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
 import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels, modelLabelPrefix } from './commentEventHelpers.js';
 import { handleMergeCommand } from './mergeConflictDetector.js';
@@ -28,9 +29,9 @@ export interface UltrafixDeps {
     loadUltrafixPauseSeconds: () => Promise<number>;
     loadPrReviewModel: () => Promise<string>;
     startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; workEpoch?: number }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
-    clearState: (redis: Redis, owner: string, repo: string, pr: number) => Promise<void>;
+    clearStateIfCurrent: (redis: Redis, identity: { owner: string; repo: string; pr: number }, workEpoch: number) => Promise<boolean>;
     hasAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<boolean>;
-    getAutomaticWorkEpoch: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
+    reserveAutomaticWork: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
     invalidateAutomaticWork: (redis: Redis, identity: { owner: string; repo: string; pr: number; sourceCommentId: number; sourceCommentRevision: string }) => Promise<{ workEpoch: number; hadAutomaticWork: boolean }>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
@@ -405,21 +406,19 @@ type UltrafixCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> 
 
 async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void> {
     const { commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
-    const { eventType, prNumber, owner, repo } = eventContext;
+    const { prNumber, owner, repo } = eventContext;
     const { redisClient } = config;
 
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/ultrafix command detected, initializing loop');
 
     // 1. Load configured defaults from settings, then override with command arguments
     const deps = loadUltrafixDeps();
-    const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel, workEpoch] = await Promise.all([
+    const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel] = await Promise.all([
         deps.loadUltrafixRatingGoal(),
         deps.loadUltrafixMaxCycles(),
         deps.loadUltrafixPauseSeconds(),
         deps.loadPrReviewModel(),
-        deps.getAutomaticWorkEpoch(redisClient, owner, repo, prNumber),
     ]);
-    const loopMeta: UltrafixCommandMeta = { ...commandMeta, workEpoch };
 
     // Command args override DB defaults; undefined means "not provided by user".
     const effectiveGoal = commandMeta.goal ?? dbGoal;
@@ -427,69 +426,79 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     const effectivePauseSeconds = commandMeta.pauseSeconds ?? dbPauseSeconds;
     const effectiveReviewModel = commandMeta.reviewModel ?? dbReviewModel;
 
-    // 2. Check for existing active/waiting jobs (batching/concurrency guard) BEFORE
-    //    posting comments or mutating labels to avoid duplicate side effects.
+    // A fresh loop must not be reinterpreted as an ordinary follow-up by the
+    // worker that owns older PR work. When work is already in flight, queue a
+    // conservative review behind it instead of duplicating a possibly active fix.
     const strippedComment = { ...comment, body: commandMeta.instructions || '' };
     const existingJob = await checkExistingJob(prNumber, owner, repo);
-    if (existingJob) {
-        // Store the original ultrafix meta so commandMode is 'ultrafix', not a provisional value.
-        // The actual initial action (review vs fix) will be determined when the batch is processed.
-        await storeCommentForBatch(
-            { ...strippedComment, ...buildPendingCommandFields(commandMeta), ultrafixMeta: loopMeta },
-            commentAuthor,
-            eventContext,
-            { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },
-        );
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id }, '/ultrafix command: existing job found for PR, stored comment for batch processing');
-        return;
-    }
 
-    // 3. Query pending review state to decide initial action
     const octokit = await getAuthenticatedOctokit();
-    const prComments = await withRetry(
-        () => octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: prNumber, per_page: 100 }),
-        { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
-        `get_pr_comments_${owner}_${repo}_${prNumber}`
-    ) as Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>;
-
-    const { hasPendingReview } = await deps.getPendingReviewState(
-        prComments as Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>,
-        { repoOwner: owner, repoName: repo, pullRequestNumber: prNumber, redisClient, correlatedLogger },
-    );
-
-    // 4. Add `ultrafix` label to the PR
-    const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
-    const hasUltrafixLabel = prData.prLabels.some(l => l.name === 'ultrafix');
-    const labelWasAdded = !hasUltrafixLabel;
-    if (labelWasAdded) {
-        await safeUpdateLabels(
-            { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
-            [],
-            ['ultrafix'],
-        );
+    let hasPendingReview = false;
+    if (!existingJob) {
+        const prComments = await withRetry(
+            () => octokit.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/comments', { owner, repo, issue_number: prNumber, per_page: 100 }),
+            { maxAttempts: 3, baseDelay: 2000, maxDelay: 10000, exponentialBase: 2 },
+            `get_pr_comments_${owner}_${repo}_${prNumber}`
+        ) as Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>;
+        ({ hasPendingReview } = await deps.getPendingReviewState(
+            prComments,
+            { repoOwner: owner, repoName: repo, pullRequestNumber: prNumber, redisClient, correlatedLogger },
+        ));
     }
 
-    // 5. Determine the initial action based on pending review state
-    const initialAction: 'review' | 'fix' = hasPendingReview ? 'fix' : 'review';
+    const identity = { owner, repo, pr: prNumber };
+    let prData: PRBranchAndLabels | undefined;
+    let workEpoch: number | undefined;
+    let loopMeta: UltrafixCommandMeta = commandMeta;
+    let initialAction: 'review' | 'fix' = 'review';
+    let labelIntroduced = false;
 
-    // 6. Persist ultrafix state and enqueue the first job. If either fails, roll
-    //    back everything (state, label, post failure comment). Once both have
-    //    committed, the loop is live and we must NOT roll them back — even if the
-    //    subsequent "started" comment post fails.
+    // The reserved epoch fences older queued, deferred, and in-flight automatic
+    // continuations. State commit and rollback are both conditional on ownership.
     try {
-        await deps.startLoop(redisClient, {
-            owner,
-            repo,
-            pr: prNumber,
-            goal: effectiveGoal,
-            maxCycles: effectiveMaxCycles,
-            pauseSeconds: effectivePauseSeconds,
-            reviewModel: effectiveReviewModel,
-            workEpoch,
-        }, hasPendingReview);
+        let olderPrWorkExists = false;
+        await withUltrafixLabelTransition(redisClient, identity, async () => {
+            // Read live label state while holding the same lease used by label
+            // cleanup so rollback can distinguish an inherited circuit breaker
+            // from one introduced by this startup.
+            prData = await getLivePRBranchAndLabels({ owner, repo, prNumber });
+            const labelWasPresent = prData.prLabels.some(label => label.name === 'ultrafix');
+            // Snapshot live or deferred work before reservation invalidates it.
+            const hadAutomaticWork = await deps.hasAutomaticWork(redisClient, owner, repo, prNumber);
+            workEpoch = await deps.reserveAutomaticWork(redisClient, owner, repo, prNumber);
+            loopMeta = { ...commandMeta, workEpoch };
+            // Close the gap between the first queue snapshot and reservation. Work
+            // that appeared in that interval must settle before this loop reviews it.
+            olderPrWorkExists = Boolean(hadAutomaticWork || existingJob || await checkExistingJob(prNumber, owner, repo));
+            const startWithPendingReview = !olderPrWorkExists && hasPendingReview;
+            initialAction = startWithPendingReview ? 'fix' : 'review';
+
+            // Publish the circuit breaker before the active state. Terminal label
+            // removal uses this same transition lock, so no stale teardown can
+            // open a label gap around a newer epoch.
+            const labelResult = await safeUpdateLabels(
+                { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
+                [],
+                ['ultrafix'],
+            );
+            const labelAsserted = labelResult.added.includes('ultrafix');
+            if (!labelAsserted) throw new Error('Failed to add the ultrafix circuit-breaker label');
+            labelIntroduced = !labelWasPresent;
+
+            await deps.startLoop(redisClient, {
+                owner,
+                repo,
+                pr: prNumber,
+                goal: effectiveGoal,
+                maxCycles: effectiveMaxCycles,
+                pauseSeconds: effectivePauseSeconds,
+                reviewModel: effectiveReviewModel,
+                workEpoch,
+            }, startWithPendingReview);
+        });
 
         correlatedLogger.info(
-            { pullRequestNumber: prNumber, initialAction, effectiveGoal, effectiveMaxCycles, effectivePauseSeconds, effectiveReviewModel },
+            { pullRequestNumber: prNumber, initialAction, olderPrWorkExists, workEpoch, effectiveGoal, effectiveMaxCycles, effectivePauseSeconds, effectiveReviewModel },
             `/ultrafix initialized, first action: ${initialAction}`,
         );
 
@@ -510,22 +519,30 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             ultrafixMeta: loopMeta,
         });
     } catch (error) {
-        // Rollback: remove the ultrafix label if we added it, clear loop state, and post a failure comment.
-        // This is safe because the enqueued job has NOT committed if we land here.
         correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed before job enqueue, rolling back');
         try {
-            await deps.clearState(redisClient, owner, repo, prNumber);
-
-            if (labelWasAdded) {
-                await safeUpdateLabels(
-                    { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
-                    ['ultrafix'],
-                    [],
-                );
+            let labelRemoved = false;
+            const reservedWorkEpoch = workEpoch;
+            if (reservedWorkEpoch !== undefined) {
+                await withUltrafixLabelTransition(redisClient, identity, async () => {
+                    const cleared = await deps.clearStateIfCurrent(
+                        redisClient,
+                        identity,
+                        reservedWorkEpoch,
+                    );
+                    if (cleared && labelIntroduced) {
+                        const labelResult = await safeUpdateLabels(
+                            { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
+                            ['ultrafix'],
+                            [],
+                        );
+                        labelRemoved = labelResult.removed.includes('ultrafix');
+                    }
+                });
             }
-            const labelNote = labelWasAdded
+            const labelNote = labelRemoved
                 ? 'The ultrafix label has been removed.'
-                : 'The existing ultrafix label was left in place — remove it manually if you do not want further ultrafix cycles.';
+                : 'No newer Ultrafix state or label was removed.';
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner,
                 repo,
@@ -718,19 +735,23 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
 }
 
 async function getPRBranchAndLabels(eventType: CommentEventType, payload: IssueCommentEvent | PullRequestReviewCommentEvent, repoContext: RepoContext): Promise<PRBranchAndLabels> {
-    const { owner, repo, prNumber } = repoContext;
     if (eventType === 'issue_comment') {
-        const octokit = await getAuthenticatedOctokit();
-        // Retry up to ~1 minute: 3s + 6s + 12s + 20s + 20s = 61s total
-        const { data: pr } = await withRetry(
-            () => octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber }),
-            { maxAttempts: 6, baseDelay: 3000, maxDelay: 20000, exponentialBase: 2 },
-            `get_pr_details_${owner}_${repo}_${prNumber}`
-        );
-        return { branchName: pr.head.ref, prLabels: pr.labels || [] };
+        return getLivePRBranchAndLabels(repoContext);
     }
     const prPayload = payload as PullRequestReviewCommentEvent;
     return { branchName: prPayload.pull_request.head.ref, prLabels: prPayload.pull_request.labels || [] };
+}
+
+async function getLivePRBranchAndLabels(repoContext: RepoContext): Promise<PRBranchAndLabels> {
+    const { owner, repo, prNumber } = repoContext;
+    const octokit = await getAuthenticatedOctokit();
+    // Retry up to ~1 minute: 3s + 6s + 12s + 20s + 20s = 61s total
+    const { data: pr } = await withRetry(
+        () => octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', { owner, repo, pull_number: prNumber }),
+        { maxAttempts: 6, baseDelay: 3000, maxDelay: 20000, exponentialBase: 2 },
+        `get_pr_details_${owner}_${repo}_${prNumber}`
+    );
+    return { branchName: pr.head.ref, prLabels: pr.labels || [] };
 }
 
 function prepareComment(comment: { id: number; created_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventType: CommentEventType, keywords: string[]): { enhancedBody: string; unprocessedComment: UnprocessedComment; llmFromKeywords: string | null } {

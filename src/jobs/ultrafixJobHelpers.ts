@@ -15,9 +15,36 @@ import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuat
 import {
     isUltrafixAutomaticWorkCurrent,
     loadState as loadUltrafixState,
+    markFindingsSelected,
     type UltrafixAction,
 } from './ultrafixOrchestrationService.js';
 import { restorePendingComments } from './prPendingComments.js';
+
+interface SelectedReviewComment {
+    id: number;
+    actionableFindings: Array<{ id: string; title: string }>;
+}
+
+/** Persist the exact review findings owned by an automatic fix job. */
+export async function markSelectedUltrafixFindings(
+    job: Job<CommentJobData>,
+    redisClient: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    selectedReviewComments: SelectedReviewComment[],
+): Promise<void> {
+    if (!job.data.ultrafixMeta || selectedReviewComments.length === 0) return;
+    await markFindingsSelected(redisClient, {
+        ...identity,
+        workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
+        findings: selectedReviewComments.flatMap(comment =>
+            comment.actionableFindings.map(finding => ({
+                id: finding.id,
+                sourceCommentId: comment.id,
+                title: finding.title,
+            })),
+        ),
+    });
+}
 
 /** Reject delayed or retried automatic jobs superseded by a manual command. */
 export async function isUltrafixJobCurrent(

@@ -143,10 +143,10 @@ await mock.module('../packages/core/src/utils/commentFilters.js', {
 });
 
 // Mock safeUpdateLabels — capture calls for assertions
-const mockSafeUpdateLabels = mock.fn(async () => ({
+const mockSafeUpdateLabels = mock.fn(async (_context: unknown, labelsToRemove: string[] = [], labelsToAdd: string[] = []) => ({
     success: true,
-    removed: [],
-    added: ['ultrafix'],
+    removed: [...labelsToRemove],
+    added: [...labelsToAdd],
     errors: [],
 }));
 await mock.module('../packages/core/src/utils/github/labelOperations.js', {
@@ -198,8 +198,8 @@ const mockGetPendingReviewState = mock.fn(async () => ({
     hasPendingReview: false,
 }));
 
-const mockClearState = mock.fn(async () => {});
-const mockGetAutomaticWorkEpoch = mock.fn(async () => 0);
+const mockClearStateIfCurrent = mock.fn(async () => true);
+const mockReserveAutomaticWork = mock.fn(async () => 1);
 const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
 const mockHasAutomaticWork = mock.fn(async () => false);
 
@@ -209,9 +209,9 @@ setUltrafixDeps({
     loadUltrafixPauseSeconds: mock.fn(async () => 60),
     loadPrReviewModel: mock.fn(async () => ''),
     startLoop: mockStartLoop,
-    clearState: mockClearState,
+    clearStateIfCurrent: mockClearStateIfCurrent,
     hasAutomaticWork: mockHasAutomaticWork,
-    getAutomaticWorkEpoch: mockGetAutomaticWorkEpoch,
+    reserveAutomaticWork: mockReserveAutomaticWork,
     invalidateAutomaticWork: mockInvalidateAutomaticWork,
     getPendingReviewState: mockGetPendingReviewState,
 });
@@ -237,6 +237,11 @@ function createMockRedis() {
         }),
         del: mock.fn(async (key: string) => {
             store.delete(key);
+        }),
+        eval: mock.fn(async (_script: string, _keyCount: number, key: string, token: string) => {
+            if (store.get(key) !== token) return 0;
+            store.delete(key);
+            return 1;
         }),
         rpush: mock.fn(async () => {}),
         expire: mock.fn(async () => {}),
@@ -267,14 +272,22 @@ function createPRCommentEvent(body: string, labels: Label[] = []) {
 describe('commentEventHandler — /ultrafix command', () => {
     beforeEach(() => {
         mockSafeUpdateLabels.mock.resetCalls();
+        mockSafeUpdateLabels.mock.mockImplementation(async (_context: unknown, labelsToRemove: string[] = [], labelsToAdd: string[] = []) => ({
+            success: true,
+            removed: [...labelsToRemove],
+            added: [...labelsToAdd],
+            errors: [],
+        }));
         mockQueueAdd.mock.resetCalls();
+        mockQueueAdd.mock.mockImplementation(async () => {});
         mockOctokit.request.mock.resetCalls();
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
         mockStartLoop.mock.resetCalls();
-        mockClearState.mock.resetCalls();
-        mockGetAutomaticWorkEpoch.mock.resetCalls();
-        mockGetAutomaticWorkEpoch.mock.mockImplementation(async () => 0);
+        mockClearStateIfCurrent.mock.resetCalls();
+        mockClearStateIfCurrent.mock.mockImplementation(async () => true);
+        mockReserveAutomaticWork.mock.resetCalls();
+        mockReserveAutomaticWork.mock.mockImplementation(async () => 1);
         mockInvalidateAutomaticWork.mock.resetCalls();
         mockHasAutomaticWork.mock.resetCalls();
         mockHasAutomaticWork.mock.mockImplementation(async () => false);
@@ -326,7 +339,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(loopOptions.maxCycles, 5);   // DB default
         assert.strictEqual(loopOptions.pauseSeconds, 60); // DB default
         assert.strictEqual(loopOptions.reviewModel, ''); // DB default
-        assert.strictEqual(loopOptions.workEpoch, 0);
+        assert.strictEqual(loopOptions.workEpoch, 1);
 
         // Should add ultrafix label
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
@@ -343,13 +356,27 @@ describe('commentEventHandler — /ultrafix command', () => {
         const ultrafixMeta = jobData.ultrafixMeta as Record<string, unknown>;
         assert.ok(ultrafixMeta, 'Job data should include ultrafixMeta');
         assert.strictEqual(ultrafixMeta.mode, 'ultrafix');
-        assert.strictEqual(ultrafixMeta.workEpoch, 0);
+        assert.strictEqual(ultrafixMeta.workEpoch, 1);
 
         // Should have posted a circuit-breaker comment (Octokit request for POST comments)
         const postCalls = mockOctokit.request.mock.calls.filter(
             (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST')
         );
         assert.ok(postCalls.length > 0, 'Expected a POST request to create a comment');
+    });
+
+    test('asserts the circuit-breaker label before publishing active loop state', async () => {
+        mockSafeUpdateLabels.mock.mockImplementation(async (_context: unknown, labelsToRemove: string[] = [], labelsToAdd: string[] = []) => {
+            assert.strictEqual(mockStartLoop.mock.callCount(), 0);
+            return { success: true, removed: [...labelsToRemove], added: [...labelsToAdd], errors: [] };
+        });
+        mockStartLoop.mock.mockImplementation(async () => {
+            assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+            return { state: {}, initialAction: 'review' as const };
+        });
+
+        await processCommentEvent(createPRCommentEvent('/ultrafix'), 'issue_comment', 'corr-uf-label-first', createTestConfig());
+
     });
 
     test('tracking refresh failure after enqueue does not roll back Ultrafix startup', async () => {
@@ -363,7 +390,7 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         assert.strictEqual(mockStartLoop.mock.callCount(), 1);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        assert.strictEqual(mockClearState.mock.callCount(), 0);
+        assert.strictEqual(mockClearStateIfCurrent.mock.callCount(), 0);
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
 
         const postBodies = mockOctokit.request.mock.calls
@@ -460,7 +487,7 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(jobData.commandMode, 'review');
     });
 
-    test('/ultrafix is batched when an existing job is active for the same PR', async () => {
+    test('/ultrafix supersedes an existing job with an independent conservative review', async () => {
         // Simulate an active job for PR 42
         mockActiveJobs = [{
             name: 'processPullRequestComment',
@@ -472,26 +499,72 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-batch', config);
 
-        // Should NOT enqueue a new job
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-        // Should store comment for batch via rpush
-        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
-        const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
-        // The batched comment should carry ultrafixMeta
-        assert.ok(pendingComment.ultrafixMeta, 'Batched comment should include ultrafixMeta');
-        // Preserve the command until the batch is processed; only then can the
-        // current review state safely select the first action.
-        assert.strictEqual(pendingComment.commandMode, 'ultrafix');
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
+        assert.strictEqual(mockReserveAutomaticWork.mock.callCount(), 1);
+        assert.strictEqual(mockGetPendingReviewState.mock.callCount(), 0);
+        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
+        assert.strictEqual(mockStartLoop.mock.calls[0].arguments[2], false);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'review');
+        assert.strictEqual((jobData.ultrafixMeta as Record<string, unknown>).workEpoch, 1);
 
-        // Should NOT post label or circuit-breaker comment (batching guard fires before side effects)
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const postCalls = mockOctokit.request.mock.calls.filter(
             (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST')
         );
-        assert.strictEqual(postCalls.length, 0, 'Should not post circuit-breaker comment when batched');
+        assert.ok(postCalls.length > 0, 'Expected the loop-start comment');
     });
 
-    test('/ultrafix does not add ultrafix label if it already exists', async () => {
+    test('/ultrafix rechecks for work that appears while reserving its epoch', async () => {
+        mockGetPendingReviewState.mock.mockImplementation(async () => ({
+            unprocessedComments: [{ id: 1, body: 'Review feedback' }],
+            latestScore: 4,
+            hasPendingReview: true,
+        }));
+        mockReserveAutomaticWork.mock.mockImplementation(async () => {
+            mockActiveJobs = [{
+                name: 'processPullRequestComment',
+                data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+            }];
+            return 1;
+        });
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-uf-reservation-race', config);
+
+        assert.strictEqual(mockStartLoop.mock.calls[0].arguments[2], false);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'review');
+    });
+
+    test('/ultrafix starts with review when automatic work exists without a queue job', async () => {
+        mockGetPendingReviewState.mock.mockImplementation(async () => ({
+            unprocessedComments: [{ id: 1, body: 'Review feedback' }],
+            latestScore: 4,
+            hasPendingReview: true,
+        }));
+        // Models either current loop state or a deferred continuation in Redis.
+        mockHasAutomaticWork.mock.mockImplementation(async () => true);
+        mockReserveAutomaticWork.mock.mockImplementation(async () => {
+            assert.strictEqual(mockHasAutomaticWork.mock.callCount(), 1, 'automatic work must be checked before reservation');
+            return 1;
+        });
+
+        await processCommentEvent(
+            createPRCommentEvent('/ultrafix'),
+            'issue_comment',
+            'corr-uf-automatic-work',
+            createTestConfig(),
+        );
+
+        assert.strictEqual(mockStartLoop.mock.calls[0].arguments[2], false);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'review');
+    });
+
+    test('/ultrafix reasserts the ultrafix label even when the PR snapshot contains it', async () => {
         mockOctokit.request.mock.mockImplementation(async (url: string) => {
             if (url.includes('/comments')) {
                 return { data: [] };
@@ -511,11 +584,11 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-label-exists', config);
 
-        // Should NOT call safeUpdateLabels since label already exists
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['ultrafix']);
     });
 
-    test('/ultrafix is batched when a delayed job exists for the same PR', async () => {
+    test('/ultrafix starts independently when a delayed job exists for the same PR', async () => {
         // Simulate a delayed ultrafix job for PR 42
         mockDelayedJobs = [{
             name: 'processPullRequestComment',
@@ -527,13 +600,13 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-delayed', config);
 
-        // Should NOT enqueue a new job (batching guard)
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-        // Should store comment for batch via rpush
-        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.commandMode, 'review');
     });
 
-    test('/ultrafix is batched when a waiting job exists for the same PR', async () => {
+    test('/ultrafix starts independently when a waiting job exists for the same PR', async () => {
         // Simulate a waiting job for PR 42
         mockWaitingJobs = [{
             name: 'processPullRequestComment',
@@ -545,8 +618,8 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-uf-waiting', config);
 
-        // Should NOT enqueue a new job
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 
     test('/ultrafix enqueued job carries correct ultrafixMeta fields', async () => {
@@ -579,6 +652,112 @@ describe('commentEventHandler — /ultrafix command', () => {
         const commentBody = (postCalls[0].arguments[1] as Record<string, unknown>).body as string;
         assert.ok(commentBody.includes('ultrafix'), 'Comment should mention ultrafix');
         assert.ok(commentBody.includes('label'), 'Comment should mention the label as a circuit breaker');
+    });
+
+    test('queue failure rolls back only the reserved loop and removes its label', async () => {
+        mockQueueAdd.mock.mockImplementation(async () => {
+            throw new Error('queue unavailable');
+        });
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-queue-failure', config),
+            /queue unavailable/,
+        );
+
+        assert.strictEqual(mockClearStateIfCurrent.mock.callCount(), 1);
+        assert.deepStrictEqual(mockClearStateIfCurrent.mock.calls[0].arguments[1], {
+            owner: 'testowner', repo: 'testrepo', pr: 42,
+        });
+        assert.strictEqual(mockClearStateIfCurrent.mock.calls[0].arguments[2], 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[1], ['ultrafix']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[2], []);
+        assert.strictEqual(config.redisClient.del.mock.callCount(), 1, 'slash-command claim should be released for retry');
+    });
+
+    test('queue failure preserves a pre-existing ultrafix label', async () => {
+        mockQueueAdd.mock.mockImplementation(async () => {
+            throw new Error('queue unavailable');
+        });
+        mockOctokit.request.mock.mockImplementation(async (url: string) => {
+            if (url.includes('/comments')) return { data: [] };
+            return {
+                data: {
+                    head: { ref: 'feature-branch' },
+                    labels: [
+                        { id: 1, name: 'ultrafix', color: '000', default: false, description: null, node_id: 'L_1', url: '' },
+                    ],
+                },
+            };
+        });
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(createPRCommentEvent('/ultrafix'), 'issue_comment', 'corr-uf-existing-label-queue-failure', config),
+            /queue unavailable/,
+        );
+
+        assert.strictEqual(mockClearStateIfCurrent.mock.callCount(), 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1, 'must not remove a label inherited by this startup');
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['ultrafix'], 'startup should still reassert the label');
+    });
+
+    test('lock acquisition failure cannot clear an unowned epoch-zero state', async () => {
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+        config.redisClient.set.mock.mockImplementation(async (key: string, value: string, ...args: string[]) => {
+            if (key.startsWith('ultrafix:label-transition:')) throw new Error('lock unavailable');
+            if (args.includes('NX') && config.redisClient._store.has(key)) return null;
+            config.redisClient._store.set(key, value);
+            return 'OK';
+        });
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-lock-failure', config),
+            /lock unavailable/,
+        );
+
+        assert.strictEqual(mockReserveAutomaticWork.mock.callCount(), 0);
+        assert.strictEqual(mockClearStateIfCurrent.mock.callCount(), 0);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+    });
+
+    test('reservation failure cannot clear an unowned epoch-zero state', async () => {
+        mockReserveAutomaticWork.mock.mockImplementation(async () => {
+            throw new Error('reservation unavailable');
+        });
+
+        await assert.rejects(
+            processCommentEvent(createPRCommentEvent('/ultrafix'), 'issue_comment', 'corr-uf-reserve-failure', createTestConfig()),
+            /reservation unavailable/,
+        );
+
+        assert.strictEqual(mockClearStateIfCurrent.mock.callCount(), 0);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+    });
+
+    test('stale startup rollback preserves a newer loop state and label', async () => {
+        mockQueueAdd.mock.mockImplementation(async () => {
+            throw new Error('queue unavailable');
+        });
+        mockClearStateIfCurrent.mock.mockImplementation(async () => false);
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-stale-rollback', config),
+            /queue unavailable/,
+        );
+
+        assert.strictEqual(mockClearStateIfCurrent.mock.callCount(), 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1, 'must not remove a newer loop\'s shared label');
+        const failurePosts = mockOctokit.request.mock.calls.filter(
+            (c: { arguments: unknown[] }) => (c.arguments[0] as string).includes('POST')
+                && String((c.arguments[1] as Record<string, unknown>).body ?? '').includes('No newer Ultrafix state or label was removed')
+        );
+        assert.strictEqual(failurePosts.length, 1);
     });
 
     test('bot-authored /ultrafix is filtered when the login does not match configured bot identity', async () => {

@@ -7,19 +7,28 @@ import {
     issueQueue,
     retryConfigs,
     safeRemoveLabel,
+    withUltrafixLabelTransition,
     withRetry,
 } from '@propr/core';
 import { enableAutoMerge } from '../github/autoMergeOperations.js';
 import {
     checkReadiness,
     areChecksReadyForUltrafix,
+    clearDeferredContinuationIfCurrent,
+    clearUltrafixStateIfCurrent,
+    completeLoop,
+    hasReviewReachedGoal,
     hasFollowUpJobsForPR,
     hasPendingBatchedComments,
+    isUltrafixAutomaticWorkCurrent,
+    type UltrafixLoopState,
     type UltrafixReadinessResult,
 } from './ultrafixOrchestrationService.js';
 import type { UltrafixAction } from './ultrafixOrchestrationService.js';
 import { requiresPassingChecks } from './ultrafixReadinessPolicy.js';
+import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import type {
+    ContinuationResult,
     UltrafixContinuationParams,
     ChecksPassingFn,
     GetPRHeadFn,
@@ -134,6 +143,67 @@ export async function maybeEnableAutoMerge(
     } catch (err) {
         correlatedLogger.warn({ error: (err as Error).message, pullRequestNumber }, 'Failed to evaluate auto-merge re-enable after ultrafix success');
     }
+}
+
+/** Finish a loop without allowing an older automatic job to clean up newer work. */
+export async function finishUltrafixLoop(input: {
+    params: UltrafixContinuationParams;
+    state: UltrafixLoopState;
+    latestScore: number | null;
+    reviewStatus: ReviewOutputStatus;
+    decisionReason: string;
+}): Promise<ContinuationResult> {
+    const { params, state, latestScore, reviewStatus, decisionReason } = input;
+    const { owner, repo, pullRequestNumber, completedAction, redisClient, correlatedLogger } = params;
+    const workEpoch = params.ultrafixMeta?.workEpoch ?? 0;
+    const identity = { owner, repo, pr: pullRequestNumber };
+
+    const goalReached = completedAction === 'review'
+        && hasReviewReachedGoal(reviewStatus, latestScore, state.goal);
+    const finishResult = await withUltrafixLabelTransition(redisClient, identity, async () => {
+        if (!await isUltrafixAutomaticWorkCurrent(redisClient, identity, workEpoch)) return false;
+        const completedState = await completeLoop(redisClient, {
+            ...identity,
+            completionStatus: goalReached ? 'succeeded' : 'failed',
+            completionReason: decisionReason,
+            finalScore: latestScore,
+            workEpoch,
+        });
+        if (!completedState) return false;
+        if (!goalReached) {
+            const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
+            const manualReason = cleanReviewMissedGoal
+                ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
+                : 'Max cycles were exhausted, so manual review and merge are now required.';
+            await postPrComment({
+                owner,
+                repo,
+                pullRequestNumber,
+                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${state.goal}/10. Last score: ${latestScore ?? 'unknown'}. ${manualReason}`,
+                correlatedLogger,
+            });
+            return true;
+        }
+
+        const stateCleared = await clearUltrafixStateIfCurrent(redisClient, identity, workEpoch);
+        if (!stateCleared) return false;
+        await clearDeferredContinuationIfCurrent(redisClient, identity, workEpoch);
+        await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
+        await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
+        return true;
+    });
+    if (!finishResult) return { continued: false, reason: 'ultrafix_superseded' };
+
+    correlatedLogger.info(
+        { pullRequestNumber, reason: decisionReason, cycleCount: state.cycleCount, goalReached },
+        'Ultrafix loop: loop finished',
+    );
+    return {
+        continued: false,
+        reason: decisionReason,
+        score: latestScore,
+        cycleCount: state.cycleCount,
+    };
 }
 
 export async function enqueueNextStep(

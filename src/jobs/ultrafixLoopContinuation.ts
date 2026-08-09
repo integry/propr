@@ -18,13 +18,10 @@ import {
     loadState,
     claimDeferredContinuation,
     recordAction,
-    clearState,
-    completeLoop,
+    clearUltrafixStateIfCurrent,
     determineNextAction,
-    hasReviewReachedGoal,
     recordReviewFindings,
     saveDeferredContinuation,
-    clearDeferredContinuation,
     clearDeferredContinuationIfCurrent,
     isUltrafixAutomaticWorkCurrent,
 } from './ultrafixOrchestrationService.js';
@@ -35,10 +32,8 @@ import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
 import {
     enqueueNextStep,
     evaluateReadiness,
+    finishUltrafixLoop,
     hasUltrafixLabel,
-    maybeEnableAutoMerge,
-    postPrComment,
-    removeUltrafixLabel,
 } from './ultrafixLoopContinuationHelpers.js';
 
 export interface UltrafixContinuationParams {
@@ -176,6 +171,7 @@ async function collectReviewOutput(
                 owner,
                 repo,
                 pr: pullRequestNumber,
+                workEpoch: params.ultrafixMeta?.workEpoch ?? 0,
                 findings: pendingState.unprocessedComments.flatMap(comment =>
                     comment.actionableFindings.map(finding => ({
                         id: finding.id,
@@ -220,31 +216,43 @@ export async function continueUltrafixLoop(
         owner, repo, pullRequestNumber, completedAction,
         redisClient, correlatedLogger,
     } = params;
+    const workEpoch = params.ultrafixMeta?.workEpoch ?? 0;
 
     if (!await isUltrafixAutomaticWorkCurrent(
         redisClient,
         { owner, repo, pr: pullRequestNumber },
-        params.ultrafixMeta?.workEpoch,
+        workEpoch,
     )) {
         return { continued: false, reason: 'ultrafix_superseded' };
     }
 
     // 1. Load current loop state
     const state = await loadState(redisClient, owner, repo, pullRequestNumber);
-    if (!state || !state.active) {
+    const stateWorkEpoch = typeof state?.workEpoch === 'number' ? state.workEpoch : 0;
+    if (!state || !state.active || stateWorkEpoch !== workEpoch) {
         correlatedLogger.info(
             { pullRequestNumber, hasState: !!state },
             'Ultrafix loop: no active loop state, skipping continuation',
         );
-        return { continued: false, reason: 'no_active_loop' };
+        return {
+            continued: false,
+            reason: state && stateWorkEpoch !== workEpoch ? 'ultrafix_superseded' : 'no_active_loop',
+        };
     }
 
     // 2. Record the completed action
     const updatedState = await recordAction(redisClient, {
-        owner, repo, pr: pullRequestNumber, action: completedAction,
+        owner, repo, pr: pullRequestNumber, action: completedAction, workEpoch,
     });
     if (!updatedState) {
-        return { continued: false, reason: 'state_lost_after_record' };
+        return {
+            continued: false,
+            reason: await isUltrafixAutomaticWorkCurrent(
+                redisClient,
+                { owner, repo, pr: pullRequestNumber },
+                workEpoch,
+            ) ? 'state_lost_after_record' : 'ultrafix_superseded',
+        };
     }
 
     correlatedLogger.info(
@@ -256,8 +264,17 @@ export async function continueUltrafixLoop(
     const labelPresent = await hasUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
     if (!labelPresent) {
         correlatedLogger.info({ pullRequestNumber }, 'Ultrafix loop: label removed, stopping loop');
-        await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
-        await clearState(redisClient, owner, repo, pullRequestNumber);
+        const stateCleared = await clearUltrafixStateIfCurrent(
+            redisClient,
+            { owner, repo, pr: pullRequestNumber },
+            workEpoch,
+        );
+        if (!stateCleared) return { continued: false, reason: 'ultrafix_superseded' };
+        await clearDeferredContinuationIfCurrent(
+            redisClient,
+            { owner, repo, pr: pullRequestNumber },
+            workEpoch,
+        );
         return { continued: false, reason: 'label_removed', cycleCount: updatedState.cycleCount };
     }
 
@@ -273,52 +290,13 @@ export async function continueUltrafixLoop(
 
     // 6. If loop should stop, clean up
     if (decision.action === null) {
-        if (!await isUltrafixAutomaticWorkCurrent(
-            redisClient,
-            { owner, repo, pr: pullRequestNumber },
-            params.ultrafixMeta?.workEpoch,
-        )) {
-            return { continued: false, reason: 'ultrafix_superseded' };
-        }
-        const goalReached = completedAction === 'review'
-            && hasReviewReachedGoal(reviewStatus, latestScore, updatedState.goal);
-        await completeLoop(redisClient, {
-            owner,
-            repo,
-            pr: pullRequestNumber,
-            completionStatus: goalReached ? 'succeeded' : 'failed',
-            completionReason: decision.reason,
-            finalScore: latestScore,
+        return finishUltrafixLoop({
+            params,
+            state: updatedState,
+            latestScore,
+            reviewStatus,
+            decisionReason: decision.reason,
         });
-        if (goalReached) {
-            await removeUltrafixLabel(owner, repo, pullRequestNumber, correlatedLogger);
-            await clearDeferredContinuation(redisClient, owner, repo, pullRequestNumber);
-            await clearState(redisClient, owner, repo, pullRequestNumber);
-            await maybeEnableAutoMerge(owner, repo, pullRequestNumber, correlatedLogger);
-        } else {
-            const stoppedBecauseCleanReviewMissedGoal = completedAction === 'review'
-                && reviewStatus === 'valid_clean';
-            const manualReason = stoppedBecauseCleanReviewMissedGoal
-                ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
-                : 'Max cycles were exhausted, so manual review and merge are now required.';
-            await postPrComment({
-                owner,
-                repo,
-                pullRequestNumber,
-                body: `⚠️ **Ultrafix stopped before reaching its goal.** Requested goal: ${updatedState.goal}/10. Last score: ${latestScore ?? 'unknown'}. ${manualReason}`,
-                correlatedLogger,
-            });
-        }
-        correlatedLogger.info(
-            { pullRequestNumber, reason: decision.reason, cycleCount: updatedState.cycleCount, goalReached },
-            'Ultrafix loop: loop finished',
-        );
-        return {
-            continued: false,
-            reason: decision.reason,
-            score: latestScore,
-            cycleCount: updatedState.cycleCount,
-        };
     }
 
     // 7. Readiness gating — verify all conditions before enqueueing

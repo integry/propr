@@ -1,9 +1,9 @@
 import type { UltrafixDeps } from '@propr/core';
 import { loadUltrafixRatingGoal, loadUltrafixMaxCycles, loadUltrafixPauseSeconds, loadPrReviewModel } from '@propr/core';
 import {
-    clearState,
-    getUltrafixAutomaticWorkEpoch,
+    clearUltrafixStateIfCurrent,
     hasUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWork,
     invalidateUltrafixAutomaticWorkForComment,
     startLoop,
 } from './ultrafixOrchestrationService.js';
@@ -16,9 +16,9 @@ export function createUltrafixDeps(): UltrafixDeps {
         loadUltrafixPauseSeconds,
         loadPrReviewModel,
         startLoop,
-        clearState,
+        clearStateIfCurrent: clearUltrafixStateIfCurrent,
         hasAutomaticWork: hasUltrafixAutomaticWork,
-        getAutomaticWorkEpoch: getUltrafixAutomaticWorkEpoch,
+        reserveAutomaticWork: invalidateUltrafixAutomaticWork,
         invalidateAutomaticWork: invalidateUltrafixAutomaticWorkForComment,
         getPendingReviewState,
     };

@@ -27,8 +27,12 @@ import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
-import { markFindingsSelected, retainOriginalScope } from './ultrafixOrchestrationService.js';
-import { handleUltrafixContinuation, restorePendingCommentsIfUltrafixJobSuperseded } from './ultrafixJobHelpers.js';
+import { retainOriginalScope } from './ultrafixOrchestrationService.js';
+import {
+    handleUltrafixContinuation,
+    markSelectedUltrafixFindings,
+    restorePendingCommentsIfUltrafixJobSuperseded,
+} from './ultrafixJobHelpers.js';
 import { shouldDeferUltrafixReview } from './ultrafixReviewExecutionGate.js';
 import { handleNoAuthorizedFindings } from './prCommentNoAuthorizedFindings.js';
 import { handlePostExecution } from './prCommentPostExecution.js';
@@ -268,20 +272,12 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         return { status: 'skipped', reason: 'no_authorized_review_findings', pullRequestNumber };
     }
 
-    if (job.data.ultrafixMeta && selectedReviewComments.length > 0) {
-        await markFindingsSelected(redisClient, {
-            owner: repoOwner,
-            repo: repoName,
-            pr: pullRequestNumber,
-            findings: selectedReviewComments.flatMap(comment =>
-                comment.actionableFindings.map(finding => ({
-                    id: finding.id,
-                    sourceCommentId: comment.id,
-                    title: finding.title,
-                })),
-            ),
-        });
-    }
+    await markSelectedUltrafixFindings(
+        job,
+        redisClient,
+        { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
+        selectedReviewComments,
+    );
 
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
@@ -311,7 +307,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         originalTaskSpec = await retainOriginalScope(redisClient, {
             owner: repoOwner,
             repo: repoName,
-            pr: pullRequestNumber,
+            pr: pullRequestNumber, workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
             scope: originalTaskSpec,
         });
     }

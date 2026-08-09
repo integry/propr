@@ -8,6 +8,7 @@ const mockOctokit = {
 };
 
 const mockRedisGet = mock.fn(async () => null);
+const mockRedisDel = mock.fn(async () => 0);
 const redisConstructorCalls: unknown[][] = [];
 
 // Mock simple-git (transitive dependency)
@@ -27,6 +28,7 @@ await mock.module('ioredis', {
                 on: mock.fn(),
                 get: mockRedisGet,
                 mget: mock.fn(async (...keys: string[]) => Promise.all(keys.map(key => mockRedisGet(key)))),
+                del: mockRedisDel,
                 quit: mock.fn(async () => {}),
                 disconnect: mock.fn(),
             };
@@ -145,6 +147,7 @@ function resetMocks(): void {
     mockOctokit.request.mock.resetCalls();
     mockRedisGet.mock.resetCalls();
     mockRedisGet.mock.mockImplementation(async () => null);
+    mockRedisDel.mock.resetCalls();
     redisConstructorCalls.length = 0;
     mockFindPlanIssueByRepoAndPR.mock.resetCalls();
     mockFindPlanIssueByRepoAndNumber.mock.resetCalls();
@@ -570,6 +573,37 @@ describe('getPRAutoMergeInfo', () => {
 
         const result = await getPRAutoMergeInfo('owner', 'repo', 42);
         assert.strictEqual(result.hasActiveUltrafixLoop, true);
+    });
+
+    test('preserves a new loop published after the initial label snapshot', async () => {
+        resetMocks();
+        let newLoopPublished = false;
+        mockOctokit.request.mock.mockImplementation(async () => {
+            const response = {
+                data: {
+                    labels: [{ name: 'auto-merge' }],
+                    draft: false,
+                    base: { ref: 'main' },
+                    head: { ref: 'feature-branch' }
+                }
+            };
+            newLoopPublished = true;
+            return response;
+        });
+        mockRedisGet.mock.mockImplementation(async (key: string) => {
+            assert.strictEqual(newLoopPublished, true);
+            if (key.startsWith('ultrafix:state:')) {
+                return JSON.stringify({ active: true, workEpoch: 2 });
+            }
+            if (key.startsWith('ultrafix:automatic-work-epoch:')) return '2';
+            return null;
+        });
+
+        const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+
+        assert.strictEqual(result.hasUltrafixLabel, false);
+        assert.strictEqual(result.hasActiveUltrafixLoop, true);
+        assert.strictEqual(mockRedisDel.mock.callCount(), 0);
     });
 
     test('returns hasActiveUltrafixLoop false for state from a superseded work epoch', async () => {

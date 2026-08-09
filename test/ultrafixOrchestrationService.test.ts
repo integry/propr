@@ -10,6 +10,8 @@ import {
     saveState,
     loadState,
     clearState,
+    clearUltrafixStateIfCurrent,
+    invalidateUltrafixAutomaticWork,
     startLoop,
     recordAction,
     retainOriginalScope,
@@ -19,6 +21,10 @@ import {
     type UltrafixLoopState,
     type StartLoopOptions,
 } from '../src/jobs/ultrafixOrchestrationService.js';
+import {
+    clearUltrafixStateForLabelRemoval,
+    withUltrafixLabelTransition,
+} from '../packages/core/src/utils/ultrafixLabelTransition.js';
 
 // --- Mock Redis ---
 
@@ -30,15 +36,19 @@ function createMockRedis() {
         async set(key: string, value: string) { store.set(key, value); return 'OK'; },
         async del(key: string) { store.delete(key); return 1; },
         async eval(script: string, _keyCount: number, ...args: string[]) {
-            const [epochKey, deferredKey] = args;
+            const [epochKey, targetKey] = args;
             if (script.includes("redis.call('INCR'")) {
                 const nextEpoch = Number(store.get(epochKey) ?? '0') + 1;
                 store.set(epochKey, String(nextEpoch));
-                store.delete(deferredKey);
+                store.delete(targetKey);
                 return nextEpoch;
             }
             if ((store.get(epochKey) ?? '0') !== args[2]) return 0;
-            store.set(deferredKey, args[3]);
+            if (script.includes("redis.call('DEL', KEYS[2])")) {
+                store.delete(targetKey);
+                return 1;
+            }
+            store.set(targetKey, args[3]);
             return 1;
         },
     };
@@ -344,6 +354,74 @@ describe('startLoop', () => {
 
         assert.strictEqual(initialAction, 'fix');
     });
+
+    test('commits an explicitly reserved epoch atomically', async () => {
+        const redis = createMockRedis();
+        const workEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+
+        const { state } = await startLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, workEpoch,
+        }, false);
+
+        assert.strictEqual(state.workEpoch, 1);
+        assert.deepStrictEqual(await loadState(redis as any, 'o', 'r', 1), state);
+    });
+
+    test('rejects stale startup commits and epoch-conditioned rollback preserves newer state', async () => {
+        const redis = createMockRedis();
+        const firstEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        const secondEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        const newerState = createDefaultState({ owner: 'o', repo: 'r', pr: 1, workEpoch: secondEpoch });
+        newerState.goal = 9;
+        await saveState(redis as any, newerState);
+
+        await assert.rejects(
+            startLoop(redis as any, {
+                owner: 'o', repo: 'r', pr: 1, goal: 5, workEpoch: firstEpoch,
+            }, false),
+            /superseded before state commit/,
+        );
+        assert.strictEqual(
+            await clearUltrafixStateIfCurrent(
+                redis as any,
+                { owner: 'o', repo: 'r', pr: 1 },
+                firstEpoch,
+            ),
+            false,
+        );
+        assert.deepStrictEqual(await loadState(redis as any, 'o', 'r', 1), newerState);
+    });
+
+    test('stale mutations cannot change a newer loop state', async () => {
+        const redis = createMockRedis();
+        const firstEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        await startLoop(redis as any, { owner: 'o', repo: 'r', pr: 1, workEpoch: firstEpoch }, false);
+        const secondEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        const { state: newerState } = await startLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, goal: 9, workEpoch: secondEpoch,
+        }, false);
+
+        const updated = await recordAction(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, action: 'review', workEpoch: firstEpoch,
+        });
+
+        assert.strictEqual(updated, null);
+        assert.deepStrictEqual(await loadState(redis as any, 'o', 'r', 1), newerState);
+    });
+
+    test('treats legacy unversioned state as epoch zero', async () => {
+        const redis = createMockRedis();
+        const legacyState = createDefaultState({ owner: 'o', repo: 'r', pr: 1 });
+        delete (legacyState as Partial<UltrafixLoopState>).workEpoch;
+        await saveState(redis as any, legacyState);
+
+        const updated = await recordAction(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, action: 'review', workEpoch: 0,
+        });
+
+        assert.strictEqual(updated?.workEpoch, 0);
+        assert.strictEqual((await loadState(redis as any, 'o', 'r', 1))?.workEpoch, 0);
+    });
 });
 
 // --- recordAction ---
@@ -471,5 +549,117 @@ describe('Serialization', () => {
         assert.strictEqual(restored.reviewModel, 'claude-opus-4-6');
         assert.strictEqual(restored.active, true);
         assert.strictEqual(typeof restored.lastActionTimestamp, 'string');
+    });
+});
+
+describe('shared label transition ownership', () => {
+    function createTransitionRedis() {
+        const store = new Map<string, string>();
+        const expiries = new Map<string, number>();
+        return {
+            store,
+            async set(key: string, value: string, _mode: string, ttl: number, condition: string) {
+                if ((expiries.get(key) ?? Infinity) <= Date.now()) {
+                    store.delete(key);
+                    expiries.delete(key);
+                }
+                if (condition === 'NX' && store.has(key)) return null;
+                store.set(key, value);
+                expiries.set(key, Date.now() + ttl);
+                return 'OK';
+            },
+            async eval(_script: string, _keyCount: number, key: string, token: string, ttl?: string) {
+                if ((expiries.get(key) ?? Infinity) <= Date.now()) {
+                    store.delete(key);
+                    expiries.delete(key);
+                }
+                if (store.get(key) !== token) return 0;
+                if (_script.includes("redis.call('PEXPIRE'")) {
+                    expiries.set(key, Date.now() + Number(ttl));
+                    return 1;
+                }
+                store.delete(key);
+                expiries.delete(key);
+                return 1;
+            },
+        };
+    }
+
+    test('serializes startup and teardown transitions for the same PR', async () => {
+        const redis = createTransitionRedis();
+        const identity = { owner: 'acme', repo: 'web', pr: 42 };
+        const order: string[] = [];
+        let releaseFirst!: () => void;
+        const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+
+        const first = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('first-start');
+            await firstGate;
+            order.push('first-end');
+        });
+        const second = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('second');
+        });
+
+        await new Promise(resolve => setTimeout(resolve, 20));
+        assert.deepStrictEqual(order, ['first-start']);
+        releaseFirst();
+        await Promise.all([first, second]);
+        assert.deepStrictEqual(order, ['first-start', 'first-end', 'second']);
+    });
+
+    test('renews ownership when an operation exceeds its initial lease', async () => {
+        const redis = createTransitionRedis();
+        const identity = { owner: 'acme', repo: 'web', pr: 43 };
+        const order: string[] = [];
+        const timing = { ttlMs: 40, renewIntervalMs: 10, waitMs: 500 };
+
+        const first = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('first-start');
+            await new Promise(resolve => setTimeout(resolve, 120));
+            order.push('first-end');
+        }, timing);
+        await new Promise(resolve => setTimeout(resolve, 60));
+        const second = withUltrafixLabelTransition(redis as any, identity, async () => {
+            order.push('second');
+        }, timing);
+
+        await Promise.all([first, second]);
+        assert.deepStrictEqual(order, ['first-start', 'first-end', 'second']);
+    });
+
+    test('a delayed removal event preserves state after a newer startup re-adds the label', async () => {
+        const redis = createTransitionRedis();
+        let cleared = false;
+        const result = await clearUltrafixStateForLabelRemoval(
+            redis as any,
+            { owner: 'acme', repo: 'web', pr: 42 },
+            async () => true,
+            async () => { cleared = true; },
+        );
+
+        assert.strictEqual(result, 'label_present');
+        assert.strictEqual(cleared, false);
+    });
+
+    test('confirmed current label removal clears state, while failed verification preserves it', async () => {
+        const redis = createTransitionRedis();
+        let clearCount = 0;
+        const clearedResult = await clearUltrafixStateForLabelRemoval(
+            redis as any,
+            { owner: 'acme', repo: 'web', pr: 42 },
+            async () => false,
+            async () => { clearCount += 1; },
+        );
+        const unverifiedResult = await clearUltrafixStateForLabelRemoval(
+            redis as any,
+            { owner: 'acme', repo: 'web', pr: 42 },
+            async () => { throw new Error('GitHub unavailable'); },
+            async () => { clearCount += 1; },
+        );
+
+        assert.strictEqual(clearedResult, 'cleared');
+        assert.strictEqual(unverifiedResult, 'unverified');
+        assert.strictEqual(clearCount, 1);
     });
 });
