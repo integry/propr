@@ -394,6 +394,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
     const context = await initializePRJobContext(job);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
+    // This guard deliberately precedes ensurePRProcessingLockToken/acquirePRLock
+    // below. A deferred or superseded return owns no PR lock, heartbeat, task
+    // state, container, repository, or worktree, so there is nothing to clean up.
     const ultrafixGuard = await guardUltrafixJobExecution(job, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
     if (ultrafixGuard) return ultrafixGuard;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);

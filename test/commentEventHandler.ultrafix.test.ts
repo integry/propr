@@ -229,6 +229,8 @@ after(async () => {
 
 function createMockRedis() {
     const store = new Map<string, string>();
+    const rpush = mock.fn(async () => {});
+    const expire = mock.fn(async () => {});
     return {
         get: mock.fn(async (key: string) => store.get(key) ?? null),
         setex: mock.fn(async (key: string, _ttl: number, value: string) => {
@@ -242,8 +244,25 @@ function createMockRedis() {
         del: mock.fn(async (key: string) => {
             store.delete(key);
         }),
-        rpush: mock.fn(async () => {}),
-        expire: mock.fn(async () => {}),
+        incr: mock.fn(async (key: string) => {
+            const next = Number(store.get(key) ?? '0') + 1;
+            store.set(key, String(next));
+            return next;
+        }),
+        rpush,
+        expire,
+        eval: mock.fn(async (
+            _script: string,
+            _keyCount: number,
+            pendingKey: string,
+            stageKey: string,
+            serializedComment: string,
+        ) => {
+            await rpush(pendingKey, serializedComment);
+            await expire(pendingKey, 3600);
+            store.set(stageKey, 'scheduled');
+            return 1;
+        }),
         _store: store,
     };
 }
@@ -693,6 +712,33 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
     });
 
+    test('manual /fix redelivery resumes failed cancellation without enqueueing twice', async () => {
+        mockWithTransitionLease.mock.mockImplementationOnce(async () => {
+            throw new Error('lease unavailable');
+        });
+        const event = createPRCommentEvent('/fix F1');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-manual-fix-cancel-failure', config),
+            /lease unavailable/,
+        );
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
+
+        await processCommentEvent(
+            event, 'issue_comment', 'corr-uf-manual-fix-cancel-retry', config,
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
+        assert.strictEqual(
+            [...config.redisClient._store.keys()].some(key =>
+                key.startsWith('pr-command-takeover:testowner:testrepo:42:issue_comment:')),
+            false,
+        );
+    });
+
     test('manual /review stores its replacement before cancelling a deferred transition', async () => {
         const operations: string[] = [];
         mockActiveJobs = [{
@@ -733,5 +779,31 @@ describe('commentEventHandler — /ultrafix command', () => {
 
         assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('manual /review redelivery resumes failed cancellation without batching twice', async () => {
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+        mockWithTransitionLease.mock.mockImplementationOnce(async () => {
+            throw new Error('lease unavailable');
+        });
+        const event = createPRCommentEvent('/review');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-manual-review-cancel-failure', config),
+            /lease unavailable/,
+        );
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
+
+        await processCommentEvent(
+            event, 'issue_comment', 'corr-uf-manual-review-cancel-retry', config,
+        );
+
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
     });
 });

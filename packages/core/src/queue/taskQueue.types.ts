@@ -63,6 +63,8 @@ export interface CommentJobData {
     commandInstructions?: string;
     /** GitHub comment that established the queued command context. */
     commandCommentId?: number;
+    /** Per-PR intake order shared by issue and review comment endpoints. */
+    commandSequence?: number;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
     /** Reasoning level override resolved from PR or linked issue level-* labels. */
@@ -84,6 +86,8 @@ export interface UnprocessedComment {
     requestedModels?: string[];
     commandInstructions?: string;
     llmOverride?: string | null;
+    /** Per-PR intake order shared by issue and review comment endpoints. */
+    commandSequence?: number;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
 }

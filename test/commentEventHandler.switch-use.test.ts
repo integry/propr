@@ -187,6 +187,8 @@ after(async () => {
 
 function createMockRedis() {
     const store = new Map<string, string>();
+    const rpush = mock.fn(async () => {});
+    const expire = mock.fn(async () => {});
     return {
         get: mock.fn(async (key: string) => store.get(key) ?? null),
         setex: mock.fn(async (key: string, _ttl: number, value: string) => {
@@ -200,8 +202,25 @@ function createMockRedis() {
         del: mock.fn(async (key: string) => {
             store.delete(key);
         }),
-        rpush: mock.fn(async () => {}),
-        expire: mock.fn(async () => {}),
+        incr: mock.fn(async (key: string) => {
+            const next = Number(store.get(key) ?? '0') + 1;
+            store.set(key, String(next));
+            return next;
+        }),
+        rpush,
+        expire,
+        eval: mock.fn(async (
+            _script: string,
+            _keyCount: number,
+            pendingKey: string,
+            stageKey: string,
+            serializedComment: string,
+        ) => {
+            await rpush(pendingKey, serializedComment);
+            await expire(pendingKey, 3600);
+            store.set(stageKey, 'scheduled');
+            return 1;
+        }),
         _store: store,
     };
 }
@@ -980,12 +999,41 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
         assert.strictEqual(config.redisClient.del.mock.callCount(), 1);
         assert.strictEqual(
             config.redisClient.del.mock.calls[0].arguments[0],
-            'pr-comment-processed:testowner:testrepo:42:123'
+            'pr-comment-processed:testowner:testrepo:42:issue_comment:123'
         );
     });
 });
 
 describe('applyPendingCommentCommandContext', () => {
+    test('uses shared intake sequence when a newer issue command has a smaller endpoint ID', () => {
+        const jobData = {
+            pullRequestNumber: 42,
+            repoOwner: 'testowner',
+            repoName: 'testrepo',
+            correlationId: 'corr-mixed-endpoints',
+            commandCommentId: 900,
+            commandSequence: 10,
+            commandMode: 'review' as const,
+            ultrafixMeta: { mode: 'ultrafix' as const, instructions: '', generation: 8 },
+        };
+        const commentsToProcess = [{
+            id: 100,
+            body: 'Fix F18',
+            author: 'alice',
+            type: 'issue' as const,
+            commandMode: 'fix' as const,
+            commandInstructions: 'Fix F18',
+            commandSequence: 11,
+        }];
+
+        applyPendingCommentCommandContext(jobData, commentsToProcess, mockLoggerInstance as never);
+
+        assert.strictEqual(jobData.commandMode, 'fix');
+        assert.strictEqual(jobData.ultrafixMeta, undefined);
+        assert.strictEqual(jobData.commandCommentId, 100);
+        assert.strictEqual(jobData.commandSequence, 11);
+    });
+
     test('does not let an older pending command override a newer queued command', () => {
         const jobData = {
             pullRequestNumber: 42,
