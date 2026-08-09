@@ -13,7 +13,7 @@ import type { CommentJobData, JobResult } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
-import { isUltrafixGenerationCurrent, loadState as loadUltrafixState, saveDeferredContinuation, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import { getActiveUltrafixTakeoverSequence, isUltrafixGenerationCurrent, loadState as loadUltrafixState, saveDeferredContinuation, type UltrafixAction } from './ultrafixOrchestrationService.js';
 import { requiresPassingChecks } from './ultrafixReadinessPolicy.js';
 
 /** Reject delayed or retried work from a loop superseded by a manual command. */
@@ -78,6 +78,27 @@ export async function checkUltrafixReadiness(
     if (!job.data.ultrafixMeta) return true;
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger } = params;
     const nextAction: UltrafixAction = job.data.commandMode === 'fix' ? 'fix' : 'review';
+    try {
+        const takeoverSequence = await getActiveUltrafixTakeoverSequence(
+            params.redisClient,
+            { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
+        );
+        if (takeoverSequence !== null) {
+            correlatedLogger.info(
+                { pullRequestNumber, nextAction, takeoverSequence },
+                'Ultrafix pre-check: manual takeover in progress, deferring stale loop work',
+            );
+            await deferUltrafixJob(job, params, nextAction, 'manual_takeover_in_progress');
+            return false;
+        }
+    } catch (err) {
+        correlatedLogger.warn(
+            { pullRequestNumber, error: (err as Error).message },
+            'Ultrafix pre-check: could not inspect manual takeover fence, deferring',
+        );
+        await deferUltrafixJob(job, params, nextAction, 'manual_takeover_fence_unavailable');
+        return false;
+    }
     if (!requiresPassingChecks(nextAction)) {
         correlatedLogger.info({ pullRequestNumber, nextAction }, 'Ultrafix pre-check: allowing fix transition without passing CI checks');
         return true;

@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 /**
  * Ultrafix Loop Continuation
  *
@@ -24,6 +25,7 @@ import {
     recordReviewFindings,
     saveDeferredContinuation,
     deleteDeferredContinuationIfCurrent,
+    getActiveUltrafixTakeoverSequence,
     isDeferredContinuationCurrent,
     isUltrafixGenerationCurrent,
     retireLoopIfGenerationCurrent,
@@ -378,7 +380,41 @@ export async function resumeDeferredContinuation(
     redisClient: Redis,
     correlatedLogger: Logger,
 ): Promise<ContinuationResult> {
+    const correlationId = generateCorrelationId();
+    return withUltrafixTransitionLease(
+        redisClient,
+        prId,
+        correlationId,
+        async assertOwned => {
+            await assertOwned();
+            return resumeDeferredContinuationWithLease(
+                { prId, redisClient, correlatedLogger, correlationId }, assertOwned,
+            );
+        },
+    );
+}
+
+async function resumeDeferredContinuationWithLease(
+    context: {
+        prId: { owner: string; repo: string; pr: number };
+        redisClient: Redis;
+        correlatedLogger: Logger;
+        correlationId: string;
+    },
+    assertTransitionOwned: () => Promise<void>,
+): Promise<ContinuationResult> {
+    const { prId, redisClient, correlatedLogger, correlationId } = context;
     const { owner, repo, pr } = prId;
+    const takeoverSequence = await getActiveUltrafixTakeoverSequence(
+        redisClient, { owner, repo, pr },
+    );
+    if (takeoverSequence !== null) {
+        return {
+            continued: false,
+            reason: `still_deferred: manual_takeover_in_progress:${takeoverSequence}`,
+            deferred: true,
+        };
+    }
     // Atomically claim the deferred record so concurrent check_run events
     // for the same PR cannot double-enqueue the next step.
     const deferred = await claimDeferredContinuation(redisClient, owner, repo, pr);
@@ -391,7 +427,6 @@ export async function resumeDeferredContinuation(
         return { continued: false, reason: 'no_active_loop' };
     }
 
-    const correlationId = generateCorrelationId();
     const ultrafixMeta: UltrafixCommandMeta = {
         ...(deferred.ultrafixMeta ?? {
         mode: 'ultrafix' as const,
@@ -455,6 +490,7 @@ export async function resumeDeferredContinuation(
         return { continued: false, reason: 'deferred_cancelled' };
     }
 
+    await assertTransitionOwned();
     const delayMs = (state.pauseSeconds || 60) * 1000;
     await enqueueNextStep(params, deferred.nextAction, delayMs);
 

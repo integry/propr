@@ -210,15 +210,26 @@ function createMockRedis() {
         rpush,
         expire,
         eval: mock.fn(async (
-            _script: string,
+            script: string,
             _keyCount: number,
             pendingKey: string,
             stageKey: string,
             serializedComment: string,
+            _pendingTtl: string,
+            _stageTtl: string,
+            takeoverSequence: string,
         ) => {
+            if (script.includes("local existing = redis.call('GET', KEYS[1])")) {
+                const existing = store.get(pendingKey);
+                if (existing) return Number(existing);
+                const next = Number(store.get(stageKey) ?? '0') + 1;
+                store.set(stageKey, String(next));
+                store.set(pendingKey, String(next));
+                return next;
+            }
             await rpush(pendingKey, serializedComment);
             await expire(pendingKey, 3600);
-            store.set(stageKey, 'scheduled');
+            store.set(stageKey, takeoverSequence);
             return 1;
         }),
         _store: store,

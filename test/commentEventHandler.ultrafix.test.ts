@@ -37,6 +37,7 @@ await mock.module('ioredis', {
 
 // Mock bullmq — allow tests to inject active/waiting/delayed jobs
 const mockQueueAdd = mock.fn(async () => {});
+const mockQueueGetJob = mock.fn(async () => null as unknown);
 let mockActiveJobs: unknown[] = [];
 let mockWaitingJobs: unknown[] = [];
 let mockDelayedJobs: unknown[] = [];
@@ -45,6 +46,7 @@ await mock.module('bullmq', {
         Queue: function Queue() {
             return {
                 add: mockQueueAdd,
+                getJob: mockQueueGetJob,
                 close: mock.fn(),
                 on: mock.fn(),
                 getActive: mock.fn(async () => mockActiveJobs),
@@ -201,6 +203,8 @@ const mockGetPendingReviewState = mock.fn(async () => ({
 
 const mockClearStateIfGenerationCurrent = mock.fn(async () => true);
 const mockClearDeferredContinuation = mock.fn(async () => 1);
+const mockBeginManualTakeover = mock.fn(async () => true);
+const mockAbortManualTakeover = mock.fn(async () => true);
 const mockWithTransitionLease = mock.fn(async (
     _redis: unknown,
     _identity: unknown,
@@ -215,7 +219,10 @@ setUltrafixDeps({
     loadPrReviewModel: mock.fn(async () => ''),
     startLoop: mockStartLoop,
     clearStateIfGenerationCurrent: mockClearStateIfGenerationCurrent,
-    clearDeferredContinuation: mockClearDeferredContinuation,
+    beginManualTakeover: mockBeginManualTakeover,
+    abortManualTakeover: mockAbortManualTakeover,
+    completeManualTakeover: mockClearDeferredContinuation,
+    startFreshTransition: mockClearDeferredContinuation,
     withTransitionLease: mockWithTransitionLease,
     getPendingReviewState: mockGetPendingReviewState,
 });
@@ -252,15 +259,26 @@ function createMockRedis() {
         rpush,
         expire,
         eval: mock.fn(async (
-            _script: string,
+            script: string,
             _keyCount: number,
             pendingKey: string,
             stageKey: string,
             serializedComment: string,
+            _pendingTtl: string,
+            _stageTtl: string,
+            takeoverSequence: string,
         ) => {
+            if (script.includes("local existing = redis.call('GET', KEYS[1])")) {
+                const existing = store.get(pendingKey);
+                if (existing) return Number(existing);
+                const next = Number(store.get(stageKey) ?? '0') + 1;
+                store.set(stageKey, String(next));
+                store.set(pendingKey, String(next));
+                return next;
+            }
             await rpush(pendingKey, serializedComment);
             await expire(pendingKey, 3600);
-            store.set(stageKey, 'scheduled');
+            store.set(stageKey, takeoverSequence);
             return 1;
         }),
         _store: store,
@@ -295,12 +313,33 @@ describe('commentEventHandler — /ultrafix command', () => {
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
         mockStartLoop.mock.resetCalls();
+        mockStartLoop.mock.mockImplementation(async (_redis, _options, hasPendingReviews) => ({
+            state: {},
+            initialAction: hasPendingReviews ? 'fix' : 'review',
+        }));
         mockClearStateIfGenerationCurrent.mock.resetCalls();
         mockClearStateIfGenerationCurrent.mock.mockImplementation(async () => true);
         mockClearDeferredContinuation.mock.resetCalls();
+        mockClearDeferredContinuation.mock.mockImplementation(async () => 1);
+        mockBeginManualTakeover.mock.resetCalls();
+        mockBeginManualTakeover.mock.mockImplementation(async () => true);
+        mockAbortManualTakeover.mock.resetCalls();
+        mockAbortManualTakeover.mock.mockImplementation(async () => true);
         mockWithTransitionLease.mock.resetCalls();
+        mockWithTransitionLease.mock.mockImplementation(async (
+            _redis,
+            _identity,
+            _correlationId,
+            operation,
+        ) => operation(async () => {}));
         mockGetPendingReviewState.mock.resetCalls();
+        mockGetPendingReviewState.mock.mockImplementation(async () => ({
+            unprocessedComments: [], latestScore: null, hasPendingReview: false,
+        }));
         mockFilterCommentByAuthor.mock.resetCalls();
+        mockQueueAdd.mock.mockImplementation(async () => {});
+        mockQueueGetJob.mock.resetCalls();
+        mockQueueGetJob.mock.mockImplementation(async () => null);
         mockActiveJobs = [];
         mockWaitingJobs = [];
         mockDelayedJobs = [];
@@ -678,6 +717,21 @@ describe('commentEventHandler — /ultrafix command', () => {
 
     test('manual /fix enqueues its replacement before cancelling a deferred transition', async () => {
         const operations: string[] = [];
+        mockWithTransitionLease.mock.mockImplementationOnce(async (
+            _redis: unknown,
+            _identity: unknown,
+            _correlationId: string,
+            operation: (assertOwned: () => Promise<void>) => Promise<unknown>,
+        ) => {
+            operations.push('lease-start');
+            const result = await operation(async () => {});
+            operations.push('lease-end');
+            return result;
+        });
+        mockBeginManualTakeover.mock.mockImplementationOnce(async () => {
+            operations.push('fence');
+            return true;
+        });
         mockQueueAdd.mock.mockImplementationOnce(async () => { operations.push('enqueue'); });
         mockClearDeferredContinuation.mock.mockImplementationOnce(async () => {
             operations.push('cancel');
@@ -691,10 +745,13 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
         assert.deepStrictEqual(
             mockClearDeferredContinuation.mock.calls[0].arguments.slice(1),
-            ['testowner', 'testrepo', 42],
+            [{ owner: 'testowner', repo: 'testrepo', pr: 42 }, 1],
         );
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        assert.deepStrictEqual(operations, ['enqueue', 'cancel']);
+        assert.deepStrictEqual(
+            operations,
+            ['lease-start', 'fence', 'enqueue', 'cancel', 'lease-end'],
+        );
     });
 
     test('manual /fix preserves deferred ultrafix when replacement enqueue fails', async () => {
@@ -713,29 +770,66 @@ describe('commentEventHandler — /ultrafix command', () => {
     });
 
     test('manual /fix redelivery resumes failed cancellation without enqueueing twice', async () => {
-        mockWithTransitionLease.mock.mockImplementationOnce(async () => {
-            throw new Error('lease unavailable');
+        mockClearDeferredContinuation.mock.mockImplementationOnce(async () => {
+            throw new Error('transition commit failed');
         });
         const event = createPRCommentEvent('/fix F1');
         const config = createTestConfig();
 
         await assert.rejects(
             processCommentEvent(event, 'issue_comment', 'corr-uf-manual-fix-cancel-failure', config),
-            /lease unavailable/,
+            /transition commit failed/,
         );
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
 
         await processCommentEvent(
             event, 'issue_comment', 'corr-uf-manual-fix-cancel-retry', config,
         );
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 2);
         assert.strictEqual(
             [...config.redisClient._store.keys()].some(key =>
                 key.startsWith('pr-command-takeover:testowner:testrepo:42:issue_comment:')),
             false,
+        );
+    });
+
+    test('manual /fix retry keeps its intake order when the stage write fails', async () => {
+        const event = createPRCommentEvent('/fix F1');
+        const config = createTestConfig();
+        let failStageWrite = true;
+        config.redisClient.set.mock.mockImplementation(async (
+            key: string,
+            value: string,
+            ...args: string[]
+        ) => {
+            if (key.startsWith('pr-command-takeover:') && failStageWrite) {
+                failStageWrite = false;
+                throw new Error('stage write failed');
+            }
+            if (args.includes('NX') && config.redisClient._store.has(key)) return null;
+            config.redisClient._store.set(key, value);
+            return 'OK';
+        });
+        let replacementLookup = 0;
+        mockQueueGetJob.mock.mockImplementation(async () => {
+            replacementLookup += 1;
+            return replacementLookup === 1 ? null : {};
+        });
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-stage-write-failure', config),
+            /stage write failed/,
+        );
+        await processCommentEvent(event, 'issue_comment', 'corr-stage-write-retry', config);
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
+        assert.deepStrictEqual(
+            mockBeginManualTakeover.mock.calls.map(call => call.arguments[2]),
+            [1, 1],
         );
     });
 
@@ -786,24 +880,62 @@ describe('commentEventHandler — /ultrafix command', () => {
             name: 'processPullRequestComment',
             data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
         }];
-        mockWithTransitionLease.mock.mockImplementationOnce(async () => {
-            throw new Error('lease unavailable');
+        mockClearDeferredContinuation.mock.mockImplementationOnce(async () => {
+            throw new Error('transition commit failed');
         });
         const event = createPRCommentEvent('/review');
         const config = createTestConfig();
 
         await assert.rejects(
             processCommentEvent(event, 'issue_comment', 'corr-uf-manual-review-cancel-failure', config),
-            /lease unavailable/,
+            /transition commit failed/,
         );
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
-        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 0);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
 
         await processCommentEvent(
             event, 'issue_comment', 'corr-uf-manual-review-cancel-retry', config,
         );
 
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
-        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 1);
+        assert.strictEqual(mockClearDeferredContinuation.mock.callCount(), 2);
+    });
+
+    test('stale manual retry cannot cancel a newer /ultrafix transition', async () => {
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+        let transitionCall = 0;
+        mockClearDeferredContinuation.mock.mockImplementation(async (
+            _redis: unknown,
+            _identity: unknown,
+            sequence: number,
+        ) => {
+            transitionCall += 1;
+            if (transitionCall === 1) throw new Error('transition commit failed');
+            return sequence === 1 ? null : 2;
+        });
+        const manualEvent = createPRCommentEvent('/fix F1');
+        manualEvent.comment.id = 100;
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(manualEvent, 'issue_comment', 'corr-old-manual', config),
+            /transition commit failed/,
+        );
+
+        mockActiveJobs = [];
+        const freshEvent = createPRCommentEvent('/ultrafix');
+        freshEvent.comment.id = 101;
+        await processCommentEvent(freshEvent, 'issue_comment', 'corr-fresh-loop', config);
+        await processCommentEvent(manualEvent, 'issue_comment', 'corr-old-manual-retry', config);
+
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.deepStrictEqual(
+            mockClearDeferredContinuation.mock.calls.map(call => call.arguments[2]),
+            [1, 2, 1],
+        );
     });
 });

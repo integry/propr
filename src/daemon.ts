@@ -48,7 +48,10 @@ import type { DetectedIssue } from './daemon/issueDetection.js';
 import {
     startLoop,
     clearStateIfGenerationCurrent,
-    clearDeferredContinuation,
+    abortManualUltrafixTakeover,
+    beginManualUltrafixTakeover,
+    completeManualUltrafixTakeover,
+    startFreshUltrafixTransition,
     listDeferredContinuationKeys,
     parseDeferredKey,
 } from './jobs/ultrafixOrchestrationService.js';
@@ -183,7 +186,10 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         loadPrReviewModel,
         startLoop,
         clearStateIfGenerationCurrent,
-        clearDeferredContinuation,
+        beginManualTakeover: beginManualUltrafixTakeover,
+        abortManualTakeover: abortManualUltrafixTakeover,
+        completeManualTakeover: completeManualUltrafixTakeover,
+        startFreshTransition: startFreshUltrafixTransition,
         withTransitionLease: withUltrafixTransitionLease,
         getPendingReviewState,
     });

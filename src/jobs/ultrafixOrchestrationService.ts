@@ -28,6 +28,13 @@ export {
     parseDeferredKey,
     saveDeferredContinuation,
     deleteDeferredContinuationIfCurrent,
+    abortManualUltrafixTakeover,
+    beginManualUltrafixTakeover,
+    completeManualUltrafixTakeover,
+    getActiveUltrafixTakeoverSequence,
+    getUltrafixTakeoverFenceKey,
+    getUltrafixTransitionOrderKey,
+    startFreshUltrafixTransition,
 } from './ultrafixDeferredContinuationStore.js';
 export type { UltrafixDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
 export {

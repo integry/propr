@@ -5,6 +5,7 @@ const getCurrentPRHead = mock.fn(async () => 'head-sha' as string | null);
 const areAllChecksPassing = mock.fn(async () => true);
 const saveDeferredContinuation = mock.fn(async () => {});
 const isUltrafixGenerationCurrent = mock.fn(async () => true);
+const getActiveUltrafixTakeoverSequence = mock.fn(async () => null as number | null);
 
 await mock.module('@propr/core', {
     namedExports: { getCurrentPRHead, areAllChecksPassing },
@@ -24,6 +25,7 @@ await mock.module('../src/jobs/ultrafixOrchestrationService.js', {
         loadState: mock.fn(),
         saveDeferredContinuation,
         isUltrafixGenerationCurrent,
+        getActiveUltrafixTakeoverSequence,
     },
 });
 
@@ -61,6 +63,8 @@ beforeEach(() => {
     saveDeferredContinuation.mock.resetCalls();
     isUltrafixGenerationCurrent.mock.resetCalls();
     isUltrafixGenerationCurrent.mock.mockImplementation(async () => true);
+    getActiveUltrafixTakeoverSequence.mock.resetCalls();
+    getActiveUltrafixTakeoverSequence.mock.mockImplementation(async () => null);
 });
 
 test('allows a queued Ultrafix job only while its generation is current', async () => {
@@ -91,6 +95,14 @@ test('allows an Ultrafix fix without consulting CI', async () => {
     assert.equal(await checkUltrafixReadiness(job('fix') as never, params as never), true);
     assert.equal(getCurrentPRHead.mock.callCount(), 0);
     assert.equal(saveDeferredContinuation.mock.callCount(), 0);
+});
+
+test('defers stale Ultrafix work while a manual takeover is being scheduled', async () => {
+    getActiveUltrafixTakeoverSequence.mock.mockImplementationOnce(async () => 17);
+
+    assert.equal(await checkUltrafixReadiness(job('fix') as never, params as never), false);
+    assert.equal(saveDeferredContinuation.mock.callCount(), 1);
+    assert.equal(saveDeferredContinuation.mock.calls[0].arguments[1].reason, 'manual_takeover_in_progress');
 });
 
 test('defers an Ultrafix review when the PR head is unavailable', async () => {

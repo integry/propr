@@ -28,7 +28,10 @@ export interface UltrafixDeps {
     loadPrReviewModel: () => Promise<string>;
     startLoop: (redis: Redis, options: { owner: string; repo: string; pr: number; goal?: number; maxCycles?: number; pauseSeconds?: number; reviewModel?: string; generation?: number }, hasPendingReviews: boolean) => Promise<{ state: unknown; initialAction: 'review' | 'fix' }>;
     clearStateIfGenerationCurrent: (redis: Redis, identity: { owner: string; repo: string; pr: number }, generation: number) => Promise<boolean>;
-    clearDeferredContinuation: (redis: Redis, owner: string, repo: string, pr: number) => Promise<number>;
+    beginManualTakeover: (redis: Redis, identity: { owner: string; repo: string; pr: number }, commandSequence: number) => Promise<boolean>;
+    abortManualTakeover: (redis: Redis, identity: { owner: string; repo: string; pr: number }, commandSequence: number) => Promise<boolean>;
+    completeManualTakeover: (redis: Redis, identity: { owner: string; repo: string; pr: number }, commandSequence: number) => Promise<number | null>;
+    startFreshTransition: (redis: Redis, identity: { owner: string; repo: string; pr: number }, commandSequence: number) => Promise<number | null>;
     withTransitionLease: <T>(redis: Redis, identity: { owner: string; repo: string; pr: number }, correlationId: string, operation: (assertOwned: () => Promise<void>) => Promise<T>) => Promise<T>;
     getPendingReviewState: (allComments: Array<{ id: number; body: string | null; user: { login: string; type?: string }; created_at: string }>, options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis; correlatedLogger: ReturnType<typeof logger.withCorrelation> }) => Promise<{ hasPendingReview: boolean }>;
 }
@@ -83,26 +86,57 @@ interface PRJobData extends CommentJobData {
 }
 
 interface CommentContext { eventType: CommentEventType; prNumber: number; owner: string; repo: string }
-interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; takeoverStageKey?: string }
+interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; takeoverStageKey?: string; takeoverSequence?: number }
 interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; throwOnQueueFailure?: boolean; idempotentJobId?: string }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
+interface ManualTakeoverContext {
+    deps: UltrafixDeps;
+    takeoverStageKey: string;
+    commandSequence: number;
+    assertTransitionOwned: () => Promise<void>;
+}
 type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta' | 'commandSequence'> & { path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
 type QueuedCommandMeta = Extract<CommandMeta, { mode: 'review' | 'fix' | 'use' }>;
 type PRComment = { id: number; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number; commandSequence?: number };
 
 const TAKEOVER_STAGE_TTL_SECONDS = 86400;
+const ASSIGN_COMMAND_SEQUENCE_SCRIPT = `
+local existing = redis.call('GET', KEYS[1])
+if existing then
+    return existing
+end
+local sequence = redis.call('INCR', KEYS[2])
+redis.call('SET', KEYS[1], sequence, 'EX', ARGV[1])
+return sequence
+`;
 const STORE_PENDING_TAKEOVER_SCRIPT = `
 redis.call('RPUSH', KEYS[1], ARGV[1])
 redis.call('EXPIRE', KEYS[1], ARGV[2])
-redis.call('SET', KEYS[2], 'scheduled', 'EX', ARGV[3])
+redis.call('SET', KEYS[2], ARGV[4], 'EX', ARGV[3])
 return 1
 `;
 
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
     const result = await redisClient.set(key, Date.now().toString(), 'EX', 86400, 'NX');
     return result === 'OK';
+}
+
+async function getOrAssignCommandSequence(
+    redisClient: Redis,
+    identity: RepoContext & { eventType: CommentEventType; commentId: number },
+): Promise<number> {
+    const identitySuffix = `${identity.owner}:${identity.repo}:${identity.prNumber}`;
+    const sequenceKey = `pr-command-order:${identitySuffix}:${identity.eventType}:${identity.commentId}`;
+    const counterKey = `pr-command-sequence:${identitySuffix}`;
+    return Number(await redisClient.eval(
+        ASSIGN_COMMAND_SEQUENCE_SCRIPT,
+        2,
+        sequenceKey,
+        counterKey,
+        String(TAKEOVER_STAGE_TTL_SECONDS),
+    ));
 }
 
 interface CommentKeyIdentity {
@@ -297,7 +331,7 @@ async function handleQueuedSlashCommand(
     opts: SlashCommandHandlerOptions,
     commandMeta: QueuedCommandMeta,
 ): Promise<void> {
-    const { comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
+    const { comment, eventContext, config, correlationId, correlatedLogger } = opts;
     const { prNumber, owner, repo, eventType } = eventContext;
     const { redisClient } = config;
     const takeoverDeps = (commandMeta.mode === 'fix' || commandMeta.mode === 'review')
@@ -306,9 +340,13 @@ async function handleQueuedSlashCommand(
     const takeoverStageKey = takeoverDeps
         ? getTakeoverStageKey({ owner, repo, prNumber, eventType, commentId: comment.id })
         : undefined;
-    if (takeoverDeps && takeoverStageKey && await redisClient.get(takeoverStageKey)) {
+    const stagedSequence = takeoverStageKey
+        ? await redisClient.get(takeoverStageKey)
+        : null;
+    if (takeoverDeps && takeoverStageKey && stagedSequence) {
         await cancelDeferredUltrafixTransition(takeoverDeps, {
-            redisClient, owner, repo, prNumber, correlationId, correlatedLogger, takeoverStageKey,
+            redisClient, owner, repo, prNumber, correlationId, correlatedLogger,
+            takeoverStageKey, commandSequence: Number(stagedSequence),
         });
         correlatedLogger.info(
             { pullRequestNumber: prNumber, commentId: comment.id },
@@ -316,56 +354,184 @@ async function handleQueuedSlashCommand(
         );
         return;
     }
-
-    correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
-    // Strip the slash command line from the comment body so the downstream job
-    // only sees the user's instructions, not the control syntax (consistent with /switch).
-    const strippedComment = { ...comment, body: commandMeta.instructions || '' };
-
-    // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
-    const existingJob = await checkExistingJob(prNumber, owner, repo);
-    if (existingJob) {
-        await storeCommentForBatch(
-            { ...strippedComment, ...buildPendingCommandFields(commandMeta) },
-            commentAuthor,
-            eventContext,
-            {
-                redisClient,
-                PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
-                takeoverStageKey,
-            },
-        );
-        if (takeoverDeps) {
-            await cancelDeferredUltrafixTransition(
-                takeoverDeps,
-                { redisClient, owner, repo, prNumber, correlationId, correlatedLogger, takeoverStageKey },
-            );
-        }
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
+    const commandSequence = comment.commandSequence ?? 0;
+    if (!takeoverDeps || !takeoverStageKey) {
+        await scheduleQueuedSlashCommand(opts, commandMeta);
         return;
     }
 
-    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
-        payload,
+    await takeoverDeps.withTransitionLease(
         redisClient,
-        PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
-        MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN,
+        { owner, repo, pr: prNumber },
         correlationId,
-        commandMeta,
-        throwOnQueueFailure: !!takeoverDeps,
-        idempotentJobId: takeoverDeps
-            ? `pr-comments-command-${owner}-${repo}-${prNumber}-${eventContext.eventType}-${comment.id}`
-            : undefined,
-    });
-    if (takeoverDeps) {
-        await redisClient.set(
-            takeoverStageKey!, 'scheduled', 'EX', TAKEOVER_STAGE_TTL_SECONDS,
-        );
-        await cancelDeferredUltrafixTransition(
-            takeoverDeps,
-            { redisClient, owner, repo, prNumber, correlationId, correlatedLogger, takeoverStageKey },
-        );
+        async assertTransitionOwned => {
+            await assertTransitionOwned();
+            if (!await takeoverDeps.beginManualTakeover(
+                redisClient, { owner, repo, pr: prNumber }, commandSequence,
+            )) {
+                correlatedLogger.info(
+                    { pullRequestNumber: prNumber, commentId: comment.id, commandSequence },
+                    'Ignored stale manual takeover command',
+                );
+                return;
+            }
+            await scheduleQueuedSlashCommand(opts, commandMeta, {
+                deps: takeoverDeps,
+                takeoverStageKey,
+                commandSequence,
+                assertTransitionOwned,
+            });
+        },
+    );
+    await redisClient.del(takeoverStageKey);
+}
+
+async function scheduleQueuedSlashCommand(
+    opts: SlashCommandHandlerOptions,
+    commandMeta: QueuedCommandMeta,
+    takeover?: ManualTakeoverContext,
+): Promise<void> {
+    const { comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
+    const { prNumber, owner, repo } = eventContext;
+    const { redisClient } = config;
+    const deterministicJobId = takeover
+        ? `pr-comments-command-${owner}-${repo}-${prNumber}-${eventContext.eventType}-${comment.id}`
+        : undefined;
+    let replacementScheduled = false;
+    try {
+        if (takeover && deterministicJobId) {
+            const existingReplacement = await (await getIssueQueue()).getJob(deterministicJobId);
+            if (existingReplacement) {
+                await redisClient.set(
+                    takeover.takeoverStageKey,
+                    String(takeover.commandSequence),
+                    'EX',
+                    TAKEOVER_STAGE_TTL_SECONDS,
+                );
+                replacementScheduled = true;
+                await finalizeManualUltrafixTakeover(takeover, {
+                    redisClient, owner, repo, prNumber, correlatedLogger,
+                });
+                correlatedLogger.info(
+                    { pullRequestNumber: prNumber, commentId: comment.id },
+                    'Recovered an already queued manual takeover',
+                );
+                return;
+            }
+        }
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
+        // Strip the slash command line from the comment body so the downstream job
+        // only sees the user's instructions, not the control syntax (consistent with /switch).
+        const strippedComment = { ...comment, body: commandMeta.instructions || '' };
+
+        // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
+        const existingJob = await checkExistingJob(prNumber, owner, repo);
+        if (existingJob) {
+            await storeCommentForBatch(
+                { ...strippedComment, ...buildPendingCommandFields(commandMeta) },
+                commentAuthor,
+                eventContext,
+                {
+                    redisClient,
+                    PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+                    takeoverStageKey: takeover?.takeoverStageKey,
+                    takeoverSequence: takeover?.commandSequence,
+                },
+            );
+            replacementScheduled = true;
+            if (takeover) {
+                await finalizeManualUltrafixTakeover(takeover, {
+                    redisClient, owner, repo, prNumber, correlatedLogger,
+                });
+            }
+            correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
+            return;
+        }
+
+        await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
+            payload,
+            redisClient,
+            PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+            MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN,
+            correlationId,
+            commandMeta,
+            throwOnQueueFailure: !!takeover,
+            idempotentJobId: deterministicJobId,
+        });
+        replacementScheduled = true;
+        if (takeover) {
+            await redisClient.set(
+                takeover.takeoverStageKey,
+                String(takeover.commandSequence),
+                'EX',
+                TAKEOVER_STAGE_TTL_SECONDS,
+            );
+            await finalizeManualUltrafixTakeover(takeover, {
+                redisClient, owner, repo, prNumber, correlatedLogger,
+            });
+        }
+    } catch (error) {
+        if (takeover) {
+            await abortUnscheduledManualTakeover(takeover, {
+                redisClient, owner, repo, prNumber, correlatedLogger,
+                deterministicJobId, replacementScheduled,
+            });
+        }
+        throw error;
     }
+}
+
+async function abortUnscheduledManualTakeover(
+    takeover: ManualTakeoverContext,
+    options: {
+        redisClient: Redis; owner: string; repo: string; prNumber: number;
+        correlatedLogger: ReturnType<typeof logger.withCorrelation>;
+        deterministicJobId?: string;
+        replacementScheduled: boolean;
+    },
+): Promise<void> {
+    const {
+        redisClient, owner, repo, prNumber, correlatedLogger,
+        deterministicJobId, replacementScheduled,
+    } = options;
+    if (replacementScheduled) return;
+    let staged: string | null;
+    try {
+        staged = await redisClient.get(takeover.takeoverStageKey);
+        if (staged === null && deterministicJobId
+            && await (await getIssueQueue()).getJob(deterministicJobId)) {
+            await redisClient.set(
+                takeover.takeoverStageKey,
+                String(takeover.commandSequence),
+                'EX',
+                TAKEOVER_STAGE_TTL_SECONDS,
+            );
+            staged = String(takeover.commandSequence);
+        }
+    } catch (stageError) {
+        correlatedLogger.warn({ stageError, prNumber }, 'Could not verify manual takeover stage; preserving fence');
+        return;
+    }
+    if (staged !== null) return;
+    await takeover.assertTransitionOwned();
+    await takeover.deps.abortManualTakeover(
+        redisClient, { owner, repo, pr: prNumber }, takeover.commandSequence,
+    );
+}
+
+async function finalizeManualUltrafixTakeover(
+    takeover: ManualTakeoverContext,
+    options: {
+        redisClient: Redis; owner: string; repo: string; prNumber: number;
+        correlatedLogger: ReturnType<typeof logger.withCorrelation>;
+    },
+): Promise<void> {
+    const { redisClient, owner, repo, prNumber, correlatedLogger } = options;
+    await takeover.assertTransitionOwned();
+    const generation = await takeover.deps.completeManualTakeover(
+        redisClient, { owner, repo, pr: prNumber }, takeover.commandSequence,
+    );
+    logManualTakeoverResult(generation, takeover.commandSequence, prNumber, correlatedLogger);
 }
 
 async function cancelDeferredUltrafixTransition(
@@ -378,19 +544,38 @@ async function cancelDeferredUltrafixTransition(
         correlationId: string;
         correlatedLogger: ReturnType<typeof logger.withCorrelation>;
         takeoverStageKey?: string;
+        commandSequence: number;
     },
 ): Promise<void> {
-    const { redisClient, owner, repo, prNumber, correlationId, correlatedLogger } = options;
-    await deps.withTransitionLease(
+    const { redisClient, owner, repo, prNumber, correlationId, correlatedLogger, commandSequence } = options;
+    const generation = await deps.withTransitionLease(
         redisClient,
         { owner, repo, pr: prNumber },
         correlationId,
         async assertOwned => {
             await assertOwned();
-            return deps.clearDeferredContinuation(redisClient, owner, repo, prNumber);
+            return deps.completeManualTakeover(
+                redisClient, { owner, repo, pr: prNumber }, commandSequence,
+            );
         },
     );
     if (options.takeoverStageKey) await redisClient.del(options.takeoverStageKey);
+    logManualTakeoverResult(generation, commandSequence, prNumber, correlatedLogger);
+}
+
+function logManualTakeoverResult(
+    generation: number | null,
+    commandSequence: number,
+    prNumber: number,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>,
+): void {
+    if (generation === null) {
+        correlatedLogger.info(
+            { pullRequestNumber: prNumber, commandSequence },
+            'Manual takeover was superseded by a newer action',
+        );
+        return;
+    }
     correlatedLogger.info(
         { pullRequestNumber: prNumber },
         'Durably scheduled manual command and cancelled any deferred ultrafix transition',
@@ -500,7 +685,17 @@ async function handleUltrafixCommandWithLease(
 
     // 1. Load configured defaults from settings, then override with command arguments
     await assertTransitionOwned();
-    const generation = await deps.clearDeferredContinuation(redisClient, owner, repo, prNumber);
+    const commandSequence = comment.commandSequence ?? 0;
+    const generation = await deps.startFreshTransition(
+        redisClient, { owner, repo, pr: prNumber }, commandSequence,
+    );
+    if (generation === null) {
+        correlatedLogger.info(
+            { pullRequestNumber: prNumber, commentId: comment.id, commandSequence },
+            'Ignored stale /ultrafix command superseded by a newer action',
+        );
+        return;
+    }
     const loopMeta: UltrafixCommandMeta = { ...commandMeta, generation };
     const [dbGoal, dbMaxCycles, dbPauseSeconds, dbReviewModel] = await Promise.all([
         deps.loadUltrafixRatingGoal(),
@@ -698,7 +893,9 @@ export async function processCommentEvent(payload: IssueCommentEvent | PullReque
             return { status: 'ignored', reason: 'duplicate_delivery' };
         }
         try {
-            comment.commandSequence = await redisClient.incr(`pr-command-sequence:${owner}:${repo}:${prNumber}`);
+            comment.commandSequence = await getOrAssignCommandSequence(redisClient, {
+                owner, repo, prNumber, eventType, commentId: comment.id,
+            });
             await handleSlashCommand({ parsedCommand, comment, commentAuthor, eventContext: { eventType, prNumber, owner, repo }, payload, config, correlationId, correlatedLogger });
         } catch (error) {
             await redisClient.del(slashCommentTrackingKey);
@@ -795,6 +992,7 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
             serializedComment,
             '3600',
             String(TAKEOVER_STAGE_TTL_SECONDS),
+            String(config.takeoverSequence ?? 0),
         );
         if (Number(stored) !== 1) throw new Error('Failed to durably stage manual takeover');
         return;

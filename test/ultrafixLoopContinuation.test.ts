@@ -13,6 +13,7 @@ import {
     saveDeferredContinuation,
     loadDeferredContinuation,
     clearDeferredContinuation,
+    getUltrafixTakeoverFenceKey,
     type UltrafixLoopState,
 } from '../src/jobs/ultrafixOrchestrationService.js';
 
@@ -58,9 +59,22 @@ function createMockRedis() {
         store,
         sets,
         async get(key: string) { return store.get(key) ?? null; },
-        async set(key: string, value: string) { store.set(key, value); return 'OK'; },
+        async set(key: string, value: string, ...args: string[]) {
+            if (args.includes('NX') && store.has(key)) return null;
+            store.set(key, value);
+            return 'OK';
+        },
         async del(key: string) { store.delete(key); return 1; },
         async eval(script: string, _keyCount: number, ...args: string[]) {
+            if (script.includes("redis.call('expire', KEYS[1]")) {
+                return store.get(args[0]) === args[1] ? 1 : 0;
+            }
+            if (script.includes("redis.call('del', KEYS[1])")
+                && script.includes("redis.call('get', KEYS[1]) == ARGV[1]")) {
+                if (store.get(args[0]) !== args[1]) return 0;
+                store.delete(args[0]);
+                return 1;
+            }
             const [generationKey, deferredKey] = args;
             if (script.includes("redis.call('DEL', KEYS[3])")) {
                 if ((store.get(generationKey) ?? '0') !== args[3]) return 0;
@@ -445,6 +459,24 @@ describe('claimed deferred continuation cancellation', () => {
         assert.strictEqual(result.reason, 'deferred_cancelled');
         assert.strictEqual(enqueueNextStep.mock.callCount(), 0);
         assert.strictEqual(await loadDeferredContinuation(redis as never, 'acme', 'web', 42), null);
+    });
+
+    test('active manual takeover fence leaves a deferred continuation untouched', async () => {
+        await seedDeferredLoop();
+        redis.store.set(getUltrafixTakeoverFenceKey('acme', 'web', 42), '17');
+
+        const result = await resumeDeferredContinuation(
+            { owner: 'acme', repo: 'web', pr: 42 },
+            redis as never,
+            logger as never,
+        );
+
+        assert.strictEqual(result.reason, 'still_deferred: manual_takeover_in_progress:17');
+        assert.strictEqual(enqueueNextStep.mock.callCount(), 0);
+        assert.notStrictEqual(
+            await loadDeferredContinuation(redis as never, 'acme', 'web', 42),
+            null,
+        );
     });
 
     test('fresh loop startup prevents a claimed continuation from being re-saved', async () => {
