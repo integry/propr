@@ -1,6 +1,6 @@
 {
   "version": "0.8.6",
-  "git_sha": "1dcc325a",
+  "git_sha": "bf98253a2821ffbb1ed1a31890d3a548dc42c3c1",
   "registry": "propr",
   "images": {
     "app": "propr/app:0.8.6",
