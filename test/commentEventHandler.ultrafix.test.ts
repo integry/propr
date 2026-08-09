@@ -376,6 +376,35 @@ describe('commentEventHandler — /ultrafix command', () => {
         assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['ultrafix']);
     });
 
+    test('queue failure rolls back a newly started ultrafix loop and label', async () => {
+        mockQueueAdd.mock.mockImplementationOnce(async () => {
+            throw new Error('queue unavailable');
+        });
+        const event = createPRCommentEvent('/ultrafix');
+        const config = createTestConfig();
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-uf-enqueue-failure', config),
+            /queue unavailable/,
+        );
+
+        assert.strictEqual(mockStartLoop.mock.callCount(), 1);
+        assert.strictEqual(mockClearStateIfGenerationCurrent.mock.callCount(), 1);
+        assert.deepStrictEqual(mockClearStateIfGenerationCurrent.mock.calls[0].arguments.slice(1), [
+            { owner: 'testowner', repo: 'testrepo', pr: 42 }, 1,
+        ]);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments.slice(1), [
+            ['ultrafix'], [],
+        ]);
+        const failureComments = mockOctokit.request.mock.calls.filter(
+            (call: { arguments: unknown[] }) => String(
+                (call.arguments[1] as Record<string, unknown>)?.body ?? '',
+            ).includes('failed to start'),
+        );
+        assert.strictEqual(failureComments.length, 1);
+    });
+
     test('duplicate /ultrafix deliveries for the same comment initialize only one loop', async () => {
         const event = createPRCommentEvent('/ultrafix goal=8 max=4');
         const config = createTestConfig();

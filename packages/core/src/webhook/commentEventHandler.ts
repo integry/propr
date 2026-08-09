@@ -84,7 +84,7 @@ interface PRJobData extends CommentJobData {
 
 interface CommentContext { eventType: CommentEventType; prNumber: number; owner: string; repo: string }
 interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[] }
-interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta }
+interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; throwOnQueueFailure?: boolean }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta'> & { path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
@@ -484,6 +484,7 @@ async function handleUltrafixCommandWithLease(
             commandMeta: firstActionMeta,
             prefetchedPRData: prData,
             ultrafixMeta: loopMeta,
+            throwOnQueueFailure: true,
         });
     } catch (error) {
         // Rollback: remove the ultrafix label if we added it, clear loop state, and post a failure comment.
@@ -780,6 +781,7 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
     const timestamp = Date.now();
     const jobId = `pr-comments-batch-${owner}-${repo}-${prNumber}-${timestamp}`;
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;
+    let jobQueued = false;
 
     try {
         const queue = await getIssueQueue();
@@ -789,11 +791,13 @@ async function enqueueNewCommentJob(comment: { id: number; body: string; path?: 
             attempts: 3,
             backoff: { type: 'exponential', delay: 10000 },  // 10s, 20s, 40s
         });
+        jobQueued = true;
         await redisClient.setex(commentTrackingKey, 86400, Date.now().toString());
         correlatedLogger.info({ jobId, pullRequestNumber: prNumber, commentId: comment.id, commentType: unprocessedComment.type, delayMs: COMMENT_BATCH_DELAY_MS }, `Successfully added PR comment job with ${COMMENT_BATCH_DELAY_MS}ms delay`);
     } catch (error) {
         const err = error as Error;
         if (err.message?.includes('Job already exists')) correlatedLogger.debug({ pullRequestNumber: prNumber }, 'PR comment job already in queue, skipping');
         else handleError(error, `Failed to add PR comment to queue`, { correlationId });
+        if (options.throwOnQueueFailure && !jobQueued) throw error;
     }
 }
