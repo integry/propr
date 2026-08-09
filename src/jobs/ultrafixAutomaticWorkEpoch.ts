@@ -37,6 +37,24 @@ redis.call('DEL', KEYS[2])
 return 1
 `;
 
+const SAVE_STATE_IF_CURRENT_SCRIPT = `
+local current_epoch = redis.call('GET', KEYS[1]) or '0'
+if current_epoch ~= ARGV[1] then
+    return 0
+end
+redis.call('SET', KEYS[2], ARGV[2])
+return 1
+`;
+
+const CLEAR_STATE_IF_CURRENT_SCRIPT = `
+local current_epoch = redis.call('GET', KEYS[1]) or '0'
+if current_epoch ~= ARGV[1] then
+    return 0
+end
+redis.call('DEL', KEYS[2])
+return 1
+`;
+
 const INVALIDATE_AUTOMATIC_WORK_SCRIPT = `
 local epoch = redis.call('INCR', KEYS[1])
 redis.call('DEL', KEYS[2])
@@ -201,6 +219,38 @@ export async function clearDeferredContinuationIfCurrent(
         2,
         getUltrafixAutomaticWorkEpochKey(identity.owner, identity.repo, identity.pr),
         getUltrafixDeferredKey(identity.owner, identity.repo, identity.pr),
+        String(workEpoch),
+    );
+    return Number(cleared) === 1;
+}
+
+export async function saveUltrafixStateIfCurrent(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    workEpoch: number,
+    serializedState: string,
+): Promise<boolean> {
+    const saved = await redis.eval(
+        SAVE_STATE_IF_CURRENT_SCRIPT,
+        2,
+        getUltrafixAutomaticWorkEpochKey(identity.owner, identity.repo, identity.pr),
+        `${ULTRAFIX_STATE_KEY_PREFIX}:${identity.owner}:${identity.repo}:${identity.pr}`,
+        String(workEpoch),
+        serializedState,
+    );
+    return Number(saved) === 1;
+}
+
+export async function clearUltrafixStateIfCurrent(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    workEpoch: number,
+): Promise<boolean> {
+    const cleared = await redis.eval(
+        CLEAR_STATE_IF_CURRENT_SCRIPT,
+        2,
+        getUltrafixAutomaticWorkEpochKey(identity.owner, identity.repo, identity.pr),
+        `${ULTRAFIX_STATE_KEY_PREFIX}:${identity.owner}:${identity.repo}:${identity.pr}`,
         String(workEpoch),
     );
     return Number(cleared) === 1;

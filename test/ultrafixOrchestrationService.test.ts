@@ -10,6 +10,8 @@ import {
     saveState,
     loadState,
     clearState,
+    clearUltrafixStateIfCurrent,
+    invalidateUltrafixAutomaticWork,
     startLoop,
     recordAction,
     retainOriginalScope,
@@ -30,15 +32,19 @@ function createMockRedis() {
         async set(key: string, value: string) { store.set(key, value); return 'OK'; },
         async del(key: string) { store.delete(key); return 1; },
         async eval(script: string, _keyCount: number, ...args: string[]) {
-            const [epochKey, deferredKey] = args;
+            const [epochKey, targetKey] = args;
             if (script.includes("redis.call('INCR'")) {
                 const nextEpoch = Number(store.get(epochKey) ?? '0') + 1;
                 store.set(epochKey, String(nextEpoch));
-                store.delete(deferredKey);
+                store.delete(targetKey);
                 return nextEpoch;
             }
             if ((store.get(epochKey) ?? '0') !== args[2]) return 0;
-            store.set(deferredKey, args[3]);
+            if (script.includes("redis.call('DEL', KEYS[2])")) {
+                store.delete(targetKey);
+                return 1;
+            }
+            store.set(targetKey, args[3]);
             return 1;
         },
     };
@@ -343,6 +349,74 @@ describe('startLoop', () => {
         }, true);
 
         assert.strictEqual(initialAction, 'fix');
+    });
+
+    test('commits an explicitly reserved epoch atomically', async () => {
+        const redis = createMockRedis();
+        const workEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+
+        const { state } = await startLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, workEpoch,
+        }, false);
+
+        assert.strictEqual(state.workEpoch, 1);
+        assert.deepStrictEqual(await loadState(redis as any, 'o', 'r', 1), state);
+    });
+
+    test('rejects stale startup commits and epoch-conditioned rollback preserves newer state', async () => {
+        const redis = createMockRedis();
+        const firstEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        const secondEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        const newerState = createDefaultState({ owner: 'o', repo: 'r', pr: 1, workEpoch: secondEpoch });
+        newerState.goal = 9;
+        await saveState(redis as any, newerState);
+
+        await assert.rejects(
+            startLoop(redis as any, {
+                owner: 'o', repo: 'r', pr: 1, goal: 5, workEpoch: firstEpoch,
+            }, false),
+            /superseded before state commit/,
+        );
+        assert.strictEqual(
+            await clearUltrafixStateIfCurrent(
+                redis as any,
+                { owner: 'o', repo: 'r', pr: 1 },
+                firstEpoch,
+            ),
+            false,
+        );
+        assert.deepStrictEqual(await loadState(redis as any, 'o', 'r', 1), newerState);
+    });
+
+    test('stale mutations cannot change a newer loop state', async () => {
+        const redis = createMockRedis();
+        const firstEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        await startLoop(redis as any, { owner: 'o', repo: 'r', pr: 1, workEpoch: firstEpoch }, false);
+        const secondEpoch = await invalidateUltrafixAutomaticWork(redis as any, 'o', 'r', 1);
+        const { state: newerState } = await startLoop(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, goal: 9, workEpoch: secondEpoch,
+        }, false);
+
+        const updated = await recordAction(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, action: 'review', workEpoch: firstEpoch,
+        });
+
+        assert.strictEqual(updated, null);
+        assert.deepStrictEqual(await loadState(redis as any, 'o', 'r', 1), newerState);
+    });
+
+    test('treats legacy unversioned state as epoch zero', async () => {
+        const redis = createMockRedis();
+        const legacyState = createDefaultState({ owner: 'o', repo: 'r', pr: 1 });
+        delete (legacyState as Partial<UltrafixLoopState>).workEpoch;
+        await saveState(redis as any, legacyState);
+
+        const updated = await recordAction(redis as any, {
+            owner: 'o', repo: 'r', pr: 1, action: 'review', workEpoch: 0,
+        });
+
+        assert.strictEqual(updated?.workEpoch, 0);
+        assert.strictEqual((await loadState(redis as any, 'o', 'r', 1))?.workEpoch, 0);
     });
 });
 

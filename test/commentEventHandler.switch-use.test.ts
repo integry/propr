@@ -196,9 +196,9 @@ setUltrafixDeps({
     loadUltrafixPauseSeconds: mock.fn(async () => 60),
     loadPrReviewModel: mock.fn(async () => ''),
     startLoop: mock.fn(async () => ({ state: {}, initialAction: 'review' as const })),
-    clearState: mock.fn(async () => {}),
+    clearStateIfCurrent: mock.fn(async () => true),
     hasAutomaticWork: mockHasAutomaticWork,
-    getAutomaticWorkEpoch: mock.fn(async () => 0),
+    reserveAutomaticWork: mock.fn(async () => 1),
     invalidateAutomaticWork: mockInvalidateAutomaticWork,
     getPendingReviewState: mock.fn(async () => ({ hasPendingReview: false })),
 });

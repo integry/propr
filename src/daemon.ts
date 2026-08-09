@@ -44,9 +44,9 @@ import {
 import { resetQueues, resetIssueLabels } from './daemon/queueReset.js';
 import { sweepDraftContext } from './daemon/draftContextSweep.js';
 import {
-    clearState,
-    getUltrafixAutomaticWorkEpoch,
+    clearUltrafixStateIfCurrent,
     hasUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWork,
     invalidateUltrafixAutomaticWorkForComment,
     startLoop,
 } from './jobs/ultrafixOrchestrationService.js';
@@ -180,9 +180,9 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         loadUltrafixPauseSeconds,
         loadPrReviewModel,
         startLoop,
-        clearState,
+        clearStateIfCurrent: clearUltrafixStateIfCurrent,
         hasAutomaticWork: hasUltrafixAutomaticWork,
-        getAutomaticWorkEpoch: getUltrafixAutomaticWorkEpoch,
+        reserveAutomaticWork: invalidateUltrafixAutomaticWork,
         invalidateAutomaticWork: invalidateUltrafixAutomaticWorkForComment,
         getPendingReviewState,
     });

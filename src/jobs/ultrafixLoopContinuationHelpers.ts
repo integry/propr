@@ -77,6 +77,33 @@ export async function removeUltrafixLabel(
     }
 }
 
+/** Restore the shared circuit-breaker label when newer work wins a cleanup race. */
+export async function ensureUltrafixLabel(
+    owner: string,
+    repo: string,
+    pullRequestNumber: number,
+    correlatedLogger: Logger,
+): Promise<void> {
+    try {
+        const octokit = await withRetry(
+            () => getAuthenticatedOctokit(),
+            { ...retryConfigs.githubApi },
+            'get_authenticated_octokit_ultrafix_label_restore',
+        );
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner,
+            repo,
+            issue_number: pullRequestNumber,
+            labels: ['ultrafix'],
+        });
+    } catch (err) {
+        correlatedLogger.warn(
+            { error: (err as Error).message, pullRequestNumber },
+            'Failed to restore ultrafix label for newer loop',
+        );
+    }
+}
+
 export async function postPrComment(options: {
     owner: string;
     repo: string;

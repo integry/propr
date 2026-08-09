@@ -305,6 +305,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             repo: repoName,
             pr: pullRequestNumber,
             scope: originalTaskSpec,
+            workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
         });
     }
 

@@ -272,7 +272,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         await markFindingsSelected(redisClient, {
             owner: repoOwner,
             repo: repoName,
-            pr: pullRequestNumber,
+            pr: pullRequestNumber, workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
             findings: selectedReviewComments.flatMap(comment =>
                 comment.actionableFindings.map(finding => ({
                     id: finding.id,
@@ -311,7 +311,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         originalTaskSpec = await retainOriginalScope(redisClient, {
             owner: repoOwner,
             repo: repoName,
-            pr: pullRequestNumber,
+            pr: pullRequestNumber, workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
             scope: originalTaskSpec,
         });
     }
