@@ -14,10 +14,19 @@ const mockGetCheckRunsStatus = mock.fn(async () => ({
     anyFailed: true,
 }));
 const mockAreAllChecksPassing = mock.fn(async () => false);
+const mockFindPlanIssueByRepoAndPR = mock.fn(async () => null as { issue_number: number } | null);
+const mockEnableAutoMerge = mock.fn(async () => ({ success: true }));
+const mockGetPendingReviewState = mock.fn(async () => ({
+    latestScore: 5,
+    reviewStatus: 'valid_with_blockers' as const,
+    hasPendingReview: true,
+    unprocessedComments: [],
+}));
+let labelTransitionActive = false;
 
 await mock.module('@propr/core', {
     namedExports: {
-        findPlanIssueByRepoAndPR: mock.fn(async () => null),
+        findPlanIssueByRepoAndPR: mockFindPlanIssueByRepoAndPR,
         generateCorrelationId: mock.fn(() => 'next-correlation-id'),
         getAuthenticatedOctokit: mock.fn(async () => ({ request: mockOctokitRequest })),
         getPendingPrCommentsKey: (owner: string, repo: string, pr: number) => `pending:${owner}:${repo}:${pr}`,
@@ -27,14 +36,21 @@ await mock.module('@propr/core', {
         },
         retryConfigs: { githubApi: {} },
         safeRemoveLabel: mock.fn(async () => undefined),
-        withUltrafixLabelTransition: async (_redis: unknown, _identity: unknown, operation: () => Promise<unknown>) => operation(),
+        withUltrafixLabelTransition: async (_redis: unknown, _identity: unknown, operation: () => Promise<unknown>) => {
+            labelTransitionActive = true;
+            try {
+                return await operation();
+            } finally {
+                labelTransitionActive = false;
+            }
+        },
         withRetry: async (operation: () => Promise<unknown>) => operation(),
     },
 });
 
 await mock.module('../src/github/autoMergeOperations.js', {
     namedExports: {
-        enableAutoMerge: mock.fn(async () => ({ success: true })),
+        enableAutoMerge: mockEnableAutoMerge,
     },
 });
 
@@ -46,12 +62,7 @@ await mock.module('../src/jobs/prCommentJobUtils.js', {
 
 await mock.module('../src/jobs/reviewCommentGatherer.js', {
     namedExports: {
-        getPendingReviewState: mock.fn(async () => ({
-            latestScore: 5,
-            reviewStatus: 'valid_with_blockers',
-            hasPendingReview: true,
-            unprocessedComments: [],
-        })),
+        getPendingReviewState: mockGetPendingReviewState,
     },
 });
 
@@ -95,6 +106,18 @@ describe('Ultrafix continuation entry point', () => {
         mockGetCurrentPRHead.mock.resetCalls();
         mockGetCheckRunsStatus.mock.resetCalls();
         mockAreAllChecksPassing.mock.resetCalls();
+        mockFindPlanIssueByRepoAndPR.mock.resetCalls();
+        mockFindPlanIssueByRepoAndPR.mock.mockImplementation(async () => null);
+        mockEnableAutoMerge.mock.resetCalls();
+        mockEnableAutoMerge.mock.mockImplementation(async () => ({ success: true }));
+        mockGetPendingReviewState.mock.resetCalls();
+        mockGetPendingReviewState.mock.mockImplementation(async () => ({
+            latestScore: 5,
+            reviewStatus: 'valid_with_blockers',
+            hasPendingReview: true,
+            unprocessedComments: [],
+        }));
+        labelTransitionActive = false;
         setCheckRunDeps({
             areAllChecksPassing: mockAreAllChecksPassing,
             getCurrentPRHead: mockGetCurrentPRHead,
@@ -156,5 +179,42 @@ describe('Ultrafix continuation entry point', () => {
             (await loadDeferredContinuation(redis as never, 'acme', 'web', 43))?.nextAction,
             'review',
         );
+    });
+
+    test('successful terminal auto-merge remains inside epoch transition ownership', async () => {
+        const redis = createMockRedis();
+        await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 44, goal: 8 }, false);
+        mockGetPendingReviewState.mock.mockImplementation(async () => ({
+            latestScore: 8,
+            reviewStatus: 'valid_clean',
+            hasPendingReview: false,
+            unprocessedComments: [],
+        }));
+        mockFindPlanIssueByRepoAndPR.mock.mockImplementation(async () => ({ issue_number: 99 }));
+        mockOctokitRequest.mock.mockImplementation(async (_route: string, options: Record<string, unknown>) => ({
+            data: { labels: [{ name: options.issue_number === 99 ? 'auto-merge' : 'ultrafix' }] },
+        }));
+        mockEnableAutoMerge.mock.mockImplementation(async () => {
+            assert.equal(labelTransitionActive, true);
+            return { success: true };
+        });
+
+        const result = await continueUltrafixLoop({
+            owner: 'acme',
+            repo: 'web',
+            pullRequestNumber: 44,
+            completedAction: 'review',
+            ultrafixMeta: { mode: 'ultrafix', goal: 8, instructions: '' },
+            redisClient: redis as never,
+            correlatedLogger: logger as never,
+            correlationId: 'terminal-review-correlation-id',
+            currentJobId: 'completed-clean-review-job',
+            currentReviewCommentIds: [202],
+            currentReviewResultCount: 1,
+        });
+
+        assert.equal(result.continued, false);
+        assert.equal(mockEnableAutoMerge.mock.callCount(), 1);
+        assert.equal(labelTransitionActive, false);
     });
 });
