@@ -953,12 +953,12 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         );
     });
 
-    test('manual review takeover gets a durable job instead of being stranded behind active Ultrafix work', async () => {
+    test('tail-active automatic work gets a durable manual takeover after loop state becomes inactive', async () => {
         const takeoverSteps: string[] = [];
         mockQueueAdd.mock.mockImplementationOnce(async () => { takeoverSteps.push('enqueue'); });
         mockInvalidateAutomaticWork.mock.mockImplementationOnce(async () => {
             takeoverSteps.push('invalidate');
-            return { workEpoch: 1, hadAutomaticWork: true };
+            return { workEpoch: 1, hadAutomaticWork: false };
         });
         mockActiveJobs = [{
             name: 'processPullRequestComment',
@@ -1098,6 +1098,18 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         const config = createTestConfig();
 
         await processCommentEvent(takeover, 'issue_comment', 'corr-first-takeover', config);
+        mockActiveJobs = [
+            ...mockActiveJobs,
+            {
+                name: 'processPullRequestComment',
+                data: {
+                    pullRequestNumber: 42,
+                    repoOwner: 'testowner',
+                    repoName: 'testrepo',
+                    commandMode: 'review',
+                },
+            },
+        ];
         await processCommentEvent(laterCommand, 'issue_comment', 'corr-later-batch', config);
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
@@ -1133,7 +1145,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
     });
 });
 
-describe('commentEventHandler — comment deletion queue cleanup', () => {
+describe('commentEventHandler — comment revision cancellation', () => {
     beforeEach(() => {
         mockLoggerInstance.info.mock.resetCalls();
         mockActiveJobs = [];
@@ -1141,15 +1153,16 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
         mockDelayedJobs = [];
     });
 
-    test('removes delayed PR comment job when the source comment is deleted', async () => {
+    test('deleting an active revision-based manual job uses the stable per-PR abort key', async () => {
         const remove = mock.fn(async () => {});
-        mockDelayedJobs = [{
-            id: 'pr-comments-batch-testowner-testrepo-42-123',
+        mockActiveJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z',
             name: 'processPullRequestComment',
             data: {
                 pullRequestNumber: 42,
                 repoOwner: 'testowner',
                 repoName: 'testrepo',
+                commandMode: 'fix',
                 comments: [{ id: 123, body: 'please fix this', author: 'integry', type: 'issue' }],
             },
             remove,
@@ -1161,11 +1174,37 @@ describe('commentEventHandler — comment deletion queue cleanup', () => {
         await handleCommentDeleted(event, 'issue_comment', 'corr-delete-delayed', config);
 
         assert.strictEqual(remove.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.set.mock.calls[0].arguments[0], 'worker:abort:testowner-testrepo-42');
         assert.strictEqual(config.redisClient.del.mock.callCount(), 1);
         assert.strictEqual(
             config.redisClient.del.mock.calls[0].arguments[0],
             'pr-comment-processed:testowner:testrepo:42:123'
         );
+    });
+
+    test('editing an active revision-based manual job uses the stable per-PR abort key', async () => {
+        const remove = mock.fn(async () => {});
+        mockActiveJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-123-2026-08-09T10-00-00Z',
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                commandMode: 'review',
+                comments: [{ id: 123, body: 'please review this', author: 'integry', type: 'issue' }],
+            },
+            remove,
+        }];
+        const event = createPRCommentEvent('/review codex');
+        event.comment.id = 123;
+        const config = createTestConfig();
+
+        await handleCommentEdited(event, 'issue_comment', 'corr-edit-active-manual', config);
+
+        assert.strictEqual(remove.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.set.mock.calls[0].arguments[0], 'worker:abort:testowner-testrepo-42');
+        assert.strictEqual(config.redisClient.del.mock.calls[0].arguments[0], 'pr-comment-processed:testowner:testrepo:42:123');
     });
 });
 

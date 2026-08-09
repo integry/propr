@@ -91,6 +91,11 @@ interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta'> & { created_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
 type PRComment = { id: number; created_at: string; updated_at: string; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+type ManualCommandTakeover = { workEpoch: number; hadAutomaticWork: boolean };
+
+function getPRWorkerTaskId(owner: string, repo: string, prNumber: number): string {
+    return `${owner}-${repo}-${prNumber}`;
+}
 
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
     const result = await redisClient.set(key, Date.now().toString(), 'EX', 86400, 'NX');
@@ -159,7 +164,7 @@ export async function handleCommentDeleted(payload: IssueCommentEvent | PullRequ
         const jobCommentIds = job.data.comments?.map(c => c.id) || [];
         if (jobCommentIds.includes(commentId)) {
             correlatedLogger.info({ jobId: job.id, pullRequestNumber: prNumber, repository: repoFullName }, 'Aborting job due to comment deletion');
-            const taskId = job.id?.startsWith('pr-comments-batch-') ? job.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') : `${owner}-${repo}-${prNumber}`;
+            const taskId = getPRWorkerTaskId(owner, repo, prNumber);
             await redisClient.set(`worker:abort:${taskId}`, JSON.stringify({ timestamp: new Date().toISOString(), reason: 'comment_deleted', commentId }), 'EX', 3600);
             await job.remove();
             correlatedLogger.info({ jobId: job.id, taskId }, 'Job aborted and removed from queue');
@@ -198,7 +203,7 @@ export async function handleCommentEdited(payload: IssueCommentEvent | PullReque
 
     if (foundJob) {
         correlatedLogger.info({ jobId: foundJob.id, pullRequestNumber: prNumber, repository: repoFullName }, 'Aborting existing job due to comment edit');
-        const taskId = foundJob.id?.startsWith('pr-comments-batch-') ? foundJob.id.replace(/^pr-comments-batch-/, '').replace(/-\d+$/, '') : `${owner}-${repo}-${prNumber}`;
+        const taskId = getPRWorkerTaskId(owner, repo, prNumber);
         await redisClient.set(`worker:abort:${taskId}`, JSON.stringify({ timestamp: new Date().toISOString(), reason: 'comment_edited', commentId }), 'EX', 3600);
         await foundJob.remove();
     }
@@ -225,9 +230,9 @@ type ManualCommandFenceOptions = Pick<SlashCommandHandlerOptions, 'comment' | 'e
     commandMeta: CommandMeta;
 };
 
-async function fenceManualCommand(opts: ManualCommandFenceOptions): Promise<boolean> {
+async function fenceManualCommand(opts: ManualCommandFenceOptions): Promise<ManualCommandTakeover | null> {
     const { commandMeta, comment, eventContext, config, correlatedLogger } = opts;
-    if (commandMeta.mode !== 'fix' && commandMeta.mode !== 'review') return false;
+    if (commandMeta.mode !== 'fix' && commandMeta.mode !== 'review') return null;
 
     const { owner, repo, prNumber } = eventContext;
     const takeover = await loadUltrafixDeps().invalidateAutomaticWork(config.redisClient, {
@@ -241,7 +246,7 @@ async function fenceManualCommand(opts: ManualCommandFenceOptions): Promise<bool
         { pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode, workEpoch: takeover.workEpoch },
         'Manual command invalidated deferred and queued Ultrafix actions',
     );
-    return takeover.hadAutomaticWork;
+    return takeover;
 }
 
 async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<void> {
@@ -294,15 +299,19 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     // only sees the user's instructions, not the control syntax (consistent with /switch).
     const strippedComment = { ...comment, body: commandMeta.instructions || '' };
 
-    // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
-    const existingJob = await checkExistingJob(prNumber, owner, repo);
-    if (existingJob && !manualTakeover) {
+    // Check for existing active/waiting jobs for this PR (batching/concurrency guard).
+    // The Redis loop state may already be inactive while its BullMQ job is still
+    // finishing, so the post-invalidation queue snapshot is also authoritative.
+    const existingJobs = await getExistingPRCommentJobs(prNumber, owner, repo);
+    const requiresIndependentTakeover = shouldEnqueueIndependentManualTakeover(existingJobs, manualTakeover);
+
+    if (existingJobs.length > 0 && !requiresIndependentTakeover) {
         await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode }, `/${commandMeta.mode} command: existing job found for PR, stored comment for batch processing`);
         return;
     }
 
-    if (existingJob && manualTakeover) {
+    if (existingJobs.length > 0 && requiresIndependentTakeover) {
         correlatedLogger.info(
             { pullRequestNumber: prNumber, commentId: comment.id, command: commandMeta.mode },
             'Manual Ultrafix takeover will run as an independent durable job',
@@ -655,6 +664,23 @@ async function getExistingPRCommentJobs(prNumber: number, owner: string, repo: s
     ]);
     const existingJobs = [...activeJobs, ...waitingJobs, ...delayedJobs] as Job<PRJobData>[];
     return existingJobs.filter(job => job.name === 'processPullRequestComment' && job.data.pullRequestNumber === prNumber && job.data.repoOwner === owner && job.data.repoName === repo);
+}
+
+function shouldEnqueueIndependentManualTakeover(
+    existingJobs: Job<PRJobData>[],
+    manualTakeover: ManualCommandTakeover | null,
+): boolean {
+    if (manualTakeover === null) return false;
+    const hasCurrentManualJob = existingJobs.some(job =>
+        !job.data.ultrafixMeta
+        && (job.data.commandMode === 'fix' || job.data.commandMode === 'review')
+    );
+    if (hasCurrentManualJob) return false;
+
+    return manualTakeover.hadAutomaticWork || existingJobs.some(job =>
+        job.data.ultrafixMeta != null
+        && (job.data.ultrafixMeta.workEpoch ?? 0) < manualTakeover.workEpoch
+    );
 }
 
 async function storeCommentForBatch(comment: BatchComment, commentAuthor: string, eventContext: CommentContext, config: StoreCommentConfig): Promise<void> {
