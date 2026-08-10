@@ -13,7 +13,7 @@ import {
   createTestClient, sleep,
   type ModelTestResult, type AgentModelPair,
   newModelResult,
-  createAndGeneratePlan, waitForTasks, pollTasksToCompletion,
+  createAndGeneratePlan, waitForTasks, pollTasksToCompletion, assertModelTasksSucceeded,
   triggerSequentialImplementation, waitForPlanIssueCondition,
   hasInProgressIssue, getIssueStatusCounts,
   IN_PROGRESS_STATUSES,
@@ -516,6 +516,7 @@ describe("ProPR CLI E2E", {
       const pr = modelTestResults.filter((r) => r.testMode === "parallel");
       await waitForTasks(pr, REPO!, client);
       await pollTasksToCompletion(pr, client);
+      assertModelTasksSucceeded(pr);
     });
 
     it("single-model: each model on a separate issue", async () => {
@@ -541,6 +542,7 @@ describe("ProPR CLI E2E", {
       const sr = modelTestResults.filter((r) => r.testMode === "single");
       await waitForTasks(sr, REPO!, client);
       await pollTasksToCompletion(sr, client);
+      assertModelTasksSucceeded(sr);
     });
 
     it("every model has execution history", async () => {
