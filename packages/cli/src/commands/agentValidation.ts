@@ -277,7 +277,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
           agentType: "antigravity",
           env: ["-e", "ANTIGRAVITY_CLI=1", "-e", "ANTIGRAVITY_CLI_TRUST_WORKSPACE=true"],
         }),
-        "/bin/bash", "-lc", 'set -e\nexec agy --dangerously-skip-permissions --print - "$@"', "propr-antigravity",
+        "/bin/bash", "-lc", 'set -e\nexec agy --dangerously-skip-permissions "$@"', "propr-antigravity",
       ],
       stdin: VALIDATION_PROMPT,
     }),

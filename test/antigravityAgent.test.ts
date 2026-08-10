@@ -61,7 +61,7 @@ describe('AntigravityAgent Docker args', () => {
         }
     });
 
-    test('reads the prompt from stdin via `--print -` and passes the CLI display-name model', () => {
+    test('lets agy auto-read non-TTY stdin and passes the CLI display-name model', () => {
         const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-model-'));
         fs.mkdirSync(path.join(tempHome, '.gemini'), { recursive: true });
 
@@ -81,10 +81,12 @@ describe('AntigravityAgent Docker args', () => {
                 issueNumber: 0
             });
 
-            // Prompt is delivered via stdin (`--print -`), never as an argv element
-            // (large repo-context prompts would exceed MAX_ARG_STRLEN -> E2BIG).
+            // Omitting a prompt flag makes agy read non-TTY stdin. `--print -`
+            // would send a literal dash, while an argv prompt can hit E2BIG.
             const shellCmd = args.find(a => a.includes('agy'));
-            assert.ok(shellCmd && shellCmd.includes('--print - '), 'shell command must use `--print -` to read stdin');
+            assert.ok(shellCmd, 'shell command should invoke agy');
+            assert.doesNotMatch(shellCmd, /--print|\s-p(?:\s|$)/, 'shell command must leave the prompt unset so agy reads stdin');
+            assert.match(shellCmd, /--dangerously-skip-permissions "\$@"/);
 
             // Model must be the CLI display name, never the namespaced id.
             const modelIdx = args.indexOf('--model');
@@ -103,6 +105,19 @@ describe('AntigravityAgent Docker args', () => {
         assert.match(script, /Using disposable Antigravity runtime state/);
         assert.match(script, /PROPR_ANTIGRAVITY_TRANSCRIPT_PATH/);
         assert.match(script, /transcript\.jsonl/);
+    });
+
+    test('entrypoint makes runtime directories writable after creating them', () => {
+        const script = fs.readFileSync(path.join(process.cwd(), 'scripts/antigravity-entrypoint.sh'), 'utf8');
+        const prepareFunction = script.slice(
+            script.indexOf('prepare_antigravity_config_dir()'),
+            script.indexOf('prepare_antigravity_config_dir "$antigravity_config_dir"')
+        );
+
+        const createDirectoriesAt = prepareFunction.indexOf('for dir in tmp antigravity-cli/log antigravity-cli/cache config/projects');
+        const fixOwnershipAt = prepareFunction.indexOf('chown -R node:node "$config_dir"');
+        assert.ok(createDirectoriesAt >= 0, 'runtime directory creation should be present');
+        assert.ok(fixOwnershipAt > createDirectoriesAt, 'ownership must be fixed after root creates runtime directories');
     });
 });
 

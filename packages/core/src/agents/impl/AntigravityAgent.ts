@@ -351,7 +351,7 @@ export class AntigravityAgent implements Agent {
 
             if (isSuccessfulAnalysisResult(result, summary)) {
                 const analysisText = (summary || '').trim();
-                // agy --print emits plain text with no token stats, so
+                // agy print mode emits plain text with no token stats, so
                 // parseAntigravityJsonl returns empty usage. Estimate from the
                 // full prompt and the response so reviews / summaries / pr-comments
                 // still report (estimated) token counts and cost, matching the
@@ -395,15 +395,15 @@ export class AntigravityAgent implements Agent {
     }
 
     private buildAntigravityShellCommand(repositoryInspection = false): string {
-        // `--print -` makes agy read the prompt from STDIN (the `-` convention).
-        // This is required because the prompt is passed via stdin (see executeTask
-        // / analyze): repo-context prompts routinely exceed Linux's 128 KiB
-        // per-argument limit (MAX_ARG_STRLEN), so passing it as an argv element
-        // fails with spawn E2BIG. `"$@"` carries only the `--model` flag.
+        // With no prompt flag, agy detects non-TTY stdin and enters print mode.
+        // This is required because repo-context prompts routinely exceed Linux's
+        // 128 KiB per-argument limit (MAX_ARG_STRLEN). Passing `--print -` does
+        // not read stdin: agy treats `-` as the literal prompt. `"$@"` carries
+        // only CLI flags such as `--model`, so all flags precede the stdin prompt.
         const safetyArgs = repositoryInspection
             ? '--sandbox --disable-slash-commands'
             : '--dangerously-skip-permissions';
-        return ['set -e', `exec ${this.getCliCommand()} ${safetyArgs} --print - "$@"`].join('\n');
+        return ['set -e', `exec ${this.getCliCommand()} ${safetyArgs} "$@"`].join('\n');
     }
 
     private buildDockerArgs(params: { worktreePath: string; githubToken: string; modelName?: string; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean }): string[] {
@@ -433,9 +433,9 @@ export class AntigravityAgent implements Agent {
             ...envVars, '-w', '/home/node/workspace',
             this.config.dockerImage, '/bin/bash', '-lc', this.buildAntigravityShellCommand(repositoryInspection), 'propr-antigravity'
         ];
-        // Note: the prompt is delivered via STDIN (`--print -`), NOT as an argv
-        // element, to avoid spawn E2BIG on large repo-context prompts. Only the
-        // model flag goes here.
+        // The prompt is delivered through non-TTY stdin, not as an argv element,
+        // to avoid spawn E2BIG on large repo-context prompts. Only CLI flags such
+        // as the model selection are appended here.
         if (modelName) {
             // Convert ProPR's namespaced id (e.g. 'antigravity-gpt-oss-120b-medium')
             // to the Antigravity CLI's native model name. Passing the prefixed id

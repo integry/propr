@@ -365,7 +365,7 @@ test('Antigravity scout Docker args install deny-first permissions without bypas
     });
 
     assert.ok(args.includes(`/tmp/scout-worktree:${REPOSITORY_SCOUT_CONTAINER_ROOT}:ro`));
-    assert.ok(args.some(arg => arg.includes('agy --sandbox --disable-slash-commands --print')));
+    assert.ok(args.some(arg => arg.includes('agy --sandbox --disable-slash-commands "$@"')));
     assert.ok(!args.some(arg => arg.includes('--dangerously-skip-permissions')));
     assert.ok(args.some(arg => arg.startsWith('PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_PERMISSIONS=')));
     assert.ok(args.some(arg => arg.startsWith('PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG=')));
