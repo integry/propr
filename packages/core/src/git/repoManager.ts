@@ -27,6 +27,7 @@ import {
     assertGitHubRepositoryUrl,
     assertRepositoryClonePath,
     resolveRepositoryClonePath,
+    sanitizeGeneratedNameComponent,
 } from './repositoryPaths.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
@@ -231,9 +232,10 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
     const now = new Date();
     const shortTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
 
-    const branchModelPrefix = modelName ? `${modelName}-` : '';
+    const safeModelName = modelName ? sanitizeGeneratedNameComponent(modelName, 'model') : null;
+    const branchModelPrefix = safeModelName ? `${safeModelName}-` : '';
     const branchName = `${issueId}/${branchModelPrefix}${sanitizedTitle}-${shortTimestamp}-${randomString}`;
-    const modelSuffix = modelName ? `-${modelName}` : '';
+    const modelSuffix = safeModelName ? `-${safeModelName}` : '';
     const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
 
