@@ -95,6 +95,7 @@ Queue and worker behavior; see [Worker Runtime](../architecture/worker-runtime.m
 | Variable | Default (shipped / code) | What it does | Required when |
 |---|---|---|---|
 | `REDIS_HOST` / `REDIS_PORT` | `127.0.0.1` / `6379` | Redis connection for the job queue. | Optional. |
+| `REDIS_EXTERNAL_BIND_HOST` / `REDIS_EXTERNAL_PORT` | `127.0.0.1` / `6380` | Host bind used only by the development `docker-compose.yml` when publishing Redis. Keep the bind on loopback or a private Docker bridge; never expose unauthenticated Redis on a public interface. | Optional; contributor preview deployment derives a private Docker gateway automatically. |
 | `GITHUB_ISSUE_QUEUE_NAME` | `github-issue-processor` | Name of the issue-processing queue. | Optional. |
 | `WORKER_CONCURRENCY` | Shipped `2` / code falls back to `5` if unset | Jobs a worker processes in parallel. | Optional. |
 | `COMMENT_BATCH_DELAY_MS` | `3000` | Delay for batching GitHub comment updates. | Optional. |

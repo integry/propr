@@ -28,8 +28,11 @@ services:
     image: redis:alpine
     ports:
       # Expose Redis for PR preview environments to share sessions
-      # REDIS_EXTERNAL_PORT allows different ports for different stacks
-      - '${REDIS_EXTERNAL_PORT:-6380}:6379'
+      # Bind to loopback by default so running this development compose file on
+      # a public host does not expose unauthenticated Redis to the internet.
+      # REDIS_EXTERNAL_PORT allows different ports for different stacks;
+      # REDIS_EXTERNAL_BIND_HOST must be set explicitly for trusted bridge access.
+      - '${REDIS_EXTERNAL_BIND_HOST:-127.0.0.1}:${REDIS_EXTERNAL_PORT:-6380}:6379'
     volumes:
       - redis_data:/data
     networks:

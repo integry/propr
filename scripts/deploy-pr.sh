@@ -68,6 +68,14 @@ UI_PORT=$((10000 + PR_NUMBER))
 API_PORT=$((20000 + PR_NUMBER))
 DOCS_PORT=$((30000 + PR_NUMBER))
 REDIS_EXTERNAL_PORT=$((50000 + PR_NUMBER))
+REDIS_EXTERNAL_BIND_HOST=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)
+
+case "$REDIS_EXTERNAL_BIND_HOST" in
+  ''|*[!0-9.]*)
+    echo "Error: Could not determine the Docker host gateway used for private Redis access"
+    exit 1
+    ;;
+esac
 
 echo "============================================"
 echo "Deploying PR Preview Environment"
@@ -76,6 +84,7 @@ echo "  PR Number:  #$PR_NUMBER"
 echo "  UI Port:    $UI_PORT"
 echo "  API Port:   $API_PORT"
 echo "  Docs Port:  $DOCS_PORT"
+echo "  Redis Bind: $REDIS_EXTERNAL_BIND_HOST (Docker host gateway only)"
 echo "  UI URL:     https://pr-${PR_NUMBER}.gitfix.dev"
 echo "  API URL:    https://pr-${PR_NUMBER}-api.gitfix.dev"
 echo "============================================"
@@ -290,6 +299,7 @@ UI_PORT=$UI_PORT \
 API_PORT=$API_PORT \
 DOCS_PORT=$DOCS_PORT \
 REDIS_EXTERNAL_PORT=$REDIS_EXTERNAL_PORT \
+REDIS_EXTERNAL_BIND_HOST=$REDIS_EXTERNAL_BIND_HOST \
 API_PUBLIC_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
 VITE_API_BASE_URL="https://pr-${PR_NUMBER}-api.gitfix.dev" \
 VITE_OAUTH_API_URL="https://api.gitfix.dev" \
