@@ -169,8 +169,7 @@ The description is mandatory. Do not add structured fields such as \`summary\` o
 If there are no suggestions, write \`No suggestions.\` Positive observations may be included in the Overall Evaluation instead of being assigned finding IDs.
 
 ## Score
-Rate the PR on a scale of **1 – 10** using the format: **Score: N/10**
-Follow the score with a one- or two-sentence justification.
+Rate the PR on a scale of **1 – 10**. Provide a one- or two-sentence justification, then end the section with the literal plain-text line Score: N/10; do not wrap that line in bold or other Markdown.
 
 The score reflects correctness against the immutable objective, regressions introduced by the diff, test coverage for changed behavior, current-head check status, and merge readiness within scope. Keep the score consistent with the findings and evaluation:
 - **8–10:** no actionable findings and no known current-head check failure; the PR is merge-ready within scope (10 is exceptional).

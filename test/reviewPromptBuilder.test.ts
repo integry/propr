@@ -46,6 +46,8 @@ describe('buildReviewPrompt — mandatory output contract', () => {
             assert.ok(prompt.includes(section), `default prompt missing ${section}`);
         }
         assert.ok(/Score: N\/10/.test(prompt), 'default prompt missing the Score: N/10 instruction');
+        assert.ok(prompt.includes('literal plain-text line Score: N/10'));
+        assert.ok(prompt.includes('do not wrap that line in bold or other Markdown'));
     });
 
     test('default guidance is used when override is undefined', () => {

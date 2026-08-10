@@ -196,7 +196,7 @@ describe('buildReviewComment', () => {
             'No suggestions.',
             '## Score',
             'The implementation is otherwise strong.',
-            'Score: 9/10',
+            '**Score: 9/10**',
         ].join('\n');
 
         const formatted = buildReviewComment(
@@ -204,7 +204,7 @@ describe('buildReviewComment', () => {
             { response, modelUsed: 'claude-sonnet', executionTimeMs: 1000, success: true },
         );
 
-        assert.ok(formatted.includes('Score: 6/10'));
+        assert.ok(formatted.includes('**Score: 6/10**'));
         assert.ok(formatted.includes('Score capped at 6 because merge blockers remain.'));
         assert.equal(parseStructuredReview(formatted).score, 6);
     });

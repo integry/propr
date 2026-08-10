@@ -148,6 +148,19 @@ describe('structured review finding extraction', () => {
         assert.strictEqual(parseStructuredReview(malformed).status, 'invalid');
     });
 
+    test('accepts harmless bold emphasis around the required score line', () => {
+        const boldScore = STRUCTURED_REVIEW
+            .replace(
+                /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+                'No actionable findings.',
+            )
+            .replace('Score: 7/10', '**Score: 7/10**');
+        const parsed = parseStructuredReview(boldScore);
+
+        assert.strictEqual(parsed.status, 'valid_clean');
+        assert.strictEqual(parsed.score, 7);
+    });
+
     test('strips the formatter title but rejects an extra findings heading before the contract', () => {
         const clean = STRUCTURED_REVIEW.replace(
             /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
