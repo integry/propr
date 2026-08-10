@@ -5,6 +5,7 @@ import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { resolveRepositoryWorktreePath } from './repositoryPaths.js';
+import { redactAuthenticatedGitUrl } from './repoBranching.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
@@ -337,15 +338,20 @@ export async function setupWorktreeRemote(worktreeGit: SimpleGit, parentGit: Sim
 
             if (originRemote && originRemote.refs.fetch) {
                 await worktreeGit.addRemote('origin', originRemote.refs.fetch);
-                logger.info({ worktreePath, remoteUrl: originRemote.refs.fetch }, 'Successfully added origin remote to worktree');
+                logger.info({ worktreePath, remoteName: originRemote.name }, 'Successfully added origin remote to worktree');
             } else {
-                logger.error({ worktreePath, parentRemotes }, 'Could not find origin remote in parent repository');
+                logger.error({ worktreePath, remoteNames: parentRemotes.map(remote => remote.name) }, 'Could not find origin remote in parent repository');
             }
         } else {
             logger.debug({ worktreePath }, 'Origin remote already exists in worktree');
         }
     } catch (remoteError) {
-        logger.error({ worktreePath, error: (remoteError as Error).message, stack: (remoteError as Error).stack }, 'Failed to set up remote in worktree - push operations WILL fail');
+        const error = remoteError as Error;
+        logger.error({
+            worktreePath,
+            error: redactAuthenticatedGitUrl(error.message),
+            stack: error.stack ? redactAuthenticatedGitUrl(error.stack) : undefined
+        }, 'Failed to set up remote in worktree - push operations WILL fail');
     }
 }
 

@@ -13,6 +13,7 @@ import {
 } from './worktreeOperations.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { assertRepositoryClonePath } from './repositoryPaths.js';
+import { redactAuthenticatedGitUrl } from './repoBranching.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
 
@@ -220,10 +221,11 @@ async function verifyFinalWorktreeSetup(worktreeGit: SimpleGit, worktreePath: st
 
         if (!hasOrigin) throw new Error('Worktree was created but origin remote is missing');
 
-        logger.info({ worktreePath, branchName, remotes: finalRemotes.map(r => ({ name: r.name, url: r.refs.fetch })) }, 'Git worktree created successfully from existing branch with remotes configured');
+        logger.info({ worktreePath, branchName, remoteNames: finalRemotes.map(remote => remote.name) }, 'Git worktree created successfully from existing branch with remotes configured');
     } catch (verifyError) {
-        logger.error({ worktreePath, error: (verifyError as Error).message }, 'Final verification failed - worktree may not be properly configured');
-        throw new Error(`Worktree setup incomplete: ${(verifyError as Error).message}`);
+        const safeMessage = redactAuthenticatedGitUrl((verifyError as Error).message);
+        logger.error({ worktreePath, error: safeMessage }, 'Final verification failed - worktree may not be properly configured');
+        throw new Error(`Worktree setup incomplete: ${safeMessage}`);
     }
 }
 
