@@ -54,6 +54,7 @@ describe('AntigravityAgent Docker args', () => {
 
             assert.ok(args.includes(`${geminiPath}:/home/node/.gemini-source:rw`));
             assert.ok(!args.includes(`${legacyPath}:/home/node/.gemini-source:rw`));
+            assert.ok(args.includes('PROPR_AGENT_TYPE=antigravity'));
             assert.ok(args.includes('PROPR_EPHEMERAL_STATE=1'));
             assert.ok(args.includes('PROPR_ANTIGRAVITY_SOURCE_CONFIG=/home/node/.gemini-source'));
         } finally {
@@ -103,6 +104,19 @@ describe('AntigravityAgent Docker args', () => {
         assert.match(script, /Using disposable Antigravity runtime state/);
         assert.match(script, /PROPR_ANTIGRAVITY_TRANSCRIPT_PATH/);
         assert.match(script, /transcript\.jsonl/);
+    });
+
+    test('entrypoint makes runtime directories writable after creating them', () => {
+        const script = fs.readFileSync(path.join(process.cwd(), 'scripts/antigravity-entrypoint.sh'), 'utf8');
+        const prepareFunction = script.slice(
+            script.indexOf('prepare_antigravity_config_dir()'),
+            script.indexOf('prepare_antigravity_config_dir "$antigravity_config_dir"')
+        );
+
+        const createDirectoriesAt = prepareFunction.indexOf('for dir in tmp antigravity-cli/log antigravity-cli/cache config/projects');
+        const fixOwnershipAt = prepareFunction.indexOf('chown -R node:node "$config_dir"');
+        assert.ok(createDirectoriesAt >= 0, 'runtime directory creation should be present');
+        assert.ok(fixOwnershipAt > createDirectoriesAt, 'ownership must be fixed after root creates runtime directories');
     });
 });
 
