@@ -12,7 +12,7 @@ interface InstallationAuth {
 export function redactAuthenticatedGitUrl(message: string): string {
     return message
         .replace(/https:\/\/x-access-token:[^@\s'"]+@github\.com\//g, 'https://x-access-token:[REDACTED]@github.com/')
-        .replace(/\b(?:ghs|ghp|gho|ghu|ghr|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED_GITHUB_TOKEN]');
+        .replace(/\b(?:ghs|ghp|gho|ghu|ghr|github_pat)_[A-Za-z0-9_.-]+/g, '[REDACTED_GITHUB_TOKEN]');
 }
 
 export async function setupAuthenticatedRemote(git: SimpleGit, repoUrl: string, authToken: string): Promise<void> {

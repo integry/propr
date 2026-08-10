@@ -29,6 +29,13 @@ test('redactSecrets replaces GitHub App installation tokens (ghs_)', () => {
     assert.ok(result.includes('[REDACTED_GITHUB_TOKEN]'));
 });
 
+test('redactSecrets replaces modern JWT-shaped GitHub App installation tokens', () => {
+    const token = 'ghs_1234567_eyJhbGciOiJFUzI1NiJ9.abc-DEF_123.xyz';
+    const result = redactSecrets(`relay returned ${token}`);
+    assert.ok(!result.includes(token));
+    assert.strictEqual(result, 'relay returned [REDACTED_GITHUB_TOKEN]');
+});
+
 test('redactSecrets scrubs the relay credential (PROPR_GH_RELAY_TOKEN)', () => {
     const input = 'PROPR_GH_RELAY_TOKEN=rly_abcdefghijklmnopqrstuvwxyz0123456789';
     const result = redactSecrets(input);

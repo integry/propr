@@ -5,11 +5,21 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
-import { pushBranch } from '../packages/core/src/git/repoBranching.js';
+import { pushBranch, redactAuthenticatedGitUrl } from '../packages/core/src/git/repoBranching.js';
 import { addWorktreeWithoutTracking } from '../packages/core/src/git/worktreeCreation.js';
 import { createHooklessGit } from '../packages/core/src/git/hooklessGit.js';
 
 const execGit = promisify(execFile);
+
+test('authenticated Git URL redaction removes modern installation tokens', () => {
+    const token = 'ghs_1234567_eyJhbGciOiJFUzI1NiJ9.abc-DEF_123.xyz';
+    const input = `remote https://x-access-token:${token}@github.com/integry/propr.git raw ${token}`;
+    const result = redactAuthenticatedGitUrl(input);
+
+    assert.ok(!result.includes(token));
+    assert.match(result, /https:\/\/x-access-token:\[REDACTED\]@github\.com\/integry\/propr\.git/);
+    assert.match(result, /raw \[REDACTED_GITHUB_TOKEN\]/);
+});
 
 async function git(cwd: string, args: string[]): Promise<string> {
     const { stdout } = await execGit('git', args, { cwd });
