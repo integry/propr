@@ -94,10 +94,57 @@ describe('formatPRDiff', () => {
         assert.ok(diff.includes('## src/a.ts'), 'should include first small source file');
         assert.ok(diff.includes('## src/b.ts'), 'should include second small source file');
         assert.ok(!diff.includes('## package-lock.json'), 'should omit oversized lockfile');
-        assert.ok(diff.includes('1 files omitted'), 'should report omitted files');
+        assert.ok(diff.includes('1 file was omitted'), 'should report omitted files');
         assert.ok(diff.includes('**Files omitted from review diff:**'), 'should include omitted file list for the prompt');
         assert.ok(diff.includes('- package-lock.json'), 'should identify omitted lockfile');
+        assert.ok(diff.includes('patch content was unavailable from GitHub or did not fit'));
         assert.ok(diff.includes('Large, binary, generated, and lockfile changes are deprioritized'));
+    });
+
+    test('treats a missing non-binary patch as omitted review coverage', () => {
+        const result = formatPRDiffWithMetadata([
+            prFile({
+                filename: 'src/large-change.ts',
+                additions: 2000,
+                deletions: 1500,
+                patch: undefined,
+            }),
+        ]);
+
+        assert.deepStrictEqual(result.omittedFiles, ['src/large-change.ts']);
+        assert.ok(!result.diff.includes('## src/large-change.ts'));
+        assert.ok(result.diff.includes('Review diff is partial'));
+        assert.ok(result.diff.includes('- src/large-change.ts'));
+    });
+
+    test('does not treat a recognized binary file as missing text coverage', () => {
+        const result = formatPRDiffWithMetadata([
+            prFile({
+                filename: 'assets/logo.png',
+                additions: 0,
+                deletions: 0,
+                patch: undefined,
+            }),
+        ]);
+
+        assert.deepStrictEqual(result.omittedFiles, []);
+        assert.ok(result.diff.includes('## assets/logo.png'));
+        assert.ok(result.diff.includes('(binary or too large to display)'));
+    });
+
+    test('does not mark a metadata-only text-file change as missing coverage', () => {
+        const result = formatPRDiffWithMetadata([
+            prFile({
+                filename: 'src/renamed.ts',
+                status: 'renamed',
+                additions: 0,
+                deletions: 0,
+                patch: undefined,
+            }),
+        ]);
+
+        assert.deepStrictEqual(result.omittedFiles, []);
+        assert.ok(result.diff.includes('## src/renamed.ts'));
     });
 
     test('returns omitted file metadata for the review result comment', () => {

@@ -21,6 +21,7 @@ const mockGetPendingReviewState = mock.fn(async () => ({
     reviewStatus: 'valid_with_blockers' as const,
     hasPendingReview: true,
     unprocessedComments: [],
+    isPartial: false,
 }));
 let labelTransitionActive = false;
 
@@ -116,6 +117,7 @@ describe('Ultrafix continuation entry point', () => {
             reviewStatus: 'valid_with_blockers',
             hasPendingReview: true,
             unprocessedComments: [],
+            isPartial: false,
         }));
         labelTransitionActive = false;
         setCheckRunDeps({
@@ -189,6 +191,7 @@ describe('Ultrafix continuation entry point', () => {
             reviewStatus: 'valid_clean',
             hasPendingReview: false,
             unprocessedComments: [],
+            isPartial: false,
         }));
         mockFindPlanIssueByRepoAndPR.mock.mockImplementation(async () => ({ issue_number: 99 }));
         mockOctokitRequest.mock.mockImplementation(async (_route: string, options: Record<string, unknown>) => ({
@@ -216,5 +219,36 @@ describe('Ultrafix continuation entry point', () => {
         assert.equal(result.continued, false);
         assert.equal(mockEnableAutoMerge.mock.callCount(), 1);
         assert.equal(labelTransitionActive, false);
+    });
+
+    test('a partial clean review cannot complete Ultrafix or re-enable auto-merge', async () => {
+        const redis = createMockRedis();
+        await startLoop(redis as never, { owner: 'acme', repo: 'web', pr: 45, goal: 8 }, false);
+        mockGetPendingReviewState.mock.mockImplementation(async () => ({
+            latestScore: 9,
+            reviewStatus: 'valid_clean',
+            hasPendingReview: false,
+            unprocessedComments: [],
+            isPartial: true,
+        }));
+        mockFindPlanIssueByRepoAndPR.mock.mockImplementation(async () => ({ issue_number: 100 }));
+
+        const result = await continueUltrafixLoop({
+            owner: 'acme',
+            repo: 'web',
+            pullRequestNumber: 45,
+            completedAction: 'review',
+            ultrafixMeta: { mode: 'ultrafix', goal: 8, instructions: '' },
+            redisClient: redis as never,
+            correlatedLogger: logger as never,
+            correlationId: 'partial-review-correlation-id',
+            currentJobId: 'completed-partial-review-job',
+            currentReviewCommentIds: [203],
+            currentReviewResultCount: 1,
+        });
+
+        assert.equal(result.continued, false);
+        assert.match(result.reason, /partial diff coverage/i);
+        assert.equal(mockEnableAutoMerge.mock.callCount(), 0);
     });
 });

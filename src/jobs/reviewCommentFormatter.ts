@@ -166,7 +166,7 @@ export function buildReviewComment(
         comment += `* **Cost:** $${options.costUsd.toFixed(2)}\n`;
     }
     if (isPartialReview) {
-        comment += '* **Review scope:** Partial — PR diff files or ranges were omitted to fit the configured review token limit.\n';
+        comment += '* **Review scope:** Partial — PR diff files or ranges were unavailable from GitHub or omitted by the configured review context limit.\n';
     }
     if (taskUrl) {
         comment += `\n[View Task](${taskUrl})`;
@@ -200,7 +200,7 @@ function formatOmittedDiffFilesForComment(omittedFiles: string[]): string {
         '<details>',
         '<summary>Files omitted from review diff</summary>',
         '',
-        `${omittedFiles.length} file${omittedFiles.length === 1 ? ' was' : 's were'} omitted from the prompt diff due to the review context budget. Large, binary, generated, and lockfile changes are deprioritized.`,
+        `${omittedFiles.length} file${omittedFiles.length === 1 ? ' was' : 's were'} omitted because patch content was unavailable from GitHub or did not fit the review context budget. Large, binary, generated, and lockfile changes are deprioritized.`,
         '',
         listedFiles,
         remainingNote,

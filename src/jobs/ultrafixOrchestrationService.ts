@@ -189,10 +189,16 @@ export function determineInitialAction(hasPendingReviews: boolean): UltrafixActi
 
 /**
  * A review only reaches the requested Ultrafix goal when it is both clean and
- * has an explicit score at or above the configured target.
+ * has complete diff coverage and an explicit score at or above the configured
+ * target.
  */
-export function hasReviewReachedGoal(reviewStatus: ReviewOutputStatus, currentScore: number | null, goal: number): boolean {
-    return reviewStatus === 'valid_clean' && currentScore !== null && currentScore >= goal;
+export function hasReviewReachedGoal(
+    reviewStatus: ReviewOutputStatus,
+    currentScore: number | null,
+    goal: number,
+    isPartial: boolean = false,
+): boolean {
+    return !isPartial && reviewStatus === 'valid_clean' && currentScore !== null && currentScore >= goal;
 }
 
 /**
@@ -202,6 +208,7 @@ export function determineNextAction(
     state: UltrafixLoopState,
     currentScore: number | null,
     reviewStatus: ReviewOutputStatus = 'invalid',
+    isPartial: boolean = false,
 ): NextActionDecision {
     const { reviewCount, fixCount } = getActionCounts(state);
 
@@ -216,7 +223,13 @@ export function determineNextAction(
 
     if (state.lastAction === 'review') {
         if (reviewStatus === 'valid_clean') {
-            if (hasReviewReachedGoal(reviewStatus, currentScore, state.goal)) {
+            if (isPartial) {
+                return {
+                    action: null,
+                    reason: 'Review reports no actionable findings but had partial diff coverage; stopping for manual review',
+                };
+            }
+            if (hasReviewReachedGoal(reviewStatus, currentScore, state.goal, isPartial)) {
                 return {
                     action: null,
                     reason: `Valid review reports no actionable findings and score ${currentScore}/10 reaches goal ${state.goal}/10`,

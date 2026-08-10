@@ -310,6 +310,7 @@ describe('buildReviewComment', () => {
         assert.ok(comment.includes('`package-lock.json`'));
         assert.ok(comment.includes('`assets/logo.png`'));
         assert.ok(comment.includes('**Review scope:** Partial'));
+        assert.ok(comment.includes('patch content was unavailable from GitHub or did not fit'));
         assert.ok(comment.includes('<!-- propr:ai-review model="claude-sonnet" partial="true" -->'));
     });
 
@@ -327,7 +328,7 @@ describe('buildReviewComment', () => {
         );
 
         assert.ok(comment.includes('**Review scope:** Partial'));
-        assert.ok(comment.includes('PR diff files or ranges were omitted'));
+        assert.ok(comment.includes('PR diff files or ranges were unavailable from GitHub or omitted'));
         assert.ok(comment.includes('<!-- propr:ai-review model="claude-sonnet" partial="true" -->'));
     });
 

@@ -238,6 +238,28 @@ describe('structured review finding extraction', () => {
         assert.strictEqual(state.unprocessedComments[0].suggestions.length, 1);
     });
 
+    test('preserves partial review coverage metadata for orchestration', async () => {
+        const body = STRUCTURED_REVIEW.replace(
+            /### F1: Preserve terminal state[\s\S]*?(?=\n## Suggestions and Follow-ups)/,
+            'No actionable findings.',
+        );
+        const state = await getStructuredPendingReviewState([{
+            id: 44,
+            body: `${body}\n<!-- propr:ai-review model="test" partial="true" -->`,
+            user: { login: 'propr-bot', type: 'Bot' },
+            created_at: new Date().toISOString(),
+        }], {
+            repoOwner: 'o', repoName: 'r', pullRequestNumber: 1,
+            redisClient: { smembers: async () => [] } as any,
+            correlatedLogger: { debug() {}, info() {}, warn() {} } as any,
+        });
+
+        assert.strictEqual(state.reviewStatus, 'valid_clean');
+        assert.strictEqual(state.latestScore, 7);
+        assert.strictEqual(state.isPartial, true);
+        assert.strictEqual(state.unprocessedComments[0].isPartial, true);
+    });
+
     test('newest malformed review stays invalid instead of borrowing an older score', async () => {
         const now = Date.now();
         const malformed = STRUCTURED_REVIEW.replace(

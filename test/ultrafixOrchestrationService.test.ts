@@ -142,6 +142,29 @@ describe('determineNextAction', () => {
         assert.ok(decision.reason.includes('no actionable findings'));
     });
 
+    test('stops for manual review when a clean-looking review had partial diff coverage', () => {
+        const decision = determineNextAction(
+            makeState({ goal: 7, lastAction: 'review' }),
+            9,
+            'valid_clean',
+            true,
+        );
+        assert.strictEqual(decision.action, null);
+        assert.match(decision.reason, /partial diff coverage/i);
+        assert.match(decision.reason, /manual review/i);
+        assert.strictEqual(hasReviewReachedGoal('valid_clean', 9, 7, true), false);
+    });
+
+    test('still fixes known blockers found by a partial review', () => {
+        const decision = determineNextAction(
+            makeState({ goal: 7, lastAction: 'review' }),
+            6,
+            'valid_with_blockers',
+            true,
+        );
+        assert.strictEqual(decision.action, 'fix');
+    });
+
     test('a passing score does not override actionable findings', () => {
         const decision = determineNextAction(
             makeState({ goal: 7, lastAction: 'review' }),
