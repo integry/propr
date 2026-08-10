@@ -149,9 +149,9 @@ async function enqueueCurrentNextAction(
 async function collectReviewOutput(
     params: UltrafixContinuationParams,
     goal: number,
-): Promise<{ latestScore: number | null; reviewStatus: ReviewOutputStatus }> {
+): Promise<{ latestScore: number | null; reviewStatus: ReviewOutputStatus; isPartial: boolean }> {
     if (params.completedAction !== 'review') {
-        return { latestScore: null, reviewStatus: 'invalid' };
+        return { latestScore: null, reviewStatus: 'invalid', isPartial: false };
     }
     const { owner, repo, pullRequestNumber, redisClient, correlatedLogger, correlationId } = params;
     try {
@@ -186,6 +186,7 @@ async function collectReviewOutput(
                 pullRequestNumber,
                 latestScore: pendingState.latestScore,
                 reviewStatus: pendingState.reviewStatus,
+                isPartial: pendingState.isPartial,
                 goal,
             },
             'Ultrafix loop: parsed latest review output',
@@ -193,13 +194,14 @@ async function collectReviewOutput(
         return {
             latestScore: pendingState.latestScore,
             reviewStatus: pendingState.reviewStatus,
+            isPartial: pendingState.isPartial,
         };
     } catch (err) {
         correlatedLogger.warn(
             { error: (err as Error).message, pullRequestNumber },
             'Ultrafix loop: failed to parse review output, scheduling a review retry',
         );
-        return { latestScore: null, reviewStatus: 'invalid' };
+        return { latestScore: null, reviewStatus: 'invalid', isPartial: false };
     }
 }
 
@@ -279,12 +281,12 @@ export async function continueUltrafixLoop(
     }
 
     // 4. Get the latest review score
-    const { latestScore, reviewStatus } = await collectReviewOutput(params, updatedState.goal);
+    const { latestScore, reviewStatus, isPartial } = await collectReviewOutput(params, updatedState.goal);
 
     // 5. Determine next action
-    const decision = determineNextAction(updatedState, latestScore, reviewStatus);
+    const decision = determineNextAction(updatedState, latestScore, reviewStatus, isPartial);
     correlatedLogger.info(
-        { pullRequestNumber, nextAction: decision.action, reason: decision.reason, latestScore },
+        { pullRequestNumber, nextAction: decision.action, reason: decision.reason, latestScore, isPartial },
         'Ultrafix loop: next action decision',
     );
 
@@ -295,6 +297,7 @@ export async function continueUltrafixLoop(
             state: updatedState,
             latestScore,
             reviewStatus,
+            isPartial,
             decisionReason: decision.reason,
         });
     }

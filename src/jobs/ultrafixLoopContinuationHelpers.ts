@@ -151,15 +151,16 @@ export async function finishUltrafixLoop(input: {
     state: UltrafixLoopState;
     latestScore: number | null;
     reviewStatus: ReviewOutputStatus;
+    isPartial: boolean;
     decisionReason: string;
 }): Promise<ContinuationResult> {
-    const { params, state, latestScore, reviewStatus, decisionReason } = input;
+    const { params, state, latestScore, reviewStatus, isPartial, decisionReason } = input;
     const { owner, repo, pullRequestNumber, completedAction, redisClient, correlatedLogger } = params;
     const workEpoch = params.ultrafixMeta?.workEpoch ?? 0;
     const identity = { owner, repo, pr: pullRequestNumber };
 
     const goalReached = completedAction === 'review'
-        && hasReviewReachedGoal(reviewStatus, latestScore, state.goal);
+        && hasReviewReachedGoal(reviewStatus, latestScore, state.goal, isPartial);
     const finishResult = await withUltrafixLabelTransition(redisClient, identity, async () => {
         if (!await isUltrafixAutomaticWorkCurrent(redisClient, identity, workEpoch)) return false;
         const completedState = await completeLoop(redisClient, {
@@ -172,7 +173,10 @@ export async function finishUltrafixLoop(input: {
         if (!completedState) return false;
         if (!goalReached) {
             const cleanReviewMissedGoal = completedAction === 'review' && reviewStatus === 'valid_clean';
-            const manualReason = cleanReviewMissedGoal
+            const cleanPartialReview = cleanReviewMissedGoal && isPartial;
+            const manualReason = cleanPartialReview
+                ? 'The latest review had partial diff coverage, so it cannot establish merge readiness. Manual review and merge are now required.'
+                : cleanReviewMissedGoal
                 ? 'The review has no actionable blockers, so no fix was scheduled. Manual review and merge are now required.'
                 : 'Max cycles were exhausted, so manual review and merge are now required.';
             await postPrComment({

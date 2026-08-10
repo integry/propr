@@ -61,6 +61,8 @@ export interface AIReviewComment {
     suggestions: ReviewSuggestion[];
     score: number | null;
     reviewStatus: ReviewOutputStatus;
+    /** Whether the review omitted any PR diff files or ranges. */
+    isPartial: boolean;
 }
 
 export interface PendingReviewState {
@@ -72,6 +74,8 @@ export interface PendingReviewState {
     hasPendingReview: boolean;
     /** Structured-output state of the newest unprocessed review. */
     reviewStatus: ReviewOutputStatus;
+    /** Whether any member of the current review result set had partial diff coverage. */
+    isPartial: boolean;
 }
 
 interface PRComment {
@@ -106,6 +110,7 @@ const DEFAULT_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
  * Accepts optional whitespace and the integer 1–10.
  */
 const SCORE_RE = /Score:\s*(\d{1,2})\s*\/\s*10/;
+const PARTIAL_REVIEW_MARKER_RE = /<!--\s*propr:ai-review\b[^>]*\bpartial\s*=\s*["']true["'][^>]*-->/i;
 
 export function formatActionableFindings(findings: ActionableFinding[]): string {
     return findings.map(finding => [
@@ -194,6 +199,7 @@ export async function gatherUnprocessedReviewComments(
             suggestions,
             score: parsedReview.score,
             reviewStatus: parsedReview.status,
+            isPartial: PARTIAL_REVIEW_MARKER_RE.test(comment.body!),
         });
     }
 
@@ -267,6 +273,7 @@ export async function getPendingReviewState(
         latestScore: reviewStatus === 'invalid' ? null : latestReview?.score ?? null,
         hasPendingReview: unprocessedComments.some(comment => comment.actionableFindings.length > 0),
         reviewStatus,
+        isPartial: unprocessedComments.some(comment => comment.isPartial),
     };
 }
 

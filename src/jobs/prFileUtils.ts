@@ -151,6 +151,14 @@ export function formatPRDiffWithMetadata(files: PRFile[], maxChars: number = 100
     let currentSize = 0;
 
     for (const file of orderedFiles) {
+        // GitHub omits `patch` for text diffs that exceed its per-file limit.
+        // A placeholder is not review coverage: fail closed by reporting the
+        // file as omitted so downstream review/Ultrafix logic stays partial.
+        if (!file.patch && !isBinaryFile(file.filename) && changedLineCount(file) > 0) {
+            omittedFiles.push(file.filename);
+            continue;
+        }
+
         const section = formatPRFileDiffSection(file);
 
         if (currentSize + section.length > maxChars) {
@@ -182,7 +190,7 @@ function buildOmittedFilesNote(omittedFiles: string[]): string {
     return [
         '',
         '',
-        `*Note: Diff prioritized for review and truncated due to size. ${omittedFiles.length} files omitted. Large, binary, generated, and lockfile changes are deprioritized so smaller source changes fit first.*`,
+        `*Note: Review diff is partial. ${omittedFiles.length} ${omittedFiles.length === 1 ? 'file was' : 'files were'} omitted because patch content was unavailable from GitHub or did not fit the configured review context limit. Large, binary, generated, and lockfile changes are deprioritized so smaller source changes fit first.*`,
         '',
         '**Files omitted from review diff:**',
         listedFiles,
