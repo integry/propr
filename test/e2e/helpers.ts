@@ -278,6 +278,20 @@ export async function pollTasksToCompletion(
   );
 }
 
+export function assertModelTasksSucceeded(results: ModelTestResult[]): void {
+  const unsuccessful = results.filter((result) => result.finalState !== "completed");
+  if (unsuccessful.length === 0) return;
+
+  const details = unsuccessful.map((result) => {
+    const state = result.finalState ?? "unknown";
+    const reason = result.failureReason?.replace(/\s+/g, " ").trim();
+    return `${result.agent_alias}/${result.model_name}: ${state}${reason ? ` — ${reason.slice(0, 300)}` : ""}`;
+  });
+  throw new Error(
+    `${unsuccessful.length}/${results.length} model task(s) did not complete successfully: ${details.join("; ")}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Plan issue status helpers
 // ---------------------------------------------------------------------------
