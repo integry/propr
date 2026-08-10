@@ -131,6 +131,21 @@ test("validateAgents starts validation containers as root so entrypoints can dro
   }
 });
 
+test("Antigravity image validation leaves the prompt on stdin", async () => {
+  const logFile = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-docker-log-")), "docker.log");
+  const hostDir = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-creds-")), "antigravity");
+  mkdirSync(hostDir);
+  const restore = installFakeDocker(logFile);
+  try {
+    await validateAgents(fakeOrchestrator(), fakeConfig({ hostAntigravityDir: hostDir }), { agents: ["antigravity"] });
+    const logged = readFileSync(logFile, "utf8");
+    assert.match(logged, /exec agy --dangerously-skip-permissions/);
+    assert.doesNotMatch(logged, /--print -/);
+  } finally {
+    restore();
+  }
+});
+
 test("planAgentLogin validates configured host paths before callers create them", () => {
   const { plan, error } = planAgentLogin(
     "claude",

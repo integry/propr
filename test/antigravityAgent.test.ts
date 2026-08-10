@@ -54,7 +54,6 @@ describe('AntigravityAgent Docker args', () => {
 
             assert.ok(args.includes(`${geminiPath}:/home/node/.gemini-source:rw`));
             assert.ok(!args.includes(`${legacyPath}:/home/node/.gemini-source:rw`));
-            assert.ok(args.includes('PROPR_AGENT_TYPE=antigravity'));
             assert.ok(args.includes('PROPR_EPHEMERAL_STATE=1'));
             assert.ok(args.includes('PROPR_ANTIGRAVITY_SOURCE_CONFIG=/home/node/.gemini-source'));
         } finally {
@@ -62,7 +61,7 @@ describe('AntigravityAgent Docker args', () => {
         }
     });
 
-    test('reads the prompt from stdin via `--print -` and passes the CLI display-name model', () => {
+    test('lets agy auto-read non-TTY stdin and passes the CLI display-name model', () => {
         const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-model-'));
         fs.mkdirSync(path.join(tempHome, '.gemini'), { recursive: true });
 
@@ -82,10 +81,12 @@ describe('AntigravityAgent Docker args', () => {
                 issueNumber: 0
             });
 
-            // Prompt is delivered via stdin (`--print -`), never as an argv element
-            // (large repo-context prompts would exceed MAX_ARG_STRLEN -> E2BIG).
+            // Omitting a prompt flag makes agy read non-TTY stdin. `--print -`
+            // would send a literal dash, while an argv prompt can hit E2BIG.
             const shellCmd = args.find(a => a.includes('agy'));
-            assert.ok(shellCmd && shellCmd.includes('--print - '), 'shell command must use `--print -` to read stdin');
+            assert.ok(shellCmd, 'shell command should invoke agy');
+            assert.doesNotMatch(shellCmd, /--print|\s-p(?:\s|$)/, 'shell command must leave the prompt unset so agy reads stdin');
+            assert.match(shellCmd, /--dangerously-skip-permissions "\$@"/);
 
             // Model must be the CLI display name, never the namespaced id.
             const modelIdx = args.indexOf('--model');

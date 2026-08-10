@@ -106,7 +106,7 @@ test('AgentRegistry creates AntigravityAgent for antigravity configs', () => {
     assert.ok(agent instanceof AntigravityAgent);
 });
 
-test('Antigravity execution invokes agy with print-mode CLI flags', () => {
+test('Antigravity execution lets agy read the prompt from non-TTY stdin', () => {
     withAntigravityEnv({}, () => {
         const agent = new AntigravityAgent(createAntigravityConfig());
         const args = buildDockerArgs(agent, { modelName: 'antigravity:antigravity-gemini-3.1-pro-high' });
@@ -118,7 +118,8 @@ test('Antigravity execution invokes agy with print-mode CLI flags', () => {
         assert.equal(args[entrypointIndex + 1], '/bin/bash');
         assert.equal(args[entrypointIndex + 2], '-lc');
         assert.match(args[entrypointIndex + 3], /--dangerously-skip-permissions/);
-        assert.match(args[entrypointIndex + 3], /--print - "\$@"/);
+        assert.doesNotMatch(args[entrypointIndex + 3], /--print|\s-p(?:\s|$)/);
+        assert.match(args[entrypointIndex + 3], /--dangerously-skip-permissions "\$@"/);
         assert.doesNotMatch(args[entrypointIndex + 3], /prompt="\$\(cat\)"/);
         assert.equal(args[entrypointIndex + 4], 'propr-antigravity');
         assert.ok(!args.includes('--output-format'));
