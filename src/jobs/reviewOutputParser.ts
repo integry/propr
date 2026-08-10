@@ -53,6 +53,9 @@ const PUBLIC_SECTION_HEADINGS = [
 /** Error reviews are diagnostic comments and must never satisfy the review contract. */
 const ERROR_REVIEW_MARKER_RE = /<!--\s*propr:ai-review\b[^>]*\berror\s*=\s*["']true["'][^>]*-->/i;
 
+/** Accept the literal score line plus harmless symmetric Markdown emphasis. */
+const SCORE_LINE_RE = /^(\*\*)?Score:[ \t]*(\d{1,2})[ \t]*\/[ \t]*10\1[ \t]*$/gm;
+
 /** The only level-two heading added outside the model's review response. */
 const REVIEW_TITLE_WRAPPER_RE = /^##[ \t]+🔍[ \t]+AI Code Review[ \t]+—[ \t]+[^\r\n]+[ \t]*\r?\n(?:\r?\n)?/;
 
@@ -269,8 +272,8 @@ function parseContract(body: string, contract: ReviewContract): StructuredReview
     const findingsSection = extractMarkdownSection(body, findingsHeading);
     const suggestionSection = extractMarkdownSection(body, suggestionsHeading);
     const scoreSection = extractMarkdownSection(body, scoreHeading);
-    const scoreMatches = [...scoreSection.matchAll(/^Score:[ \t]*(\d{1,2})[ \t]*\/[ \t]*10[ \t]*$/gm)];
-    const score = scoreMatches.length === 1 ? Number.parseInt(scoreMatches[0][1], 10) : null;
+    const scoreMatches = [...scoreSection.matchAll(SCORE_LINE_RE)];
+    const score = scoreMatches.length === 1 ? Number.parseInt(scoreMatches[0][2], 10) : null;
     const suggestions = contract.parseSuggestions(suggestionSection);
     if (!overallSection || suggestions === null || score === null || score < 1 || score > 10) {
         return invalidReview();
@@ -414,10 +417,13 @@ export function renderPublicReview(
     const originalScoreSection = extractMarkdownSection(cleaned, 'Score');
     const publishedScore = Math.min(parsed.score ?? 10, scoreCap?.maximum ?? 10);
     const scoreSection = originalScoreSection.replace(
-        /^Score:[ \t]*\d{1,2}[ \t]*\/[ \t]*10[ \t]*$/m,
-        `Score: ${publishedScore}/10`,
+        /^(\*\*)?Score:[ \t]*\d{1,2}[ \t]*\/[ \t]*10\1[ \t]*$/m,
+        (_line, emphasis: string | undefined) => `${emphasis ?? ''}Score: ${publishedScore}/10${emphasis ?? ''}`,
     );
-    const originalScore = Number.parseInt(originalScoreSection.match(/^Score:[ \t]*(\d{1,2})[ \t]*\/[ \t]*10[ \t]*$/m)?.[1] ?? '', 10);
+    const originalScore = Number.parseInt(
+        originalScoreSection.match(/^(\*\*)?Score:[ \t]*(\d{1,2})[ \t]*\/[ \t]*10\1[ \t]*$/m)?.[2] ?? '',
+        10,
+    );
     const scoreCapNote = originalScore > publishedScore
         ? `\n\n_${parsed.actionableFindings.length > 0
             ? `Score capped at ${publishedScore} because merge blockers remain.`
