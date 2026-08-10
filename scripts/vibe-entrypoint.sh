@@ -350,6 +350,9 @@ if [ $# -gt 0 ]; then
         echo "Cannot switch to node user: sudo or su-exec is required" >&2
         exit 127
     else
+        if [ -n "$VIBE_PROMPT_FILE_TO_INJECT" ]; then
+            exec env PROPR_VIBE_PROMPT_FILE="$VIBE_PROMPT_FILE_TO_INJECT" "$@"
+        fi
         exec "$@"
     fi
 else
