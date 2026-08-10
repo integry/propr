@@ -7,6 +7,7 @@ import {
   assertRepositoryClonePath,
   resolveRepositoryClonePath,
   resolveRepositoryWorktreePath,
+  sanitizeGeneratedNameComponent,
 } from '../packages/core/src/git/repositoryPaths.js';
 
 test('repository clone paths remain beneath their configured root', () => {
@@ -63,4 +64,15 @@ test('worktree paths accept one safe directory segment only', () => {
       /Invalid worktree/,
     );
   }
+});
+
+test('external identifiers are sanitized for Git refs and worktree paths', () => {
+  assert.equal(
+    sanitizeGeneratedNameComponent('opencode-go/qwen3.7-max', 'model'),
+    'opencode-go-qwen3.7-max',
+  );
+  assert.equal(sanitizeGeneratedNameComponent(' ../../ ', 'model'), 'model');
+  assert.equal(sanitizeGeneratedNameComponent('model..name', 'model'), 'model-name');
+  assert.equal(sanitizeGeneratedNameComponent('你好', 'model'), 'model');
+  assert.ok(sanitizeGeneratedNameComponent('a'.repeat(200), 'model').length <= 80);
 });

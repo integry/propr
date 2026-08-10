@@ -4,6 +4,55 @@ const OWNER_PATTERN = /^[A-Za-z0-9_-]+$/;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9._-]+$/;
 const MAX_REPOSITORY_COMPONENT_LENGTH = 100;
 const MAX_FILESYSTEM_SEGMENT_LENGTH = 255;
+const MAX_GENERATED_NAME_COMPONENT_LENGTH = 80;
+const MAX_EXTERNAL_IDENTIFIER_LENGTH = 512;
+
+function isAsciiLetterOrDigit(value: string): boolean {
+  const code = value.charCodeAt(0);
+  return (code >= 48 && code <= 57)
+    || (code >= 65 && code <= 90)
+    || (code >= 97 && code <= 122);
+}
+
+function isNameEdgeSeparator(value: string): boolean {
+  return value === '-' || value === '_' || value === '.';
+}
+
+/**
+ * Convert an external identifier (for example, an agent model ID) into a
+ * single component that is safe in both Git refs and worktree paths.
+ */
+export function sanitizeGeneratedNameComponent(value: string, fallback = 'value'): string {
+  const source = value.trim().slice(0, MAX_EXTERNAL_IDENTIFIER_LENGTH);
+  let sanitized = '';
+  let previousWasDot = false;
+
+  for (const character of source) {
+    if (isAsciiLetterOrDigit(character) || character === '_') {
+      sanitized += character;
+      previousWasDot = false;
+    } else if (character === '.') {
+      if (previousWasDot) {
+        if (sanitized.endsWith('.')) sanitized = sanitized.slice(0, -1);
+        if (sanitized && !sanitized.endsWith('-')) sanitized += '-';
+      } else if (sanitized && !sanitized.endsWith('-')) {
+        sanitized += character;
+      }
+      previousWasDot = true;
+    } else {
+      if (sanitized && !sanitized.endsWith('-')) sanitized += '-';
+      previousWasDot = false;
+    }
+
+    if (sanitized.length >= MAX_GENERATED_NAME_COMPONENT_LENGTH) break;
+  }
+
+  while (sanitized && isNameEdgeSeparator(sanitized.at(-1)!)) {
+    sanitized = sanitized.slice(0, -1);
+  }
+
+  return sanitized || fallback;
+}
 
 function assertRepositoryComponent(
   value: string,
