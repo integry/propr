@@ -50,7 +50,7 @@ test('redeems a Connect code server-to-server without exposing the relay token i
       const request = new Request(input, init);
       if (request.url === 'https://api.github.com/user') {
         githubRequest = request;
-        return Response.json({ id: 583231 });
+        return Response.json({ id: 583231, login: 'octocat' });
       }
       relayRequest = request;
       return Response.json({
@@ -68,4 +68,26 @@ test('redeems a Connect code server-to-server without exposing the relay token i
   assert.equal(user.id, '583231');
   assert.equal(user.username, 'octocat');
   assert.equal(user.accessToken, 'gho_user_secret');
+});
+
+test('binds the Connect identity username to the validated token owner', async () => {
+  const user = await redeemConnectAuthorizationCode({
+    code: 'pia_code',
+    relayUrl: 'https://webhook.propr.dev/v1',
+    relayToken: 'prt_relay_secret',
+    fetchImpl: (async (input) => {
+      if (String(input) === 'https://api.github.com/user') {
+        return Response.json({ id: 583231, login: 'verified-owner' });
+      }
+      return Response.json({
+        username: 'different-relay-user',
+        avatar_url: null,
+        access_token: 'gho_user_secret',
+      });
+    }) as typeof fetch,
+  });
+
+  assert.equal(user.login, 'verified-owner');
+  assert.equal(user.username, 'verified-owner');
+  assert.equal(user.displayName, 'verified-owner');
 });

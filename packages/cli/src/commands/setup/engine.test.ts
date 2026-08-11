@@ -175,6 +175,33 @@ test("pulls only core images plus the selected agents", async () => {
   assert.deepEqual(pulledAgentTypes, ["claude", "codex"]);
 });
 
+test("prepares an existing custom agent credential path before starting the stack", async () => {
+  const customCredentialDir = "/missing/custom/codex-credentials";
+  const prepared: string[] = [];
+  let started = false;
+
+  await runSetup({
+    root: "/stack",
+    prompts: { selectAgents: async () => ["codex"] },
+    actions: mockActions({
+      readEnvVars: () => ({
+        GITHUB_USER_WHITELIST: "alice,bob",
+        HOST_CODEX_DIR: customCredentialDir,
+      }),
+      prepareAgentCredentialDir: (path) => {
+        assert.equal(started, false, "credential path must be prepared before Docker starts");
+        prepared.push(path);
+      },
+      startStack: async () => {
+        started = true;
+      },
+    }),
+  });
+
+  assert.deepEqual(prepared, [customCredentialDir]);
+  assert.equal(started, true);
+});
+
 test("optional repo step can be skipped without failing the run", async () => {
   // No addRepository prompt at all → repo is skipped.
   const result = await runSetup({ root: "/stack", actions: mockActions() });

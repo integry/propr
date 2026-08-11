@@ -87,19 +87,28 @@ export async function redeemConnectAuthorizationCode(options: {
 
     return {
         id: String(githubIdentity.id),
-        login: body.username,
-        username: body.username,
-        displayName: body.username,
+        login: githubIdentity.login,
+        username: githubIdentity.login,
+        displayName: githubIdentity.login,
         email: null,
         avatarUrl: body.avatar_url,
         accessToken: body.access_token,
     };
 }
 
-function isGitHubIdentity(value: unknown): value is { id: number } {
+function isGitHubIdentity(value: unknown): value is { id: number; login: string } {
     if (typeof value !== 'object' || value === null) return false;
-    const id = (value as Record<string, unknown>).id;
-    return typeof id === 'number' && Number.isSafeInteger(id) && id > 0;
+    const candidate = value as Record<string, unknown>;
+    return (
+        typeof candidate.id === 'number' &&
+        Number.isSafeInteger(candidate.id) &&
+        candidate.id > 0 &&
+        isGitHubLogin(candidate.login)
+    );
+}
+
+function isGitHubLogin(value: unknown): value is string {
+    return typeof value === 'string' && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(value);
 }
 
 function isConfiguredValue(value: string | undefined): boolean {
@@ -115,8 +124,7 @@ function isRedeemedIdentity(value: unknown): value is {
     if (typeof value !== 'object' || value === null) return false;
     const candidate = value as Record<string, unknown>;
     return (
-        typeof candidate.username === 'string' &&
-        /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(candidate.username) &&
+        isGitHubLogin(candidate.username) &&
         (candidate.avatar_url === null || typeof candidate.avatar_url === 'string') &&
         typeof candidate.access_token === 'string' &&
         candidate.access_token.length > 0

@@ -289,7 +289,7 @@ export interface SetupActions extends AgentSetupActions {
   /** Remove keys from `.env` entirely (used to clear a value, not blank it). */
   clearEnvKeys(rootDir: string, keys: string[]): void;
   detectGithubAuthMode(rootDir: string): GithubAuthModeResult;
-  /** Create a selected agent's host credential directory securely when absent. */
+  /** Ensure a selected agent's host credential path is a directory, creating it securely when absent. */
   prepareAgentCredentialDir(path: string): void;
   pullImages(params: PullImagesParams): Promise<PullImagesResult>;
   isStackRunning(rootDir: string): Promise<boolean>;
@@ -819,6 +819,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       });
     } else {
       const vars: Record<string, string> = {};
+      const existingEnv = actions.readEnvVars(rootDir);
       for (const type of selectedAgents) {
         const desc = catalog.find((a) => a.type === type);
         if (!desc) continue;
@@ -827,10 +828,10 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
           // before the stack starts so Docker never creates a root-owned path,
           // and record it now so the post-login image validation sees exactly
           // the mount the worker will use.
-          if (!existsSync(cred.defaultDir)) {
-            actions.prepareAgentCredentialDir(cred.defaultDir);
-          }
-          vars[cred.envKey] = cred.defaultDir;
+          const configuredDir = existingEnv[cred.envKey];
+          const effectiveDir = configuredDir?.trim() ? configuredDir : cred.defaultDir;
+          actions.prepareAgentCredentialDir(effectiveDir);
+          vars[cred.envKey] = effectiveDir;
         }
       }
       const applied = actions.applyEnvSelection(rootDir, vars, { overwrite: false });
