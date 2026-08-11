@@ -228,6 +228,13 @@ export function readEnvFile(envFilePath) {
 // Config resolution
 // ---------------------------------------------------------------------------
 
+/** Host-facing port number from a Docker publish value (bare or IP-bound). */
+export function publishedHostPort(binding) {
+    const raw = String(binding ?? '').trim();
+    const match = raw.match(/(?:^|:)(\d{1,5})$/);
+    return match?.[1] ?? raw;
+}
+
 /**
  * Resolve a stack config from an environment + overrides. Works for both the
  * containerized launcher (paths are bind-mounted host paths) and the host CLI
@@ -259,6 +266,8 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const uiPort = overrides.uiPort ?? get('UI_PORT') ?? '5173';
     const docsPort = overrides.docsPort ?? get('DOCS_PORT') ?? '8080';
     const redisExternalPort = overrides.redisExternalPort ?? get('REDIS_EXTERNAL_PORT') ?? '';
+    const apiHostPort = publishedHostPort(apiPort);
+    const uiHostPort = publishedHostPort(uiPort);
     const docsEnabled = overrides.docsEnabled ?? (get('DOCS_ENABLED') === 'true');
     const apiRateLimitMax = overrides.apiRateLimitMax ?? get('PROPR_API_RATE_LIMIT_MAX') ?? '600';
     const apiRateLimitWindowMs = overrides.apiRateLimitWindowMs ?? get('PROPR_API_RATE_LIMIT_WINDOW_MS') ?? '60000';
@@ -342,9 +351,9 @@ export function resolveConfig(env = process.env, overrides = {}) {
         // and the frontend must point at the hosted UI origin. An explicit
         // API_PUBLIC_URL / FRONTEND_URL still wins; otherwise tunnel mode derives
         // them, falling back to the localhost defaults for local development.
-        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiPort}`),
-        frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiPort}`,
-        ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || (uiTunnelEnabled && uiPublicApiUrl ? `${uiPublicApiUrl}/api/auth/github/callback` : `http://localhost:${apiPort}/api/auth/github/callback`),
+        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiHostPort}`),
+        frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiHostPort}`,
+        ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || (uiTunnelEnabled && uiPublicApiUrl ? `${uiPublicApiUrl}/api/auth/github/callback` : `http://localhost:${apiHostPort}/api/auth/github/callback`),
         githubBotUsername: get('GITHUB_BOT_USERNAME') || 'propr.dev[bot]',
         indexingScanInterval: get('INDEXING_SCAN_INTERVAL_MS') || '300000',
         indexingReindexInterval: get('INDEXING_REINDEX_INTERVAL_MS') || '86400000',
@@ -1607,7 +1616,7 @@ export function validateEnv(cfg) {
     // hosted UI cannot reach. Warn so the operator updates it (and the GitHub App
     // config) to the public proxy callback.
     if (cfg.uiTunnelEnabled && /^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(cfg.ghOauthCallbackUrl)) {
-        warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. GitHub OAuth will redirect the browser to a localhost URL the hosted UI cannot reach. Set GH_OAUTH_CALLBACK_URL to your public proxy callback (e.g. https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback) and register it in the GitHub App.`);
+        warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. Hosted login will redirect the browser to a localhost URL the hosted UI cannot reach. Run \`propr tunnel setup\` or set GH_OAUTH_CALLBACK_URL to the active proxy callback (e.g. https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback).`);
     }
 
     const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);

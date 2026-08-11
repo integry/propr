@@ -48,6 +48,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     applyEnvSelection: () => ({ written: [], skipped: [] }),
     clearEnvKeys: () => undefined,
     detectGithubAuthMode: () => APP_AUTH,
+    prepareAgentCredentialDir: () => undefined,
     pullImages: async () => ({ pulledCore: ["propr/api"], pulledAgents: [], failedCore: [], failedAgents: [] }),
     isStackRunning: async () => false,
     startStack: async () => undefined,
@@ -67,6 +68,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     addAgent: async () => undefined,
     loginableAgents: async () => [],
     loginAgent: async () => ({ available: false, success: false }),
+    validateAgents: async (_root, types) => types.map((type) => ({ type, status: "ok", detail: "connected" })),
     ...overrides,
   };
 }
@@ -268,6 +270,7 @@ test("relay enrollment auto-selects a single installation and writes the relay v
     PROPR_GH_RELAY_URL: "https://relay/v1",
     PROPR_GH_RELAY_TOKEN: "prt_minted",
     GH_INSTALLATION_ID: "42",
+    PROPR_ADMIN_USERS: "octocat",
   });
 });
 

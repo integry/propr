@@ -142,6 +142,19 @@ test('UI tunnel is disabled by default with local-development URL defaults intac
   assert.equal(cfg.cookieDomain, undefined);
 });
 
+test('loopback-bound Docker ports produce valid localhost URLs', () => {
+  const cfg = resolveConfig({
+    API_PORT: '127.0.0.1:4000',
+    UI_PORT: '127.0.0.1:5173',
+  }, { manifestPath });
+
+  assert.equal(cfg.apiPort, '127.0.0.1:4000');
+  assert.equal(cfg.uiPort, '127.0.0.1:5173');
+  assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
+  assert.equal(cfg.frontendUrl, 'http://localhost:5173');
+  assert.equal(cfg.ghOauthCallbackUrl, 'http://localhost:4000/api/auth/github/callback');
+});
+
 test('enabling the tunnel derives public API, frontend, and OAuth callback URLs', () => {
   const cfg = resolveConfig({
     PROPR_UI_TUNNEL_TOKEN: 'secret-token',

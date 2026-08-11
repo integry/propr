@@ -107,6 +107,7 @@ test("tunnel setup builds env from the Connect proxy URL", () => {
       API_PUBLIC_URL: "https://t-abc123.propr.dev",
       FRONTEND_URL: "https://app.propr.dev",
       GH_OAUTH_CALLBACK_URL: "https://t-abc123.propr.dev/api/auth/github/callback",
+      PROPR_WEB_AUTH_MODE: "connect",
     }
   );
 });
@@ -125,6 +126,7 @@ test("tunnel setup builds env from an instance id", () => {
       API_PUBLIC_URL: "https://t-abc123.propr.dev",
       FRONTEND_URL: "https://app.propr.dev",
       GH_OAUTH_CALLBACK_URL: "https://t-abc123.propr.dev/api/auth/github/callback",
+      PROPR_WEB_AUTH_MODE: "connect",
     }
   );
 });
@@ -189,6 +191,7 @@ test("tunnel setup canonicalizes a mixed-case instance id", () => {
       API_PUBLIC_URL: "https://t-abc123.propr.dev",
       FRONTEND_URL: "https://app.propr.dev",
       GH_OAUTH_CALLBACK_URL: "https://t-abc123.propr.dev/api/auth/github/callback",
+      PROPR_WEB_AUTH_MODE: "connect",
     }
   );
 });

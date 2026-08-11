@@ -36,7 +36,7 @@ The UI is not served by the API container. In both the launcher stack and the de
 
 ## Authentication
 
-- Browser sessions use GitHub OAuth (`GET /api/auth/github` → `GET /api/auth/github/callback`). Configure `GH_OAUTH_CLIENT_ID`, `GH_OAUTH_CLIENT_SECRET`, and `GH_OAUTH_CALLBACK_URL`; the callback URL must match the GitHub OAuth App settings and the public API origin.
+- Browser sessions start at `GET /api/auth/github` and finish at `GET /api/auth/github/callback`. Hosted tunnels use `PROPR_WEB_AUTH_MODE=connect`: Connect owns the shared GitHub OAuth client and hands the instance a short-lived one-use code. Custom deployments may use `PROPR_WEB_AUTH_MODE=github` with their own `GH_OAUTH_CLIENT_ID` and `GH_OAUTH_CLIENT_SECRET`.
 - Sessions are stored in Redis (`propr:session:` prefix) and sent as cookies; all frontend fetches use `credentials: 'include'`.
 - All `/api/*` routes require authentication; CORS is configured from `FRONTEND_URL`.
 - Bearer token authentication (GitHub tokens validated against the GitHub API, cached briefly in Redis) is enabled by default for the CLI; disable it with `ENABLE_BEARER_AUTH=false`.

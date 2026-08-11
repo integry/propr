@@ -31,7 +31,7 @@
  *   - Core images pull by default; the agent image pulls when an agent is selected.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import {
@@ -73,6 +73,7 @@ import {
   type StackInitState,
 } from "./state.js";
 import type { SetupState, SetupStep, SetupStepId, SetupStepPatch } from "./types.js";
+import { localhostServiceUrl } from "../../utils/dockerPort.js";
 
 /**
  * Catalog of supported agents: the image each one needs and the host
@@ -288,6 +289,8 @@ export interface SetupActions extends AgentSetupActions {
   /** Remove keys from `.env` entirely (used to clear a value, not blank it). */
   clearEnvKeys(rootDir: string, keys: string[]): void;
   detectGithubAuthMode(rootDir: string): GithubAuthModeResult;
+  /** Create a selected agent's host credential directory securely when absent. */
+  prepareAgentCredentialDir(path: string): void;
   pullImages(params: PullImagesParams): Promise<PullImagesResult>;
   isStackRunning(rootDir: string): Promise<boolean>;
   startStack(params: StartStackParams): Promise<void>;
@@ -363,7 +366,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     const { getHostConfig } = await import("../../orchestrator/index.js");
     const { cfg } = await getHostConfig({ configManager, root: rootDir });
     const { createApiClient } = await import("../../api/client.js");
-    return createApiClient({ baseUrl: `http://localhost:${cfg.apiPort}` });
+    return createApiClient({ baseUrl: localhostServiceUrl(cfg.apiPort) });
   };
 
   return {
@@ -388,6 +391,9 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     applyEnvSelection,
     clearEnvKeys,
     detectGithubAuthMode,
+    prepareAgentCredentialDir(path) {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+    },
     async pullImages({ rootDir, agentTypes, onLog }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
@@ -475,7 +481,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     async resolveUiUrl(rootDir) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { cfg } = await getHostConfig({ configManager, root: rootDir });
-      return `http://localhost:${cfg.uiPort}`;
+      return localhostServiceUrl(cfg.uiPort);
     },
     async openUrl(url) {
       // Open in the host's default browser with the platform launcher. Detached
@@ -617,7 +623,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     try {
       // 2. Discover installations: auto-select the only one, pick among many,
       //    error when there are none.
-      const { installations } = await actions.fetchRelayInstallations({ relayUrl });
+      const { username, installations } = await actions.fetchRelayInstallations({ relayUrl });
       if (installations.length === 0) {
         return {
           note: {
@@ -640,6 +646,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       //    these keys). PROPR_DEMO_MODE=false ensures the new relay config isn't
       //    shadowed by a leftover demo flag (see detectGithubAuthMode).
       const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId });
+      const existingAdminUsers = (actions.readEnvVars(rootDir).PROPR_ADMIN_USERS ?? "").trim();
       actions.applyEnvSelection(
         rootDir,
         {
@@ -648,10 +655,16 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
           PROPR_GH_RELAY_URL: resolvedRelayUrl,
           PROPR_GH_RELAY_TOKEN: token,
           GH_INSTALLATION_ID: installationId,
+          // The relay identity was just authenticated by GitHub and owns this
+          // installation, so it is the safe bootstrap administrator on a fresh
+          // stack. Never replace an existing administrator list.
+          ...(existingAdminUsers ? {} : { PROPR_ADMIN_USERS: username }),
         },
         { overwrite: true }
       );
-      return { detail: `auth mode: relay (installation ${installationId})` };
+      return {
+        detail: `auth mode: relay (installation ${installationId}); ${existingAdminUsers ? "kept existing administrators" : `bootstrap administrator: ${username}`}`,
+      };
     } catch (error) {
       return {
         note: {
@@ -810,7 +823,14 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         const desc = catalog.find((a) => a.type === type);
         if (!desc) continue;
         for (const cred of desc.credentials) {
-          if (existsSync(cred.defaultDir)) vars[cred.envKey] = cred.defaultDir;
+          // A selected agent may not have logged in yet. Prepare its host mount
+          // before the stack starts so Docker never creates a root-owned path,
+          // and record it now so the post-login image validation sees exactly
+          // the mount the worker will use.
+          if (!existsSync(cred.defaultDir)) {
+            actions.prepareAgentCredentialDir(cred.defaultDir);
+          }
+          vars[cred.envKey] = cred.defaultDir;
         }
       }
       const applied = actions.applyEnvSelection(rootDir, vars, { overwrite: false });
@@ -1044,12 +1064,16 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       if (outcome.alreadyConfigured.length > 0) parts.push(`${outcome.alreadyConfigured.length} already configured`);
       if (outcome.authenticated.length > 0) parts.push(`authenticated ${outcome.authenticated.join(", ")}`);
       if (outcome.authFailed.length > 0) parts.push(`${outcome.authFailed.length} login(s) did not complete`);
+      if (outcome.validated.length > 0) parts.push(`connectivity verified: ${outcome.validated.join(", ")}`);
+      if (outcome.validationFailed.length > 0) parts.push(`${outcome.validationFailed.length} connectivity check(s) need attention`);
       const detail = parts.length > 0 ? parts.join("; ") : "no changes needed";
-      if (outcome.errors.length > 0 || outcome.authFailed.length > 0) {
+      if (outcome.errors.length > 0 || outcome.authFailed.length > 0 || outcome.validationFailed.length > 0) {
         settle("enable-agents", {
           status: "warning",
           detail: outcome.errors.length > 0 ? `${detail}; ${outcome.errors.join("; ")}` : detail,
-          nextAction: "Enable or authenticate agents later in the UI or with `propr agent add` / `propr agent login`.",
+          nextAction: outcome.nextCommands.length > 0
+            ? `Run: ${outcome.nextCommands.map((command) => `\`${command}\``).join("; then ")}`
+            : "Enable or authenticate agents later in the UI or with `propr agent add` / `propr agent login`.",
         });
       } else {
         settle("enable-agents", { status: "done", detail });

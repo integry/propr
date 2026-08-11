@@ -3,6 +3,7 @@ import { Strategy as GitHubStrategy, Profile } from 'passport-github2';
 import session from 'express-session';
 import { RedisStore } from 'connect-redis';
 import { createClient } from 'redis';
+import { randomBytes } from 'node:crypto';
 import type { Express, Request, Response, NextFunction, RequestHandler } from 'express';
 import { validateSessionSecret } from '@propr/shared';
 import { validateGitHubToken } from './authBearer.js';
@@ -12,6 +13,11 @@ import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js
 import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
 import { createAuthRequestRateLimiter } from './requestRateLimits.js';
+import {
+    buildConnectAuthorizationUrl,
+    redeemConnectAuthorizationCode,
+    resolveBrowserAuthMode,
+} from './connectAuth.js';
 import {
     authenticatedUserResponse,
     resolveAuthorization,
@@ -89,6 +95,36 @@ function clearSessionCookie(res: Response): void {
     });
 }
 
+type AuthSession = session.Session & {
+    redirectTo?: string;
+    connectOAuthState?: string;
+};
+
+function redirectAuthError(res: Response, error: string): void {
+    res.redirect(`${process.env.FRONTEND_URL}/login?error=${encodeURIComponent(error)}`);
+}
+
+function completeAuthenticatedSession(req: Request, res: Response): void {
+    if (!isUserWhitelisted(req.user?.username)) {
+        req.logout(() => {
+            req.session.destroy(() => {
+                clearSessionCookie(res);
+                redirectAuthError(res, 'not_authorized');
+            });
+        });
+        return;
+    }
+
+    const authSession = req.session as AuthSession;
+    const finalRedirect = authSession.redirectTo || getDefaultRedirectUrl();
+    delete authSession.redirectTo;
+    delete authSession.connectOAuthState;
+    req.session.save((err) => {
+        if (err) console.error('Session save error:', err);
+        res.redirect(finalRedirect);
+    });
+}
+
 export interface GitHubOAuthStrategyConfig {
     clientID: string;
     clientSecret: string;
@@ -125,9 +161,12 @@ export function createGitHubOAuthStrategy(config: GitHubOAuthStrategyConfig): Gi
 
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): SocketAuthMiddlewareBundle {
     configureDemoMode(demoModeAtStartup);
-    const requiredEnvVars = demoModeAtStartup
-        ? ['FRONTEND_URL']
-        : ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL'];
+    const browserAuthMode = demoModeAtStartup ? 'disabled' : resolveBrowserAuthMode();
+    const requiredEnvVars = browserAuthMode === 'github'
+        ? ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL']
+        : browserAuthMode === 'connect'
+            ? ['PROPR_GH_RELAY_URL', 'PROPR_GH_RELAY_TOKEN', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL']
+            : ['FRONTEND_URL'];
     const missingVars = requiredEnvVars.filter(v => !process.env[v]);
     if (missingVars.length > 0) {
         throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
@@ -184,11 +223,13 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         app.use(passportInitializeMiddleware);
         app.use(passportSessionMiddleware);
 
-        passport.use(createGitHubOAuthStrategy({
-            clientID: process.env.GH_OAUTH_CLIENT_ID!,
-            clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
-            callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
-        }));
+        if (browserAuthMode === 'github') {
+            passport.use(createGitHubOAuthStrategy({
+                clientID: process.env.GH_OAUTH_CLIENT_ID!,
+                clientSecret: process.env.GH_OAUTH_CLIENT_SECRET!,
+                callbackURL: process.env.GH_OAUTH_CALLBACK_URL!,
+            }));
+        }
 
         passport.serializeUser((user, done) => done(null, user));
         passport.deserializeUser((obj: Express.User, done) => done(null, obj));
@@ -205,7 +246,35 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         }
 
         if (redirectTo) {
-            (req.session as session.Session & { redirectTo?: string }).redirectTo = redirectTo;
+            (req.session as AuthSession).redirectTo = redirectTo;
+        }
+
+        if (browserAuthMode === 'connect') {
+            const state = randomBytes(32).toString('base64url');
+            (req.session as AuthSession).connectOAuthState = state;
+            req.session.save((error) => {
+                if (error) {
+                    console.error('Could not save Connect OAuth state:', error);
+                    redirectAuthError(res, 'session_unavailable');
+                    return;
+                }
+                try {
+                    res.redirect(buildConnectAuthorizationUrl({
+                        connectOrigin: process.env.PROPR_CONNECT_URL,
+                        callbackUrl: process.env.GH_OAUTH_CALLBACK_URL!,
+                        state,
+                    }));
+                } catch (buildError) {
+                    console.error('Could not build Connect authorization URL:', buildError);
+                    redirectAuthError(res, 'connect_not_configured');
+                }
+            });
+            return;
+        }
+
+        if (browserAuthMode === 'disabled') {
+            redirectAuthError(res, 'web_auth_not_configured');
+            return;
         }
         passport.authenticate('github', { scope: ['user:email', 'read:org', 'repo'] })(req, res, next);
     });
@@ -215,41 +284,49 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
             const redirectTo = getValidatedRedirectTo(req.query.redirect_to as string | undefined);
             res.redirect(redirectTo || getDefaultRedirectUrl());
         });
-    } else {
+    } else if (browserAuthMode === 'github') {
         app.get('/api/auth/github/callback',
             passport.authenticate('github', { failureRedirect: '/login' }),
-            (req: Request, res: Response) => {
-                // Reject logins from users not on the access whitelist, before a
-                // session is usable. (No-op when no whitelist is configured.)
-                if (!isUserWhitelisted(req.user?.username)) {
-                    req.logout(() => {
-                        req.session.destroy(() => {
-                            clearSessionCookie(res);
-                            res.redirect(`${process.env.FRONTEND_URL}/login?error=not_authorized`);
-                        });
-                    });
-                    return;
-                }
-
-                // Check for stored redirect URL (for PR preview environments)
-                const redirectTo = (req.session as session.Session & { redirectTo?: string }).redirectTo;
-                if (redirectTo) {
-                    // Clear the stored redirect
-                    delete (req.session as session.Session & { redirectTo?: string }).redirectTo;
-                }
-
-                const finalRedirect = redirectTo || getDefaultRedirectUrl();
-
-                // Explicitly save session before redirect to ensure cookie is set
-                // This is required when using Redis store with async operations
-                req.session.save((err) => {
-                    if (err) {
-                        console.error('Session save error:', err);
-                    }
-                    res.redirect(finalRedirect);
-                });
-            }
+            completeAuthenticatedSession
         );
+    } else if (browserAuthMode === 'connect') {
+        app.get('/api/auth/github/callback', async (req: Request, res: Response) => {
+            const authSession = req.session as AuthSession;
+            const state = typeof req.query.state === 'string' ? req.query.state : '';
+            const code = typeof req.query.code === 'string' ? req.query.code : '';
+            if (!authSession.connectOAuthState || state !== authSession.connectOAuthState || !code) {
+                delete authSession.connectOAuthState;
+                redirectAuthError(res, 'oauth_state_mismatch');
+                return;
+            }
+
+            // Consume local state before the network exchange. The Connect grant
+            // itself is also one-use, so retrying this callback cannot create a
+            // second session if the browser replays the URL.
+            delete authSession.connectOAuthState;
+            try {
+                const user = await redeemConnectAuthorizationCode({
+                    code,
+                    relayUrl: process.env.PROPR_GH_RELAY_URL!,
+                    relayToken: process.env.PROPR_GH_RELAY_TOKEN!,
+                });
+                req.login(user, (loginError) => {
+                    if (loginError) {
+                        console.error('Connect session login failed:', loginError);
+                        redirectAuthError(res, 'session_unavailable');
+                        return;
+                    }
+                    completeAuthenticatedSession(req, res);
+                });
+            } catch (error) {
+                console.error('Connect instance login failed:', error);
+                redirectAuthError(res, 'connect_login_failed');
+            }
+        });
+    } else {
+        app.get('/api/auth/github/callback', (_req: Request, res: Response) => {
+            redirectAuthError(res, 'web_auth_not_configured');
+        });
     }
 
     app.get('/api/auth/logout', (req: Request, res: Response) => {
