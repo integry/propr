@@ -10,11 +10,6 @@ on:
         description: 'Version that must match package.json and CHANGELOG.md, for example 0.8.0'
         required: true
         type: string
-      ghcr_namespace:
-        description: 'GHCR namespace to publish under'
-        required: true
-        default: 'ghcr.io/integry'
-        type: string
       dockerhub_namespace:
         description: 'Docker Hub namespace to publish under'
         required: true
@@ -32,7 +27,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   validate-release:
@@ -49,6 +43,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -127,6 +122,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -171,6 +168,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -200,12 +199,11 @@ jobs:
             --expected-version "$PACKAGE_VERSION"
 
   build-smoke-and-push:
-    name: Build, Smoke Test, Push
+    name: Build, Smoke Test, and Push to Docker Hub
     needs: [validate-release, prepare-cli, preflight-cli]
     runs-on: [self-hosted, linux, x64, propr]
     timeout-minutes: 180
     env:
-      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
       PUSH_LATEST: 'false'
 
@@ -219,6 +217,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -259,19 +258,6 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build GHCR-tagged images
-        run: ./scripts/build-images.sh --ghcr
-
-      - name: Smoke test GHCR images
-        env:
-          APP_TAG: ${{ env.GHCR_NS }}/propr-app:${{ steps.version.outputs.version }}
-          UI_TAG: ${{ env.GHCR_NS }}/propr-ui:${{ steps.version.outputs.version }}
-          DOCS_TAG: ${{ env.GHCR_NS }}/propr-docs:${{ steps.version.outputs.version }}
-          AGENT_TAG: ${{ env.GHCR_NS }}/propr-agent:${{ steps.version.outputs.version }}
-          LAUNCHER_TAG: ${{ env.GHCR_NS }}/propr-launcher:${{ steps.version.outputs.version }}
-          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
-        run: npm run images:smoke
-
       - name: Build Docker Hub-tagged images
         run: ./scripts/build-images.sh --dockerhub
 
@@ -284,14 +270,6 @@ jobs:
           LAUNCHER_TAG: ${{ env.DOCKERHUB_NS }}/launcher:${{ steps.version.outputs.version }}
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: npm run images:smoke
-
-      - name: Login to GHCR
-        env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          TOKEN="${GHCR_TOKEN:-$GITHUB_TOKEN}"
-          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Login to Docker Hub
         env:
@@ -306,7 +284,7 @@ jobs:
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Stage, preflight, and publish smoke-tested images
-        run: ./scripts/build-images.sh --push-only
+        run: ./scripts/build-images.sh --push-only --dockerhub
 
       - name: Sync Docker Hub metadata
         continue-on-error: true
@@ -329,7 +307,6 @@ jobs:
             echo "Refusing to clean unexpected DOCKER_CONFIG path: $DOCKER_CONFIG" >&2
             exit 1
           fi
-          docker logout ghcr.io >/dev/null 2>&1 || true
           docker logout >/dev/null 2>&1 || true
           rm -rf -- "$DOCKER_CONFIG"
 
@@ -346,6 +323,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -417,16 +396,14 @@ jobs:
           fi
 
   promote-latest:
-    name: Promote latest images
+    name: Promote latest images on Docker Hub
     if: ${{ (github.event_name == 'push' && github.ref_type == 'tag') || inputs.push_latest }}
     needs: [validate-release, publish-github-release]
     runs-on: [self-hosted, linux, x64, propr]
     timeout-minutes: 60
     permissions:
       contents: read
-      packages: write
     env:
-      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
 
     steps:
@@ -438,20 +415,14 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: '.nvmrc'
           package-manager-cache: false
-
-      - name: Login to GHCR
-        env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          TOKEN="${GHCR_TOKEN:-$GITHUB_TOKEN}"
-          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Login to Docker Hub
         env:
@@ -465,7 +436,7 @@ jobs:
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Promote release images to latest
-        run: ./scripts/build-images.sh --promote-latest
+        run: ./scripts/build-images.sh --promote-latest --dockerhub
 
       - name: Show latest-tag reconciliation guidance
         if: failure()
@@ -481,6 +452,5 @@ jobs:
             echo "Refusing to clean unexpected DOCKER_CONFIG path: $DOCKER_CONFIG" >&2
             exit 1
           fi
-          docker logout ghcr.io >/dev/null 2>&1 || true
           docker logout >/dev/null 2>&1 || true
           rm -rf -- "$DOCKER_CONFIG"
