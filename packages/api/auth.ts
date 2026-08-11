@@ -14,6 +14,14 @@ import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
 import { createAuthRequestRateLimiter } from './requestRateLimits.js';
 import {
+    clearSessionCookie,
+    completeAuthenticatedSession,
+    getSessionCookieDomain,
+    redirectAuthError,
+    shouldUseSecureSessionCookie,
+    type AuthSession,
+} from './authSession.js';
+import {
     buildConnectAuthorizationUrl,
     redeemConnectAuthorizationCode,
     resolveBrowserAuthMode,
@@ -27,6 +35,7 @@ import {
 import './authTypes.js';
 
 export { refreshGitHubTokenIfNeeded } from './authGithubTokens.js';
+export { getSessionCookieDomain, shouldUseSecureSessionCookie } from './authSession.js';
 export type { GitHubUser } from './authTypes.js';
 
 export interface SocketAuthMiddlewareBundle {
@@ -61,68 +70,6 @@ export class SocketAuthenticationError extends Error {
         super(message);
         this.name = 'SocketAuthenticationError';
     }
-}
-
-export function getSessionCookieDomain(): string | undefined {
-    if (process.env.COOKIE_DOMAIN) return process.env.COOKIE_DOMAIN;
-    return undefined;
-}
-
-export function shouldUseSecureSessionCookie(cookieDomain: string | undefined): boolean {
-    try {
-        if (process.env.API_PUBLIC_URL) {
-            const url = new URL(process.env.API_PUBLIC_URL);
-            if (url.protocol === 'https:') return true;
-            if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]')) return false;
-        }
-        return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
-    } catch {
-        return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
-    }
-}
-
-function clearSessionCookie(res: Response): void {
-    const domain = getSessionCookieDomain();
-    // Mirror the attributes used when the session cookie is set — browsers match
-    // on name/domain/path, but mirroring secure/httpOnly/sameSite is the safer
-    // convention.
-    res.clearCookie('connect.sid', {
-        ...(domain ? { domain } : {}),
-        path: '/',
-        secure: shouldUseSecureSessionCookie(domain),
-        httpOnly: true,
-        sameSite: 'lax',
-    });
-}
-
-type AuthSession = session.Session & {
-    redirectTo?: string;
-    connectOAuthState?: string;
-};
-
-function redirectAuthError(res: Response, error: string): void {
-    res.redirect(`${process.env.FRONTEND_URL}/login?error=${encodeURIComponent(error)}`);
-}
-
-function completeAuthenticatedSession(req: Request, res: Response): void {
-    if (!isUserWhitelisted(req.user?.username)) {
-        req.logout(() => {
-            req.session.destroy(() => {
-                clearSessionCookie(res);
-                redirectAuthError(res, 'not_authorized');
-            });
-        });
-        return;
-    }
-
-    const authSession = req.session as AuthSession;
-    const finalRedirect = authSession.redirectTo || getDefaultRedirectUrl();
-    delete authSession.redirectTo;
-    delete authSession.connectOAuthState;
-    req.session.save((err) => {
-        if (err) console.error('Session save error:', err);
-        res.redirect(finalRedirect);
-    });
 }
 
 export interface GitHubOAuthStrategyConfig {
