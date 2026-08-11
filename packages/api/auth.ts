@@ -106,6 +106,45 @@ export function createGitHubOAuthStrategy(config: GitHubOAuthStrategyConfig): Gi
     });
 }
 
+/** Build the Connect callback with an injectable redeemer for route-level tests. */
+export function createConnectCallbackHandler(
+    redeem: typeof redeemConnectAuthorizationCode = redeemConnectAuthorizationCode,
+): RequestHandler {
+    return async (req: Request, res: Response) => {
+        const authSession = req.session as AuthSession;
+        const state = typeof req.query.state === 'string' ? req.query.state : '';
+        const code = typeof req.query.code === 'string' ? req.query.code : '';
+        if (!authSession.connectOAuthState || state !== authSession.connectOAuthState || !code) {
+            delete authSession.connectOAuthState;
+            redirectAuthError(res, 'oauth_state_mismatch');
+            return;
+        }
+
+        // Consume local state before the network exchange. The Connect grant
+        // itself is also one-use, so retrying this callback cannot create a
+        // second session if the browser replays the URL.
+        delete authSession.connectOAuthState;
+        try {
+            const user = await redeem({
+                code,
+                relayUrl: process.env.PROPR_GH_RELAY_URL!,
+                relayToken: process.env.PROPR_GH_RELAY_TOKEN!,
+            });
+            req.login(user, { session: true, keepSessionInfo: true }, (loginError) => {
+                if (loginError) {
+                    console.error('Connect session login failed:', loginError);
+                    redirectAuthError(res, 'session_unavailable');
+                    return;
+                }
+                completeAuthenticatedSession(req, res);
+            });
+        } catch (error) {
+            console.error('Connect instance login failed:', error);
+            redirectAuthError(res, 'connect_login_failed');
+        }
+    };
+}
+
 export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): SocketAuthMiddlewareBundle {
     configureDemoMode(demoModeAtStartup);
     const browserAuthMode = demoModeAtStartup ? 'disabled' : resolveBrowserAuthMode();
@@ -237,39 +276,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
             completeAuthenticatedSession
         );
     } else if (browserAuthMode === 'connect') {
-        app.get('/api/auth/github/callback', async (req: Request, res: Response) => {
-            const authSession = req.session as AuthSession;
-            const state = typeof req.query.state === 'string' ? req.query.state : '';
-            const code = typeof req.query.code === 'string' ? req.query.code : '';
-            if (!authSession.connectOAuthState || state !== authSession.connectOAuthState || !code) {
-                delete authSession.connectOAuthState;
-                redirectAuthError(res, 'oauth_state_mismatch');
-                return;
-            }
-
-            // Consume local state before the network exchange. The Connect grant
-            // itself is also one-use, so retrying this callback cannot create a
-            // second session if the browser replays the URL.
-            delete authSession.connectOAuthState;
-            try {
-                const user = await redeemConnectAuthorizationCode({
-                    code,
-                    relayUrl: process.env.PROPR_GH_RELAY_URL!,
-                    relayToken: process.env.PROPR_GH_RELAY_TOKEN!,
-                });
-                req.login(user, (loginError) => {
-                    if (loginError) {
-                        console.error('Connect session login failed:', loginError);
-                        redirectAuthError(res, 'session_unavailable');
-                        return;
-                    }
-                    completeAuthenticatedSession(req, res);
-                });
-            } catch (error) {
-                console.error('Connect instance login failed:', error);
-                redirectAuthError(res, 'connect_login_failed');
-            }
-        });
+        app.get('/api/auth/github/callback', createConnectCallbackHandler());
     } else {
         app.get('/api/auth/github/callback', (_req: Request, res: Response) => {
             redirectAuthError(res, 'web_auth_not_configured');

@@ -33,7 +33,7 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import {
   resolveGithubEventIntakeMode,
   validateIntakeModePrerequisites,
@@ -105,6 +105,18 @@ function agentCatalog(): AgentDescriptor[] {
     },
     { type: "vibe", imageKey: "agent", credentials: [{ envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe") }] },
   ];
+}
+
+/** Reject unsafe Docker bind sources before any recursive filesystem write. */
+function assertSafeAgentCredentialDir(path: string, name = "Agent credential path"): void {
+  if (
+    !isAbsolute(path)
+    || normalize(path) === "/"
+    || path.includes(":")
+    || /[\u0000-\u001f\u007f-\u009f]/.test(path)
+  ) {
+    throw new Error(`${name} must be an absolute, non-root Linux path without ':' or control characters`);
+  }
 }
 
 /** Agent types whose default credential directory exists on this host. */
@@ -392,6 +404,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     clearEnvKeys,
     detectGithubAuthMode,
     prepareAgentCredentialDir(path) {
+      assertSafeAgentCredentialDir(path);
       mkdirSync(path, { recursive: true, mode: 0o700 });
     },
     async pullImages({ rootDir, agentTypes, onLog }) {
@@ -561,6 +574,8 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   let checks: ChecksOutcome | undefined;
   /** Agents chosen at the pull step, reused when recording credentials. */
   let selectedAgents: string[] = [];
+  /** True only when setup scaffolded a previously bare stack root. */
+  let freshStackCreated = false;
   /**
    * Set when the user declines to start the stack. Starting and validating the
    * backend is the central goal of setup, so a declined start must not report
@@ -647,6 +662,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       //    shadowed by a leftover demo flag (see detectGithubAuthMode).
       const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId });
       const existingAdminUsers = (actions.readEnvVars(rootDir).PROPR_ADMIN_USERS ?? "").trim();
+      const seedBootstrapAdmin = freshStackCreated && !existingAdminUsers;
       actions.applyEnvSelection(
         rootDir,
         {
@@ -657,13 +673,20 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
           GH_INSTALLATION_ID: installationId,
           // The relay identity was just authenticated by GitHub and owns this
           // installation, so it is the safe bootstrap administrator on a fresh
-          // stack. Never replace an existing administrator list.
-          ...(existingAdminUsers ? {} : { PROPR_ADMIN_USERS: username }),
+          // stack. Existing stacks may already have durable database-backed
+          // administrators, so a missing environment value is not evidence that
+          // setup may widen their authorization boundary.
+          ...(seedBootstrapAdmin ? { PROPR_ADMIN_USERS: username } : {}),
         },
         { overwrite: true }
       );
+      const adminDetail = existingAdminUsers
+        ? "kept existing administrators"
+        : seedBootstrapAdmin
+          ? `bootstrap administrator: ${username}`
+          : "left administrators unchanged on existing stack";
       return {
-        detail: `auth mode: relay (installation ${installationId}); ${existingAdminUsers ? "kept existing administrators" : `bootstrap administrator: ${username}`}`,
+        detail: `auth mode: relay (installation ${installationId}); ${adminDetail}`,
       };
     } catch (error) {
       return {
@@ -730,6 +753,9 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     // `.env` is always preserved — re-running setup never clobbers it.
     const reinitialize = !init.initialized || userChoseReinit;
     if (reinitialize) {
+      // Automatic administrator seeding is safe only when this root had none of
+      // the stack artifacts that could hold established state before setup.
+      const rootWasBare = !init.envExists && Object.values(init.dirs).every((exists) => !exists);
       // No `force`: scaffoldStack creates a fresh `.env` only when absent and
       // otherwise leaves the existing one in place.
       const result = await actions.scaffoldStack({ root: rootDir });
@@ -741,6 +767,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         rootDir = result.rootDir;
         state = { ...state, rootDir };
       }
+      freshStackCreated = rootWasBare && result.envCreated && !result.envBackedUp;
       const created = [...result.dirsCreated];
       settle("init-stack", {
         status: "done",
@@ -830,6 +857,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
           // the mount the worker will use.
           const configuredDir = existingEnv[cred.envKey];
           const effectiveDir = configuredDir?.trim() ? configuredDir : cred.defaultDir;
+          assertSafeAgentCredentialDir(effectiveDir, cred.envKey);
           actions.prepareAgentCredentialDir(effectiveDir);
           vars[cred.envKey] = effectiveDir;
         }
@@ -844,7 +872,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     settle("configure-agents", {
       status: "failed",
       detail: `could not record agent credentials: ${(error as Error).message}`,
-      nextAction: "Check write permissions on .env, then re-run setup.",
+      nextAction: "Correct invalid HOST_* credential paths and check write permissions on .env, then re-run setup.",
     });
     return finish();
   }
