@@ -2,6 +2,7 @@ import type { GitHubUser } from './authTypes.js';
 
 export const DEFAULT_PROPR_CONNECT_ORIGIN = 'https://connect.propr.dev';
 const CONNECT_REDEEM_TIMEOUT_MS = 20_000;
+const GITHUB_USER_URL = 'https://api.github.com/user';
 
 export type BrowserAuthMode = 'connect' | 'github' | 'disabled';
 
@@ -42,13 +43,14 @@ export async function redeemConnectAuthorizationCode(options: {
     relayToken: string;
     fetchImpl?: typeof fetch;
 }): Promise<GitHubUser> {
+    const fetchImpl = options.fetchImpl ?? fetch;
     const relayBase = options.relayUrl.trim().replace(/\/+$/, '');
     const endpoint = new URL(`${relayBase}/auth/instance-grants/redeem`);
     if (endpoint.protocol !== 'https:' && endpoint.hostname !== 'localhost' && endpoint.hostname !== '127.0.0.1') {
         throw new Error('PROPR_GH_RELAY_URL must use HTTPS');
     }
 
-    const response = await (options.fetchImpl ?? fetch)(endpoint, {
+    const response = await fetchImpl(endpoint, {
         method: 'POST',
         headers: {
             accept: 'application/json',
@@ -67,8 +69,24 @@ export async function redeemConnectAuthorizationCode(options: {
         throw new Error('ProPR Connect returned an invalid instance login response');
     }
 
+    const githubResponse = await fetchImpl(GITHUB_USER_URL, {
+        headers: {
+            accept: 'application/vnd.github+json',
+            authorization: `Bearer ${body.access_token}`,
+            'user-agent': 'ProPR',
+        },
+        signal: AbortSignal.timeout(CONNECT_REDEEM_TIMEOUT_MS),
+    });
+    if (!githubResponse.ok) {
+        throw new Error(`GitHub rejected the Connect access token (HTTP ${githubResponse.status})`);
+    }
+    const githubIdentity = await githubResponse.json() as unknown;
+    if (!isGitHubIdentity(githubIdentity)) {
+        throw new Error('GitHub returned an invalid user response for the Connect access token');
+    }
+
     return {
-        id: `connect:${body.username.toLowerCase()}`,
+        id: String(githubIdentity.id),
         login: body.username,
         username: body.username,
         displayName: body.username,
@@ -76,6 +94,12 @@ export async function redeemConnectAuthorizationCode(options: {
         avatarUrl: body.avatar_url,
         accessToken: body.access_token,
     };
+}
+
+function isGitHubIdentity(value: unknown): value is { id: number } {
+    if (typeof value !== 'object' || value === null) return false;
+    const id = (value as Record<string, unknown>).id;
+    return typeof id === 'number' && Number.isSafeInteger(id) && id > 0;
 }
 
 function isConfiguredValue(value: string | undefined): boolean {

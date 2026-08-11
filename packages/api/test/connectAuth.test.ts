@@ -40,13 +40,19 @@ test('Connect authorization URL carries the exact callback and CSRF state', () =
 });
 
 test('redeems a Connect code server-to-server without exposing the relay token in the body', async () => {
-  let request: Request | undefined;
+  let relayRequest: Request | undefined;
+  let githubRequest: Request | undefined;
   const user = await redeemConnectAuthorizationCode({
     code: 'pia_code',
     relayUrl: 'https://webhook.propr.dev/v1',
     relayToken: 'prt_relay_secret',
     fetchImpl: (async (input, init) => {
-      request = new Request(input, init);
+      const request = new Request(input, init);
+      if (request.url === 'https://api.github.com/user') {
+        githubRequest = request;
+        return Response.json({ id: 583231 });
+      }
+      relayRequest = request;
       return Response.json({
         username: 'octocat',
         avatar_url: 'https://avatar.test/1',
@@ -55,9 +61,11 @@ test('redeems a Connect code server-to-server without exposing the relay token i
     }) as typeof fetch,
   });
 
-  assert.equal(request?.url, 'https://webhook.propr.dev/v1/auth/instance-grants/redeem');
-  assert.equal(request?.headers.get('authorization'), 'Bearer prt_relay_secret');
-  assert.deepEqual(JSON.parse(await request!.text()), { code: 'pia_code' });
+  assert.equal(relayRequest?.url, 'https://webhook.propr.dev/v1/auth/instance-grants/redeem');
+  assert.equal(relayRequest?.headers.get('authorization'), 'Bearer prt_relay_secret');
+  assert.deepEqual(JSON.parse(await relayRequest!.text()), { code: 'pia_code' });
+  assert.equal(githubRequest?.headers.get('authorization'), 'Bearer gho_user_secret');
+  assert.equal(user.id, '583231');
   assert.equal(user.username, 'octocat');
   assert.equal(user.accessToken, 'gho_user_secret');
 });
