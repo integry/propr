@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-08-11
+
+### Added
+
+- **Managed Connect login**: hosted tunnel instances can authenticate through
+  the shared ProPR GitHub App without requiring users to create a separate
+  OAuth App, while preserving verified GitHub identity and redirect state.
+- **Guided agent validation**: setup prepares safe credential mounts, checks
+  selected agents from the worker image, and prints exact login/recovery
+  commands when an agent is not ready.
+
+### Changed
+
+- **Issue-driven Ultrafix**: an exact `ultrafix` label on a source issue now
+  starts Ultrafix automatically on its generated implementation PR.
+
+### Fixed
+
+- **Agent and E2E reliability**: bundled runtimes remain executable,
+  Antigravity initializes disposable state correctly, model-task failures are
+  surfaced, and configured task coverage is tracked deterministically.
+- **Review correctness**: emphasized scores are accepted and incomplete diff
+  coverage fails closed instead of producing an overconfident review.
+- **Safe runtime paths and logs**: model IDs cannot escape generated worktree
+  paths, credentials are redacted from worktree diagnostics, and setup rejects
+  unsafe agent credential mount paths before creating directories.
+- **Deployment defaults**: Compose Redis ports remain bound to loopback rather
+  than being exposed on public interfaces.
+
 ## [0.8.7] - 2026-08-09
 
 ### Added
@@ -196,6 +225,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.8]: https://github.com/integry/propr/releases/tag/v0.8.8
 [0.8.7]: https://github.com/integry/propr/releases/tag/v0.8.7
 [0.8.5]: https://github.com/integry/propr/releases/tag/v0.8.5
 [0.8.3]: https://github.com/integry/propr/releases/tag/v0.8.3
