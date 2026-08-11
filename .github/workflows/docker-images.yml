@@ -20,6 +20,11 @@ on:
         required: true
         default: 'propr'
         type: string
+      publish_ghcr:
+        description: 'Also publish to the optional GHCR mirror'
+        required: true
+        default: false
+        type: boolean
       push_latest:
         description: 'Also update the latest tags'
         required: true
@@ -49,6 +54,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -127,6 +133,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -171,6 +179,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -207,6 +217,7 @@ jobs:
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
+      PUBLISH_GHCR: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_ghcr }}
       PUSH_LATEST: 'false'
 
     steps:
@@ -219,6 +230,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -260,9 +272,11 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build GHCR-tagged images
+        if: env.PUBLISH_GHCR == 'true'
         run: ./scripts/build-images.sh --ghcr
 
       - name: Smoke test GHCR images
+        if: env.PUBLISH_GHCR == 'true'
         env:
           APP_TAG: ${{ env.GHCR_NS }}/propr-app:${{ steps.version.outputs.version }}
           UI_TAG: ${{ env.GHCR_NS }}/propr-ui:${{ steps.version.outputs.version }}
@@ -286,6 +300,7 @@ jobs:
         run: npm run images:smoke
 
       - name: Login to GHCR
+        if: env.PUBLISH_GHCR == 'true'
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -306,7 +321,12 @@ jobs:
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Stage, preflight, and publish smoke-tested images
-        run: ./scripts/build-images.sh --push-only
+        run: |
+          if [ "$PUBLISH_GHCR" = "true" ]; then
+            ./scripts/build-images.sh --push-only
+          else
+            ./scripts/build-images.sh --push-only --dockerhub
+          fi
 
       - name: Sync Docker Hub metadata
         continue-on-error: true
@@ -346,6 +366,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -428,6 +450,7 @@ jobs:
     env:
       GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
+      PUBLISH_GHCR: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_ghcr }}
 
     steps:
       - name: Prepare isolated Docker credentials
@@ -438,6 +461,8 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.expected_version) || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -446,6 +471,7 @@ jobs:
           package-manager-cache: false
 
       - name: Login to GHCR
+        if: env.PUBLISH_GHCR == 'true'
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -465,7 +491,12 @@ jobs:
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Promote release images to latest
-        run: ./scripts/build-images.sh --promote-latest
+        run: |
+          if [ "$PUBLISH_GHCR" = "true" ]; then
+            ./scripts/build-images.sh --promote-latest
+          else
+            ./scripts/build-images.sh --promote-latest --dockerhub
+          fi
 
       - name: Show latest-tag reconciliation guidance
         if: failure()
