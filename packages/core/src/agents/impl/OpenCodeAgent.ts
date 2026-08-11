@@ -8,7 +8,7 @@ import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwners
 import { resolveConfigPath } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, createLlmLogFromAgentExecution, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
-import { buildOpenCodeDockerArgs, buildOpenCodePrompt, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
+import { buildOpenCodeDockerArgs, buildOpenCodePrompt, evaluateOpenCodeAnalysis, parseOpenCodeJsonl, type OpenCodeDockerArgsParams, type ParsedOpenCodeOutput } from './openCodeUtils.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { isManagedAgentConfigPath } from '@propr/shared';
@@ -158,18 +158,16 @@ export class OpenCodeAgent implements Agent {
             );
             const executionTimeMs = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
-            const analysisText = (parsedOutput.summary || '').trim();
-
-            const modelUsed = parsedOutput.modelUsed || effectiveModel;
-            const success = !result.timedOut && result.exitCode === 0 && !parsedOutput.error && analysisText.length > 0;
-
-            const errorMsg = parsedOutput.error || result.stderr || 'No assistant text returned';
+            const analysis = evaluateOpenCodeAnalysis({
+                parsedOutput,
+                processResult: result,
+                effectiveModel,
+                executionTimeMs,
+            });
             if (!suppressLlmLog) {
-                await this.persistAnalysisLogSafely({ executionType, modelUsed, executionTimeMs, success, error: success ? undefined : errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
+                await this.persistAnalysisLogSafely({ executionType, modelUsed: analysis.modelUsed, executionTimeMs, success: analysis.success, error: analysis.success ? undefined : analysis.errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
             }
-            return success
-                ? { response: analysisText, modelUsed, executionTimeMs, success: true, sessionId: parsedOutput.sessionId, tokenUsage: parsedOutput.tokenUsage }
-                : { response: analysisText, modelUsed, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}`, tokenUsage: parsedOutput.tokenUsage };
+            return analysis.result;
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;

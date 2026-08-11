@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unsafe agent credential mount paths before creating directories.
 - **Deployment defaults**: Compose Redis ports remain bound to loopback rather
   than being exposed on public interfaces.
+- **Release validation**: workspace dependencies are built before package
+  typechecks, and agent runner code satisfies the release's zero-warning gate.
 
 ## [0.8.7] - 2026-08-09
 

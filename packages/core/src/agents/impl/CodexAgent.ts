@@ -3,12 +3,11 @@ import { execSync } from 'child_process';
 import logger from '../../utils/logger.js';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
-import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { buildCodexPrompt, parseCodexStreamOutput, storeCodexPromptInRedis } from '../../codex/codexHelpers.js';
 import {
     assertReasoningLevelCliVersionSupported,
-    loadModelReasoningLevel, resolveAgentModelReasoningLevel, resolveCodexReasoningLevel, resolveConfigPath, type CodexRuntimeReasoningLevel,
+    loadModelReasoningLevel, resolveAgentModelReasoningLevel, resolveCodexReasoningLevel, type CodexRuntimeReasoningLevel,
     type ModelReasoningLevel
 } from '../../config/configManager.js';
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
@@ -17,28 +16,13 @@ import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysi
 import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { resolveAgentTerminationReason } from '../termination.js';
-import { createContainerExecutionId } from './utils/containerExecutionId.js';
-import {
-    buildCodexRepositoryScoutArgs,
-    REPOSITORY_SCOUT_CONTAINER_ROOT,
-} from './utils/repositoryScoutMcpServer.js';
+import { buildCodexDockerArgs, type CodexDockerArgsParams } from './utils/codexDockerArgsBuilder.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
 
 const DEFAULT_CODEX_MAX_TURNS = 1000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
-
-// Container path for Codex config
-const CONTAINER_CONFIG_PATH = '/home/node/.codex';
-const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
-const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
-
-function isGitHubCredentialEnvironmentVariable(name: string): boolean {
-    const normalizedName = name.toUpperCase();
-    return GITHUB_CREDENTIAL_ENV_NAMES.has(normalizedName)
-        || GITHUB_CREDENTIAL_ENV_PATTERN.test(normalizedName);
-}
 
 type CodexExecutionOutput = Awaited<ReturnType<typeof executeDockerCommand>>;
 type CodexParsedOutput = ReturnType<typeof parseCodexStreamOutput>;
@@ -389,108 +373,7 @@ export class CodexAgent implements Agent {
     /**
      * Builds Docker arguments for running Codex in a container.
      */
-    private buildDockerArgs(params: {
-        worktreePath: string; githubToken: string; modelName?: string;
-        issueNumber: number; jsonOutput?: boolean; environment?: Record<string, string>;
-        taskId?: string; executionType?: string;
-        reasoningLevel?: CodexRuntimeReasoningLevel | '';
-        readOnlyWorkspace?: boolean;
-        repositoryInspection?: boolean;
-    }): string[] {
-        const {
-            worktreePath,
-            githubToken,
-            modelName,
-            issueNumber,
-            jsonOutput = true,
-            environment,
-            taskId,
-            executionType,
-            reasoningLevel,
-            readOnlyWorkspace = false,
-            repositoryInspection = false,
-        } = params;
-
-        if (repositoryInspection && !readOnlyWorkspace) {
-            throw new Error('Repository inspection requires a read-only workspace');
-        }
-
-        const dockerImage = this.config.dockerImage;
-        const configPath = resolveConfigPath(this.config.configPath);
-
-        // Inject any custom environment variables from config
-        const envVars: string[] = [];
-        if (this.config.envVars) {
-            for (const [key, value] of Object.entries(this.config.envVars)) {
-                if (repositoryInspection && isGitHubCredentialEnvironmentVariable(key)) continue;
-                envVars.push('-e', `${key}=${value}`);
-            }
-        }
-        if (environment) {
-            for (const [key, value] of Object.entries(environment)) {
-                if (repositoryInspection && isGitHubCredentialEnvironmentVariable(key)) continue;
-                envVars.push('-e', `${key}=${value}`);
-            }
-        }
-
-        // Generate human-readable container name
-        const shortTaskId = createContainerExecutionId(taskId);
-        const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
-        const containerName = `${this.config.alias || 'codex'}-${taskType}-${shortTaskId}`;
-
-        // Build Docker run arguments
-        // Note: Start as root so entrypoint can fix volume permissions, then drops to node user
-        // This matches the Claude agent pattern for consistent security handling
-        const dockerArgs: string[] = [
-            'run', '--rm',
-            '-i', // Allow stdin for piping prompt
-            '--name', containerName,
-            '--security-opt', 'no-new-privileges',
-            // Docker's default seccomp profile often blocks the namespace syscalls
-            // bubblewrap needs inside the container.
-            '--security-opt', 'seccomp=unconfined',
-            // Ubuntu/Debian hosts often apply an AppArmor profile that blocks
-            // the user namespace and mount operations bubblewrap needs.
-            '--security-opt', 'apparmor=unconfined',
-            '--cap-add', 'CHOWN',
-            '--network', 'bridge',
-            '--user', '0:0', // Start as root; entrypoint drops to node after permission fixes
-            '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-            ...(repositoryInspection ? [] : ['-v', `/tmp/git-processor:/tmp/git-processor:${readOnlyWorkspace ? 'ro' : 'rw'}`]),
-            '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-            ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
-            ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
-            ...envVars,
-            '-w', '/home/node/workspace',
-            dockerImage,
-            // Codex CLI arguments
-            'codex', 'exec',
-            '--ephemeral', // ProPR persists run output itself; do not pollute the user's resumable Codex sessions
-            ...(jsonOutput ? ['--json'] : []), // Output NDJSON events (for task execution) or plain text (for analysis)
-            ...(repositoryInspection
-                ? buildCodexRepositoryScoutArgs()
-                : [
-                    '--dangerously-bypass-approvals-and-sandbox', // Docker is the outer isolation boundary on this host
-                    '--config', 'features.multi_agent=false', // Nested Codex subagents fail under Docker on this host
-                ]),
-            ...(reasoningLevel ? ['--config', `model_reasoning_effort="${reasoningLevel}"`] : []),
-            '--skip-git-repo-check',     // Allow running outside git repos (for analysis workspace)
-            '--cd', '/home/node/workspace', // Set working directory
-            '-'                          // Read prompt from stdin
-        ];
-
-        // Add model if specified
-        if (modelName) {
-            // Strip agent prefix if present (e.g., "codex:gpt-5.4" -> "gpt-5.4")
-            const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
-            const codexIndex = dockerArgs.indexOf('codex');
-            dockerArgs.splice(codexIndex + 2, 0, '--model', cleanModelName);
-            logger.info({ issueNumber, requestedModel: cleanModelName, agentAlias: this.config.alias }, 'Using specific model for Codex agent execution');
-        } else {
-            logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Codex agent will use default');
-        }
-        logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Codex agent');
-
-        return wrapDockerRunArgsWithRepoSetup(dockerArgs, dockerImage, 'codex');
+    private buildDockerArgs(params: CodexDockerArgsParams): string[] {
+        return buildCodexDockerArgs(this.config, params);
     }
 }

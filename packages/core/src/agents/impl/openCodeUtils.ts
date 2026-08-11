@@ -4,7 +4,7 @@ import logger from '../../utils/logger.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../claude/prompts/promptGenerator.js';
-import type { AgentConfig } from '../types.js';
+import type { AgentConfig, AnalysisResult } from '../types.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
 import {
     buildOpenCodeRepositoryScoutConfig,
@@ -13,6 +13,7 @@ import {
 export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from './openCodeModelIds.js';
 export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput } from './openCodeParsing.js';
 export type { NormalizedOpenCodeUsage, OpenCodeEvent, OpenCodeUsage, ParsedOpenCodeOutput } from './openCodeParsing.js';
+import type { ParsedOpenCodeOutput } from './openCodeParsing.js';
 import { toOpenCodeExternalModelId } from './openCodeModelIds.js';
 
 const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
@@ -42,6 +43,38 @@ export interface OpenCodeDockerArgsParams {
     repositoryInspection?: boolean;
     dataPath?: string;
     ensureConfigPath?: (configPath: string) => void;
+}
+
+export function evaluateOpenCodeAnalysis(options: {
+    parsedOutput: ParsedOpenCodeOutput;
+    processResult: { timedOut?: boolean; exitCode: number | null; stderr?: string };
+    effectiveModel: string;
+    executionTimeMs: number;
+}): {
+    analysisText: string;
+    modelUsed: string;
+    success: boolean;
+    errorMsg: string;
+    result: AnalysisResult;
+} {
+    const { parsedOutput, processResult, effectiveModel, executionTimeMs } = options;
+    const analysisText = (parsedOutput.summary || '').trim();
+    const modelUsed = parsedOutput.modelUsed || effectiveModel;
+    const success = !processResult.timedOut
+        && processResult.exitCode === 0
+        && !parsedOutput.error
+        && analysisText.length > 0;
+    const errorMsg = parsedOutput.error || processResult.stderr || 'No assistant text returned';
+    const result: AnalysisResult = success
+        ? {
+            response: analysisText, modelUsed, executionTimeMs, success: true,
+            sessionId: parsedOutput.sessionId, tokenUsage: parsedOutput.tokenUsage,
+        }
+        : {
+            response: analysisText, modelUsed, executionTimeMs, success: false,
+            error: `Analysis failed: ${errorMsg}`, tokenUsage: parsedOutput.tokenUsage,
+        };
+    return { analysisText, modelUsed, success, errorMsg, result };
 }
 
 export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string {
