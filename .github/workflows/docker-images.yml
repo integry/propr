@@ -210,14 +210,12 @@ jobs:
             --expected-version "$PACKAGE_VERSION"
 
   build-smoke-and-push:
-    name: Build, Smoke Test, Push
+    name: Build, Smoke Test, and Push to Docker Hub
     needs: [validate-release, prepare-cli, preflight-cli]
     runs-on: [self-hosted, linux, x64, propr]
     timeout-minutes: 180
     env:
-      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
-      PUBLISH_GHCR: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_ghcr }}
       PUSH_LATEST: 'false'
 
     steps:
@@ -271,21 +269,6 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build GHCR-tagged images
-        if: env.PUBLISH_GHCR == 'true'
-        run: ./scripts/build-images.sh --ghcr
-
-      - name: Smoke test GHCR images
-        if: env.PUBLISH_GHCR == 'true'
-        env:
-          APP_TAG: ${{ env.GHCR_NS }}/propr-app:${{ steps.version.outputs.version }}
-          UI_TAG: ${{ env.GHCR_NS }}/propr-ui:${{ steps.version.outputs.version }}
-          DOCS_TAG: ${{ env.GHCR_NS }}/propr-docs:${{ steps.version.outputs.version }}
-          AGENT_TAG: ${{ env.GHCR_NS }}/propr-agent:${{ steps.version.outputs.version }}
-          LAUNCHER_TAG: ${{ env.GHCR_NS }}/propr-launcher:${{ steps.version.outputs.version }}
-          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
-        run: npm run images:smoke
-
       - name: Build Docker Hub-tagged images
         run: ./scripts/build-images.sh --dockerhub
 
@@ -298,15 +281,6 @@ jobs:
           LAUNCHER_TAG: ${{ env.DOCKERHUB_NS }}/launcher:${{ steps.version.outputs.version }}
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: npm run images:smoke
-
-      - name: Login to GHCR
-        if: env.PUBLISH_GHCR == 'true'
-        env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          TOKEN="${GHCR_TOKEN:-$GITHUB_TOKEN}"
-          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Login to Docker Hub
         env:
@@ -321,12 +295,7 @@ jobs:
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Stage, preflight, and publish smoke-tested images
-        run: |
-          if [ "$PUBLISH_GHCR" = "true" ]; then
-            ./scripts/build-images.sh --push-only
-          else
-            ./scripts/build-images.sh --push-only --dockerhub
-          fi
+        run: ./scripts/build-images.sh --push-only --dockerhub
 
       - name: Sync Docker Hub metadata
         continue-on-error: true
@@ -351,6 +320,100 @@ jobs:
           fi
           docker logout ghcr.io >/dev/null 2>&1 || true
           docker logout >/dev/null 2>&1 || true
+          rm -rf -- "$DOCKER_CONFIG"
+
+  publish-ghcr:
+    name: Publish optional GHCR mirror
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_ghcr
+    needs: [validate-release, build-smoke-and-push]
+    runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
+      PUSH_LATEST: 'false'
+
+    steps:
+      - name: Prepare isolated Docker credentials
+        run: |
+          docker_config="$RUNNER_TEMP/propr-docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-ghcr"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+          install -d -m 700 "$docker_config"
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: v${{ inputs.expected_version }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check toolchain
+        run: |
+          node --version
+          npm --version
+          docker version
+          docker buildx version
+
+      - name: Reverify manual release tag
+        env:
+          RELEASE_TAG: v${{ inputs.expected_version }}
+        run: |
+          TAG_COMMIT="$(git rev-list -n 1 "$RELEASE_TAG" 2>/dev/null || true)"
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          if [ -z "$TAG_COMMIT" ] || [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+            echo "$RELEASE_TAG must still exist and point to checked-out commit $HEAD_COMMIT" >&2
+            exit 1
+          fi
+
+      - name: Build GHCR-tagged images
+        run: ./scripts/build-images.sh --ghcr
+
+      - name: Smoke test GHCR images
+        env:
+          APP_TAG: ${{ env.GHCR_NS }}/propr-app:${{ needs.validate-release.outputs.version }}
+          UI_TAG: ${{ env.GHCR_NS }}/propr-ui:${{ needs.validate-release.outputs.version }}
+          DOCS_TAG: ${{ env.GHCR_NS }}/propr-docs:${{ needs.validate-release.outputs.version }}
+          AGENT_TAG: ${{ env.GHCR_NS }}/propr-agent:${{ needs.validate-release.outputs.version }}
+          LAUNCHER_TAG: ${{ env.GHCR_NS }}/propr-launcher:${{ needs.validate-release.outputs.version }}
+          EXPECTED_VERSION: ${{ needs.validate-release.outputs.version }}
+        run: npm run images:smoke
+
+      - name: Login to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          TOKEN="${GHCR_TOKEN:-$GITHUB_TOKEN}"
+          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Stage, preflight, and publish smoke-tested images to GHCR
+        run: ./scripts/build-images.sh --push-only --ghcr
+
+      - name: Show GHCR publication reconciliation guidance
+        if: failure()
+        run: |
+          echo "Optional GHCR publication did not finish. The primary Docker Hub release is unaffected." >&2
+          echo "### Optional GHCR reconciliation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run this workflow for the same immutable release tag with GHCR publication enabled to reconcile the optional mirror." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove isolated Docker credentials
+        if: always()
+        run: |
+          if [ -z "${RUNNER_TEMP:-}" ] || [[ "$DOCKER_CONFIG" != "$RUNNER_TEMP"/propr-docker-config-* ]]; then
+            echo "Refusing to clean unexpected DOCKER_CONFIG path: $DOCKER_CONFIG" >&2
+            exit 1
+          fi
+          docker logout ghcr.io >/dev/null 2>&1 || true
           rm -rf -- "$DOCKER_CONFIG"
 
   publish-cli:
@@ -439,7 +502,7 @@ jobs:
           fi
 
   promote-latest:
-    name: Promote latest images
+    name: Promote latest images on Docker Hub
     if: ${{ (github.event_name == 'push' && github.ref_type == 'tag') || inputs.push_latest }}
     needs: [validate-release, publish-github-release]
     runs-on: [self-hosted, linux, x64, propr]
@@ -448,9 +511,7 @@ jobs:
       contents: read
       packages: write
     env:
-      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
       DOCKERHUB_NS: ${{ github.event.inputs.dockerhub_namespace || 'propr' }}
-      PUBLISH_GHCR: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_ghcr }}
 
     steps:
       - name: Prepare isolated Docker credentials
@@ -470,15 +531,6 @@ jobs:
           node-version-file: '.nvmrc'
           package-manager-cache: false
 
-      - name: Login to GHCR
-        if: env.PUBLISH_GHCR == 'true'
-        env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          TOKEN="${GHCR_TOKEN:-$GITHUB_TOKEN}"
-          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
       - name: Login to Docker Hub
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -491,12 +543,7 @@ jobs:
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
 
       - name: Promote release images to latest
-        run: |
-          if [ "$PUBLISH_GHCR" = "true" ]; then
-            ./scripts/build-images.sh --promote-latest
-          else
-            ./scripts/build-images.sh --promote-latest --dockerhub
-          fi
+        run: ./scripts/build-images.sh --promote-latest --dockerhub
 
       - name: Show latest-tag reconciliation guidance
         if: failure()
@@ -514,4 +561,62 @@ jobs:
           fi
           docker logout ghcr.io >/dev/null 2>&1 || true
           docker logout >/dev/null 2>&1 || true
+          rm -rf -- "$DOCKER_CONFIG"
+
+  promote-latest-ghcr:
+    name: Promote latest images on optional GHCR mirror
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_ghcr && inputs.push_latest
+    needs: [publish-ghcr, promote-latest]
+    runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GHCR_NS: ${{ github.event.inputs.ghcr_namespace || 'ghcr.io/integry' }}
+
+    steps:
+      - name: Prepare isolated Docker credentials
+        run: |
+          docker_config="$RUNNER_TEMP/propr-docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-ghcr-latest"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+          install -d -m 700 "$docker_config"
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: v${{ inputs.expected_version }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          package-manager-cache: false
+
+      - name: Login to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          TOKEN="${GHCR_TOKEN:-$GITHUB_TOKEN}"
+          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Promote release images to latest on GHCR
+        run: ./scripts/build-images.sh --promote-latest --ghcr
+
+      - name: Show GHCR latest-tag reconciliation guidance
+        if: failure()
+        run: |
+          echo "Optional GHCR latest promotion failed. Docker Hub latest tags are unaffected." >&2
+          echo "### Optional GHCR latest-tag reconciliation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run this workflow for the same release tag with GHCR publication and latest promotion enabled to reconcile the optional mirror." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove isolated Docker credentials
+        if: always()
+        run: |
+          if [ -z "${RUNNER_TEMP:-}" ] || [[ "$DOCKER_CONFIG" != "$RUNNER_TEMP"/propr-docker-config-* ]]; then
+            echo "Refusing to clean unexpected DOCKER_CONFIG path: $DOCKER_CONFIG" >&2
+            exit 1
+          fi
+          docker logout ghcr.io >/dev/null 2>&1 || true
           rm -rf -- "$DOCKER_CONFIG"
