@@ -18,6 +18,7 @@ import {
 import { enableAutoMerge } from '../github/autoMergeOperations.js';
 import type { PostProcessingResult } from './issueJobHelpers.js';
 import { redisClient } from './issueJob/config.js';
+import { resolveImplementationPrUltrafixTrigger } from './implementationPrUltrafix.js';
 
 type Octokit = {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -285,14 +286,19 @@ export async function handleCreatedPlanIssuePR(options: {
         ? await resolveEffectiveUltrafixSettings(planIssue)
         : { runUltrafix: false, goal: null, maxCycles: null };
 
-    if (effectiveUltrafix.runUltrafix) {
+    const ultrafixTrigger = resolveImplementationPrUltrafixTrigger(
+        currentIssueData.data.labels,
+        effectiveUltrafix,
+    );
+
+    if (ultrafixTrigger) {
         try {
             await triggerSystemUltrafix({
                 owner: issueRef.repoOwner,
                 repo: issueRef.repoName,
                 prNumber,
-                goal: effectiveUltrafix.goal,
-                maxCycles: effectiveUltrafix.maxCycles,
+                goal: ultrafixTrigger.goal,
+                maxCycles: ultrafixTrigger.maxCycles,
                 correlatedLogger,
             });
         } catch (error) {
