@@ -87,6 +87,9 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Build workspace packages
+        run: npm run test:prepare
+
       - name: Run lint and typecheck gates
         run: |
           npm run lint -- --max-warnings 0
@@ -100,9 +103,6 @@ jobs:
           npm ci
           npm run typecheck
           npm run build
-
-      - name: Build test dependencies
-        run: npm run test:prepare
 
       - name: Start isolated Redis
         run: ./scripts/ci-redis.sh start

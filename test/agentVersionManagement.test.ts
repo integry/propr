@@ -150,10 +150,10 @@ describe('agent version management', () => {
 
     test('launches ownership-repairing agent entrypoints as root before dropping privileges', () => {
         const claudeDockerArgs = fs.readFileSync('packages/core/src/agents/impl/utils/dockerArgsBuilder.ts', 'utf8');
-        const codexAgent = fs.readFileSync('packages/core/src/agents/impl/CodexAgent.ts', 'utf8');
+        const codexDockerArgs = fs.readFileSync('packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts', 'utf8');
         const antigravityAgent = fs.readFileSync('packages/core/src/agents/impl/AntigravityAgent.ts', 'utf8');
 
-        for (const [name, source] of Object.entries({ claudeDockerArgs, codexAgent, antigravityAgent })) {
+        for (const [name, source] of Object.entries({ claudeDockerArgs, codexDockerArgs, antigravityAgent })) {
             assert.match(source, /'--cap-add', 'CHOWN'/, `${name} should grant CHOWN for mounted config repair`);
             assert.match(source, /'--user', '0:0'/, `${name} should start as root so the entrypoint can repair config ownership`);
         }
