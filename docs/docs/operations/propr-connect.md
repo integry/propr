@@ -136,9 +136,9 @@ Supported alternatives include:
 
 The hosted relay is the recommended default because it avoids inbound networking requirements and keeps GitHub App setup simpler.
 
-## Current Limitations
+## Hosted Instance Login
 
-Today, tunnel-based OAuth requires the local ProPR instance to use a callback URL that matches its per-instance proxy hostname, such as `https://t-<id>.propr.dev/api/auth/github/callback`; you must register the same URL in the GitHub OAuth App used by that stack. A centralized login flow is planned so the hosted UI can use one stable callback URL while still connecting users to the correct self-hosted instance.
+Tunnel-based browser login uses the shared ProPR GitHub App through Connect. The local API keeps the browser's CSRF state, Connect verifies that the signed-in GitHub user may access the tunnel's installation, and the instance redeems a short-lived one-use code with its installation-bound relay credential. The shared App secret never leaves Connect, and users do not create an OAuth App or register a per-instance callback.
 
 Tunnel provisioning is managed by ProPR Connect for Plus installations: Connect creates the Cloudflare Tunnel, shows the one-time connector token and setup command, and opens `app.propr.dev` with a validated `?tunnel=t-<id>.propr.dev` deep link. The setup command, configuration, and the handling of the live connector token are documented in [Hosted UI Tunnel](./hosted-ui-tunnel.md).
 

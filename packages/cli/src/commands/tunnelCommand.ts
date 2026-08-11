@@ -382,6 +382,7 @@ export interface TunnelSetupEnv {
   API_PUBLIC_URL: string;
   FRONTEND_URL: string;
   GH_OAUTH_CALLBACK_URL: string;
+  PROPR_WEB_AUTH_MODE: string;
 }
 
 export function validateTunnelCommandOptions(
@@ -457,6 +458,7 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
     API_PUBLIC_URL: publicUrl,
     FRONTEND_URL: DEFAULT_PROPR_UI_ORIGIN,
     GH_OAUTH_CALLBACK_URL: `${publicUrl}/api/auth/github/callback`,
+    PROPR_WEB_AUTH_MODE: "connect",
   };
 }
 

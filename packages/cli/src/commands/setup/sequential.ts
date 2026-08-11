@@ -440,7 +440,7 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
     async confirmAgentLogin({ candidates }): Promise<string[]> {
       return promptMultiSelect(io, paint, {
         title: "Authenticate agents through their images?",
-        detail: 'Log in inside each agent\'s Docker image; credentials are written to the mounted host directory. Blank or "none" skips.',
+        detail: 'Log in inside each agent\'s Docker image; setup then runs one live image connectivity check. Blank or "none" skips login, but still checks and prints exact recovery commands.',
         options: candidates.map((type) => ({ label: type, value: type })),
         defaultSelected: [],
       });

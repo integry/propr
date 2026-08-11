@@ -48,6 +48,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     applyEnvSelection: () => ({ written: [], skipped: [] }),
     clearEnvKeys: () => undefined,
     detectGithubAuthMode: () => APP_AUTH,
+    prepareAgentCredentialDir: () => undefined,
     pullImages: async () => ({ pulledCore: ["propr/api"], pulledAgents: [], failedCore: [], failedAgents: [] }),
     isStackRunning: async () => false,
     startStack: async () => undefined,
@@ -67,6 +68,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     addAgent: async () => undefined,
     loginableAgents: async () => [],
     loginAgent: async () => ({ available: false, success: false }),
+    validateAgents: async (_root, types) => types.map((type) => ({ type, status: "ok", detail: "connected" })),
     ...overrides,
   };
 }
@@ -173,6 +175,55 @@ test("pulls only core images plus the selected agents", async () => {
   assert.deepEqual(pulledAgentTypes, ["claude", "codex"]);
 });
 
+test("prepares an existing custom agent credential path before starting the stack", async () => {
+  const customCredentialDir = "/missing/custom/codex-credentials";
+  const prepared: string[] = [];
+  let started = false;
+
+  await runSetup({
+    root: "/stack",
+    prompts: { selectAgents: async () => ["codex"] },
+    actions: mockActions({
+      readEnvVars: () => ({
+        GITHUB_USER_WHITELIST: "alice,bob",
+        HOST_CODEX_DIR: customCredentialDir,
+      }),
+      prepareAgentCredentialDir: (path) => {
+        assert.equal(started, false, "credential path must be prepared before Docker starts");
+        prepared.push(path);
+      },
+      startStack: async () => {
+        started = true;
+      },
+    }),
+  });
+
+  assert.deepEqual(prepared, [customCredentialDir]);
+  assert.equal(started, true);
+});
+
+test("rejects unsafe agent credential paths before filesystem preparation", async () => {
+  const unsafePaths = ["relative/credentials", "/", "/tmp/credentials:rw", "/tmp/credentials\nother"];
+
+  for (const unsafePath of unsafePaths) {
+    let prepareCalled = false;
+    const result = await runSetup({
+      root: "/stack",
+      prompts: { selectAgents: async () => ["codex"] },
+      actions: mockActions({
+        readEnvVars: () => ({ HOST_CODEX_DIR: unsafePath }),
+        prepareAgentCredentialDir: () => {
+          prepareCalled = true;
+        },
+      }),
+    });
+
+    assert.equal(prepareCalled, false, `must not prepare unsafe path ${JSON.stringify(unsafePath)}`);
+    assert.equal(statusOf(result.state, "configure-agents"), "failed");
+    assert.match(getStep(result.state, "configure-agents")?.detail ?? "", /absolute, non-root Linux path/);
+  }
+});
+
 test("optional repo step can be skipped without failing the run", async () => {
   // No addRepository prompt at all → repo is skipped.
   const result = await runSetup({ root: "/stack", actions: mockActions() });
@@ -248,6 +299,22 @@ test("relay enrollment auto-selects a single installation and writes the relay v
     root: "/stack",
     prompts: relayPrompts(),
     actions: mockActions({
+      inspectStackInit: (rootDir) => ({
+        rootDir,
+        envExists: false,
+        dirs: { data: false, logs: false, repos: false },
+        initialized: false,
+      }),
+      scaffoldStack: async ({ root }) => ({
+        rootDir: root ?? "/stack",
+        envCreated: true,
+        envSkipped: false,
+        envBackedUp: false,
+        dirsCreated: ["data", "logs", "repos"],
+        detected: [],
+        credentialsAppended: false,
+        pendingCredentials: [],
+      }),
       hasGithubToken: () => true,
       fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org", "Organization")] }),
       enrollRelay: async ({ installationId }) => {
@@ -268,7 +335,31 @@ test("relay enrollment auto-selects a single installation and writes the relay v
     PROPR_GH_RELAY_URL: "https://relay/v1",
     PROPR_GH_RELAY_TOKEN: "prt_minted",
     GH_INSTALLATION_ID: "42",
+    PROPR_ADMIN_USERS: "octocat",
   });
+});
+
+test("relay enrollment does not seed an environment administrator on an existing stack", async () => {
+  let relayVars: Record<string, string> | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      // An existing stack can have durable administrators even after its
+      // PROPR_ADMIN_USERS bootstrap value has been removed.
+      readEnvVars: () => ({}),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      applyEnvSelection: (_root, vars) => {
+        if (vars.GH_AUTH_MODE === "relay") relayVars = vars;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(relayVars?.PROPR_ADMIN_USERS, undefined);
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /left administrators unchanged/);
 });
 
 test("relay enrollment asks the user to pick among multiple installations", async () => {

@@ -315,6 +315,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     applyEnvSelection: () => ({ written: [], skipped: [] }),
     clearEnvKeys: () => undefined,
     detectGithubAuthMode: () => ({ mode: "app", warnings: [] }),
+    prepareAgentCredentialDir: () => undefined,
     pullImages: async () => ({ pulledCore: ["propr/api"], pulledAgents: [], failedCore: [], failedAgents: [] }),
     isStackRunning: async () => false,
     startStack: async () => undefined,
@@ -334,6 +335,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     addAgent: async () => undefined,
     loginableAgents: async () => [],
     loginAgent: async () => ({ available: false, success: false }),
+    validateAgents: async (_root, types) => types.map((type) => ({ type, status: "ok", detail: "connected" })),
     ...overrides,
   };
 }

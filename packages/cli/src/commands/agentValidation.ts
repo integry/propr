@@ -402,6 +402,8 @@ export interface ValidateAgentsOptions {
   onProgress?: (message: string) => void;
   /** Fired as each agent cell (version/host/image) resolves, for live rendering. */
   onUpdate?: (agent: string, update: AgentCellUpdate) => void;
+  /** Skip the billable host invocation; setup uses the worker image as truth. */
+  skipHost?: boolean;
 }
 
 /** The agent types that would be validated for the given filter (for seeding a live view). */
@@ -518,6 +520,7 @@ export async function validateAgents(
   writeFileSync(promptFileHost, `${VALIDATION_PROMPT}\n`);
 
   const runHost = async (d: AgentValidationDescriptor): Promise<AgentCell | undefined> => {
+    if (options.skipHost) return undefined;
     if (!d.hostInvocation || !d.hostBin) return undefined;
     if (!commandExists(d.hostBin)) {
       return { status: "warn", detail: `${d.hostBin} not installed on host — skipped` };

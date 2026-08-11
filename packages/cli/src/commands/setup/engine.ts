@@ -31,9 +31,9 @@
  *   - Core images pull by default; the agent image pulls when an agent is selected.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import {
   resolveGithubEventIntakeMode,
   validateIntakeModePrerequisites,
@@ -73,6 +73,7 @@ import {
   type StackInitState,
 } from "./state.js";
 import type { SetupState, SetupStep, SetupStepId, SetupStepPatch } from "./types.js";
+import { localhostServiceUrl } from "../../utils/dockerPort.js";
 
 /**
  * Catalog of supported agents: the image each one needs and the host
@@ -104,6 +105,18 @@ function agentCatalog(): AgentDescriptor[] {
     },
     { type: "vibe", imageKey: "agent", credentials: [{ envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe") }] },
   ];
+}
+
+/** Reject unsafe Docker bind sources before any recursive filesystem write. */
+function assertSafeAgentCredentialDir(path: string, name = "Agent credential path"): void {
+  if (
+    !isAbsolute(path)
+    || normalize(path) === "/"
+    || path.includes(":")
+    || /[\u0000-\u001f\u007f-\u009f]/.test(path)
+  ) {
+    throw new Error(`${name} must be an absolute, non-root Linux path without ':' or control characters`);
+  }
 }
 
 /** Agent types whose default credential directory exists on this host. */
@@ -288,6 +301,8 @@ export interface SetupActions extends AgentSetupActions {
   /** Remove keys from `.env` entirely (used to clear a value, not blank it). */
   clearEnvKeys(rootDir: string, keys: string[]): void;
   detectGithubAuthMode(rootDir: string): GithubAuthModeResult;
+  /** Ensure a selected agent's host credential path is a directory, creating it securely when absent. */
+  prepareAgentCredentialDir(path: string): void;
   pullImages(params: PullImagesParams): Promise<PullImagesResult>;
   isStackRunning(rootDir: string): Promise<boolean>;
   startStack(params: StartStackParams): Promise<void>;
@@ -363,7 +378,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     const { getHostConfig } = await import("../../orchestrator/index.js");
     const { cfg } = await getHostConfig({ configManager, root: rootDir });
     const { createApiClient } = await import("../../api/client.js");
-    return createApiClient({ baseUrl: `http://localhost:${cfg.apiPort}` });
+    return createApiClient({ baseUrl: localhostServiceUrl(cfg.apiPort) });
   };
 
   return {
@@ -388,6 +403,10 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     applyEnvSelection,
     clearEnvKeys,
     detectGithubAuthMode,
+    prepareAgentCredentialDir(path) {
+      assertSafeAgentCredentialDir(path);
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+    },
     async pullImages({ rootDir, agentTypes, onLog }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
@@ -475,7 +494,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     async resolveUiUrl(rootDir) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { cfg } = await getHostConfig({ configManager, root: rootDir });
-      return `http://localhost:${cfg.uiPort}`;
+      return localhostServiceUrl(cfg.uiPort);
     },
     async openUrl(url) {
       // Open in the host's default browser with the platform launcher. Detached
@@ -555,6 +574,8 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   let checks: ChecksOutcome | undefined;
   /** Agents chosen at the pull step, reused when recording credentials. */
   let selectedAgents: string[] = [];
+  /** True only when setup scaffolded a previously bare stack root. */
+  let freshStackCreated = false;
   /**
    * Set when the user declines to start the stack. Starting and validating the
    * backend is the central goal of setup, so a declined start must not report
@@ -617,7 +638,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     try {
       // 2. Discover installations: auto-select the only one, pick among many,
       //    error when there are none.
-      const { installations } = await actions.fetchRelayInstallations({ relayUrl });
+      const { username, installations } = await actions.fetchRelayInstallations({ relayUrl });
       if (installations.length === 0) {
         return {
           note: {
@@ -640,6 +661,8 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       //    these keys). PROPR_DEMO_MODE=false ensures the new relay config isn't
       //    shadowed by a leftover demo flag (see detectGithubAuthMode).
       const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId });
+      const existingAdminUsers = (actions.readEnvVars(rootDir).PROPR_ADMIN_USERS ?? "").trim();
+      const seedBootstrapAdmin = freshStackCreated && !existingAdminUsers;
       actions.applyEnvSelection(
         rootDir,
         {
@@ -648,10 +671,23 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
           PROPR_GH_RELAY_URL: resolvedRelayUrl,
           PROPR_GH_RELAY_TOKEN: token,
           GH_INSTALLATION_ID: installationId,
+          // The relay identity was just authenticated by GitHub and owns this
+          // installation, so it is the safe bootstrap administrator on a fresh
+          // stack. Existing stacks may already have durable database-backed
+          // administrators, so a missing environment value is not evidence that
+          // setup may widen their authorization boundary.
+          ...(seedBootstrapAdmin ? { PROPR_ADMIN_USERS: username } : {}),
         },
         { overwrite: true }
       );
-      return { detail: `auth mode: relay (installation ${installationId})` };
+      const adminDetail = existingAdminUsers
+        ? "kept existing administrators"
+        : seedBootstrapAdmin
+          ? `bootstrap administrator: ${username}`
+          : "left administrators unchanged on existing stack";
+      return {
+        detail: `auth mode: relay (installation ${installationId}); ${adminDetail}`,
+      };
     } catch (error) {
       return {
         note: {
@@ -717,6 +753,9 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     // `.env` is always preserved — re-running setup never clobbers it.
     const reinitialize = !init.initialized || userChoseReinit;
     if (reinitialize) {
+      // Automatic administrator seeding is safe only when this root had none of
+      // the stack artifacts that could hold established state before setup.
+      const rootWasBare = !init.envExists && Object.values(init.dirs).every((exists) => !exists);
       // No `force`: scaffoldStack creates a fresh `.env` only when absent and
       // otherwise leaves the existing one in place.
       const result = await actions.scaffoldStack({ root: rootDir });
@@ -728,6 +767,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         rootDir = result.rootDir;
         state = { ...state, rootDir };
       }
+      freshStackCreated = rootWasBare && result.envCreated && !result.envBackedUp;
       const created = [...result.dirsCreated];
       settle("init-stack", {
         status: "done",
@@ -806,11 +846,20 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       });
     } else {
       const vars: Record<string, string> = {};
+      const existingEnv = actions.readEnvVars(rootDir);
       for (const type of selectedAgents) {
         const desc = catalog.find((a) => a.type === type);
         if (!desc) continue;
         for (const cred of desc.credentials) {
-          if (existsSync(cred.defaultDir)) vars[cred.envKey] = cred.defaultDir;
+          // A selected agent may not have logged in yet. Prepare its host mount
+          // before the stack starts so Docker never creates a root-owned path,
+          // and record it now so the post-login image validation sees exactly
+          // the mount the worker will use.
+          const configuredDir = existingEnv[cred.envKey];
+          const effectiveDir = configuredDir?.trim() ? configuredDir : cred.defaultDir;
+          assertSafeAgentCredentialDir(effectiveDir, cred.envKey);
+          actions.prepareAgentCredentialDir(effectiveDir);
+          vars[cred.envKey] = effectiveDir;
         }
       }
       const applied = actions.applyEnvSelection(rootDir, vars, { overwrite: false });
@@ -823,7 +872,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     settle("configure-agents", {
       status: "failed",
       detail: `could not record agent credentials: ${(error as Error).message}`,
-      nextAction: "Check write permissions on .env, then re-run setup.",
+      nextAction: "Correct invalid HOST_* credential paths and check write permissions on .env, then re-run setup.",
     });
     return finish();
   }
@@ -1044,12 +1093,16 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       if (outcome.alreadyConfigured.length > 0) parts.push(`${outcome.alreadyConfigured.length} already configured`);
       if (outcome.authenticated.length > 0) parts.push(`authenticated ${outcome.authenticated.join(", ")}`);
       if (outcome.authFailed.length > 0) parts.push(`${outcome.authFailed.length} login(s) did not complete`);
+      if (outcome.validated.length > 0) parts.push(`connectivity verified: ${outcome.validated.join(", ")}`);
+      if (outcome.validationFailed.length > 0) parts.push(`${outcome.validationFailed.length} connectivity check(s) need attention`);
       const detail = parts.length > 0 ? parts.join("; ") : "no changes needed";
-      if (outcome.errors.length > 0 || outcome.authFailed.length > 0) {
+      if (outcome.errors.length > 0 || outcome.authFailed.length > 0 || outcome.validationFailed.length > 0) {
         settle("enable-agents", {
           status: "warning",
           detail: outcome.errors.length > 0 ? `${detail}; ${outcome.errors.join("; ")}` : detail,
-          nextAction: "Enable or authenticate agents later in the UI or with `propr agent add` / `propr agent login`.",
+          nextAction: outcome.nextCommands.length > 0
+            ? `Run: ${outcome.nextCommands.map((command) => `\`${command}\``).join("; then ")}`
+            : "Enable or authenticate agents later in the UI or with `propr agent add` / `propr agent login`.",
         });
       } else {
         settle("enable-agents", { status: "done", detail });
