@@ -194,6 +194,7 @@ jobs:
             echo "Smoke-tested CLI tarball is missing" >&2
             exit 1
           fi
+          TARBALL="$(realpath "$TARBALL")"
           node scripts/reconcile-npm-artifact.mjs \
             --artifact "$TARBALL" \
             --expected-name propr-cli \
@@ -352,6 +353,7 @@ jobs:
             echo "Smoke-tested CLI tarball is missing" >&2
             exit 1
           fi
+          TARBALL="$(realpath "$TARBALL")"
           node scripts/reconcile-npm-artifact.mjs \
             --artifact "$TARBALL" \
             --expected-name propr-cli \
