@@ -119,6 +119,26 @@ function isSupportedLoopbackCallback(value: string | undefined): boolean {
   }
 }
 
+/** Mirror the launcher's effective local API origin when no callback is explicit. */
+function resolveEffectiveOAuthCallback(env: Record<string, string | undefined>): string | undefined {
+  if (env.GH_OAUTH_CALLBACK_URL?.trim()) return env.GH_OAUTH_CALLBACK_URL;
+
+  const configuredApiOrigin = env.API_PUBLIC_URL?.trim();
+  if (configuredApiOrigin) {
+    try {
+      return new URL("/api/auth/github/callback", configuredApiOrigin).toString();
+    } catch {
+      return undefined;
+    }
+  }
+
+  try {
+    return `${localhostServiceUrl(env.API_PORT || "4000")}/api/auth/github/callback`;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Catalog of supported agents: the image each one needs and the host
  * credential directories recorded into `.env` when it is selected. Mirrors
@@ -736,8 +756,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         normalizeServiceUrl(resolvedRelayUrl) === normalizeServiceUrl(DEFAULT_PROPR_GH_RELAY_URL) &&
         normalizeServiceUrl(existingEnv.PROPR_CONNECT_URL || "https://connect.propr.dev") ===
           "https://connect.propr.dev";
-      const callbackUrl = existingEnv.GH_OAUTH_CALLBACK_URL ||
-        "http://localhost:4000/api/auth/github/callback";
+      const callbackUrl = resolveEffectiveOAuthCallback(existingEnv);
       const automaticConnectApplies =
         managedTunnelEnabled ||
         (usesHostedConnect && isSupportedLoopbackCallback(callbackUrl));

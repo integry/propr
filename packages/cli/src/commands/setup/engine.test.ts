@@ -380,6 +380,36 @@ test("relay enrollment does not select Connect for a non-loopback off-tunnel cal
   assert.equal(env.PROPR_WEB_AUTH_MODE, undefined);
 });
 
+test("relay enrollment does not select Connect for an external API origin without an explicit callback", async () => {
+  const env: Record<string, string> = {
+    GITHUB_EVENT_INTAKE_MODE: "polling",
+    PROPR_UI_TUNNEL_ENABLED: "false",
+    API_PUBLIC_URL: "https://api.example.com",
+  };
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts({
+      configureGithubAuth: async () => ({
+        mode: "relay",
+        enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL },
+      }),
+    }),
+    actions: mockActions({
+      readEnvVars: () => ({ ...env }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => ({ relayUrl: DEFAULT_PROPR_GH_RELAY_URL, token: "prt_minted" }),
+      applyEnvSelection: (_root, vars) => {
+        Object.assign(env, vars);
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(env.PROPR_WEB_AUTH_MODE, undefined);
+});
+
 test("custom relay enrollment preserves an explicit browser auth mode", async () => {
   const env: Record<string, string> = {
     GITHUB_EVENT_INTAKE_MODE: "polling",
