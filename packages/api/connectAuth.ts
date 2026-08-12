@@ -1,4 +1,5 @@
 import type { GitHubUser } from './authTypes.js';
+import { DEFAULT_PROPR_GH_RELAY_URL } from '@propr/shared';
 
 export const DEFAULT_PROPR_CONNECT_ORIGIN = 'https://connect.propr.dev';
 const CONNECT_REDEEM_TIMEOUT_MS = 20_000;
@@ -13,12 +14,17 @@ export function resolveBrowserAuthMode(
     if (explicit === 'connect' || explicit === 'github' || explicit === 'disabled') return explicit;
 
     const hasRelay = Boolean(env.PROPR_GH_RELAY_URL?.trim() && env.PROPR_GH_RELAY_TOKEN?.trim());
+    const usesHostedConnect = hasRelay && isHostedConnectPath(env);
     const tunnelEnabled = env.PROPR_UI_TUNNEL_ENABLED?.trim().toLowerCase() === 'true';
+    // Preserve the established managed-tunnel behavior for operator-supplied
+    // relay/Connect endpoints. The hosted-service restriction applies only to
+    // the new automatic loopback path below.
     if (hasRelay && tunnelEnabled) return 'connect';
 
     if (isConfiguredValue(env.GH_OAUTH_CLIENT_ID) && isConfiguredValue(env.GH_OAUTH_CLIENT_SECRET)) {
         return 'github';
     }
+    if (usesHostedConnect && isSupportedLoopbackCallback(env.GH_OAUTH_CALLBACK_URL)) return 'connect';
     return 'disabled';
 }
 
@@ -26,6 +32,7 @@ export function buildConnectAuthorizationUrl(options: {
     connectOrigin?: string;
     callbackUrl: string;
     state: string;
+    installationId?: string;
 }): string {
     const origin = new URL(options.connectOrigin || DEFAULT_PROPR_CONNECT_ORIGIN);
     if (origin.protocol !== 'https:' || origin.username || origin.password || origin.search || origin.hash) {
@@ -34,6 +41,9 @@ export function buildConnectAuthorizationUrl(options: {
     const url = new URL('/instance-login', origin);
     url.searchParams.set('callback_url', options.callbackUrl);
     url.searchParams.set('state', options.state);
+    if (options.installationId?.trim()) {
+        url.searchParams.set('installation_id', options.installationId.trim());
+    }
     return url.toString();
 }
 
@@ -114,6 +124,45 @@ function isGitHubLogin(value: unknown): value is string {
 function isConfiguredValue(value: string | undefined): boolean {
     const normalized = value?.trim().toLowerCase();
     return Boolean(normalized && !normalized.startsWith('your_') && normalized !== 'changeme');
+}
+
+function isHostedConnectPath(env: NodeJS.ProcessEnv): boolean {
+    return (
+        normalizeServiceUrl(env.PROPR_GH_RELAY_URL) === normalizeServiceUrl(DEFAULT_PROPR_GH_RELAY_URL) &&
+        normalizeServiceUrl(env.PROPR_CONNECT_URL || DEFAULT_PROPR_CONNECT_ORIGIN) ===
+            normalizeServiceUrl(DEFAULT_PROPR_CONNECT_ORIGIN)
+    );
+}
+
+function normalizeServiceUrl(value: string | undefined): string | undefined {
+    try {
+        if (!value?.trim()) return undefined;
+        const url = new URL(value.trim());
+        if (url.username || url.password || url.search || url.hash) return undefined;
+        const path = url.pathname.replace(/\/+$/, '');
+        return `${url.origin}${path}`;
+    } catch {
+        return undefined;
+    }
+}
+
+function isSupportedLoopbackCallback(value: string | undefined): boolean {
+    try {
+        if (!value?.trim()) return false;
+        const url = new URL(value.trim());
+        const hostname = url.hostname.toLowerCase();
+        return (
+            url.protocol === 'http:' &&
+            (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]') &&
+            url.username === '' &&
+            url.password === '' &&
+            url.pathname === '/api/auth/github/callback' &&
+            url.search === '' &&
+            url.hash === ''
+        );
+    } catch {
+        return false;
+    }
 }
 
 function isRedeemedIdentity(value: unknown): value is {

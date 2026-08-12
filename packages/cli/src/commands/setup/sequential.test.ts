@@ -101,7 +101,7 @@ test("select: Demo mode is no longer offered as an auth choice", async () => {
   assert.doesNotMatch(io.lines.join("\n"), /demo/i, "the demo option is removed from the auth prompt");
 });
 
-test("select: on a fresh install Token relay leads and no keep option is shown", async () => {
+test("select: on a fresh install ProPR Connect leads and no keep option is shown", async () => {
   // current.mode "none" → nothing to keep, so options are Token relay(1), Custom
   // GitHub App(2); option 1 is the relay branch. The relay branch now asks only
   // for the relay URL (default hosted) and signals enrollment — no token entry;
@@ -115,7 +115,7 @@ test("select: on a fresh install Token relay leads and no keep option is shown",
   assert.doesNotMatch(io.lines.join("\n"), /keep current/i, "no keep option without an existing config");
 });
 
-test("select: Token relay accepts the hosted relay default on a blank URL", async () => {
+test("select: ProPR Connect accepts the hosted relay default on a blank URL", async () => {
   // Blank URL → the hosted ProPR relay default is used.
   const io = scriptedIo(["1", ""]);
   const decision = await buildSequentialPrompts(io).configureGithubAuth!({ current: { mode: "none", warnings: [] } });

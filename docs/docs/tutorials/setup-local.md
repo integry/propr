@@ -11,7 +11,7 @@ The end state: ProPR runs from the prebuilt images on your Linux workstation, th
 ## Prerequisites
 
 - A Linux `amd64` host that meets the [system requirements](./setup.md#system-requirements), including direct access to the Docker daemon and socket. Under Docker Desktop on macOS or Windows use the Compose-based [Source Development Setup](./setup-source.md); that path is outside the current release qualification.
-- GitHub access for the backend. By default ProPR uses the shared, hosted ProPR GitHub App through the token relay, and running your own GitHub App is the advanced alternative — see [GitHub Authentication](../operations/github-auth.md).
+- GitHub access for the backend. By default ProPR uses the shared, hosted ProPR GitHub App through Connect; install the GitHub CLI (`gh`) for setup's default browser login, or run `propr login <token>` first. Running your own GitHub App is the advanced alternative — see [GitHub Authentication](../operations/github-auth.md).
 - A provider account for at least one coding agent — reuse host credentials, run `propr agent login <agent>`, or log in directly while adding the agent in the Web UI
 - Node.js 22+ for the recommended CLI path (the launcher-container alternative needs no Node.js)
 - Reserve 20 GB of free disk for images, data, logs, and repository workspaces; allow more for large repositories and image upgrades
@@ -69,7 +69,7 @@ custom `npm config set prefix`) needs no `sudo`. Mixing the two can update a
 different copy of the CLI or leave root-owned files in a user-owned prefix.
 :::
 
-`propr setup` walks through every step interactively: it scaffolds `.env` + `data/ logs/ repos/`, detects the agent credentials you prepared above, pulls images, helps you choose a [GitHub auth mode](../operations/github-auth.md) and issue intake, starts the stack, configures the user whitelist, and can add a first repository and open the Web UI. When you pick **Token relay** at the auth step, it enrolls the shared App for you through [ProPR Connect](../operations/propr-connect.md) and writes the relay/routing credentials to `.env`, so no separate `propr relay enroll` is required. Setup is safe to re-run at any time: it skips already-satisfied steps and never overwrites existing configuration or data.
+`propr setup` walks through every step interactively: it scaffolds `.env` + `data/ logs/ repos/`, detects the agent credentials you prepared above, pulls images, enrolls the default hosted ProPR GitHub App through [ProPR Connect](../operations/propr-connect.md), starts the stack, restricts triggers to the authenticated GitHub user, and can add a first repository and open the Web UI. On a clean install, accepting the defaults performs the GitHub login and App-install handoff when needed, writes the relay/routing credentials to `.env`, and configures Connect for browser login at the local UI; no separate OAuth App or `propr relay enroll` command is required. Setup is safe to re-run at any time: it skips already-satisfied steps and never overwrites existing configuration or data.
 
 Over SSH or in terminals without raw-mode support, add `--no-tui` for line-by-line prompts. When stdin is a pipe or CI stream, setup cannot prompt — use the manual flow below instead.
 

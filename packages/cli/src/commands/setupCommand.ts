@@ -17,7 +17,9 @@
  */
 
 import { Command } from "commander";
+import { createInterface } from "node:readline/promises";
 import { createConfigManager } from "../config/index.js";
+import type { ConfigManager } from "../config/index.js";
 import { runSequentialSetup, SequentialSetupUnavailableError } from "./setup/sequential.js";
 
 export interface SetupCommandOptions {
@@ -39,6 +41,37 @@ export function canRenderInkSetup(
   stdout: { isTTY?: boolean } = process.stdout
 ): boolean {
   return Boolean(stdin.isTTY) && Boolean(stdout.isTTY) && typeof stdin.setRawMode === "function";
+}
+
+/**
+ * Authenticate before Ink enables terminal raw mode. Reuse an existing `gh`
+ * session silently; otherwise ask one default-Yes question and let `gh auth
+ * login` own the terminal. The setup engine can then enroll the default ProPR
+ * Connect path without asking the user to quit and rerun another command.
+ */
+async function prepareInkGithubLogin(configManager: ConfigManager, root?: string): Promise<void> {
+  const { detectGithubAuthMode, resolveSetupRoot } = await import("./setup/state.js");
+  const currentAuth = detectGithubAuthMode(resolveSetupRoot(configManager, root));
+  if (currentAuth.mode !== "none") return;
+  if (configManager.getGithubToken()) return;
+  const { loginWithGithubCli } = await import("../auth/githubLogin.js");
+  const reused = await loginWithGithubCli(configManager, { interactive: false });
+  if (reused.ok) return;
+
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  let answer = "";
+  try {
+    answer = await readline.question("Log in to GitHub for the default ProPR Connect setup? [Y/n] ");
+  } finally {
+    readline.close();
+  }
+  if (/^n(?:o)?$/i.test(answer.trim())) return;
+
+  const result = await loginWithGithubCli(configManager, {
+    interactive: true,
+    onLog: (line) => console.log(line),
+  });
+  if (!result.ok) console.warn(`GitHub login was not completed: ${result.message}`);
 }
 
 export function createSetupCommand(): Command {
@@ -74,6 +107,7 @@ cannot prompt and exits with guidance — scaffold non-interactively instead wit
         const useInk = options.tui !== false && canRenderInkSetup();
 
         if (useInk) {
+          await prepareInkGithubLogin(configManager, options.root);
           // Loaded dynamically so the sequential path never pulls in ink/react.
           const { renderSetupWizard } = await import("../tui/app.js");
           const result = await renderSetupWizard({

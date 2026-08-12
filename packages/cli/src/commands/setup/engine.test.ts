@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { runSetup, type SetupActions, type SetupPrompts } from "./engine.js";
 import type { ChecksOutcome } from "../checkCommands.js";
 import type { AuthorizedInstallation } from "../../api/relay.js";
-import type { GithubAuthModeResult } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthModeResult } from "@propr/shared";
 import { getStep } from "./state.js";
 import type { SetupState } from "./types.js";
 
@@ -44,7 +44,10 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
       throw new Error(`scaffoldStack must not run for an initialized stack (${root})`);
     },
     persistStackRoot: async () => undefined,
-    readEnvVars: () => ({ GITHUB_USER_WHITELIST: "alice,bob" }),
+    readEnvVars: () => ({
+      GITHUB_EVENT_INTAKE_MODE: "polling",
+      GITHUB_USER_WHITELIST: "alice,bob",
+    }),
     applyEnvSelection: () => ({ written: [], skipped: [] }),
     clearEnvKeys: () => undefined,
     detectGithubAuthMode: () => APP_AUTH,
@@ -185,6 +188,7 @@ test("prepares an existing custom agent credential path before starting the stac
     prompts: { selectAgents: async () => ["codex"] },
     actions: mockActions({
       readEnvVars: () => ({
+        GITHUB_EVENT_INTAKE_MODE: "polling",
         GITHUB_USER_WHITELIST: "alice,bob",
         HOST_CODEX_DIR: customCredentialDir,
       }),
@@ -270,14 +274,14 @@ test("a missing Docker daemon blocks the flow at the check step", async () => {
   assert.equal(result.completed, false);
 });
 
-test("missing GitHub auth surfaces a warning but does not abort", async () => {
+test("missing GitHub auth blocks startup instead of launching a broken stack", async () => {
   const result = await runSetup({
     root: "/stack",
     actions: mockActions({ detectGithubAuthMode: () => NO_AUTH }),
   });
-  assert.equal(statusOf(result.state, "github-auth"), "warning");
-  // The flow still reaches the end.
-  assert.notEqual(statusOf(result.state, "start-stack"), "pending");
+  assert.equal(statusOf(result.state, "github-auth"), "failed");
+  assert.equal(statusOf(result.state, "start-stack"), "pending");
+  assert.equal(result.completed, false);
 });
 
 // --- relay enrollment in the auth step --------------------------------------
@@ -297,7 +301,12 @@ test("relay enrollment auto-selects a single installation and writes the relay v
   let enrolledId: string | undefined;
   const result = await runSetup({
     root: "/stack",
-    prompts: relayPrompts(),
+    prompts: relayPrompts({
+      configureGithubAuth: async () => ({
+        mode: "relay",
+        enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL },
+      }),
+    }),
     actions: mockActions({
       inspectStackInit: (rootDir) => ({
         rootDir,
@@ -319,7 +328,7 @@ test("relay enrollment auto-selects a single installation and writes the relay v
       fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org", "Organization")] }),
       enrollRelay: async ({ installationId }) => {
         enrolledId = installationId;
-        return { relayUrl: "https://relay/v1", token: "prt_minted" };
+        return { relayUrl: DEFAULT_PROPR_GH_RELAY_URL, token: "prt_minted" };
       },
       applyEnvSelection: (_root, vars) => {
         if (vars.GH_AUTH_MODE === "relay") relayVars = vars;
@@ -332,11 +341,124 @@ test("relay enrollment auto-selects a single installation and writes the relay v
   assert.deepEqual(relayVars, {
     PROPR_DEMO_MODE: "false",
     GH_AUTH_MODE: "relay",
-    PROPR_GH_RELAY_URL: "https://relay/v1",
+    PROPR_GH_RELAY_URL: DEFAULT_PROPR_GH_RELAY_URL,
     PROPR_GH_RELAY_TOKEN: "prt_minted",
     GH_INSTALLATION_ID: "42",
+    PROPR_WEB_AUTH_MODE: "connect",
     PROPR_ADMIN_USERS: "octocat",
+    GITHUB_USER_WHITELIST: "octocat",
   });
+});
+
+test("relay enrollment does not select Connect for a non-loopback off-tunnel callback", async () => {
+  const env: Record<string, string> = {
+    GITHUB_EVENT_INTAKE_MODE: "polling",
+    PROPR_UI_TUNNEL_ENABLED: "false",
+    GH_OAUTH_CALLBACK_URL: "https://api.example.com/api/auth/github/callback",
+  };
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts({
+      configureGithubAuth: async () => ({
+        mode: "relay",
+        enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL },
+      }),
+    }),
+    actions: mockActions({
+      readEnvVars: () => ({ ...env }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => ({ relayUrl: DEFAULT_PROPR_GH_RELAY_URL, token: "prt_minted" }),
+      applyEnvSelection: (_root, vars) => {
+        Object.assign(env, vars);
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(env.PROPR_WEB_AUTH_MODE, undefined);
+});
+
+test("custom relay enrollment preserves an explicit browser auth mode", async () => {
+  const env: Record<string, string> = {
+    GITHUB_EVENT_INTAKE_MODE: "polling",
+    PROPR_UI_TUNNEL_ENABLED: "false",
+    PROPR_WEB_AUTH_MODE: "disabled",
+    GH_OAUTH_CALLBACK_URL: "http://localhost:4000/api/auth/github/callback",
+  };
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      readEnvVars: () => ({ ...env }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => ({ relayUrl: "https://relay.example.com/v1", token: "prt_minted" }),
+      applyEnvSelection: (_root, vars) => {
+        Object.assign(env, vars);
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(env.PROPR_WEB_AUTH_MODE, "disabled");
+});
+
+test("managed tunnel enrollment preserves Connect for a custom relay", async () => {
+  const env: Record<string, string> = {
+    GITHUB_EVENT_INTAKE_MODE: "routing_websocket",
+    PROPR_UI_TUNNEL_ENABLED: "true",
+    GH_OAUTH_CALLBACK_URL: "https://t-example.propr.dev/api/auth/github/callback",
+  };
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      readEnvVars: () => ({ ...env }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => ({ relayUrl: "https://relay.example.com/v1", token: "prt_minted" }),
+      applyEnvSelection: (_root, vars) => {
+        Object.assign(env, vars);
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(env.PROPR_WEB_AUTH_MODE, "connect");
+});
+
+test("relay enrollment preserves custom GitHub browser OAuth off-tunnel", async () => {
+  const env: Record<string, string> = {
+    GITHUB_EVENT_INTAKE_MODE: "polling",
+    PROPR_UI_TUNNEL_ENABLED: "false",
+    GH_OAUTH_CLIENT_ID: "real-client-id",
+    GH_OAUTH_CLIENT_SECRET: "real-client-secret",
+  };
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      readEnvVars: () => ({ ...env }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => ({ relayUrl: "https://relay/v1", token: "prt_minted" }),
+      applyEnvSelection: (_root, vars) => {
+        Object.assign(env, vars);
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(env.PROPR_WEB_AUTH_MODE, undefined);
+  assert.equal(env.GH_OAUTH_CLIENT_ID, "real-client-id");
+  assert.equal(env.GH_OAUTH_CLIENT_SECRET, "real-client-secret");
+  assert.equal(env.GH_AUTH_MODE, "relay");
+  assert.equal(env.PROPR_GH_RELAY_TOKEN, "prt_minted");
 });
 
 test("relay enrollment does not seed an environment administrator on an existing stack", async () => {
@@ -415,7 +537,69 @@ test("relay enrollment offers an interactive login when no token, then enrolls",
   assert.equal(statusOf(result.state, "github-auth"), "done");
 });
 
-test("relay enrollment without a token (and no login hook) warns and writes nothing", async () => {
+test("default Connect setup opens the ProPR App install page and retries discovery", async () => {
+  const opened: string[] = [];
+  let discoveryCalls = 0;
+  let enrolledId: string | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts({
+      configureGithubAuth: async () => ({
+        mode: "relay",
+        enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL },
+      }),
+      confirmGithubAppInstall: async () => true,
+      confirmGithubAppInstalled: async () => true,
+    }),
+    actions: mockActions({
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => {
+        discoveryCalls += 1;
+        return {
+          username: "octocat",
+          installations: discoveryCalls === 1 ? [] : [inst(42, "octo-org")],
+        };
+      },
+      openUrl: async (url) => { opened.push(url); },
+      enrollRelay: async ({ installationId }) => {
+        enrolledId = installationId;
+        return { relayUrl: "https://relay/v1", token: "prt_z" };
+      },
+    }),
+  });
+
+  assert.deepEqual(opened, ["https://github.com/apps/propr-dev/installations/new"]);
+  assert.equal(discoveryCalls, 2);
+  assert.equal(enrolledId, "42");
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+});
+
+test("a custom relay without installations does not offer the hosted ProPR App", async () => {
+  let installPrompted = false;
+  const opened: string[] = [];
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts({
+      confirmGithubAppInstall: async () => {
+        installPrompted = true;
+        return true;
+      },
+    }),
+    actions: mockActions({
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [] }),
+      openUrl: async (url) => { opened.push(url); },
+    }),
+  });
+
+  assert.equal(installPrompted, false);
+  assert.deepEqual(opened, []);
+  assert.equal(statusOf(result.state, "github-auth"), "failed");
+  assert.match(getStep(result.state, "github-auth")?.nextAction ?? "", /administrator of https:\/\/relay\/v1/);
+  assert.doesNotMatch(getStep(result.state, "github-auth")?.nextAction ?? "", /github\.com\/apps\/propr-dev/);
+});
+
+test("relay enrollment without a token (and no login hook) blocks startup and writes nothing", async () => {
   let relayWritten = false;
   const result = await runSetup({
     root: "/stack",
@@ -429,14 +613,13 @@ test("relay enrollment without a token (and no login hook) warns and writes noth
       },
     }),
   });
-  assert.equal(statusOf(result.state, "github-auth"), "warning");
+  assert.equal(statusOf(result.state, "github-auth"), "failed");
   assert.match(getStep(result.state, "github-auth")?.detail ?? "", /not logged in/);
   assert.equal(relayWritten, false, "no partial relay config is written without a token");
-  // The run is not aborted by the warning.
-  assert.notEqual(statusOf(result.state, "start-stack"), "pending");
+  assert.equal(statusOf(result.state, "start-stack"), "pending");
 });
 
-test("a relay enrollment failure is a warning and the run still proceeds", async () => {
+test("a relay enrollment failure blocks startup", async () => {
   const result = await runSetup({
     root: "/stack",
     prompts: relayPrompts(),
@@ -448,20 +631,25 @@ test("a relay enrollment failure is a warning and the run still proceeds", async
       },
     }),
   });
-  assert.equal(statusOf(result.state, "github-auth"), "warning");
+  assert.equal(statusOf(result.state, "github-auth"), "failed");
   assert.match(getStep(result.state, "github-auth")?.detail ?? "", /relay enrollment failed/);
-  assert.notEqual(statusOf(result.state, "start-stack"), "pending");
+  assert.equal(statusOf(result.state, "start-stack"), "pending");
 });
 
-test("an unhealthy backend after startup is reported as a warning", async () => {
+test("an unhealthy backend fails setup and does not launch the UI", async () => {
+  let uiPrompted = false;
   const result = await runSetup({
     root: "/stack",
+    prompts: { launchUi: async () => { uiPrompted = true; return true; } },
     actions: mockActions({
       isStackRunning: async () => false,
       checkBackendHealth: async () => ({ healthy: false, detail: "backend not healthy within 60s" }),
     }),
   });
-  assert.equal(statusOf(result.state, "start-stack"), "warning");
+  assert.equal(statusOf(result.state, "start-stack"), "failed");
+  assert.equal(statusOf(result.state, "launch-ui"), "skipped");
+  assert.equal(uiPrompted, false);
+  assert.equal(result.completed, false);
 });
 
 test("an already-running stack is reused, not restarted", async () => {
@@ -533,7 +721,7 @@ test("an empty webhook secret is rejected without writing intake .env", async ()
   assert.equal(result.completed, true, "a rejected secret is non-blocking");
 });
 
-test("routing_websocket without relay auth warns with a prerequisite hint", async () => {
+test("routing_websocket without relay auth blocks startup with a prerequisite hint", async () => {
   // The relay routing default only works with relay auth + a relay token. App
   // auth selecting it must surface the gap here, not at backend boot.
   const result = await runSetup({
@@ -545,7 +733,7 @@ test("routing_websocket without relay auth warns with a prerequisite hint", asyn
     }),
   });
 
-  assert.equal(statusOf(result.state, "intake"), "warning");
+  assert.equal(statusOf(result.state, "intake"), "failed");
   assert.match(getStep(result.state, "intake")?.detail ?? "", /relay/i);
   assert.match(getStep(result.state, "intake")?.nextAction ?? "", /relay enroll|polling/);
 });

@@ -953,12 +953,16 @@ export function buildServiceSpec(cfg, service) {
         case 'ui': {
             // The UI image's docker-entrypoint.sh rewrites public/config.js from
             // PROPR_UI_PUBLIC_API_URL so one prebuilt bundle can point at any
-            // per-instance proxy. Pass the tunnel base URL through unchanged — the
-            // UI appends /api/... to it for REST and uses /socket.io/ for Socket.IO,
-            // so the value must be the bare proxy origin (no /api suffix). Only set
-            // it when known; an unset value keeps the same-origin local default.
-            const uiArgs = ['-p', `${cfg.uiPort}:5173`];
-            if (cfg.uiPublicApiUrl) uiArgs.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
+            // browser-visible API origin. A production UI container has no Vite
+            // development proxy: leaving this unset makes /api requests hit the UI
+            // server and its SPA fallback returns index.html. Prefer the managed
+            // tunnel URL when present; otherwise inject API_PUBLIC_URL (localhost
+            // by default, or the operator's explicit public API URL).
+            const uiApiBaseUrl = cfg.uiPublicApiUrl || cfg.apiPublicUrl;
+            const uiArgs = [
+                '-p', `${cfg.uiPort}:5173`,
+                '-e', `PROPR_UI_PUBLIC_API_URL=${uiApiBaseUrl}`,
+            ];
             return { image: cfg.images.ui, args: uiArgs };
         }
         case 'docs':

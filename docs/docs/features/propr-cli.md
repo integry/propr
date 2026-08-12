@@ -62,7 +62,7 @@ Running bare `propr` performs the same environment checks as `propr check` (incl
 
 If you use a vendor-provided shared GitHub App instead of registering your own, the stack fetches short-lived installation tokens from a relay. See [ProPR Connect](../operations/propr-connect.md) for the hosted bridge behind the shared App, routing WebSocket, relay tokens, and managed UI tunnels; see [GitHub Authentication](../operations/github-auth.md) for the token configuration details.
 
-**The easiest path is `propr setup`:** choose **Token relay** at the GitHub-authentication step and it enrolls for you — it reuses your `propr login` token, discovers your installation (auto-selecting when there is exactly one, prompting when there are several), mints the relay token, and writes `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, and `GH_INSTALLATION_ID` to the stack `.env`. If you are not logged in yet, the line-by-line wizard offers to run `propr login` first. No separate enroll step is needed.
+**The easiest path is `propr setup`:** accept **ProPR Connect (default ProPR GitHub App)** and setup logs in through the GitHub CLI when needed, offers to install the official App when none is available, discovers the installation, mints the relay token, and writes the relay, routing, and Connect browser-login settings to the stack `.env`. A fresh stack also uses the verified GitHub user as its initial administrator and trigger whitelist. No separate OAuth App or enroll command is needed.
 
 To manage relay tokens directly — or to enroll outside the wizard — use `propr relay`. Run these from the initialized stack directory (the one holding `.env`), so the token is written to the right `.env`:
 
