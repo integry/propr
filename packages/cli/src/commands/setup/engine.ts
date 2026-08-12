@@ -646,7 +646,9 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       // 2. Discover installations: auto-select the only one, pick among many,
       //    error when there are none.
       let { username, installations } = await actions.fetchRelayInstallations({ relayUrl });
-      if (installations.length === 0 && prompts.confirmGithubAppInstall) {
+      const usingHostedRelay =
+        relayUrl.replace(/\/+$/, "") === DEFAULT_PROPR_GH_RELAY_URL.replace(/\/+$/, "");
+      if (installations.length === 0 && usingHostedRelay && prompts.confirmGithubAppInstall) {
         const installUrl = DEFAULT_PROPR_GITHUB_APP_INSTALL_URL;
         if (await prompts.confirmGithubAppInstall({ url: installUrl })) {
           await actions.openUrl(installUrl);
@@ -662,7 +664,9 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         return {
           note: {
             detail: "relay not enrolled — no GitHub App installation available",
-            nextAction: `Install the default ProPR GitHub App at ${DEFAULT_PROPR_GITHUB_APP_INSTALL_URL}, then re-run setup.`,
+            nextAction: usingHostedRelay
+              ? `Install the default ProPR GitHub App at ${DEFAULT_PROPR_GITHUB_APP_INSTALL_URL}, then re-run setup.`
+              : `Ask the administrator of ${relayUrl} for that relay's GitHub App installation URL, install it, then re-run setup.`,
           },
         };
       }

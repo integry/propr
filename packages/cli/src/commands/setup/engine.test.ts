@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { runSetup, type SetupActions, type SetupPrompts } from "./engine.js";
 import type { ChecksOutcome } from "../checkCommands.js";
 import type { AuthorizedInstallation } from "../../api/relay.js";
-import type { GithubAuthModeResult } from "@propr/shared";
+import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthModeResult } from "@propr/shared";
 import { getStep } from "./state.js";
 import type { SetupState } from "./types.js";
 
@@ -458,6 +458,10 @@ test("default Connect setup opens the ProPR App install page and retries discove
   const result = await runSetup({
     root: "/stack",
     prompts: relayPrompts({
+      configureGithubAuth: async () => ({
+        mode: "relay",
+        enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL },
+      }),
       confirmGithubAppInstall: async () => true,
       confirmGithubAppInstalled: async () => true,
     }),
@@ -482,6 +486,31 @@ test("default Connect setup opens the ProPR App install page and retries discove
   assert.equal(discoveryCalls, 2);
   assert.equal(enrolledId, "42");
   assert.equal(statusOf(result.state, "github-auth"), "done");
+});
+
+test("a custom relay without installations does not offer the hosted ProPR App", async () => {
+  let installPrompted = false;
+  const opened: string[] = [];
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts({
+      confirmGithubAppInstall: async () => {
+        installPrompted = true;
+        return true;
+      },
+    }),
+    actions: mockActions({
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [] }),
+      openUrl: async (url) => { opened.push(url); },
+    }),
+  });
+
+  assert.equal(installPrompted, false);
+  assert.deepEqual(opened, []);
+  assert.equal(statusOf(result.state, "github-auth"), "failed");
+  assert.match(getStep(result.state, "github-auth")?.nextAction ?? "", /administrator of https:\/\/relay\/v1/);
+  assert.doesNotMatch(getStep(result.state, "github-auth")?.nextAction ?? "", /github\.com\/apps\/propr-dev/);
 });
 
 test("relay enrollment without a token (and no login hook) blocks startup and writes nothing", async () => {
