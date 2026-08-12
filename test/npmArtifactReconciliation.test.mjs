@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import { gzipSync } from "node:zlib";
 import {
   classifyPublishedArtifact,
   inspectNpmArtifact,
   isNpmNotFoundError,
+  resolveNpmPublishArtifactPath,
   validateNpmArtifactIdentity,
 } from "../scripts/lib/npm-artifact-reconciliation.mjs";
 
@@ -81,6 +82,18 @@ describe("npm release artifact reconciliation", () => {
     assert.throws(
       () => classifyPublishedArtifact("sha512-local", "sha512-other"),
       /already exists with different package contents/,
+    );
+  });
+
+  test("makes relative npm publish paths unambiguously local", () => {
+    const cwd = "/tmp/propr-release";
+    assert.equal(
+      resolveNpmPublishArtifactPath("release-artifacts/propr-cli-1.2.3.tgz", cwd),
+      resolve(cwd, "release-artifacts/propr-cli-1.2.3.tgz"),
+    );
+    assert.equal(
+      resolveNpmPublishArtifactPath("/tmp/propr-cli-1.2.3.tgz", cwd),
+      "/tmp/propr-cli-1.2.3.tgz",
     );
   });
 
