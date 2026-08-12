@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { VibeAgent } from '../src/agents/impl/VibeAgent.js';
+import { resolveDefaultAgentCpuLimit } from '../src/agents/agentContainerResources.js';
 import { splitVibeCliArgs, writeVibePromptFile } from '../src/agents/impl/utils/vibeAgentHelpers.js';
 import { db } from '../src/db/connection.js';
 import type { AgentConfig } from '../src/agents/types.js';
@@ -73,7 +74,7 @@ test('Vibe Docker args use supported default CLI invocation', () => {
     assert.equal(args[networkIndex + 1], 'bridge');
     assert.deepEqual(args.slice(1, 9), [
         '--memory', '6g', '--memory-swap', '6g',
-        '--cpus', '4', '--pids-limit', '512'
+        '--cpus', resolveDefaultAgentCpuLimit(), '--pids-limit', '512'
     ]);
 });
 

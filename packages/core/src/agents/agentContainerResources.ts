@@ -1,5 +1,8 @@
+import { availableParallelism } from 'node:os';
+
 const DEFAULT_MEMORY_LIMIT = '6g';
-const DEFAULT_CPU_LIMIT = '4';
+const DEFAULT_CPU_LIMIT_CEILING = 4;
+const DEFAULT_CPU_LIMIT_FALLBACK = 1;
 const DEFAULT_PIDS_LIMIT = '512';
 const MIN_MEMORY_LIMIT_BYTES = 6n * 1024n * 1024n;
 const MIN_CPU_LIMIT = 0.01;
@@ -54,6 +57,22 @@ function validateCpuLimit(value: string): string {
     return value;
 }
 
+/**
+ * Keep the default agent quota within the CPUs actually available to the worker.
+ *
+ * The normal deployment runs the worker against the same host Docker daemon, so
+ * Node's cgroup-aware availableParallelism() reflects the capacity Docker will
+ * accept. An explicit AGENT_CONTAINER_CPU_LIMIT remains authoritative. The
+ * conservative one-CPU fallback prevents a failed probe from recreating the
+ * original failure mode (asking a small Docker host for four CPUs).
+ */
+export function resolveDefaultAgentCpuLimit(detectedCapacity: number = availableParallelism()): string {
+    if (!Number.isSafeInteger(detectedCapacity) || detectedCapacity < 1) {
+        return String(DEFAULT_CPU_LIMIT_FALLBACK);
+    }
+    return String(Math.min(DEFAULT_CPU_LIMIT_CEILING, detectedCapacity));
+}
+
 function validatePidsLimit(value: string): string {
     if (!POSITIVE_INTEGER_PATTERN.test(value) || !Number.isSafeInteger(Number(value))) {
         throw new Error(`AGENT_CONTAINER_PIDS_LIMIT must be a positive integer, got: ${value}`);
@@ -70,10 +89,14 @@ function validatePidsLimit(value: string): string {
  * before Docker starts instead of silently leaving a container unbounded.
  */
 export function buildAgentContainerResourceArgs(
-    environment: AgentContainerResourceEnvironment = process.env
+    environment: AgentContainerResourceEnvironment = process.env,
+    detectedCpuCapacity?: number,
 ): string[] {
     const memory = validateMemoryLimit(configuredValue(environment.AGENT_CONTAINER_MEMORY_LIMIT, DEFAULT_MEMORY_LIMIT));
-    const cpus = validateCpuLimit(configuredValue(environment.AGENT_CONTAINER_CPU_LIMIT, DEFAULT_CPU_LIMIT));
+    const cpus = validateCpuLimit(configuredValue(
+        environment.AGENT_CONTAINER_CPU_LIMIT,
+        resolveDefaultAgentCpuLimit(detectedCpuCapacity),
+    ));
     const pids = validatePidsLimit(configuredValue(environment.AGENT_CONTAINER_PIDS_LIMIT, DEFAULT_PIDS_LIMIT));
 
     return [
