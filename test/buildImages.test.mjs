@@ -383,47 +383,29 @@ describe('build-images publication reconciliation', () => {
     assert.equal(readState(root).digests[latestRef], DIGEST_B);
   });
 
-  test('restores an earlier registry when a later latest promotion fails', () => {
-    const ghcrRepository = 'registry.example/ghcr/propr-app';
+  test('uses Docker Hub as the sole default latest-promotion registry', () => {
     const dockerLatest = `${IMAGE_REPOSITORY}:latest`;
-    const ghcrLatest = `${ghcrRepository}:latest`;
     const root = createFixture({
       [`${IMAGE_REPOSITORY}:1.2.3`]: DIGEST_A,
       [`${IMAGE_REPOSITORY}:${FULL_SHA}`]: DIGEST_A,
       [dockerLatest]: DIGEST_B,
-      [`${ghcrRepository}:1.2.3`]: DIGEST_A,
-      [`${ghcrRepository}:${FULL_SHA}`]: DIGEST_A,
-      [ghcrLatest]: DIGEST_B,
     });
-    const result = runBuild(root, ['--promote-latest', '--only', 'app'], {
-      FAIL_CREATE_REF: ghcrLatest,
-      GHCR_NS: 'registry.example/ghcr',
-    });
+    const result = runBuild(root, ['--promote-latest', '--only', 'app']);
 
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /restoring previously published latest tags/);
-    assert.equal(readState(root).digests[dockerLatest], DIGEST_B);
-    assert.equal(readState(root).digests[ghcrLatest], DIGEST_B);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readState(root).digests[dockerLatest], DIGEST_A);
+    assert.equal(
+      readDockerLog(root).some(args => args.some(arg => String(arg).includes('ghcr'))),
+      false,
+    );
   });
 
-  test('reports a non-atomic result when rollback cannot remove a newly created latest tag', () => {
-    const ghcrRepository = 'registry.example/ghcr/propr-app';
-    const dockerLatest = `${IMAGE_REPOSITORY}:latest`;
-    const ghcrLatest = `${ghcrRepository}:latest`;
-    const root = createFixture({
-      [`${IMAGE_REPOSITORY}:1.2.3`]: DIGEST_A,
-      [`${IMAGE_REPOSITORY}:${FULL_SHA}`]: DIGEST_A,
-      [`${ghcrRepository}:1.2.3`]: DIGEST_A,
-      [`${ghcrRepository}:${FULL_SHA}`]: DIGEST_A,
-    });
-    const result = runBuild(root, ['--promote-latest', '--only', 'app'], {
-      FAIL_CREATE_REF: ghcrLatest,
-      GHCR_NS: 'registry.example/ghcr',
-    });
+  test('rejects the removed GHCR selector before invoking Docker', () => {
+    const root = createFixture();
+    const result = runBuild(root, ['--push', '--ghcr', '--only', 'app']);
 
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /NON-ATOMIC PROMOTION/);
-    assert.match(result.stderr, /registry-side reconciliation is required/);
-    assert.equal(readState(root).digests[dockerLatest], DIGEST_A);
+    assert.match(result.stderr, /GHCR publishing is no longer supported/);
+    assert.deepEqual(readDockerLog(root), []);
   });
 });

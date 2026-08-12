@@ -3,11 +3,10 @@
 #
 # Usage:
 #   scripts/build-images.sh                    # build all images, no push
-#   scripts/build-images.sh --push             # build + push to Docker Hub + GHCR
+#   scripts/build-images.sh --push             # build + push to Docker Hub
 #   scripts/build-images.sh --push-only        # stage, preflight, then publish smoke-tested images
 #   scripts/build-images.sh --promote-latest   # promote immutable version tags to latest
-#   scripts/build-images.sh --push --dockerhub # push to Docker Hub only
-#   scripts/build-images.sh --push --ghcr      # push to GHCR only
+#   scripts/build-images.sh --push --dockerhub # explicit Docker Hub selector (backward compatible)
 #   scripts/build-images.sh --platform linux/amd64,linux/arm64 --push  # multi-arch (app/ui/docs only)
 #   scripts/build-images.sh --only app,agent   # build a subset
 #
@@ -28,8 +27,6 @@ cd "$REPO_ROOT"
 
 # --- Config -------------------------------------------------------------------
 DOCKERHUB_NS="${DOCKERHUB_NS:-propr}"
-GHCR_NS="${GHCR_NS:-ghcr.io/proprdev}"
-GHCR_PREFIX="${GHCR_PREFIX:-propr-}"   # GHCR uses flat namespace: propr-app instead of propr/app
 CLAUDE_CLI_VERSION="${CLAUDE_CLI_VERSION:-2.1.220}"
 CODEX_CLI_VERSION="${CODEX_CLI_VERSION:-0.146.0}"
 ANTIGRAVITY_CLI_VERSION="${ANTIGRAVITY_CLI_VERSION:-1.1.11}"
@@ -92,8 +89,6 @@ AGENT_BUNDLE_TAG=""
 PUSH=false
 PUSH_ONLY=false
 PROMOTE_LATEST=false
-PUSH_DH=true
-PUSH_GHCR=true
 PLATFORM=""   # empty = native platform
 ONLY=""
 
@@ -102,8 +97,11 @@ while [[ $# -gt 0 ]]; do
     --push) PUSH=true; shift ;;
     --push-only) PUSH=true; PUSH_ONLY=true; shift ;;
     --promote-latest) PROMOTE_LATEST=true; shift ;;
-    --dockerhub) PUSH_GHCR=false; shift ;;
-    --ghcr) PUSH_DH=false; shift ;;
+    --dockerhub) shift ;;
+    --ghcr)
+      echo "GHCR publishing is no longer supported; Docker Hub is ProPR's release registry." >&2
+      exit 1
+      ;;
     --platform) PLATFORM="$2"; shift 2 ;;
     --only) ONLY="$2"; shift 2 ;;
     -h|--help) sed -n '3,20p' "$0"; exit 0 ;;
@@ -141,8 +139,7 @@ should_build() {
 # --- Derive tags --------------------------------------------------------------
 repositories_for() {
   local name="$1"
-  $PUSH_DH && printf '%s\n' "$DOCKERHUB_NS/$name"
-  $PUSH_GHCR && printf '%s\n' "$GHCR_NS/$GHCR_PREFIX$name"
+  printf '%s\n' "$DOCKERHUB_NS/$name"
 }
 
 tags_for() {
@@ -172,20 +169,16 @@ immutable_suffixes_for() {
 manifest_ns() {
   if [[ -n "${MANIFEST_NS:-}" ]]; then
     echo "$MANIFEST_NS"
-  elif $PUSH_DH; then
-    echo "$DOCKERHUB_NS"
   else
-    echo "$GHCR_NS"
+    echo "$DOCKERHUB_NS"
   fi
 }
 
 manifest_prefix() {
   if [[ -n "${MANIFEST_PREFIX:-}" ]]; then
     echo "$MANIFEST_PREFIX"
-  elif $PUSH_DH; then
-    echo ""
   else
-    echo "$GHCR_PREFIX"
+    echo ""
   fi
 }
 
@@ -575,8 +568,7 @@ RELEASE_IMAGES=("${IMAGES[@]}" "launcher|docker/Dockerfile.launcher|.")
 echo "Propr image build"
 echo "  version:    $VERSION"
 echo "  git sha:    $GIT_SHA"
-echo "  docker hub: $($PUSH_DH && echo "$DOCKERHUB_NS" || echo 'skip')"
-echo "  ghcr:       $($PUSH_GHCR && echo "$GHCR_NS/$GHCR_PREFIX*" || echo 'skip')"
+echo "  docker hub: $DOCKERHUB_NS"
 echo "  platform:   ${PLATFORM:-native}"
 echo "  push:       $PUSH"
 echo "  latest:     $PUSH_LATEST"

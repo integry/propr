@@ -10,11 +10,11 @@ The end state: ProPR runs from the prebuilt images on your Linux workstation, th
 
 ## Prerequisites
 
-- A Linux host with Docker. The stack bind-mounts host paths and the Docker socket directly, so under Docker Desktop on macOS or Windows use the Compose-based [Source Development Setup](./setup-source.md).
+- A Linux `amd64` host that meets the [system requirements](./setup.md#system-requirements), including direct access to the Docker daemon and socket. Under Docker Desktop on macOS or Windows use the Compose-based [Source Development Setup](./setup-source.md); that path is outside the current release qualification.
 - GitHub access for the backend. By default ProPR uses the shared, hosted ProPR GitHub App through the token relay, and running your own GitHub App is the advanced alternative — see [GitHub Authentication](../operations/github-auth.md).
 - A provider account for at least one coding agent — reuse host credentials, run `propr agent login <agent>`, or log in directly while adding the agent in the Web UI
 - Node.js 22+ for the recommended CLI path (the launcher-container alternative needs no Node.js)
-- Disk space for data, logs, and repository workspaces
+- Reserve 20 GB of free disk for images, data, logs, and repository workspaces; allow more for large repositories and image upgrades
 
 ## Prepare Existing Agent Credentials (Optional)
 

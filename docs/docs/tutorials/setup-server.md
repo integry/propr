@@ -22,7 +22,7 @@ The Docker image flow is the same as [Local Setup](./setup-local.md). The differ
 - Restrict access to the Docker socket and credential directories.
 - Back up data, logs, repositories, Redis, and SQLite state.
 
-The server must be a Linux host; the launcher bind-mounts host paths and the Docker socket directly.
+The server must be a Linux `amd64` host that meets the [system requirements](./setup.md#system-requirements); the launcher bind-mounts host paths and the Docker socket directly. For normal use, start with at least 8 GB RAM and 20 GB of free disk. A 2-vCPU, 4-GB host is suitable for a single-task evaluation when `WORKER_CONCURRENCY=1`.
 
 ## Runtime Directory
 

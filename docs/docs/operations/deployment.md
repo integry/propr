@@ -8,12 +8,15 @@ Use the prebuilt images, started by the ProPR CLI control plane (`propr init sta
 
 You need:
 
-- Docker
+- A Linux `amd64` host that meets the [system requirements](../tutorials/setup.md#system-requirements)
+- A maintained Docker Engine release. The ProPR user must be able to run `docker info` and read/write `/var/run/docker.sock` without an interactive `sudo` prompt. The engine must support Linux containers, user-defined networks, bind mounts, named volumes, restart policies, `--init`, and CPU, memory, and PID limits.
 - A runtime directory such as `/srv/propr`
 - GitHub backend access — your own GitHub App and private key (`HOST_GH_PRIVATE_KEY` bind-mounts it from any host path), or a shared App via the token relay; see [GitHub Authentication](./github-auth.md) for the three `GH_AUTH_MODE`s
 - A provider account for at least one agent; reuse host credentials or log in directly after adding the agent in the Web UI
 - Public URLs for the Web UI and OAuth callback
 - TLS through your reverse proxy or ingress
+
+Docker Compose is not part of the prebuilt production path. It is used for the source-development stack. The v0.8.10 release run completed on Docker Engine 29.1.3; ProPR does not enforce that exact version, and `propr check` validates the capabilities it needs before startup.
 
 ## Runtime Directory Layout
 
@@ -56,7 +59,7 @@ The launcher starts these images, pinned to the release version in its manifest:
 | `propr/agent` | Unified Claude, Codex, Antigravity, OpenCode, and Vibe execution container |
 | `redis:7-alpine` | Queue and cache state |
 
-Images are published to Docker Hub under the `propr/` namespace and mirrored to GHCR under `ghcr.io/proprdev/*` (the namespace is set by `GHCR_NS` in `scripts/build-images.sh`).
+Images are published to Docker Hub under the `propr/` namespace. Docker Hub is the single public release registry; the namespace can be overridden with `DOCKERHUB_NS` for development or private distributions.
 
 ## Environment
 
