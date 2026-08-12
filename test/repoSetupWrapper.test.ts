@@ -2,6 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import { wrapDockerRunArgsWithRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.js';
+import { resolveDefaultAgentCpuLimit } from '../packages/core/src/agents/agentContainerResources.js';
 
 describe('wrapDockerRunArgsWithRepoSetup', () => {
     test('wraps docker command with repo setup hook and original entrypoint', () => {
@@ -31,7 +32,7 @@ describe('wrapDockerRunArgsWithRepoSetup', () => {
         assert.ok(wrapped.includes('no-new-privileges'));
         assert.deepStrictEqual(wrapped.slice(1, 9), [
             '--memory', '6g', '--memory-swap', '6g',
-            '--cpus', '4', '--pids-limit', '512'
+            '--cpus', resolveDefaultAgentCpuLimit(), '--pids-limit', '512'
         ]);
     });
 

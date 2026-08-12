@@ -69,7 +69,7 @@ Unified image selection, per-agent credential paths, and execution limits. Codin
 |---|---|---|---|
 | `AGENT_DOCKER_IMAGE` | `propr/agent:latest` | Optional unified image override used when no agents are configured. | Optional. |
 | `AGENT_CONTAINER_MEMORY_LIMIT` | `6g` | Hard memory and memory-plus-swap ceiling applied to every coding-agent container. Use a positive Docker memory value such as `8g`. | Optional tuning. |
-| `AGENT_CONTAINER_CPU_LIMIT` | `4` | Maximum CPUs available to each coding-agent container; fractional values such as `1.5` are accepted. | Optional tuning. |
+| `AGENT_CONTAINER_CPU_LIMIT` | Adaptive: `min(4, detected CPUs)` | Maximum CPUs available to each coding-agent container; fractional overrides such as `1.5` are accepted. Leave unset to stay within the worker host's detected capacity. | Optional tuning. |
 | `AGENT_CONTAINER_PIDS_LIMIT` | `512` | Maximum processes/threads available to each coding-agent container. | Optional tuning. |
 | `PROPR_MANAGED_CREDENTIALS_DIR` | Native/Compose: `~/.propr/agent-credentials`; launcher: `PROPR_DATA_DIR/agent-credentials` | Host-visible root for isolated accounts created through direct Web login. The default is derived automatically; a launcher/CLI override must be an absolute Docker-host path. | Optional advanced override. |
 | `CLAUDE_CONFIG_PATH` | Empty | Absolute path to an existing `~/.claude` directory. `~` and `${HOME}` are **not** expanded in `.env` files or Docker bind mounts. Direct-login agents do not need this setting. | Reusing an existing Claude account. |

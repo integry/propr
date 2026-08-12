@@ -1,15 +1,25 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { buildAgentContainerResourceArgs } from '../packages/core/src/agents/agentContainerResources.js';
+import {
+    buildAgentContainerResourceArgs,
+    resolveDefaultAgentCpuLimit,
+} from '../packages/core/src/agents/agentContainerResources.js';
 
 describe('agent container resource policy', () => {
-    test('applies bounded defaults for memory, CPU, and processes', () => {
-        assert.deepEqual(buildAgentContainerResourceArgs({}), [
+    test('caps the automatic CPU default at detected host capacity', () => {
+        assert.deepEqual(buildAgentContainerResourceArgs({}, 2), [
             '--memory', '6g',
             '--memory-swap', '6g',
-            '--cpus', '4',
+            '--cpus', '2',
             '--pids-limit', '512',
         ]);
+        assert.equal(resolveDefaultAgentCpuLimit(16), '4');
+        assert.equal(resolveDefaultAgentCpuLimit(1), '1');
+    });
+
+    test('uses a conservative CPU fallback when detection is invalid', () => {
+        assert.equal(resolveDefaultAgentCpuLimit(0), '1');
+        assert.equal(resolveDefaultAgentCpuLimit(Number.NaN), '1');
     });
 
     test('accepts explicit operator overrides', () => {
@@ -26,7 +36,7 @@ describe('agent container resource policy', () => {
     });
 
     test('enforces Docker\'s minimum memory limit', () => {
-        assert.deepEqual(buildAgentContainerResourceArgs({ AGENT_CONTAINER_MEMORY_LIMIT: '6m' }), [
+        assert.deepEqual(buildAgentContainerResourceArgs({ AGENT_CONTAINER_MEMORY_LIMIT: '6m' }, 4), [
             '--memory', '6m',
             '--memory-swap', '6m',
             '--cpus', '4',
