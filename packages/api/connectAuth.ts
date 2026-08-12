@@ -16,7 +16,10 @@ export function resolveBrowserAuthMode(
     const hasRelay = Boolean(env.PROPR_GH_RELAY_URL?.trim() && env.PROPR_GH_RELAY_TOKEN?.trim());
     const usesHostedConnect = hasRelay && isHostedConnectPath(env);
     const tunnelEnabled = env.PROPR_UI_TUNNEL_ENABLED?.trim().toLowerCase() === 'true';
-    if (usesHostedConnect && tunnelEnabled) return 'connect';
+    // Preserve the established managed-tunnel behavior for operator-supplied
+    // relay/Connect endpoints. The hosted-service restriction applies only to
+    // the new automatic loopback path below.
+    if (hasRelay && tunnelEnabled) return 'connect';
 
     if (isConfiguredValue(env.GH_OAUTH_CLIENT_ID) && isConfiguredValue(env.GH_OAUTH_CLIENT_SECRET)) {
         return 'github';

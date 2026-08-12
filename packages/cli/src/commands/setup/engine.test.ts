@@ -406,6 +406,31 @@ test("custom relay enrollment preserves an explicit browser auth mode", async ()
   assert.equal(env.PROPR_WEB_AUTH_MODE, "disabled");
 });
 
+test("managed tunnel enrollment preserves Connect for a custom relay", async () => {
+  const env: Record<string, string> = {
+    GITHUB_EVENT_INTAKE_MODE: "routing_websocket",
+    PROPR_UI_TUNNEL_ENABLED: "true",
+    GH_OAUTH_CALLBACK_URL: "https://t-example.propr.dev/api/auth/github/callback",
+  };
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      readEnvVars: () => ({ ...env }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => ({ relayUrl: "https://relay.example.com/v1", token: "prt_minted" }),
+      applyEnvSelection: (_root, vars) => {
+        Object.assign(env, vars);
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(env.PROPR_WEB_AUTH_MODE, "connect");
+});
+
 test("relay enrollment preserves custom GitHub browser OAuth off-tunnel", async () => {
   const env: Record<string, string> = {
     GITHUB_EVENT_INTAKE_MODE: "polling",

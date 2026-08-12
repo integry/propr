@@ -14,6 +14,15 @@ test('relay tunnel mode uses Connect without local OAuth credentials', () => {
   }), 'connect');
 });
 
+test('relay tunnel mode preserves Connect for operator-supplied service endpoints', () => {
+  assert.equal(resolveBrowserAuthMode({
+    PROPR_UI_TUNNEL_ENABLED: 'true',
+    PROPR_GH_RELAY_URL: 'https://relay.example.com/v1',
+    PROPR_GH_RELAY_TOKEN: 'prt_secret',
+    PROPR_CONNECT_URL: 'https://connect.example.com',
+  }), 'connect');
+});
+
 test('local relay mode uses Connect without a per-instance OAuth App', () => {
   assert.equal(resolveBrowserAuthMode({
     PROPR_UI_TUNNEL_ENABLED: 'false',

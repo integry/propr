@@ -739,8 +739,8 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       const callbackUrl = existingEnv.GH_OAUTH_CALLBACK_URL ||
         "http://localhost:4000/api/auth/github/callback";
       const automaticConnectApplies =
-        usesHostedConnect &&
-        (managedTunnelEnabled || isSupportedLoopbackCallback(callbackUrl));
+        managedTunnelEnabled ||
+        (usesHostedConnect && isSupportedLoopbackCallback(callbackUrl));
       actions.applyEnvSelection(
         rootDir,
         {
