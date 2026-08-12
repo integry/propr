@@ -21,19 +21,20 @@ export interface ConfigReloadSubscription {
   close(): Promise<void>;
 }
 
-function isSettingsUpdate(message: string): boolean {
+function isReloadableConfigUpdate(message: string): boolean {
   const event = JSON.parse(message) as { type?: unknown; subtype?: unknown };
-  return event.type === 'config_update' && event.subtype === 'settings_update';
+  return event.type === 'config_update'
+    && (event.subtype === 'settings_update' || event.subtype === 'repos_update');
 }
 
 /**
- * Keep API authorization settings synchronized with changes made through the
- * settings routes. Reloads are serialized so a slower earlier read cannot
- * overwrite the result of a later notification.
+ * Keep the API's in-memory settings and monitored repositories synchronized
+ * with persisted configuration. Reloads are serialized so a slower earlier
+ * read cannot overwrite the result of a later notification.
  */
 export async function startConfigReloadSubscription(
   redisClient: DuplicableRedisClient,
-  reloadSettings: () => Promise<void>,
+  reloadConfig: () => Promise<void>,
   logger: SubscriptionLogger = console,
 ): Promise<ConfigReloadSubscription> {
   const subscriber = redisClient.duplicate();
@@ -41,7 +42,7 @@ export async function startConfigReloadSubscription(
   let reloadQueue = Promise.resolve();
   const enqueueReload = (): Promise<void> => {
     reloadQueue = reloadQueue
-      .then(reloadSettings)
+      .then(reloadConfig)
       .catch(error => logger.error('Failed to reload API settings:', error));
     return reloadQueue;
   };
@@ -54,7 +55,7 @@ export async function startConfigReloadSubscription(
     await subscriber.subscribe(CONFIG_EVENT_CHANNEL, message => {
       if (closed) return;
       try {
-        if (!isSettingsUpdate(message)) return;
+        if (!isReloadableConfigUpdate(message)) return;
       } catch (error) {
         logger.error('Failed to parse API config update event:', error);
         return;

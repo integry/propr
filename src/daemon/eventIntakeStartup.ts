@@ -24,6 +24,11 @@ export interface EventIntakeLogger {
 const noopLogger: EventIntakeLogger = { info: () => {}, warn: () => {} };
 
 export interface EventIntakeStartupDeps {
+    /**
+     * Establishes config notifications and completes a catch-up reload before
+     * any intake source can dispatch an event.
+     */
+    prepareConfiguration: () => Promise<void>;
     /** Run a single polling cycle (already wrapped with error handling). */
     safePoll: () => void;
     /** Polling cadence in ms; the recurring poll is scheduled at this rate in polling mode. */
@@ -72,6 +77,11 @@ export async function startEventIntake(
         routingService: null,
         routingStatusPublisher: null,
     };
+
+    // Repository filtering is shared by every intake mode. Close the startup
+    // subscription gap before polling, webhook handling, or routed delivery can
+    // observe the monitored-repository snapshot.
+    await deps.prepareConfiguration();
 
     switch (mode) {
         case 'polling': {

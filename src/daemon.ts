@@ -36,6 +36,7 @@ import {
     loadAllConfigs,
     reloadConfigs,
     getRepos,
+    isMonitoredRepository,
     getBotUsername,
     getUserWhitelist,
     getPrimaryProcessingLabels,
@@ -204,8 +205,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const repos = getRepos();
 
     if (repos.length === 0) {
-        logger.error('No repositories configured. Set GITHUB_REPOS_TO_MONITOR or CONFIG_REPO. Exiting.');
-        process.exit(1);
+        logger.warn('No repositories configured yet. The daemon will stay active and reload repositories added through setup or Settings.');
     }
 
     if (options.reset) {
@@ -309,29 +309,25 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             issueProcessor: (issue: DetectedIssue, correlationId: string) => processDetectedIssue(issue, correlationId, redisClient),
             commentProcessor: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => processCommentEvent(payload, eventType, correlationId, commentConfig),
             commentDeletedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
-            commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig)
+            commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig),
+            repositoryFilter: (repository: string) => isMonitoredRepository(repository),
         });
     };
 
-    // Start only the components for the resolved intake mode. The mode-selection
-    // logic is extracted into startEventIntake so it can be unit-tested with injected
-    // dependencies, without standing up real Redis/GitHub/WebSocket connections.
-    const intakeStartup = await startEventIntake(EVENT_INTAKE_MODE, {
-        safePoll,
-        pollingIntervalMs: POLLING_INTERVAL_MS,
-        initWebhookHandler: initSharedWebhookHandler,
-        createRoutingService: () => new RoutingWebSocketIntakeService(),
-        startRoutingStatusPublisher: (service) => startRoutingStatusPublisher(service, heartbeatRedis),
-        logger,
-        startupLogContext: baseStartupLog,
-        webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
-        routingUrl: process.env.PROPR_ROUTING_URL,
-    });
-    intervalId = intakeStartup.intervalId;
-    routingService = intakeStartup.routingService;
-    routingStatusPublisher = intakeStartup.routingStatusPublisher;
+    // Serialize every reload source so an earlier, slower persisted-config read
+    // cannot overwrite a newer notification's state after it completes.
+    let configReloadQueue = Promise.resolve();
+    const enqueueConfigReload = (): Promise<void> => {
+        configReloadQueue = configReloadQueue
+            .then(reloadConfigs)
+            .catch((error: unknown) => {
+                const err = error as Error;
+                logger.error({ error: err.message }, 'Failed to reload daemon config');
+            });
+        return configReloadQueue;
+    };
 
-    const configReloadInterval = setInterval(reloadConfigs, 5 * 60 * 1000);
+    const configReloadInterval = setInterval(() => { void enqueueConfigReload(); }, 5 * 60 * 1000);
 
     // --- Real-time Config Subscription Setup ---
     // Create a dedicated Redis client for subscription (subscriber clients cannot run other commands)
@@ -339,15 +335,6 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         host: process.env.REDIS_HOST || '127.0.0.1',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
         retryStrategy: (times: number) => Math.min(times * 50, 2000)
-    });
-
-    // Subscribe to config update events
-    subscriberRedis.subscribe(CONFIG_EVENT_CHANNEL, (err) => {
-        if (err) {
-            logger.error({ error: err.message }, 'Failed to subscribe to config events channel');
-        } else {
-            logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
-        }
     });
 
     // Handle incoming config update messages
@@ -358,7 +345,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
                 logger.info({ event }, 'Received config update event, reloading configs...');
 
                 // 1. Reload base configs (repos, settings, tags, etc.)
-                await reloadConfigs();
+                await enqueueConfigReload();
 
                 // 2. Handle specific update types
                 if (event.subtype === 'agents_update') {
@@ -390,6 +377,32 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             }
         }
     });
+
+    // Start only the components for the resolved intake mode. Configuration is
+    // subscribed and caught up inside this startup boundary before polling or
+    // routed/webhook dispatch can begin.
+    const intakeStartup = await startEventIntake(EVENT_INTAKE_MODE, {
+        prepareConfiguration: async () => {
+            // Subscribe before the catch-up reload so a repository saved between
+            // the initial startup read and subscription cannot be missed. Any
+            // later update either appears in the read or arrives as a message.
+            await subscriberRedis.subscribe(CONFIG_EVENT_CHANNEL);
+            logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
+            await enqueueConfigReload();
+        },
+        safePoll,
+        pollingIntervalMs: POLLING_INTERVAL_MS,
+        initWebhookHandler: initSharedWebhookHandler,
+        createRoutingService: () => new RoutingWebSocketIntakeService(),
+        startRoutingStatusPublisher: (service) => startRoutingStatusPublisher(service, heartbeatRedis),
+        logger,
+        startupLogContext: baseStartupLog,
+        webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
+        routingUrl: process.env.PROPR_ROUTING_URL,
+    });
+    intervalId = intakeStartup.intervalId;
+    routingService = intakeStartup.routingService;
+    routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
     const shutdown = async (signal: string): Promise<void> => {
         logger.info(`Received ${signal}, shutting down gracefully...`);

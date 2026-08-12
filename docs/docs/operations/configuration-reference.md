@@ -51,8 +51,8 @@ How ProPR receives GitHub events, plus what it watches for once they arrive. All
 | `PROPR_ROUTING_WS_PONG_TIMEOUT_MS` | `30000` (30 seconds) | Maximum wait for a transport pong before the stale socket is terminated and reconnected. | Optional. |
 | `POLLING_INTERVAL_MS` | `60000` | Poll period when pulling events from the GitHub API. | Polling mode only. |
 | `GH_WEBHOOK_SECRET` | Unset | Shared secret GitHub signs webhook deliveries with. | Direct webhook mode. |
-| `GITHUB_REPOS_TO_MONITOR` | Placeholder (`owner/repo1,owner/repo2`) | Comma-separated repositories the daemon watches. | Always. |
-| `CONFIG_REPO` | Example config repo URL | Git repository for dynamic repository management; when set, processing labels and repo config load from it. | Optional. |
+| `GITHUB_REPOS_TO_MONITOR` | Unset | Optional authoritative, comma-separated repository list when `CONFIG_REPO` is unset. When neither variable is set, the daemon uses repositories selected through setup or Settings and reloads that persisted list live. | Static environment-managed deployments only. |
+| `CONFIG_REPO` | Example config repo URL | Legacy external config-repository switch; when set, processing labels and persisted repo config load dynamically. | Optional. |
 | `PRIMARY_PROCESSING_LABELS` | Shipped `AI,propr` / code falls back to `AI` | Issue labels that trigger processing. | Optional. |
 | `PR_LABEL` | `propr` | Label applied to PRs ProPR creates. | Optional. |
 | `GITHUB_BOT_USERNAME` | Placeholder / code falls back to `propr-dev[bot]` | The bot identity, used to filter its own comments out of triggers. | Optional. |
