@@ -116,6 +116,7 @@ function diskActions(overrides: Partial<SetupActions> = {}): SetupActions {
     addAgent: async () => undefined,
     loginableAgents: async () => [],
     loginAgent: async () => ({ available: false, success: false }),
+    validateAgents: async (types) => types.map((type) => ({ type, status: "skipped", detail: "mocked" })),
     ...overrides,
   };
 }
