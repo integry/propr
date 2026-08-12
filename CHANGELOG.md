@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-08-12
+
+### Fixed
+
+- **Resumable image publication**: partial Docker Hub releases preserve the
+  first commit-scoped artifact and complete missing immutable tags safely even
+  when a later rebuild produces a different digest.
+- **Ultrafix deferred actions**: API continuation sweeps initialize the issue
+  queue before checking conflicts or enqueueing the next review/fix action.
+- **Source Compose compatibility**: backend development and legacy production
+  images use Node 22, matching ProPR's declared runtime requirement.
+
 ## [0.8.9] - 2026-08-12
 
 ### Changed
@@ -246,6 +258,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.10]: https://github.com/integry/propr/releases/tag/v0.8.10
 [0.8.9]: https://github.com/integry/propr/releases/tag/v0.8.9
 [0.8.8]: https://github.com/integry/propr/releases/tag/v0.8.8
 [0.8.7]: https://github.com/integry/propr/releases/tag/v0.8.7
