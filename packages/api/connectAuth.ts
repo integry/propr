@@ -12,6 +12,10 @@ export function resolveBrowserAuthMode(
     const explicit = env.PROPR_WEB_AUTH_MODE?.trim().toLowerCase();
     if (explicit === 'connect' || explicit === 'github' || explicit === 'disabled') return explicit;
 
+    // Relay enrollment identifies this stack to ProPR Connect. Managed tunnels
+    // retain their existing Connect-first behavior. Off-tunnel, an explicitly
+    // configured OAuth App still wins for backward compatibility; otherwise
+    // Connect supports an exact loopback callback for the zero-config path.
     const hasRelay = Boolean(env.PROPR_GH_RELAY_URL?.trim() && env.PROPR_GH_RELAY_TOKEN?.trim());
     const tunnelEnabled = env.PROPR_UI_TUNNEL_ENABLED?.trim().toLowerCase() === 'true';
     if (hasRelay && tunnelEnabled) return 'connect';
@@ -19,6 +23,7 @@ export function resolveBrowserAuthMode(
     if (isConfiguredValue(env.GH_OAUTH_CLIENT_ID) && isConfiguredValue(env.GH_OAUTH_CLIENT_SECRET)) {
         return 'github';
     }
+    if (hasRelay) return 'connect';
     return 'disabled';
 }
 
@@ -26,6 +31,7 @@ export function buildConnectAuthorizationUrl(options: {
     connectOrigin?: string;
     callbackUrl: string;
     state: string;
+    installationId?: string;
 }): string {
     const origin = new URL(options.connectOrigin || DEFAULT_PROPR_CONNECT_ORIGIN);
     if (origin.protocol !== 'https:' || origin.username || origin.password || origin.search || origin.hash) {
@@ -34,6 +40,9 @@ export function buildConnectAuthorizationUrl(options: {
     const url = new URL('/instance-login', origin);
     url.searchParams.set('callback_url', options.callbackUrl);
     url.searchParams.set('state', options.state);
+    if (options.installationId?.trim()) {
+        url.searchParams.set('installation_id', options.installationId.trim());
+    }
     return url.toString();
 }
 

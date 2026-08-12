@@ -13,8 +13,9 @@ and remains dependency-free on Node 20 because it does not load the Ink-based
 interactive CLI.
 
 Using the CLI as the local stack control plane additionally requires a Linux
-`amd64` host, a maintained Docker Engine release, and direct read/write access
-to `/var/run/docker.sock`. Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for
+`amd64` host, a maintained Docker Engine release, direct read/write access to
+`/var/run/docker.sock`, and the GitHub CLI (`gh`) for the guided setup's default
+Connect login (or authenticate first with `propr login <token>`). Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for
 a single-task evaluation; 8 GB RAM or more is recommended for normal or
 concurrent use. `propr check` validates Docker access before startup. See the
 full [system requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).

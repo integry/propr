@@ -151,6 +151,10 @@ jobs:
             npm run build -w @propr/shared
             PROPR_DEMO_MODE=true npx tsx --test \
               test/orchestratorConfig.test.mjs \
+              packages/cli/src/commands/setup/engine.test.ts \
+              packages/cli/src/commands/setup/sequential.test.ts \
+              packages/cli/src/commands/setupCommand.test.ts \
+              packages/cli/src/tui/SetupApp.test.tsx \
               packages/cli/src/commands/tunnelCommand.test.ts \
               test/orchestratorTunnelLifecycle.test.mjs \
               test/orchestratorTunnelStatus.test.mjs \

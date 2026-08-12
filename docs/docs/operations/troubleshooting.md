@@ -54,7 +54,7 @@ Likely causes, what to check, and fixes:
 
 **Symptom:** the Web UI login fails or every request comes back unauthorized.
 
-For a hosted tunnel, confirm `PROPR_WEB_AUTH_MODE=connect`, the relay credential, `GH_OAUTH_CALLBACK_URL`, `SESSION_SECRET`, and `FRONTEND_URL`; do not add local OAuth client placeholders. Sessions are stored in Redis, so a Redis outage also invalidates logins — confirm the Redis container is up with `docker ps` and check Redis connectivity on `/api/status`. A custom deployment using `PROPR_WEB_AUTH_MODE=github` must instead verify its own OAuth client id, secret, and registered callback.
+For the default Connect login, confirm `PROPR_WEB_AUTH_MODE=connect`, the relay credential, `GH_OAUTH_CALLBACK_URL`, `SESSION_SECRET`, and `FRONTEND_URL`; do not add local OAuth client placeholders. A local callback must be the exact loopback API URL (normally `http://localhost:4000/api/auth/github/callback`); a hosted callback must match the active tunnel. Sessions are stored in Redis, so a Redis outage also invalidates logins — confirm the Redis container is up with `docker ps` and check Redis connectivity on `/api/status`. A custom deployment using `PROPR_WEB_AUTH_MODE=github` must instead verify its own OAuth client id, secret, and registered callback.
 
 If you use the hosted UI tunnel, the callback lives on the **proxy host** (`https://t-<id>.propr.dev/api/auth/github/callback`) and Connect must list that tunnel as active; also note that enabling the tunnel on an already-running stack leaves the API with its pre-tunnel localhost URLs until you run `propr start --restart` (see [tunnel problems](#hosted-ui-tunnel-not-working) below).
 

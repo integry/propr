@@ -112,6 +112,20 @@ test("buildSetupPrompts keeps existing GitHub auth when 'keep' is chosen", async
   assert.deepEqual(await decision, { keep: true });
 });
 
+test("buildSetupPrompts offers the official ProPR App install as a default-yes action", async () => {
+  const bridge = new SetupBridge();
+  const prompts = capture(bridge);
+  const hooks = buildSetupPrompts(bridge);
+  const answer = hooks.confirmGithubAppInstall!({
+    url: "https://github.com/apps/propr-dev/installations/new",
+  });
+
+  assert.equal(prompts[0].kind, "confirm");
+  assert.equal(prompts[0].kind === "confirm" && prompts[0].defaultValue, true);
+  bridge.resolve(prompts[0].id, true);
+  assert.equal(await answer, true);
+});
+
 test("buildSetupPrompts collects GitHub App vars across chained inputs", async () => {
   const bridge = new SetupBridge();
   const seen: SetupPrompt[] = [];

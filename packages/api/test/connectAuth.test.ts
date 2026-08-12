@@ -14,6 +14,14 @@ test('relay tunnel mode uses Connect without local OAuth credentials', () => {
   }), 'connect');
 });
 
+test('local relay mode uses Connect without a per-instance OAuth App', () => {
+  assert.equal(resolveBrowserAuthMode({
+    PROPR_UI_TUNNEL_ENABLED: 'false',
+    PROPR_GH_RELAY_URL: 'https://webhook.propr.dev/v1',
+    PROPR_GH_RELAY_TOKEN: 'prt_secret',
+  }), 'connect');
+});
+
 test('literal example OAuth placeholders do not enable GitHub web auth', () => {
   assert.equal(resolveBrowserAuthMode({
     GH_OAUTH_CLIENT_ID: 'your_github_oauth_client_id',
@@ -28,15 +36,26 @@ test('explicit custom GitHub web auth remains supported', () => {
   }), 'github');
 });
 
+test('explicit custom GitHub web auth wins over relay inference off-tunnel', () => {
+  assert.equal(resolveBrowserAuthMode({
+    PROPR_GH_RELAY_URL: 'https://webhook.propr.dev/v1',
+    PROPR_GH_RELAY_TOKEN: 'prt_secret',
+    GH_OAUTH_CLIENT_ID: 'real-client-id',
+    GH_OAUTH_CLIENT_SECRET: 'real-client-secret',
+  }), 'github');
+});
+
 test('Connect authorization URL carries the exact callback and CSRF state', () => {
   const url = new URL(buildConnectAuthorizationUrl({
     callbackUrl: 'https://t-abc.propr.dev/api/auth/github/callback',
     state: 'random-state',
+    installationId: '123',
   }));
   assert.equal(url.origin, 'https://connect.propr.dev');
   assert.equal(url.pathname, '/instance-login');
   assert.equal(url.searchParams.get('callback_url'), 'https://t-abc.propr.dev/api/auth/github/callback');
   assert.equal(url.searchParams.get('state'), 'random-state');
+  assert.equal(url.searchParams.get('installation_id'), '123');
 });
 
 test('redeems a Connect code server-to-server without exposing the relay token in the body', async () => {

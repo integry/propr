@@ -249,6 +249,7 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
                         connectOrigin: process.env.PROPR_CONNECT_URL,
                         callbackUrl: process.env.GH_OAUTH_CALLBACK_URL!,
                         state,
+                        installationId: process.env.GH_INSTALLATION_ID,
                     }));
                 } catch (buildError) {
                     console.error('Could not build Connect authorization URL:', buildError);

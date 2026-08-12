@@ -280,12 +280,23 @@ test('ui container receives the tunnel public API URL (no /api appended) when se
   assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
 });
 
-test('ui container omits PROPR_UI_PUBLIC_API_URL in local development', () => {
+test('ui container receives the browser-visible local API URL in local development', () => {
   const cfg = resolveConfig({ API_PORT: '4000', UI_PORT: '5173' }, { manifestPath });
   const { args } = buildServiceSpec(cfg, 'ui');
 
-  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), []);
+  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['http://localhost:4000']);
   assert.deepEqual(envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'), []);
+});
+
+test('ui container honors an explicit browser-visible API URL without a tunnel', () => {
+  const cfg = resolveConfig({
+    API_PUBLIC_URL: 'https://api.example.test',
+    API_PORT: '4000',
+    UI_PORT: '5173',
+  }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'ui');
+
+  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://api.example.test']);
 });
 
 test('api container reports the tunnel disabled and omits optional PROPR_* vars in local development', () => {
