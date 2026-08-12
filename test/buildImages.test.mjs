@@ -157,18 +157,43 @@ describe('build-images publication reconciliation', () => {
     ));
   });
 
-  test('refuses to overwrite an existing full commit tag before publishing the version', () => {
+  test('uses an existing full commit artifact to complete a partial publication', () => {
     const shaRef = `${IMAGE_REPOSITORY}:${FULL_SHA}`;
     const root = createFixture({ [shaRef]: DIGEST_B });
     const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app']);
 
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Refusing to overwrite immutable image tag/);
+    assert.equal(result.status, 0, result.stderr);
     assert.equal(readState(root).digests[shaRef], DIGEST_B);
-    assert.equal(readState(root).digests[`${IMAGE_REPOSITORY}:1.2.3`], undefined);
+    assert.equal(readState(root).digests[`${IMAGE_REPOSITORY}:1.2.3`], DIGEST_B);
+    assert.match(result.stdout, /reusing existing immutable artifact/);
     assert.deepEqual(readDockerLog(root).filter(args => args[0] === 'push').map(args => args[1]), [
       `${IMAGE_REPOSITORY}:reconcile-${FULL_SHA}`,
     ]);
+  });
+
+  test('preserves the first smoke-tested staging artifact across release retries', () => {
+    const candidateRef = `${IMAGE_REPOSITORY}:reconcile-${FULL_SHA}`;
+    const root = createFixture({ [candidateRef]: DIGEST_B });
+    const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app']);
+
+    assert.equal(result.status, 0, result.stderr);
+    const state = readState(root);
+    assert.equal(state.digests[candidateRef], DIGEST_B);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], DIGEST_B);
+    assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], DIGEST_B);
+    assert.equal(readDockerLog(root).some(args => args[0] === 'push'), false);
+    assert.match(result.stdout, /keeping previously staged reconciliation artifact/);
+  });
+
+  test('does not trust an existing version tag without the matching commit tag', () => {
+    const versionRef = `${IMAGE_REPOSITORY}:1.2.3`;
+    const root = createFixture({ [versionRef]: DIGEST_B });
+    const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app']);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Existing immutable image tags disagree/);
+    assert.equal(readState(root).digests[versionRef], DIGEST_B);
+    assert.equal(readState(root).digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], undefined);
   });
 
   test('refuses an immutable version conflict after confirming the commit artifact', () => {
@@ -178,18 +203,22 @@ describe('build-images publication reconciliation', () => {
     const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app']);
 
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Refusing to overwrite immutable image tag/);
+    assert.match(result.stderr, /Existing immutable image tags disagree/);
     assert.equal(readState(root).digests[versionRef], DIGEST_B);
   });
 
   test('preflights every selected image before publishing any consumer tag', () => {
     const uiRepository = 'registry.example/propr/ui';
     const conflictingUiVersion = `${uiRepository}:1.2.3`;
-    const root = createFixture({ [conflictingUiVersion]: DIGEST_B });
+    const conflictingUiSha = `${uiRepository}:${FULL_SHA}`;
+    const root = createFixture({
+      [conflictingUiVersion]: DIGEST_B,
+      [conflictingUiSha]: DIGEST_A,
+    });
     const result = runBuild(root, ['--push-only', '--dockerhub', '--only', 'app,ui']);
 
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Refusing to overwrite immutable image tag/);
+    assert.match(result.stderr, /Existing immutable image tags disagree/);
     const state = readState(root);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], undefined);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], undefined);
@@ -272,11 +301,15 @@ describe('build-images publication reconciliation', () => {
   test('native push preflights every selected image before publishing any consumer tag', () => {
     const uiRepository = 'registry.example/propr/ui';
     const conflictingUiVersion = `${uiRepository}:1.2.3`;
-    const root = createFixture({ [conflictingUiVersion]: DIGEST_B });
+    const conflictingUiSha = `${uiRepository}:${FULL_SHA}`;
+    const root = createFixture({
+      [conflictingUiVersion]: DIGEST_B,
+      [conflictingUiSha]: DIGEST_A,
+    });
     const result = runBuild(root, ['--push', '--dockerhub', '--only', 'app,ui']);
 
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Refusing to overwrite immutable image tag/);
+    assert.match(result.stderr, /Existing immutable image tags disagree/);
     const state = readState(root);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], undefined);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], undefined);
@@ -293,7 +326,11 @@ describe('build-images publication reconciliation', () => {
   test('multi-platform push stages every selected image before global preflight', () => {
     const uiRepository = 'registry.example/propr/ui';
     const conflictingUiVersion = `${uiRepository}:1.2.3`;
-    const root = createFixture({ [conflictingUiVersion]: DIGEST_B });
+    const conflictingUiSha = `${uiRepository}:${FULL_SHA}`;
+    const root = createFixture({
+      [conflictingUiVersion]: DIGEST_B,
+      [conflictingUiSha]: DIGEST_A,
+    });
     const result = runBuild(root, [
       '--push',
       '--dockerhub',
@@ -304,7 +341,7 @@ describe('build-images publication reconciliation', () => {
     ]);
 
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Refusing to overwrite immutable image tag/);
+    assert.match(result.stderr, /Existing immutable image tags disagree/);
     const state = readState(root);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:${FULL_SHA}`], undefined);
     assert.equal(state.digests[`${IMAGE_REPOSITORY}:1.2.3`], undefined);

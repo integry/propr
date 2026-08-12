@@ -298,9 +298,9 @@ jobs:
       - name: Show image publication reconciliation guidance
         if: failure()
         run: |
-          echo "Image publication did not finish. Re-run this workflow for the same immutable release tag; validated images are rebuilt and existing tags are reconciled idempotently." >&2
+          echo "Image publication did not finish. Re-run this workflow for the same immutable release tag; the first staged or published artifacts are preserved and missing tags are reconciled idempotently." >&2
           echo "### Release reconciliation" >> "$GITHUB_STEP_SUMMARY"
-          echo "Re-run this workflow for the same immutable release tag. Image tags are rebuilt from that tag and safely re-pushed before npm publication can begin." >> "$GITHUB_STEP_SUMMARY"
+          echo "Re-run this workflow for the same immutable release tag. Rebuilt images are smoke-tested again, while existing commit-scoped staging artifacts and immutable tags remain authoritative for publication." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove isolated Docker credentials
         if: always()

@@ -290,10 +290,17 @@ verify_local_release_image() {
 }
 
 stage_candidate_image() {
-  local name="$1" repository source_ref candidate_ref
+  local name="$1" repository source_ref candidate_ref existing_digest status
   while IFS= read -r repository; do
     source_ref="$repository:$VERSION"
     candidate_ref="$(candidate_ref_for "$repository")"
+    if existing_digest="$(inspect_remote_digest "$candidate_ref")"; then
+      echo "  keeping previously staged reconciliation artifact $candidate_ref ($existing_digest)"
+      continue
+    else
+      status=$?
+      [[ $status -eq 1 ]] || return "$status"
+    fi
     docker tag "$source_ref" "$candidate_ref"
     echo "  pushing non-consumer reconciliation tag $candidate_ref"
     docker push "$candidate_ref"
@@ -319,17 +326,44 @@ preflight_immutable_tag() {
 declare -A PREFLIGHTED_CANDIDATE_DIGESTS=()
 
 preflight_candidate_image() {
-  local name="$1" repository candidate_ref rebuilt_digest suffix
+  local name="$1" repository candidate_ref staged_digest authoritative_digest suffix
+  local existing_digest status
   while IFS= read -r repository; do
     candidate_ref="$(candidate_ref_for "$repository")"
-    if ! rebuilt_digest="$(inspect_remote_digest "$candidate_ref")"; then
+    if ! staged_digest="$(inspect_remote_digest "$candidate_ref")"; then
       echo "Unable to resolve staged artifact digest from $candidate_ref" >&2
       return 1
     fi
+    # The full-SHA tag is the only consumer tag that can safely identify an
+    # artifact for this exact source revision. A version tag on its own may be
+    # a collision from a different commit, so it must never override staging.
+    if authoritative_digest="$(inspect_remote_digest "$repository:$GIT_SHA")"; then
+      if [[ "$authoritative_digest" != "$staged_digest" ]]; then
+        echo "  reusing existing immutable artifact for $repository ($authoritative_digest)"
+        echo "  staged retry artifact differs ($staged_digest); immutable tags will not be overwritten"
+      fi
+    else
+      status=$?
+      [[ $status -eq 1 ]] || return "$status"
+      authoritative_digest="$staged_digest"
+    fi
     while IFS= read -r suffix; do
-      preflight_immutable_tag "$repository:$suffix" "$rebuilt_digest" || return
+      if existing_digest="$(inspect_remote_digest "$repository:$suffix")"; then
+        if [[ "$existing_digest" != "$authoritative_digest" ]]; then
+          echo "Existing immutable image tags disagree for $repository" >&2
+          echo "  expected digest: $authoritative_digest" >&2
+          echo "  $repository:$suffix: $existing_digest" >&2
+          return 1
+        fi
+      else
+        status=$?
+        [[ $status -eq 1 ]] || return "$status"
+      fi
     done < <(immutable_suffixes_for "$name")
-    PREFLIGHTED_CANDIDATE_DIGESTS["$repository"]="$rebuilt_digest"
+    while IFS= read -r suffix; do
+      preflight_immutable_tag "$repository:$suffix" "$authoritative_digest" || return
+    done < <(immutable_suffixes_for "$name")
+    PREFLIGHTED_CANDIDATE_DIGESTS["$repository"]="$authoritative_digest"
   done < <(repositories_for "$name")
 }
 
