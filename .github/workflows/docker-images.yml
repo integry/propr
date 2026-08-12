@@ -153,9 +153,10 @@ jobs:
       - name: Upload CLI artifact
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          name: propr-cli-${{ github.run_id }}
           path: ${{ steps.package.outputs.tarball }}
           if-no-files-found: error
+          overwrite: true
 
   preflight-cli:
     name: Preflight npm Release Artifact
@@ -181,7 +182,7 @@ jobs:
       - name: Download smoke-tested CLI artifact
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
-          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          name: propr-cli-${{ github.run_id }}
           path: release-artifacts
 
       - name: Reject npm version collisions before image publication
@@ -339,7 +340,7 @@ jobs:
       - name: Download smoke-tested CLI artifact
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
-          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          name: propr-cli-${{ github.run_id }}
           path: release-artifacts
 
       - name: Publish CLI to npm if needed
@@ -377,7 +378,7 @@ jobs:
       - name: Download CLI artifact
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
-          name: propr-cli-${{ github.run_id }}-${{ github.run_attempt }}
+          name: propr-cli-${{ github.run_id }}
           path: release-artifacts
 
       - name: Create or update GitHub release
