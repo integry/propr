@@ -404,24 +404,6 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     routingService = intakeStartup.routingService;
     routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
-    // Start intake only after subscription and the serialized catch-up reload have
-    // completed, so the first polled or routed event sees the latest persisted
-    // repository configuration.
-    const intakeStartup = await startEventIntake(EVENT_INTAKE_MODE, {
-        safePoll,
-        pollingIntervalMs: POLLING_INTERVAL_MS,
-        initWebhookHandler: initSharedWebhookHandler,
-        createRoutingService: () => new RoutingWebSocketIntakeService(),
-        startRoutingStatusPublisher: (service) => startRoutingStatusPublisher(service, heartbeatRedis),
-        logger,
-        startupLogContext: baseStartupLog,
-        webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
-        routingUrl: process.env.PROPR_ROUTING_URL,
-    });
-    intervalId = intakeStartup.intervalId;
-    routingService = intakeStartup.routingService;
-    routingStatusPublisher = intakeStartup.routingStatusPublisher;
-
     const shutdown = async (signal: string): Promise<void> => {
         logger.info(`Received ${signal}, shutting down gracefully...`);
         if (intervalId) clearInterval(intervalId);
