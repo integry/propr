@@ -76,7 +76,7 @@ Image workflows are useful when changing Dockerfiles or release packaging:
 
 ```bash
 npm run images:build        # build all images (scripts/build-images.sh)
-npm run images:build:push   # build and push to registries
+npm run images:build:push   # build and push to Docker Hub
 npm run images:smoke        # smoke-test built images
 ```
 
