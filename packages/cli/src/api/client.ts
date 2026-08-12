@@ -32,6 +32,14 @@ const DEFAULT_BASE_URL = "http://localhost:4000";
  */
 const DEFAULT_TIMEOUT = 30000;
 
+/** Maximum attempts for idempotent reads across transient tunnel failures. */
+const GET_REQUEST_ATTEMPTS = 3;
+const GET_RETRY_BASE_DELAY_MS = 250;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * API Client for making HTTP requests to the ProPR backend.
  *
@@ -143,68 +151,73 @@ export class ApiClient {
       fetchOptions.body = JSON.stringify(body);
     }
 
-    // Create abort controller for timeout
-    const controller = new AbortController();
-    fetchOptions.signal = controller.signal;
+    const maxAttempts = method === "GET" ? GET_REQUEST_ATTEMPTS : 1;
 
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Each retry receives its own timeout window and abort signal.
+      const controller = new AbortController();
+      fetchOptions.signal = controller.signal;
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    try {
-      const response = await fetch(url, fetchOptions);
-      clearTimeout(timeoutId);
+      try {
+        const response = await fetch(url, fetchOptions);
+        clearTimeout(timeoutId);
 
-      // Handle error responses
-      if (!response.ok) {
-        let errorResponse: ApiErrorResponse | undefined;
-        try {
-          errorResponse = await response.json() as ApiErrorResponse;
-        } catch {
-          // Response body is not JSON or empty
+        // Handle error responses
+        if (!response.ok) {
+          let errorResponse: ApiErrorResponse | undefined;
+          try {
+            errorResponse = await response.json() as ApiErrorResponse;
+          } catch {
+            // Response body is not JSON or empty
+          }
+          throw createApiError(response.status, errorResponse);
         }
-        throw createApiError(response.status, errorResponse);
-      }
 
-      // Parse successful response
-      let data: T;
-      const contentType = response.headers.get("content-type");
-      if (contentType?.includes("application/json")) {
-        data = await response.json() as T;
-      } else {
-        // Handle non-JSON responses
-        data = await response.text() as unknown as T;
-      }
+        // Parse successful response
+        let data: T;
+        const contentType = response.headers.get("content-type");
+        if (contentType?.includes("application/json")) {
+          data = await response.json() as T;
+        } else {
+          // Handle non-JSON responses
+          data = await response.text() as unknown as T;
+        }
 
-      return {
-        data,
-        status: response.status,
-        headers: response.headers,
-      };
-    } catch (error) {
-      clearTimeout(timeoutId);
+        return {
+          data,
+          status: response.status,
+          headers: response.headers,
+        };
+      } catch (error) {
+        clearTimeout(timeoutId);
 
-      // Re-throw API errors as-is
-      if (error instanceof ApiError) {
-        throw error;
-      }
+        // Re-throw API errors as-is. HTTP responses are not transport failures.
+        if (error instanceof ApiError) {
+          throw error;
+        }
 
-      // Handle abort errors (timeout)
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new TimeoutError("Request timed out.", timeout);
-      }
+        const retryableError = error instanceof Error && error.name === "AbortError"
+          ? new TimeoutError("Request timed out.", timeout)
+          : error instanceof TypeError
+            ? new NetworkError(`Network error: ${error.message}`, error)
+            : null;
 
-      // Handle network errors
-      if (error instanceof TypeError) {
+        if (retryableError && attempt < maxAttempts) {
+          await sleep(GET_RETRY_BASE_DELAY_MS * attempt);
+          continue;
+        }
+
+        if (retryableError) throw retryableError;
+
+        // Handle other errors
         throw new NetworkError(
-          `Network error: ${error.message}`,
-          error
+          `Unexpected error: ${error instanceof Error ? error.message : String(error)}`
         );
       }
-
-      // Handle other errors
-      throw new NetworkError(
-        `Unexpected error: ${error instanceof Error ? error.message : String(error)}`
-      );
     }
+
+    throw new NetworkError("Request failed after all attempts.");
   }
 
   /**
