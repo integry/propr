@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 
 const mockQueueAdd = mock.fn(async () => ({}));
 const mockQueueGetJobs = mock.fn(async () => []);
+const mockGetIssueQueue = mock.fn(async () => ({
+    add: mockQueueAdd,
+    getJobs: mockQueueGetJobs,
+}));
 const mockOctokitRequest = mock.fn(async () => ({
     data: { labels: [{ name: 'ultrafix' }] },
 }));
@@ -30,11 +34,8 @@ await mock.module('@propr/core', {
         findPlanIssueByRepoAndPR: mockFindPlanIssueByRepoAndPR,
         generateCorrelationId: mock.fn(() => 'next-correlation-id'),
         getAuthenticatedOctokit: mock.fn(async () => ({ request: mockOctokitRequest })),
+        getIssueQueue: mockGetIssueQueue,
         getPendingPrCommentsKey: (owner: string, repo: string, pr: number) => `pending:${owner}:${repo}:${pr}`,
-        issueQueue: {
-            add: mockQueueAdd,
-            getJobs: mockQueueGetJobs,
-        },
         retryConfigs: { githubApi: {} },
         safeRemoveLabel: mock.fn(async () => undefined),
         withUltrafixLabelTransition: async (_redis: unknown, _identity: unknown, operation: () => Promise<unknown>) => {
@@ -103,6 +104,7 @@ describe('Ultrafix continuation entry point', () => {
     beforeEach(() => {
         mockQueueAdd.mock.resetCalls();
         mockQueueGetJobs.mock.resetCalls();
+        mockGetIssueQueue.mock.resetCalls();
         mockOctokitRequest.mock.resetCalls();
         mockGetCurrentPRHead.mock.resetCalls();
         mockGetCheckRunsStatus.mock.resetCalls();
@@ -150,6 +152,7 @@ describe('Ultrafix continuation entry point', () => {
         assert.equal(mockGetCurrentPRHead.mock.callCount(), 0);
         assert.equal(mockGetCheckRunsStatus.mock.callCount(), 0);
         assert.equal(mockQueueAdd.mock.callCount(), 1);
+        assert.ok(mockGetIssueQueue.mock.callCount() >= 2, 'readiness and enqueue both resolve the lazy queue');
         assert.equal(mockQueueAdd.mock.calls[0].arguments[1].commandMode, 'fix');
         assert.equal(await loadDeferredContinuation(redis as never, 'acme', 'web', 42), null);
     });
