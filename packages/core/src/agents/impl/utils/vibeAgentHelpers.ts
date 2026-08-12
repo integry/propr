@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { parseVibeOutput } from './vibeOutputParser.js';
+import { createContainerExecutionId } from './containerExecutionId.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
@@ -334,8 +335,7 @@ export function cleanupTempFile(filePath: string | undefined): void {
 }
 
 export function buildVibeContainerName(alias: string, taskType: string, taskId: string | undefined, modelName?: string): string {
-    const uniqueSuffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    const shortTaskId = sanitizeDockerNamePart(taskId?.slice(-8), uniqueSuffix);
+    const shortTaskId = sanitizeDockerNamePart(createContainerExecutionId(taskId), 'execution');
     const sanitizedAlias = sanitizeDockerNamePart(alias, 'vibe');
     const sanitizedType = sanitizeDockerNamePart(taskType, 'task');
     const sanitizedModel = modelName ? `${sanitizeDockerNamePart(modelName, 'model')}-` : '';
