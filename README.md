@@ -60,7 +60,9 @@ ProPR is a set of stages you can adopt independently — use one or all:
 
 ## Quick start (recommended: CLI)
 
-You need a Docker-capable Linux host, **Node.js 22+**, and a provider account for at least one coding agent. Reuse a host login (`claude auth login`, `agy login`, …), create one through the agent image with `propr agent login <agent>`, or add the agent in the Web UI and log in directly to an isolated ProPR-managed credential directory.
+You need a Linux `amd64` host with a maintained Docker Engine release, direct access to its Docker socket, **Node.js 22+**, GitHub access, and a provider account for at least one coding agent. Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for a single-task evaluation; 8 GB RAM or more is recommended for normal or concurrent use. The full Docker, platform, capacity, and network contract is in [System Requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).
+
+Reuse a host login (`claude auth login`, `agy login`, …), create one through the agent image with `propr agent login <agent>`, or add the agent in the Web UI and log in directly to an isolated ProPR-managed credential directory.
 
 ```bash
 npm install -g propr-cli
@@ -74,7 +76,7 @@ Then open the Web UI at **http://localhost:5173** and add a repository and an ag
 
 See the [Local Setup tutorial](https://docs.propr.dev/docs/tutorials/setup-local) for the full walkthrough, [Server Setup](https://docs.propr.dev/docs/tutorials/setup-server) for shared/production hosts, and [Secure VPS Deployment](https://docs.propr.dev/docs/tutorials/setup-vps) for a hardened install.
 
-> **No Node.js on the host?** The stack can also be launched from the prebuilt `propr/launcher` image with a single `docker run`. See [Setup](https://docs.propr.dev/docs/tutorials/setup).
+> **No Node.js on the host?** The stack can also be launched from the prebuilt `propr/launcher` image with a single `docker run`. Docker Compose is only required for source development. See [Setup](https://docs.propr.dev/docs/tutorials/setup).
 
 ## Supported agents
 
@@ -144,7 +146,7 @@ Start from [`.env.example`](.env.example) and see [GitHub authentication](https:
 
 ## Prebuilt images
 
-ProPR ships as a set of prebuilt images orchestrated by the `propr/launcher` umbrella image (mirrored to `ghcr.io/proprdev/*`):
+ProPR ships its prebuilt images on Docker Hub, orchestrated by the `propr/launcher` umbrella image:
 
 | Image | Contents |
 |---|---|

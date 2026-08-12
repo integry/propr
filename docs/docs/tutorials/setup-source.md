@@ -13,9 +13,11 @@ This path runs ProPR from a source checkout with Docker Compose. It serves two a
 
 - Node.js 22+
 - Git 2.25+
-- Docker (Docker Desktop works here)
+- A maintained Docker Engine release and Docker Compose v2 (`docker compose version`; Docker Desktop includes both)
 - Redis, only if running services directly outside Docker Compose
 - A ProPR source checkout
+
+The published v0.8.10 stack is release-qualified on Linux `amd64`. Docker Desktop on macOS and Windows is the documented source-development path, but it has not completed the release qualification run. The current agent image has no `arm64` manifest, so Apple Silicon evaluation depends on `amd64` image emulation and remains untested.
 
 ## 1. Install Dependencies
 
