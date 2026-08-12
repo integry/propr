@@ -3,8 +3,8 @@ import {
     findPlanIssueByRepoAndPR,
     generateCorrelationId,
     getAuthenticatedOctokit,
+    getIssueQueue,
     getPendingPrCommentsKey,
-    issueQueue,
     retryConfigs,
     safeRemoveLabel,
     withUltrafixLabelTransition,
@@ -223,6 +223,7 @@ export async function enqueueNextStep(
         ? [ultrafixMeta.reviewModel]
         : undefined;
 
+    const issueQueue = await getIssueQueue();
     await issueQueue.add('processPullRequestComment', {
         pullRequestNumber,
         repoOwner: owner,
@@ -307,6 +308,7 @@ export async function evaluateReadiness(
     let followUpJobsExist = false;
     try {
         followUpJobsExist = await hasFollowUpJobsForPR(owner, repo, pullRequestNumber, async () => {
+            const issueQueue = await getIssueQueue();
             const jobs = await issueQueue.getJobs(['waiting', 'active', 'delayed']);
             const filtered = currentJobId ? jobs.filter((job) => job.id !== currentJobId) : jobs;
             return filtered as Array<{ data: { repoOwner?: string; repoName?: string; pullRequestNumber?: number; ultrafixMeta?: unknown } }>;
