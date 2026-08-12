@@ -6,6 +6,7 @@ import {
   classifyPublishedArtifact,
   inspectNpmArtifact,
   isNpmNotFoundError,
+  resolveNpmPublishArtifactPath,
   validateNpmArtifactIdentity,
 } from "./lib/npm-artifact-reconciliation.mjs";
 
@@ -46,7 +47,8 @@ function lookupPublishedIntegrity(packageSpec) {
 }
 
 function main() {
-  const artifact = inspectNpmArtifact(values.artifact);
+  const artifactPath = resolveNpmPublishArtifactPath(values.artifact);
+  const artifact = inspectNpmArtifact(artifactPath);
   validateNpmArtifactIdentity(artifact, {
     name: values["expected-name"],
     version: values["expected-version"],
@@ -71,7 +73,7 @@ function main() {
   }
 
   console.log(`Publishing verified artifact ${packageSpec}`);
-  execFileSync("npm", ["publish", values.artifact, "--access", "public"], { stdio: "inherit" });
+  execFileSync("npm", ["publish", artifactPath, "--access", "public"], { stdio: "inherit" });
 }
 
 try {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 
 const MAX_TARBALL_BYTES = 25 * 1024 * 1024;
@@ -125,6 +126,18 @@ export function inspectNpmArtifact(artifactPath) {
     version: manifest.version,
     integrity: `sha512-${createHash("sha512").update(compressed).digest("base64")}`,
   };
+}
+
+/**
+ * Return an unambiguous local path for `npm publish`.
+ *
+ * npm treats a relative path without a `./` prefix (for example
+ * `release-artifacts/package.tgz`) as a GitHub shorthand. An absolute path is
+ * valid for both relative and already-absolute inputs and cannot be mistaken
+ * for a repository spec.
+ */
+export function resolveNpmPublishArtifactPath(artifactPath, cwd = process.cwd()) {
+  return resolve(cwd, artifactPath);
 }
 
 export function validateNpmArtifactIdentity(artifact, expected) {
