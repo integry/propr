@@ -88,6 +88,37 @@ function isTruthyEnvFlag(value: string | undefined): boolean {
   return normalized === "true" || normalized === "1";
 }
 
+function normalizeServiceUrl(value: string | undefined): string | undefined {
+  try {
+    if (!value?.trim()) return undefined;
+    const url = new URL(value.trim());
+    if (url.username || url.password || url.search || url.hash) return undefined;
+    const path = url.pathname.replace(/\/+$/, "");
+    return `${url.origin}${path}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function isSupportedLoopbackCallback(value: string | undefined): boolean {
+  try {
+    if (!value?.trim()) return false;
+    const url = new URL(value.trim());
+    const hostname = url.hostname.toLowerCase();
+    return (
+      url.protocol === "http:" &&
+      (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") &&
+      url.username === "" &&
+      url.password === "" &&
+      url.pathname === "/api/auth/github/callback" &&
+      url.search === "" &&
+      url.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Catalog of supported agents: the image each one needs and the host
  * credential directories recorded into `.env` when it is selected. Mirrors
@@ -692,12 +723,24 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         existingEnv.PROPR_UI_TUNNEL_TOKEN?.trim() || isTruthyEnvFlag(existingEnv.PROPR_UI_TUNNEL_ENABLED)
       );
       const explicitBrowserAuthMode = existingEnv.PROPR_WEB_AUTH_MODE?.trim().toLowerCase();
+      const hasExplicitBrowserAuthMode =
+        explicitBrowserAuthMode === "connect" ||
+        explicitBrowserAuthMode === "github" ||
+        explicitBrowserAuthMode === "disabled";
       const customBrowserOAuthApplies =
         !managedTunnelEnabled &&
-        explicitBrowserAuthMode !== "connect" &&
-        explicitBrowserAuthMode !== "disabled" &&
+        !hasExplicitBrowserAuthMode &&
         isConfiguredOAuthValue(existingEnv.GH_OAUTH_CLIENT_ID) &&
         isConfiguredOAuthValue(existingEnv.GH_OAUTH_CLIENT_SECRET);
+      const usesHostedConnect =
+        normalizeServiceUrl(resolvedRelayUrl) === normalizeServiceUrl(DEFAULT_PROPR_GH_RELAY_URL) &&
+        normalizeServiceUrl(existingEnv.PROPR_CONNECT_URL || "https://connect.propr.dev") ===
+          "https://connect.propr.dev";
+      const callbackUrl = existingEnv.GH_OAUTH_CALLBACK_URL ||
+        "http://localhost:4000/api/auth/github/callback";
+      const automaticConnectApplies =
+        usesHostedConnect &&
+        (managedTunnelEnabled || isSupportedLoopbackCallback(callbackUrl));
       actions.applyEnvSelection(
         rootDir,
         {
@@ -706,11 +749,12 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
           PROPR_GH_RELAY_URL: resolvedRelayUrl,
           PROPR_GH_RELAY_TOKEN: token,
           GH_INSTALLATION_ID: installationId,
-          // Connect owns the shared App's browser OAuth client. Managed tunnels
-          // require it, and local stacks use it unless a real custom OAuth App
-          // already applies. Omitting this key preserves the API resolver's
-          // off-tunnel custom-credential precedence.
-          ...(!customBrowserOAuthApplies ? { PROPR_WEB_AUTH_MODE: "connect" } : {}),
+          // Select hosted Connect only for its managed tunnel and exact
+          // loopback callback deployments. Explicit modes, custom OAuth, and
+          // custom/self-hosted relay paths remain operator-owned.
+          ...(automaticConnectApplies && !hasExplicitBrowserAuthMode && !customBrowserOAuthApplies
+            ? { PROPR_WEB_AUTH_MODE: "connect" }
+            : {}),
           // The relay identity was just authenticated by GitHub and owns this
           // installation, so it is the safe bootstrap administrator on a fresh
           // stack. Existing stacks may already have durable database-backed

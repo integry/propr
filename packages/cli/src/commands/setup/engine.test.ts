@@ -301,7 +301,12 @@ test("relay enrollment auto-selects a single installation and writes the relay v
   let enrolledId: string | undefined;
   const result = await runSetup({
     root: "/stack",
-    prompts: relayPrompts(),
+    prompts: relayPrompts({
+      configureGithubAuth: async () => ({
+        mode: "relay",
+        enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL },
+      }),
+    }),
     actions: mockActions({
       inspectStackInit: (rootDir) => ({
         rootDir,
@@ -323,7 +328,7 @@ test("relay enrollment auto-selects a single installation and writes the relay v
       fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org", "Organization")] }),
       enrollRelay: async ({ installationId }) => {
         enrolledId = installationId;
-        return { relayUrl: "https://relay/v1", token: "prt_minted" };
+        return { relayUrl: DEFAULT_PROPR_GH_RELAY_URL, token: "prt_minted" };
       },
       applyEnvSelection: (_root, vars) => {
         if (vars.GH_AUTH_MODE === "relay") relayVars = vars;
@@ -336,13 +341,69 @@ test("relay enrollment auto-selects a single installation and writes the relay v
   assert.deepEqual(relayVars, {
     PROPR_DEMO_MODE: "false",
     GH_AUTH_MODE: "relay",
-    PROPR_GH_RELAY_URL: "https://relay/v1",
+    PROPR_GH_RELAY_URL: DEFAULT_PROPR_GH_RELAY_URL,
     PROPR_GH_RELAY_TOKEN: "prt_minted",
     GH_INSTALLATION_ID: "42",
     PROPR_WEB_AUTH_MODE: "connect",
     PROPR_ADMIN_USERS: "octocat",
     GITHUB_USER_WHITELIST: "octocat",
   });
+});
+
+test("relay enrollment does not select Connect for a non-loopback off-tunnel callback", async () => {
+  const env: Record<string, string> = {
+    GITHUB_EVENT_INTAKE_MODE: "polling",
+    PROPR_UI_TUNNEL_ENABLED: "false",
+    GH_OAUTH_CALLBACK_URL: "https://api.example.com/api/auth/github/callback",
+  };
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts({
+      configureGithubAuth: async () => ({
+        mode: "relay",
+        enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL },
+      }),
+    }),
+    actions: mockActions({
+      readEnvVars: () => ({ ...env }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => ({ relayUrl: DEFAULT_PROPR_GH_RELAY_URL, token: "prt_minted" }),
+      applyEnvSelection: (_root, vars) => {
+        Object.assign(env, vars);
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(env.PROPR_WEB_AUTH_MODE, undefined);
+});
+
+test("custom relay enrollment preserves an explicit browser auth mode", async () => {
+  const env: Record<string, string> = {
+    GITHUB_EVENT_INTAKE_MODE: "polling",
+    PROPR_UI_TUNNEL_ENABLED: "false",
+    PROPR_WEB_AUTH_MODE: "disabled",
+    GH_OAUTH_CALLBACK_URL: "http://localhost:4000/api/auth/github/callback",
+  };
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      readEnvVars: () => ({ ...env }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => ({ relayUrl: "https://relay.example.com/v1", token: "prt_minted" }),
+      applyEnvSelection: (_root, vars) => {
+        Object.assign(env, vars);
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(env.PROPR_WEB_AUTH_MODE, "disabled");
 });
 
 test("relay enrollment preserves custom GitHub browser OAuth off-tunnel", async () => {

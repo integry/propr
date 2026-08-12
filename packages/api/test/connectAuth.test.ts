@@ -19,7 +19,33 @@ test('local relay mode uses Connect without a per-instance OAuth App', () => {
     PROPR_UI_TUNNEL_ENABLED: 'false',
     PROPR_GH_RELAY_URL: 'https://webhook.propr.dev/v1',
     PROPR_GH_RELAY_TOKEN: 'prt_secret',
+    GH_OAUTH_CALLBACK_URL: 'http://localhost:4000/api/auth/github/callback',
   }), 'connect');
+});
+
+test('off-tunnel relay inference rejects callbacks outside the exact loopback allowlist', () => {
+  for (const callbackUrl of [
+    'https://api.example.com/api/auth/github/callback',
+    'https://localhost:4000/api/auth/github/callback',
+    'http://127.0.0.2:4000/api/auth/github/callback',
+    'http://localhost:4000/not-the-auth-callback',
+  ]) {
+    assert.equal(resolveBrowserAuthMode({
+      PROPR_UI_TUNNEL_ENABLED: 'false',
+      PROPR_GH_RELAY_URL: 'https://webhook.propr.dev/v1',
+      PROPR_GH_RELAY_TOKEN: 'prt_secret',
+      GH_OAUTH_CALLBACK_URL: callbackUrl,
+    }), 'disabled', callbackUrl);
+  }
+});
+
+test('off-tunnel custom relay enrollment does not infer hosted Connect auth', () => {
+  assert.equal(resolveBrowserAuthMode({
+    PROPR_UI_TUNNEL_ENABLED: 'false',
+    PROPR_GH_RELAY_URL: 'https://relay.example.com/v1',
+    PROPR_GH_RELAY_TOKEN: 'prt_secret',
+    GH_OAUTH_CALLBACK_URL: 'http://localhost:4000/api/auth/github/callback',
+  }), 'disabled');
 });
 
 test('literal example OAuth placeholders do not enable GitHub web auth', () => {
