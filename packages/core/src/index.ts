@@ -279,6 +279,8 @@ export { parseAntigravityJsonl, filterAntigravityAnalysisEvents } from './agents
 export {
     getReposFromEnv,
     getRepos,
+    isMonitoredRepository,
+    resolveMonitoredRepositories,
     getAiPrimaryTag,
     getPrimaryProcessingLabels,
     getUserWhitelist,

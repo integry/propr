@@ -36,6 +36,7 @@ import {
     loadAllConfigs,
     reloadConfigs,
     getRepos,
+    isMonitoredRepository,
     getBotUsername,
     getUserWhitelist,
     getPrimaryProcessingLabels,
@@ -204,8 +205,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const repos = getRepos();
 
     if (repos.length === 0) {
-        logger.error('No repositories configured. Set GITHUB_REPOS_TO_MONITOR or CONFIG_REPO. Exiting.');
-        process.exit(1);
+        logger.warn('No repositories configured yet. The daemon will stay active and reload repositories added through setup or Settings.');
     }
 
     if (options.reset) {
@@ -309,7 +309,8 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             issueProcessor: (issue: DetectedIssue, correlationId: string) => processDetectedIssue(issue, correlationId, redisClient),
             commentProcessor: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => processCommentEvent(payload, eventType, correlationId, commentConfig),
             commentDeletedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentDeleted(payload, eventType, correlationId, commentConfig),
-            commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig)
+            commentEditedHandler: (payload: CommentPayload, eventType: CommentEventType, correlationId: string) => handleCommentEdited(payload, eventType, correlationId, commentConfig),
+            repositoryFilter: (repository: string) => isMonitoredRepository(repository),
         });
     };
 
@@ -339,15 +340,6 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         host: process.env.REDIS_HOST || '127.0.0.1',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
         retryStrategy: (times: number) => Math.min(times * 50, 2000)
-    });
-
-    // Subscribe to config update events
-    subscriberRedis.subscribe(CONFIG_EVENT_CHANNEL, (err) => {
-        if (err) {
-            logger.error({ error: err.message }, 'Failed to subscribe to config events channel');
-        } else {
-            logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
-        }
     });
 
     // Handle incoming config update messages
@@ -390,6 +382,13 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
             }
         }
     });
+
+    // Subscribe before the catch-up reload so a repository saved between the
+    // initial startup read and subscription cannot be missed. Any update after
+    // subscribe either appears in the catch-up read or arrives as a message.
+    await subscriberRedis.subscribe(CONFIG_EVENT_CHANNEL);
+    logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
+    await reloadConfigs();
 
     const shutdown = async (signal: string): Promise<void> => {
         logger.info(`Received ${signal}, shutting down gracefully...`);

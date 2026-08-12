@@ -68,6 +68,7 @@ export type CommentDeletedHandler = (payload: IssueCommentEvent | PullRequestRev
 export type CommentEditedHandler = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
 export type PullRequestProcessor = (payload: PullRequestEvent, correlationId: string) => Promise<void>;
 export type CheckRunProcessor = (payload: CheckRunEvent, correlationId: string) => Promise<void>;
+export type RepositoryFilter = (repository: string) => boolean | Promise<boolean>;
 
 let processDetectedIssue: IssueProcessor | null = null;
 let processCommentEvent: CommentProcessor | null = null;
@@ -76,6 +77,7 @@ let handleCommentEdited: CommentEditedHandler | null = null;
 let processPullRequest: PullRequestProcessor | null = null;
 let processCheckRun: CheckRunProcessor | null = null;
 let webhookRedisClient: Redis | null = null;
+let repositoryFilter: RepositoryFilter | null = null;
 
 export interface WebhookHandlerOptions {
     issueProcessor: IssueProcessor;
@@ -85,6 +87,7 @@ export interface WebhookHandlerOptions {
     pullRequestProcessor?: PullRequestProcessor;
     checkRunProcessor?: CheckRunProcessor;
     redisClient?: Redis;
+    repositoryFilter?: RepositoryFilter;
 }
 
 export async function initializeWebhookHandler(options: WebhookHandlerOptions): Promise<void> {
@@ -95,7 +98,16 @@ export async function initializeWebhookHandler(options: WebhookHandlerOptions): 
     processPullRequest = options.pullRequestProcessor || null;
     processCheckRun = options.checkRunProcessor || null;
     webhookRedisClient = options.redisClient || null;
+    repositoryFilter = options.repositoryFilter || null;
     logger.info('Webhook handler initialized');
+}
+
+function getRepositoryFullName(payload: unknown): string | null {
+    if (typeof payload !== 'object' || payload === null || !('repository' in payload)) return null;
+    const repository = (payload as { repository?: unknown }).repository;
+    if (typeof repository !== 'object' || repository === null || !('full_name' in repository)) return null;
+    const fullName = (repository as { full_name?: unknown }).full_name;
+    return typeof fullName === 'string' && fullName.trim() ? fullName.trim() : null;
 }
 
 function isIssuesEvent(payload: unknown): payload is IssuesEvent {
@@ -387,6 +399,18 @@ export async function processWebhookEvent(
     correlationId: string,
 ): Promise<DeliveryDisposition> {
     const correlatedLogger = logger.withCorrelation(correlationId);
+
+    const repository = getRepositoryFullName(payload);
+    if (repositoryFilter) {
+        if (!repository) {
+            correlatedLogger.warn({ event: eventType }, 'Ignoring event without a repository identity');
+            return { status: 'ignored', reason: 'repository_missing' };
+        }
+        if (!await repositoryFilter(repository)) {
+            correlatedLogger.debug({ repository, event: eventType }, 'Ignoring event for an unmonitored repository');
+            return { status: 'ignored', reason: 'repository_not_monitored' };
+        }
+    }
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 

@@ -10,21 +10,36 @@ interface Settings {
     [key: string]: unknown;
 }
 
-const GITHUB_REPOS_TO_MONITOR = process.env.GITHUB_REPOS_TO_MONITOR;
-
 let AI_PRIMARY_TAG = process.env.AI_PRIMARY_TAG ?? 'AI';
 let primaryProcessingLabels: string[] = [];
 let monitoredRepos: string[] = [];
 let GITHUB_USER_WHITELIST: string[] = (process.env.GITHUB_USER_WHITELIST ?? '').split(',').filter(u => u);
 let GITHUB_BOT_USERNAME: string | undefined = process.env.GITHUB_BOT_USERNAME;
 
-export function getReposFromEnv(): string[] {
-    if (!GITHUB_REPOS_TO_MONITOR) return [];
-    return GITHUB_REPOS_TO_MONITOR.split(',').map(r => r.trim()).filter(r => r);
+export function getReposFromEnv(environment: NodeJS.ProcessEnv = process.env): string[] {
+    const configuredRepos = environment.GITHUB_REPOS_TO_MONITOR;
+    if (!configuredRepos) return [];
+    return configuredRepos.split(',').map(r => r.trim()).filter(r => r);
 }
 
 export function getRepos(): string[] {
     return monitoredRepos;
+}
+
+export function isMonitoredRepository(repository: string, repos: readonly string[] = monitoredRepos): boolean {
+    const normalizedRepository = repository.trim().toLowerCase();
+    return normalizedRepository.length > 0
+        && repos.some(configured => configured.trim().toLowerCase() === normalizedRepository);
+}
+
+export async function resolveMonitoredRepositories(
+    environment: NodeJS.ProcessEnv = process.env,
+    loadPersisted: () => Promise<string[]> = loadMonitoredRepos,
+): Promise<string[]> {
+    const environmentRepos = getReposFromEnv(environment);
+    return environment.CONFIG_REPO || environmentRepos.length === 0
+        ? loadPersisted()
+        : environmentRepos;
 }
 
 export function getAiPrimaryTag(): string {
@@ -68,11 +83,11 @@ export async function detectBotUsername(): Promise<string> {
 
 export async function loadReposFromConfig(): Promise<void> {
     try {
-        if (process.env.CONFIG_REPO) {
-            monitoredRepos = await loadMonitoredRepos();
-            logger.info({ repos: monitoredRepos }, 'Successfully loaded monitored repositories from config repo');
+        const usesPersistedConfiguration = !!process.env.CONFIG_REPO || getReposFromEnv().length === 0;
+        monitoredRepos = await resolveMonitoredRepositories();
+        if (usesPersistedConfiguration) {
+            logger.info({ repos: monitoredRepos }, 'Successfully loaded monitored repositories from persisted configuration');
         } else {
-            monitoredRepos = getReposFromEnv();
             logger.info({ repos: monitoredRepos }, 'Using repositories from environment variable');
         }
     } catch (error) {
@@ -148,8 +163,10 @@ export async function loadAllConfigs(): Promise<void> {
 
 export async function reloadConfigs(): Promise<void> {
     try {
+        // Repository configuration is persisted by the standard CLI/UI setup even
+        // when no legacy CONFIG_REPO is configured, so it must always be refreshed.
+        await loadReposFromConfig();
         if (process.env.CONFIG_REPO) {
-            await loadReposFromConfig();
             await loadSettingsFromConfig();
             await loadAiPrimaryTagFromConfig();
             await loadPrimaryProcessingLabelsFromConfig();

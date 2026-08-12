@@ -61,6 +61,21 @@ test('API config subscription serializes the startup reload with settings update
   ]);
 });
 
+test('API config subscription reloads repository updates', async () => {
+  const subscriber = new FakeSubscriber();
+  let reloads = 0;
+
+  const subscription = await startConfigReloadSubscription(
+    { duplicate: () => subscriber },
+    async () => { reloads += 1; },
+  );
+  await subscription.reload();
+  subscriber.listener?.(JSON.stringify({ type: 'config_update', subtype: 'repos_update' }));
+  await subscription.close();
+
+  assert.equal(reloads, 2);
+});
+
 test('API config subscription ignores unrelated and malformed events', async () => {
   const subscriber = new FakeSubscriber();
   let reloads = 0;

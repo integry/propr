@@ -41,7 +41,8 @@ import {
   initializeWebhookHandler,
   buildRedisRuntimeConfig,
   db,
-  loadSettingsFromConfig,
+  reloadConfigs,
+  isMonitoredRepository,
   processDetectedIssue as processDetectedIssueBase,
   handleCommentDeleted,
   handleCommentEdited,
@@ -391,7 +392,7 @@ async function start(): Promise<void> {
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
-      configReloadSubscription = await startConfigReloadSubscription(redisClient, loadSettingsFromConfig);
+      configReloadSubscription = await startConfigReloadSubscription(redisClient, reloadConfigs);
       // Subscribe first, then enqueue the initial load through the same serial
       // chain so no settings update can race with the startup snapshot.
       await configReloadSubscription.reload();
@@ -434,7 +435,13 @@ async function start(): Promise<void> {
         enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
       });
       if (apiIntakeMode === 'direct_webhook') {
-        await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper });
+        await initializeWebhookHandler({
+          issueProcessor: processDetectedIssue,
+          commentProcessor: processCommentEventWrapper,
+          commentDeletedHandler: handleCommentDeletedWrapper,
+          commentEditedHandler: handleCommentEditedWrapper,
+          repositoryFilter: (repository: string) => isMonitoredRepository(repository),
+        });
         console.log('[webhook] Webhook handler initialized');
       }
       setInterval(async () => {
