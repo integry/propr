@@ -328,9 +328,9 @@ describe('OpenCodeAgent Docker args', () => {
         assert.strictEqual(toOpenCodeExternalModelId('opencode-openai/gpt-5.5'), 'openai/gpt-5.5');
         assert.strictEqual(toOpenCodeExternalModelId('opencode-deepseek-v4-flash-free'), 'opencode/deepseek-v4-flash-free');
         assert.ok(routedArgs.includes('--name'));
-        assert.match(routedArgs[routedArgs.indexOf('--name') + 1], /^open-code-test-issue-42-opencode-provider-model-12345678$/);
-        assert.match(openAiArgs[openAiArgs.indexOf('--name') + 1], /openai-gpt-5.5-12345678$/);
-        assert.match(goArgs[goArgs.indexOf('--name') + 1], /opencode-go-qwen3.7-max-12345678$/);
+        assert.match(routedArgs[routedArgs.indexOf('--name') + 1], /^open-code-test-issue-42-opencode-provider-model-12345678-[a-f0-9]{8}$/);
+        assert.match(openAiArgs[openAiArgs.indexOf('--name') + 1], /openai-gpt-5.5-12345678-[a-f0-9]{8}$/);
+        assert.match(goArgs[goArgs.indexOf('--name') + 1], /opencode-go-qwen3.7-max-12345678-[a-f0-9]{8}$/);
         assert.ok(routedArgs.includes('--dangerously-skip-permissions'));
     });
 

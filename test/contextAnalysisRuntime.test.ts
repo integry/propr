@@ -18,8 +18,13 @@ describe('context analysis runtime safeguards', () => {
     assert.match(second, /^[a-z0-9]+-[a-f0-9]{8}$/);
   });
 
-  test('retains the task suffix for task-backed container IDs', () => {
-    assert.strictEqual(createContainerExecutionId('task-12345678'), '12345678');
+  test('keeps the task suffix while making every task-backed execution unique', () => {
+    const first = createContainerExecutionId('first-command-79edfa5d');
+    const second = createContainerExecutionId('second-command-79edfa5d');
+
+    assert.notStrictEqual(first, second);
+    assert.match(first, /^79edfa5d-[a-f0-9]{8}$/);
+    assert.match(second, /^79edfa5d-[a-f0-9]{8}$/);
   });
 
   test('defaults context analysis to thirty minutes', () => {
