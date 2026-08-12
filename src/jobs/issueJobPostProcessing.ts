@@ -40,6 +40,38 @@ function hasPublishableAgentWork(claudeResult: ClaudeCodeResponse | null): boole
     return claudeResult.success || resolveAgentTerminationReason(claudeResult) !== undefined;
 }
 
+async function handleUnpublishableAgentFailure(options: {
+    octokit: Octokit;
+    issueRef: IssueJobData;
+    claudeResult: ClaudeCodeResponse;
+    AI_PROCESSING_TAG: string;
+    correlatedLogger: Logger;
+}): Promise<PostProcessingResult> {
+    const { octokit, issueRef, claudeResult, AI_PROCESSING_TAG, correlatedLogger } = options;
+    const errorMessage = claudeResult.error?.trim() || 'The coding agent stopped before producing publishable work.';
+
+    correlatedLogger.warn({ issueNumber: issueRef.number, error: redactSecrets(errorMessage) }, 'Agent execution failed without publishable work');
+    await safeUpdateLabels(
+        { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
+        [AI_PROCESSING_TAG],
+        [],
+    );
+
+    const completionComment = await generateCompletionComment(claudeResult, {
+        number: issueRef.number,
+        repoOwner: issueRef.repoOwner,
+        repoName: issueRef.repoName,
+    }, { publishedAs: 'issue_comment' });
+    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: issueRef.repoOwner,
+        repo: issueRef.repoName,
+        issue_number: issueRef.number,
+        body: `❌ **AI processing failed before producing publishable work.**\n\n${formatErrorBlock('System Error', errorMessage)}${completionComment}`,
+    });
+
+    return { success: false, pr: null, updatedLabels: [], error: errorMessage };
+}
+
 function formatFallbackDiagnostics(claudeResult: ClaudeCodeResponse, postProcessingError: unknown): string {
     const systemError = claudeResult?.success === false ? claudeResult.error?.trim() : '';
     const postProcessingMessage = getErrorMessage(postProcessingError).trim();
@@ -90,6 +122,17 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
     let postProcessingResult: PostProcessingResult | null = null;
 
     try {
+        if (!hasPublishableAgentWork(claudeResult)) {
+            postProcessingResult = await handleUnpublishableAgentFailure({
+                octokit,
+                issueRef,
+                claudeResult,
+                AI_PROCESSING_TAG,
+                correlatedLogger,
+            });
+            return { commitResult, postProcessingResult };
+        }
+
         const completionNote = buildImplementationCompletionNote(claudeResult);
         let commitMessage = `fix(ai): Resolve issue #${issueRef.number} - ${currentIssueData.data.title.substring(0, 50)}\n\nImplemented by ProPR AI using ${modelName} model.\n\n${completionNote}`;
 
@@ -169,13 +212,22 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
         correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (postProcessingError as Error).message }, 'Deterministic post-processing failed');
 
         try {
-            await safeUpdateLabels({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, [AI_PROCESSING_TAG], [AI_DONE_TAG]);
-            const completionComment = await generateCompletionComment(claudeResult, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName });
+            const publishableWork = hasPublishableAgentWork(claudeResult);
+            const completedLabels = publishableWork ? [AI_DONE_TAG] : [];
+            await safeUpdateLabels({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, [AI_PROCESSING_TAG], completedLabels);
+            const completionComment = await generateCompletionComment(
+                claudeResult,
+                { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
+                { publishedAs: 'issue_comment' },
+            );
+            const fallbackHeading = publishableWork
+                ? '⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**'
+                : '❌ **AI processing failed before producing publishable work.**';
             await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
                 owner: issueRef.repoOwner, repo: issueRef.repoName, issue_number: issueRef.number,
-                body: `⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**\n\n${formatFallbackDiagnostics(claudeResult, postProcessingError)}${completionComment}`,
+                body: `${fallbackHeading}\n\n${formatFallbackDiagnostics(claudeResult, postProcessingError)}${completionComment}`,
             });
-            postProcessingResult = { success: false, pr: null, updatedLabels: [AI_DONE_TAG], error: (postProcessingError as Error).message };
+            postProcessingResult = { success: false, pr: null, updatedLabels: completedLabels, error: (postProcessingError as Error).message };
         } catch (fallbackError) {
             correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (fallbackError as Error).message }, 'Fallback post-processing also failed');
             postProcessingResult = { success: false, pr: null, updatedLabels: [], error: (postProcessingError as Error).message };

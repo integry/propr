@@ -257,7 +257,7 @@ export async function handleNoCodeChanges(options: {
         number: issueRef.number,
         repoOwner: issueRef.repoOwner,
         repoName: issueRef.repoName,
-    });
+    }, { publishedAs: 'issue_comment' });
     await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: issueRef.repoOwner,
         repo: issueRef.repoName,
