@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.11] - 2026-08-12
+
+### Changed
+
+- **Supported install contract**: release documentation now states the tested
+  Linux `amd64` baseline, practical host sizing, Docker requirements, and
+  Docker Hub as the canonical distribution registry.
+
+### Fixed
+
+- **Planner issue dispatch**: routing selectors are applied before the `AI`
+  trigger label, preventing one planned issue from starting both on `main` and
+  on its generated epic branch.
+- **CLI read reliability**: transient transport failures on idempotent API
+  reads retry briefly without retrying mutations or HTTP error responses.
+
 ## [0.8.10] - 2026-08-12
 
 ### Fixed
@@ -258,6 +274,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.11]: https://github.com/integry/propr/releases/tag/v0.8.11
 [0.8.10]: https://github.com/integry/propr/releases/tag/v0.8.10
 [0.8.9]: https://github.com/integry/propr/releases/tag/v0.8.9
 [0.8.8]: https://github.com/integry/propr/releases/tag/v0.8.8
