@@ -332,7 +332,20 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     routingService = intakeStartup.routingService;
     routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
-    const configReloadInterval = setInterval(reloadConfigs, 5 * 60 * 1000);
+    // Serialize every reload source so an earlier, slower persisted-config read
+    // cannot overwrite a newer notification's state after it completes.
+    let configReloadQueue = Promise.resolve();
+    const enqueueConfigReload = (): Promise<void> => {
+        configReloadQueue = configReloadQueue
+            .then(reloadConfigs)
+            .catch((error: unknown) => {
+                const err = error as Error;
+                logger.error({ error: err.message }, 'Failed to reload daemon config');
+            });
+        return configReloadQueue;
+    };
+
+    const configReloadInterval = setInterval(() => { void enqueueConfigReload(); }, 5 * 60 * 1000);
 
     // --- Real-time Config Subscription Setup ---
     // Create a dedicated Redis client for subscription (subscriber clients cannot run other commands)
@@ -350,7 +363,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
                 logger.info({ event }, 'Received config update event, reloading configs...');
 
                 // 1. Reload base configs (repos, settings, tags, etc.)
-                await reloadConfigs();
+                await enqueueConfigReload();
 
                 // 2. Handle specific update types
                 if (event.subtype === 'agents_update') {
@@ -388,7 +401,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     // subscribe either appears in the catch-up read or arrives as a message.
     await subscriberRedis.subscribe(CONFIG_EVENT_CHANNEL);
     logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
-    await reloadConfigs();
+    await enqueueConfigReload();
 
     const shutdown = async (signal: string): Promise<void> => {
         logger.info(`Received ${signal}, shutting down gracefully...`);

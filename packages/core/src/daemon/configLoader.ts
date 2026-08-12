@@ -166,8 +166,10 @@ export async function reloadConfigs(): Promise<void> {
         // Repository configuration is persisted by the standard CLI/UI setup even
         // when no legacy CONFIG_REPO is configured, so it must always be refreshed.
         await loadReposFromConfig();
+        // Settings updates must always invalidate the settings cache. Loading the
+        // legacy repository-backed values remains conditional inside this function.
+        await loadSettingsFromConfig();
         if (process.env.CONFIG_REPO) {
-            await loadSettingsFromConfig();
             await loadAiPrimaryTagFromConfig();
             await loadPrimaryProcessingLabelsFromConfig();
         }
