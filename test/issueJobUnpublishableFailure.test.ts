@@ -6,6 +6,7 @@ const pushBranch = mock.fn(async () => undefined);
 const safeUpdateLabels = mock.fn(async () => ({ success: true, removed: ['AI-processing'], added: [], errors: [] }));
 const generateCompletionComment = mock.fn(async () => 'Generated failure details.');
 const createPullRequest = mock.fn(async () => ({ success: true, pr: null, updatedLabels: [] }));
+const resolveAgentTerminationReason = mock.fn((result: { terminationReason?: 'timeout' | 'max_turns' }) => result.terminationReason);
 
 await mock.module('@propr/core', {
     namedExports: {
@@ -15,7 +16,7 @@ await mock.module('@propr/core', {
         AI_COMMIT_AUTHOR: { name: 'ProPR AI', email: 'ai@propr.dev' },
         TaskStates: { CANCELLED: 'cancelled' },
         describeAgentTermination: mock.fn(() => 'Agent stopped.'),
-        resolveAgentTerminationReason: mock.fn(() => undefined),
+        resolveAgentTerminationReason,
         getAuthenticatedOctokit: mock.fn(),
         linkPRToPlanIssue: mock.fn(),
         safeUpdateLabels,
@@ -155,4 +156,49 @@ test('an unsuccessful processing-label removal is retried by failure post-proces
     assert.match(result.postProcessingResult?.error || '', /Failed to remove the processing label/);
     assert.equal(request.mock.calls.length, 1);
     assert.match(request.mock.calls[0].arguments[1].body as string, /Post-processing Error/);
+});
+
+test('an interrupted execution without a commit remains retryable and never creates an empty PR', async () => {
+    commitChanges.mock.resetCalls();
+    commitChanges.mock.mockImplementation(async () => null);
+    pushBranch.mock.resetCalls();
+    safeUpdateLabels.mock.resetCalls();
+    safeUpdateLabels.mock.mockImplementation(async () => ({ success: true, removed: ['AI-processing'], added: [], errors: [] }));
+    generateCompletionComment.mock.resetCalls();
+    createPullRequest.mock.resetCalls();
+    const request = mock.fn(async () => ({ data: {} }));
+    const claudeResult = {
+        ...failedAgentResult(),
+        terminationReason: 'timeout' as const,
+        error: 'Agent execution timed out after 1800000ms',
+    };
+
+    const result = await performPostProcessing({
+        octokit: { request },
+        issueRef: { repoOwner: 'owner', repoName: 'repo', number: 43 },
+        worktreeInfo: { worktreePath: '/tmp/worktree', branchName: 'propr/43-fix' },
+        currentIssueData: { data: { title: 'Partial timeout', labels: [{ name: 'AI' }] } },
+        claudeResult,
+        modelName: 'codex-test',
+        repoValidation: { isValid: true, repoData: { defaultBranch: 'main' } },
+        repoUrl: 'https://github.com/owner/repo.git',
+        githubToken: { token: 'github-token' },
+        PR_LABEL: 'propr',
+        AI_PROCESSING_TAG: 'AI-processing',
+        AI_DONE_TAG: 'AI-done',
+        jobId: 'job-43',
+        correlatedLogger: logger,
+    });
+
+    assert.equal(commitChanges.mock.calls.length, 1);
+    assert.equal(pushBranch.mock.calls.length, 0);
+    assert.equal(createPullRequest.mock.calls.length, 0);
+    assert.deepEqual(safeUpdateLabels.mock.calls[0].arguments[1], ['AI-processing']);
+    assert.deepEqual(safeUpdateLabels.mock.calls[0].arguments[2], []);
+    assert.equal(result.commitResult, null);
+    assert.equal(result.postProcessingResult?.success, false);
+    assert.deepEqual(result.postProcessingResult?.updatedLabels, []);
+    assert.equal(request.mock.calls.length, 1);
+    assert.match(request.mock.calls[0].arguments[1].body as string, /failed before producing publishable work/i);
+    assert.doesNotMatch(request.mock.calls[0].arguments[1].body as string, /AI-done/);
 });

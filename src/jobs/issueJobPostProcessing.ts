@@ -123,21 +123,21 @@ export interface PostProcessResult {
 async function handlePostProcessingFailure(
     options: PostProcessOptions,
     postProcessingError: unknown,
+    canMarkDone = hasPublishableAgentWork(options.claudeResult),
 ): Promise<PostProcessingResult> {
     const { octokit, issueRef, claudeResult, AI_PROCESSING_TAG, AI_DONE_TAG, jobId, correlatedLogger } = options;
 
     correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (postProcessingError as Error).message }, 'Deterministic post-processing failed');
 
     try {
-        const publishableWork = hasPublishableAgentWork(claudeResult);
-        const completedLabels = publishableWork ? [AI_DONE_TAG] : [];
+        const completedLabels = canMarkDone ? [AI_DONE_TAG] : [];
         await safeUpdateLabels({ octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger }, [AI_PROCESSING_TAG], completedLabels);
         const completionComment = await generateCompletionComment(
             claudeResult,
             { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName },
             { publishedAs: 'issue_comment' },
         );
-        const fallbackHeading = publishableWork
+        const fallbackHeading = canMarkDone
             ? '⚠️ **Post-processing encountered an error, but ProPR analysis was completed.**'
             : '❌ **AI processing failed before producing publishable work.**';
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
@@ -149,6 +149,29 @@ async function handlePostProcessingFailure(
         correlatedLogger.error({ jobId, issueNumber: issueRef.number, error: (fallbackError as Error).message }, 'Fallback post-processing also failed');
         return { success: false, pr: null, updatedLabels: [], error: (postProcessingError as Error).message };
     }
+}
+
+async function handleMissingCommit(options: PostProcessOptions): Promise<PostProcessingResult> {
+    const { octokit, issueRef, claudeResult, currentIssueData, AI_PROCESSING_TAG, AI_DONE_TAG, correlatedLogger } = options;
+    if (claudeResult.success) {
+        return handleNoCodeChanges({
+            octokit,
+            issueRef,
+            claudeResult,
+            currentIssueData,
+            AI_PROCESSING_TAG,
+            AI_DONE_TAG,
+            correlatedLogger,
+        });
+    }
+
+    return handleUnpublishableAgentFailure({
+        octokit,
+        issueRef,
+        claudeResult,
+        AI_PROCESSING_TAG,
+        correlatedLogger,
+    });
 }
 
 export async function performPostProcessing(options: PostProcessOptions): Promise<PostProcessResult> {
@@ -183,17 +206,10 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
 
         claudeResult.modifiedFiles = commitResult?.filesChanged || claudeResult.modifiedFiles;
 
-        // Handle the case where no code changes were needed (work already complete)
-        if (commitResult === null && claudeResult?.success) {
-            postProcessingResult = await handleNoCodeChanges({
-                octokit,
-                issueRef,
-                claudeResult,
-                currentIssueData,
-                AI_PROCESSING_TAG,
-                AI_DONE_TAG,
-                correlatedLogger,
-            });
+        // Successful no-change runs are complete; interrupted no-change runs have
+        // no partial implementation to publish and must remain retryable.
+        if (commitResult === null) {
+            postProcessingResult = await handleMissingCommit(options);
             return { commitResult, postProcessingResult };
         }
 
@@ -244,7 +260,10 @@ export async function performPostProcessing(options: PostProcessOptions): Promis
         );
 
     } catch (postProcessingError) {
-        postProcessingResult = await handlePostProcessingFailure(options, postProcessingError);
+        // A completed execution or an actual commit can be marked done during
+        // fallback. A failed/interrupted run with no commit must remain retryable.
+        const canMarkDone = claudeResult.success || commitResult !== null;
+        postProcessingResult = await handlePostProcessingFailure(options, postProcessingError, canMarkDone);
     }
 
     return { commitResult, postProcessingResult };
