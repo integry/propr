@@ -342,7 +342,7 @@ function buildClaudeResultSection(claudeResult: ClaudeCodeResponse | null): { su
 
 function buildPostProcessingSection(postProcessingResult: PostProcessingResult | null): { success: boolean; pr: PostProcessingResult['pr']; updatedLabels: string[] } {
     return {
-        success: !!postProcessingResult,
+        success: postProcessingResult?.success ?? false,
         pr: postProcessingResult?.pr ?? null,
         updatedLabels: postProcessingResult?.updatedLabels ?? []
     };

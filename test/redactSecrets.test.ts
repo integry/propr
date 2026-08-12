@@ -472,6 +472,17 @@ test('generateCompletionComment redacts secrets in summary, conversation preview
     assert.ok(comment.includes('[REDACTED_AWS_ACCESS_KEY]'), 'AWS redaction placeholder should appear in comment');
 });
 
+test('generateCompletionComment does not claim a PR exists when posted to an issue', async () => {
+    const comment = await generateCompletionComment({ success: false, error: 'Agent failed' }, {
+        number: 7788,
+        repoOwner: 'test-owner',
+        repoName: 'test-repo',
+    }, { publishedAs: 'issue_comment' });
+
+    assert.match(comment, /processing report was generated automatically/i);
+    assert.doesNotMatch(comment, /This PR was created automatically/);
+});
+
 // --- Vendor-specific false-positive boundary tests ---
 
 test('redactSecrets should not redact Stripe publishable key prefix in prose', () => {
