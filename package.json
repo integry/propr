@@ -1,6 +1,6 @@
 {
   "name": "propr",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "private": true,
   "type": "module",
   "main": "index.js",
@@ -86,7 +86,7 @@
     "@octokit/auth-app": "^8.0.1",
     "@octokit/core": "^7.0.2",
     "@octokit/plugin-paginate-rest": "^13.1.1",
-    "@propr/core": "^0.8.8",
+    "@propr/core": "^0.8.9",
     "better-sqlite3": "^11.7.0",
     "bullmq": "^5.81.3",
     "cors": "^2.8.5",

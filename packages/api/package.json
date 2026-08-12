@@ -1,6 +1,6 @@
 {
   "name": "@propr/api",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "description": "API server for ProPR Web UI",
   "type": "module",
   "main": "dist/server.js",
@@ -15,8 +15,8 @@
     "dev": "tsx watch server.ts"
   },
   "dependencies": {
-    "@propr/core": "^0.8.8",
-    "@propr/shared": "^0.8.8",
+    "@propr/core": "^0.8.9",
+    "@propr/shared": "^0.8.9",
     "@types/multer": "^2.0.0",
     "bullmq": "^5.81.3",
     "chokidar": "^3.6.0",

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-08-12
+
+### Changed
+
+- **Adaptive agent resources**: default container CPU limits now scale to the
+  detected host capacity while preserving explicit operator overrides.
+
+### Fixed
+
+- **First-run repository activation**: repositories selected in setup or
+  Settings load without a legacy config repository, reload live, and filter
+  routed events before processing begins.
+- **Retryable issue failures**: failed or zero-change interrupted agent runs no
+  longer create empty pull requests or receive a misleading done label.
+- **Review container reliability**: retries and concurrent review commands use
+  unique Docker container names while preserving task ownership labels.
+- **Release retries**: Docker Hub publication and npm artifact reconciliation
+  are deterministic and safely resumable after partial workflow failures.
+
 ## [0.8.8] - 2026-08-11
 
 ### Added
@@ -227,6 +246,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.9]: https://github.com/integry/propr/releases/tag/v0.8.9
 [0.8.8]: https://github.com/integry/propr/releases/tag/v0.8.8
 [0.8.7]: https://github.com/integry/propr/releases/tag/v0.8.7
 [0.8.5]: https://github.com/integry/propr/releases/tag/v0.8.5
