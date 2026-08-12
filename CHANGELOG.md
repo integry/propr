@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.12] - 2026-08-12
+
+### Changed
+
+- **Guided setup defaults**: clean installs now use ProPR Connect and the
+  default ProPR GitHub App, including guided GitHub login and App installation.
+
+### Fixed
+
+- **Local UI API routing**: production UI containers receive the browser-visible
+  API origin, so local `/api/*` requests reach the backend instead of the static
+  UI server.
+- **Setup failure handling**: missing authentication, invalid intake settings,
+  and unhealthy backend startup stop setup before dependent configuration or UI
+  launch.
+- **Connect authentication boundaries**: local login is limited to exact
+  loopback callbacks while managed tunnels, custom OAuth Apps, and explicit
+  operator modes retain their supported behavior.
+
 ## [0.8.11] - 2026-08-12
 
 ### Changed
@@ -274,6 +293,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.12]: https://github.com/integry/propr/releases/tag/v0.8.12
 [0.8.11]: https://github.com/integry/propr/releases/tag/v0.8.11
 [0.8.10]: https://github.com/integry/propr/releases/tag/v0.8.10
 [0.8.9]: https://github.com/integry/propr/releases/tag/v0.8.9
