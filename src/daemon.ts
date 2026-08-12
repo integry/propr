@@ -314,24 +314,6 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         });
     };
 
-    // Start only the components for the resolved intake mode. The mode-selection
-    // logic is extracted into startEventIntake so it can be unit-tested with injected
-    // dependencies, without standing up real Redis/GitHub/WebSocket connections.
-    const intakeStartup = await startEventIntake(EVENT_INTAKE_MODE, {
-        safePoll,
-        pollingIntervalMs: POLLING_INTERVAL_MS,
-        initWebhookHandler: initSharedWebhookHandler,
-        createRoutingService: () => new RoutingWebSocketIntakeService(),
-        startRoutingStatusPublisher: (service) => startRoutingStatusPublisher(service, heartbeatRedis),
-        logger,
-        startupLogContext: baseStartupLog,
-        webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
-        routingUrl: process.env.PROPR_ROUTING_URL,
-    });
-    intervalId = intakeStartup.intervalId;
-    routingService = intakeStartup.routingService;
-    routingStatusPublisher = intakeStartup.routingStatusPublisher;
-
     // Serialize every reload source so an earlier, slower persisted-config read
     // cannot overwrite a newer notification's state after it completes.
     let configReloadQueue = Promise.resolve();
@@ -396,12 +378,31 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         }
     });
 
-    // Subscribe before the catch-up reload so a repository saved between the
-    // initial startup read and subscription cannot be missed. Any update after
-    // subscribe either appears in the catch-up read or arrives as a message.
-    await subscriberRedis.subscribe(CONFIG_EVENT_CHANNEL);
-    logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
-    await enqueueConfigReload();
+    // Start only the components for the resolved intake mode. Configuration is
+    // subscribed and caught up inside this startup boundary before polling or
+    // routed/webhook dispatch can begin.
+    const intakeStartup = await startEventIntake(EVENT_INTAKE_MODE, {
+        prepareConfiguration: async () => {
+            // Subscribe before the catch-up reload so a repository saved between
+            // the initial startup read and subscription cannot be missed. Any
+            // later update either appears in the read or arrives as a message.
+            await subscriberRedis.subscribe(CONFIG_EVENT_CHANNEL);
+            logger.info({ channel: CONFIG_EVENT_CHANNEL }, 'Subscribed to config update events');
+            await enqueueConfigReload();
+        },
+        safePoll,
+        pollingIntervalMs: POLLING_INTERVAL_MS,
+        initWebhookHandler: initSharedWebhookHandler,
+        createRoutingService: () => new RoutingWebSocketIntakeService(),
+        startRoutingStatusPublisher: (service) => startRoutingStatusPublisher(service, heartbeatRedis),
+        logger,
+        startupLogContext: baseStartupLog,
+        webhookSecretConfigured: !!process.env.GH_WEBHOOK_SECRET,
+        routingUrl: process.env.PROPR_ROUTING_URL,
+    });
+    intervalId = intakeStartup.intervalId;
+    routingService = intakeStartup.routingService;
+    routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
     const shutdown = async (signal: string): Promise<void> => {
         logger.info(`Received ${signal}, shutting down gracefully...`);
