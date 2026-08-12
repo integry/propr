@@ -1,10 +1,16 @@
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createContainerExecutionId } from '../packages/core/src/agents/impl/utils/containerExecutionId.js';
+import { buildCodexDockerArgs } from '../packages/core/src/agents/impl/utils/codexDockerArgsBuilder.js';
+import { closeConnection } from '../packages/core/src/db/connection.js';
 import {
   DEFAULT_CONTEXT_ANALYSIS_TIMEOUT_MS,
   resolveContextAnalysisTimeoutMs,
 } from '../packages/core/src/services/relevance/contextAnalysisConfig.js';
+
+after(async () => {
+  await closeConnection();
+});
 
 describe('context analysis runtime safeguards', () => {
   test('creates distinct fallback container IDs for parallel calls in the same millisecond', (t) => {
@@ -25,6 +31,35 @@ describe('context analysis runtime safeguards', () => {
     assert.notStrictEqual(first, second);
     assert.match(first, /^79edfa5d-[a-f0-9]{8}$/);
     assert.match(second, /^79edfa5d-[a-f0-9]{8}$/);
+  });
+
+  test('gives repeated Codex review attempts distinct Docker names', () => {
+    const config = {
+      id: 'codex-test',
+      type: 'codex' as const,
+      alias: 'codex',
+      enabled: true,
+      dockerImage: 'propr/agent:test',
+      configPath: '/tmp/codex-config',
+      supportedModels: ['gpt-5.6-sol'],
+    };
+    const params = {
+      worktreePath: '/tmp/review-worktree',
+      githubToken: '',
+      issueNumber: 0,
+      taskId: 'pr-comments-batch-integry-mcptest-268-006379edfa5d',
+      executionType: 'pr-review',
+      readOnlyWorkspace: true,
+    };
+
+    const firstArgs = buildCodexDockerArgs(config, params);
+    const secondArgs = buildCodexDockerArgs(config, params);
+    const firstName = firstArgs[firstArgs.indexOf('--name') + 1];
+    const secondName = secondArgs[secondArgs.indexOf('--name') + 1];
+
+    assert.match(firstName, /^codex-pr-review-79edfa5d-[a-f0-9]{8}$/);
+    assert.match(secondName, /^codex-pr-review-79edfa5d-[a-f0-9]{8}$/);
+    assert.notStrictEqual(firstName, secondName);
   });
 
   test('defaults context analysis to thirty minutes', () => {
