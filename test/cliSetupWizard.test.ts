@@ -222,7 +222,7 @@ test("routing_websocket selected with relay auth + a relay token is wired correc
   assert.equal(readEnvVars(root).GITHUB_EVENT_INTAKE_MODE, "routing_websocket");
 });
 
-test("routing_websocket selected without relay auth warns about the missing relay prerequisites", async () => {
+test("routing_websocket selected without relay auth fails on the missing relay prerequisites", async () => {
   const root = makeRoot();
   // App auth can't use the hosted routing path — it needs relay auth + a token.
   seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
@@ -234,11 +234,12 @@ test("routing_websocket selected without relay auth warns about the missing rela
   });
 
   // The mode is still written (the user explicitly chose it), but the gap is
-  // surfaced here rather than as a backend boot failure.
-  assert.equal(statusOf(result.state, "intake"), "warning");
+  // surfaced here and blocks startup rather than becoming a backend boot failure.
+  assert.equal(statusOf(result.state, "intake"), "failed");
   assert.equal(readEnvVars(root).GITHUB_EVENT_INTAKE_MODE, "routing_websocket");
   assert.match(getStep(result.state, "intake")?.nextAction ?? "", /relay enroll|polling/);
-  assert.equal(result.completed, true, "the prerequisite warning is non-blocking");
+  assert.equal(statusOf(result.state, "start-stack"), "pending");
+  assert.equal(result.completed, false, "invalid intake prerequisites block setup");
 });
 
 // ---------------------------------------------------------------------------
@@ -443,7 +444,10 @@ test("unknown and duplicate agent selections are filtered before pulling images"
 
 test("no selected agents means the agent image is not pulled", async () => {
   const root = makeRoot();
-  seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
+  seedInitializedStack(
+    root,
+    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nGITHUB_EVENT_INTAKE_MODE=polling\n",
+  );
 
   let pulledAgentTypes: string[] | undefined;
   const result = await runSetup({
@@ -471,7 +475,7 @@ test("clearing the whitelist removes GITHUB_USER_WHITELIST from .env (not blanke
   const root = makeRoot();
   seedInitializedStack(
     root,
-    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nGITHUB_USER_WHITELIST=alice,bob\n",
+    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nGITHUB_EVENT_INTAKE_MODE=polling\nGITHUB_USER_WHITELIST=alice,bob\n",
   );
 
   const result = await runSetup({
@@ -538,7 +542,10 @@ test("both renderers turn demo off when selecting a real auth mode", async () =>
 
 test("declining to start the stack reports setup as incomplete", async () => {
   const root = makeRoot();
-  seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
+  seedInitializedStack(
+    root,
+    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nGITHUB_EVENT_INTAKE_MODE=polling\n",
+  );
 
   const result = await runSetup({
     root,
@@ -573,7 +580,10 @@ test("reusing an already-initialized root persists it to config", async () => {
 
 test("declining to start the stack skips the backend-dependent follow-up steps", async () => {
   const root = makeRoot();
-  seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
+  seedInitializedStack(
+    root,
+    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nGITHUB_EVENT_INTAKE_MODE=polling\n",
+  );
 
   let addRepoCalled = false;
   let enableAgentsTouchedBackend = false;
@@ -630,7 +640,10 @@ test("a legacy ENABLE_GITHUB_WEBHOOKS .env pre-selects keep for intake", async (
 
 test("confirming the UI launch actually opens the resolved URL", async () => {
   const root = makeRoot();
-  seedInitializedStack(root, "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\n");
+  seedInitializedStack(
+    root,
+    "GH_AUTH_MODE=app\nGH_APP_ID=1\nGH_PRIVATE_KEY_PATH=/k.pem\nGH_INSTALLATION_ID=2\nGITHUB_EVENT_INTAKE_MODE=polling\n",
+  );
 
   let opened: string | undefined;
   const result = await runSetup({
