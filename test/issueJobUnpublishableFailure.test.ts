@@ -65,6 +65,7 @@ test('an agent failure without publishable work remains retryable and never crea
     commitChanges.mock.resetCalls();
     pushBranch.mock.resetCalls();
     safeUpdateLabels.mock.resetCalls();
+    safeUpdateLabels.mock.mockImplementation(async () => ({ success: true, removed: ['AI-processing'], added: [], errors: [] }));
     generateCompletionComment.mock.resetCalls();
     createPullRequest.mock.resetCalls();
     const request = mock.fn(async () => ({ data: {} }));
@@ -108,4 +109,50 @@ test('an agent failure without publishable work remains retryable and never crea
     assert.doesNotMatch(comment, /Post-processing encountered an error/);
     assert.doesNotMatch(comment, /AI-done/);
     assert.deepEqual(generateCompletionComment.mock.calls[0].arguments[2], { publishedAs: 'issue_comment' });
+});
+
+test('an unsuccessful processing-label removal is retried by failure post-processing', async () => {
+    commitChanges.mock.resetCalls();
+    pushBranch.mock.resetCalls();
+    safeUpdateLabels.mock.resetCalls();
+    generateCompletionComment.mock.resetCalls();
+    createPullRequest.mock.resetCalls();
+    let labelUpdateAttempt = 0;
+    safeUpdateLabels.mock.mockImplementation(async () => {
+        labelUpdateAttempt += 1;
+        return labelUpdateAttempt === 1
+            ? { success: false, removed: [], added: [], errors: ["Failed to remove 'AI-processing'"] }
+            : { success: true, removed: ['AI-processing'], added: [], errors: [] };
+    });
+    const request = mock.fn(async () => ({ data: {} }));
+
+    const result = await performPostProcessing({
+        octokit: { request },
+        issueRef: { repoOwner: 'owner', repoName: 'repo', number: 42 },
+        worktreeInfo: { worktreePath: '/tmp/worktree', branchName: 'propr/42-fix' },
+        currentIssueData: { data: { title: 'Fix startup', labels: [{ name: 'AI' }] } },
+        claudeResult: failedAgentResult(),
+        modelName: 'codex-test',
+        repoValidation: { isValid: true, repoData: { defaultBranch: 'main' } },
+        repoUrl: 'https://github.com/owner/repo.git',
+        githubToken: { token: 'github-token' },
+        PR_LABEL: 'propr',
+        AI_PROCESSING_TAG: 'AI-processing',
+        AI_DONE_TAG: 'AI-done',
+        jobId: 'job-42',
+        correlatedLogger: logger,
+    });
+
+    assert.equal(commitChanges.mock.calls.length, 0);
+    assert.equal(pushBranch.mock.calls.length, 0);
+    assert.equal(createPullRequest.mock.calls.length, 0);
+    assert.equal(safeUpdateLabels.mock.calls.length, 2);
+    assert.deepEqual(safeUpdateLabels.mock.calls[0].arguments[1], ['AI-processing']);
+    assert.deepEqual(safeUpdateLabels.mock.calls[0].arguments[2], []);
+    assert.deepEqual(safeUpdateLabels.mock.calls[1].arguments[1], ['AI-processing']);
+    assert.deepEqual(safeUpdateLabels.mock.calls[1].arguments[2], []);
+    assert.equal(result.postProcessingResult?.success, false);
+    assert.match(result.postProcessingResult?.error || '', /Failed to remove the processing label/);
+    assert.equal(request.mock.calls.length, 1);
+    assert.match(request.mock.calls[0].arguments[1].body as string, /Post-processing Error/);
 });

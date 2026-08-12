@@ -51,11 +51,15 @@ async function handleUnpublishableAgentFailure(options: {
     const errorMessage = claudeResult.error?.trim() || 'The coding agent stopped before producing publishable work.';
 
     correlatedLogger.warn({ issueNumber: issueRef.number, error: redactSecrets(errorMessage) }, 'Agent execution failed without publishable work');
-    await safeUpdateLabels(
+    const labelUpdate = await safeUpdateLabels(
         { octokit, owner: issueRef.repoOwner, repo: issueRef.repoName, issueNumber: issueRef.number, logger: correlatedLogger },
         [AI_PROCESSING_TAG],
         [],
     );
+    if (!labelUpdate.success) {
+        const details = labelUpdate.errors.length > 0 ? `: ${labelUpdate.errors.join('; ')}` : '';
+        throw new Error(`Failed to remove the processing label from issue #${issueRef.number}${details}`);
+    }
 
     const completionComment = await generateCompletionComment(claudeResult, {
         number: issueRef.number,
