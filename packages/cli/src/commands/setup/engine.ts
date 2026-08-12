@@ -77,6 +77,17 @@ import { localhostServiceUrl } from "../../utils/dockerPort.js";
 
 const DEFAULT_PROPR_GITHUB_APP_INSTALL_URL = "https://github.com/apps/propr-dev/installations/new";
 
+/** Match the API's distinction between real OAuth credentials and example placeholders. */
+function isConfiguredOAuthValue(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return Boolean(normalized && !normalized.startsWith("your_") && normalized !== "changeme");
+}
+
+function isTruthyEnvFlag(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "true" || normalized === "1";
+}
+
 /**
  * Catalog of supported agents: the image each one needs and the host
  * credential directories recorded into `.env` when it is selected. Mirrors
@@ -669,8 +680,20 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       //    these keys). PROPR_DEMO_MODE=false ensures the new relay config isn't
       //    shadowed by a leftover demo flag (see detectGithubAuthMode).
       const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId });
-      const existingAdminUsers = (actions.readEnvVars(rootDir).PROPR_ADMIN_USERS ?? "").trim();
+      const existingEnv = actions.readEnvVars(rootDir);
+      const existingAdminUsers = (existingEnv.PROPR_ADMIN_USERS ?? "").trim();
       const seedBootstrapAdmin = freshStackCreated && !existingAdminUsers;
+      const tunnelOverride = configManager?.getTunnelEnabled();
+      const managedTunnelEnabled = tunnelOverride ?? Boolean(
+        existingEnv.PROPR_UI_TUNNEL_TOKEN?.trim() || isTruthyEnvFlag(existingEnv.PROPR_UI_TUNNEL_ENABLED)
+      );
+      const explicitBrowserAuthMode = existingEnv.PROPR_WEB_AUTH_MODE?.trim().toLowerCase();
+      const customBrowserOAuthApplies =
+        !managedTunnelEnabled &&
+        explicitBrowserAuthMode !== "connect" &&
+        explicitBrowserAuthMode !== "disabled" &&
+        isConfiguredOAuthValue(existingEnv.GH_OAUTH_CLIENT_ID) &&
+        isConfiguredOAuthValue(existingEnv.GH_OAUTH_CLIENT_SECRET);
       actions.applyEnvSelection(
         rootDir,
         {
@@ -679,10 +702,11 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
           PROPR_GH_RELAY_URL: resolvedRelayUrl,
           PROPR_GH_RELAY_TOKEN: token,
           GH_INSTALLATION_ID: installationId,
-          // Connect owns the shared App's browser OAuth client. Explicitly select
-          // it for both local loopback and managed-tunnel browser login so a
-          // relay-connected stack never falls back to placeholder OAuth keys.
-          PROPR_WEB_AUTH_MODE: "connect",
+          // Connect owns the shared App's browser OAuth client. Managed tunnels
+          // require it, and local stacks use it unless a real custom OAuth App
+          // already applies. Omitting this key preserves the API resolver's
+          // off-tunnel custom-credential precedence.
+          ...(!customBrowserOAuthApplies ? { PROPR_WEB_AUTH_MODE: "connect" } : {}),
           // The relay identity was just authenticated by GitHub and owns this
           // installation, so it is the safe bootstrap administrator on a fresh
           // stack. Existing stacks may already have durable database-backed

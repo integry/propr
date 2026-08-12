@@ -345,6 +345,36 @@ test("relay enrollment auto-selects a single installation and writes the relay v
   });
 });
 
+test("relay enrollment preserves custom GitHub browser OAuth off-tunnel", async () => {
+  const env: Record<string, string> = {
+    GITHUB_EVENT_INTAKE_MODE: "polling",
+    PROPR_UI_TUNNEL_ENABLED: "false",
+    GH_OAUTH_CLIENT_ID: "real-client-id",
+    GH_OAUTH_CLIENT_SECRET: "real-client-secret",
+  };
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      readEnvVars: () => ({ ...env }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      enrollRelay: async () => ({ relayUrl: "https://relay/v1", token: "prt_minted" }),
+      applyEnvSelection: (_root, vars) => {
+        Object.assign(env, vars);
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(env.PROPR_WEB_AUTH_MODE, undefined);
+  assert.equal(env.GH_OAUTH_CLIENT_ID, "real-client-id");
+  assert.equal(env.GH_OAUTH_CLIENT_SECRET, "real-client-secret");
+  assert.equal(env.GH_AUTH_MODE, "relay");
+  assert.equal(env.PROPR_GH_RELAY_TOKEN, "prt_minted");
+});
+
 test("relay enrollment does not seed an environment administrator on an existing stack", async () => {
   let relayVars: Record<string, string> | undefined;
   const result = await runSetup({
