@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:22-alpine
 
 # Install git, sudo, Docker tooling, script(1) for browser agent-login PTYs,
 # curl, jq, and build tools for native modules (better-sqlite3)
