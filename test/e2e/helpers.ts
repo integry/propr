@@ -21,6 +21,7 @@ import {
   type ImplementIssueResponse,
 } from "../../packages/cli/src/api/implement.js";
 import { findUnclaimedModelTask } from "./taskMatching.js";
+import { parseModelTaskTimeoutMs } from "./modelTaskTimeout.js";
 
 // ---------------------------------------------------------------------------
 // Environment
@@ -30,6 +31,9 @@ export const API_URL = process.env.PROPR_E2E_API_URL;
 export const REPO = process.env.PROPR_E2E_REPO;
 export const SKIP_SLOW = process.env.PROPR_E2E_SKIP_SLOW === "1";
 export const NO_CLEANUP = process.env.PROPR_E2E_NO_CLEANUP === "1";
+export const MODEL_TASK_TIMEOUT_MS = parseModelTaskTimeoutMs(
+  process.env.PROPR_E2E_MODEL_TASK_TIMEOUT_MS,
+);
 
 export function resolveToken(): string | undefined {
   if (process.env.PROPR_E2E_TOKEN) return process.env.PROPR_E2E_TOKEN;
@@ -216,7 +220,7 @@ export async function waitForTasks(
 export async function pollTasksToCompletion(
   results: ModelTestResult[],
   client: ApiClient,
-  timeoutMs = 900_000,
+  timeoutMs = MODEL_TASK_TIMEOUT_MS,
 ): Promise<void> {
   const withTasks = results.filter((r) => r.taskId);
   if (withTasks.length === 0) return;
