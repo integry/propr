@@ -60,7 +60,7 @@ ProPR is a set of stages you can adopt independently — use one or all:
 
 ## Quick start (recommended: CLI)
 
-You need a Linux `amd64` host with a maintained Docker Engine release, direct access to its Docker socket, **Node.js 22+**, GitHub access (the guided default uses the GitHub CLI, `gh`), and a provider account for at least one coding agent. Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for a single-task evaluation; 8 GB RAM or more is recommended for normal or concurrent use. The full Docker, platform, capacity, and network contract is in [System Requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).
+You need a Linux `amd64` host with a maintained Docker Engine release, direct access to its Docker socket, **Node.js 22 or 24**, GitHub access (the guided default uses the GitHub CLI, `gh`), and a provider account for at least one coding agent. Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for a single-task evaluation; 8 GB RAM or more is recommended for normal or concurrent use. The full Docker, platform, capacity, and network contract is in [System Requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).
 
 Reuse a host login (`claude auth login`, `agy login`, …), create one through the agent image with `propr agent login <agent>`, or add the agent in the Web UI and log in directly to an isolated ProPR-managed credential directory.
 
@@ -71,6 +71,8 @@ propr setup   # guided one-pass: verify host, authorize agents, connect GitHub, 
 ```
 
 `propr setup` is re-runnable and wraps the individual steps (`propr init stack`, `propr check`, `propr start`), which remain available for scripting.
+
+Delegating setup to an AI coding agent? Use the copyable [safe agent installation prompt](https://docs.propr.dev/docs/tutorials/setup#give-this-to-your-coding-agent) so GitHub authorization, App scope, Connect/tunnel choices, provider logins, and existing stack data stay under human control.
 
 Then open the Web UI at **http://localhost:5173** and add a repository and an agent (`propr repo add`, `propr agent add`, or via the UI).
 
