@@ -154,6 +154,27 @@ test("fresh scaffolding persists the resolved root through setup's active config
   assert.equal(result.completed, true);
 });
 
+test("a datastore inspection exception settles init-stack once as failed", async () => {
+  const settlements: string[] = [];
+  const result = await runSetup({
+    root: "/stack",
+    reporter: {
+      onStepSettled: (step) => {
+        if (step.id === "init-stack") settlements.push(step.status);
+      },
+    },
+    actions: mockActions({
+      inspectDatastoreAdministrators: async () => {
+        throw new Error("inspection crashed");
+      },
+    }),
+  });
+
+  assert.deepEqual(settlements, ["failed"]);
+  assert.equal(statusOf(result.state, "init-stack"), "failed");
+  assert.match(getStep(result.state, "init-stack")?.detail ?? "", /inspection crashed/);
+});
+
 test("unknown and duplicate agent selections are filtered to known types", async () => {
   let pulledAgentTypes: string[] | undefined;
   const prompts: SetupPrompts = {
@@ -433,6 +454,69 @@ test("relay enrollment seeds when PROPR_ADMIN_USERS contains no effective userna
   assert.match(getStep(result.state, "github-auth")?.detail ?? "", /bootstrap administrator: octocat/);
 });
 
+test("keeping relay auth seeds its authenticated identity before starting an adminless stack", async () => {
+  const env: Record<string, string> = {
+    GH_AUTH_MODE: "relay",
+    GH_INSTALLATION_ID: "42",
+    PROPR_GH_RELAY_URL: "https://relay/v1",
+    PROPR_GH_RELAY_TOKEN: "prt_existing",
+    GITHUB_EVENT_INTAKE_MODE: "polling",
+    GITHUB_USER_WHITELIST: "alice",
+  };
+  let startCalled = false;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: { configureGithubAuth: async () => ({ keep: true }) },
+    actions: mockActions({
+      inspectDatastoreAdministrators: async () => ({ status: "no-admin", databasePath: "/stack/data/propr.sqlite" }),
+      readEnvVars: () => ({ ...env }),
+      detectGithubAuthMode: () => ({ mode: "relay", warnings: [] }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      applyEnvSelection: (_root, vars) => {
+        Object.assign(env, vars);
+        return { written: Object.keys(vars), skipped: [] };
+      },
+      startStack: async () => {
+        startCalled = true;
+      },
+    }),
+  });
+
+  assert.equal(env.PROPR_ADMIN_USERS, "octocat");
+  assert.equal(env.GITHUB_USER_WHITELIST, "alice,octocat");
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /bootstrap administrator: octocat/);
+  assert.equal(startCalled, true);
+});
+
+test("keeping non-demo auth without a safe bootstrap identity blocks startup", async () => {
+  let startCalled = false;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: { configureGithubAuth: async () => ({ keep: true }) },
+    actions: mockActions({
+      inspectDatastoreAdministrators: async () => ({ status: "no-admin", databasePath: "/stack/data/propr.sqlite" }),
+      readEnvVars: () => ({
+        GH_AUTH_MODE: "relay",
+        GH_INSTALLATION_ID: "42",
+        PROPR_GH_RELAY_URL: "https://relay/v1",
+        PROPR_GH_RELAY_TOKEN: "prt_existing",
+        GITHUB_EVENT_INTAKE_MODE: "polling",
+      }),
+      detectGithubAuthMode: () => ({ mode: "relay", warnings: [] }),
+      hasGithubToken: () => false,
+      startStack: async () => {
+        startCalled = true;
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "failed");
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /no instance administrator/);
+  assert.equal(statusOf(result.state, "start-stack"), "pending");
+  assert.equal(startCalled, false);
+});
+
 test("relay enrollment leaves the whitelist unchanged when an environment administrator already exists", async () => {
   let relayVars: Record<string, string> | undefined;
   const result = await runSetup({
@@ -461,9 +545,14 @@ test("relay enrollment leaves the whitelist unchanged when an environment admini
 
 test("an uninspectable datastore without an environment administrator blocks startup", async () => {
   let startCalled = false;
+  const initSettlements: string[] = [];
   const result = await runSetup({
     root: "/stack",
-    prompts: relayPrompts(),
+    reporter: {
+      onStepSettled: (step) => {
+        if (step.id === "init-stack") initSettlements.push(step.status);
+      },
+    },
     actions: mockActions({
       inspectDatastoreAdministrators: async () => ({
         status: "uninspectable",
@@ -481,10 +570,34 @@ test("an uninspectable datastore without an environment administrator blocks sta
     }),
   });
 
-  assert.equal(statusOf(result.state, "init-stack"), "failed");
-  assert.match(getStep(result.state, "init-stack")?.detail ?? "", /database is locked/);
+  assert.deepEqual(initSettlements, ["skipped"], "init-stack must settle exactly once");
+  assert.equal(statusOf(result.state, "github-auth"), "failed");
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /database is locked/);
   assert.equal(statusOf(result.state, "start-stack"), "pending");
   assert.equal(startCalled, false, "startStack must not run without a verified administrator");
+});
+
+test("demo mode permits startup when the datastore administrator cannot be inspected", async () => {
+  let startCalled = false;
+  const result = await runSetup({
+    root: "/stack",
+    actions: mockActions({
+      inspectDatastoreAdministrators: async () => ({
+        status: "uninspectable",
+        databasePath: "/external/propr.sqlite",
+        detail: "database is locked",
+      }),
+      readEnvVars: () => ({ PROPR_DEMO_MODE: "true" }),
+      detectGithubAuthMode: () => ({ mode: "demo", warnings: [] }),
+      startStack: async () => {
+        startCalled = true;
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(statusOf(result.state, "start-stack"), "done");
+  assert.equal(startCalled, true);
 });
 
 test("relay enrollment does not select Connect for a non-loopback off-tunnel callback", async () => {

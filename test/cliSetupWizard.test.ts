@@ -65,7 +65,15 @@ function writeEnv(rootDir: string, contents: string): void {
  */
 function seedInitializedStack(rootDir: string, contents: string): void {
   for (const sub of STACK_SUBDIRS) mkdirSync(join(rootDir, sub), { recursive: true });
-  writeEnv(rootDir, contents);
+  // Non-demo auth fixtures represent stacks that are allowed to start. Add the
+  // environment administrator now required by the setup preflight unless the
+  // individual test deliberately supplies another administrator state.
+  const hasNonDemoAuth = /^GH_AUTH_MODE=(?:app|relay)$/m.test(contents);
+  const hasEnvironmentAdministrator = /^PROPR_ADMIN_USERS=/m.test(contents);
+  const effectiveContents = hasNonDemoAuth && !hasEnvironmentAdministrator
+    ? `${contents.replace(/\n?$/, "\n")}PROPR_ADMIN_USERS=test-admin\n`
+    : contents;
+  writeEnv(rootDir, effectiveContents);
 }
 
 /** Create the durable-member portion of a migrated ProPR SQLite datastore. */
@@ -230,8 +238,9 @@ test("datastore inspection rejects DB_FILENAME outside the runtime data bind mou
   const env = readEnvVars(root);
   assert.equal(env.PROPR_ADMIN_USERS, undefined, "an uninspectable datastore cannot authorize a new grant");
   assert.equal(env.GITHUB_USER_WHITELIST, "alice,bob", "an uninspectable datastore leaves the whitelist untouched");
-  assert.equal(statusOf(result.state, "init-stack"), "failed");
-  assert.match(getStep(result.state, "init-stack")?.detail ?? "", /outside the mounted data directory/);
+  assert.equal(statusOf(result.state, "init-stack"), "skipped");
+  assert.equal(statusOf(result.state, "github-auth"), "failed");
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /outside the mounted data directory/);
   assert.equal(statusOf(result.state, "start-stack"), "pending");
 });
 
@@ -695,7 +704,7 @@ test("switching from demo to app turns PROPR_DEMO_MODE off on disk", async () =>
   const root = makeRoot();
   seedInitializedStack(root, "PROPR_DEMO_MODE=true\nGH_AUTH_MODE=demo\n");
 
-  await runSetup({
+  const result = await runSetup({
     root,
     prompts: {
       // Mirror what the renderers now hand back when leaving demo mode.
@@ -716,6 +725,11 @@ test("switching from demo to app turns PROPR_DEMO_MODE off on disk", async () =>
   const env = readEnvVars(root);
   assert.equal(env.PROPR_DEMO_MODE, "false", "demo mode is explicitly disabled");
   assert.equal(detectGithubAuthMode(root).mode, "app", "auth no longer resolves as demo");
+  assert.equal(
+    statusOf(result.state, "github-auth"),
+    "failed",
+    "switching a demo stack to non-demo still requires an administrator",
+  );
 });
 
 test("both renderers turn demo off when selecting a real auth mode", async () => {
