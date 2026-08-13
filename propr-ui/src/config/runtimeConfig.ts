@@ -12,8 +12,10 @@
 //   2. Previously selected hosted tunnel in sessionStorage — tab-scoped, survives
 //      same-tab navigation and OAuth redirects. The stored value is only trusted
 //      when the URL carries a matching flow token (?flow=<id>) and the current
-//      browsing context carries the matching tab id, so copied sessionStorage or
-//      copied URLs in a fresh context are rejected.
+//      browsing context carries the matching tab id. If a cross-site OAuth
+//      redirect clears window.name, an OAuth-only continuation cookie can restore
+//      that tab id once. Copied sessionStorage or copied URLs in a fresh context
+//      are rejected.
 //   3. Runtime config (window.__PROPR_CONFIG__.apiBaseUrl) — hosted deployments.
 //   4. Build-time env (VITE_API_BASE_URL) — static single-target builds.
 //   5. Empty string — same-origin (local dev via the Vite proxy).
@@ -56,9 +58,11 @@ export const HOSTED_TUNNEL_API_BASE_STORAGE_KEY = 'propr.hostedTunnelApiBaseUrl'
 export const HOSTED_TUNNEL_FLOW_ID_KEY = 'propr.hostedTunnelFlowId';
 /** Paired with HOSTED_TUNNEL_FLOW_ID_KEY; must match this browsing context's window.name token. */
 export const HOSTED_TUNNEL_CONTEXT_ID_KEY = 'propr.hostedTunnelContextId';
+export const HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE = 'propr.hostedTunnelOAuthContinuation';
 
 const WINDOW_NAME_CONTEXT_PREFIX = 'propr-hosted-flow-context:';
 const WINDOW_NAME_CONTEXT_SEPARATOR = '|';
+const OAUTH_CONTINUATION_MAX_AGE_SECONDS = 10 * 60;
 
 let activeHostedTunnelFlowId: string | null = null;
 
@@ -190,6 +194,82 @@ const ensureHostedTunnelContextId = (): string | null => {
 const flowIdFromSearch = (search: string): string | null =>
   new URLSearchParams(search).get('flow') || null;
 
+const readCookie = (name: string): string | null => {
+  if (typeof document === 'undefined') return null;
+  try {
+    const prefix = `${name}=`;
+    const cookie = document.cookie
+      .split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(prefix));
+    return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeCookie = (name: string, value: string, maxAgeSeconds: number): void => {
+  if (typeof document === 'undefined') return;
+  try {
+    const secure =
+      typeof window !== 'undefined' && window.location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax${secure}`;
+  } catch { /* cookies can be disabled */ }
+};
+
+const clearCookie = (name: string): void => {
+  writeCookie(name, '', 0);
+};
+
+type OAuthContinuationMap = Record<string, string>;
+
+const readOAuthContinuationMap = (): OAuthContinuationMap => {
+  const raw = readCookie(HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+    );
+  } catch {
+    return {};
+  }
+};
+
+const writeOAuthContinuationMap = (continuations: OAuthContinuationMap): void => {
+  if (Object.keys(continuations).length === 0) {
+    clearCookie(HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE);
+    return;
+  }
+  writeCookie(
+    HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE,
+    JSON.stringify(continuations),
+    OAUTH_CONTINUATION_MAX_AGE_SECONDS
+  );
+};
+
+const readOAuthContinuationContextId = (
+  flowId: string,
+  storedContextId: string
+): string | null => {
+  const continuations = readOAuthContinuationMap();
+  if (continuations[flowId] !== storedContextId) return null;
+  delete continuations[flowId];
+  writeOAuthContinuationMap(continuations);
+  return setHostedTunnelContextId(storedContextId);
+};
+
+const effectiveHostedTunnelContextId = (
+  flowId: string,
+  storedContextId: string,
+  contextId: string | null | undefined
+): string | null => {
+  const currentContextId = contextId === undefined ? currentHostedTunnelContextId() : contextId;
+  if (currentContextId) return currentContextId;
+  if (contextId !== undefined) return null;
+  return readOAuthContinuationContextId(flowId, storedContextId);
+};
+
 /**
  * Store the selected hosted tunnel URL in sessionStorage together with a
  * per-tab flow token. Returns the generated flow token (to be embedded in the
@@ -225,15 +305,18 @@ export const readStoredHostedTunnelApiBaseUrl = (
   hostname: string,
   flowId: string | null,
   storage: HostedTunnelStorage | undefined = storageForWindow(),
-  contextId: string | null = currentHostedTunnelContextId()
+  contextId?: string | null
 ): string | null => {
-  if (!isHostedUiOrigin(hostname) || !storage || !contextId) return null;
+  if (!isHostedUiOrigin(hostname) || !storage) return null;
   try {
     const storedFlowId = storage.getItem(HOSTED_TUNNEL_FLOW_ID_KEY)?.trim() || null;
     const storedContextId = storage.getItem(HOSTED_TUNNEL_CONTEXT_ID_KEY)?.trim() || null;
     // Reject if storage has no flow token (never legitimately set by this tab)
     // or context token, or if the URL/current tab tokens do not match storage.
-    if (!storedFlowId || storedFlowId !== flowId || !storedContextId || storedContextId !== contextId) {
+    if (!storedFlowId || storedFlowId !== flowId || !storedContextId) {
+      return null;
+    }
+    if (effectiveHostedTunnelContextId(storedFlowId, storedContextId, contextId) !== storedContextId) {
       return null;
     }
     const stored = storage.getItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY)?.trim();
@@ -243,6 +326,23 @@ export const readStoredHostedTunnelApiBaseUrl = (
     return null;
   }
   return null;
+};
+
+export const prepareHostedTunnelOAuthContinuation = (
+  hostname = typeof window !== 'undefined' ? window.location.hostname : '',
+  storage: HostedTunnelStorage | undefined = storageForWindow(),
+  contextId: string | null = currentHostedTunnelContextId()
+): void => {
+  if (!isHostedUiOrigin(hostname) || !storage || !activeHostedTunnelFlowId || !contextId) return;
+  try {
+    const storedFlowId = storage.getItem(HOSTED_TUNNEL_FLOW_ID_KEY)?.trim() || null;
+    const storedContextId = storage.getItem(HOSTED_TUNNEL_CONTEXT_ID_KEY)?.trim() || null;
+    if (storedFlowId !== activeHostedTunnelFlowId || storedContextId !== contextId) return;
+    writeOAuthContinuationMap({
+      ...readOAuthContinuationMap(),
+      [storedFlowId]: storedContextId,
+    });
+  } catch { /* sessionStorage can be unavailable */ }
 };
 
 /**

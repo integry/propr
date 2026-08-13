@@ -3,8 +3,11 @@ import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { getCurrentUser } from '../api/proprApi';
-import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
-import { isProprProxyUrl } from '@propr/shared';
+import {
+  getApiBaseUrl,
+  pathWithActiveHostedTunnelFlow,
+  prepareHostedTunnelOAuthContinuation,
+} from '../config/runtimeConfig';
 
 const API_BASE_URL = getApiBaseUrl();
 // For OAuth, use main API to avoid registering multiple callback URLs
@@ -34,9 +37,6 @@ const safeInternalPath = (value: unknown, origin: URL): string => {
   }
 };
 
-const isLocalApiOrigin = (url: URL): boolean =>
-  ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-
 const validatedHttpUrl = (value: string, fallbackBase?: string): URL => {
   const url = new URL(value || fallbackBase || '');
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
@@ -50,10 +50,7 @@ const validateOAuthApiBaseUrl = (oauthApiUrl: string, origin: URL): URL => {
   if (url.username || url.password || /[^/]/.test(url.pathname) || url.search || url.hash) {
     throw new Error('OAuth API URL must be a bare http(s) origin.');
   }
-  if (url.origin === origin.origin || isLocalApiOrigin(url) || isProprProxyUrl(url.origin)) {
-    return url;
-  }
-  throw new Error('OAuth API URL is not an allowed ProPR OAuth base.');
+  return url;
 };
 
 // Resolve where to send the user after a successful login, preferring the page
@@ -85,6 +82,7 @@ export const buildGithubOAuthUrl = (
   const originUrl = validatedHttpUrl(origin);
   const oauthUrl = validateOAuthApiBaseUrl(oauthApiUrl, originUrl);
   const safeReturnPath = safeInternalPath(returnPath, originUrl);
+  prepareHostedTunnelOAuthContinuation(hostname);
   const returnPathWithActiveFlow = pathWithActiveHostedTunnelFlow(safeReturnPath, hostname);
   const redirectTo = new URL(returnPathWithActiveFlow, originUrl);
 

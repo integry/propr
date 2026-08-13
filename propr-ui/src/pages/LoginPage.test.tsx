@@ -232,8 +232,6 @@ describe('LoginPage session recovery', () => {
 
   it.each([
     ['malformed OAuth base', 'not a url'],
-    ['foreign OAuth base', 'https://evil.example'],
-    ['foreign ProPR subdomain', 'https://auth.propr.dev'],
     ['managed tunnel with path', 'https://t-oauth123.propr.dev/base'],
     ['non-http OAuth base', 'ftp://localhost'],
   ])('rejects a %s before producing a navigation target', (_name, oauthApiUrl) => {
@@ -254,6 +252,20 @@ describe('LoginPage session recovery', () => {
     expect(url.origin).toBe('http://localhost:4000');
     expect(url.pathname).toBe('/api/auth/github');
     expect(redirectToFor(oauthUrl)).toBe('http://localhost:5173/plans?status=open&filter=mine#details');
+  });
+
+  it('builds a legitimate configured split-origin OAuth URL', () => {
+    const oauthUrl = buildGithubOAuthUrl(
+      '/settings?tab=members#invite',
+      'https://app.propr.dev',
+      'https://api.example.com',
+      'app.propr.dev'
+    );
+    const url = new URL(oauthUrl);
+
+    expect(url.origin).toBe('https://api.example.com');
+    expect(url.pathname).toBe('/api/auth/github');
+    expect(redirectToFor(oauthUrl)).toBe('https://app.propr.dev/settings?tab=members#invite');
   });
 
   it('builds a legitimate managed tunnel OAuth URL', () => {

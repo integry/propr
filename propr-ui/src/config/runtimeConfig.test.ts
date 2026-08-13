@@ -358,6 +358,70 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     ).toBe('https://t-abc123.propr.dev');
   });
 
+  it('a same-tab OAuth callback can restore the context after window.name is cleared', async () => {
+    const {
+      HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+      HOSTED_TUNNEL_FLOW_ID_KEY,
+      HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE,
+      prepareHostedTunnelOAuthContinuation,
+      readStoredHostedTunnelApiBaseUrl,
+      resolveApiBaseUrl,
+    } = await load();
+    const storage = memoryStorage();
+
+    resolveApiBaseUrl(
+      'app.propr.dev',
+      '?tunnel=t-oauthclear.propr.dev',
+      undefined,
+      undefined,
+      storage,
+      'oauth-context'
+    );
+    const flowId = storage.getItem(HOSTED_TUNNEL_FLOW_ID_KEY);
+    expect(flowId).toBeTruthy();
+    expect(storage.getItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY)).toBe('https://t-oauthclear.propr.dev');
+
+    prepareHostedTunnelOAuthContinuation('app.propr.dev', storage, 'oauth-context');
+    window.name = '';
+
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowId, storage)).toBe(
+      'https://t-oauthclear.propr.dev'
+    );
+    expect(window.name).toContain('oauth-context');
+
+    // The OAuth continuation is one-use; a later copied context without the
+    // restored window.name must still be rejected.
+    window.name = '';
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowId, storage)).toBeNull();
+    document.cookie = `${HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE}=; Path=/; Max-Age=0`;
+  });
+
+  it('keeps separate OAuth continuations for interleaved hosted flows', async () => {
+    const {
+      HOSTED_TUNNEL_FLOW_ID_KEY,
+      HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE,
+      prepareHostedTunnelOAuthContinuation,
+      readStoredHostedTunnelApiBaseUrl,
+      resolveApiBaseUrl,
+    } = await load();
+    const storageA = memoryStorage();
+    const storageB = memoryStorage();
+
+    resolveApiBaseUrl('app.propr.dev', '?tunnel=t-alpha.propr.dev', undefined, undefined, storageA, 'context-a');
+    const flowIdA = storageA.getItem(HOSTED_TUNNEL_FLOW_ID_KEY);
+    prepareHostedTunnelOAuthContinuation('app.propr.dev', storageA, 'context-a');
+
+    resolveApiBaseUrl('app.propr.dev', '?tunnel=t-beta.propr.dev', undefined, undefined, storageB, 'context-b');
+    const flowIdB = storageB.getItem(HOSTED_TUNNEL_FLOW_ID_KEY);
+    prepareHostedTunnelOAuthContinuation('app.propr.dev', storageB, 'context-b');
+
+    window.name = '';
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdA, storageA)).toBe('https://t-alpha.propr.dev');
+    window.name = '';
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdB, storageB)).toBe('https://t-beta.propr.dev');
+    document.cookie = `${HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE}=; Path=/; Max-Age=0`;
+  });
+
   it('keeps unrelated query parameters and one active flow when building hosted navigation paths', async () => {
     const { HOSTED_TUNNEL_FLOW_ID_KEY, pathWithActiveHostedTunnelFlow, resolveApiBaseUrl } = await load();
     const storage = memoryStorage();
