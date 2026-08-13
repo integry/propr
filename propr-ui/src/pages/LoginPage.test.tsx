@@ -4,7 +4,12 @@ import { MemoryRouter, Routes, Route, useLocation, type InitialEntry } from 'rea
 import LoginPage, { buildGithubOAuthUrl } from './LoginPage';
 import { getCurrentUser } from '../api/proprApi';
 import type { CurrentUser } from '../api/proprTypes';
-import { HOSTED_TUNNEL_FLOW_ID_KEY, pathWithActiveHostedTunnelFlow, resolveApiBaseUrl } from '../config/runtimeConfig';
+import {
+  activateStoredHostedTunnelFlow,
+  HOSTED_TUNNEL_FLOW_ID_KEY,
+  pathWithActiveHostedTunnelFlow,
+  resolveApiBaseUrl,
+} from '../config/runtimeConfig';
 
 vi.mock('../hooks/useDocumentTitle', () => ({
   useDocumentTitle: vi.fn(),
@@ -64,9 +69,12 @@ const memoryStorage = (initial: Record<string, string> = {}) => {
   };
 };
 
+const redirectToFor = (oauthUrl: string): string | null => new URL(oauthUrl).searchParams.get('redirect_to');
+
 describe('LoginPage session recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    activateStoredHostedTunnelFlow('app.propr.dev', '', memoryStorage(), 'empty-context');
     demoState.isDemoMode = false;
     demoState.isLoading = false;
   });
@@ -192,14 +200,73 @@ describe('LoginPage session recovery', () => {
     );
 
     const oauthUrl = buildGithubOAuthUrl(
-      '/tasks?status=open&flow=attacker&flow=other',
+      '/tasks?status=open&sort=updated&flow=attacker&flow=other#details',
       'https://app.propr.dev',
-      'https://auth.propr.dev',
+      'https://t-oauth123.propr.dev',
       'app.propr.dev'
     );
-    const redirectTo = new URL(oauthUrl).searchParams.get('redirect_to');
+    const redirectTo = redirectToFor(oauthUrl);
 
-    expect(redirectTo).toBe(`https://app.propr.dev/tasks?status=open&flow=${flowId}`);
+    expect(new URL(oauthUrl).origin).toBe('https://t-oauth123.propr.dev');
+    expect(new URL(oauthUrl).pathname).toBe('/api/auth/github');
+    expect(redirectTo).toBe(`https://app.propr.dev/tasks?status=open&sort=updated&flow=${flowId}#details`);
     expect(redirectTo?.match(/[?&]flow=/g)).toHaveLength(1);
+  });
+
+  it.each([
+    ['javascript URL', 'javascript:alert(1)'],
+    ['data URL', 'data:text/html,<script>alert(1)</script>'],
+    ['protocol-relative URL', '//evil.example/path'],
+    ['backslash path', '/plans\\evil'],
+    ['control-character path', '/plans\nnext'],
+  ])('falls back to / for an unsafe %s return path at the OAuth boundary', (_name, returnPath) => {
+    const oauthUrl = buildGithubOAuthUrl(
+      returnPath,
+      'https://app.propr.dev',
+      'https://app.propr.dev',
+      'app.propr.dev'
+    );
+
+    expect(redirectToFor(oauthUrl)).toBe('https://app.propr.dev/');
+  });
+
+  it.each([
+    ['malformed OAuth base', 'not a url'],
+    ['foreign OAuth base', 'https://evil.example'],
+    ['foreign ProPR subdomain', 'https://auth.propr.dev'],
+    ['managed tunnel with path', 'https://t-oauth123.propr.dev/base'],
+    ['non-http OAuth base', 'ftp://localhost'],
+  ])('rejects a %s before producing a navigation target', (_name, oauthApiUrl) => {
+    expect(() =>
+      buildGithubOAuthUrl('/plans?status=open#details', 'https://app.propr.dev', oauthApiUrl, 'app.propr.dev')
+    ).toThrow();
+  });
+
+  it('builds a legitimate local API OAuth URL through URLSearchParams', () => {
+    const oauthUrl = buildGithubOAuthUrl(
+      '/plans?status=open&filter=mine#details',
+      'http://localhost:5173',
+      'http://localhost:4000',
+      'localhost'
+    );
+    const url = new URL(oauthUrl);
+
+    expect(url.origin).toBe('http://localhost:4000');
+    expect(url.pathname).toBe('/api/auth/github');
+    expect(redirectToFor(oauthUrl)).toBe('http://localhost:5173/plans?status=open&filter=mine#details');
+  });
+
+  it('builds a legitimate managed tunnel OAuth URL', () => {
+    const oauthUrl = buildGithubOAuthUrl(
+      '/settings?tab=members&sort=asc#invite',
+      'https://app.propr.dev',
+      'https://t-managed123.propr.dev',
+      'app.propr.dev'
+    );
+    const url = new URL(oauthUrl);
+
+    expect(url.origin).toBe('https://t-managed123.propr.dev');
+    expect(url.pathname).toBe('/api/auth/github');
+    expect(redirectToFor(oauthUrl)).toBe('https://app.propr.dev/settings?tab=members&sort=asc#invite');
   });
 });

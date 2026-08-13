@@ -4,6 +4,7 @@ import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { getCurrentUser } from '../api/proprApi';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
+import { isProprProxyUrl } from '@propr/shared';
 
 const API_BASE_URL = getApiBaseUrl();
 // For OAuth, use main API to avoid registering multiple callback URLs
@@ -20,6 +21,39 @@ const isSafeInternalPath = (value: unknown): value is string => {
   if (value.startsWith('//') || value.startsWith('/\\')) return false;
   if (/[\u0000-\u001F\u007F\\]/.test(value)) return false;
   return true;
+};
+
+const safeInternalPath = (value: unknown, origin: URL): string => {
+  if (!isSafeInternalPath(value)) return '/';
+  try {
+    const url = new URL(value, origin);
+    if (url.origin !== origin.origin) return '/';
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return '/';
+  }
+};
+
+const isLocalApiOrigin = (url: URL): boolean =>
+  ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+
+const validatedHttpUrl = (value: string, fallbackBase?: string): URL => {
+  const url = new URL(value || fallbackBase || '');
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('OAuth URL must use http(s).');
+  }
+  return url;
+};
+
+const validateOAuthApiBaseUrl = (oauthApiUrl: string, origin: URL): URL => {
+  const url = validatedHttpUrl(oauthApiUrl.trim(), origin.origin);
+  if (url.username || url.password || /[^/]/.test(url.pathname) || url.search || url.hash) {
+    throw new Error('OAuth API URL must be a bare http(s) origin.');
+  }
+  if (url.origin === origin.origin || isLocalApiOrigin(url) || isProprProxyUrl(url.origin)) {
+    return url;
+  }
+  throw new Error('OAuth API URL is not an allowed ProPR OAuth base.');
 };
 
 // Resolve where to send the user after a successful login, preferring the page
@@ -48,9 +82,17 @@ export const buildGithubOAuthUrl = (
   oauthApiUrl = OAUTH_API_URL,
   hostname = window.location.hostname
 ): string => {
-  const returnPathWithActiveFlow = pathWithActiveHostedTunnelFlow(returnPath, hostname);
-  const redirectTo = encodeURIComponent(origin + returnPathWithActiveFlow);
-  return `${oauthApiUrl}/api/auth/github?redirect_to=${redirectTo}`;
+  const originUrl = validatedHttpUrl(origin);
+  const oauthUrl = validateOAuthApiBaseUrl(oauthApiUrl, originUrl);
+  const safeReturnPath = safeInternalPath(returnPath, originUrl);
+  const returnPathWithActiveFlow = pathWithActiveHostedTunnelFlow(safeReturnPath, hostname);
+  const redirectTo = new URL(returnPathWithActiveFlow, originUrl);
+
+  oauthUrl.pathname = '/api/auth/github';
+  oauthUrl.search = '';
+  oauthUrl.hash = '';
+  oauthUrl.searchParams.set('redirect_to', redirectTo.toString());
+  return oauthUrl.toString();
 };
 
 const LoginFooter: React.FC = () => (
