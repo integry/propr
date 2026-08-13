@@ -224,7 +224,7 @@ const LoginPage: React.FC = () => {
   }, [isDemoMode, isDemoModeLoading, isOAuthCompletion, loggedOut, navigate, returnPathWithActiveFlow]);
 
   useEffect(() => () => {
-    stopHostedOAuthFlow();
+    stopHostedOAuthFlow(true);
   }, [stopHostedOAuthFlow]);
 
   const startHostedOAuthFlow = useCallback((oauthUrl: string) => {

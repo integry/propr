@@ -470,6 +470,54 @@ describe('LoginPage session recovery', () => {
     expect(screen.getByRole('button', { name: 'Sign in with GitHub' })).not.toBeDisabled();
   });
 
+  it('closes hosted popup and ignores an in-flight poll completion after unmount', async () => {
+    runtimeConfigMockState.forceHostedUiOrigin = true;
+    let resolvePendingUser: (user: CurrentUser) => void = () => {};
+    const pendingUser = new Promise<CurrentUser>((resolve) => {
+      resolvePendingUser = resolve;
+    });
+    mockGetCurrentUser
+      .mockRejectedValueOnce(new Error('Authentication required'))
+      .mockReturnValueOnce(pendingUser);
+    const popup = { closed: false, close: vi.fn(function close(this: { closed: boolean }) { this.closed = true; }) } as unknown as Window;
+    vi.spyOn(window, 'open').mockReturnValue(popup);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const Harness = ({ showLogin }: { showLogin: boolean }) => (
+      <MemoryRouter initialEntries={[{ pathname: '/login', state: { from: '/plans' } }]}>
+        <LocationProbe />
+        <Routes>
+          <Route path="/login" element={showLogin ? <LoginPage /> : <div>login removed</div>} />
+          <Route path="/plans" element={<div>plans page</div>} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    const { rerender } = render(<Harness showLogin />);
+    const loginButton = await screen.findByRole('button', { name: 'Sign in with GitHub' });
+    const clearIntervalSpy = vi.spyOn(window, 'clearInterval');
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
+
+    fireEvent.click(loginButton);
+    expect(mockGetCurrentUser).toHaveBeenCalledTimes(2);
+
+    rerender(<Harness showLogin={false} />);
+
+    expect(screen.getByText('login removed')).toBeInTheDocument();
+    expect(popup.close).toHaveBeenCalledTimes(1);
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(2);
+    expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolvePendingUser(authenticatedUser);
+      await pendingUser;
+    });
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/login');
+    expect(screen.queryByText('plans page')).not.toBeInTheDocument();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
   it('does not authorize a copied blank-name context before, during, or after another hosted tab starts OAuth', async () => {
     runtimeConfigMockState.forceHostedUiOrigin = true;
     mockGetCurrentUser
