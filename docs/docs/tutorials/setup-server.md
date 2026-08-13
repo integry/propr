@@ -82,7 +82,7 @@ In your GitHub App settings, set the webhook URL to `https://propr.example.com/w
 
 ## Start The Stack
 
-On the server, the CLI control plane is the simplest path (Node.js 22+). The guided `propr setup` wizard is the recommended bootstrap — it scaffolds the runtime directory, helps you pick a [GitHub auth mode](../operations/github-auth.md) and issue intake (including the polling-vs-webhook choice covered above), and starts the stack:
+On the server, the CLI control plane is the simplest path (Node.js 22 or 24). The guided `propr setup` wizard is the recommended bootstrap — it scaffolds the runtime directory, helps you pick a [GitHub auth mode](../operations/github-auth.md) and issue intake (including the polling-vs-webhook choice covered above), and starts the stack:
 
 ```bash
 sudo mkdir -p /srv/propr && sudo chown -R "$USER":"$USER" /srv/propr && cd /srv/propr

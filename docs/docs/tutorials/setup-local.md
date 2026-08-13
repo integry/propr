@@ -13,7 +13,7 @@ The end state: ProPR runs from the prebuilt images on your Linux workstation, th
 - A Linux `amd64` host that meets the [system requirements](./setup.md#system-requirements), including direct access to the Docker daemon and socket. Under Docker Desktop on macOS or Windows use the Compose-based [Source Development Setup](./setup-source.md); that path is outside the current release qualification.
 - GitHub access for the backend. By default ProPR uses the shared, hosted ProPR GitHub App through Connect; install the GitHub CLI (`gh`) for setup's default browser login, or run `propr login <token>` first. Running your own GitHub App is the advanced alternative — see [GitHub Authentication](../operations/github-auth.md).
 - A provider account for at least one coding agent — reuse host credentials, run `propr agent login <agent>`, or log in directly while adding the agent in the Web UI
-- Node.js 22+ for the recommended CLI path (the launcher-container alternative needs no Node.js)
+- Node.js 22 or 24 for the recommended CLI path (the launcher-container alternative needs no Node.js)
 - Reserve 20 GB of free disk for images, data, logs, and repository workspaces; allow more for large repositories and image upgrades
 
 ## Prepare Existing Agent Credentials (Optional)
@@ -53,7 +53,7 @@ mkdir -p "/tmp/propr-vibe-prompts-$(id -u)"
 The ProPR CLI is the [stack control plane](../features/propr-cli.md#local-stack-control-plane) — it scaffolds the runtime directory, verifies the host, and starts the stack. The quickest way to get everything running is the guided `propr setup` wizard:
 
 ```bash
-npm install -g propr-cli      # Node.js 22+ — prefix sudo if your global npm needs it
+npm install -g propr-cli      # Node.js 22 or 24 — prefix sudo if your global npm needs it
 which propr && propr --version # confirm the CLI is on PATH (catches root/user prefix mismatches)
 
 mkdir propr-deploy && cd propr-deploy

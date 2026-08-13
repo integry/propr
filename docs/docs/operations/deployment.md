@@ -4,7 +4,7 @@ Use this page when ProPR should run on a shared server. For a laptop install, st
 
 ## Recommended Path
 
-Use the prebuilt images, started by the ProPR CLI control plane (`propr init stack --root /srv/propr`, `propr check`, `propr start --no-tui`; Node.js 22+) or by the published launcher container. Both run the same orchestrator: it reads a pinned image manifest, pulls each image, creates a Docker network, and starts the ProPR service containers as siblings through the mounted Docker socket.
+Use the prebuilt images, started by the ProPR CLI control plane (`propr init stack --root /srv/propr`, `propr check`, `propr start --no-tui`; Node.js 22 or 24) or by the published launcher container. Both run the same orchestrator: it reads a pinned image manifest, pulls each image, creates a Docker network, and starts the ProPR service containers as siblings through the mounted Docker socket.
 
 You need:
 
@@ -177,7 +177,7 @@ To stay within limits:
 
 ### Option A — CLI (Recommended)
 
-The ProPR CLI (`propr-cli`, Node.js 22+) is the recommended control plane. It
+The ProPR CLI (`propr-cli`, Node.js 22 or 24) is the recommended control plane. It
 reads `.env`, pulls images, creates the Docker network, and starts service
 containers — the same orchestration the launcher performs, but managed from the
 host rather than from inside a container.

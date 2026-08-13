@@ -14,7 +14,7 @@ This page documents the end-user CLI. For developing or operating ProPR itself f
 npm install -g propr-cli
 ```
 
-The host CLI requires **Node.js 22 or newer** (the Docker launcher image is separate and unaffected). The package is published at [npmjs.com/package/propr-cli](https://www.npmjs.com/package/propr-cli); the installed command is `propr`.
+The host CLI is validated on **Node.js 22 and 24** (the Docker launcher image is separate and unaffected). The published package engine minimum remains Node.js `>=22`. The package is published at [npmjs.com/package/propr-cli](https://www.npmjs.com/package/propr-cli); the installed command is `propr`.
 
 ## Local Stack Control Plane
 
