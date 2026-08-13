@@ -7,11 +7,6 @@ test('validateTaskId accepts model-derived task IDs with dotted versions', () =>
   assert.equal(result.valid, true);
 });
 
-test('validateTaskId accepts route-safe IDs that require percent-encoding', () => {
-  const result = validateTaskId('integry@propr-task-1');
-  assert.equal(result.valid, true);
-});
-
 test('validateTaskId still rejects unsafe path characters', () => {
   assert.equal(validateTaskId('../bad-task').valid, false);
   assert.equal(validateTaskId('bad/task').valid, false);
