@@ -58,7 +58,8 @@ Use this block when you want a coding agent to bootstrap ProPR on a host you con
 Install ProPR safely on this host.
 
 Placeholders:
-- Stack root: <STACK_ROOT, for example /srv/propr or ~/propr-deploy>
+- Stack root: <STACK_ROOT, absolute path only, for example /srv/propr or
+  $HOME/propr-deploy resolved before running commands>
 - GitHub account/repository to connect: <GITHUB_ACCOUNT_OR_OWNER/REPO>
 - Selected coding agent: <claude|codex|antigravity|opencode|vibe>
 - ProPR Connect/shared GitHub App: <yes|no>
@@ -71,7 +72,8 @@ Before installing, verify and report: Linux amd64, CPU/RAM/disk capacity,
 outbound HTTPS/WebSocket access to Docker Hub/npm/GitHub/selected provider
 and ProPR Connect if selected, Docker Engine + CLI, direct read/write access
 to /var/run/docker.sock without interactive sudo, Node.js 22 or 24, npm, Git,
-and authenticated GitHub CLI access (`gh auth status`).
+and authenticated GitHub CLI access (`gh auth status`). Resolve <STACK_ROOT>
+to an absolute path before using it in quoted command arguments.
 
 Install the current public CLI with `npm install -g propr-cli`, then run
 `propr --version`. If this is an existing stack root, run
@@ -98,13 +100,25 @@ Verify with:
 - `propr status --root "<STACK_ROOT>"`
 - loopback UI/API access, normally http://127.0.0.1:5173 and
   http://127.0.0.1:4000/api/status
-- configured repository visibility with `propr repo list` and `propr repo status`
-- configured agent visibility with `propr agent list`
+- before backend-client checks, preserve the current CLI remote configuration
+  (`propr config list`), switch to a temporary verification profile, point it at
+  this stack's discovered API URL (normally `propr config profile use
+  setup-verify` then `propr remote http://127.0.0.1:4000`), and run
+  `propr login` interactively if the profile is not already authenticated
+- configured repository visibility against that temporary profile with
+  `propr repo list` and `propr repo status`
+- configured agent visibility against that temporary profile with
+  `propr agent list`
+- restore the previous active CLI remote profile/configuration after these
+  backend-client checks
 - `propr tunnel verify` only when the managed app.propr.dev tunnel was selected,
   entitled, configured, and enabled
 
-If anything fails, report the exact command, output, and likely cause, then stop.
-Do not apply destructive recovery or broad cleanup without my explicit approval.
+If anything fails, report the exact non-sensitive command, output, and likely
+cause, then stop. Redact all credentials, tokens, one-time codes, cookies,
+private-key material, and sensitive URLs from commands and output while
+preserving the useful diagnostic text. Do not apply destructive recovery or
+broad cleanup without my explicit approval.
 ```
 
 For the details behind the prompt, see [Local Setup](./setup-local.md) or [Server Setup](./setup-server.md), [GitHub Authentication](../operations/github-auth.md), [ProPR Connect](../operations/propr-connect.md), [Production Deployment](../operations/deployment.md), [Hosted UI Tunnel](../operations/hosted-ui-tunnel.md), [Security Overview](../concepts/security-overview.md), and [Troubleshooting](../operations/troubleshooting.md).
