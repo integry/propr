@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // getApiBaseUrl reads window.__PROPR_CONFIG__ at module-load time, so each case
@@ -149,6 +150,7 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
   it('stores a valid hosted tunnel API base and a flow token in sessionStorage', async () => {
     const {
       HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+      HOSTED_TUNNEL_CONTEXT_ID_KEY,
       HOSTED_TUNNEL_FLOW_ID_KEY,
       rememberHostedTunnelApiBaseUrl,
     } = await load();
@@ -157,7 +159,8 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     const flowId = rememberHostedTunnelApiBaseUrl(
       'app.propr.dev',
       'https://t-abc123.propr.dev/',
-      storage
+      storage,
+      'tab-context'
     );
 
     expect(typeof flowId).toBe('string');
@@ -167,40 +170,46 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
       'https://t-abc123.propr.dev'
     );
     expect(storage.setItem).toHaveBeenCalledWith(HOSTED_TUNNEL_FLOW_ID_KEY, flowId);
+    expect(storage.setItem).toHaveBeenCalledWith(HOSTED_TUNNEL_CONTEXT_ID_KEY, 'tab-context');
   });
 
   it('reads a valid stored tunnel when the URL flow token matches', async () => {
     const {
       HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+      HOSTED_TUNNEL_CONTEXT_ID_KEY,
       HOSTED_TUNNEL_FLOW_ID_KEY,
       readStoredHostedTunnelApiBaseUrl,
     } = await load();
     const storage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev/',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'test-context-id',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'test-flow-id',
     });
 
     expect(
-      readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'test-flow-id', storage)
+      readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'test-flow-id', storage, 'test-context-id')
     ).toBe('https://t-abc123.propr.dev');
     expect(
-      readStoredHostedTunnelApiBaseUrl('propr.example.com', 'test-flow-id', storage)
+      readStoredHostedTunnelApiBaseUrl('propr.example.com', 'test-flow-id', storage, 'test-context-id')
     ).toBeNull();
   });
 
   it('rejects a stored tunnel when the URL flow token does not match', async () => {
     const {
       HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+      HOSTED_TUNNEL_CONTEXT_ID_KEY,
       HOSTED_TUNNEL_FLOW_ID_KEY,
       readStoredHostedTunnelApiBaseUrl,
     } = await load();
     const storage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'real-context-id',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'real-flow-id',
     });
 
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'wrong-flow-id', storage)).toBeNull();
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', null, storage)).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'wrong-flow-id', storage, 'real-context-id')).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'real-flow-id', storage, 'wrong-context-id')).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', null, storage, 'real-context-id')).toBeNull();
   });
 
   it('rejects storage that has no flow token (was never legitimately set)', async () => {
@@ -210,22 +219,24 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
       // No HOSTED_TUNNEL_FLOW_ID_KEY — simulates old/externally written storage
     });
 
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'any-flow-id', storage)).toBeNull();
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', null, storage)).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'any-flow-id', storage, 'any-context')).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', null, storage, 'any-context')).toBeNull();
   });
 
   it('removes an invalid stored tunnel value when flow token matches', async () => {
     const {
       HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+      HOSTED_TUNNEL_CONTEXT_ID_KEY,
       HOSTED_TUNNEL_FLOW_ID_KEY,
       readStoredHostedTunnelApiBaseUrl,
     } = await load();
     const storage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://custom.example.com',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'my-context',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'my-flow',
     });
 
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'my-flow', storage)).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'my-flow', storage, 'my-context')).toBeNull();
     expect(storage.removeItem).toHaveBeenCalledWith(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
   });
 
@@ -234,14 +245,14 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     const storageA = memoryStorage();
     const storageB = memoryStorage();
 
-    const flowIdA = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-aaa111.propr.dev', storageA);
-    const flowIdB = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-bbb222.propr.dev', storageB);
+    const flowIdA = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-aaa111.propr.dev', storageA, 'context-a');
+    const flowIdB = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-bbb222.propr.dev', storageB, 'context-b');
 
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdA, storageA)).toBe('https://t-aaa111.propr.dev');
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdB, storageB)).toBe('https://t-bbb222.propr.dev');
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdA, storageA, 'context-a')).toBe('https://t-aaa111.propr.dev');
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdB, storageB, 'context-b')).toBe('https://t-bbb222.propr.dev');
     // Cross-tab: Tab A's flow ID does not unlock Tab B's storage and vice versa
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdA, storageB)).toBeNull();
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdB, storageA)).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdA, storageB, 'context-a')).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdB, storageA, 'context-b')).toBeNull();
   });
 
   it('does not read from an old localStorage entry — stale global value is ignored', async () => {
@@ -249,14 +260,15 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     // Simulate an empty sessionStorage (new tab) while a stale localStorage value exists.
     // The sessionStorage storage mock has no entry, so the result must be null.
     const emptySession = memoryStorage();
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', null, emptySession)).toBeNull();
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'any-flow', emptySession)).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', null, emptySession, 'any-context')).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', 'any-flow', emptySession, 'any-context')).toBeNull();
   });
 
   // ── Regression: fresh context with prepopulated storage ──────────────────────
   it('rejects a fresh context whose sessionStorage was prepopulated from another tab but whose URL has no flow selector', async () => {
     const {
       HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+      HOSTED_TUNNEL_CONTEXT_ID_KEY,
       HOSTED_TUNNEL_FLOW_ID_KEY,
       readStoredHostedTunnelApiBaseUrl,
       resolveApiBaseUrl,
@@ -265,6 +277,7 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     // Simulate Tab A's sessionStorage being copied into a new browsing context.
     const copiedStorage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-tabA.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'tab-a-context-id',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'tab-a-flow-id',
     });
 
@@ -281,12 +294,14 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
   it('a direct new app.propr.dev visit with no query params resolves no instance even with prepopulated storage', async () => {
     const {
       HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+      HOSTED_TUNNEL_CONTEXT_ID_KEY,
       HOSTED_TUNNEL_FLOW_ID_KEY,
       hostedUiConnectionIssue,
     } = await load();
 
     const prepopulated = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-prior.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'prior-context',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'some-prior-flow',
     });
 
@@ -302,23 +317,23 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     const storageB = memoryStorage();
 
     // Both tabs visit their respective ?tunnel= deep links and remember the selection.
-    const flowIdA = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-alpha.propr.dev', storageA);
-    const flowIdB = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-beta.propr.dev', storageB);
+    const flowIdA = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-alpha.propr.dev', storageA, 'context-a');
+    const flowIdB = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-beta.propr.dev', storageB, 'context-b');
 
     // After login redirect, each tab's URL carries ?flow=<id>; ?tunnel= is gone.
     expect(
-      resolveApiBaseUrl('app.propr.dev', `?flow=${flowIdA}`, undefined, undefined, storageA)
+      resolveApiBaseUrl('app.propr.dev', `?flow=${flowIdA}`, undefined, undefined, storageA, 'context-a')
     ).toBe('https://t-alpha.propr.dev');
     expect(
-      resolveApiBaseUrl('app.propr.dev', `?flow=${flowIdB}`, undefined, undefined, storageB)
+      resolveApiBaseUrl('app.propr.dev', `?flow=${flowIdB}`, undefined, undefined, storageB, 'context-b')
     ).toBe('https://t-beta.propr.dev');
 
     // After a deep-route reload (/tasks), the flow token is still in the URL.
     expect(
-      resolveApiBaseUrl('app.propr.dev', `?flow=${flowIdA}`, undefined, undefined, storageA)
+      resolveApiBaseUrl('app.propr.dev', `?flow=${flowIdA}`, undefined, undefined, storageA, 'context-a')
     ).toBe('https://t-alpha.propr.dev');
     expect(
-      resolveApiBaseUrl('app.propr.dev', `?flow=${flowIdB}`, undefined, undefined, storageB)
+      resolveApiBaseUrl('app.propr.dev', `?flow=${flowIdB}`, undefined, undefined, storageB, 'context-b')
     ).toBe('https://t-beta.propr.dev');
   });
 
@@ -329,18 +344,66 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     const storage = memoryStorage();
 
     // Initial load: ?tunnel= present → tunnel stored, flow token returned.
-    const flowId = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-abc123.propr.dev', storage);
+    const flowId = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-abc123.propr.dev', storage, 'same-tab-context');
     expect(typeof flowId).toBe('string');
 
     // Post-OAuth callback with ?flow= in URL (the login page threaded it through).
     expect(
-      resolveApiBaseUrl('app.propr.dev', `?flow=${flowId}`, undefined, undefined, storage)
+      resolveApiBaseUrl('app.propr.dev', `?flow=${flowId}`, undefined, undefined, storage, 'same-tab-context')
     ).toBe('https://t-abc123.propr.dev');
 
     // Deep-route reload still has ?flow= in URL.
     expect(
-      resolveApiBaseUrl('app.propr.dev', `?flow=${flowId}`, undefined, undefined, storage)
+      resolveApiBaseUrl('app.propr.dev', `?flow=${flowId}`, undefined, undefined, storage, 'same-tab-context')
     ).toBe('https://t-abc123.propr.dev');
+  });
+
+  it('keeps unrelated query parameters and one active flow when building hosted navigation paths', async () => {
+    const { HOSTED_TUNNEL_FLOW_ID_KEY, pathWithActiveHostedTunnelFlow, resolveApiBaseUrl } = await load();
+    const storage = memoryStorage();
+
+    resolveApiBaseUrl(
+      'app.propr.dev',
+      '?tunnel=t-active123.propr.dev&view=open',
+      undefined,
+      undefined,
+      storage,
+      'active-context'
+    );
+    const flowId = storage.setItem.mock.calls.find(([key]) => key === HOSTED_TUNNEL_FLOW_ID_KEY)?.[1];
+
+    expect(
+      pathWithActiveHostedTunnelFlow('/settings?tab=members&flow=attacker&sort=asc', 'app.propr.dev')
+    ).toBe(`/settings?tab=members&sort=asc&flow=${flowId}`);
+  });
+
+  it('does not revive a copied flow URL in a fresh browsing context', async () => {
+    const {
+      HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+      HOSTED_TUNNEL_CONTEXT_ID_KEY,
+      HOSTED_TUNNEL_FLOW_ID_KEY,
+      resolveApiBaseUrl,
+    } = await load();
+    const copiedStorage = memoryStorage({
+      [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-copied.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'original-context',
+      [HOSTED_TUNNEL_FLOW_ID_KEY]: 'copied-flow',
+    });
+
+    expect(
+      resolveApiBaseUrl('app.propr.dev', '?flow=copied-flow', undefined, undefined, copiedStorage, 'fresh-context')
+    ).toBe('');
+    expect(
+      resolveApiBaseUrl('app.propr.dev', '?flow=copied-flow', undefined, undefined, copiedStorage, null)
+    ).toBe('');
+  });
+
+  it('strips attacker-controlled flow input when no hosted flow is active', async () => {
+    const { pathWithActiveHostedTunnelFlow } = await load();
+
+    expect(
+      pathWithActiveHostedTunnelFlow('/tasks?flow=evil&status=open', 'app.propr.dev')
+    ).toBe('/tasks?status=open');
   });
 
   // ── Regression: invalid tunnel input is rejected and does not overwrite ───────
@@ -348,7 +411,7 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     const { rememberHostedTunnelApiBaseUrl, resolveApiBaseUrl } = await load();
 
     const storage = memoryStorage();
-    const flowId = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-valid.propr.dev', storage);
+    const flowId = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-valid.propr.dev', storage, 'valid-context');
 
     // Someone navigates to ?tunnel=evil.example.com — invalid, must be rejected.
     const resultWithBadTunnel = resolveApiBaseUrl(
@@ -363,7 +426,7 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
 
     // The stored valid tunnel is still intact — same-tab reload with flow token works.
     expect(
-      resolveApiBaseUrl('app.propr.dev', `?flow=${flowId}`, undefined, undefined, storage)
+      resolveApiBaseUrl('app.propr.dev', `?flow=${flowId}`, undefined, undefined, storage, 'valid-context')
     ).toBe('https://t-valid.propr.dev');
   });
 });
@@ -403,35 +466,38 @@ describe('resolveApiBaseUrl', () => {
   });
 
   it('uses the stored hosted tunnel when the query is gone after a login redirect and URL carries the flow token', async () => {
-    const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_FLOW_ID_KEY, resolveApiBaseUrl } = await load();
+    const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_CONTEXT_ID_KEY, HOSTED_TUNNEL_FLOW_ID_KEY, resolveApiBaseUrl } = await load();
     const storage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'my-context-id',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'my-flow-id',
     });
 
     expect(
-      resolveApiBaseUrl('app.propr.dev', '?flow=my-flow-id', undefined, undefined, storage)
+      resolveApiBaseUrl('app.propr.dev', '?flow=my-flow-id', undefined, undefined, storage, 'my-context-id')
     ).toBe('https://t-abc123.propr.dev');
   });
 
   it('does not use the stored hosted tunnel when URL has no flow token', async () => {
-    const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_FLOW_ID_KEY, resolveApiBaseUrl } = await load();
+    const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_CONTEXT_ID_KEY, HOSTED_TUNNEL_FLOW_ID_KEY, resolveApiBaseUrl } = await load();
     const storage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'my-context-id',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'my-flow-id',
     });
 
     // Simulates a new tab that inherited sessionStorage but navigated to app.propr.dev
     // without a ?flow= parameter — must not use the inherited tunnel.
     expect(
-      resolveApiBaseUrl('app.propr.dev', '', undefined, undefined, storage)
+      resolveApiBaseUrl('app.propr.dev', '', undefined, undefined, storage, 'my-context-id')
     ).toBe('');
   });
 
   it('does not use the stored hosted tunnel on self-hosted origins', async () => {
-    const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_FLOW_ID_KEY, resolveApiBaseUrl } = await load();
+    const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_CONTEXT_ID_KEY, HOSTED_TUNNEL_FLOW_ID_KEY, resolveApiBaseUrl } = await load();
     const storage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'my-context-id',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'my-flow-id',
     });
 
@@ -441,7 +507,8 @@ describe('resolveApiBaseUrl', () => {
         '?flow=my-flow-id',
         { apiBaseUrl: 'https://runtime.example.com' },
         undefined,
-        storage
+        storage,
+        'my-context-id'
       )
     ).toBe('https://runtime.example.com');
   });
@@ -471,26 +538,28 @@ describe('runtimeConfigWarning', () => {
   });
 
   it('does not warn about missing config when a stored hosted tunnel with matching flow token is present', async () => {
-    const { runtimeConfigWarning, HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_FLOW_ID_KEY } =
+    const { runtimeConfigWarning, HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_CONTEXT_ID_KEY, HOSTED_TUNNEL_FLOW_ID_KEY } =
       await (await import('./runtimeConfig'), vi.resetModules(), import('./runtimeConfig'));
     const storage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'my-context',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'my-flow',
     });
 
-    expect(runtimeConfigWarning('app.propr.dev', undefined, '?flow=my-flow', storage)).toBeNull();
+    expect(runtimeConfigWarning('app.propr.dev', undefined, '?flow=my-flow', storage, 'my-context')).toBeNull();
   });
 
   it('warns when storage has a tunnel but URL has no matching flow token', async () => {
-    const { runtimeConfigWarning, HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_FLOW_ID_KEY } =
+    const { runtimeConfigWarning, HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_CONTEXT_ID_KEY, HOSTED_TUNNEL_FLOW_ID_KEY } =
       await import('./runtimeConfig');
     const storage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'my-context',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'my-flow',
     });
 
     // No ?flow= in URL → inherited storage is not trusted → warning fires.
-    expect(runtimeConfigWarning('app.propr.dev', undefined, '', storage)).not.toBeNull();
+    expect(runtimeConfigWarning('app.propr.dev', undefined, '', storage, 'my-context')).not.toBeNull();
   });
 
   it('warns on the hosted UI origin when apiBaseUrl is empty', async () => {
@@ -554,27 +623,29 @@ describe('hosted UI connection issue', () => {
   });
 
   it('does not block hosted UI visits with a stored tunnel and matching flow token', async () => {
-    const { hostedUiConnectionIssue, HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_FLOW_ID_KEY } =
+    const { hostedUiConnectionIssue, HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_CONTEXT_ID_KEY, HOSTED_TUNNEL_FLOW_ID_KEY } =
       await import('./runtimeConfig');
     const storage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-stored.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'context-xyz',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'flow-xyz',
     });
 
-    expect(hostedUiConnectionIssue('app.propr.dev', undefined, '?flow=flow-xyz', storage)).toBeNull();
+    expect(hostedUiConnectionIssue('app.propr.dev', undefined, '?flow=flow-xyz', storage, 'context-xyz')).toBeNull();
   });
 
   it('blocks when storage has a tunnel but URL has no matching flow token', async () => {
-    const { hostedUiConnectionIssue, HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_FLOW_ID_KEY } =
+    const { hostedUiConnectionIssue, HOSTED_TUNNEL_API_BASE_STORAGE_KEY, HOSTED_TUNNEL_CONTEXT_ID_KEY, HOSTED_TUNNEL_FLOW_ID_KEY } =
       await import('./runtimeConfig');
     const storage = memoryStorage({
       [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-stored.propr.dev',
+      [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'context-xyz',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'flow-xyz',
     });
 
     // Inherited storage without URL authority → should block and prompt reconnect.
     expect(
-      hostedUiConnectionIssue('app.propr.dev', undefined, '', storage)?.title
+      hostedUiConnectionIssue('app.propr.dev', undefined, '', storage, 'context-xyz')?.title
     ).toBe('Connect a ProPR stack');
   });
 

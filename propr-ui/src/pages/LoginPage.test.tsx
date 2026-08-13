@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation, type InitialEntry } from 'react-router-dom';
-import LoginPage from './LoginPage';
+import LoginPage, { buildGithubOAuthUrl } from './LoginPage';
 import { getCurrentUser } from '../api/proprApi';
 import type { CurrentUser } from '../api/proprTypes';
+import { HOSTED_TUNNEL_FLOW_ID_KEY, pathWithActiveHostedTunnelFlow, resolveApiBaseUrl } from '../config/runtimeConfig';
 
 vi.mock('../hooks/useDocumentTitle', () => ({
   useDocumentTitle: vi.fn(),
@@ -49,6 +50,19 @@ const renderLogin = (entry: InitialEntry) =>
       </Routes>
     </MemoryRouter>
   );
+
+const memoryStorage = (initial: Record<string, string> = {}) => {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem: vi.fn((key: string) => values.get(key) ?? null),
+    setItem: vi.fn((key: string, value: string) => {
+      values.set(key, value);
+    }),
+    removeItem: vi.fn((key: string) => {
+      values.delete(key);
+    }),
+  };
+};
 
 describe('LoginPage session recovery', () => {
   beforeEach(() => {
@@ -159,5 +173,33 @@ describe('LoginPage session recovery', () => {
 
     expect(screen.getByRole('status', { name: 'Checking session' })).toBeInTheDocument();
     expect(mockGetCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it('builds an OAuth redirect_to with exactly the validated active hosted flow', () => {
+    const storage = memoryStorage();
+    resolveApiBaseUrl(
+      'app.propr.dev',
+      '?tunnel=t-oauth123.propr.dev',
+      undefined,
+      undefined,
+      storage,
+      'oauth-context'
+    );
+    const flowId = storage.setItem.mock.calls.find(([key]) => key === HOSTED_TUNNEL_FLOW_ID_KEY)?.[1];
+
+    expect(pathWithActiveHostedTunnelFlow('/login?flow=attacker', 'app.propr.dev')).toBe(
+      `/login?flow=${flowId}`
+    );
+
+    const oauthUrl = buildGithubOAuthUrl(
+      '/tasks?status=open&flow=attacker&flow=other',
+      'https://app.propr.dev',
+      'https://auth.propr.dev',
+      'app.propr.dev'
+    );
+    const redirectTo = new URL(oauthUrl).searchParams.get('redirect_to');
+
+    expect(redirectTo).toBe(`https://app.propr.dev/tasks?status=open&flow=${flowId}`);
+    expect(redirectTo?.match(/[?&]flow=/g)).toHaveLength(1);
   });
 });

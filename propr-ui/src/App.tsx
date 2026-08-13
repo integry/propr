@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketProvider } from './contexts/SocketProvider'
@@ -9,7 +9,7 @@ import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
 import { getCurrentUser, INSTANCE_AUTHORIZATION_CHANGED_EVENT } from './api/proprApi'
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
-import { hostedUiConnectionIssue, isHostedUiOrigin } from './config/runtimeConfig'
+import { hostedUiConnectionIssue, isHostedUiOrigin, pathWithActiveHostedTunnelFlow } from './config/runtimeConfig'
 import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
 import type { CurrentUser, InstancePermission } from './api/proprTypes'
 import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
@@ -94,6 +94,19 @@ const PermissionRequired: React.FC<{
       </p>
     </div>
   );
+};
+
+export const HostedFlowRouteSync: React.FC<{ hostname?: string }> = ({ hostname }) => {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const currentPath = `${location.pathname}${location.search}${location.hash}`;
+    const nextPath = pathWithActiveHostedTunnelFlow(currentPath, hostname);
+    if (nextPath !== currentPath) navigate(nextPath, { replace: true });
+  }, [hostname, location, navigate]);
+
+  return null;
 };
 
 const AppContent: React.FC = () => {
@@ -185,6 +198,7 @@ const AppContent: React.FC = () => {
           <div className="min-h-0 flex-1">
             <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
               <Router>
+                <HostedFlowRouteSync />
                 <RouteChunkErrorBoundary>
                   <Suspense fallback={<LoadingSpinner />}>
                     <Routes>

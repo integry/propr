@@ -3,7 +3,7 @@ import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { getCurrentUser } from '../api/proprApi';
-import { getApiBaseUrl } from '../config/runtimeConfig';
+import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 
 const API_BASE_URL = getApiBaseUrl();
 // For OAuth, use main API to avoid registering multiple callback URLs
@@ -41,6 +41,18 @@ const resolveReturnPath = (state: unknown, redirectToParam: string | null): stri
   return '/';
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
+export const buildGithubOAuthUrl = (
+  returnPath: string,
+  origin = window.location.origin,
+  oauthApiUrl = OAUTH_API_URL,
+  hostname = window.location.hostname
+): string => {
+  const returnPathWithActiveFlow = pathWithActiveHostedTunnelFlow(returnPath, hostname);
+  const redirectTo = encodeURIComponent(origin + returnPathWithActiveFlow);
+  return `${oauthApiUrl}/api/auth/github?redirect_to=${redirectTo}`;
+};
+
 const LoginFooter: React.FC = () => (
   <footer className="w-full border-t border-gray-100 bg-white/80 px-4 py-3 text-center text-[11px] leading-tight text-gray-400">
     <a
@@ -67,6 +79,7 @@ const LoginPage: React.FC = () => {
     () => resolveReturnPath(location.state, searchParams.get('redirect_to')),
     [location.state, searchParams]
   );
+  const returnPathWithActiveFlow = useMemo(() => pathWithActiveHostedTunnelFlow(returnPath), [returnPath]);
 
   // Start in the "recovering" state (showing a spinner instead of the OAuth
   // button) unless we already know recovery should be skipped. This avoids a
@@ -91,7 +104,7 @@ const LoginPage: React.FC = () => {
         if (cancelled) return;
         // The server still has (or could refresh) a valid session, so send
         // the user back to where they came from.
-        navigate(returnPath, { replace: true });
+        navigate(returnPathWithActiveFlow, { replace: true });
       } catch {
         // Auth failures, network errors, and invalid responses fall through to
         // the login UI.
@@ -102,20 +115,14 @@ const LoginPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isDemoMode, isDemoModeLoading, loggedOut, navigate, returnPath]);
+  }, [isDemoMode, isDemoModeLoading, loggedOut, navigate, returnPathWithActiveFlow]);
 
   const handleLogin = () => {
     // Pass redirect_to so the OAuth flow returns the user to the page they came
     // from (falling back to the dashboard root) after authenticating.
-    // Include ?flow= if present so the OAuth callback URL carries URL authority
-    // for the hosted-tunnel flow token, allowing the stored tunnel to be resolved
-    // after the GitHub OAuth redirect completes.
-    const flowParam = searchParams.get('flow');
-    const returnWithFlow = flowParam
-      ? `${returnPath}${returnPath.includes('?') ? '&' : '?'}flow=${encodeURIComponent(flowParam)}`
-      : returnPath;
-    const redirectTo = encodeURIComponent(window.location.origin + returnWithFlow);
-    window.location.href = `${OAUTH_API_URL}/api/auth/github?redirect_to=${redirectTo}`;
+    // Include only the validated active flow so the OAuth callback URL carries
+    // authority for this tab without trusting arbitrary raw URL input.
+    window.location.href = buildGithubOAuthUrl(returnPath);
   };
 
   if (isRecovering) {
