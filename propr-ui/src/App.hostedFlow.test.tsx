@@ -17,7 +17,16 @@ const memoryStorage = (initial: Record<string, string> = {}) => {
 
 const LocationProbe = () => {
   const location = useLocation();
-  return <div data-testid="location">{`${location.pathname}${location.search}${location.hash}`}</div>;
+  const state = location.state as { from?: { pathname?: string; search?: string; hash?: string } } | null;
+  const from = state?.from
+    ? `${state.from.pathname || ''}${state.from.search || ''}${state.from.hash || ''}`
+    : '';
+  return (
+    <>
+      <div data-testid="location">{`${location.pathname}${location.search}${location.hash}`}</div>
+      <div data-testid="state-from">{from}</div>
+    </>
+  );
 };
 
 describe('HostedFlowRouteSync', () => {
@@ -67,5 +76,46 @@ describe('HostedFlowRouteSync', () => {
         `/settings?tab=members&flow=${flowId}`
       );
     });
+  });
+
+  it('preserves router state.from when inserting flow during route normalization', async () => {
+    const runtimeConfig = await import('./config/runtimeConfig');
+    const { HostedFlowRouteSync } = await import('./App');
+    const storage = memoryStorage();
+
+    runtimeConfig.resolveApiBaseUrl(
+      'app.propr.dev',
+      '?tunnel=t-router-state.propr.dev',
+      undefined,
+      undefined,
+      storage,
+      'router-state-context'
+    );
+    const flowId = storage.setItem.mock.calls.find(
+      ([key]) => key === runtimeConfig.HOSTED_TUNNEL_FLOW_ID_KEY
+    )?.[1];
+
+    render(
+      <MemoryRouter
+        initialEntries={[{
+          pathname: '/login',
+          search: '?logged_out=true',
+          state: { from: { pathname: '/plans', search: '?status=open&sort=updated', hash: '#details' } },
+        }]}
+      >
+        <HostedFlowRouteSync hostname="app.propr.dev" />
+        <LocationProbe />
+        <Routes>
+          <Route path="/login" element={<div>login</div>} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent(
+        `/login?logged_out=true&flow=${flowId}`
+      );
+    });
+    expect(screen.getByTestId('state-from')).toHaveTextContent('/plans?status=open&sort=updated#details');
   });
 });

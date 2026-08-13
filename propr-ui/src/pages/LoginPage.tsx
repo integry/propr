@@ -8,6 +8,7 @@ import {
   isHostedUiOrigin,
   pathWithActiveHostedTunnelFlow,
 } from '../config/runtimeConfig';
+import { isProprProxyUrl } from '@propr/shared';
 
 const API_BASE_URL = getApiBaseUrl();
 // For OAuth, use main API to avoid registering multiple callback URLs
@@ -20,6 +21,7 @@ const HOSTED_OAUTH_TIMEOUT_MS = 5 * 60 * 1_000;
 
 interface BuildGithubOAuthUrlOptions {
   hostedPopupCompletion?: boolean;
+  activeApiBaseUrl?: string;
 }
 
 interface HostedOAuthFlow {
@@ -61,10 +63,30 @@ const validatedHttpUrl = (value: string, fallbackBase?: string): URL => {
   return url;
 };
 
-const validateOAuthApiBaseUrl = (oauthApiUrl: string, origin: URL): URL => {
+const validateOAuthApiBaseUrl = (
+  oauthApiUrl: string,
+  origin: URL,
+  hostname: string,
+  options: BuildGithubOAuthUrlOptions = {}
+): URL => {
   const url = validatedHttpUrl(oauthApiUrl.trim(), origin.origin);
   if (url.username || url.password || /[^/]/.test(url.pathname) || url.search || url.hash) {
     throw new Error('OAuth API URL must be a bare http(s) origin.');
+  }
+  if (options.hostedPopupCompletion && isHostedUiOrigin(hostname)) {
+    const activeApiBaseUrl = (options.activeApiBaseUrl ?? API_BASE_URL).trim();
+    let activeApiUrl: URL;
+    try {
+      activeApiUrl = validatedHttpUrl(activeApiBaseUrl);
+    } catch {
+      throw new Error('Hosted OAuth requires an active managed ProPR tunnel.');
+    }
+    if (!isProprProxyUrl(activeApiUrl.origin)) {
+      throw new Error('Hosted OAuth requires an active managed ProPR tunnel.');
+    }
+    if (url.origin !== activeApiUrl.origin) {
+      throw new Error('Hosted OAuth API URL must match the active ProPR tunnel.');
+    }
   }
   return url;
 };
@@ -97,7 +119,7 @@ export const buildGithubOAuthUrl = (
   options: BuildGithubOAuthUrlOptions = {}
 ): string => {
   const originUrl = validatedHttpUrl(origin);
-  const oauthUrl = validateOAuthApiBaseUrl(oauthApiUrl, originUrl);
+  const oauthUrl = validateOAuthApiBaseUrl(oauthApiUrl, originUrl, hostname, options);
   const safeReturnPath = safeInternalPath(returnPath, originUrl);
   const redirectPath = options.hostedPopupCompletion && isHostedUiOrigin(hostname)
     ? HOSTED_OAUTH_COMPLETION_PATH
@@ -272,13 +294,23 @@ const LoginPage: React.FC = () => {
     // selected tunnel, so the popup receives only an inert same-origin
     // completion URL and no flow authority.
     const hostedLogin = isHostedUiOrigin(window.location.hostname);
-    const oauthUrl = buildGithubOAuthUrl(
-      returnPath,
-      window.location.origin,
-      OAUTH_API_URL,
-      window.location.hostname,
-      { hostedPopupCompletion: hostedLogin }
-    );
+    let oauthUrl: string;
+    try {
+      oauthUrl = buildGithubOAuthUrl(
+        returnPath,
+        window.location.origin,
+        OAUTH_API_URL,
+        window.location.hostname,
+        { hostedPopupCompletion: hostedLogin }
+      );
+    } catch (error) {
+      if (hostedLogin) {
+        setIsHostedOAuthPolling(false);
+        setHostedOAuthError(error instanceof Error ? error.message : 'Hosted GitHub sign-in is not configured correctly.');
+        return;
+      }
+      throw error;
+    }
     if (hostedLogin) {
       startHostedOAuthFlow(oauthUrl);
       return;

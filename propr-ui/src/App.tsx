@@ -103,7 +103,7 @@ export const HostedFlowRouteSync: React.FC<{ hostname?: string }> = ({ hostname 
   useEffect(() => {
     const currentPath = `${location.pathname}${location.search}${location.hash}`;
     const nextPath = pathWithActiveHostedTunnelFlow(currentPath, hostname);
-    if (nextPath !== currentPath) navigate(nextPath, { replace: true });
+    if (nextPath !== currentPath) navigate(nextPath, { replace: true, state: location.state });
   }, [hostname, location, navigate]);
 
   return null;

@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation, type InitialEntry } from 'react-router-dom';
+import { HostedFlowRouteSync } from '../App';
 import LoginPage, { buildGithubOAuthUrl } from './LoginPage';
 import { getCurrentUser } from '../api/proprApi';
 import type { CurrentUser } from '../api/proprTypes';
@@ -11,7 +12,10 @@ import {
   resolveApiBaseUrl,
 } from '../config/runtimeConfig';
 
-const runtimeConfigMockState = vi.hoisted(() => ({ forceHostedUiOrigin: false }));
+const runtimeConfigMockState = vi.hoisted(() => ({
+  activeApiBaseUrl: 'https://t-testactive.propr.dev',
+  forceHostedUiOrigin: false,
+}));
 
 vi.mock('../config/runtimeConfig', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config/runtimeConfig')>();
@@ -20,6 +24,7 @@ vi.mock('../config/runtimeConfig', async (importOriginal) => {
     isHostedUiOrigin: vi.fn((hostname: string) => (
       runtimeConfigMockState.forceHostedUiOrigin || actual.isHostedUiOrigin(hostname)
     )),
+    getApiBaseUrl: vi.fn(() => runtimeConfigMockState.activeApiBaseUrl),
     pathWithActiveHostedTunnelFlow: vi.fn((path: string, hostname?: string, flowId?: string | null) => (
       actual.pathWithActiveHostedTunnelFlow(
         path,
@@ -66,6 +71,19 @@ const LocationProbe = () => {
 const renderLogin = (entry: InitialEntry) =>
   render(
     <MemoryRouter initialEntries={[entry]}>
+      <LocationProbe />
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/plans" element={<div>plans page</div>} />
+        <Route path="/" element={<div>dashboard</div>} />
+      </Routes>
+    </MemoryRouter>
+  );
+
+const renderLoginWithHostedFlowRouteSync = (entry: InitialEntry) =>
+  render(
+    <MemoryRouter initialEntries={[entry]}>
+      <HostedFlowRouteSync hostname="app.propr.dev" />
       <LocationProbe />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
@@ -236,7 +254,7 @@ describe('LoginPage session recovery', () => {
       'https://app.propr.dev',
       'https://t-oauth123.propr.dev',
       'app.propr.dev',
-      { hostedPopupCompletion: true }
+      { hostedPopupCompletion: true, activeApiBaseUrl: 'https://t-oauth123.propr.dev' }
     );
     const redirectTo = redirectToFor(oauthUrl);
 
@@ -288,32 +306,49 @@ describe('LoginPage session recovery', () => {
     expect(redirectToFor(oauthUrl)).toBe('http://localhost:5173/plans?status=open&filter=mine#details');
   });
 
-  it('builds a legitimate configured split-origin OAuth URL', () => {
+  it('builds a legitimate configured split-origin OAuth URL for local/self-hosted builds', () => {
     const oauthUrl = buildGithubOAuthUrl(
       '/settings?tab=members#invite',
-      'https://app.propr.dev',
-      'https://api.example.com',
-      'app.propr.dev'
+      'https://ui-preview.gitfix.dev',
+      'https://api.gitfix.dev',
+      'ui-preview.gitfix.dev'
     );
     const url = new URL(oauthUrl);
 
-    expect(url.origin).toBe('https://api.example.com');
+    expect(url.origin).toBe('https://api.gitfix.dev');
     expect(url.pathname).toBe('/api/auth/github');
-    expect(redirectToFor(oauthUrl)).toBe('https://app.propr.dev/settings?tab=members#invite');
+    expect(redirectToFor(oauthUrl)).toBe('https://ui-preview.gitfix.dev/settings?tab=members#invite');
   });
 
-  it('builds a legitimate managed tunnel OAuth URL', () => {
+  it('builds a legitimate hosted managed tunnel OAuth URL only for the exact active tunnel', () => {
     const oauthUrl = buildGithubOAuthUrl(
       '/settings?tab=members&sort=asc#invite',
       'https://app.propr.dev',
       'https://t-managed123.propr.dev',
-      'app.propr.dev'
+      'app.propr.dev',
+      { hostedPopupCompletion: true, activeApiBaseUrl: 'https://t-managed123.propr.dev' }
     );
     const url = new URL(oauthUrl);
 
     expect(url.origin).toBe('https://t-managed123.propr.dev');
     expect(url.pathname).toBe('/api/auth/github');
-    expect(redirectToFor(oauthUrl)).toBe('https://app.propr.dev/settings?tab=members&sort=asc#invite');
+    expect(redirectToFor(oauthUrl)).toBe('https://app.propr.dev/login?oauth_complete=true');
+  });
+
+  it.each([
+    ['foreign configured origin', 'https://api.example.com', 'https://t-managed123.propr.dev'],
+    ['other managed tunnel', 'https://t-other456.propr.dev', 'https://t-managed123.propr.dev'],
+    ['non-managed active API origin', 'https://t-managed123.propr.dev', 'https://api.example.com'],
+  ])('rejects hosted OAuth when %s would not bind to the active tunnel', (_name, oauthApiUrl, activeApiBaseUrl) => {
+    expect(() =>
+      buildGithubOAuthUrl(
+        '/settings?tab=members#invite',
+        'https://app.propr.dev',
+        oauthApiUrl,
+        'app.propr.dev',
+        { hostedPopupCompletion: true, activeApiBaseUrl }
+      )
+    ).toThrow();
   });
 
   it('keeps local same-tab login behavior unchanged', () => {
@@ -370,6 +405,45 @@ describe('LoginPage session recovery', () => {
     expect(clearIntervalSpy).toHaveBeenCalled();
     expect(clearTimeoutSpy).toHaveBeenCalled();
     expect(screen.getByTestId('location')).toHaveTextContent('/plans?status=open#details');
+  });
+
+  it('returns to router state.from after hosted flow insertion and popup completion', async () => {
+    runtimeConfigMockState.forceHostedUiOrigin = true;
+    mockGetCurrentUser
+      .mockRejectedValueOnce(new Error('Authentication required'))
+      .mockResolvedValue(authenticatedUser);
+    const popup = { closed: false, close: vi.fn(function close(this: { closed: boolean }) { this.closed = true; }) } as unknown as Window;
+    vi.spyOn(window, 'open').mockReturnValue(popup);
+
+    const storage = memoryStorage();
+    resolveApiBaseUrl(
+      'app.propr.dev',
+      '?tunnel=t-loginstate.propr.dev',
+      undefined,
+      undefined,
+      storage,
+      'login-state-context'
+    );
+    const flowId = storage.setItem.mock.calls.find(([key]) => key === HOSTED_TUNNEL_FLOW_ID_KEY)?.[1];
+
+    renderLoginWithHostedFlowRouteSync({
+      pathname: '/login',
+      state: { from: { pathname: '/plans', search: '?status=open&sort=updated', hash: '#details' } },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent(`/login?flow=${flowId}`);
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in with GitHub' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('plans page')).toBeInTheDocument();
+    });
+    expect(popup.close).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      `/plans?status=open&sort=updated&flow=${flowId}#details`
+    );
   });
 
   it('stops hosted polling when the popup closes before authentication completes', async () => {
