@@ -48,6 +48,49 @@ export function materializePackagedRuntimeMode(template: string): string {
   return template.replace(linePattern, "NODE_ENV=production");
 }
 
+/**
+ * Keep source-checkout port defaults unchanged while making the packaged
+ * launcher's generated environment loopback-only. Explicit bindings in the
+ * template are operator choices and are therefore preserved verbatim.
+ */
+export function materializePackagedPortBindings(template: string): string {
+  const bindings = [
+    { name: "API_PORT", legacyDefault: "4000", packagedDefault: "127.0.0.1:4000" },
+    { name: "UI_PORT", legacyDefault: "5173", packagedDefault: "127.0.0.1:5173" },
+  ];
+  const missing: string[] = [];
+  let materialized = template;
+
+  for (const binding of bindings) {
+    const linePattern = new RegExp(
+      `^([ \\t]*(?:export[ \\t]+)?${binding.name}[ \\t]*=[ \\t]*)([^#\\r\\n]*)(.*)$`,
+      "m",
+    );
+    const match = materialized.match(linePattern);
+    if (!match) {
+      missing.push(`${binding.name}=${binding.packagedDefault}`);
+      continue;
+    }
+
+    const value = match[2].trim().replace(/^(["'])(.*)\1$/, "$2");
+    if (value === binding.legacyDefault) {
+      materialized = materialized.replace(
+        linePattern,
+        `$1${binding.packagedDefault}$3`,
+      );
+    }
+  }
+
+  if (missing.length > 0) {
+    const separator = materialized.endsWith("\n") ? "" : "\n";
+    materialized +=
+      `${separator}\n# Packaged launcher ports (host-loopback-only by default)\n` +
+      `${missing.join("\n")}\n`;
+  }
+
+  return materialized;
+}
+
 export interface DetectedCred {
   envKey: string;
   path: string;
@@ -196,8 +239,10 @@ export async function scaffoldStack(
         "Could not locate .env.example. Run `npm run build` in packages/cli, or run from a ProPR source checkout."
       );
     }
-    envContent = materializePackagedRuntimeMode(
-      materializeSessionSecret(readFileSync(example, "utf-8")),
+    envContent = materializePackagedPortBindings(
+      materializePackagedRuntimeMode(
+        materializeSessionSecret(readFileSync(example, "utf-8")),
+      ),
     );
     if (options.force && envExists) {
       secureExistingPrivateFile(envPath);
