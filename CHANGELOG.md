@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.14] - 2026-08-13
+
+### Changed
+
+- **Configurable live-E2E timeout**: model tasks can override the live-E2E
+  timeout while retaining a bounded default when no override is configured.
+
+### Fixed
+
+- **Interrupted setup recovery**: fresh and migrated stacks without a durable
+  administrator can safely resume `propr setup` after pre-authentication
+  interruption.
+
 ### Security
 
 - **UI dependency refresh**: updated the transitive `nanoid` resolution to
@@ -306,6 +319,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.14]: https://github.com/integry/propr/compare/v0.8.13...v0.8.14
 [0.8.13]: https://github.com/integry/propr/releases/tag/v0.8.13
 [0.8.12]: https://github.com/integry/propr/releases/tag/v0.8.12
 [0.8.11]: https://github.com/integry/propr/releases/tag/v0.8.11
