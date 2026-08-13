@@ -722,8 +722,14 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       //    shadowed by a leftover demo flag (see detectGithubAuthMode).
       const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId });
       const existingEnv = actions.readEnvVars(rootDir);
-      const existingAdminUsers = (existingEnv.PROPR_ADMIN_USERS ?? "").trim();
-      const seedBootstrapAdmin = bootstrapIdentityEligible && !existingAdminUsers;
+      const existingAdminUsers = [...new Set(
+        (existingEnv.PROPR_ADMIN_USERS ?? "")
+          .split(",")
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean)
+      )];
+      const hasExistingAdminUsers = existingAdminUsers.length > 0;
+      const seedBootstrapAdmin = bootstrapIdentityEligible && !hasExistingAdminUsers;
       const existingWhitelist = (existingEnv.GITHUB_USER_WHITELIST ?? "")
         .split(",")
         .map((value) => value.trim())
@@ -731,7 +737,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       const whitelistHasIdentity = existingWhitelist.some(
         (value) => value.toLowerCase() === username.trim().toLowerCase()
       );
-      const bootstrapWhitelist = bootstrapIdentityEligible && !whitelistHasIdentity
+      const bootstrapWhitelist = seedBootstrapAdmin && !whitelistHasIdentity
         ? [...existingWhitelist, username].join(",")
         : undefined;
       const tunnelOverride = configManager?.getTunnelEnabled();
@@ -783,7 +789,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         },
         { overwrite: true }
       );
-      const adminDetail = existingAdminUsers
+      const adminDetail = hasExistingAdminUsers
         ? "kept existing administrators"
         : seedBootstrapAdmin
           ? `bootstrap administrator: ${username}`
@@ -891,8 +897,9 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
 
     // Eligibility comes from the configured datastore itself, not scaffold
     // artifacts. This recovers migrated databases with no durable administrator
-    // and respects DB_FILENAME values outside the default data directory. Any
-    // resolution or inspection failure remains ineligible (fail closed).
+    // and follows the runtime's DB_FILENAME/DATA_DIR resolution. Configured
+    // paths outside the launcher's data bind mount cannot be safely inspected
+    // from the host and remain ineligible (fail closed).
     datastoreAdminInspection = await actions.inspectDatastoreAdministrators(rootDir);
     bootstrapIdentityEligible =
       datastoreAdminInspection.status === "absent" || datastoreAdminInspection.status === "no-admin";

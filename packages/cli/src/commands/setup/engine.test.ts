@@ -407,6 +407,54 @@ test("relay enrollment seeds a migrated datastore that has no durable administra
   assert.match(getStep(result.state, "github-auth")?.detail ?? "", /bootstrap administrator: octocat/);
 });
 
+test("relay enrollment seeds when PROPR_ADMIN_USERS contains no effective usernames", async () => {
+  let relayVars: Record<string, string> | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      inspectDatastoreAdministrators: async () => ({ status: "absent", databasePath: "/stack/data/propr.sqlite" }),
+      readEnvVars: () => ({
+        GITHUB_EVENT_INTAKE_MODE: "polling",
+        PROPR_ADMIN_USERS: " , , ",
+        GITHUB_USER_WHITELIST: "alice",
+      }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      applyEnvSelection: (_root, vars) => {
+        if (vars.GH_AUTH_MODE === "relay") relayVars = vars;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(relayVars?.PROPR_ADMIN_USERS, "octocat");
+  assert.equal(relayVars?.GITHUB_USER_WHITELIST, "alice,octocat");
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /bootstrap administrator: octocat/);
+});
+
+test("relay enrollment leaves the whitelist unchanged when an environment administrator already exists", async () => {
+  let relayVars: Record<string, string> | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      inspectDatastoreAdministrators: async () => ({ status: "absent", databasePath: "/stack/data/propr.sqlite" }),
+      readEnvVars: () => ({ GITHUB_EVENT_INTAKE_MODE: "polling", PROPR_ADMIN_USERS: "alice" }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      applyEnvSelection: (_root, vars) => {
+        if (vars.GH_AUTH_MODE === "relay") relayVars = vars;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(relayVars?.PROPR_ADMIN_USERS, undefined);
+  assert.equal(relayVars?.GITHUB_USER_WHITELIST, undefined);
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /kept existing administrators/);
+});
+
 test("relay enrollment fails closed when the configured datastore cannot be inspected", async () => {
   let relayVars: Record<string, string> | undefined;
   const result = await runSetup({

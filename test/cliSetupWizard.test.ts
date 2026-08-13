@@ -195,7 +195,7 @@ test("datastore inspection finds a migrated SQLite database with no durable admi
   });
 });
 
-test("datastore inspection honors DB_FILENAME outside the default data directory", async () => {
+test("datastore inspection rejects DB_FILENAME outside the runtime data bind mount", async () => {
   const root = makeRoot();
   const databasePath = join(root, "custom-datastore", "propr.sqlite");
   seedInitializedStack(
@@ -204,10 +204,10 @@ test("datastore inspection honors DB_FILENAME outside the default data directory
   );
   createMemberDatabase(databasePath, ["123"]);
 
-  assert.deepEqual(await inspectDatastoreAdministrators(root), {
-    status: "has-admin",
-    databasePath,
-  });
+  const inspection = await inspectDatastoreAdministrators(root);
+  assert.equal(inspection.status, "uninspectable");
+  assert.equal(inspection.databasePath, undefined);
+  assert.match(inspection.detail ?? "", /outside the mounted data directory/);
 
   const result = await runSetup({
     root,
@@ -228,9 +228,21 @@ test("datastore inspection honors DB_FILENAME outside the default data directory
   });
 
   const env = readEnvVars(root);
-  assert.equal(env.PROPR_ADMIN_USERS, undefined, "the external datastore's existing admin prevents a new grant");
-  assert.equal(env.GITHUB_USER_WHITELIST, "alice,bob", "an established stack's whitelist is untouched");
-  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /left administrators unchanged/);
+  assert.equal(env.PROPR_ADMIN_USERS, undefined, "an uninspectable datastore cannot authorize a new grant");
+  assert.equal(env.GITHUB_USER_WHITELIST, "alice,bob", "an uninspectable datastore leaves the whitelist untouched");
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /could not be inspected/);
+});
+
+test("datastore inspection uses DATA_DIR when DB_FILENAME is unset", async () => {
+  const root = makeRoot();
+  seedInitializedStack(root, "DATA_DIR=/usr/src/app/data/custom\n");
+  const databasePath = join(root, "data", "custom", "propr.sqlite");
+  createMemberDatabase(databasePath, ["123"]);
+
+  assert.deepEqual(await inspectDatastoreAdministrators(root), {
+    status: "has-admin",
+    databasePath,
+  });
 });
 
 // ---------------------------------------------------------------------------

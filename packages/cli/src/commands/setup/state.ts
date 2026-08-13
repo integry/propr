@@ -15,7 +15,7 @@
  */
 
 import { readFileSync, statSync } from "node:fs";
-import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { resolveGithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
 import { resolveStackRoot } from "../../orchestrator/index.js";
 import type { ConfigManager } from "../../config/index.js";
@@ -112,29 +112,35 @@ export interface DatastoreAdminInspection {
   detail?: string;
 }
 
-/** Container data locations used by the CLI launcher and production launcher. */
-const CONTAINER_DATA_DIRS = ["/usr/src/app/data", "/app/data"] as const;
+/** Runtime paths used by the app image started by the CLI launcher. */
+const APP_WORKDIR = "/usr/src/app";
+const CONTAINER_DATA_DIR = join(APP_WORKDIR, "data");
 
 /**
- * Resolve DB_FILENAME to the host path setup can inspect. Relative paths use
- * the stack root, matching the app container's working directory. The two
- * canonical container data mounts map back to the stack's host data directory;
- * other absolute paths are already host-resolvable paths.
+ * Resolve the API's SQLite filename to the corresponding host bind-mount path.
+ * This mirrors @propr/core's DB_FILENAME/DATA_DIR precedence and resolves
+ * relative values from the app image's working directory. Only files below
+ * /usr/src/app/data are inspectable from the host because that is the sole data
+ * bind mount supplied by the CLI launcher.
  */
-function resolveDatastorePath(rootDir: string, configuredPath: string | undefined): string {
-  const value = configuredPath?.trim() || "./data/propr.sqlite";
-  if (!isAbsolute(value)) return resolve(rootDir, value);
-
-  const normalized = normalize(value);
-  for (const containerDataDir of CONTAINER_DATA_DIRS) {
-    const childPath = relative(containerDataDir, normalized);
-    const outsideDataDir =
-      childPath === ".." || childPath.startsWith(`..${sep}`) || isAbsolute(childPath);
-    if (!outsideDataDir) {
-      return resolve(rootDir, "data", childPath);
-    }
+function resolveDatastorePath(
+  rootDir: string,
+  configuredPath: string | undefined,
+  configuredDataDir: string | undefined
+): string {
+  const dbFilename = configuredPath;
+  const runtimePath = dbFilename
+    ? resolve(APP_WORKDIR, dbFilename)
+    : resolve(APP_WORKDIR, join(configuredDataDir ?? CONTAINER_DATA_DIR, "propr.sqlite"));
+  const childPath = relative(CONTAINER_DATA_DIR, runtimePath);
+  const outsideDataDir =
+    childPath === ".." || childPath.startsWith(`..${sep}`) || isAbsolute(childPath);
+  if (outsideDataDir) {
+    throw new Error(
+      `runtime path ${runtimePath} is outside the mounted data directory ${CONTAINER_DATA_DIR}`
+    );
   }
-  return normalized;
+  return resolve(rootDir, "data", childPath);
 }
 
 /**
@@ -146,11 +152,12 @@ function resolveDatastorePath(rootDir: string, configuredPath: string | undefine
 export async function inspectDatastoreAdministrators(rootDir: string): Promise<DatastoreAdminInspection> {
   let databasePath: string;
   try {
-    databasePath = resolveDatastorePath(rootDir, readEnvVars(rootDir).DB_FILENAME);
+    const env = readEnvVars(rootDir);
+    databasePath = resolveDatastorePath(rootDir, env.DB_FILENAME, env.DATA_DIR);
   } catch (error) {
     return {
       status: "uninspectable",
-      detail: `could not resolve DB_FILENAME: ${(error as Error).message}`,
+      detail: `could not resolve configured datastore: ${(error as Error).message}`,
     };
   }
 
