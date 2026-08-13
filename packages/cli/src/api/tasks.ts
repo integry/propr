@@ -288,7 +288,7 @@ export async function deleteTask(
 ): Promise<void> {
   const apiClient = client ?? (await createApiClient());
 
-  const endpoint = `/api/task/${encodeURIComponent(taskId)}`;
+  const endpoint = `/api/tasks/${encodeURIComponent(taskId)}`;
   const params: Record<string, string> = {};
 
   if (force) {

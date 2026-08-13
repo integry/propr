@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { followupTask, getRevertPreview, importTasks } from "./tasks.js";
+import { deleteTask, followupTask, getRevertPreview, importTasks } from "./tasks.js";
 import type { ApiClient } from "./client.js";
 
 function clientWithCalls(responseData: unknown) {
@@ -13,6 +13,10 @@ function clientWithCalls(responseData: unknown) {
     async post(endpoint: string, options?: unknown) {
       calls.push({ method: "POST", endpoint, options });
       return { data: responseData, status: 200, headers: new Headers() };
+    },
+    async delete(endpoint: string, options?: unknown) {
+      calls.push({ method: "DELETE", endpoint, options });
+      return { data: responseData, status: 204, headers: new Headers() };
     },
   } as unknown as ApiClient;
   return { client, calls };
@@ -51,5 +55,18 @@ test("getRevertPreview sends expected query parameters", async () => {
     method: "GET",
     endpoint: "/api/tasks/revert-preview",
     options: { params: { owner: "owner", repo: "repo", pr: "42", commit: "abc123" } },
+  }]);
+});
+
+test("deleteTask uses the canonical tasks endpoint with encoded task ID and force query", async () => {
+  const { client, calls } = clientWithCalls(undefined);
+  const taskId = "owner@repo.task-1";
+
+  await deleteTask(taskId, true, client);
+
+  assert.deepEqual(calls, [{
+    method: "DELETE",
+    endpoint: "/api/tasks/owner%40repo.task-1",
+    options: { params: { force: "true" } },
   }]);
 });
