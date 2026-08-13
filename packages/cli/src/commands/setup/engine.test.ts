@@ -600,6 +600,34 @@ test("demo mode permits startup when the datastore administrator cannot be inspe
   assert.equal(startCalled, true);
 });
 
+for (const proprDemoMode of [undefined, "false"] as const) {
+  test(`GH_AUTH_MODE=demo does not bypass administrator preflight when PROPR_DEMO_MODE is ${proprDemoMode ?? "absent"}`, async () => {
+    let startCalled = false;
+    const result = await runSetup({
+      root: "/stack",
+      actions: mockActions({
+        inspectDatastoreAdministrators: async () => ({
+          status: "no-admin",
+          databasePath: "/stack/data/propr.sqlite",
+        }),
+        readEnvVars: () => ({
+          GH_AUTH_MODE: "demo",
+          ...(proprDemoMode === undefined ? {} : { PROPR_DEMO_MODE: proprDemoMode }),
+        }),
+        detectGithubAuthMode: () => ({ mode: "demo", warnings: [] }),
+        startStack: async () => {
+          startCalled = true;
+        },
+      }),
+    });
+
+    assert.equal(statusOf(result.state, "github-auth"), "failed");
+    assert.match(getStep(result.state, "github-auth")?.detail ?? "", /no instance administrator/);
+    assert.equal(statusOf(result.state, "start-stack"), "pending");
+    assert.equal(startCalled, false);
+  });
+}
+
 test("relay enrollment does not select Connect for a non-loopback off-tunnel callback", async () => {
   const env: Record<string, string> = {
     GITHUB_EVENT_INTAKE_MODE: "polling",

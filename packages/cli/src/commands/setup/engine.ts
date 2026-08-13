@@ -1062,6 +1062,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   // identity when the datastore is conclusively empty. On a keep rerun, the
   // same identity can be recovered safely only when the stored GitHub session
   // can access the installation already configured for this stack.
+  const demoModeEnabled = isTruthyEnvFlag(actions.readEnvVars(rootDir).PROPR_DEMO_MODE);
   let keptRelayBootstrapIdentity: string | undefined;
   const configuredAdministrators = (): string[] =>
     (actions.readEnvVars(rootDir).PROPR_ADMIN_USERS ?? "")
@@ -1070,7 +1071,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       .filter(Boolean);
   const durableAdministratorExists = datastoreAdminInspection?.status === "has-admin";
   if (
-    resolvedAuth.mode !== "demo" &&
+    !demoModeEnabled &&
     !durableAdministratorExists &&
     !bootstrapAdministratorSeeded &&
     configuredAdministrators().length === 0 &&
@@ -1117,7 +1118,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   }
 
   if (
-    resolvedAuth.mode !== "demo" &&
+    !demoModeEnabled &&
     !durableAdministratorExists &&
     !bootstrapAdministratorSeeded &&
     configuredAdministrators().length === 0
