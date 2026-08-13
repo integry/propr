@@ -80,6 +80,15 @@ const HOSTED_UI_HOSTNAME = new URL(DEFAULT_PROPR_UI_ORIGIN).hostname;
 export const isHostedUiOrigin = (hostname: string): boolean =>
   hostname === HOSTED_UI_HOSTNAME;
 
+export const isHostedOAuthCompletionRoute = (
+  hostname: string,
+  pathname: string,
+  search: string
+): boolean =>
+  isHostedUiOrigin(hostname) &&
+  pathname === '/login' &&
+  new URLSearchParams(search).get('oauth_complete') === 'true';
+
 /**
  * Whether a string is an absolute http(s) URL — used to sanity-check a
  * runtime-injected API base before it is used to build request URLs. Returns
@@ -422,45 +431,51 @@ export const resolveApiBaseUrl = (
 };
 /* eslint-enable max-params */
 
+const replaceHostedTunnelQueryWithFlow = (originalSearch: string, flowId: string): void => {
+  try {
+    const params = new URLSearchParams(originalSearch);
+    params.delete('tunnel');
+    params.set('flow', flowId);
+    window.history.replaceState(
+      null,
+      '',
+      window.location.pathname + '?' + params.toString() + window.location.hash
+    );
+  } catch { /* history API unavailable */ }
+};
+
 if (typeof window !== 'undefined') {
   // Retire the old origin-global localStorage selection. Its value is NOT
   // migrated into sessionStorage: pulling an ambiguous global selection into
   // an unrelated new tab would violate the per-tab isolation guarantee.
   try { window.localStorage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY); } catch { /* ignore */ }
 
-  // When a ?tunnel= deep link is present, store the validated tunnel URL in
-  // sessionStorage with fresh flow/context tokens, then replace ?tunnel= in the
-  // URL with ?flow=<id>. On reload/OAuth callback, re-activate the flow only if
-  // the URL flow and this browsing context's window.name token both match the
-  // stored selection.
   const originalSearch = window.location.search;
-  const queryApiBaseUrl = hostedTunnelQueryApiBaseUrl(window.location.hostname, originalSearch);
-  if (queryApiBaseUrl) {
-    const flowId = rememberHostedTunnelApiBaseUrl(window.location.hostname, queryApiBaseUrl, storageForWindow());
-    if (flowId) {
-      activeHostedTunnelFlowId = flowId;
-      try {
-        const params = new URLSearchParams(originalSearch);
-        params.delete('tunnel');
-        params.set('flow', flowId);
-        window.history.replaceState(
-          null,
-          '',
-          window.location.pathname + '?' + params.toString() + window.location.hash
-        );
-      } catch { /* history API unavailable */ }
+  if (!isHostedOAuthCompletionRoute(window.location.hostname, window.location.pathname, originalSearch)) {
+    // When a ?tunnel= deep link is present, store the validated tunnel URL in
+    // sessionStorage with fresh flow/context tokens, then replace ?tunnel= in the
+    // URL with ?flow=<id>. On reload/OAuth callback, re-activate the flow only if
+    // the URL flow and this browsing context's window.name token both match the
+    // stored selection.
+    const queryApiBaseUrl = hostedTunnelQueryApiBaseUrl(window.location.hostname, originalSearch);
+    if (queryApiBaseUrl) {
+      const flowId = rememberHostedTunnelApiBaseUrl(window.location.hostname, queryApiBaseUrl, storageForWindow());
+      if (flowId) {
+        activeHostedTunnelFlowId = flowId;
+        replaceHostedTunnelQueryWithFlow(originalSearch, flowId);
+      }
+    } else {
+      activateStoredHostedTunnelFlow(window.location.hostname, originalSearch, storageForWindow());
     }
-  } else {
-    activateStoredHostedTunnelFlow(window.location.hostname, originalSearch, storageForWindow());
-  }
 
-  const warning = runtimeConfigWarning(
-    window.location.hostname,
-    window.__PROPR_CONFIG__,
-    originalSearch,
-    storageForWindow()
-  );
-  if (warning) console.warn(warning);
+    const warning = runtimeConfigWarning(
+      window.location.hostname,
+      window.__PROPR_CONFIG__,
+      originalSearch,
+      storageForWindow()
+    );
+    if (warning) console.warn(warning);
+  }
 }
 
 /**

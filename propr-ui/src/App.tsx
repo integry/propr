@@ -9,7 +9,12 @@ import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
 import { getCurrentUser, INSTANCE_AUTHORIZATION_CHANGED_EVENT } from './api/proprApi'
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
-import { hostedUiConnectionIssue, isHostedUiOrigin, pathWithActiveHostedTunnelFlow } from './config/runtimeConfig'
+import {
+  hostedUiConnectionIssue,
+  isHostedOAuthCompletionRoute,
+  isHostedUiOrigin,
+  pathWithActiveHostedTunnelFlow,
+} from './config/runtimeConfig'
 import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
 import type { CurrentUser, InstancePermission } from './api/proprTypes'
 import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
@@ -77,6 +82,16 @@ const HostedConnectionBlocked: React.FC<{ title: string; message: string }> = ({
         Reload
       </button>
     </div>
+  </div>
+);
+
+const HostedOAuthCompletion: React.FC = () => (
+  <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+    <main className="text-center">
+      <img src="/media/logo-and-name.png" alt="ProPR" className="mx-auto mb-4 h-12 w-auto" />
+      <h1 className="text-xl font-semibold text-gray-950">GitHub sign-in complete</h1>
+      <p className="mt-3 text-sm text-gray-600">You can close this window and return to ProPR.</p>
+    </main>
   </div>
 );
 
@@ -339,17 +354,24 @@ const App: React.FC = () => {
   // there is nothing to gate: start 'ready' (no spinner flash, no network
   // round-trip) and keep local development working (issue #1627).
   const isHosted = isHostedUiOrigin(window.location.hostname);
-  const connectionIssue = hostedUiConnectionIssue(
+  const isHostedOAuthCompletion = isHostedOAuthCompletionRoute(
     window.location.hostname,
-    window.__PROPR_CONFIG__,
+    window.location.pathname,
     window.location.search
   );
+  const connectionIssue = isHostedOAuthCompletion
+    ? null
+    : hostedUiConnectionIssue(
+      window.location.hostname,
+      window.__PROPR_CONFIG__,
+      window.location.search
+    );
   const [compatibility, setCompatibility] = useState<CompatibilityState>(
-    isHosted && !connectionIssue ? { status: 'checking' } : { status: 'ready' }
+    isHosted && !isHostedOAuthCompletion && !connectionIssue ? { status: 'checking' } : { status: 'ready' }
   );
 
   useEffect(() => {
-    if (!isHosted || connectionIssue) return;
+    if (!isHosted || isHostedOAuthCompletion || connectionIssue) return;
     let cancelled = false;
 
     checkProprApiCompatibility()
@@ -397,8 +419,11 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isHosted, connectionIssue]);
+  }, [isHosted, isHostedOAuthCompletion, connectionIssue]);
 
+  if (isHostedOAuthCompletion) {
+    return <HostedOAuthCompletion />;
+  }
   if (connectionIssue) {
     return <HostedConnectionBlocked title={connectionIssue.title} message={connectionIssue.message} />;
   }

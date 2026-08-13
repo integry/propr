@@ -30,6 +30,7 @@ interface HostedOAuthFlow {
   pollIntervalId: number;
   popupCheckIntervalId: number;
   timeoutId: number;
+  closeCheckStarted: boolean;
 }
 
 // Only same-origin, absolute in-app paths are safe redirect targets. This
@@ -263,14 +264,29 @@ const LoginPage: React.FC = () => {
       }
     };
 
+    const checkClosedPopupOnce = async () => {
+      const flow = hostedOAuthFlowRef.current;
+      if (!flow || flow.id !== flowId || flow.closeCheckStarted) return;
+      flow.closeCheckStarted = true;
+      window.clearInterval(flow.pollIntervalId);
+      window.clearInterval(flow.popupCheckIntervalId);
+
+      try {
+        await getCurrentUser();
+        completeHostedOAuthFlow();
+      } catch {
+        failHostedOAuthFlow(flowId, 'The GitHub sign-in window was closed before login completed. Try again.');
+      }
+    };
+
     const pollIntervalId = window.setInterval(pollForSession, HOSTED_OAUTH_POLL_INTERVAL_MS);
     const popupCheckIntervalId = window.setInterval(() => {
       try {
         if (popup.closed) {
-          failHostedOAuthFlow(flowId, 'The GitHub sign-in window was closed before login completed. Try again.');
+          void checkClosedPopupOnce();
         }
       } catch {
-        failHostedOAuthFlow(flowId, 'The GitHub sign-in window is no longer available. Try again.');
+        void checkClosedPopupOnce();
       }
     }, HOSTED_OAUTH_POPUP_CHECK_INTERVAL_MS);
     const timeoutId = window.setTimeout(() => {
@@ -283,6 +299,7 @@ const LoginPage: React.FC = () => {
       pollIntervalId,
       popupCheckIntervalId,
       timeoutId,
+      closeCheckStarted: false,
     };
     void pollForSession();
   }, [failHostedOAuthFlow, navigate, returnPathWithActiveFlow, stopHostedOAuthFlow]);
