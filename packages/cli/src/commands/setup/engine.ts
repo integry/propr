@@ -64,12 +64,14 @@ import {
   createSetupState,
   detectGithubAuthMode,
   getStep,
+  inspectDatastoreAdministrators,
   inspectStackInit,
   isSetupComplete,
   readEnvVars,
   resolveSetupRoot,
   updateStep,
   type EnvSelectionResult,
+  type DatastoreAdminInspection,
   type StackInitState,
 } from "./state.js";
 import type { SetupState, SetupStep, SetupStepId, SetupStepPatch } from "./types.js";
@@ -333,6 +335,8 @@ export interface BackendHealth {
 export interface SetupActions extends AgentSetupActions {
   runChecks(options: RunChecksOptions): Promise<ChecksOutcome>;
   inspectStackInit(rootDir: string): StackInitState;
+  /** Inspect the configured datastore's durable administrator state without modifying it. */
+  inspectDatastoreAdministrators(rootDir: string): Promise<DatastoreAdminInspection>;
   scaffoldStack(options: InitStackOptions): Promise<InitStackResult>;
   /**
    * Persist the resolved stack root to the CLI config so later `propr start` /
@@ -432,6 +436,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       return runChecks(options);
     },
     inspectStackInit,
+    inspectDatastoreAdministrators,
     async scaffoldStack(options) {
       const { scaffoldStack } = await import("../initStack.js");
       return scaffoldStack(options);
@@ -617,8 +622,11 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   let checks: ChecksOutcome | undefined;
   /** Agents chosen at the pull step, reused when recording credentials. */
   let selectedAgents: string[] = [];
-  /** True only when setup scaffolded a previously bare stack root. */
-  let freshStackCreated = false;
+  /** True only when the configured datastore conclusively has no durable administrator. */
+  let bootstrapIdentityEligible = false;
+  /** Set after this run successfully writes an authenticated identity to the administrator environment. */
+  let bootstrapAdministratorSeeded = false;
+  let datastoreAdminInspection: DatastoreAdminInspection | undefined;
   /** True only after the local API answers the setup health probe. */
   let backendReady = false;
 
@@ -716,8 +724,24 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       //    shadowed by a leftover demo flag (see detectGithubAuthMode).
       const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId });
       const existingEnv = actions.readEnvVars(rootDir);
-      const existingAdminUsers = (existingEnv.PROPR_ADMIN_USERS ?? "").trim();
-      const seedBootstrapAdmin = freshStackCreated && !existingAdminUsers;
+      const existingAdminUsers = [...new Set(
+        (existingEnv.PROPR_ADMIN_USERS ?? "")
+          .split(",")
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean)
+      )];
+      const hasExistingAdminUsers = existingAdminUsers.length > 0;
+      const seedBootstrapAdmin = bootstrapIdentityEligible && !hasExistingAdminUsers;
+      const existingWhitelist = (existingEnv.GITHUB_USER_WHITELIST ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const whitelistHasIdentity = existingWhitelist.some(
+        (value) => value.toLowerCase() === username.trim().toLowerCase()
+      );
+      const bootstrapWhitelist = seedBootstrapAdmin && !whitelistHasIdentity
+        ? [...existingWhitelist, username].join(",")
+        : undefined;
       const tunnelOverride = configManager?.getTunnelEnabled();
       const managedTunnelEnabled = tunnelOverride ?? Boolean(
         existingEnv.PROPR_UI_TUNNEL_TOKEN?.trim() || isTruthyEnvFlag(existingEnv.PROPR_UI_TUNNEL_ENABLED)
@@ -756,20 +780,25 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
             ? { PROPR_WEB_AUTH_MODE: "connect" }
             : {}),
           // The relay identity was just authenticated by GitHub and owns this
-          // installation, so it is the safe bootstrap administrator on a fresh
-          // stack. Existing stacks may already have durable database-backed
-          // administrators, so a missing environment value is not evidence that
-          // setup may widen their authorization boundary.
+          // installation, so it is the safe bootstrap administrator only when
+          // the configured datastore is absent or conclusively contains no
+          // durable administrator. Existing environment administrators and
+          // durable database administrators are always preserved.
           ...(seedBootstrapAdmin ? { PROPR_ADMIN_USERS: username } : {}),
-          ...(freshStackCreated ? { GITHUB_USER_WHITELIST: username } : {}),
+          // Preserve every user-managed whitelist entry, adding the enrolled
+          // identity only when bootstrap enrollment needs it.
+          ...(bootstrapWhitelist ? { GITHUB_USER_WHITELIST: bootstrapWhitelist } : {}),
         },
         { overwrite: true }
       );
-      const adminDetail = existingAdminUsers
+      bootstrapAdministratorSeeded = seedBootstrapAdmin;
+      const adminDetail = hasExistingAdminUsers
         ? "kept existing administrators"
         : seedBootstrapAdmin
           ? `bootstrap administrator: ${username}`
-          : "left administrators unchanged on existing stack";
+          : datastoreAdminInspection?.status === "uninspectable"
+            ? "left administrators unchanged because the datastore could not be inspected"
+            : "left administrators unchanged on existing stack";
       return {
         detail: `auth mode: relay (installation ${installationId}); ${adminDetail}`,
       };
@@ -817,6 +846,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   //    root. An existing functional install is never re-scaffolded or clobbered.
   begin("init-stack");
   try {
+    let initSettlement: SetupStepPatch;
     let init = actions.inspectStackInit(rootDir);
     let userChoseReinit = false;
     if (prompts.resolveStackRoot) {
@@ -838,9 +868,6 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     // `.env` is always preserved — re-running setup never clobbers it.
     const reinitialize = !init.initialized || userChoseReinit;
     if (reinitialize) {
-      // Automatic administrator seeding is safe only when this root had none of
-      // the stack artifacts that could hold established state before setup.
-      const rootWasBare = !init.envExists && Object.values(init.dirs).every((exists) => !exists);
       // No `force`: scaffoldStack creates a fresh `.env` only when absent and
       // otherwise leaves the existing one in place.
       const result = await actions.scaffoldStack({ root: rootDir });
@@ -857,21 +884,38 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       // tunnel preferences) can write a stale in-memory config and silently
       // discard the root that scaffoldStack recorded through its own manager.
       await actions.persistStackRoot(rootDir);
-      freshStackCreated = rootWasBare && result.envCreated && !result.envBackedUp;
       const created = [...result.dirsCreated];
-      settle("init-stack", {
+      initSettlement = {
         status: "done",
         detail: result.envCreated
           ? `scaffolded stack at ${rootDir}${created.length ? ` (created ${created.join(", ")})` : ""}`
           : `stack root ready at ${rootDir} (existing .env kept)`,
-      });
+      };
     } else {
       // Reuse path: scaffolding is skipped, so nothing has recorded this root in
       // config. Persist it now so a later `propr start` / `propr status` without
       // --root targets this stack rather than an old saved root or the cwd.
       await actions.persistStackRoot(rootDir);
-      settle("init-stack", { status: "skipped", detail: `using existing stack at ${rootDir} (.env preserved)` });
+      initSettlement = { status: "skipped", detail: `using existing stack at ${rootDir} (.env preserved)` };
     }
+
+    // Eligibility comes from the configured datastore itself, not scaffold
+    // artifacts. This recovers migrated databases with no durable administrator
+    // and follows the runtime's DB_FILENAME/DATA_DIR resolution. Configured
+    // paths outside the launcher's data bind mount cannot be safely inspected
+    // from the host and remain ineligible (fail closed).
+    datastoreAdminInspection = await actions.inspectDatastoreAdministrators(rootDir);
+    bootstrapIdentityEligible =
+      datastoreAdminInspection.status === "absent" || datastoreAdminInspection.status === "no-admin";
+    if (datastoreAdminInspection.status === "uninspectable") {
+      const inspectionDetail = datastoreAdminInspection.detail ?? "configured datastore is unavailable";
+      log(`administrator inspection: ${inspectionDetail}`);
+    }
+    // Inspect before reporting initialization success so this step has exactly
+    // one terminal settlement even when inspection itself throws. An
+    // uninspectable datastore is evaluated after auth resolves because demo
+    // mode does not require an instance administrator.
+    settle("init-stack", initSettlement);
   } catch (error) {
     settle("init-stack", {
       status: "failed",
@@ -1003,15 +1047,96 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   if (relayNote) {
     settle("github-auth", { status: "failed", detail: relayNote.detail, nextAction: relayNote.nextAction });
     return finish();
-  } else if (relayDoneDetail) {
-    settle("github-auth", { status: "done", detail: relayDoneDetail });
-  } else if (resolvedAuth.mode === "none") {
+  }
+  if (resolvedAuth.mode === "none") {
     settle("github-auth", {
       status: "failed",
       detail: "no GitHub auth configured",
       nextAction: "Choose ProPR Connect (default), configure your own GitHub App, or enable demo mode, then re-run setup.",
     });
     return finish();
+  }
+
+  // Every non-demo start needs either an environment administrator or a
+  // durable one. Relay enrollment above already seeds its authenticated
+  // identity when the datastore is conclusively empty. On a keep rerun, the
+  // same identity can be recovered safely only when the stored GitHub session
+  // can access the installation already configured for this stack.
+  const demoModeEnabled = isTruthyEnvFlag(actions.readEnvVars(rootDir).PROPR_DEMO_MODE);
+  let keptRelayBootstrapIdentity: string | undefined;
+  const configuredAdministrators = (): string[] =>
+    (actions.readEnvVars(rootDir).PROPR_ADMIN_USERS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+  const durableAdministratorExists = datastoreAdminInspection?.status === "has-admin";
+  if (
+    !demoModeEnabled &&
+    !durableAdministratorExists &&
+    !bootstrapAdministratorSeeded &&
+    configuredAdministrators().length === 0 &&
+    bootstrapIdentityEligible &&
+    resolvedAuth.mode === "relay" &&
+    actions.hasGithubToken()
+  ) {
+    const env = actions.readEnvVars(rootDir);
+    const installationId = env.GH_INSTALLATION_ID?.trim();
+    if (installationId) {
+      try {
+        const identity = await actions.fetchRelayInstallations({
+          relayUrl: env.PROPR_GH_RELAY_URL?.trim() || undefined,
+        });
+        const username = identity.username.trim();
+        const ownsConfiguredInstallation = identity.installations.some(
+          (installation) => String(installation.installation_id) === installationId
+        );
+        if (username && ownsConfiguredInstallation) {
+          const existingWhitelist = (env.GITHUB_USER_WHITELIST ?? "")
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean);
+          const whitelistHasIdentity = existingWhitelist.some(
+            (value) => value.toLowerCase() === username.toLowerCase()
+          );
+          actions.applyEnvSelection(
+            rootDir,
+            {
+              PROPR_ADMIN_USERS: username,
+              ...(!whitelistHasIdentity
+                ? { GITHUB_USER_WHITELIST: [...existingWhitelist, username].join(",") }
+                : {}),
+            },
+            { overwrite: true }
+          );
+          bootstrapAdministratorSeeded = true;
+          keptRelayBootstrapIdentity = username;
+        }
+      } catch (error) {
+        log(`administrator bootstrap: could not verify the configured relay identity: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  if (
+    !demoModeEnabled &&
+    !durableAdministratorExists &&
+    !bootstrapAdministratorSeeded &&
+    configuredAdministrators().length === 0
+  ) {
+    const inspectionDetail = datastoreAdminInspection?.status === "uninspectable"
+      ? ` (${datastoreAdminInspection.detail ?? "the configured datastore could not be inspected"})`
+      : "";
+    settle("github-auth", {
+      status: "failed",
+      detail: `no instance administrator is configured${inspectionDetail}`,
+      nextAction:
+        "Set PROPR_ADMIN_USERS to at least one GitHub username, repair the configured datastore, or re-run setup and enroll ProPR Connect with an authenticated GitHub account.",
+    });
+    return finish();
+  }
+
+  if (relayDoneDetail) {
+    settle("github-auth", { status: "done", detail: relayDoneDetail });
   } else if (resolvedAuth.warnings.length > 0) {
     // The mode resolves, but the shared detector flagged a partial/ambiguous
     // configuration — surface it so the user can fix it before it bites later.
@@ -1020,7 +1145,12 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       detail: `auth mode: ${resolvedAuth.mode} — ${resolvedAuth.warnings.join("; ")}`,
     });
   } else {
-    settle("github-auth", { status: "done", detail: `auth mode: ${resolvedAuth.mode}` });
+    settle("github-auth", {
+      status: "done",
+      detail: keptRelayBootstrapIdentity
+        ? `auth mode: ${resolvedAuth.mode}; bootstrap administrator: ${keptRelayBootstrapIdentity}`
+        : `auth mode: ${resolvedAuth.mode}`,
+    });
   }
 
   // 5b. GitHub event intake — how the backend learns about GitHub events

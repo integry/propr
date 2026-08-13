@@ -307,6 +307,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
   return {
     runChecks: async ({ root }) => okChecks(root ?? "/stack"),
     inspectStackInit: (rootDir) => ({ rootDir, envExists: true, dirs: { data: true, logs: true, repos: true }, initialized: true }),
+    inspectDatastoreAdministrators: async () => ({ status: "has-admin", databasePath: "/stack/data/propr.sqlite" }),
     scaffoldStack: async ({ root }) => {
       throw new Error(`scaffoldStack must not run for an initialized stack (${root})`);
     },
