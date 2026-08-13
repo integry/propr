@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **UI dependency refresh**: updated the transitive `nanoid` resolution to
+  3.3.18, addressing GHSA-2v37-7h3g-55p8 without upgrading `postcss`.
+
 ## [0.8.13] - 2026-08-13
 
 ### Fixed
