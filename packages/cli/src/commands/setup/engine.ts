@@ -904,7 +904,20 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     bootstrapIdentityEligible =
       datastoreAdminInspection.status === "absent" || datastoreAdminInspection.status === "no-admin";
     if (datastoreAdminInspection.status === "uninspectable") {
-      log(`administrator inspection: ${datastoreAdminInspection.detail ?? "configured datastore is unavailable"}`);
+      const inspectionDetail = datastoreAdminInspection.detail ?? "configured datastore is unavailable";
+      log(`administrator inspection: ${inspectionDetail}`);
+      const hasConfiguredAdministrator = (actions.readEnvVars(rootDir).PROPR_ADMIN_USERS ?? "")
+        .split(",")
+        .some((value) => value.trim().length > 0);
+      if (!hasConfiguredAdministrator) {
+        settle("init-stack", {
+          status: "failed",
+          detail: `could not verify an instance administrator: ${inspectionDetail}`,
+          nextAction:
+            "Set PROPR_ADMIN_USERS to at least one GitHub username or repair the configured datastore, then re-run setup.",
+        });
+        return finish();
+      }
     }
   } catch (error) {
     settle("init-stack", {

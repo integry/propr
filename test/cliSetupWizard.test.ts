@@ -17,7 +17,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -230,7 +230,9 @@ test("datastore inspection rejects DB_FILENAME outside the runtime data bind mou
   const env = readEnvVars(root);
   assert.equal(env.PROPR_ADMIN_USERS, undefined, "an uninspectable datastore cannot authorize a new grant");
   assert.equal(env.GITHUB_USER_WHITELIST, "alice,bob", "an uninspectable datastore leaves the whitelist untouched");
-  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /could not be inspected/);
+  assert.equal(statusOf(result.state, "init-stack"), "failed");
+  assert.match(getStep(result.state, "init-stack")?.detail ?? "", /outside the mounted data directory/);
+  assert.equal(statusOf(result.state, "start-stack"), "pending");
 });
 
 test("datastore inspection uses DATA_DIR when DB_FILENAME is unset", async () => {
@@ -243,6 +245,20 @@ test("datastore inspection uses DATA_DIR when DB_FILENAME is unset", async () =>
     status: "has-admin",
     databasePath,
   });
+});
+
+test("datastore inspection rejects an escaping symlink beneath the data bind mount", async () => {
+  const root = makeRoot();
+  const outsideRoot = makeRoot();
+  const outsideDatabasePath = join(outsideRoot, "propr.sqlite");
+  seedInitializedStack(root, "DB_FILENAME=./data/linked/propr.sqlite\n");
+  createMemberDatabase(outsideDatabasePath, ["123"]);
+  symlinkSync(outsideRoot, join(root, "data", "linked"));
+
+  const inspection = await inspectDatastoreAdministrators(root);
+  assert.equal(inspection.status, "uninspectable");
+  assert.equal(inspection.databasePath, join(root, "data", "linked", "propr.sqlite"));
+  assert.match(inspection.detail ?? "", /symbolic link/);
 });
 
 // ---------------------------------------------------------------------------

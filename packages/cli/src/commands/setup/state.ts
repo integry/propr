@@ -14,7 +14,7 @@
  * and env — it does not start Docker.
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { resolveGithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
 import { resolveStackRoot } from "../../orchestrator/index.js";
@@ -144,6 +144,30 @@ function resolveDatastorePath(
 }
 
 /**
+ * Reject symbolic links between the host bind-mount root and the configured
+ * datastore. A link that is valid in the host namespace may resolve to a
+ * different target inside the container, so following it cannot establish
+ * bootstrap eligibility for the datastore the API will actually use.
+ */
+function assertDatastorePathHasNoSymlinks(rootDir: string, databasePath: string): void {
+  const dataRoot = resolve(rootDir, "data");
+  const childPath = relative(dataRoot, databasePath);
+  let currentPath = dataRoot;
+
+  for (const component of childPath.split(sep).filter(Boolean)) {
+    currentPath = join(currentPath, component);
+    try {
+      if (lstatSync(currentPath).isSymbolicLink()) {
+        throw new Error(`configured datastore path contains a symbolic link: ${currentPath}`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+  }
+}
+
+/**
  * Inspect the configured SQLite datastore without creating or migrating it.
  * Missing databases and databases conclusively lacking a durable administrator
  * are bootstrap-eligible. Every resolution, I/O, schema, and query failure is
@@ -162,6 +186,7 @@ export async function inspectDatastoreAdministrators(rootDir: string): Promise<D
   }
 
   try {
+    assertDatastorePathHasNoSymlinks(rootDir, databasePath);
     const stat = statSync(databasePath);
     if (!stat.isFile()) {
       return { status: "uninspectable", databasePath, detail: "configured datastore is not a regular file" };

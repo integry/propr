@@ -439,7 +439,11 @@ test("relay enrollment leaves the whitelist unchanged when an environment admini
     root: "/stack",
     prompts: relayPrompts(),
     actions: mockActions({
-      inspectDatastoreAdministrators: async () => ({ status: "absent", databasePath: "/stack/data/propr.sqlite" }),
+      inspectDatastoreAdministrators: async () => ({
+        status: "uninspectable",
+        databasePath: "/stack/data/propr.sqlite",
+        detail: "database is locked",
+      }),
       readEnvVars: () => ({ GITHUB_EVENT_INTAKE_MODE: "polling", PROPR_ADMIN_USERS: "alice" }),
       hasGithubToken: () => true,
       fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
@@ -455,8 +459,8 @@ test("relay enrollment leaves the whitelist unchanged when an environment admini
   assert.match(getStep(result.state, "github-auth")?.detail ?? "", /kept existing administrators/);
 });
 
-test("relay enrollment fails closed when the configured datastore cannot be inspected", async () => {
-  let relayVars: Record<string, string> | undefined;
+test("an uninspectable datastore without an environment administrator blocks startup", async () => {
+  let startCalled = false;
   const result = await runSetup({
     root: "/stack",
     prompts: relayPrompts(),
@@ -466,19 +470,21 @@ test("relay enrollment fails closed when the configured datastore cannot be insp
         databasePath: "/external/propr.sqlite",
         detail: "database is locked",
       }),
-      readEnvVars: () => ({ GITHUB_EVENT_INTAKE_MODE: "polling", GITHUB_USER_WHITELIST: "alice,bob" }),
-      hasGithubToken: () => true,
-      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
-      applyEnvSelection: (_root, vars) => {
-        if (vars.GH_AUTH_MODE === "relay") relayVars = vars;
-        return { written: Object.keys(vars), skipped: [] };
+      readEnvVars: () => ({
+        GITHUB_EVENT_INTAKE_MODE: "polling",
+        GITHUB_USER_WHITELIST: "alice,bob",
+        PROPR_ADMIN_USERS: " , , ",
+      }),
+      startStack: async () => {
+        startCalled = true;
       },
     }),
   });
 
-  assert.equal(relayVars?.PROPR_ADMIN_USERS, undefined);
-  assert.equal(relayVars?.GITHUB_USER_WHITELIST, undefined);
-  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /could not be inspected/);
+  assert.equal(statusOf(result.state, "init-stack"), "failed");
+  assert.match(getStep(result.state, "init-stack")?.detail ?? "", /database is locked/);
+  assert.equal(statusOf(result.state, "start-stack"), "pending");
+  assert.equal(startCalled, false, "startStack must not run without a verified administrator");
 });
 
 test("relay enrollment does not select Connect for a non-loopback off-tunnel callback", async () => {
