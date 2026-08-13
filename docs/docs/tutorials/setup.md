@@ -101,16 +101,19 @@ Verify with:
 - loopback UI/API access, normally http://127.0.0.1:5173 and
   http://127.0.0.1:4000/api/status
 - before backend-client checks, preserve the current CLI remote configuration
-  (`propr config list`), switch to a temporary verification profile, point it at
-  this stack's discovered API URL (normally `propr config profile use
-  setup-verify` then `propr remote http://127.0.0.1:4000`), and run
-  `propr login` interactively if the profile is not already authenticated
+  (`propr config list`), inspect existing profiles, choose an unused
+  temporary verification profile name (for example,
+  `setup-verify-<timestamp>`), switch to it, point it at this stack's
+  discovered API URL (normally `propr config profile use
+  setup-verify-<timestamp>` then `propr remote http://127.0.0.1:4000`), and
+  run `propr login` interactively if the profile is not already authenticated
 - configured repository visibility against that temporary profile with
   `propr repo list` and `propr repo status`
 - configured agent visibility against that temporary profile with
   `propr agent list`
 - restore the previous active CLI remote profile/configuration after these
-  backend-client checks
+  backend-client checks, then remove the temporary verification profile if the
+  CLI supports deleting profiles
 - `propr tunnel verify` only when the managed app.propr.dev tunnel was selected,
   entitled, configured, and enabled
 
