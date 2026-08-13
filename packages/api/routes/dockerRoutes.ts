@@ -493,10 +493,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
 
       console.log(`[stop-execution] Attempting to stop task: ${req.params.taskId}`);
-      const result = await executeStopTask(req.params.taskId, {
-        redisClient,
-        requestedBy: req.user?.username || 'user'
-      });
+      const result = await executeStopTask(req.params.taskId, { redisClient, requestedBy: req.user?.username || 'user' });
 
       if (result.notFound) {
         res.status(404).json({ error: 'Task not found', message: result.message });
@@ -507,14 +504,9 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
 
-      res.json({
-        success: true,
-        message: result.message,
-        taskId: result.taskId,
-        containerStopped: result.containerStopped
-      });
-    } catch (error) {
-      console.error('Error in /api/task/:taskId/stop:', error);
+      res.json({ success: true, message: result.message, taskId: result.taskId, containerStopped: result.containerStopped });
+    } catch {
+      console.error('Error in /api/task/:taskId/stop');
       res.status(500).json({ error: 'Internal server error' });
     }
   }
