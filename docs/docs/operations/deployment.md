@@ -229,11 +229,36 @@ The launcher starts these containers (stack prefix configurable with `PROPR_STAC
 - `propr-worker`
 - `propr-analysis-worker`
 - `propr-indexing-worker`
-- `propr-api` — publishes port 4000 (override with `API_PORT`)
-- `propr-ui` — publishes port 5173 (override with `UI_PORT`)
+- `propr-api` — publishes `127.0.0.1:4000` by default (override with `API_PORT`)
+- `propr-ui` — publishes `127.0.0.1:5173` by default (override with `UI_PORT`)
 - `propr-docs` — only with `DOCS_ENABLED=true`; port 8080 (override with `DOCS_PORT`)
 
 Redis is not published on the host unless `REDIS_EXTERNAL_PORT` is set.
+The API and UI defaults are reachable directly from the Docker host but not
+from its public network interfaces; the managed tunnel continues to reach the
+API through the stack network and does not require an inbound port.
+
+To opt into a different bind, set the Docker publish value explicitly in the
+stack `.env`. Existing values are preserved during setup and upgrades, including
+older bare-port defaults:
+
+```bash
+# Custom loopback ports remain host-only.
+API_PORT=127.0.0.1:4400
+UI_PORT=127.0.0.1:5174
+
+# Bare ports intentionally publish on every host interface.
+# API_PORT=4000
+# UI_PORT=5173
+```
+
+:::warning[Secure non-loopback bindings]
+A bare port or another non-loopback address can expose the service to external
+clients. Only use one as an intentional opt-in; restrict access with a firewall
+and put browser/API traffic behind a properly configured TLS reverse proxy. If
+an existing stack contains bare `4000`/`5173` values that were not deliberate,
+change them manually to the loopback forms above before restarting.
+:::
 
 ## Reverse Proxy And TLS
 

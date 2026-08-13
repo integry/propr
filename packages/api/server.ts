@@ -9,7 +9,7 @@ import { authenticateSocketRequest, setupAuth, ensureAuthenticated } from './aut
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
-import { createCorsOriginValidator } from './corsValidation.js';
+import { corsRejectionHandler, createCorsOriginValidator } from './corsValidation.js';
 import {
   createStatusRoutes, createTaskRoutes,
   createTaskHistoryRoutes, createLiveDetailsRoutes,
@@ -157,6 +157,10 @@ try {
 }
 
 app.use(cors({ origin: validateCorsOrigin, credentials: true }));
+// The `cors` package forwards rejected origins as middleware errors. Handle
+// those immediately so Express never renders its development HTML error page
+// (which contains stack traces and container paths).
+app.use(corsRejectionHandler);
 
 app.use('/api', createApiRequestRateLimiter());
 setupWebhookRoute();

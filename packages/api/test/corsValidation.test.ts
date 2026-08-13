@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
-import { createCorsOriginValidator } from '../corsValidation.js';
+import cors from 'cors';
+import express from 'express';
+import { corsRejectionHandler, createCorsOriginValidator } from '../corsValidation.js';
 
 // Helper that runs the validator synchronously and reports whether the origin
 // was allowed.
@@ -74,3 +78,83 @@ test('CORS preserves http COOKIE_DOMAIN preview compatibility', () => {
 test('CORS validator factory throws on an invalid FRONTEND_URL', () => {
   assert.throws(() => createCorsOriginValidator('not-a-url', undefined));
 });
+
+async function withCorsBoundary(
+  runtimeMode: 'development' | 'production',
+  run: (baseUrl: string) => Promise<void>,
+): Promise<void> {
+  const app = express();
+  app.set('env', runtimeMode);
+  app.use(cors({
+    origin: createCorsOriginValidator('https://app.propr.dev', '.preview.example.com'),
+    credentials: true,
+  }));
+  app.use(corsRejectionHandler);
+  app.get('/api/compatibility', (_req, res) => res.json({ compatibility: 'public' }));
+  app.all('/api/protected', (_req, res) => res.status(401).json({ error: 'Authentication required' }));
+
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address() as AddressInfo;
+  try {
+    await run(`http://127.0.0.1:${port}`);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+    });
+  }
+}
+
+for (const runtimeMode of ['development', 'production'] as const) {
+  test(`Express CORS boundary is sanitized in ${runtimeMode} mode`, async () => {
+    await withCorsBoundary(runtimeMode, async baseUrl => {
+      for (const origin of ['https://evil.example', 'null']) {
+        const response = await fetch(`${baseUrl}/api/protected`, { headers: { Origin: origin } });
+        assert.equal(response.status, 403);
+        assert.equal(await response.text(), '{"error":"CORS origin rejected"}');
+      }
+
+      for (const origin of ['https://evil.example', 'null']) {
+        const preflight = await fetch(`${baseUrl}/api/protected`, {
+          method: 'OPTIONS',
+          headers: {
+            Origin: origin,
+            'Access-Control-Request-Method': 'GET',
+          },
+        });
+        assert.equal(preflight.status, 403);
+        const rejectedBody = await preflight.text();
+        assert.equal(rejectedBody, '{"error":"CORS origin rejected"}');
+        assert.doesNotMatch(rejectedBody, /(?:Error|\bat\s|\/(?:app|home|usr|workspace)\/)/);
+      }
+
+      for (const origin of [
+        'https://app.propr.dev',
+        'https://pr-17.preview.example.com',
+        'http://localhost:5173',
+      ]) {
+        const response = await fetch(`${baseUrl}/api/protected`, { headers: { Origin: origin } });
+        assert.equal(response.status, 401, `expected ${origin} to reach authentication`);
+        assert.equal(response.headers.get('access-control-allow-origin'), origin);
+      }
+
+      const noOrigin = await fetch(`${baseUrl}/api/protected`);
+      assert.equal(noOrigin.status, 401);
+
+      const compatibility = await fetch(`${baseUrl}/api/compatibility`, {
+        headers: { Origin: 'https://app.propr.dev' },
+      });
+      assert.equal(compatibility.status, 200);
+
+      const allowedPreflight = await fetch(`${baseUrl}/api/protected`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://app.propr.dev',
+          'Access-Control-Request-Method': 'GET',
+        },
+      });
+      assert.equal(allowedPreflight.status, 204);
+      assert.equal(allowedPreflight.headers.get('access-control-allow-origin'), 'https://app.propr.dev');
+    });
+  });
+}
