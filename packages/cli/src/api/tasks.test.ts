@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { followupTask, getRevertPreview, importTasks } from "./tasks.js";
+import { followupTask, getRevertPreview, importTasks, stopTask } from "./tasks.js";
 import type { ApiClient } from "./client.js";
 
 function clientWithCalls(responseData: unknown) {
@@ -27,6 +27,18 @@ test("followupTask posts the task follow-up body", async () => {
     method: "POST",
     endpoint: "/api/tasks/task-123/followup",
     options: { body: { body: "Please add tests" } },
+  }]);
+});
+
+test("stopTask posts to the canonical stop endpoint with encoded task IDs", async () => {
+  const { client, calls } = clientWithCalls({ success: true, message: "stopped" });
+
+  await stopTask("task.alpha_beta-42", client);
+
+  assert.deepEqual(calls, [{
+    method: "POST",
+    endpoint: "/api/task/task.alpha_beta-42/stop",
+    options: undefined,
   }]);
 });
 
