@@ -10,10 +10,24 @@
 // Resolution order for the API base URL:
 //   1. Hosted-UI `?tunnel=` query param — Connect's per-installation deep link.
 //   2. Previously selected hosted tunnel in sessionStorage — tab-scoped, survives
-//      same-tab navigation and OAuth redirects without leaking across tabs.
+//      same-tab navigation and OAuth redirects. The stored value is only trusted
+//      when the URL carries a matching flow token (?flow=<id>), so a new browsing
+//      context whose sessionStorage was copied from another tab (window.open(),
+//      duplicate-tab) but whose URL has no valid flow selector is rejected.
 //   3. Runtime config (window.__PROPR_CONFIG__.apiBaseUrl) — hosted deployments.
 //   4. Build-time env (VITE_API_BASE_URL) — static single-target builds.
 //   5. Empty string — same-origin (local dev via the Vite proxy).
+//
+// Flow-token lifecycle:
+//   - On a ?tunnel= load, a random flowId is generated, stored in sessionStorage
+//     alongside the tunnel URL, and embedded in the page URL via
+//     history.replaceState (replacing ?tunnel= with ?flow=<id>).
+//   - The flowId is threaded through same-tab full-page navigations:
+//     * Auth redirects to /login preserve ?flow= in the URL.
+//     * The login page includes ?flow= in the OAuth redirect_to so the callback
+//       URL also carries it, restoring URL authority after GitHub OAuth.
+//   - A new tab opened to app.propr.dev (no tunnel/flow in URL) never has URL
+//     authority, even if sessionStorage was copied from an existing tab.
 
 import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl, proprInstanceProxyUrl } from '@propr/shared';
 
@@ -37,6 +51,8 @@ const runtimeConfig: ProprRuntimeConfig =
   (typeof window !== 'undefined' && window.__PROPR_CONFIG__) || {};
 
 export const HOSTED_TUNNEL_API_BASE_STORAGE_KEY = 'propr.hostedTunnelApiBaseUrl';
+/** Paired with HOSTED_TUNNEL_API_BASE_STORAGE_KEY; must match the URL ?flow= param to be trusted. */
+export const HOSTED_TUNNEL_FLOW_ID_KEY = 'propr.hostedTunnelFlowId';
 
 /**
  * Hostname of the managed hosted UI (e.g. `app.propr.dev`), derived from the
@@ -113,12 +129,59 @@ const storageForWindow = (): HostedTunnelStorage | undefined => {
   }
 };
 
+/** Generate a random per-tab flow token. */
+const generateFlowId = (): string => {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+};
+
+/** Extract the `?flow=` token from a URL search string. */
+const flowIdFromSearch = (search: string): string | null =>
+  new URLSearchParams(search).get('flow') || null;
+
+/**
+ * Store the selected hosted tunnel URL in sessionStorage together with a
+ * per-tab flow token. Returns the generated flow token (to be embedded in the
+ * page URL by the caller), or null if nothing was stored.
+ */
+export const rememberHostedTunnelApiBaseUrl = (
+  hostname: string,
+  apiBaseUrl: string,
+  storage: HostedTunnelStorage | undefined = storageForWindow()
+): string | null => {
+  if (!isHostedUiOrigin(hostname) || !storage || !isProprProxyUrl(apiBaseUrl)) return null;
+  try {
+    const flowId = generateFlowId();
+    storage.setItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY, apiBaseUrl.replace(/\/+$/, ''));
+    storage.setItem(HOSTED_TUNNEL_FLOW_ID_KEY, flowId);
+    return flowId;
+  } catch {
+    // sessionStorage can be disabled or full.
+    return null;
+  }
+};
+
+/**
+ * Read the previously stored hosted tunnel URL from sessionStorage, but only
+ * when the supplied `flowId` matches the stored per-tab token. A new browsing
+ * context whose sessionStorage was copied from another tab (window.open(),
+ * duplicate-tab) but whose URL carries no valid flow token is rejected here,
+ * preventing silent cross-tab tunnel inheritance.
+ */
 export const readStoredHostedTunnelApiBaseUrl = (
   hostname: string,
+  flowId: string | null,
   storage: HostedTunnelStorage | undefined = storageForWindow()
 ): string | null => {
   if (!isHostedUiOrigin(hostname) || !storage) return null;
   try {
+    const storedFlowId = storage.getItem(HOSTED_TUNNEL_FLOW_ID_KEY)?.trim() || null;
+    // Reject if storage has no flow token (never legitimately set by this tab)
+    // or if the URL's flow token does not match the stored one.
+    if (!storedFlowId || storedFlowId !== flowId) return null;
     const stored = storage.getItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY)?.trim();
     if (stored && isProprProxyUrl(stored)) return stored.replace(/\/+$/, '');
     if (stored) storage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
@@ -126,20 +189,6 @@ export const readStoredHostedTunnelApiBaseUrl = (
     return null;
   }
   return null;
-};
-
-export const rememberHostedTunnelApiBaseUrl = (
-  hostname: string,
-  apiBaseUrl: string,
-  storage: HostedTunnelStorage | undefined = storageForWindow()
-): void => {
-  if (!isHostedUiOrigin(hostname) || !storage || !isProprProxyUrl(apiBaseUrl)) return;
-  try {
-    storage.setItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY, apiBaseUrl.replace(/\/+$/, ''));
-  } catch {
-    // sessionStorage can be disabled or full. The query-param path still works
-    // for the current page load; persistence is only needed across same-tab redirects.
-  }
 };
 
 /**
@@ -160,7 +209,7 @@ export const runtimeConfigWarning = (
 ): string | null => {
   if (!isHostedUiOrigin(hostname)) return null;
   if (hostedTunnelQueryApiBaseUrl(hostname, search)) return null;
-  if (readStoredHostedTunnelApiBaseUrl(hostname, storage)) return null;
+  if (readStoredHostedTunnelApiBaseUrl(hostname, flowIdFromSearch(search), storage)) return null;
   if (!config) {
     return (
       '[propr] window.__PROPR_CONFIG__ is not set — config.js did not load. ' +
@@ -212,7 +261,7 @@ export const hostedUiConnectionIssue = (
 ): HostedUiConnectionIssue | null => {
   if (!isHostedUiOrigin(hostname)) return null;
   if (hostedTunnelQueryApiBaseUrl(hostname, search)) return null;
-  if (readStoredHostedTunnelApiBaseUrl(hostname, storage)) return null;
+  if (readStoredHostedTunnelApiBaseUrl(hostname, flowIdFromSearch(search), storage)) return null;
 
   const apiBaseUrl = config?.apiBaseUrl?.trim();
   if (!apiBaseUrl) {
@@ -253,9 +302,11 @@ export const resolveApiBaseUrl = (
     rememberHostedTunnelApiBaseUrl(hostname, queryApiBaseUrl, storage);
   }
 
+  const flowId = flowIdFromSearch(search);
+
   return (
     queryApiBaseUrl ||
-    readStoredHostedTunnelApiBaseUrl(hostname, storage) ||
+    readStoredHostedTunnelApiBaseUrl(hostname, flowId, storage) ||
     config?.apiBaseUrl?.trim() ||
     buildTimeApiBaseUrl?.trim() ||
     ''
@@ -268,10 +319,35 @@ if (typeof window !== 'undefined') {
   // an unrelated new tab would violate the per-tab isolation guarantee.
   try { window.localStorage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY); } catch { /* ignore */ }
 
+  // When a ?tunnel= deep link is present, store the validated tunnel URL in
+  // sessionStorage with a fresh flow token, then replace ?tunnel= in the URL
+  // with ?flow=<id>. This embeds URL authority for same-tab navigation:
+  // subsequent same-tab page loads (including the /login redirect and the OAuth
+  // callback) carry ?flow=<id> so the stored tunnel remains trusted, while a new
+  // tab that inherits sessionStorage but navigates to a URL without ?flow= is
+  // correctly rejected by readStoredHostedTunnelApiBaseUrl.
+  const originalSearch = window.location.search;
+  const queryApiBaseUrl = hostedTunnelQueryApiBaseUrl(window.location.hostname, originalSearch);
+  if (queryApiBaseUrl) {
+    const flowId = rememberHostedTunnelApiBaseUrl(window.location.hostname, queryApiBaseUrl, storageForWindow());
+    if (flowId) {
+      try {
+        const params = new URLSearchParams(originalSearch);
+        params.delete('tunnel');
+        params.set('flow', flowId);
+        window.history.replaceState(
+          null,
+          '',
+          window.location.pathname + '?' + params.toString() + window.location.hash
+        );
+      } catch { /* history API unavailable */ }
+    }
+  }
+
   const warning = runtimeConfigWarning(
     window.location.hostname,
     window.__PROPR_CONFIG__,
-    window.location.search,
+    originalSearch,
     storageForWindow()
   );
   if (warning) console.warn(warning);

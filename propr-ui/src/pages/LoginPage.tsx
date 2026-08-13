@@ -107,7 +107,14 @@ const LoginPage: React.FC = () => {
   const handleLogin = () => {
     // Pass redirect_to so the OAuth flow returns the user to the page they came
     // from (falling back to the dashboard root) after authenticating.
-    const redirectTo = encodeURIComponent(window.location.origin + returnPath);
+    // Include ?flow= if present so the OAuth callback URL carries URL authority
+    // for the hosted-tunnel flow token, allowing the stored tunnel to be resolved
+    // after the GitHub OAuth redirect completes.
+    const flowParam = searchParams.get('flow');
+    const returnWithFlow = flowParam
+      ? `${returnPath}${returnPath.includes('?') ? '&' : '?'}flow=${encodeURIComponent(flowParam)}`
+      : returnPath;
+    const redirectTo = encodeURIComponent(window.location.origin + returnWithFlow);
     window.location.href = `${OAUTH_API_URL}/api/auth/github?redirect_to=${redirectTo}`;
   };
 

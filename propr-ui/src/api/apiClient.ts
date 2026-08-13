@@ -99,7 +99,10 @@ const throwUnauthorizedResponse = (data: ApiErrorBody | null): never => {
     throw new TokenRefreshRetryRequiredError(getApiErrorMessage(data));
   }
   if (window.location.pathname === '/login') throw new Error('Authentication required');
-  window.location.href = '/login';
+  // Preserve the ?flow= token so the login page and subsequent OAuth redirect_to
+  // carry URL authority for the stored hosted-tunnel selection.
+  const flowId = new URLSearchParams(window.location.search).get('flow');
+  window.location.href = flowId ? `/login?flow=${encodeURIComponent(flowId)}` : '/login';
   throw new Error('Authentication required');
 };
 
