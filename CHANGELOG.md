@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.13] - 2026-08-13
+
+### Fixed
+
+- **Setup root persistence**: fresh `propr setup` runs retain the normalized
+  stack root across later configuration saves, so rootless CLI commands target
+  the configured stack from any working directory.
+
 ## [0.8.12] - 2026-08-12
 
 ### Changed
@@ -293,6 +301,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.13]: https://github.com/integry/propr/releases/tag/v0.8.13
 [0.8.12]: https://github.com/integry/propr/releases/tag/v0.8.12
 [0.8.11]: https://github.com/integry/propr/releases/tag/v0.8.11
 [0.8.10]: https://github.com/integry/propr/releases/tag/v0.8.10
