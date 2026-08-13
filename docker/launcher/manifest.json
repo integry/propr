@@ -1,12 +1,12 @@
 {
-  "version": "0.8.12",
+  "version": "0.8.13",
   "git_sha": "bf98253a2821ffbb1ed1a31890d3a548dc42c3c1",
   "registry": "propr",
   "images": {
-    "app": "propr/app:0.8.12",
-    "ui": "propr/ui:0.8.12",
-    "docs": "propr/docs:0.8.12",
-    "agent": "propr/agent:0.8.12",
+    "app": "propr/app:0.8.13",
+    "ui": "propr/ui:0.8.13",
+    "docs": "propr/docs:0.8.13",
+    "agent": "propr/agent:0.8.13",
     "redis": "redis:7-alpine",
     "cloudflared": "cloudflare/cloudflared:2024.12.2"
   }
