@@ -9,7 +9,8 @@
 //
 // Resolution order for the API base URL:
 //   1. Hosted-UI `?tunnel=` query param — Connect's per-installation deep link.
-//   2. Previously selected hosted tunnel in localStorage — survives login redirects.
+//   2. Previously selected hosted tunnel in sessionStorage — tab-scoped, survives
+//      same-tab navigation and OAuth redirects without leaking across tabs.
 //   3. Runtime config (window.__PROPR_CONFIG__.apiBaseUrl) — hosted deployments.
 //   4. Build-time env (VITE_API_BASE_URL) — static single-target builds.
 //   5. Empty string — same-origin (local dev via the Vite proxy).
@@ -106,7 +107,7 @@ type HostedTunnelStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 const storageForWindow = (): HostedTunnelStorage | undefined => {
   if (typeof window === 'undefined') return undefined;
   try {
-    return window.localStorage;
+    return window.sessionStorage;
   } catch {
     return undefined;
   }
@@ -136,8 +137,8 @@ export const rememberHostedTunnelApiBaseUrl = (
   try {
     storage.setItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY, apiBaseUrl.replace(/\/+$/, ''));
   } catch {
-    // localStorage can be disabled or full. The query-param path still works for
-    // the current page load; persistence is only needed across full redirects.
+    // sessionStorage can be disabled or full. The query-param path still works
+    // for the current page load; persistence is only needed across same-tab redirects.
   }
 };
 
@@ -262,6 +263,11 @@ export const resolveApiBaseUrl = (
 };
 
 if (typeof window !== 'undefined') {
+  // Retire the old origin-global localStorage selection. Its value is NOT
+  // migrated into sessionStorage: pulling an ambiguous global selection into
+  // an unrelated new tab would violate the per-tab isolation guarantee.
+  try { window.localStorage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY); } catch { /* ignore */ }
+
   const warning = runtimeConfigWarning(
     window.location.hostname,
     window.__PROPR_CONFIG__,

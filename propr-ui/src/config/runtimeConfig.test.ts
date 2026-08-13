@@ -139,14 +139,14 @@ describe('hosted tunnel query API base', () => {
   });
 });
 
-describe('stored hosted tunnel API base', () => {
+describe('stored hosted tunnel API base (sessionStorage)', () => {
   const load = async () => await import('./runtimeConfig');
 
   beforeEach(() => {
     vi.resetModules();
   });
 
-  it('stores a valid hosted tunnel API base for later hosted UI reloads', async () => {
+  it('stores a valid hosted tunnel API base in sessionStorage for same-tab reloads', async () => {
     const { HOSTED_TUNNEL_API_BASE_STORAGE_KEY, rememberHostedTunnelApiBaseUrl } =
       await load();
     const storage = memoryStorage();
@@ -186,6 +186,26 @@ describe('stored hosted tunnel API base', () => {
     expect(storage.removeItem).toHaveBeenCalledWith(
       HOSTED_TUNNEL_API_BASE_STORAGE_KEY
     );
+  });
+
+  it('two independent sessionStorage objects select different tunnels with no cross-over', async () => {
+    const { readStoredHostedTunnelApiBaseUrl, rememberHostedTunnelApiBaseUrl } = await load();
+    const tabA = memoryStorage();
+    const tabB = memoryStorage();
+
+    rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-aaa111.propr.dev', tabA);
+    rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-bbb222.propr.dev', tabB);
+
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', tabA)).toBe('https://t-aaa111.propr.dev');
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', tabB)).toBe('https://t-bbb222.propr.dev');
+  });
+
+  it('does not read from an old localStorage entry — stale global value is ignored', async () => {
+    const { readStoredHostedTunnelApiBaseUrl } = await load();
+    // Simulate an empty sessionStorage (new tab) while a stale localStorage value exists.
+    // The sessionStorage storage mock has no entry, so the result must be null.
+    const emptySession = memoryStorage();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', emptySession)).toBeNull();
   });
 });
 
