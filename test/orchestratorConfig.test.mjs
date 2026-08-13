@@ -156,6 +156,54 @@ test('empty explicit overrides win over env and defaults', () => {
   assert.equal(cfg.docsPort, '');
 });
 
+test('default API and UI publishes are IPv4-loopback-only with numeric localhost URLs', () => {
+  const cfg = resolveConfig({ PROPR_STACK: 'custom-stack' }, { manifestPath });
+
+  assert.equal(cfg.apiPort, '127.0.0.1:4000');
+  assert.equal(cfg.uiPort, '127.0.0.1:5173');
+  assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
+  assert.equal(cfg.frontendUrl, 'http://localhost:5173');
+  assert.equal(cfg.ghOauthCallbackUrl, 'http://localhost:4000/api/auth/github/callback');
+
+  const apiArgs = buildServiceSpec(cfg, 'api').args;
+  const apiPublishIndex = apiArgs.indexOf('-p');
+  assert.notEqual(apiPublishIndex, -1);
+  assert.equal(apiArgs[apiPublishIndex + 1], '127.0.0.1:4000:4000');
+
+  const uiArgs = buildServiceSpec(cfg, 'ui').args;
+  const uiPublishIndex = uiArgs.indexOf('-p');
+  assert.notEqual(uiPublishIndex, -1);
+  assert.equal(uiArgs[uiPublishIndex + 1], '127.0.0.1:5173:5173');
+});
+
+test('explicit API and UI publish bindings are preserved without rewriting the stack env', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envPath = join(rootDir, '.env');
+  const existing = 'API_PORT=4000\nUI_PORT=5173\n';
+  writeFileSync(envPath, existing);
+
+  const cfg = resolveHostConfig({ rootDir, env: {}, manifestPath });
+
+  assert.equal(cfg.apiPort, '4000');
+  assert.equal(cfg.uiPort, '5173');
+  assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
+  assert.equal(cfg.frontendUrl, 'http://localhost:5173');
+  assert.equal(readFileSync(envPath, 'utf8'), existing);
+  assert.ok(buildServiceSpec(cfg, 'api').args.includes('4000:4000'));
+  assert.ok(buildServiceSpec(cfg, 'ui').args.includes('5173:5173'));
+
+  const custom = resolveConfig({
+    API_PORT: '127.0.0.1:4400',
+    UI_PORT: '127.0.0.1:55173',
+  }, { manifestPath });
+  assert.equal(custom.apiPort, '127.0.0.1:4400');
+  assert.equal(custom.uiPort, '127.0.0.1:55173');
+  assert.equal(custom.apiPublicUrl, 'http://localhost:4400');
+  assert.equal(custom.frontendUrl, 'http://localhost:55173');
+  assert.ok(buildServiceSpec(custom, 'api').args.includes('127.0.0.1:4400:4000'));
+  assert.ok(buildServiceSpec(custom, 'ui').args.includes('127.0.0.1:55173:5173'));
+});
+
 test('UI tunnel is disabled by default with local-development URL defaults intact', () => {
   const cfg = resolveConfig({ API_PORT: '4000', UI_PORT: '5173' }, { manifestPath });
 

@@ -267,8 +267,11 @@ export function resolveConfig(env = process.env, overrides = {}) {
             ? join(homedir(), '.propr', 'agent-credentials')
             : (hostData ? join(hostData, 'agent-credentials') : undefined));
 
-    const apiPort = overrides.apiPort ?? get('API_PORT') ?? '4000';
-    const uiPort = overrides.uiPort ?? get('UI_PORT') ?? '5173';
+    // Published service ports are host-loopback-only unless an operator chooses
+    // an explicit binding. Preserve every explicit form verbatim: a bare port is
+    // an intentional all-interface opt-in, while host:port supports custom binds.
+    const apiPort = overrides.apiPort ?? get('API_PORT') ?? '127.0.0.1:4000';
+    const uiPort = overrides.uiPort ?? get('UI_PORT') ?? '127.0.0.1:5173';
     const docsPort = overrides.docsPort ?? get('DOCS_PORT') ?? '8080';
     const redisExternalPort = overrides.redisExternalPort ?? get('REDIS_EXTERNAL_PORT') ?? '';
     const apiHostPort = publishedHostPort(apiPort);
