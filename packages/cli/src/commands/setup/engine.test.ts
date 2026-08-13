@@ -121,6 +121,38 @@ test("an incomplete stack root (missing dirs) is re-scaffolded even when .env ex
   assert.equal(result.completed, true);
 });
 
+test("fresh scaffolding persists the resolved root through setup's active config", async () => {
+  let persistedRoot: string | undefined;
+  const result = await runSetup({
+    root: "relative-stack",
+    actions: mockActions({
+      inspectStackInit: (rootDir) => ({
+        rootDir,
+        envExists: false,
+        dirs: { data: false, logs: false, repos: false },
+        initialized: false,
+      }),
+      scaffoldStack: async () => ({
+        rootDir: "/resolved/stack",
+        envCreated: true,
+        envSkipped: false,
+        envBackedUp: false,
+        dirsCreated: ["data", "logs", "repos"],
+        detected: [],
+        credentialsAppended: false,
+        pendingCredentials: [],
+      }),
+      persistStackRoot: async (rootDir) => {
+        persistedRoot = rootDir;
+      },
+    }),
+  });
+
+  assert.equal(persistedRoot, "/resolved/stack");
+  assert.equal(result.state.rootDir, "/resolved/stack");
+  assert.equal(result.completed, true);
+});
+
 test("unknown and duplicate agent selections are filtered to known types", async () => {
   let pulledAgentTypes: string[] | undefined;
   const prompts: SetupPrompts = {

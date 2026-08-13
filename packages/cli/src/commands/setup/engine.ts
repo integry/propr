@@ -852,6 +852,11 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         rootDir = result.rootDir;
         state = { ...state, rootDir };
       }
+      // Persist through setup's active ConfigManager as well as scaffoldStack's
+      // initializer. Otherwise later setup saves (for example GitHub login or
+      // tunnel preferences) can write a stale in-memory config and silently
+      // discard the root that scaffoldStack recorded through its own manager.
+      await actions.persistStackRoot(rootDir);
       freshStackCreated = rootWasBare && result.envCreated && !result.envBackedUp;
       const created = [...result.dirsCreated];
       settle("init-stack", {
