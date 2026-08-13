@@ -1,18 +1,34 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { getCurrentUser } from '../api/proprApi';
 import {
   getApiBaseUrl,
+  isHostedUiOrigin,
   pathWithActiveHostedTunnelFlow,
-  prepareHostedTunnelOAuthContinuation,
 } from '../config/runtimeConfig';
 
 const API_BASE_URL = getApiBaseUrl();
 // For OAuth, use main API to avoid registering multiple callback URLs
 // Falls back to API_BASE_URL for main site
 const OAUTH_API_URL = import.meta.env.VITE_OAUTH_API_URL || API_BASE_URL;
+const HOSTED_OAUTH_COMPLETION_PATH = '/login?oauth_complete=true';
+const HOSTED_OAUTH_POLL_INTERVAL_MS = 1_000;
+const HOSTED_OAUTH_POPUP_CHECK_INTERVAL_MS = 500;
+const HOSTED_OAUTH_TIMEOUT_MS = 5 * 60 * 1_000;
+
+interface BuildGithubOAuthUrlOptions {
+  hostedPopupCompletion?: boolean;
+}
+
+interface HostedOAuthFlow {
+  id: number;
+  popup: Window;
+  pollIntervalId: number;
+  popupCheckIntervalId: number;
+  timeoutId: number;
+}
 
 // Only same-origin, absolute in-app paths are safe redirect targets. This
 // rejects external URLs ("https://evil.example/path"), protocol-relative URLs
@@ -77,14 +93,16 @@ export const buildGithubOAuthUrl = (
   returnPath: string,
   origin = window.location.origin,
   oauthApiUrl = OAUTH_API_URL,
-  hostname = window.location.hostname
+  hostname = window.location.hostname,
+  options: BuildGithubOAuthUrlOptions = {}
 ): string => {
   const originUrl = validatedHttpUrl(origin);
   const oauthUrl = validateOAuthApiBaseUrl(oauthApiUrl, originUrl);
   const safeReturnPath = safeInternalPath(returnPath, originUrl);
-  prepareHostedTunnelOAuthContinuation(hostname);
-  const returnPathWithActiveFlow = pathWithActiveHostedTunnelFlow(safeReturnPath, hostname);
-  const redirectTo = new URL(returnPathWithActiveFlow, originUrl);
+  const redirectPath = options.hostedPopupCompletion && isHostedUiOrigin(hostname)
+    ? HOSTED_OAUTH_COMPLETION_PATH
+    : pathWithActiveHostedTunnelFlow(safeReturnPath, hostname);
+  const redirectTo = new URL(redirectPath, originUrl);
 
   oauthUrl.pathname = '/api/auth/github';
   oauthUrl.search = '';
@@ -114,6 +132,9 @@ const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
   const loggedOut = searchParams.get('logged_out') === 'true';
+  const isOAuthCompletion = searchParams.get('oauth_complete') === 'true';
+  const hostedOAuthFlowRef = useRef<HostedOAuthFlow | null>(null);
+  const nextHostedOAuthFlowIdRef = useRef(0);
 
   const returnPath = useMemo(
     () => resolveReturnPath(location.state, searchParams.get('redirect_to')),
@@ -124,7 +145,30 @@ const LoginPage: React.FC = () => {
   // Start in the "recovering" state (showing a spinner instead of the OAuth
   // button) unless we already know recovery should be skipped. This avoids a
   // flash of the login button before the session check resolves.
-  const [isRecovering, setIsRecovering] = useState(!loggedOut);
+  const [isRecovering, setIsRecovering] = useState(!loggedOut && !isOAuthCompletion);
+  const [isHostedOAuthPolling, setIsHostedOAuthPolling] = useState(false);
+  const [hostedOAuthError, setHostedOAuthError] = useState<string | null>(null);
+
+  const stopHostedOAuthFlow = useCallback((closePopup = false) => {
+    const flow = hostedOAuthFlowRef.current;
+    if (!flow) return;
+    window.clearInterval(flow.pollIntervalId);
+    window.clearInterval(flow.popupCheckIntervalId);
+    window.clearTimeout(flow.timeoutId);
+    if (closePopup) {
+      try {
+        if (!flow.popup.closed) flow.popup.close();
+      } catch { /* cross-origin popup handles can throw while closing */ }
+    }
+    hostedOAuthFlowRef.current = null;
+  }, []);
+
+  const failHostedOAuthFlow = useCallback((flowId: number, message: string, closePopup = false) => {
+    if (hostedOAuthFlowRef.current?.id !== flowId) return;
+    stopHostedOAuthFlow(closePopup);
+    setIsHostedOAuthPolling(false);
+    setHostedOAuthError(message);
+  }, [stopHostedOAuthFlow]);
 
   useEffect(() => {
     // Wait until demo-mode status is known before deciding whether to recover.
@@ -132,7 +176,7 @@ const LoginPage: React.FC = () => {
 
     // Skip automatic session recovery in demo mode or right after an explicit
     // logout, since silently logging the user back in would be surprising.
-    if (isDemoMode || loggedOut) {
+    if (isDemoMode || loggedOut || isOAuthCompletion) {
       setIsRecovering(false);
       return;
     }
@@ -155,15 +199,92 @@ const LoginPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isDemoMode, isDemoModeLoading, loggedOut, navigate, returnPathWithActiveFlow]);
+  }, [isDemoMode, isDemoModeLoading, isOAuthCompletion, loggedOut, navigate, returnPathWithActiveFlow]);
 
-  const handleLogin = () => {
-    // Pass redirect_to so the OAuth flow returns the user to the page they came
-    // from (falling back to the dashboard root) after authenticating.
-    // Include only the validated active flow so the OAuth callback URL carries
-    // authority for this tab without trusting arbitrary raw URL input.
-    window.location.href = buildGithubOAuthUrl(returnPath);
-  };
+  useEffect(() => () => {
+    stopHostedOAuthFlow();
+  }, [stopHostedOAuthFlow]);
+
+  const startHostedOAuthFlow = useCallback((oauthUrl: string) => {
+    stopHostedOAuthFlow(true);
+    setHostedOAuthError(null);
+
+    const popup = window.open(
+      oauthUrl,
+      '_blank',
+      'popup,width=520,height=720'
+    );
+    if (!popup) {
+      setIsHostedOAuthPolling(false);
+      setHostedOAuthError('GitHub sign-in could not open. Allow popups for this site, then try again.');
+      return;
+    }
+
+    const flowId = nextHostedOAuthFlowIdRef.current + 1;
+    nextHostedOAuthFlowIdRef.current = flowId;
+    setIsHostedOAuthPolling(true);
+
+    const completeHostedOAuthFlow = () => {
+      if (hostedOAuthFlowRef.current?.id !== flowId) return;
+      stopHostedOAuthFlow(true);
+      setIsHostedOAuthPolling(false);
+      navigate(returnPathWithActiveFlow, { replace: true });
+    };
+
+    const pollForSession = async () => {
+      if (hostedOAuthFlowRef.current?.id !== flowId) return;
+      try {
+        await getCurrentUser();
+        completeHostedOAuthFlow();
+      } catch {
+        // Keep polling until the popup succeeds, closes, times out, or unmounts.
+      }
+    };
+
+    const pollIntervalId = window.setInterval(pollForSession, HOSTED_OAUTH_POLL_INTERVAL_MS);
+    const popupCheckIntervalId = window.setInterval(() => {
+      try {
+        if (popup.closed) {
+          failHostedOAuthFlow(flowId, 'The GitHub sign-in window was closed before login completed. Try again.');
+        }
+      } catch {
+        failHostedOAuthFlow(flowId, 'The GitHub sign-in window is no longer available. Try again.');
+      }
+    }, HOSTED_OAUTH_POPUP_CHECK_INTERVAL_MS);
+    const timeoutId = window.setTimeout(() => {
+      failHostedOAuthFlow(flowId, 'GitHub sign-in timed out. Try again and finish the popup sign-in.', true);
+    }, HOSTED_OAUTH_TIMEOUT_MS);
+
+    hostedOAuthFlowRef.current = {
+      id: flowId,
+      popup,
+      pollIntervalId,
+      popupCheckIntervalId,
+      timeoutId,
+    };
+    void pollForSession();
+  }, [failHostedOAuthFlow, navigate, returnPathWithActiveFlow, stopHostedOAuthFlow]);
+
+  const handleLogin = useCallback(() => {
+    // Local/self-hosted OAuth keeps using redirect_to for the final same-tab
+    // navigation back to the page the user came from.
+    // Hosted OAuth completes in a popup and the initiating tab polls its own
+    // selected tunnel, so the popup receives only an inert same-origin
+    // completion URL and no flow authority.
+    const hostedLogin = isHostedUiOrigin(window.location.hostname);
+    const oauthUrl = buildGithubOAuthUrl(
+      returnPath,
+      window.location.origin,
+      OAUTH_API_URL,
+      window.location.hostname,
+      { hostedPopupCompletion: hostedLogin }
+    );
+    if (hostedLogin) {
+      startHostedOAuthFlow(oauthUrl);
+      return;
+    }
+    window.location.href = oauthUrl;
+  }, [returnPath, startHostedOAuthFlow]);
 
   if (isRecovering) {
     return (
@@ -193,20 +314,32 @@ const LoginPage: React.FC = () => {
           )}
 
           <p className="text-gray-600 mb-6">
-            {isDemoMode
+            {isOAuthCompletion
+              ? 'GitHub sign-in has finished. You can close this window and return to ProPR.'
+              : isDemoMode
               ? 'Demo mode is enabled. You can browse ProPR without GitHub OAuth, but all write and AI execution actions are disabled.'
               : 'Sign in with your GitHub account to access the dashboard.'}
           </p>
 
-          <button
-            onClick={isDemoMode ? () => { window.location.href = '/'; } : handleLogin}
-            className="w-full bg-gray-900 hover:bg-gray-800 text-white font-medium py-3 px-4 rounded-md transition-colors flex items-center justify-center gap-2"
-          >
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-              <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" />
-            </svg>
-            {isDemoMode ? 'Enter Demo' : 'Sign in with GitHub'}
-          </button>
+          {!isOAuthCompletion && (
+            <>
+              <button
+                onClick={isDemoMode ? () => { window.location.href = '/'; } : handleLogin}
+                disabled={isHostedOAuthPolling}
+                className="w-full bg-gray-900 hover:bg-gray-800 disabled:bg-gray-500 text-white font-medium py-3 px-4 rounded-md transition-colors flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                  <path fillRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clipRule="evenodd" />
+                </svg>
+                {isDemoMode ? 'Enter Demo' : isHostedOAuthPolling ? 'Waiting for GitHub...' : 'Sign in with GitHub'}
+              </button>
+              {hostedOAuthError && (
+                <div className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-700">
+                  {hostedOAuthError}
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
       <LoginFooter />

@@ -337,8 +337,8 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     ).toBe('https://t-beta.propr.dev');
   });
 
-  // ── Regression: valid query/flow survives same-tab OAuth navigation ───────────
-  it('a valid ?tunnel= selection survives same-tab OAuth navigation and subsequent ?flow= reload', async () => {
+  // ── Regression: valid query/flow survives hosted parent navigation ───────────
+  it('a valid ?tunnel= selection survives hosted parent navigation and subsequent ?flow= reload', async () => {
     const { rememberHostedTunnelApiBaseUrl, resolveApiBaseUrl } = await load();
 
     const storage = memoryStorage();
@@ -347,7 +347,7 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     const flowId = rememberHostedTunnelApiBaseUrl('app.propr.dev', 'https://t-abc123.propr.dev', storage, 'same-tab-context');
     expect(typeof flowId).toBe('string');
 
-    // Post-OAuth callback with ?flow= in URL (the login page threaded it through).
+    // The hosted parent tab stays on app.propr.dev and keeps its own context.
     expect(
       resolveApiBaseUrl('app.propr.dev', `?flow=${flowId}`, undefined, undefined, storage, 'same-tab-context')
     ).toBe('https://t-abc123.propr.dev');
@@ -358,12 +358,11 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     ).toBe('https://t-abc123.propr.dev');
   });
 
-  it('a same-tab OAuth callback can restore the context after window.name is cleared', async () => {
+  it('does not revive a copied flow after hosted login starts because there is no continuation cookie', async () => {
     const {
       HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+      HOSTED_TUNNEL_CONTEXT_ID_KEY,
       HOSTED_TUNNEL_FLOW_ID_KEY,
-      HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE,
-      prepareHostedTunnelOAuthContinuation,
       readStoredHostedTunnelApiBaseUrl,
       resolveApiBaseUrl,
     } = await load();
@@ -380,27 +379,23 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
     const flowId = storage.getItem(HOSTED_TUNNEL_FLOW_ID_KEY);
     expect(flowId).toBeTruthy();
     expect(storage.getItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY)).toBe('https://t-oauthclear.propr.dev');
+    expect(storage.getItem(HOSTED_TUNNEL_CONTEXT_ID_KEY)).toBe('oauth-context');
 
-    prepareHostedTunnelOAuthContinuation('app.propr.dev', storage, 'oauth-context');
-    window.name = '';
-
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowId, storage)).toBe(
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowId, storage, 'oauth-context')).toBe(
       'https://t-oauthclear.propr.dev'
     );
-    expect(window.name).toContain('oauth-context');
 
-    // The OAuth continuation is one-use; a later copied context without the
-    // restored window.name must still be rejected.
+    // A copied URL plus copied sessionStorage in a blank-name browsing context
+    // cannot recover the original context. Hosted OAuth no longer writes any
+    // origin-wide continuation cookie that could revive it.
     window.name = '';
     expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowId, storage)).toBeNull();
-    document.cookie = `${HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE}=; Path=/; Max-Age=0`;
+    expect(document.cookie).not.toContain('propr.hostedTunnelOAuthContinuation');
   });
 
-  it('keeps separate OAuth continuations for interleaved hosted flows', async () => {
+  it('keeps interleaved hosted flows independent without shared continuation state', async () => {
     const {
       HOSTED_TUNNEL_FLOW_ID_KEY,
-      HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE,
-      prepareHostedTunnelOAuthContinuation,
       readStoredHostedTunnelApiBaseUrl,
       resolveApiBaseUrl,
     } = await load();
@@ -409,17 +404,15 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
 
     resolveApiBaseUrl('app.propr.dev', '?tunnel=t-alpha.propr.dev', undefined, undefined, storageA, 'context-a');
     const flowIdA = storageA.getItem(HOSTED_TUNNEL_FLOW_ID_KEY);
-    prepareHostedTunnelOAuthContinuation('app.propr.dev', storageA, 'context-a');
 
     resolveApiBaseUrl('app.propr.dev', '?tunnel=t-beta.propr.dev', undefined, undefined, storageB, 'context-b');
     const flowIdB = storageB.getItem(HOSTED_TUNNEL_FLOW_ID_KEY);
-    prepareHostedTunnelOAuthContinuation('app.propr.dev', storageB, 'context-b');
 
-    window.name = '';
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdA, storageA)).toBe('https://t-alpha.propr.dev');
-    window.name = '';
-    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdB, storageB)).toBe('https://t-beta.propr.dev');
-    document.cookie = `${HOSTED_TUNNEL_OAUTH_CONTINUATION_COOKIE}=; Path=/; Max-Age=0`;
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdA, storageA, 'context-a')).toBe('https://t-alpha.propr.dev');
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdB, storageB, 'context-b')).toBe('https://t-beta.propr.dev');
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdA, storageB, 'context-a')).toBeNull();
+    expect(readStoredHostedTunnelApiBaseUrl('app.propr.dev', flowIdB, storageA, 'context-b')).toBeNull();
+    expect(document.cookie).not.toContain('propr.hostedTunnelOAuthContinuation');
   });
 
   it('keeps unrelated query parameters and one active flow when building hosted navigation paths', async () => {
