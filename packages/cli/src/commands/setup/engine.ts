@@ -617,8 +617,12 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   let checks: ChecksOutcome | undefined;
   /** Agents chosen at the pull step, reused when recording credentials. */
   let selectedAgents: string[] = [];
-  /** True only when setup scaffolded a previously bare stack root. */
-  let freshStackCreated = false;
+  /**
+   * True when the root has never held runtime data, so setup may safely seed
+   * its first authenticated GitHub identity. Unlike an in-memory "created this
+   * run" flag, this survives an interruption after scaffolding but before auth.
+   */
+  let bootstrapIdentityEligible = false;
   /** True only after the local API answers the setup health probe. */
   let backendReady = false;
 
@@ -717,7 +721,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId });
       const existingEnv = actions.readEnvVars(rootDir);
       const existingAdminUsers = (existingEnv.PROPR_ADMIN_USERS ?? "").trim();
-      const seedBootstrapAdmin = freshStackCreated && !existingAdminUsers;
+      const seedBootstrapAdmin = bootstrapIdentityEligible && !existingAdminUsers;
       const tunnelOverride = configManager?.getTunnelEnabled();
       const managedTunnelEnabled = tunnelOverride ?? Boolean(
         existingEnv.PROPR_UI_TUNNEL_TOKEN?.trim() || isTruthyEnvFlag(existingEnv.PROPR_UI_TUNNEL_ENABLED)
@@ -756,12 +760,13 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
             ? { PROPR_WEB_AUTH_MODE: "connect" }
             : {}),
           // The relay identity was just authenticated by GitHub and owns this
-          // installation, so it is the safe bootstrap administrator on a fresh
-          // stack. Existing stacks may already have durable database-backed
-          // administrators, so a missing environment value is not evidence that
-          // setup may widen their authorization boundary.
+          // installation, so it is the safe bootstrap administrator when this
+          // stack has never held runtime data. A pre-auth setup interruption
+          // leaves an empty scaffold and remains eligible on the next run;
+          // established stacks have persisted database state and are never
+          // widened merely because the environment value is absent.
           ...(seedBootstrapAdmin ? { PROPR_ADMIN_USERS: username } : {}),
-          ...(freshStackCreated ? { GITHUB_USER_WHITELIST: username } : {}),
+          ...(bootstrapIdentityEligible ? { GITHUB_USER_WHITELIST: username } : {}),
         },
         { overwrite: true }
       );
@@ -829,6 +834,13 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       userChoseReinit = decision.reinitialize;
     }
 
+    // The durable database lives under data/. An empty (or not-yet-created)
+    // data directory proves that this root cannot already contain a durable
+    // administrator, even when a previous setup run already created .env and
+    // the scaffold directories. inspectStackInit is conservative on inspection
+    // errors, preserving the established-stack authorization boundary.
+    bootstrapIdentityEligible = !init.hasPersistedData;
+
     // Scaffold whenever the stack is incomplete — `.env` missing *or* a required
     // sub-directory (data/logs/repos) absent — or when the user explicitly chose
     // to (re)initialize a root. Keying off `initialized` (not just `envExists`)
@@ -838,9 +850,6 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     // `.env` is always preserved — re-running setup never clobbers it.
     const reinitialize = !init.initialized || userChoseReinit;
     if (reinitialize) {
-      // Automatic administrator seeding is safe only when this root had none of
-      // the stack artifacts that could hold established state before setup.
-      const rootWasBare = !init.envExists && Object.values(init.dirs).every((exists) => !exists);
       // No `force`: scaffoldStack creates a fresh `.env` only when absent and
       // otherwise leaves the existing one in place.
       const result = await actions.scaffoldStack({ root: rootDir });
@@ -857,7 +866,6 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       // tunnel preferences) can write a stale in-memory config and silently
       // discard the root that scaffoldStack recorded through its own manager.
       await actions.persistStackRoot(rootDir);
-      freshStackCreated = rootWasBare && result.envCreated && !result.envBackedUp;
       const created = [...result.dirsCreated];
       settle("init-stack", {
         status: "done",

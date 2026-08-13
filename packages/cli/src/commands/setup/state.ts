@@ -14,7 +14,7 @@
  * and env — it does not start Docker.
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { resolveGithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
 import { resolveStackRoot } from "../../orchestrator/index.js";
@@ -81,6 +81,12 @@ export interface StackInitState {
   envExists: boolean;
   /** Per-subdir existence (data/, logs/, repos/). */
   dirs: Record<(typeof STACK_SUBDIRS)[number], boolean>;
+  /**
+   * True when data/ contains runtime state, or when it cannot be inspected
+   * safely. A scaffolded-but-never-started stack has an empty data directory;
+   * an established stack's durable database makes it non-empty.
+   */
+  hasPersistedData: boolean;
   /** True when .env and all expected sub-directories are present. */
   initialized: boolean;
 }
@@ -97,8 +103,18 @@ export function inspectStackInit(rootDir: string): StackInitState {
   for (const sub of STACK_SUBDIRS) {
     dirs[sub] = isDirectory(join(rootDir, sub));
   }
+  let hasPersistedData = false;
+  if (dirs.data) {
+    try {
+      hasPersistedData = readdirSync(join(rootDir, "data")).length > 0;
+    } catch {
+      // If permissions or an I/O error prevent inspection, assume established
+      // state. Setup must never widen authorization based on missing evidence.
+      hasPersistedData = true;
+    }
+  }
   const initialized = envExists && STACK_SUBDIRS.every((sub) => dirs[sub]);
-  return { rootDir, envExists, dirs, initialized };
+  return { rootDir, envExists, dirs, hasPersistedData, initialized };
 }
 
 /** Convenience predicate over {@link inspectStackInit}. */

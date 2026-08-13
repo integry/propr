@@ -152,7 +152,11 @@ test("inspectStackInit reports initialized only once .env and all sub-dirs exist
   seedInitializedStack(root, "FOO=bar\n");
   const init = inspectStackInit(root);
   assert.equal(init.initialized, true);
+  assert.equal(init.hasPersistedData, false, "a scaffold with an empty data directory has no runtime state");
   assert.deepEqual(init.dirs, { data: true, logs: true, repos: true });
+
+  writeFileSync(join(root, "data", "propr.sqlite"), "database state", "utf-8");
+  assert.equal(inspectStackInit(root).hasPersistedData, true, "a database artifact marks the stack as established");
 });
 
 // ---------------------------------------------------------------------------
@@ -245,6 +249,91 @@ test("routing_websocket selected without relay auth fails on the missing relay p
 // ---------------------------------------------------------------------------
 // 3. Existing .env is not overwritten on re-run (idempotency).
 // ---------------------------------------------------------------------------
+
+test("an authenticated rerun after pre-auth setup interruption seeds healthy-start prerequisites", async () => {
+  const root = makeRoot();
+  let authenticated = false;
+  let starts = 0;
+  const prompts = {
+    selectAgents: async () => [],
+    configureGithubAuth: async () => ({
+      mode: "relay" as const,
+      enrollRelay: { relayUrl: "https://relay.example.com/v1" },
+    }),
+  };
+  const relayActions = {
+    hasGithubToken: () => authenticated,
+    fetchRelayInstallations: async () => ({
+      username: "octocat",
+      installations: [{
+        installation_id: 42,
+        account_login: "octo-org",
+        account_type: "Organization" as const,
+      }],
+    }),
+    enrollRelay: async () => ({ relayUrl: "https://relay.example.com/v1", token: "prt_minted" }),
+  };
+
+  // First pass: setup creates the same empty scaffold as `propr init stack`,
+  // then stops at relay auth before the API has ever created its database.
+  const interrupted = await runSetup({
+    root,
+    prompts,
+    actions: diskActions({
+      ...relayActions,
+      scaffoldStack: async ({ root: requestedRoot }) => {
+        const scaffoldRoot = requestedRoot ?? root;
+        for (const sub of STACK_SUBDIRS) mkdirSync(join(scaffoldRoot, sub), { recursive: true });
+        writeEnv(scaffoldRoot, "DB_FILENAME=./data/propr.sqlite\n");
+        return {
+          rootDir: scaffoldRoot,
+          envCreated: true,
+          envSkipped: false,
+          envBackedUp: false,
+          dirsCreated: [...STACK_SUBDIRS],
+          detected: [],
+          credentialsAppended: false,
+          pendingCredentials: [],
+        };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(interrupted.state, "init-stack"), "done");
+  assert.equal(statusOf(interrupted.state, "github-auth"), "failed");
+  assert.equal(readEnvVars(root).PROPR_ADMIN_USERS, undefined);
+  assert.equal(inspectStackInit(root).hasPersistedData, false);
+
+  // The second process sees an existing scaffold, but its empty data directory
+  // proves no durable administrator can exist yet. Relay enrollment may seed
+  // the authenticated owner before startup, exactly as in a one-pass setup.
+  authenticated = true;
+  const rerun = await runSetup({
+    root,
+    prompts,
+    actions: diskActions({
+      ...relayActions,
+      startStack: async () => {
+        starts += 1;
+        const env = readEnvVars(root);
+        assert.equal(env.PROPR_ADMIN_USERS, "octocat", "the API administrator exists before startup");
+        assert.equal(env.GITHUB_USER_WHITELIST, "octocat", "the bootstrap identity is also allowed before startup");
+      },
+      checkBackendHealth: async () => {
+        const env = readEnvVars(root);
+        const healthy = env.PROPR_ADMIN_USERS === "octocat" && env.GITHUB_USER_WHITELIST === "octocat";
+        return { healthy, detail: healthy ? "API healthy" : "missing bootstrap identity" };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(rerun.state, "init-stack"), "skipped");
+  assert.equal(statusOf(rerun.state, "github-auth"), "done");
+  assert.match(getStep(rerun.state, "github-auth")?.detail ?? "", /bootstrap administrator: octocat/);
+  assert.equal(statusOf(rerun.state, "start-stack"), "done");
+  assert.equal(starts, 1);
+  assert.equal(rerun.completed, true);
+});
 
 test("re-running setup on an initialized stack skips scaffolding and preserves the existing .env", async () => {
   const root = makeRoot();
@@ -353,7 +442,7 @@ function scriptedIo(answers: string[]): SequentialIo & { lines: string[]; questi
 
 test("fallback prompts honour blank-Enter safe defaults", async () => {
   // Blank → keep current root, no re-scaffold offered for an un-initialized root.
-  const init = { rootDir: "/cur", envExists: false, dirs: { data: false, logs: false, repos: false }, initialized: false };
+  const init = { rootDir: "/cur", envExists: false, dirs: { data: false, logs: false, repos: false }, hasPersistedData: false, initialized: false };
   const decision = await buildSequentialPrompts(scriptedIo([""])).resolveStackRoot!({ currentRoot: "/cur", init });
   assert.deepEqual(decision, { rootDir: "/cur", reinitialize: false });
 

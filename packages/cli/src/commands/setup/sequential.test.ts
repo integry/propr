@@ -70,7 +70,7 @@ test("confirm: an already-running stack is reused without prompting", async () =
 
 test("input: blank keeps the current root, a value replaces it", async () => {
   const io = scriptedIo([""]);
-  const init = { rootDir: "/cur", envExists: true, dirs: { data: true, logs: true, repos: true }, initialized: false };
+  const init = { rootDir: "/cur", envExists: true, dirs: { data: true, logs: true, repos: true }, hasPersistedData: true, initialized: false };
   const decision = await buildSequentialPrompts(io).resolveStackRoot!({ currentRoot: "/cur", init });
   assert.deepEqual(decision, { rootDir: "/cur", reinitialize: false });
 
@@ -306,7 +306,7 @@ function okChecks(rootDir: string): ChecksOutcome {
 function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
   return {
     runChecks: async ({ root }) => okChecks(root ?? "/stack"),
-    inspectStackInit: (rootDir) => ({ rootDir, envExists: true, dirs: { data: true, logs: true, repos: true }, initialized: true }),
+    inspectStackInit: (rootDir) => ({ rootDir, envExists: true, dirs: { data: true, logs: true, repos: true }, hasPersistedData: true, initialized: true }),
     scaffoldStack: async ({ root }) => {
       throw new Error(`scaffoldStack must not run for an initialized stack (${root})`);
     },

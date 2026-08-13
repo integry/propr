@@ -38,6 +38,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
       rootDir,
       envExists: true,
       dirs: { data: true, logs: true, repos: true },
+      hasPersistedData: true,
       initialized: true,
     }),
     scaffoldStack: async ({ root }) => {
@@ -107,6 +108,7 @@ test("an incomplete stack root (missing dirs) is re-scaffolded even when .env ex
         rootDir,
         envExists: true,
         dirs: { data: true, logs: true, repos: false },
+        hasPersistedData: true,
         initialized: false,
       }),
       scaffoldStack: async ({ root }) => {
@@ -130,6 +132,7 @@ test("fresh scaffolding persists the resolved root through setup's active config
         rootDir,
         envExists: false,
         dirs: { data: false, logs: false, repos: false },
+        hasPersistedData: false,
         initialized: false,
       }),
       scaffoldStack: async () => ({
@@ -344,6 +347,7 @@ test("relay enrollment auto-selects a single installation and writes the relay v
         rootDir,
         envExists: false,
         dirs: { data: false, logs: false, repos: false },
+        hasPersistedData: false,
         initialized: false,
       }),
       scaffoldStack: async ({ root }) => ({
