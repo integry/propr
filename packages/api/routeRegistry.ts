@@ -6,7 +6,6 @@ import type {
   createAgentVersionRoutes,
   createConfigRoutes,
   createInstanceCatalogRoutes,
-  createTaskRoutes,
 } from './routes/index.js';
 import {
   requireManageAgents,
@@ -30,17 +29,6 @@ interface ManagementRouteDeps {
 
 interface MemberCatalogRouteDeps {
   instanceCatalogRoutes: ReturnType<typeof createInstanceCatalogRoutes>;
-}
-
-interface TaskDeleteRouteDeps {
-  taskRoutes: Pick<ReturnType<typeof createTaskRoutes>, 'deleteTask'>;
-}
-
-export function createTaskDeleteRouteEntries({ taskRoutes }: TaskDeleteRouteDeps): RouteEntry[] {
-  return [
-    ['delete', '/api/tasks/:taskId', taskRoutes.deleteTask],
-    ['delete', '/api/task/:taskId', taskRoutes.deleteTask],
-  ];
 }
 
 export function createManagementRouteEntries({

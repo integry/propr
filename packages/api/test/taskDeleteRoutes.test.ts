@@ -1,16 +1,28 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
+import { mkdtemp, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { after, afterEach, test } from 'node:test';
 import express from 'express';
 import type { Request, Response as ExpressResponse } from 'express';
 import knex, { type Knex } from 'knex';
 import { resetConfiguredDemoMode } from '../demoMode.js';
 
+const originalNodeEnv = process.env.NODE_ENV;
+const originalDbFilename = process.env.DB_FILENAME;
 const originalDemoMode = process.env.PROPR_DEMO_MODE;
 const originalWhitelist = process.env.GITHUB_USER_WHITELIST;
 const originalBearerAuth = process.env.ENABLE_BEARER_AUTH;
+const isolatedDbDir = await mkdtemp(path.join(tmpdir(), 'propr-task-delete-routes-'));
+process.env.NODE_ENV = 'test';
+process.env.DB_FILENAME = path.join(isolatedDbDir, 'propr.sqlite');
 
 function restoreEnv(): void {
+  if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = originalNodeEnv;
+  if (originalDbFilename === undefined) delete process.env.DB_FILENAME;
+  else process.env.DB_FILENAME = originalDbFilename;
   if (originalDemoMode === undefined) delete process.env.PROPR_DEMO_MODE;
   else process.env.PROPR_DEMO_MODE = originalDemoMode;
   if (originalWhitelist === undefined) delete process.env.GITHUB_USER_WHITELIST;
@@ -45,9 +57,13 @@ async function createDatabase(): Promise<Knex> {
   return database;
 }
 
-async function loadRouteRegistry() {
-  process.env.PROPR_DEMO_MODE = 'true';
-  return import('../routeRegistry.js');
+function applyIsolatedCoreEnv(): void {
+  process.env.NODE_ENV = 'test';
+  process.env.DB_FILENAME = path.join(isolatedDbDir, 'propr.sqlite');
+}
+
+async function loadTaskDeleteRouteRegistry() {
+  return import('../taskDeleteRouteRegistry.js');
 }
 
 async function seedCompletedTask(database: Knex, taskId: string): Promise<void> {
@@ -62,17 +78,19 @@ async function seedCompletedTask(database: Knex, taskId: string): Promise<void> 
 }
 
 async function createDeleteApp(database: Knex, authenticated: boolean): Promise<express.Express> {
+  applyIsolatedCoreEnv();
   process.env.PROPR_DEMO_MODE = 'true';
   const [
     { ensureAuthenticated },
     { createTaskRoutes },
-    { createTaskDeleteRouteEntries, registerRouteEntries },
+    { createTaskDeleteRouteEntries },
   ] = await Promise.all([
     import('../auth.js'),
     import('../routes/taskRoutes.js'),
-    loadRouteRegistry(),
+    loadTaskDeleteRouteRegistry(),
   ]);
 
+  applyIsolatedCoreEnv();
   process.env.PROPR_DEMO_MODE = 'false';
   process.env.GITHUB_USER_WHITELIST = 'alice';
   process.env.ENABLE_BEARER_AUTH = 'false';
@@ -96,7 +114,9 @@ async function createDeleteApp(database: Knex, authenticated: boolean): Promise<
   app.use('/api', ensureAuthenticated);
 
   const taskRoutes = createTaskRoutes({ db: database });
-  registerRouteEntries(app, createTaskDeleteRouteEntries({ taskRoutes }));
+  for (const [method, pathPattern, ...handlers] of createTaskDeleteRouteEntries({ taskRoutes })) {
+    app[method](pathPattern, ...handlers);
+  }
   return app;
 }
 
@@ -114,18 +134,20 @@ async function fetchFromApp(app: express.Express, path: string, init?: RequestIn
 afterEach(() => {
   resetConfiguredDemoMode();
   restoreEnv();
+  applyIsolatedCoreEnv();
 });
 
 after(async () => {
+  applyIsolatedCoreEnv();
   process.env.PROPR_DEMO_MODE = 'true';
   const { closeConnection } = await import('@propr/core');
   await closeConnection();
   restoreEnv();
+  await rm(isolatedDbDir, { recursive: true, force: true });
 });
 
 test('task delete route entries register plural and singular paths with the same handler', async () => {
-  process.env.PROPR_DEMO_MODE = 'true';
-  const { createTaskDeleteRouteEntries } = await loadRouteRegistry();
+  const { createTaskDeleteRouteEntries } = await loadTaskDeleteRouteRegistry();
   const handler = (_req: Request, res: ExpressResponse) => res.status(204).send();
   const entries = createTaskDeleteRouteEntries({ taskRoutes: { deleteTask: handler } });
 

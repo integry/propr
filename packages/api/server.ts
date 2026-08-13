@@ -67,10 +67,10 @@ import {
   assertNoDuplicateRoutes,
   createManagementRouteEntries,
   createMemberCatalogRouteEntries,
-  createTaskDeleteRouteEntries,
   registerRouteEntries,
   type RouteEntry
 } from './routeRegistry.js';
+import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
 
 type ShutdownTask = { name: string; close: () => Promise<unknown> };
 

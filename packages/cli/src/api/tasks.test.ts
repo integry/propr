@@ -70,15 +70,15 @@ test("getRevertPreview sends expected query parameters", async () => {
   }]);
 });
 
-test("deleteTask uses the canonical tasks endpoint with encoded task ID and force query", async () => {
+test("deleteTask safely encodes the task ID path segment with force query", async () => {
   const { client, calls } = clientWithCalls(undefined);
-  const taskId = "owner@repo.task-1";
+  const taskId = "task/id?x=1";
 
   await deleteTask(taskId, true, client);
 
   assert.deepEqual(calls, [{
     method: "DELETE",
-    endpoint: "/api/tasks/owner%40repo.task-1",
+    endpoint: "/api/tasks/task%2Fid%3Fx%3D1",
     options: { params: { force: "true" } },
   }]);
 });
