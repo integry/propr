@@ -38,9 +38,9 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
       rootDir,
       envExists: true,
       dirs: { data: true, logs: true, repos: true },
-      hasPersistedData: true,
       initialized: true,
     }),
+    inspectDatastoreAdministrators: async () => ({ status: "has-admin", databasePath: "/stack/data/propr.sqlite" }),
     scaffoldStack: async ({ root }) => {
       throw new Error(`scaffoldStack must not run for an initialized stack (${root})`);
     },
@@ -108,7 +108,6 @@ test("an incomplete stack root (missing dirs) is re-scaffolded even when .env ex
         rootDir,
         envExists: true,
         dirs: { data: true, logs: true, repos: false },
-        hasPersistedData: true,
         initialized: false,
       }),
       scaffoldStack: async ({ root }) => {
@@ -132,7 +131,6 @@ test("fresh scaffolding persists the resolved root through setup's active config
         rootDir,
         envExists: false,
         dirs: { data: false, logs: false, repos: false },
-        hasPersistedData: false,
         initialized: false,
       }),
       scaffoldStack: async () => ({
@@ -347,9 +345,9 @@ test("relay enrollment auto-selects a single installation and writes the relay v
         rootDir,
         envExists: false,
         dirs: { data: false, logs: false, repos: false },
-        hasPersistedData: false,
         initialized: false,
       }),
+      inspectDatastoreAdministrators: async () => ({ status: "absent", databasePath: "/stack/data/propr.sqlite" }),
       scaffoldStack: async ({ root }) => ({
         rootDir: root ?? "/stack",
         envCreated: true,
@@ -382,8 +380,57 @@ test("relay enrollment auto-selects a single installation and writes the relay v
     GH_INSTALLATION_ID: "42",
     PROPR_WEB_AUTH_MODE: "connect",
     PROPR_ADMIN_USERS: "octocat",
-    GITHUB_USER_WHITELIST: "octocat",
+    GITHUB_USER_WHITELIST: "alice,bob,octocat",
   });
+});
+
+test("relay enrollment seeds a migrated datastore that has no durable administrator", async () => {
+  let relayVars: Record<string, string> | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      inspectDatastoreAdministrators: async () => ({ status: "no-admin", databasePath: "/stack/data/propr.sqlite" }),
+      readEnvVars: () => ({ GITHUB_EVENT_INTAKE_MODE: "polling" }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      applyEnvSelection: (_root, vars) => {
+        if (vars.GH_AUTH_MODE === "relay") relayVars = vars;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(relayVars?.PROPR_ADMIN_USERS, "octocat");
+  assert.equal(relayVars?.GITHUB_USER_WHITELIST, "octocat");
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /bootstrap administrator: octocat/);
+});
+
+test("relay enrollment fails closed when the configured datastore cannot be inspected", async () => {
+  let relayVars: Record<string, string> | undefined;
+  const result = await runSetup({
+    root: "/stack",
+    prompts: relayPrompts(),
+    actions: mockActions({
+      inspectDatastoreAdministrators: async () => ({
+        status: "uninspectable",
+        databasePath: "/external/propr.sqlite",
+        detail: "database is locked",
+      }),
+      readEnvVars: () => ({ GITHUB_EVENT_INTAKE_MODE: "polling", GITHUB_USER_WHITELIST: "alice,bob" }),
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [inst(42, "octo-org")] }),
+      applyEnvSelection: (_root, vars) => {
+        if (vars.GH_AUTH_MODE === "relay") relayVars = vars;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+    }),
+  });
+
+  assert.equal(relayVars?.PROPR_ADMIN_USERS, undefined);
+  assert.equal(relayVars?.GITHUB_USER_WHITELIST, undefined);
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /could not be inspected/);
 });
 
 test("relay enrollment does not select Connect for a non-loopback off-tunnel callback", async () => {

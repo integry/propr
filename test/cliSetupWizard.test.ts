@@ -19,7 +19,8 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { runSetup, type SetupActions } from "../packages/cli/src/commands/setup/engine.js";
@@ -34,6 +35,7 @@ import {
   detectGithubAuthMode,
   getStep,
   hasEnvValue,
+  inspectDatastoreAdministrators,
   inspectStackInit,
   readEnvVars,
   STACK_SUBDIRS,
@@ -66,6 +68,31 @@ function seedInitializedStack(rootDir: string, contents: string): void {
   writeEnv(rootDir, contents);
 }
 
+/** Create the durable-member portion of a migrated ProPR SQLite datastore. */
+function createMemberDatabase(databasePath: string, adminUserIds: string[] = []): void {
+  mkdirSync(dirname(databasePath), { recursive: true });
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec(`
+      CREATE TABLE instance_members (
+        github_user_id TEXT PRIMARY KEY,
+        github_username TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+        source TEXT NOT NULL DEFAULT 'local',
+        created_by_user_id TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    const insert = database.prepare(
+      "INSERT INTO instance_members (github_user_id, github_username, role) VALUES (?, ?, 'admin')"
+    );
+    for (const userId of adminUserIds) insert.run(userId, `admin-${userId}`);
+  } finally {
+    database.close();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Mock actions: Docker/network/backend are stubbed, env helpers are REAL.
 // ---------------------------------------------------------------------------
@@ -95,6 +122,7 @@ function diskActions(overrides: Partial<SetupActions> = {}): SetupActions {
     runChecks: async ({ root }) => okChecks(root ?? "/stack"),
     // Real env/state helpers — they touch only the temp root passed in.
     inspectStackInit,
+    inspectDatastoreAdministrators,
     readEnvVars,
     applyEnvSelection,
     clearEnvKeys,
@@ -152,11 +180,57 @@ test("inspectStackInit reports initialized only once .env and all sub-dirs exist
   seedInitializedStack(root, "FOO=bar\n");
   const init = inspectStackInit(root);
   assert.equal(init.initialized, true);
-  assert.equal(init.hasPersistedData, false, "a scaffold with an empty data directory has no runtime state");
   assert.deepEqual(init.dirs, { data: true, logs: true, repos: true });
+});
 
-  writeFileSync(join(root, "data", "propr.sqlite"), "database state", "utf-8");
-  assert.equal(inspectStackInit(root).hasPersistedData, true, "a database artifact marks the stack as established");
+test("datastore inspection finds a migrated SQLite database with no durable administrator", async () => {
+  const root = makeRoot();
+  seedInitializedStack(root, "DB_FILENAME=./data/propr.sqlite\n");
+  const databasePath = join(root, "data", "propr.sqlite");
+  createMemberDatabase(databasePath);
+
+  assert.deepEqual(await inspectDatastoreAdministrators(root), {
+    status: "no-admin",
+    databasePath,
+  });
+});
+
+test("datastore inspection honors DB_FILENAME outside the default data directory", async () => {
+  const root = makeRoot();
+  const databasePath = join(root, "custom-datastore", "propr.sqlite");
+  seedInitializedStack(
+    root,
+    `DB_FILENAME=${databasePath}\nGITHUB_EVENT_INTAKE_MODE=polling\nGITHUB_USER_WHITELIST=alice,bob\n`,
+  );
+  createMemberDatabase(databasePath, ["123"]);
+
+  assert.deepEqual(await inspectDatastoreAdministrators(root), {
+    status: "has-admin",
+    databasePath,
+  });
+
+  const result = await runSetup({
+    root,
+    prompts: {
+      configureGithubAuth: async () => ({
+        mode: "relay",
+        enrollRelay: { relayUrl: "https://relay.example.com/v1" },
+      }),
+    },
+    actions: diskActions({
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({
+        username: "octocat",
+        installations: [{ installation_id: 42, account_login: "octo-org", account_type: "Organization" }],
+      }),
+      enrollRelay: async () => ({ relayUrl: "https://relay.example.com/v1", token: "prt_minted" }),
+    }),
+  });
+
+  const env = readEnvVars(root);
+  assert.equal(env.PROPR_ADMIN_USERS, undefined, "the external datastore's existing admin prevents a new grant");
+  assert.equal(env.GITHUB_USER_WHITELIST, "alice,bob", "an established stack's whitelist is untouched");
+  assert.match(getStep(result.state, "github-auth")?.detail ?? "", /left administrators unchanged/);
 });
 
 // ---------------------------------------------------------------------------
@@ -284,7 +358,10 @@ test("an authenticated rerun after pre-auth setup interruption seeds healthy-sta
       scaffoldStack: async ({ root: requestedRoot }) => {
         const scaffoldRoot = requestedRoot ?? root;
         for (const sub of STACK_SUBDIRS) mkdirSync(join(scaffoldRoot, sub), { recursive: true });
-        writeEnv(scaffoldRoot, "DB_FILENAME=./data/propr.sqlite\n");
+        writeEnv(
+          scaffoldRoot,
+          "DB_FILENAME=./data/propr.sqlite\nGITHUB_USER_WHITELIST=alice,bob\n",
+        );
         return {
           rootDir: scaffoldRoot,
           envCreated: true,
@@ -302,11 +379,10 @@ test("an authenticated rerun after pre-auth setup interruption seeds healthy-sta
   assert.equal(statusOf(interrupted.state, "init-stack"), "done");
   assert.equal(statusOf(interrupted.state, "github-auth"), "failed");
   assert.equal(readEnvVars(root).PROPR_ADMIN_USERS, undefined);
-  assert.equal(inspectStackInit(root).hasPersistedData, false);
 
-  // The second process sees an existing scaffold, but its empty data directory
-  // proves no durable administrator can exist yet. Relay enrollment may seed
-  // the authenticated owner before startup, exactly as in a one-pass setup.
+  // The second process sees an absent configured datastore, so relay enrollment
+  // may seed the authenticated owner while preserving the custom whitelist from
+  // the interrupted scaffold.
   authenticated = true;
   const rerun = await runSetup({
     root,
@@ -317,11 +393,16 @@ test("an authenticated rerun after pre-auth setup interruption seeds healthy-sta
         starts += 1;
         const env = readEnvVars(root);
         assert.equal(env.PROPR_ADMIN_USERS, "octocat", "the API administrator exists before startup");
-        assert.equal(env.GITHUB_USER_WHITELIST, "octocat", "the bootstrap identity is also allowed before startup");
+        assert.equal(
+          env.GITHUB_USER_WHITELIST,
+          "alice,bob,octocat",
+          "custom whitelist entries survive while the bootstrap identity is added",
+        );
       },
       checkBackendHealth: async () => {
         const env = readEnvVars(root);
-        const healthy = env.PROPR_ADMIN_USERS === "octocat" && env.GITHUB_USER_WHITELIST === "octocat";
+        const healthy =
+          env.PROPR_ADMIN_USERS === "octocat" && env.GITHUB_USER_WHITELIST === "alice,bob,octocat";
         return { healthy, detail: healthy ? "API healthy" : "missing bootstrap identity" };
       },
     }),
@@ -442,7 +523,7 @@ function scriptedIo(answers: string[]): SequentialIo & { lines: string[]; questi
 
 test("fallback prompts honour blank-Enter safe defaults", async () => {
   // Blank → keep current root, no re-scaffold offered for an un-initialized root.
-  const init = { rootDir: "/cur", envExists: false, dirs: { data: false, logs: false, repos: false }, hasPersistedData: false, initialized: false };
+  const init = { rootDir: "/cur", envExists: false, dirs: { data: false, logs: false, repos: false }, initialized: false };
   const decision = await buildSequentialPrompts(scriptedIo([""])).resolveStackRoot!({ currentRoot: "/cur", init });
   assert.deepEqual(decision, { rootDir: "/cur", reinitialize: false });
 

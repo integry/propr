@@ -64,12 +64,14 @@ import {
   createSetupState,
   detectGithubAuthMode,
   getStep,
+  inspectDatastoreAdministrators,
   inspectStackInit,
   isSetupComplete,
   readEnvVars,
   resolveSetupRoot,
   updateStep,
   type EnvSelectionResult,
+  type DatastoreAdminInspection,
   type StackInitState,
 } from "./state.js";
 import type { SetupState, SetupStep, SetupStepId, SetupStepPatch } from "./types.js";
@@ -333,6 +335,8 @@ export interface BackendHealth {
 export interface SetupActions extends AgentSetupActions {
   runChecks(options: RunChecksOptions): Promise<ChecksOutcome>;
   inspectStackInit(rootDir: string): StackInitState;
+  /** Inspect the configured datastore's durable administrator state without modifying it. */
+  inspectDatastoreAdministrators(rootDir: string): Promise<DatastoreAdminInspection>;
   scaffoldStack(options: InitStackOptions): Promise<InitStackResult>;
   /**
    * Persist the resolved stack root to the CLI config so later `propr start` /
@@ -432,6 +436,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       return runChecks(options);
     },
     inspectStackInit,
+    inspectDatastoreAdministrators,
     async scaffoldStack(options) {
       const { scaffoldStack } = await import("../initStack.js");
       return scaffoldStack(options);
@@ -617,12 +622,9 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   let checks: ChecksOutcome | undefined;
   /** Agents chosen at the pull step, reused when recording credentials. */
   let selectedAgents: string[] = [];
-  /**
-   * True when the root has never held runtime data, so setup may safely seed
-   * its first authenticated GitHub identity. Unlike an in-memory "created this
-   * run" flag, this survives an interruption after scaffolding but before auth.
-   */
+  /** True only when the configured datastore conclusively has no durable administrator. */
   let bootstrapIdentityEligible = false;
+  let datastoreAdminInspection: DatastoreAdminInspection | undefined;
   /** True only after the local API answers the setup health probe. */
   let backendReady = false;
 
@@ -722,6 +724,16 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       const existingEnv = actions.readEnvVars(rootDir);
       const existingAdminUsers = (existingEnv.PROPR_ADMIN_USERS ?? "").trim();
       const seedBootstrapAdmin = bootstrapIdentityEligible && !existingAdminUsers;
+      const existingWhitelist = (existingEnv.GITHUB_USER_WHITELIST ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const whitelistHasIdentity = existingWhitelist.some(
+        (value) => value.toLowerCase() === username.trim().toLowerCase()
+      );
+      const bootstrapWhitelist = bootstrapIdentityEligible && !whitelistHasIdentity
+        ? [...existingWhitelist, username].join(",")
+        : undefined;
       const tunnelOverride = configManager?.getTunnelEnabled();
       const managedTunnelEnabled = tunnelOverride ?? Boolean(
         existingEnv.PROPR_UI_TUNNEL_TOKEN?.trim() || isTruthyEnvFlag(existingEnv.PROPR_UI_TUNNEL_ENABLED)
@@ -760,13 +772,14 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
             ? { PROPR_WEB_AUTH_MODE: "connect" }
             : {}),
           // The relay identity was just authenticated by GitHub and owns this
-          // installation, so it is the safe bootstrap administrator when this
-          // stack has never held runtime data. A pre-auth setup interruption
-          // leaves an empty scaffold and remains eligible on the next run;
-          // established stacks have persisted database state and are never
-          // widened merely because the environment value is absent.
+          // installation, so it is the safe bootstrap administrator only when
+          // the configured datastore is absent or conclusively contains no
+          // durable administrator. Existing environment administrators and
+          // durable database administrators are always preserved.
           ...(seedBootstrapAdmin ? { PROPR_ADMIN_USERS: username } : {}),
-          ...(bootstrapIdentityEligible ? { GITHUB_USER_WHITELIST: username } : {}),
+          // Preserve every user-managed whitelist entry, adding the enrolled
+          // identity only when bootstrap enrollment needs it.
+          ...(bootstrapWhitelist ? { GITHUB_USER_WHITELIST: bootstrapWhitelist } : {}),
         },
         { overwrite: true }
       );
@@ -774,7 +787,9 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         ? "kept existing administrators"
         : seedBootstrapAdmin
           ? `bootstrap administrator: ${username}`
-          : "left administrators unchanged on existing stack";
+          : datastoreAdminInspection?.status === "uninspectable"
+            ? "left administrators unchanged because the datastore could not be inspected"
+            : "left administrators unchanged on existing stack";
       return {
         detail: `auth mode: relay (installation ${installationId}); ${adminDetail}`,
       };
@@ -834,13 +849,6 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       userChoseReinit = decision.reinitialize;
     }
 
-    // The durable database lives under data/. An empty (or not-yet-created)
-    // data directory proves that this root cannot already contain a durable
-    // administrator, even when a previous setup run already created .env and
-    // the scaffold directories. inspectStackInit is conservative on inspection
-    // errors, preserving the established-stack authorization boundary.
-    bootstrapIdentityEligible = !init.hasPersistedData;
-
     // Scaffold whenever the stack is incomplete — `.env` missing *or* a required
     // sub-directory (data/logs/repos) absent — or when the user explicitly chose
     // to (re)initialize a root. Keying off `initialized` (not just `envExists`)
@@ -879,6 +887,17 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       // --root targets this stack rather than an old saved root or the cwd.
       await actions.persistStackRoot(rootDir);
       settle("init-stack", { status: "skipped", detail: `using existing stack at ${rootDir} (.env preserved)` });
+    }
+
+    // Eligibility comes from the configured datastore itself, not scaffold
+    // artifacts. This recovers migrated databases with no durable administrator
+    // and respects DB_FILENAME values outside the default data directory. Any
+    // resolution or inspection failure remains ineligible (fail closed).
+    datastoreAdminInspection = await actions.inspectDatastoreAdministrators(rootDir);
+    bootstrapIdentityEligible =
+      datastoreAdminInspection.status === "absent" || datastoreAdminInspection.status === "no-admin";
+    if (datastoreAdminInspection.status === "uninspectable") {
+      log(`administrator inspection: ${datastoreAdminInspection.detail ?? "configured datastore is unavailable"}`);
     }
   } catch (error) {
     settle("init-stack", {

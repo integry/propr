@@ -14,8 +14,8 @@
  * and env — it does not start Docker.
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { resolveGithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
 import { resolveStackRoot } from "../../orchestrator/index.js";
 import type { ConfigManager } from "../../config/index.js";
@@ -81,12 +81,6 @@ export interface StackInitState {
   envExists: boolean;
   /** Per-subdir existence (data/, logs/, repos/). */
   dirs: Record<(typeof STACK_SUBDIRS)[number], boolean>;
-  /**
-   * True when data/ contains runtime state, or when it cannot be inspected
-   * safely. A scaffolded-but-never-started stack has an empty data directory;
-   * an established stack's durable database makes it non-empty.
-   */
-  hasPersistedData: boolean;
   /** True when .env and all expected sub-directories are present. */
   initialized: boolean;
 }
@@ -103,18 +97,106 @@ export function inspectStackInit(rootDir: string): StackInitState {
   for (const sub of STACK_SUBDIRS) {
     dirs[sub] = isDirectory(join(rootDir, sub));
   }
-  let hasPersistedData = false;
-  if (dirs.data) {
-    try {
-      hasPersistedData = readdirSync(join(rootDir, "data")).length > 0;
-    } catch {
-      // If permissions or an I/O error prevent inspection, assume established
-      // state. Setup must never widen authorization based on missing evidence.
-      hasPersistedData = true;
+  const initialized = envExists && STACK_SUBDIRS.every((sub) => dirs[sub]);
+  return { rootDir, envExists, dirs, initialized };
+}
+
+export type DatastoreAdminStatus = "absent" | "no-admin" | "has-admin" | "uninspectable";
+
+/** Result of inspecting the configured SQLite datastore for a durable administrator. */
+export interface DatastoreAdminInspection {
+  status: DatastoreAdminStatus;
+  /** Host path inspected, when the configured path could be resolved. */
+  databasePath?: string;
+  /** Actionable diagnostic when inspection could not be completed safely. */
+  detail?: string;
+}
+
+/** Container data locations used by the CLI launcher and production launcher. */
+const CONTAINER_DATA_DIRS = ["/usr/src/app/data", "/app/data"] as const;
+
+/**
+ * Resolve DB_FILENAME to the host path setup can inspect. Relative paths use
+ * the stack root, matching the app container's working directory. The two
+ * canonical container data mounts map back to the stack's host data directory;
+ * other absolute paths are already host-resolvable paths.
+ */
+function resolveDatastorePath(rootDir: string, configuredPath: string | undefined): string {
+  const value = configuredPath?.trim() || "./data/propr.sqlite";
+  if (!isAbsolute(value)) return resolve(rootDir, value);
+
+  const normalized = normalize(value);
+  for (const containerDataDir of CONTAINER_DATA_DIRS) {
+    const childPath = relative(containerDataDir, normalized);
+    const outsideDataDir =
+      childPath === ".." || childPath.startsWith(`..${sep}`) || isAbsolute(childPath);
+    if (!outsideDataDir) {
+      return resolve(rootDir, "data", childPath);
     }
   }
-  const initialized = envExists && STACK_SUBDIRS.every((sub) => dirs[sub]);
-  return { rootDir, envExists, dirs, hasPersistedData, initialized };
+  return normalized;
+}
+
+/**
+ * Inspect the configured SQLite datastore without creating or migrating it.
+ * Missing databases and databases conclusively lacking a durable administrator
+ * are bootstrap-eligible. Every resolution, I/O, schema, and query failure is
+ * reported as uninspectable so callers can fail closed.
+ */
+export async function inspectDatastoreAdministrators(rootDir: string): Promise<DatastoreAdminInspection> {
+  let databasePath: string;
+  try {
+    databasePath = resolveDatastorePath(rootDir, readEnvVars(rootDir).DB_FILENAME);
+  } catch (error) {
+    return {
+      status: "uninspectable",
+      detail: `could not resolve DB_FILENAME: ${(error as Error).message}`,
+    };
+  }
+
+  try {
+    const stat = statSync(databasePath);
+    if (!stat.isFile()) {
+      return { status: "uninspectable", databasePath, detail: "configured datastore is not a regular file" };
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { status: "absent", databasePath };
+    }
+    return {
+      status: "uninspectable",
+      databasePath,
+      detail: `could not inspect configured datastore: ${(error as Error).message}`,
+    };
+  }
+
+  let database: import("node:sqlite").DatabaseSync | undefined;
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    database = new DatabaseSync(databasePath, { readOnly: true, timeout: 5_000 });
+    const membersTable = database.prepare(
+      "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'instance_members' LIMIT 1"
+    ).get();
+    if (!membersTable) return { status: "no-admin", databasePath };
+
+    const durableAdmin = database.prepare(
+      "SELECT 1 AS found FROM instance_members WHERE role = 'admin' LIMIT 1"
+    ).get();
+    return { status: durableAdmin ? "has-admin" : "no-admin", databasePath };
+  } catch (error) {
+    return {
+      status: "uninspectable",
+      databasePath,
+      detail: `could not query configured datastore: ${(error as Error).message}`,
+    };
+  } finally {
+    try {
+      database?.close();
+    } catch {
+      // The read query already produced a conclusive result; closing the
+      // read-only handle cannot widen authorization and needs no retry here.
+    }
+  }
 }
 
 /** Convenience predicate over {@link inspectStackInit}. */
