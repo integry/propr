@@ -229,10 +229,10 @@ export async function listTasks(
 }
 
 /**
- * Stops a running task by cancelling it.
+ * Stops a running task.
  *
- * This function sends a cancellation request to the backend to stop
- * a task that is currently in progress.
+ * This function sends a stop request to the backend for a task that is
+ * currently in progress.
  *
  * @param taskId - The unique identifier of the task to stop.
  * @param client - Optional ApiClient instance. If not provided, one will be created.
@@ -253,7 +253,7 @@ export async function stopTask(
 ): Promise<StopTaskResponse> {
   const apiClient = client ?? (await createApiClient());
 
-  const endpoint = `/api/task/${encodeURIComponent(taskId)}/cancel`;
+  const endpoint = `/api/task/${encodeURIComponent(taskId)}/stop`;
 
   const response = await apiClient.post<StopTaskResponse>(endpoint);
 
