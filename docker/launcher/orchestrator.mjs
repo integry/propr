@@ -246,6 +246,11 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const network = overrides.network ?? env.PROPR_NETWORK ?? `${stack}-net`;
     const envFileLocal = overrides.envFileLocal ?? env.PROPR_LAUNCHER_ENV_FILE ?? '/app/.env';
     const envFileHost = overrides.envFileHost ?? env.PROPR_ENV_FILE;
+    // NODE_ENV is special: Docker receives it from the stack's --env-file, not
+    // from the CLI/launcher process environment. Inspect that exact source so a
+    // developer's shell NODE_ENV cannot accidentally describe (or alter) the
+    // packaged container runtime.
+    const nodeEnv = readEnvFile(envFileLocal).NODE_ENV || undefined;
 
     // value precedence: explicit override → process env → .env file
     const get = (name) => env[name] !== undefined ? env[name] : envFileValueFrom(envFileLocal, name) || undefined;
@@ -330,7 +335,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         (get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId))?.replace(/\/+$/, '') || undefined;
 
     return Object.freeze({
-        stack, network, envFileLocal, envFileHost,
+        stack, network, envFileLocal, envFileHost, nodeEnv,
         validateHostPaths: overrides.validateHostPaths === true,
         hostData, hostLogs, hostRepos, managedCredentialsDir,
         apiPort, uiPort, docsPort, redisExternalPort, docsEnabled,
@@ -850,10 +855,24 @@ function imageTagForService(cfg, service) {
     return cfg.images.app;
 }
 
+function packagedRuntimeModeError(cfg) {
+    if (!cfg.nodeEnv || cfg.nodeEnv.trim().toLowerCase() === 'production') return null;
+    return `The existing stack .env sets NODE_ENV=${cfg.nodeEnv}, but packaged ProPR services must run with NODE_ENV=production. `
+        + 'This file may contain the old generated development default or an intentional user setting, so ProPR will not overwrite it silently. '
+        + 'Review the setting, change NODE_ENV to production in the stack .env, then run `propr check` and start again. '
+        + 'Source-development commands continue to support NODE_ENV=development outside the packaged launcher.';
+}
+
 function appBaseArgs(cfg) {
+    const runtimeModeError = packagedRuntimeModeError(cfg);
+    if (runtimeModeError) throw new Error(runtimeModeError);
     return [
         // --env-file is resolved by the docker CLI (inside the launcher / on host).
         '--env-file', cfg.envFileLocal,
+        // Published images default to production, but make the launcher contract
+        // explicit after --env-file so a missing value cannot regress it. A
+        // conflicting existing value is rejected above rather than overwritten.
+        '-e', 'NODE_ENV=production',
         '-v', `${cfg.hostLogs}:/usr/src/app/logs`,
         '-v', `${cfg.hostData}:/usr/src/app/data`,
         '-v', '/var/run/docker.sock:/var/run/docker.sock',
@@ -1428,6 +1447,9 @@ export function getServiceLogs(cfg, service, { follow = false, tail = 'all', std
 export function validateEnv(cfg) {
     const errors = [];
     const warnings = [];
+
+    const runtimeModeError = packagedRuntimeModeError(cfg);
+    if (runtimeModeError) errors.push(runtimeModeError);
 
     // Docker name constraint — the stack name is embedded in container, volume
     // and network names, so reject it early instead of failing mid-startup.

@@ -16,6 +16,8 @@ export interface OrchestratorConfig {
   readonly network: string;
   readonly envFileLocal: string;
   readonly envFileHost?: string;
+  /** Explicit NODE_ENV read from the stack env file, if present. */
+  readonly nodeEnv?: string;
   readonly validateHostPaths: boolean;
   readonly hostData?: string;
   readonly hostLogs?: string;

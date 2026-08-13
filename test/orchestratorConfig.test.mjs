@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -87,6 +87,35 @@ test('process env values override stack .env values', () => {
 
   assert.equal(cfg.apiPort, '4500');
   assert.equal(cfg.docsEnabled, false);
+});
+
+test('packaged app services always receive production mode after the env file', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  writeFileSync(join(rootDir, '.env'), 'NODE_ENV=production\n');
+  const cfg = resolveHostConfig({ rootDir, env: { NODE_ENV: 'development' }, manifestPath });
+
+  assert.equal(cfg.nodeEnv, 'production', 'runtime mode must come from the stack env file');
+  for (const service of ['daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']) {
+    const { args } = buildServiceSpec(cfg, service);
+    assert.deepEqual(envValues(args, 'NODE_ENV'), ['production'], service);
+    assert.ok(args.indexOf('NODE_ENV=production') > args.indexOf('--env-file'), service);
+  }
+});
+
+test('legacy development-mode stacks are preserved and blocked with upgrade guidance', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envPath = join(rootDir, '.env');
+  writeFileSync(envPath, 'NODE_ENV=development\nSESSION_SECRET=user-managed\n');
+  const cfg = resolveHostConfig({ rootDir, env: {}, manifestPath });
+
+  assert.equal(cfg.nodeEnv, 'development');
+  assert.match(validateEnv(cfg).errors.join('\n'), /will not overwrite it silently/);
+  assert.match(validateEnv(cfg).errors.join('\n'), /change NODE_ENV to production/);
+  assert.throws(() => buildServiceSpec(cfg, 'api'), /packaged ProPR services must run with NODE_ENV=production/);
+  assert.equal(
+    readFileSync(envPath, 'utf8'),
+    'NODE_ENV=development\nSESSION_SECRET=user-managed\n',
+  );
 });
 
 test('empty process env values override stack .env values before defaults apply', () => {

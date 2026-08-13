@@ -34,6 +34,20 @@ export function materializeSessionSecret(
   return template.replace(linePattern, `SESSION_SECRET=${secret}`);
 }
 
+/**
+ * The repository template is intentionally development-oriented for source
+ * checkouts. A stack created by the packaged CLI runs published images instead,
+ * so materialize their runtime mode separately rather than changing the source
+ * development template.
+ */
+export function materializePackagedRuntimeMode(template: string): string {
+  const linePattern = /^NODE_ENV=.*$/m;
+  if (!linePattern.test(template)) {
+    throw new Error("Cannot scaffold stack: .env.example does not define NODE_ENV");
+  }
+  return template.replace(linePattern, "NODE_ENV=production");
+}
+
 export interface DetectedCred {
   envKey: string;
   path: string;
@@ -117,6 +131,8 @@ export interface InitStackResult {
   detected: DetectedCred[];
   credentialsAppended: boolean;
   pendingCredentials: DetectedCred[];
+  /** Upgrade guidance for a preserved environment that cannot be migrated safely. */
+  runtimeModeWarning?: string;
 }
 
 export interface InitStackDependencies {
@@ -165,6 +181,14 @@ export async function scaffoldStack(
     secureExistingPrivateFile(envPath);
     envContent = readFileSync(envPath, "utf-8");
     result.envSkipped = true;
+    const nodeEnv = envContent.match(/^\s*(?:export\s+)?NODE_ENV\s*=\s*([^#\r\n]*)/m)?.[1]
+      ?.trim()
+      .replace(/^["']|["']$/g, "");
+    if (nodeEnv && nodeEnv.toLowerCase() !== "production") {
+      result.runtimeModeWarning =
+        `Existing .env sets NODE_ENV=${nodeEnv}. Packaged ProPR stacks require NODE_ENV=production. ` +
+        "Review the setting and change it manually before starting; the existing .env was not modified.";
+    }
   } else {
     const example = resolveEnvExample();
     if (!example) {
@@ -172,7 +196,9 @@ export async function scaffoldStack(
         "Could not locate .env.example. Run `npm run build` in packages/cli, or run from a ProPR source checkout."
       );
     }
-    envContent = materializeSessionSecret(readFileSync(example, "utf-8"));
+    envContent = materializePackagedRuntimeMode(
+      materializeSessionSecret(readFileSync(example, "utf-8")),
+    );
     if (options.force && envExists) {
       secureExistingPrivateFile(envPath);
       const bakPath = `${envPath}.bak`;
@@ -244,6 +270,9 @@ function displayResult(result: InitStackResult): void {
     console.log("Created .env from .env.example");
   } else if (result.envSkipped) {
     console.log("Kept existing .env (use --force to overwrite)");
+  }
+  if (result.runtimeModeWarning) {
+    console.warn(`Warning: ${result.runtimeModeWarning}`);
   }
   if (result.detected.length > 0) {
     console.log("");

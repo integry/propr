@@ -36,7 +36,7 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `PROPR_WEBHOOK_RATE_LIMIT_MAX` / `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS` | `300` / `60000` | Per-client quota for direct webhook requests, applied before body parsing and signature verification. | Optional tuning in direct-webhook mode. |
 | `PROPR_TRUSTED_PROXY_PEERS` | Unset; launcher-managed tunnel: reserved `self` mode | Comma-separated immediate proxy IPs, CIDRs, or `proxy-addr` names whose forwarded client IP and protocol are trusted. Unset ignores forwarding headers. The launcher injects `self` only for its managed sidecar sharing the API network namespace. Its broad `uniquelocal` name is accepted only when `API_PORT` is explicitly loopback-bound. | Reverse-proxy deployments; injected automatically for the managed tunnel. |
 | `LOG_LEVEL` | `info` | Log verbosity across services. | Optional. |
-| `NODE_ENV` | `development` | Node environment; use `production` on servers. | Optional. |
+| `NODE_ENV` | `development` in the source template; `production` in stacks scaffolded by the packaged CLI | Packaged API, daemon, and worker containers require `production`. Source-development commands may use `development`. Existing files are preserved during upgrades; if an older generated stack still says `development`, review it and change it to `production` before running `propr start`. | Optional. |
 | `DB_FILENAME` | `./data/propr.sqlite` | Path to the SQLite database file (created if it doesn't exist). | Optional. |
 
 ## Event Intake
