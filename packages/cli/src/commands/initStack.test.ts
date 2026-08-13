@@ -12,7 +12,11 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { materializePackagedRuntimeMode, scaffoldStack } from "./initStack.js";
+import {
+  materializePackagedPortBindings,
+  materializePackagedRuntimeMode,
+  scaffoldStack,
+} from "./initStack.js";
 
 function mode(targetPath: string): number {
   return lstatSync(targetPath).mode & 0o777;
@@ -76,6 +80,8 @@ test("stack generation includes detected credentials in the published environmen
     const envLines = readFileSync(join(root, ".env"), "utf-8").split(/\r?\n/);
     assert.ok(envLines.includes("NODE_ENV=production"));
     assert.ok(!envLines.includes("NODE_ENV=development"));
+    assert.ok(envLines.includes("API_PORT=127.0.0.1:4000"));
+    assert.ok(envLines.includes("UI_PORT=127.0.0.1:5173"));
     assert.ok(envLines.includes(`HOST_CLAUDE_DIR=${join(home, ".claude")}`));
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
@@ -83,6 +89,21 @@ test("stack generation includes detected credentials in the published environmen
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+test("packaged port materialization rewrites only legacy defaults", () => {
+  const sourceTemplate = "API_PORT=4000\nUI_PORT=5173\n";
+
+  assert.equal(
+    materializePackagedPortBindings(sourceTemplate),
+    "API_PORT=127.0.0.1:4000\nUI_PORT=127.0.0.1:5173\n",
+  );
+  assert.equal(
+    materializePackagedPortBindings(
+      "API_PORT=0.0.0.0:4400\nUI_PORT=127.0.0.1:55173\n",
+    ),
+    "API_PORT=0.0.0.0:4400\nUI_PORT=127.0.0.1:55173\n",
+  );
 });
 
 test("packaged runtime materialization leaves the source template reusable", () => {
@@ -102,7 +123,11 @@ test("packaged runtime materialization leaves the source template reusable", () 
 test("stack scaffolding preserves an existing runtime mode and surfaces upgrade guidance", async () => {
   const root = mkdtempSync(join(tmpdir(), "propr-private-stack-"));
   try {
-    const existing = "SESSION_SECRET=user-managed\nNODE_ENV=development\n";
+    const existing =
+      "SESSION_SECRET=user-managed\n" +
+      "NODE_ENV=development\n" +
+      "API_PORT=0.0.0.0:4400\n" +
+      "UI_PORT=127.0.0.1:55173\n";
     writeFileSync(join(root, ".env"), existing);
 
     const result = await scaffoldStack(
