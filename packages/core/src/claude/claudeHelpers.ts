@@ -161,13 +161,10 @@ export async function setWorktreeOwnership(worktreePath: string, issueNumber: nu
     try {
         const ownershipTargets = await getWorktreeOwnershipTargets(worktreePath);
         const result = await executeDockerCommand('sudo', ['chown', '-R', '1000:1000', '--', ...ownershipTargets], { timeout: 10000 });
-        if (result.exitCode !== 0) {
-            throw new Error(result.stderr || `chown exited with code ${result.exitCode}`);
-        }
+        if (result.exitCode !== 0) throw new Error(result.stderr || `chown exited with code ${result.exitCode}`);
         logger.debug({ issueNumber, worktreePath, ownershipTargets }, 'Set worktree ownership to UID 1000 for container compatibility');
     } catch (chownError) {
-        const error = chownError as Error;
-        logger.warn({ issueNumber, worktreePath, error: error.message }, 'Failed to set worktree ownership - container may have permission issues');
+        logger.warn({ issueNumber, worktreePath, error: (chownError as Error).message }, 'Failed to set worktree ownership - container may have permission issues');
     }
 }
 
@@ -207,9 +204,7 @@ export function verifyWorktreeStructure(worktreePath: string, issueNumber: numbe
 }
 
 export function verifyWorktreePostExecution(
-    worktreePath: string,
-    issueNumber: number,
-    worktreeGitContent: string | null
+    worktreePath: string, issueNumber: number, worktreeGitContent: string | null
 ): void {
     try {
         const postExecGitPath = path.join(worktreePath, '.git');
