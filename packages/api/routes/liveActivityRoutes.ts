@@ -221,6 +221,34 @@ async function filterLivePage(
   return items;
 }
 
+interface PersistedQueueCandidate {
+  job: Job;
+  state: string;
+  persisted?: Record<string, unknown>;
+}
+
+function appendPersistedQueueCandidate(
+  candidate: PersistedQueueCandidate,
+  items: LiveActivityItem[],
+  livePersistedTaskIds: Set<string>,
+): boolean {
+  const { job, state, persisted } = candidate;
+  if (!persisted || !jobMatchesPersistedExecution(job, persisted)) return false;
+  const persistedTaskId = String(persisted.task_id);
+  if (!livePersistedTaskIds.has(persistedTaskId)) {
+    items.push({
+      id: persistedTaskId,
+      type: 'task',
+      label: taskLabel(persisted),
+      repository: String(persisted.repository ?? 'unknown/unknown'),
+      status: queueStatus(state),
+      createdAt: asIso(persisted.created_at),
+    });
+    livePersistedTaskIds.add(persistedTaskId);
+  }
+  return true;
+}
+
 export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
   async function getLiveActivity(req: Request, res: Response): Promise<void> {
     try {
@@ -288,21 +316,11 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
         const importKey = queuedTaskImportAssociationKey(refreshedJob);
         const persisted = persistedExecutions.get(authoritativeTaskId)
           ?? (importKey ? persistedTaskImports.get(importKey) : undefined);
-        if (persisted && jobMatchesPersistedExecution(refreshedJob, persisted)) {
-          const persistedTaskId = String(persisted.task_id);
-          if (!livePersistedTaskIds.has(persistedTaskId)) {
-            items.push({
-              id: persistedTaskId,
-              type: 'task',
-              label: taskLabel(persisted),
-              repository: String(persisted.repository ?? 'unknown/unknown'),
-              status: queueStatus(refreshedState),
-              createdAt: asIso(persisted.created_at),
-            });
-            livePersistedTaskIds.add(persistedTaskId);
-          }
-          continue;
-        }
+        if (appendPersistedQueueCandidate(
+          { job: refreshedJob, state: refreshedState, persisted },
+          items,
+          livePersistedTaskIds,
+        )) continue;
         items.push({
           id: authoritativeTaskId,
           type: 'task',

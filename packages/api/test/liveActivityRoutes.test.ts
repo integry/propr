@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- Live-activity route scenarios share one in-memory schema and module mock. */
 import assert from 'node:assert/strict';
 import { afterEach, mock, test } from 'node:test';
 import type { Request, Response } from 'express';
