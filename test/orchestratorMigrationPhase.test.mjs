@@ -9,6 +9,7 @@ import {
   resolveConfig,
   runMigrationPhaseAsync,
   startService,
+  startServiceAsync,
   startStack,
   startStackAsync,
 } from '../docker/launcher/orchestrator.mjs';
@@ -108,8 +109,8 @@ exit 0
   };
 }
 
-function config(overrides = {}) {
-  return resolveConfig({}, {
+function config(overrides = {}, env = {}) {
+  return resolveConfig(env, {
     manifestPath,
     envFileLocal: '/stack/.env',
     envFileHost: '/stack/.env',
@@ -144,6 +145,33 @@ test('full stack startup completes one migration phase before creating services'
   }
 });
 
+test('migration owner argv contains only its data bind and forced migration runtime', async () => {
+  const fake = installFakeDocker();
+  try {
+    const privilegedEnv = {
+      HOST_GH_PRIVATE_KEY: '/stack/github-app.pem',
+      HOST_CLAUDE_DIR: '/stack/claude',
+      HOST_CODEX_DIR: '/stack/codex',
+      HOST_ANTIGRAVITY_DIR: '/stack/antigravity',
+      HOST_OPENCODE_XDG_DIR: '/stack/opencode-config',
+      HOST_OPENCODE_DATA_DIR: '/stack/opencode-data',
+      HOST_VIBE_DIR: '/stack/vibe',
+      HOST_VIBE_PROMPT_CACHE_DIR: '/stack/vibe-prompts',
+      PROPR_UI_TUNNEL_TOKEN: 'sensitive-tunnel-token',
+    };
+
+    await runMigrationPhaseAsync(config({}, privilegedEnv));
+
+    const run = fake.lines().find(line => line.startsWith('run --rm --init --name propr-migrate '));
+    assert.equal(
+      run,
+      'run --rm --init --name propr-migrate --network propr-net --label propr.stack=propr --label propr.service=migrate --env-file /stack/.env -e NODE_ENV=production -e PROPR_CONTAINERIZED=1 -e PROPR_MIGRATIONS_PREAPPLIED=0 -v /stack/data:/usr/src/app/data propr/app:0.8.14 node dist/src/migrate.js',
+    );
+  } finally {
+    fake.restore();
+  }
+});
+
 test('migration failure aborts startup before any service container is created', () => {
   const fake = installFakeDocker();
   try {
@@ -161,7 +189,7 @@ test('migration failure aborts startup before any service container is created',
   }
 });
 
-test('direct database service start overrides a stale env-file marker with zero', () => {
+test('direct database service start with no live peers forces the migration marker to zero', () => {
   const fake = installFakeDocker();
   const root = mkdtempSync(join(tmpdir(), 'propr-direct-service-env-'));
   const envFile = join(root, '.env');
@@ -171,11 +199,59 @@ test('direct database service start overrides a stale env-file marker with zero'
     startService(config({ envFileLocal: envFile, envFileHost: envFile }), 'worker', {
       pull: false,
       migrationsPreapplied: true,
+      migrationHandoff: Symbol('migrations-preapplied-handoff'),
     });
     const run = fake.lines().find(line => line.startsWith('run -d '));
     assert.ok(run);
     assert.match(run, new RegExp(`--env-file ${envFile} .*PROPR_MIGRATIONS_PREAPPLIED=0`));
     assert.doesNotMatch(run, /PROPR_MIGRATIONS_PREAPPLIED=1/);
+  } finally {
+    fake.restore();
+  }
+});
+
+test('async direct database service start with no live peers is allowed', async () => {
+  const fake = installFakeDocker();
+  try {
+    await startServiceAsync(config(), 'api', { pull: false });
+
+    const run = fake.lines().find(line => line.startsWith('run -d '));
+    assert.ok(run);
+    assert.match(run, /propr\.service=api/);
+    assert.match(run, /PROPR_MIGRATIONS_PREAPPLIED=0/);
+  } finally {
+    fake.restore();
+  }
+});
+
+test('direct database service start refuses live peers including its replacement target', () => {
+  const fake = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_RUNNING_SERVICES = 'daemon,worker';
+    assert.throws(
+      () => startService(config(), 'worker', {
+        pull: false,
+        migrationHandoff: Symbol('migrations-preapplied-handoff'),
+      }),
+      /Refusing to start propr-worker directly while database services are running \(propr-daemon, propr-worker\).*propr start --restart.*left untouched/,
+    );
+    assert.equal(fake.lines().some(line => line.startsWith('run ')), false);
+    assert.equal(fake.lines().some(line => line.startsWith('rm ')), false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test('async direct database service start refuses live peers without replacing containers', async () => {
+  const fake = installFakeDocker();
+  try {
+    process.env.DOCKER_FAKE_RUNNING_SERVICES = 'analysis-worker';
+    await assert.rejects(
+      startServiceAsync(config(), 'api', { pull: false }),
+      /Refusing to start propr-api directly while database services are running \(propr-analysis-worker\).*propr start --restart.*left untouched/,
+    );
+    assert.equal(fake.lines().some(line => line.startsWith('run ')), false);
+    assert.equal(fake.lines().some(line => line.startsWith('rm ')), false);
   } finally {
     fake.restore();
   }

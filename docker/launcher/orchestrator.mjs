@@ -901,11 +901,26 @@ function appSpec(cfg, command, extraArgs = []) {
 }
 
 function migrationSpec(cfg) {
-    // Force migration ownership even if an internal handoff marker was left in
-    // the user-managed env file. appSpec places this override after --env-file.
-    return appSpec(cfg, ['dist/src/migrate.js'], [
-        '-e', 'PROPR_MIGRATIONS_PREAPPLIED=0',
-    ]);
+    const runtimeModeError = packagedRuntimeModeError(cfg);
+    if (runtimeModeError) throw new Error(runtimeModeError);
+    return {
+        image: cfg.images.app,
+        // The migration command imports only the database connection module.
+        // Keep its container equally narrow: the user-managed env file is
+        // unavoidable because it supplies DB_FILENAME, but the owner needs no
+        // app credentials, Docker access, repositories, Redis, tunnel state,
+        // worktrees, or persistent log directory. These forced values follow
+        // --env-file so stale user settings cannot change the packaged runtime
+        // or opt this sole owner out of applying migrations.
+        args: [
+            '--env-file', cfg.envFileLocal,
+            '-e', 'NODE_ENV=production',
+            '-e', 'PROPR_CONTAINERIZED=1',
+            '-e', 'PROPR_MIGRATIONS_PREAPPLIED=0',
+            '-v', `${cfg.hostData}:/usr/src/app/data`,
+        ],
+        command: ['node', 'dist/src/migrate.js'],
+    };
 }
 
 function withMigrationPolicy(spec, service, migrationHandoff) {
@@ -1065,7 +1080,7 @@ export function buildServiceSpec(cfg, service) {
  */
 export function startService(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff } = {}) {
     const name = `${cfg.stack}-${service}`;
-    assertNoLiveMigrationOwner(cfg, service);
+    assertDatabaseServiceCanStart(cfg, service, migrationHandoff);
     if (pull) ensureServiceImage(cfg, service, onLog, { freshnessCache });
     const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
     removeIfExists(cfg, name, onLog);
@@ -1182,6 +1197,19 @@ function assertNoLiveMigrationOwner(cfg, service) {
     }
 }
 
+function directDatabaseStartError(cfg, service, running) {
+    return new Error(`Refusing to start ${cfg.stack}-${service} directly while database services are running (${running.join(', ')}). Restart the full stack instead (for the CLI, run \`propr start --restart\`); existing containers were left untouched.`);
+}
+
+function assertDatabaseServiceCanStart(cfg, service, migrationHandoff) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    assertNoLiveMigrationOwner(cfg, service);
+    if (migrationHandoff === MIGRATIONS_PREAPPLIED_HANDOFF) return;
+
+    const running = runningDatabaseServiceNames(cfg);
+    if (running.length > 0) throw directDatabaseStartError(cfg, service, running);
+}
+
 function assertMigrationCanStart(cfg) {
     const running = runningDatabaseServiceNames(cfg);
     if (running.length > 0) {
@@ -1263,12 +1291,26 @@ async function assertNoLiveMigrationOwnerAsync(cfg, service) {
     }
 }
 
-async function assertMigrationCanStartAsync(cfg) {
+async function runningDatabaseServiceNamesAsync(cfg) {
     const running = [];
     for (const service of DATABASE_SERVICES) {
         const name = `${cfg.stack}-${service}`;
         if (await containerRunningAsync(cfg, name)) running.push(name);
     }
+    return running;
+}
+
+async function assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    await assertNoLiveMigrationOwnerAsync(cfg, service);
+    if (migrationHandoff === MIGRATIONS_PREAPPLIED_HANDOFF) return;
+
+    const running = await runningDatabaseServiceNamesAsync(cfg);
+    if (running.length > 0) throw directDatabaseStartError(cfg, service, running);
+}
+
+async function assertMigrationCanStartAsync(cfg) {
+    const running = await runningDatabaseServiceNamesAsync(cfg);
     if (running.length > 0) {
         throw new Error(`Refusing to run database migrations while database services are running (${running.join(', ')}). Stop the stack first (for the CLI, run \`propr stop\`) and retry; existing containers were left untouched.`);
     }
@@ -1349,7 +1391,7 @@ async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache } =
 /** Async mirror of startService. */
 export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff } = {}) {
     const name = `${cfg.stack}-${service}`;
-    await assertNoLiveMigrationOwnerAsync(cfg, service);
+    await assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff);
     if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache });
     const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
     await removeIfExistsAsync(cfg, name, onLog);
