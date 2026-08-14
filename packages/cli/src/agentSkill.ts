@@ -20,6 +20,11 @@ import {
 } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  directoryDescriptorAccess,
+  withDirectoryDescriptorPath,
+  type DirectoryDescriptorAccess,
+} from "./utils/directoryDescriptor.js";
 
 export const AGENT_SKILL_TARGETS = ["codex", "claude", "antigravity", "opencode", "vibe"] as const;
 export type AgentSkillTarget = (typeof AGENT_SKILL_TARGETS)[number];
@@ -416,28 +421,41 @@ export function inspectAgentSkills(
 interface PinnedDirectory {
   fd: number;
   path: string;
+  access: DirectoryDescriptorAccess;
 }
 
-function descriptorPath(fd: number): string {
-  for (const root of ["/proc/self/fd", "/dev/fd"]) {
-    if (existsSync(root)) return join(root, String(fd));
+function descriptorRoot(access: DirectoryDescriptorAccess): string {
+  const candidates = access === "child-paths" ? ["/proc/self/fd", "/dev/fd"] : ["/dev/fd"];
+  for (const root of candidates) {
+    if (existsSync(root)) return root;
   }
   throw new Error("safe directory-handle publication is not supported on this platform");
 }
 
+function descriptorPath(root: string, fd: number): string {
+  return join(root, String(fd));
+}
+
+function withPinnedPath<T>(directory: PinnedDirectory, operation: (base: string) => T): T {
+  return withDirectoryDescriptorPath(directory.path, directory.access, operation);
+}
+
 function openDirectoryNoFollow(path: string): PinnedDirectory {
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+  const access = directoryDescriptorAccess();
+  const root = descriptorRoot(access);
   let fd = openSync(sep, flags);
   let visiblePath: string = sep;
   try {
     for (const component of resolve(path).split(sep).filter(Boolean)) {
-      const next = openSync(join(descriptorPath(fd), component), flags);
+      const current = { fd, path: descriptorPath(root, fd), access };
+      const next = withPinnedPath(current, (base) => openSync(join(base, component), flags));
       closeSync(fd);
       fd = next;
       visiblePath = join(visiblePath, component);
-      assertVisibleDirectoryIdentity(visiblePath, { fd, path: descriptorPath(fd) });
+      assertVisibleDirectoryIdentity(visiblePath, { fd, path: descriptorPath(root, fd), access });
     }
-    return { fd, path: descriptorPath(fd) };
+    return { fd, path: descriptorPath(root, fd), access };
   } catch (error) {
     closeSync(fd);
     throw error;
@@ -446,8 +464,8 @@ function openDirectoryNoFollow(path: string): PinnedDirectory {
 
 function openPinnedChild(parent: PinnedDirectory, name: string): PinnedDirectory {
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-  const fd = openSync(join(parent.path, name), flags);
-  return { fd, path: descriptorPath(fd) };
+  const fd = withPinnedPath(parent, (base) => openSync(join(base, name), flags));
+  return { fd, path: descriptorPath(dirname(parent.path), fd), access: parent.access };
 }
 
 function closePinnedDirectory(directory: PinnedDirectory): void {
@@ -472,7 +490,7 @@ function assertVisibleEntryIdentity(parent: PinnedDirectory, visibleParent: stri
   assertVisibleDirectoryIdentity(visibleParent, parent);
   const visiblePath = join(visibleParent, name);
   const visible = lstatIfExists(visiblePath);
-  const pinned = lstatIfExists(join(parent.path, name));
+  const pinned = withPinnedPath(parent, (base) => lstatIfExists(join(base, name)));
   if (!visible || !pinned || visible.isSymbolicLink() || pinned.isSymbolicLink() || !sameFilesystemObject(visible, pinned)) {
     throw new Error(`target changed while it was being used: ${visiblePath}`);
   }
@@ -499,7 +517,7 @@ function ensureProviderSkillsParent(location: AgentSkillLocation): PinnedDirecto
         // pathname races after the check, a replacement symlink is never used.
         assertVisibleDirectoryIdentity(visibleCurrent, current);
         try {
-          mkdirSync(join(current.path, component), { recursive: false, mode: 0o700 });
+          withPinnedPath(current, (base) => mkdirSync(join(base, component), { recursive: false, mode: 0o700 }));
           created = true;
         } catch (mkdirError) {
           if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
@@ -546,7 +564,9 @@ function uniqueSibling(
     assertVisibleDirectoryIdentity(visibleParent, parent);
     const suffix = attempt === 0 ? "" : `-${attempt}`;
     const name = `.propr.${label}-${stamp}${suffix}`;
-    if (!lstatIfExists(join(parent.path, name))) return { name, path: join(visibleParent, name) };
+    if (!withPinnedPath(parent, (base) => lstatIfExists(join(base, name)))) {
+      return { name, path: join(visibleParent, name) };
+    }
   }
   throw new Error(`could not allocate ${label} path beside ${join(visibleParent, "propr")}`);
 }
@@ -563,7 +583,7 @@ function createPinnedSiblingDirectory(
     let directory: PinnedDirectory | undefined;
     let created = false;
     try {
-      mkdirSync(join(parent.path, candidate.name), { recursive: false, mode: 0o700 });
+      withPinnedPath(parent, (base) => mkdirSync(join(base, candidate.name), { recursive: false, mode: 0o700 }));
       created = true;
       directory = openPinnedChild(parent, candidate.name);
       assertVisibleDirectoryIdentity(candidate.path, directory);
@@ -583,12 +603,12 @@ function renamePinnedEntry(
   newName: string
 ): void {
   assertVisibleEntryIdentity(parent, visibleParent, oldName);
-  renameSync(join(parent.path, oldName), join(parent.path, newName));
+  withPinnedPath(parent, (base) => renameSync(join(base, oldName), join(base, newName)));
   assertVisibleDirectoryIdentity(visibleParent, parent);
 }
 
 function removePinnedTree(parent: PinnedDirectory, name: string): void {
-  rmSync(join(parent.path, name), { recursive: true, force: true });
+  withPinnedPath(parent, (base) => rmSync(join(base, name), { recursive: true, force: true }));
 }
 
 function writeBundleContents(directory: PinnedDirectory, bundle: Bundle): void {
@@ -601,17 +621,18 @@ function writeBundleContents(directory: PinnedDirectory, bundle: Bundle): void {
       const name = separator === -1 ? entry.path : entry.path.slice(separator + 1);
       const entryParent = directories.get(parentPath);
       if (!entryParent) throw new Error(`bundle parent was not written before its child: ${entry.path}`);
-      const output = join(entryParent.path, name);
       if (entry.kind === "directory") {
-        mkdirSync(output, { recursive: false, mode: 0o700 });
+        withPinnedPath(entryParent, (base) => mkdirSync(join(base, name), { recursive: false, mode: 0o700 }));
         const child = openPinnedChild(entryParent, name);
         directories.set(entry.path, child);
         opened.push(child);
       } else {
-        writeFileSync(output, entry.content!, { mode: 0o600, flag: "wx" });
+        withPinnedPath(entryParent, (base) => writeFileSync(join(base, name), entry.content!, { mode: 0o600, flag: "wx" }));
       }
     }
-    writeFileSync(join(directory.path, MANAGED_FILE), managedMarkerContent(bundle.identity), { mode: 0o600, flag: "wx" });
+    withPinnedPath(directory, (base) =>
+      writeFileSync(join(base, MANAGED_FILE), managedMarkerContent(bundle.identity), { mode: 0o600, flag: "wx" })
+    );
   } finally {
     for (const openedDirectory of opened.reverse()) closePinnedDirectory(openedDirectory);
   }
@@ -625,8 +646,7 @@ function claimTargetDirectory(location: AgentSkillLocation, pinnedParent: Pinned
   let pinnedTarget: PinnedDirectory | undefined;
   try {
     assertVisibleDirectoryIdentity(parent, pinnedParent);
-    const targetThroughParent = join(pinnedParent.path, "propr");
-    mkdirSync(targetThroughParent, { recursive: false, mode: 0o700 });
+    withPinnedPath(pinnedParent, (base) => mkdirSync(join(base, "propr"), { recursive: false, mode: 0o700 }));
     pinnedTarget = openPinnedChild(pinnedParent, "propr");
 
     const visible = lstatIfExists(location.path);
@@ -646,8 +666,31 @@ function claimTargetDirectory(location: AgentSkillLocation, pinnedParent: Pinned
   }
 }
 
+function writePinnedFileExclusively(
+  directory: PinnedDirectory,
+  name: string,
+  content: string | Buffer,
+  temporaryLabel = "publish",
+  beforePublish?: () => void
+): void {
+  const temporary = `.propr.${temporaryLabel}-${process.pid}-${randomBytes(6).toString("hex")}`;
+  withPinnedPath(directory, (base) => {
+    try {
+      writeFileSync(join(base, temporary), content, { mode: 0o600, flag: "wx" });
+      beforePublish?.();
+      linkSync(join(base, temporary), join(base, name));
+    } finally {
+      try {
+        unlinkSync(join(base, temporary));
+      } catch {
+        // The temporary path may not have been created.
+      }
+    }
+  });
+}
+
 /** Publish through pinned, no-follow handles without replacing any entry. */
-function publishBundleExclusively(directory: PinnedDirectory, staged: PinnedDirectory, bundle: Bundle): void {
+function publishBundleExclusively(directory: PinnedDirectory, bundle: Bundle): void {
   const directories = new Map<string, PinnedDirectory>([["", directory]]);
   const opened: PinnedDirectory[] = [];
   try {
@@ -657,17 +700,16 @@ function publishBundleExclusively(directory: PinnedDirectory, staged: PinnedDire
       const name = separator === -1 ? entry.path : entry.path.slice(separator + 1);
       const parent = directories.get(parentPath);
       if (!parent) throw new Error(`bundle parent was not published before its child: ${entry.path}`);
-      const output = join(parent.path, name);
       if (entry.kind === "directory") {
-        mkdirSync(output, { mode: 0o700 });
+        withPinnedPath(parent, (base) => mkdirSync(join(base, name), { mode: 0o700 }));
         const child = openPinnedChild(parent, name);
         directories.set(entry.path, child);
         opened.push(child);
       } else {
-        linkSync(join(staged.path, ...entry.path.split("/")), output);
+        writePinnedFileExclusively(parent, name, entry.content!);
       }
     }
-    linkSync(join(staged.path, MANAGED_FILE), join(directory.path, MANAGED_FILE));
+    writePinnedFileExclusively(directory, MANAGED_FILE, managedMarkerContent(bundle.identity));
   } finally {
     for (const openedDirectory of opened.reverse()) closePinnedDirectory(openedDirectory);
   }
@@ -680,20 +722,10 @@ function managedMarkerContent(identity: string): string {
 
 /** Add a fully-written marker through a held target without following a raced replacement. */
 function writeManagedMarkerAtomically(directory: PinnedDirectory, visiblePath: string, identity: string): void {
-  const markerPath = join(directory.path, MANAGED_FILE);
-  const temporary = join(directory.path, `.propr.marker-${process.pid}-${randomBytes(6).toString("hex")}`);
-  try {
+  assertVisibleDirectoryIdentity(visiblePath, directory);
+  writePinnedFileExclusively(directory, MANAGED_FILE, managedMarkerContent(identity), "marker", () => {
     assertVisibleDirectoryIdentity(visiblePath, directory);
-    writeFileSync(temporary, managedMarkerContent(identity), { mode: 0o600, flag: "wx" });
-    assertVisibleDirectoryIdentity(visiblePath, directory);
-    linkSync(temporary, markerPath);
-  } finally {
-    try {
-      unlinkSync(temporary);
-    } catch {
-      // The temporary path may not have been created.
-    }
-  }
+  });
 }
 
 function operationFailure(status: AgentSkillStatus, action: "refused" | "failed", detail: string): AgentSkillOperationResult {
@@ -763,7 +795,7 @@ function installAgentSkillWithoutOverwrite(
     try {
       assertVisibleDirectoryIdentity(parent, pinnedParent);
       assertVisibleDirectoryIdentity(location.path, claimed);
-      publishBundleExclusively(claimed, staged.directory, bundle);
+      publishBundleExclusively(claimed, bundle);
     } catch (error) {
       return preservedFailure(
         inspectLocation(location, bundle),
@@ -877,7 +909,7 @@ function installAgentSkillAtLocation(
     try {
       assertVisibleDirectoryIdentity(parent, pinnedParent);
       assertVisibleDirectoryIdentity(location.path, claimed);
-      publishBundleExclusively(claimed, temporary.directory, bundle);
+      publishBundleExclusively(claimed, bundle);
     } catch (error) {
       return preservedFailure(
         inspectLocation(location, bundle),

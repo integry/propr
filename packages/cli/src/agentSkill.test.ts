@@ -1,5 +1,22 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  cpSync,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdtempSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -14,6 +31,10 @@ import {
   resolveAgentSkillLocations,
   type AgentSkillEnvironment,
 } from "./agentSkill.js";
+import {
+  directoryDescriptorAccess,
+  withDirectoryDescriptorPath,
+} from "./utils/directoryDescriptor.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -21,10 +42,72 @@ afterEach(() => {
 });
 
 function temporaryRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "propr-agent-skill-test-"));
+  // macOS reports /var in os.tmpdir(), while /var is a symlink to
+  // /private/var. Canonicalize the disposable fixture root so production's
+  // no-symlink ancestor policy is still exercised without rejecting tmpdir.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "propr-agent-skill-test-")));
   roots.push(root);
   return root;
 }
+
+test("uses the platform's real directory-descriptor behavior", () => {
+  assert.equal(directoryDescriptorAccess("linux"), "child-paths");
+  assert.equal(directoryDescriptorAccess("darwin"), "working-directory");
+  assert.throws(() => directoryDescriptorAccess("win32"), /not supported/);
+
+  const root = temporaryRoot();
+  const held = join(root, "held");
+  const child = join(held, "child");
+  mkdirSync(child, { recursive: true });
+  const fd = openSync(held, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const descriptorRoot = process.platform === "darwin" ? "/dev/fd" : "/proc/self/fd";
+  const descriptor = join(descriptorRoot, String(fd));
+  try {
+    const endpointFd = openSync(descriptor, constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      assert.ok(fstatSync(endpointFd).isDirectory());
+    } finally {
+      closeSync(endpointFd);
+    }
+    if (process.platform === "darwin") {
+      assert.throws(
+        () => openSync(join(descriptor, "child"), constants.O_RDONLY | constants.O_DIRECTORY),
+        (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
+      );
+    } else {
+      const childFd = openSync(join(descriptor, "child"), constants.O_RDONLY | constants.O_DIRECTORY);
+      closeSync(childFd);
+    }
+  } finally {
+    closeSync(fd);
+  }
+});
+
+test("working-directory descriptor access keeps mutation inside a detached held directory", () => {
+  const root = temporaryRoot();
+  const held = join(root, "held");
+  const detached = join(root, "detached");
+  const outside = join(root, "outside");
+  mkdirSync(held);
+  mkdirSync(outside);
+  const fd = openSync(held, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const descriptorRoot = process.platform === "darwin" ? "/dev/fd" : "/proc/self/fd";
+  const originalCwd = process.cwd();
+  try {
+    withDirectoryDescriptorPath(join(descriptorRoot, String(fd)), "working-directory", (base) => {
+      renameSync(held, detached);
+      symlinkSync(outside, held, "dir");
+      mkdirSync(join(base, "created"));
+    });
+  } finally {
+    closeSync(fd);
+  }
+
+  assert.equal(process.cwd(), originalCwd);
+  assert.equal(lstatSync(held).isSymbolicLink(), true);
+  assert.equal(existsSync(join(detached, "created")), true);
+  assert.equal(existsSync(join(outside, "created")), false);
+});
 
 function environment(root: string): AgentSkillEnvironment {
   return {
@@ -41,6 +124,43 @@ function bundle(root: string, body: string): string {
   writeFileSync(join(path, "agents", "openai.yaml"), `interface:\n  display_name: "ProPR Operator"\n  short_description: "${body}"\n  default_prompt: "Use $propr for this change."\n`);
   return path;
 }
+
+test("working-directory descriptor access supports every required provider lifecycle", () => {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  if (!platformDescriptor) throw new Error("process.platform descriptor is unavailable");
+  Object.defineProperty(process, "platform", { ...platformDescriptor, value: "darwin" });
+  try {
+    const root = temporaryRoot();
+    const env = environment(root);
+    mkdirSync(env.HOME!, { recursive: true });
+    const older = bundle(root, "older portable skill");
+    const current = bundle(root, "current portable skill");
+
+    for (const target of ["codex", "claude", "antigravity", "opencode"] as const) {
+      assert.equal(installAgentSkill(target, { env, bundleDir: older }).action, "installed");
+      assert.equal(removeAgentSkill(target, { env, bundleDir: older }).action, "removed");
+
+      const targetPath = resolveAgentSkillLocations([target], env)[0].path;
+      cpSync(older, targetPath, { recursive: true });
+      assert.equal(installAgentSkill(target, { env, bundleDir: older }).action, "adopted");
+      assert.equal(installAgentSkill(target, { env, bundleDir: current }).action, "updated");
+
+      writeFileSync(join(targetPath, "SKILL.md"), "modified managed content\n");
+      const replaced = installAgentSkill(target, { env, bundleDir: current, force: true });
+      assert.equal(replaced.action, "backed-up");
+      assert.ok(replaced.backupPath);
+
+      assert.equal(removeAgentSkill(target, { env, bundleDir: current }).action, "removed");
+      mkdirSync(targetPath);
+      writeFileSync(join(targetPath, "foreign.txt"), "foreign content\n");
+      const forcedRemoval = removeAgentSkill(target, { env, bundleDir: current, force: true });
+      assert.equal(forcedRemoval.action, "backed-up");
+      assert.ok(forcedRemoval.backupPath);
+    }
+  } finally {
+    Object.defineProperty(process, "platform", platformDescriptor);
+  }
+});
 
 function dateWithOneShotSideEffect(sideEffect: () => void): Date {
   let fired = false;

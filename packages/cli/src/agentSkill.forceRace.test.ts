@@ -23,9 +23,16 @@ function snapshotTree(path: string): Array<[string, string | Buffer]> {
   return entries;
 }
 
-async function assertParentCreationSymlinkRace(t: TestContext, force: boolean): Promise<void> {
-  const root = fs.mkdtempSync(join(tmpdir(), `propr-agent-skill-parent-race-${force ? "force" : "normal"}-`));
+function temporaryRoot(t: TestContext, prefix: string): string {
+  // Resolve macOS's /var -> /private/var tmpdir alias without weakening the
+  // production ancestor-symlink checks exercised by these fixtures.
+  const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), prefix)));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+async function assertParentCreationSymlinkRace(t: TestContext, force: boolean): Promise<void> {
+  const root = temporaryRoot(t, `propr-agent-skill-parent-race-${force ? "force" : "normal"}-`);
   const checkedAncestor = join(root, "provider-parent");
   const detachedAncestor = join(root, "detached-provider-parent");
   const env = {
@@ -94,8 +101,7 @@ test("forced install refuses an already-checked ancestor replaced before descend
 });
 
 test("adoption does not publish a marker through a target replaced by an outside symlink", async (t) => {
-  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-adoption-target-race-test-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const root = temporaryRoot(t, "propr-agent-skill-adoption-target-race-test-");
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
   fs.mkdirSync(env.HOME, { recursive: true });
   const source = join(root, "bundle");
@@ -134,15 +140,14 @@ test("adoption does not publish a marker through a target replaced by an outside
 
   assert.equal(injected, true);
   assert.equal(result.action, "failed");
-  assert.match(result.detail ?? "", /symbolic link parent is not allowed|directory changed/);
+  assert.match(result.detail ?? "", /symbolic link parent is not allowed|directory changed|target changed during adoption/);
   assert.equal(fs.lstatSync(target).isSymbolicLink(), true);
   assert.deepEqual(snapshotTree(outside), outsideBefore);
   assert.deepEqual(snapshotTree(detachedTarget), targetBefore);
 });
 
 test("forced backup rename cannot follow a replaced skills parent", async (t) => {
-  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-backup-parent-race-test-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const root = temporaryRoot(t, "propr-agent-skill-backup-parent-race-test-");
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
   fs.mkdirSync(env.HOME, { recursive: true });
   const source = join(root, "bundle");
@@ -188,8 +193,7 @@ test("forced backup rename cannot follow a replaced skills parent", async (t) =>
 });
 
 test("removal rename cannot follow a replaced skills parent", async (t) => {
-  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-removal-parent-race-test-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const root = temporaryRoot(t, "propr-agent-skill-removal-parent-race-test-");
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
   fs.mkdirSync(env.HOME, { recursive: true });
   const source = join(root, "bundle");
@@ -235,8 +239,7 @@ test("removal rename cannot follow a replaced skills parent", async (t) => {
 });
 
 test("forced install fails and preserves both trees when the published bundle is modified before final inspection", async (t) => {
-  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-force-race-test-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const root = temporaryRoot(t, "propr-agent-skill-force-race-test-");
   const env = {
     HOME: join(root, "home"),
     CODEX_HOME: join(root, "codex-home"),
@@ -262,7 +265,7 @@ test("forced install fails and preserves both trees when the published bundle is
       },
       linkSync(existingPath: fs.PathLike, newPath: fs.PathLike): void {
         fs.linkSync(existingPath, newPath);
-        if (String(newPath).endsWith("/.propr-managed.json")) {
+        if (basename(String(newPath)) === ".propr-managed.json") {
           injected = true;
           fs.writeFileSync(join(target, "SKILL.md"), "modified concurrently\n");
         }
@@ -290,8 +293,7 @@ test("forced install fails and preserves both trees when the published bundle is
 });
 
 test("publication cannot follow a target replaced by an outside symlink after the final safety check", async (t) => {
-  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-target-publish-race-test-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const root = temporaryRoot(t, "propr-agent-skill-target-publish-race-test-");
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
   fs.mkdirSync(env.HOME, { recursive: true });
   const source = join(root, "bundle");
@@ -318,7 +320,7 @@ test("publication cannot follow a target replaced by an outside symlink after th
           fs.symlinkSync(outside, target, "dir");
         }
         const result = fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
-        if (value.endsWith("/propr")) targetClaimed = true;
+        if (basename(value) === "propr") targetClaimed = true;
         return result;
       },
     },
@@ -342,8 +344,7 @@ test("publication cannot follow a target replaced by an outside symlink after th
 });
 
 test("forced install leaves a concurrent empty directory untouched and reports the displaced original", async (t) => {
-  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-force-publish-race-test-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const root = temporaryRoot(t, "propr-agent-skill-force-publish-race-test-");
   const env = {
     HOME: join(root, "home"),
     CODEX_HOME: join(root, "codex-home"),
@@ -389,8 +390,7 @@ test("forced install leaves a concurrent empty directory untouched and reports t
 });
 
 test("non-forced update preserves a detached tree changed after validation", async (t) => {
-  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-update-race-test-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const root = temporaryRoot(t, "propr-agent-skill-update-race-test-");
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
   fs.mkdirSync(env.HOME, { recursive: true });
   const older = join(root, "older");
@@ -431,8 +431,7 @@ test("non-forced update preserves a detached tree changed after validation", asy
 });
 
 test("non-forced removal preserves a detached tree changed after validation", async (t) => {
-  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-removal-race-test-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const root = temporaryRoot(t, "propr-agent-skill-removal-race-test-");
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
   fs.mkdirSync(env.HOME, { recursive: true });
   const source = join(root, "bundle");
