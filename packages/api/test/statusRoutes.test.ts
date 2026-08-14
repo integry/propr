@@ -437,6 +437,46 @@ test('/api/status exposes only validated UI-safe Connect account fields', async 
   assert.deepEqual((body.routing as { connectAccount: unknown }).connectAccount, body.connectAccount);
 });
 
+test('/api/status rejects impossible account dates and preserves valid leap-day instants', async () => {
+  const connectAccount = {
+    installationId: 42,
+    accountLogin: 'octo-org',
+    plan: 'community',
+    hasPlusAccess: false,
+    activeSeats: 2,
+    allowedSeats: 3,
+    seatsRemaining: 1,
+    billingCycleResetAt: '2024-02-29T23:59:59.123456789Z',
+    seatLimitBlockedAt: '2024-02-29T12:30:45.5+05:30',
+    sentAt: '2024-02-29T08:15:00-04:00',
+  };
+  const readAccount = async (account: typeof connectAccount) => readStatus({
+    redisClient: {
+      ping: async () => 'PONG',
+      get: async (key: string) => key === 'system:status:routing'
+        ? JSON.stringify({
+            connected: true,
+            routingUrl: 'wss://routing.example',
+            lastDeliveryId: null,
+            lastAckAt: null,
+            connectAccount: account,
+          })
+        : Date.now().toString(),
+      sCard: async () => 1,
+    } as never,
+  });
+
+  assert.deepEqual((await readAccount(connectAccount)).connectAccount, connectAccount);
+
+  for (const field of ['billingCycleResetAt', 'seatLimitBlockedAt', 'sentAt'] as const) {
+    const body = await readAccount({
+      ...connectAccount,
+      [field]: '2026-02-30T00:00:00.000Z',
+    });
+    assert.equal('connectAccount' in body, false, `${field} must reject an impossible calendar date`);
+  }
+});
+
 test('/api/status drops malformed or disconnected Connect account state without assuming Community', async () => {
   for (const routingState of [
     {

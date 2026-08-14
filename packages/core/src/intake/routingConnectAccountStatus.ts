@@ -1,5 +1,6 @@
 import logger from '../utils/logger.js';
 import type { MinimalWebSocket, RoutingFrame } from './routingWebSocketProtocol.js';
+import { isAccountStatusTimestamp } from '@propr/shared';
 
 /** Additive Connect capability for installation entitlement and seat status. */
 export const ACCOUNT_STATUS_CAPABILITY = 'account_status';
@@ -8,8 +9,6 @@ export const ACCOUNT_STATUS_CAPABILITY = 'account_status';
 export const MAX_ACCOUNT_STATUS_FRAME_BYTES = 16 * 1024;
 
 const MAX_ACCOUNT_LOGIN_LENGTH = 128;
-const ISO_TIMESTAMP_PATTERN =
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 /** UI-safe projection of Connect's authenticated installation account status. */
 export interface ConnectAccountStatus {
@@ -23,12 +22,6 @@ export interface ConnectAccountStatus {
     billingCycleResetAt: string;
     seatLimitBlockedAt?: string | null;
     sentAt: string;
-}
-
-function isTimestamp(value: unknown): value is string {
-    return typeof value === 'string'
-        && ISO_TIMESTAMP_PATTERN.test(value)
-        && !Number.isNaN(Date.parse(value));
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
@@ -56,11 +49,11 @@ function hasValidSeatCounts(frame: RoutingFrame): boolean {
 }
 
 function hasValidTimestamps(frame: RoutingFrame): boolean {
-    return isTimestamp(frame.billingCycleResetAt)
+    return isAccountStatusTimestamp(frame.billingCycleResetAt)
         && (frame.seatLimitBlockedAt === undefined
             || frame.seatLimitBlockedAt === null
-            || isTimestamp(frame.seatLimitBlockedAt))
-        && isTimestamp(frame.sentAt);
+            || isAccountStatusTimestamp(frame.seatLimitBlockedAt))
+        && isAccountStatusTimestamp(frame.sentAt);
 }
 
 /**

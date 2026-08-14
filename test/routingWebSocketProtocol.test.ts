@@ -315,3 +315,43 @@ test('parseConnectAccountStatus strictly validates and safely projects the addit
     assert.equal(parseConnectAccountStatus({ ...frame, seatsRemaining: 2 }), undefined);
     assert.equal(parseConnectAccountStatus({ ...frame, sentAt: 'not-iso' }), undefined);
 });
+
+test('parseConnectAccountStatus rejects impossible dates and preserves valid leap-day instants', () => {
+    const frame = {
+        type: 'account_status',
+        installationId: 42,
+        accountLogin: 'octo-org',
+        plan: 'community',
+        hasPlusAccess: false,
+        activeSeats: 2,
+        allowedSeats: 3,
+        seatsRemaining: 1,
+        billingCycleResetAt: '2024-02-29T23:59:59.123456789Z',
+        seatLimitBlockedAt: '2024-02-29T12:30:45.5+05:30',
+        sentAt: '2024-02-29T08:15:00-04:00',
+    };
+
+    assert.deepEqual(parseConnectAccountStatus(frame), {
+        installationId: 42,
+        accountLogin: 'octo-org',
+        plan: 'community',
+        hasPlusAccess: false,
+        activeSeats: 2,
+        allowedSeats: 3,
+        seatsRemaining: 1,
+        billingCycleResetAt: frame.billingCycleResetAt,
+        seatLimitBlockedAt: frame.seatLimitBlockedAt,
+        sentAt: frame.sentAt,
+    });
+
+    for (const field of ['billingCycleResetAt', 'seatLimitBlockedAt', 'sentAt'] as const) {
+        assert.equal(
+            parseConnectAccountStatus({
+                ...frame,
+                [field]: '2026-02-30T00:00:00.000Z',
+            }),
+            undefined,
+            `${field} must reject an impossible calendar date`,
+        );
+    }
+});

@@ -1,8 +1,6 @@
-import type { GithubEventIntakeMode } from '@propr/shared';
+import { isAccountStatusTimestamp, type GithubEventIntakeMode } from '@propr/shared';
 
 const MAX_ACCOUNT_LOGIN_LENGTH = 128;
-const ISO_TIMESTAMP_PATTERN =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 /** UI-safe projection of Connect's authenticated installation account status. */
 export interface ConnectAccountStatus {
@@ -41,12 +39,6 @@ export function applyRoutingStatus(
   if (routing.connected && connectAccount) status.connectAccount = connectAccount;
 }
 
-function isTimestamp(value: unknown): value is string {
-  return typeof value === 'string'
-    && ISO_TIMESTAMP_PATTERN.test(value)
-    && !Number.isNaN(Date.parse(value));
-}
-
 function isNonNegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
@@ -72,11 +64,11 @@ function hasValidSeatCounts(account: Record<string, unknown>): boolean {
 }
 
 function hasValidTimestamps(account: Record<string, unknown>): boolean {
-  return isTimestamp(account.billingCycleResetAt)
+  return isAccountStatusTimestamp(account.billingCycleResetAt)
     && (account.seatLimitBlockedAt === undefined
       || account.seatLimitBlockedAt === null
-      || isTimestamp(account.seatLimitBlockedAt))
-    && isTimestamp(account.sentAt);
+      || isAccountStatusTimestamp(account.seatLimitBlockedAt))
+    && isAccountStatusTimestamp(account.sentAt);
 }
 
 /** Strictly validate a daemon snapshot before exposing it through the API. */

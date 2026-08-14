@@ -1,7 +1,7 @@
 import type { Task as ApiTask } from './tasks';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 import { isHostedUiOrigin, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
-import { isProprProxyUrl } from '@propr/shared';
+import { isAccountStatusTimestamp, isProprProxyUrl } from '@propr/shared';
 
 export * from './apiClient';
 
@@ -95,14 +95,6 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
   };
 };
 
-const ISO_TIMESTAMP_PATTERN =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
-
-const isTimestamp = (value: unknown): value is string =>
-  typeof value === 'string'
-  && ISO_TIMESTAMP_PATTERN.test(value)
-  && !Number.isNaN(Date.parse(value));
-
 const isNonNegativeInteger = (value: unknown): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0;
 
@@ -125,11 +117,11 @@ function parseConnectAccountStatus(value: unknown): ConnectAccountStatus | undef
     || !isAccountPlan(account.plan)
     || typeof account.hasPlusAccess !== 'boolean'
     || !hasValidSeatCounts(account)
-    || !isTimestamp(account.billingCycleResetAt)
+    || !isAccountStatusTimestamp(account.billingCycleResetAt)
     || !(account.seatLimitBlockedAt === undefined
       || account.seatLimitBlockedAt === null
-      || isTimestamp(account.seatLimitBlockedAt))
-    || !isTimestamp(account.sentAt)) return undefined;
+      || isAccountStatusTimestamp(account.seatLimitBlockedAt))
+    || !isAccountStatusTimestamp(account.sentAt)) return undefined;
   if ((account.plan === 'plus') !== account.hasPlusAccess) return undefined;
   if ((account.seatsRemaining as number) !== Math.max(
     0,
