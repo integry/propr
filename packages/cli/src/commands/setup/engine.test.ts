@@ -949,6 +949,44 @@ test("custom-App setup obtains a user token before protected backend checks", as
   assert.equal(result.completed, true);
 });
 
+for (const proprDemoMode of [undefined, "false"] as const) {
+  test(`GH_AUTH_MODE=demo requires login before protected backend checks when PROPR_DEMO_MODE is ${proprDemoMode ?? "absent"}`, async () => {
+    let tokenPresent = false;
+    let loginCalled = false;
+    let healthCalled = false;
+
+    const result = await runSetup({
+      root: "/stack",
+      prompts: {
+        configureGithubAuth: async () => ({ keep: true }),
+        confirmGithubLogin: async () => true,
+      },
+      actions: mockActions({
+        readEnvVars: () => ({
+          GH_AUTH_MODE: "demo",
+          ...(proprDemoMode === undefined ? {} : { PROPR_DEMO_MODE: proprDemoMode }),
+        }),
+        detectGithubAuthMode: () => ({ mode: "demo", warnings: [] }),
+        hasGithubToken: () => tokenPresent,
+        loginWithGithub: async () => {
+          loginCalled = true;
+          tokenPresent = true;
+          return true;
+        },
+        checkBackendHealth: async () => {
+          healthCalled = true;
+          assert.equal(tokenPresent, true);
+          return { healthy: true, detail: "API healthy" };
+        },
+      }),
+    });
+
+    assert.equal(loginCalled, true);
+    assert.equal(healthCalled, true);
+    assert.equal(statusOf(result.state, "github-auth"), "done");
+  });
+}
+
 test("custom-App setup stops clearly without login and an authenticated rerun recovers", async () => {
   let appConfigured = false;
   let tokenPresent = false;

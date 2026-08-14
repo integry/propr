@@ -43,17 +43,34 @@ export function canRenderInkSetup(
   return Boolean(stdin.isTTY) && Boolean(stdout.isTTY) && typeof stdin.setRawMode === "function";
 }
 
+/** Deployment-wide demo mode is the only setup mode with unauthenticated APIs. */
+export function shouldPrepareInkGithubLogin(
+  proprDemoMode: string | undefined,
+  hasGithubToken: boolean
+): boolean {
+  const normalizedDemoMode = proprDemoMode?.trim().toLowerCase();
+  const deploymentDemoEnabled = normalizedDemoMode === "true" || normalizedDemoMode === "1";
+  return !deploymentDemoEnabled && !hasGithubToken;
+}
+
 /**
  * Authenticate before Ink enables terminal raw mode. Reuse an existing `gh`
  * session silently; otherwise ask one default-Yes question and let `gh auth
  * login` own the terminal. Both Connect enrollment and the protected local API
- * steps used by a custom-App setup then have the user token they require.
+ * steps used by custom-App and GitHub-only demo setups then have the user token
+ * they require.
  */
 async function prepareInkGithubLogin(configManager: ConfigManager, root?: string): Promise<void> {
-  const { detectGithubAuthMode, resolveSetupRoot } = await import("./setup/state.js");
-  const currentAuth = detectGithubAuthMode(resolveSetupRoot(configManager, root));
-  if (currentAuth.mode === "demo") return;
-  if (configManager.getGithubToken()) return;
+  const { readEnvVars, resolveSetupRoot } = await import("./setup/state.js");
+  const rootDir = resolveSetupRoot(configManager, root);
+  if (
+    !shouldPrepareInkGithubLogin(
+      readEnvVars(rootDir).PROPR_DEMO_MODE,
+      Boolean(configManager.getGithubToken())
+    )
+  ) {
+    return;
+  }
   const { loginWithGithubCli } = await import("../auth/githubLogin.js");
   const reused = await loginWithGithubCli(configManager, { interactive: false });
   if (reused.ok) return;

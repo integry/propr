@@ -1153,8 +1153,8 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   // stack starts (/api/status, agent configuration, settings, and repositories)
   // is protected by bearer auth, so obtain the same user token as `propr login`
   // before making any of those calls. Connect enrollment already guarantees a
-  // token; this primarily closes the custom-App first-run and recovery paths.
-  if (resolvedAuth.mode !== "demo" && !actions.hasGithubToken()) {
+  // token; this covers custom-App and GitHub-only demo configurations alike.
+  if (!demoModeEnabled && !actions.hasGithubToken()) {
     const reason = "Finishing setup requires a GitHub user token for protected backend API steps.";
     if (prompts.confirmGithubLogin && (await prompts.confirmGithubLogin({ reason }))) {
       await actions.loginWithGithub({ onLog: log });

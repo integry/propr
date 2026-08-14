@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canRenderInkSetup } from "./setupCommand.js";
+import { canRenderInkSetup, shouldPrepareInkGithubLogin } from "./setupCommand.js";
 
 const rawTty = { isTTY: true, setRawMode() {} };
 
@@ -28,4 +28,14 @@ test("canRenderInkSetup: false when stdin cannot enter raw mode", () => {
   // A TTY without setRawMode (some SSH/embedded terminals) falls back to the
   // sequential readline wizard rather than a broken keyboard-driven view.
   assert.equal(canRenderInkSetup({ isTTY: true }, { isTTY: true }), false);
+});
+
+for (const proprDemoMode of [undefined, "false"] as const) {
+  test(`Ink login is required for GH_AUTH_MODE=demo when PROPR_DEMO_MODE is ${proprDemoMode ?? "absent"}`, () => {
+    assert.equal(shouldPrepareInkGithubLogin(proprDemoMode, false), true);
+  });
+}
+
+test("Ink login is bypassed when deployment-wide demo mode is enabled", () => {
+  assert.equal(shouldPrepareInkGithubLogin("true", false), false);
 });
