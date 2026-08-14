@@ -51,6 +51,7 @@ if [ "$actual_version" != "$EXPECTED_ANTIGRAVITY_VERSION" ]; then
   echo "Expected Antigravity CLI $EXPECTED_ANTIGRAVITY_VERSION, got $actual_version" >&2
   exit 1
 fi
+echo "✓ Antigravity CLI version $actual_version"
 
 models_output="$(run_agy models)"
 models=(

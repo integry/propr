@@ -367,10 +367,10 @@ test('Antigravity output parser ignores mixed diagnostics when a structured fina
 });
 
 test('Antigravity output parser handles uppercase ERROR terminal results', () => {
-    const parsed = parseAntigravityJsonl(JSON.stringify({
-        event: 'result',
-        result: { conversation_id: 'conversation-sanitized', status: 'ERROR', response: 'provider failed' },
-    }));
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'ERROR', response: 'provider failed' } }),
+    ].join('\n'));
 
     assert.equal(parsed.sessionId, 'conversation-sanitized');
     assert.equal(parsed.conversationId, 'conversation-sanitized');
@@ -378,10 +378,37 @@ test('Antigravity output parser handles uppercase ERROR terminal results', () =>
     assert.equal(parsed.terminalStatus, 'error');
 });
 
-test('Antigravity agent propagates conversation identity and rejects a terminal ERROR', async () => {
+test('Antigravity output parser rejects conflicting stream terminal transitions', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'ERROR', response: 'second' } }),
+    ].join('\n'));
+
+    assert.equal(parsed.terminalStatus, 'success');
+    assert.equal(parsed.protocolError, 'Conflicting Antigravity stream terminal results: success then error');
+    assert.equal(parsed.summary, 'first');
+});
+
+test('Antigravity output parser requires a non-empty init before stream updates', () => {
+    const beforeInit = parseAntigravityJsonl(JSON.stringify({
+        event: 'step_update',
+        step_update: { conversation_id: 'conversation-sanitized', step_index: 1, state: 'RUNNING', step_type: 'agent_response' },
+    }));
+    const emptyInit = parseAntigravityJsonl(JSON.stringify({
+        event: 'init', conversation_id: ' ', init: { model: 'gemini-3.7-flash-high' },
+    }));
+
+    assert.equal(beforeInit.protocolError, 'Antigravity step_update envelope arrived before an initiating conversation_id');
+    assert.equal(emptyInit.protocolError, 'Antigravity init envelope has no conversation_id');
+    assert.equal(beforeInit.terminalStatus, undefined);
+    assert.equal(emptyInit.conversationId, undefined);
+});
+
+test('Antigravity agent rejects stream results from a different conversation', async () => {
     const stdout = [
         JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)', cwd: '/tmp', tools: [] } }),
-        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'ERROR', response: 'provider failed' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-unrelated', status: 'SUCCESS', response: 'must not succeed' } }),
     ].join('\n');
     const agent = new AntigravityAgent(createAntigravityConfig());
     const internals = agent as unknown as {
@@ -412,28 +439,21 @@ test('Antigravity agent propagates conversation identity and rejects a terminal 
     });
 
     assert.equal(result.success, false);
-    assert.equal(result.error, 'Antigravity reported an ERROR result');
+    assert.equal(result.error, 'Antigravity result envelope expected conversation_id "conversation-sanitized", got "conversation-unrelated"');
     assert.equal(result.sessionId, 'conversation-sanitized');
     assert.equal(result.conversationId, 'conversation-sanitized');
     assert.equal(result.modelUsed, 'antigravity-gemini-3.7-flash-high');
-    assert.deepEqual(result.conversationLog, [{
-        type: 'result',
-        session_id: 'conversation-sanitized',
-        conversation_id: 'conversation-sanitized',
-        status: 'error',
-        message: { content: [{ type: 'text', text: 'provider failed' }], usage: {} },
-    }]);
     assert.deepEqual(callbackIdentity, ['conversation-sanitized', 'conversation-sanitized']);
 });
 
-test('Antigravity agent rejects conflicting stdout success and transcript error evidence', async () => {
+test('Antigravity agent rejects differing stdout and transcript conversation identities', async () => {
     const stdout = [
         JSON.stringify({ event: 'init', conversation_id: 'stdout-conversation', init: { model: 'gemini-3.7-flash-high', cwd: '/tmp', tools: [] } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'stdout-conversation', status: 'SUCCESS', response: 'must not succeed' } }),
     ].join('\n');
     const transcript = [
-        JSON.stringify({ event: 'init', conversation_id: 'transcript-conversation', init: { model: 'gemini-3.7-flash-low', cwd: '/tmp', tools: [] } }),
-        JSON.stringify({ event: 'result', result: { conversation_id: 'transcript-conversation', status: 'ERROR', response: 'provider failed' } }),
+        JSON.stringify({ event: 'init', conversation_id: 'transcript-conversation', init: { model: 'gemini-3.7-flash-high', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'transcript-conversation', status: 'SUCCESS', response: 'unrelated success' } }),
     ].join('\n');
     const transcriptDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-conflict-'));
     const transcriptPath = path.join(transcriptDirectory, 'transcript.jsonl');
@@ -467,7 +487,7 @@ test('Antigravity agent rejects conflicting stdout success and transcript error 
         });
 
         assert.equal(result.success, false);
-        assert.equal(result.error, 'Antigravity reported an ERROR result');
+        assert.equal(result.error, 'Conflicting Antigravity conversation identities: stdout reported "stdout-conversation" but transcript reported "transcript-conversation"');
         assert.equal(result.modelUsed, 'unknown');
     } finally {
         fs.rmSync(transcriptDirectory, { recursive: true, force: true });
@@ -548,7 +568,7 @@ test('Antigravity agent accepts a custom namespaced model reported with its exac
     assert.equal(persistedModel, 'antigravity-custom-preview-model');
 });
 
-test('Antigravity agent rejects a result-only stream without reported model identity', async () => {
+test('Antigravity agent rejects a stream result before its initiating conversation', async () => {
     const stdout = JSON.stringify({
         event: 'result',
         result: { conversation_id: 'conversation-result-only', status: 'SUCCESS', response: 'RESULT_ONLY\n' },
@@ -580,9 +600,9 @@ test('Antigravity agent rejects a result-only stream without reported model iden
     });
 
     assert.equal(result.success, false);
-    assert.equal(result.error, 'Antigravity stream did not report a model identity for requested model "antigravity-gemini-3.7-flash-high"');
+    assert.equal(result.error, 'Antigravity result envelope arrived before an initiating conversation_id');
     assert.equal(result.modelUsed, 'unknown');
-    assert.equal(result.summary, 'RESULT_ONLY\n');
+    assert.equal(result.summary, undefined);
     assert.equal(persistedModel, 'unknown');
 });
 
@@ -621,10 +641,11 @@ test('Antigravity agent rejects a malformed terminal result with exit code 0', a
     assert.equal(result.summary, undefined);
 });
 
-test('Antigravity agent rejects a truncated stream without a terminal result', async () => {
+test('Antigravity agent rejects a truncated stream even when a legacy result reports success', async () => {
     const stdout = [
         JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)', cwd: '/tmp', tools: [] } }),
         JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'must not succeed' } }),
+        JSON.stringify({ type: 'result', status: 'success' }),
     ].join('\n');
     const agent = new AntigravityAgent(createAntigravityConfig());
     const internals = agent as unknown as {

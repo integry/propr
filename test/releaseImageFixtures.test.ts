@@ -10,6 +10,7 @@ const smokeScript = readFileSync('scripts/smoke-test-images.sh', 'utf8');
 const integrationScript = readFileSync('scripts/integration-test-images.sh', 'utf8');
 const antigravityVerificationScript = readFileSync('scripts/verify-antigravity-image.sh', 'utf8');
 const releaseImageWorkflow = readFileSync('.github/workflows/docker-images.yml', 'utf8');
+const prBuildWorkflow = readFileSync('.github/workflows/pr-build-check.yml', 'utf8');
 const antigravity113VerifierFixturePath = new URL('./fixtures/antigravity-verifier-pinned-1.1.13.json', import.meta.url);
 const sqliteStartupScript = readFileSync('scripts/smoke-test-sqlite-startup.sh', 'utf8');
 
@@ -177,10 +178,21 @@ test('release publication requires authenticated Antigravity verification of the
   );
 });
 
+test('maintainer-approved PR validation records authenticated current-head Antigravity image proof', () => {
+  assert.match(prBuildWorkflow, /types: \[opened, synchronize, reopened, labeled\]/);
+  assert.match(prBuildWorkflow, /github\.event\.label\.name == 'antigravity-image-proof'/);
+  assert.match(prBuildWorkflow, /Verify label actor has write access[\s\S]+permission.*admin[\s\S]+permission.*write/);
+  assert.match(prBuildWorkflow, /Confirm approval still targets the current PR head[\s\S]+current_head[\s\S]+PR_HEAD_SHA/);
+  assert.match(prBuildWorkflow, /Build current-head unified agent image[\s\S]+\.\/scripts\/build-images\.sh --only agent/);
+  assert.match(prBuildWorkflow, /AGENT_TAG:.*PR_HEAD_SHA[\s\S]+\.\/scripts\/verify-antigravity-image\.sh \| tee/);
+  assert.match(prBuildWorkflow, /GITHUB_STEP_SUMMARY[\s\S]+Upload authenticated proof/);
+});
+
 test('authenticated image verifier accepts pinned 1.1.13 canonical init.model envelopes', () => {
   const result = runAntigravityVerification();
 
   assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  assert.match(result.stdout, /Antigravity CLI version 1\.1\.13/);
   for (const id of ['gemini-3.7-flash-high', 'gemini-3.7-flash-medium', 'gemini-3.7-flash-low']) {
     assert.match(result.stdout, new RegExp(`${id} returned exact sentinel with SUCCESS and reported ${id}`));
   }

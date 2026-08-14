@@ -98,6 +98,7 @@ function extractAntigravityResult(lines: Array<{ line: string; isJson: boolean }
     const result = resultLines.join('\n').trim();
     return result || undefined;
 }
+function extractLegacyFallback(lines: Array<{ line: string; isJson: boolean }>, hasStreamEnvelopes: boolean): string | undefined { return hasStreamEnvelopes ? undefined : extractAntigravityResult(lines); }
 
 function isTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent {
     if (!isRecord(event)) return false;
@@ -220,57 +221,58 @@ function mergeTokenUsageByMax(target: TokenUsage, usage: TokenUsage): void {
 }
 
 interface ParseState {
-    sessionId?: string;
-    conversationId?: string;
-    modelUsed?: string;
-    tokenUsage: TokenUsage;
-    terminalStatus?: AntigravityTerminalStatus;
-    currentAssistantMessage: string;
-    lastCompleteAssistantMessage: string;
+    sessionId?: string; conversationId?: string; streamConversationId?: string; modelUsed?: string;
+    tokenUsage: TokenUsage; currentAssistantMessage: string; lastCompleteAssistantMessage: string;
+    legacyTerminalStatus?: AntigravityTerminalStatus; streamTerminalStatus?: AntigravityTerminalStatus; protocolError?: string;
 }
 
-function applyIdentity(state: ParseState, conversationId: string): void {
-    state.conversationId = conversationId;
-    state.sessionId = conversationId;
+function correlateStreamEnvelope(state: ParseState, envelope: AntigravityStreamEvent['event'], conversationId: string): boolean {
+    if (!conversationId.trim()) { state.protocolError ??= `Antigravity ${envelope} envelope has no conversation_id`; return false; }
+    if (!state.streamConversationId) {
+        if (envelope !== 'init') { state.protocolError ??= `Antigravity ${envelope} envelope arrived before an initiating conversation_id`; return false; }
+        state.streamConversationId = conversationId; state.conversationId = conversationId; state.sessionId = conversationId; return true;
+    }
+    if (conversationId !== state.streamConversationId) { state.protocolError ??= `Antigravity ${envelope} envelope expected conversation_id "${state.streamConversationId}", got "${conversationId}"`; return false; }
+    return true;
 }
 
 function processLegacyEvent(event: AntigravityEvent, state: ParseState): void {
-    if (event.type === 'init') {
-        state.sessionId = event.session_id;
-        state.modelUsed = normalizeAntigravityModelId(event.model);
-        return;
-    }
+    if (state.streamConversationId) return;
+    if (event.type === 'init') { state.sessionId = event.session_id; state.modelUsed = normalizeAntigravityModelId(event.model); return; }
     if (event.type === 'message' && event.role === 'assistant') {
         if (event.delta) state.currentAssistantMessage += event.content;
         else { state.lastCompleteAssistantMessage = event.content; state.currentAssistantMessage = ''; }
         return;
     }
-    if (event.type === 'result') {
-        state.terminalStatus = event.status;
-        state.tokenUsage = normalizeLegacyTokenUsage(event.stats);
-    }
-    if (event.type !== 'message' && state.currentAssistantMessage) {
-        state.lastCompleteAssistantMessage = state.currentAssistantMessage;
-        state.currentAssistantMessage = '';
-    }
+    if (event.type === 'result') { state.legacyTerminalStatus = event.status; state.tokenUsage = normalizeLegacyTokenUsage(event.stats); }
+    if (event.type !== 'message' && state.currentAssistantMessage) { state.lastCompleteAssistantMessage = state.currentAssistantMessage; state.currentAssistantMessage = ''; }
 }
 
 function processStreamEvent(event: AntigravityStreamEvent, state: ParseState): void {
     if (event.event === 'init') {
-        applyIdentity(state, event.conversation_id);
-        state.modelUsed = normalizeAntigravityModelId(event.init.model);
+        const initiating = state.streamConversationId === undefined;
+        if (!correlateStreamEnvelope(state, event.event, event.conversation_id)) return;
+        if (initiating) {
+            state.modelUsed = normalizeAntigravityModelId(event.init.model); state.tokenUsage = {};
+            state.currentAssistantMessage = ''; state.lastCompleteAssistantMessage = '';
+        }
         return;
     }
     if (event.event === 'step_update') {
-        applyIdentity(state, event.step_update.conversation_id);
+        if (!correlateStreamEnvelope(state, event.event, event.step_update.conversation_id)) return;
         mergeTokenUsageByMax(state.tokenUsage, normalizeStreamTokenUsage(event.step_update.usage));
         if (normalizeTranscriptIdentifier(event.step_update.step_type) === 'AGENT_RESPONSE' && event.step_update.text_delta) {
             state.currentAssistantMessage += event.step_update.text_delta;
         }
         return;
     }
-    applyIdentity(state, event.result.conversation_id);
-    state.terminalStatus = event.result.status.toUpperCase() === 'SUCCESS' ? 'success' : 'error';
+    if (!correlateStreamEnvelope(state, event.event, event.result.conversation_id)) return;
+    const terminalStatus = event.result.status.toUpperCase() === 'SUCCESS' ? 'success' : 'error';
+    if (state.streamTerminalStatus && state.streamTerminalStatus !== terminalStatus) {
+        state.protocolError ??= `Conflicting Antigravity stream terminal results: ${state.streamTerminalStatus} then ${terminalStatus}`;
+        return;
+    }
+    state.streamTerminalStatus = terminalStatus;
     // result.usage is the terminal cumulative snapshot; its reported fields win
     // over interim step snapshots while omitted fields retain their step value.
     state.tokenUsage = { ...state.tokenUsage, ...normalizeStreamTokenUsage(event.result.usage) };
@@ -313,7 +315,6 @@ export function filterAntigravityAnalysisEvents(events: AntigravityOutputEvent[]
 /** Parses legacy, transcript, and Antigravity 1.1.12+ JSONL; plain text remains a supported fallback. */
 export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
     const events: AntigravityOutputEvent[] = [];
-    let protocolError: string | undefined;
     let hasStreamEnvelopes = false;
     const state: ParseState = { tokenUsage: {}, currentAssistantMessage: '', lastCompleteAssistantMessage: '' };
     const parsedLines: Array<{ line: string; value?: unknown }> = [];
@@ -331,7 +332,7 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
         if (isRecord(value) && typeof value.event === 'string' && Object.hasOwn(STREAM_EVENT_VALIDATORS, value.event)) {
             hasStreamEnvelopes = true;
             if (!STREAM_EVENT_VALIDATORS[value.event](value)) {
-                protocolError ??= `Malformed Antigravity stream envelope: ${value.event}`;
+                state.protocolError ??= `Malformed Antigravity stream envelope: ${value.event}`;
                 continue;
             }
         }
@@ -341,23 +342,22 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
         }
         events.push(value);
         if (isTranscriptEvent(value)) {
-            if (normalizeTranscriptIdentifier(value.source) === 'MODEL' && typeof value.content === 'string' && value.content.trim()) {
-                state.lastCompleteAssistantMessage = value.content;
-            }
+            if (!state.streamConversationId && normalizeTranscriptIdentifier(value.source) === 'MODEL'
+                && typeof value.content === 'string' && value.content.trim()) state.lastCompleteAssistantMessage = value.content;
         } else if (isAntigravityStreamEvent(value)) processStreamEvent(value, state);
         else processLegacyEvent(value, state);
     }
     if (state.currentAssistantMessage) state.lastCompleteAssistantMessage = state.currentAssistantMessage;
-    const plainTextSummary = extractAntigravityResult(plainLines);
+    const plainTextSummary = extractLegacyFallback(plainLines, hasStreamEnvelopes);
     return {
         sessionId: state.sessionId,
         conversationId: state.conversationId,
         modelUsed: state.modelUsed,
-        summary: state.lastCompleteAssistantMessage || plainTextSummary || undefined,
+        summary: state.lastCompleteAssistantMessage || plainTextSummary,
         conversationLog: events,
         tokenUsage: state.tokenUsage,
-        terminalStatus: state.terminalStatus,
-        protocolError,
+        terminalStatus: hasStreamEnvelopes ? state.streamTerminalStatus : state.legacyTerminalStatus,
+        protocolError: state.protocolError,
         hasStreamEnvelopes,
     };
 }

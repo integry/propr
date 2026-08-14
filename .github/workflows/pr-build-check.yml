@@ -2,13 +2,113 @@ name: Build & Lint Check
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
 
 concurrency:
   group: pr-build-check-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
+  authorize-antigravity-image-proof:
+    name: Authorize Antigravity image proof
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'antigravity-image-proof' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      approved: ${{ steps.permission.outputs.approved }}
+
+    steps:
+      - name: Verify label actor has write access
+        id: permission
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.event.sender.login }}
+        run: |
+          set -euo pipefail
+          permission="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" |
+            jq -r '.permission')"
+          if [ "$permission" = 'admin' ] || [ "$permission" = 'write' ]; then
+            echo 'approved=true' >> "$GITHUB_OUTPUT"
+          else
+            echo "Actor $ACTOR lacks write access; refusing authenticated image validation" >&2
+            exit 1
+          fi
+
+  antigravity-image-proof:
+    name: Authenticated Antigravity image proof
+    needs: authorize-antigravity-image-proof
+    if: needs.authorize-antigravity-image-proof.outputs.approved == 'true'
+    runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      DOCKERHUB_NS: propr-pr-proof-${{ github.event.pull_request.number }}
+      PUSH_LATEST: 'false'
+
+    steps:
+      - name: Confirm approval still targets the current PR head
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_head="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" |
+            jq -r '.head.sha')"
+          if [ "$current_head" != "$PR_HEAD_SHA" ]; then
+            echo "PR head changed after approval: expected $PR_HEAD_SHA, got $current_head" >&2
+            exit 1
+          fi
+
+      - name: Checkout approved PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.PR_HEAD_SHA }}
+          persist-credentials: false
+
+      - name: Build current-head unified agent image
+        run: ./scripts/build-images.sh --only agent
+
+      - name: Verify all authenticated Antigravity tiers
+        env:
+          AGENT_TAG: ${{ env.DOCKERHUB_NS }}/agent:${{ env.PR_HEAD_SHA }}
+        run: |
+          set -euo pipefail
+          echo "Current-head image: $AGENT_TAG" | tee antigravity-image-proof.txt
+          docker image inspect --format 'Image ID: {{.Id}}' "$AGENT_TAG" | tee -a antigravity-image-proof.txt
+          ./scripts/verify-antigravity-image.sh | tee -a antigravity-image-proof.txt
+
+      - name: Record authenticated proof
+        run: |
+          {
+            echo '### Authenticated Antigravity packaged-image proof'
+            echo '```text'
+            cat antigravity-image-proof.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload authenticated proof
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: antigravity-image-proof-${{ env.PR_HEAD_SHA }}
+          path: antigravity-image-proof.txt
+          if-no-files-found: error
+          retention-days: 30
+
   validate:
     name: Validate Changes
     runs-on: ubuntu-latest
@@ -76,7 +176,8 @@ jobs:
               scripts/build-images.sh \
               scripts/ci-redis.sh \
               scripts/smoke-test-images.sh \
-              scripts/smoke-test-sqlite-startup.sh
+              scripts/smoke-test-sqlite-startup.sh \
+              scripts/verify-antigravity-image.sh
           } > >(tee -a build_log.txt) 2>&1
 
       - name: Enforce pre-setup validation
