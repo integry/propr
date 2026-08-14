@@ -58,24 +58,35 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Verify the supported compatibility baseline
+      - name: Prepare the checked-out workspace for the non-root test user
         run: |
+          test "$(id -u node)" -ne 0
+          chown -R node:node "$GITHUB_WORKSPACE"
+
+      - name: Verify the supported compatibility baseline as non-root
+        run: |
+          runuser --user node -- env HOME=/home/node bash -euo pipefail <<'NON_ROOT'
+          test "$(node -p 'process.geteuid()')" -ne 0
           test "$(uname -m)" = x86_64
           test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.31"
           test "$(node -p 'process.platform')" = linux
           test "$(node -p 'process.arch')" = x64
           test "$(node -p 'process.versions.node.split(".")[0]')" = 22
+          NON_ROOT
 
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
+      - name: Install dependencies as non-root
+        run: runuser --user node -- env HOME=/home/node npm ci --ignore-scripts
 
-      - name: Load and exercise the Linux x64 helper with the focused Agent Skill suite
+      - name: Load and exercise the Linux x64 helper with the focused Agent Skill suite as non-root
         run: |
+          runuser --user node -- env HOME=/home/node bash -euo pipefail <<'NON_ROOT'
+          test "$(node -p 'process.geteuid()')" -ne 0
           npm run build -w @propr/shared
           npx tsx --experimental-test-module-mocks --test \
             packages/cli/src/agentSkill.test.ts \
             packages/cli/src/agentSkill.forceRace.test.ts \
             packages/cli/src/commands/setupCommand.test.ts
+          NON_ROOT
 
   cli-agent-skill-darwin:
     name: CLI Agent Skill (Darwin arm64, Node 22)
