@@ -1,0 +1,17 @@
+{
+  "codex": {
+    "usage": {
+      "fiveHour": null,
+      "weekly": {
+        "label": "Weekly limit",
+        "percentUsed": 12,
+        "resetsIn": "3d 4h"
+      },
+      "version": null
+    },
+    "metadata": {
+      "model": "gpt-5.6-luna"
+    },
+    "error": null
+  }
+}

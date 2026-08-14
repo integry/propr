@@ -1251,7 +1251,7 @@ function printAgentResponses(rows: AgentValidationRow[], colorEnabled: boolean):
 }
 
 /** Render Agent Tank subscription usage (or an install hint when absent). */
-function printAgentTankUsage(usage: AgentTankUsage, colorEnabled: boolean): void {
+export function printAgentTankUsage(usage: AgentTankUsage, colorEnabled: boolean): void {
   console.log("");
   console.log(color("Subscription Usage (Agent Tank)", colorEnabled, ANSI.cyan, ANSI.bold));
   if (!usage.installed) {
@@ -1276,7 +1276,9 @@ function printAgentTankUsage(usage: AgentTankUsage, colorEnabled: boolean): void
       console.log(`  ${name.padEnd(nameWidth)}  ${color(entry.error, colorEnabled, ANSI.yellow)}`);
       continue;
     }
-    const metrics = Object.values(entry?.usage ?? {});
+    // Unavailable Agent Tank limits are represented as null. Ignore those
+    // placeholders instead of treating them as metrics and dereferencing them.
+    const metrics = Object.values(entry?.usage ?? {}).filter((metric) => metric !== null);
     if (metrics.length === 0) {
       console.log(`  ${name.padEnd(nameWidth)}  (no data)`);
       continue;

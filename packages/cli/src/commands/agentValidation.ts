@@ -663,14 +663,16 @@ export function planAgentLogin(
 // ---------------------------------------------------------------------------
 
 interface AgentTankMetric {
-  label?: string;
+  label?: string | null;
   percent?: number;
   percentUsed?: number;
   resetsIn?: string;
 }
 
 interface AgentTankAgent {
-  usage?: Record<string, AgentTankMetric>;
+  // Agent Tank leaves unavailable limits as null (for example, fiveHour when
+  // only a weekly Codex limit was returned).
+  usage?: Record<string, AgentTankMetric | null>;
   metadata?: { email?: string; model?: string };
   error?: string | null;
 }
