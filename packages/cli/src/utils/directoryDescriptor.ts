@@ -21,12 +21,31 @@ interface NativeDirectoryOperations {
   lstatAt(dirfd: number, name: string): DirectoryEntryIdentity;
 }
 
+export interface NativeDirectoryOperationTestEvent {
+  operation: "openAt" | "mkdirAt" | "renameAt";
+  phase: "before" | "after";
+  dirfd: number;
+  name: string;
+  newName?: string;
+  flags?: number;
+  mode?: number;
+  result?: number;
+}
+
+type NativeDirectoryOperationTestHook = (event: NativeDirectoryOperationTestEvent) => void;
+
 export const DARWIN_DIRECTORY_OPERATION_SHA256: Readonly<Record<string, string>> = {
   arm64: "aa380d388e6c8e3a0f14c9e9a5bdfbb59095ed17fb3325318e4aeaa621e71380",
   x64: "e040b7c44a325e1c0c4b288917676a140da0402f3c98bba68a8f23d244049040",
 };
 
 let nativeOperations: NativeDirectoryOperations | undefined;
+let nativeOperationTestHook: NativeDirectoryOperationTestHook | undefined;
+
+/** Install a deterministic race injector around the Darwin addon boundary. */
+export function setNativeDirectoryOperationTestHook(hook?: NativeDirectoryOperationTestHook): void {
+  nativeOperationTestHook = hook;
+}
 
 /** Linux has traversable procfs dirfds; Darwin uses the packaged *at addon. */
 export function directoryDescriptorAccess(platform: NodeJS.Platform = process.platform): DirectoryDescriptorAccess {
@@ -66,15 +85,25 @@ function darwinOperations(): NativeDirectoryOperations {
 }
 
 export function openAt(dirfd: number, name: string, flags: number, mode = 0): number {
-  return darwinOperations().openAt(dirfd, name, flags, mode);
+  const operations = darwinOperations();
+  nativeOperationTestHook?.({ operation: "openAt", phase: "before", dirfd, name, flags, mode });
+  const result = operations.openAt(dirfd, name, flags, mode);
+  nativeOperationTestHook?.({ operation: "openAt", phase: "after", dirfd, name, flags, mode, result });
+  return result;
 }
 
 export function mkdirAt(dirfd: number, name: string, mode: number): void {
-  darwinOperations().mkdirAt(dirfd, name, mode);
+  const operations = darwinOperations();
+  nativeOperationTestHook?.({ operation: "mkdirAt", phase: "before", dirfd, name, mode });
+  operations.mkdirAt(dirfd, name, mode);
+  nativeOperationTestHook?.({ operation: "mkdirAt", phase: "after", dirfd, name, mode });
 }
 
 export function renameAt(dirfd: number, oldName: string, newName: string): void {
-  darwinOperations().renameAt(dirfd, oldName, dirfd, newName);
+  const operations = darwinOperations();
+  nativeOperationTestHook?.({ operation: "renameAt", phase: "before", dirfd, name: oldName, newName });
+  operations.renameAt(dirfd, oldName, dirfd, newName);
+  nativeOperationTestHook?.({ operation: "renameAt", phase: "after", dirfd, name: oldName, newName });
 }
 
 export function linkAt(dirfd: number, oldName: string, newName: string): void {

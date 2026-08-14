@@ -71,18 +71,34 @@ jobs:
           npm run typecheck -w @propr/cli
           npx tsx --experimental-test-module-mocks --test \
             packages/cli/src/agentSkill.test.ts \
+            packages/cli/src/agentSkill.forceRace.test.ts \
             packages/cli/src/commands/setupCommand.test.ts
           npm run build -w @propr/cli
           test -f packages/cli/dist/native/prebuilds/darwin-arm64/directory-operations.node
-          skill_fixture="$RUNNER_TEMP/propr-skill-artifact"
+          skill_fixture="$RUNNER_TEMP/propr-skill-built-cli"
           mkdir -p "$skill_fixture/home"
+          skill_targets=(codex claude antigravity opencode)
           env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
-            node packages/cli/dist/index.js skill install all --json
+            node packages/cli/dist/index.js skill install "${skill_targets[@]}" --json > "$skill_fixture/install.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.action!=="installed")) process.exit(1)' \
+            "$skill_fixture/install.json"
           env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
-            node packages/cli/dist/index.js skill status all --json
+            node packages/cli/dist/index.js skill status "${skill_targets[@]}" --json > "$skill_fixture/status.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.state!=="current-managed")) process.exit(1)' \
+            "$skill_fixture/status.json"
+          printf '\nBuilt-CLI managed update fixture.\n' >> packages/cli/dist/skill/propr/SKILL.md
           env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
-            node packages/cli/dist/index.js skill remove all --json
+            node packages/cli/dist/index.js skill install "${skill_targets[@]}" --json > "$skill_fixture/update.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.action!=="updated")) process.exit(1)' \
+            "$skill_fixture/update.json"
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill remove "${skill_targets[@]}" --json > "$skill_fixture/remove.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.action!=="removed")) process.exit(1)' \
+            "$skill_fixture/remove.json"
           test ! -e "$skill_fixture/codex/skills/propr"
+          test ! -e "$skill_fixture/home/.claude/skills/propr"
+          test ! -e "$skill_fixture/home/.gemini/antigravity-cli/skills/propr"
+          test ! -e "$skill_fixture/xdg/opencode/skills/propr"
 
   validate:
     name: Validate Changes

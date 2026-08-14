@@ -3,6 +3,19 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
+import {
+  setNativeDirectoryOperationTestHook,
+  type NativeDirectoryOperationTestEvent,
+} from "./utils/directoryDescriptor.js";
+
+function injectAtDarwinNativeBoundary(
+  t: TestContext,
+  inject: (event: NativeDirectoryOperationTestEvent) => void
+): void {
+  if (process.platform !== "darwin") return;
+  setNativeDirectoryOperationTestHook(inject);
+  t.after(() => setNativeDirectoryOperationTestHook());
+}
 
 function snapshotTree(path: string): Array<[string, string | Buffer]> {
   const entries: Array<[string, string | Buffer]> = [];
@@ -59,6 +72,14 @@ async function assertParentCreationSymlinkRace(t: TestContext, force: boolean): 
   const sentinelBefore = fs.readFileSync(outsideSentinel);
   const missingDescendant = join(checkedAncestor, "codex-home");
   let injected = false;
+
+  injectAtDarwinNativeBoundary(t, (event) => {
+    if (!injected && event.operation === "mkdirAt" && event.phase === "before" && event.name === basename(missingDescendant)) {
+      injected = true;
+      fs.renameSync(checkedAncestor, detachedAncestor);
+      fs.symlinkSync(outside, checkedAncestor, "dir");
+    }
+  });
 
   t.mock.module("node:fs", {
     namedExports: {
@@ -121,6 +142,7 @@ test("created-child cleanup preserves a replacement swapped after identity match
   let matchedFd: number | undefined;
   let armed = false;
   let nameDeletionAttempted = false;
+  let replacementBefore: Array<[string, string | Buffer]> | undefined;
 
   t.mock.module("node:fs", {
     namedExports: {
@@ -142,6 +164,7 @@ test("created-child cleanup preserves a replacement swapped after identity match
           fs.renameSync(createdChild, detachedChild);
           fs.mkdirSync(createdChild);
           fs.writeFileSync(sentinel, sentinelContent);
+          replacementBefore = snapshotTree(createdChild);
         }
         fs.closeSync(fd);
       },
@@ -162,6 +185,8 @@ test("created-child cleanup preserves a replacement swapped after identity match
   assert.equal(nameDeletionAttempted, false);
   assert.equal(fs.lstatSync(createdChild).isDirectory(), true);
   assert.deepEqual(fs.readFileSync(sentinel), sentinelContent);
+  assert.ok(replacementBefore);
+  assert.deepEqual(snapshotTree(createdChild), replacementBefore);
   assert.equal(fs.lstatSync(detachedChild).isDirectory(), true);
 });
 
@@ -183,6 +208,17 @@ test("post-identity publication substitution has no staging name-delete cleanup"
   let targetIdentityMatches = 0;
   let stagingCreated = false;
   let nameDeletionAttempted = false;
+  let replacementBefore: Array<[string, string | Buffer]> | undefined;
+
+  injectAtDarwinNativeBoundary(t, (event) => {
+    if (!injected && targetIdentityMatches >= 2 && event.operation === "mkdirAt" && event.phase === "before" && event.name === "agents") {
+      injected = true;
+      fs.renameSync(target, detachedTarget);
+      fs.mkdirSync(target);
+      fs.writeFileSync(sentinel, sentinelContent);
+      replacementBefore = snapshotTree(target);
+    }
+  });
 
   t.mock.module("node:fs", {
     namedExports: {
@@ -203,6 +239,7 @@ test("post-identity publication substitution has no staging name-delete cleanup"
           fs.renameSync(target, detachedTarget);
           fs.mkdirSync(target);
           fs.writeFileSync(sentinel, sentinelContent);
+          replacementBefore = snapshotTree(target);
         }
         return fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
       },
@@ -227,6 +264,8 @@ test("post-identity publication substitution has no staging name-delete cleanup"
   assert.equal(nameDeletionAttempted, false);
   assert.equal(fs.lstatSync(target).isDirectory(), true);
   assert.deepEqual(fs.readFileSync(sentinel), sentinelContent);
+  assert.ok(replacementBefore);
+  assert.deepEqual(snapshotTree(target), replacementBefore);
   assert.equal(fs.lstatSync(detachedTarget).isDirectory(), true);
   assert.equal(fs.readFileSync(join(detachedTarget, "SKILL.md"), "utf8").includes("current skill"), true);
 });
@@ -243,6 +282,15 @@ test("non-forced claim preserves a target created after the absence inspection",
   const target = join(env.CODEX_HOME, "skills", "propr");
   const sentinelContent = Buffer.from([0x00, 0xff, 0x51, 0x9a]);
   let injected = false;
+  let replacementBefore: Array<[string, string | Buffer]> | undefined;
+  injectAtDarwinNativeBoundary(t, (event) => {
+    if (!injected && event.operation === "mkdirAt" && event.phase === "before" && event.name === "propr") {
+      injected = true;
+      fs.mkdirSync(target);
+      fs.writeFileSync(join(target, "sentinel.bin"), sentinelContent);
+      replacementBefore = snapshotTree(target);
+    }
+  });
   t.mock.module("node:fs", {
     namedExports: {
       ...fs,
@@ -251,6 +299,7 @@ test("non-forced claim preserves a target created after the absence inspection",
           injected = true;
           fs.mkdirSync(target);
           fs.writeFileSync(join(target, "sentinel.bin"), sentinelContent);
+          replacementBefore = snapshotTree(target);
         }
         return fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
       },
@@ -265,7 +314,8 @@ test("non-forced claim preserves a target created after the absence inspection",
   assert.equal(result.action, "failed");
   assert.match(result.detail ?? "", /created during installation and was not overwritten/);
   assert.deepEqual(fs.readFileSync(join(target, "sentinel.bin")), sentinelContent);
-  assert.deepEqual(fs.readdirSync(target), ["sentinel.bin"]);
+  assert.ok(replacementBefore);
+  assert.deepEqual(snapshotTree(target), replacementBefore);
 });
 
 test("adoption publishes only to the held tree after outside-symlink substitution", async (t) => {
@@ -287,6 +337,14 @@ test("adoption publishes only to the held tree after outside-symlink substitutio
   fs.writeFileSync(join(outside, "sentinel.bin"), Buffer.from([0x00, 0xff, 0x51, 0x9a]));
   const outsideBefore = snapshotTree(outside);
   let injected = false;
+
+  injectAtDarwinNativeBoundary(t, (event) => {
+    if (!injected && event.operation === "openAt" && event.phase === "before" && event.name === ".propr-managed.json") {
+      injected = true;
+      fs.renameSync(target, detachedTarget);
+      fs.symlinkSync(outside, target, "dir");
+    }
+  });
 
   t.mock.module("node:fs", {
     namedExports: {
@@ -335,6 +393,20 @@ test("forced backup rename cannot follow a replaced skills parent", async (t) =>
   const outsideBefore = snapshotTree(outside);
   let injected = false;
 
+  injectAtDarwinNativeBoundary(t, (event) => {
+    if (
+      !injected &&
+      event.operation === "renameAt" &&
+      event.phase === "before" &&
+      event.name === "propr" &&
+      event.newName?.startsWith(".propr.backup-")
+    ) {
+      injected = true;
+      fs.renameSync(skillsParent, detachedParent);
+      fs.symlinkSync(outside, skillsParent, "dir");
+    }
+  });
+
   t.mock.module("node:fs", {
     namedExports: {
       ...fs,
@@ -381,6 +453,20 @@ test("removal rename cannot follow a replaced skills parent", async (t) => {
   const outsideBefore = snapshotTree(outside);
   let injected = false;
 
+  injectAtDarwinNativeBoundary(t, (event) => {
+    if (
+      !injected &&
+      event.operation === "renameAt" &&
+      event.phase === "before" &&
+      event.name === "propr" &&
+      event.newName?.startsWith(".propr.removing-")
+    ) {
+      injected = true;
+      fs.renameSync(skillsParent, detachedParent);
+      fs.symlinkSync(outside, skillsParent, "dir");
+    }
+  });
+
   t.mock.module("node:fs", {
     namedExports: {
       ...fs,
@@ -422,9 +508,24 @@ test("forced install fails and preserves both trees when the published bundle is
   const target = join(env.HOME, ".vibe", "skills", "propr");
   fs.mkdirSync(target, { recursive: true });
   fs.writeFileSync(join(target, "SKILL.md"), "foreign\n");
+  fs.writeFileSync(join(target, "sentinel.bin"), Buffer.from([0x00, 0xff, 0x51, 0x9a]));
+  const originalBefore = snapshotTree(target);
+  const unrelated = join(root, "unrelated");
+  fs.mkdirSync(unrelated);
+  fs.writeFileSync(join(unrelated, "sentinel.bin"), Buffer.from([0x73, 0x11, 0x00, 0xff]));
+  const unrelatedBefore = snapshotTree(unrelated);
 
   const renames: Array<[fs.PathLike, fs.PathLike]> = [];
   let injected = false;
+  injectAtDarwinNativeBoundary(t, (event) => {
+    if (event.operation === "renameAt" && event.phase === "before") {
+      renames.push([event.name, event.newName!]);
+    }
+    if (!injected && event.operation === "openAt" && event.phase === "after" && event.name === ".propr-managed.json") {
+      injected = true;
+      fs.writeFileSync(join(target, "SKILL.md"), "modified concurrently\n");
+    }
+  });
   t.mock.module("node:fs", {
     namedExports: {
       ...fs,
@@ -458,7 +559,8 @@ test("forced install fails and preserves both trees when the published bundle is
   assert.match(result.detail ?? "", /changed after the new bundle was published and was preserved/);
   assert.ok(result.backupPath);
   assert.equal(fs.readFileSync(join(target, "SKILL.md"), "utf8"), "modified concurrently\n");
-  assert.equal(fs.readFileSync(join(result.backupPath!, "SKILL.md"), "utf8"), "foreign\n");
+  assert.deepEqual(snapshotTree(result.backupPath!), originalBefore);
+  assert.deepEqual(snapshotTree(unrelated), unrelatedBefore);
 });
 
 test("publication cannot follow a target replaced by an outside symlink after the final safety check", async (t) => {
@@ -477,6 +579,16 @@ test("publication cannot follow a target replaced by an outside symlink after th
   const outsideBefore = snapshotTree(outside);
   let targetClaimed = false;
   let injected = false;
+
+  injectAtDarwinNativeBoundary(t, (event) => {
+    if (event.operation !== "mkdirAt") return;
+    if (!injected && targetClaimed && event.phase === "before") {
+      injected = true;
+      fs.rmSync(target, { recursive: true });
+      fs.symlinkSync(outside, target, "dir");
+    }
+    if (event.phase === "after" && event.name === "propr") targetClaimed = true;
+  });
 
   t.mock.module("node:fs", {
     namedExports: {
@@ -512,7 +624,7 @@ test("publication cannot follow a target replaced by an outside symlink after th
   assert.equal(fs.lstatSync(target).isSymbolicLink(), true);
 });
 
-test("forced install leaves a concurrent empty directory untouched and reports the displaced original", async (t) => {
+test("forced install leaves a concurrent replacement untouched and reports the displaced original", async (t) => {
   const root = temporaryRoot(t, "propr-agent-skill-force-publish-race-test-");
   const env = {
     HOME: join(root, "home"),
@@ -527,6 +639,16 @@ test("forced install leaves a concurrent empty directory untouched and reports t
   const target = join(env.HOME, ".vibe", "skills", "propr");
   fs.mkdirSync(target, { recursive: true });
   fs.writeFileSync(join(target, "SKILL.md"), "foreign\n");
+  const replacementContent = Buffer.from([0x00, 0xff, 0x51, 0x9a]);
+  let replacementBefore: Array<[string, string | Buffer]> | undefined;
+
+  injectAtDarwinNativeBoundary(t, (event) => {
+    if (event.operation === "renameAt" && event.phase === "after" && event.name === "propr") {
+      fs.mkdirSync(target);
+      fs.writeFileSync(join(target, "sentinel.bin"), replacementContent);
+      replacementBefore = snapshotTree(target);
+    }
+  });
 
   t.mock.module("node:fs", {
     namedExports: {
@@ -535,6 +657,8 @@ test("forced install leaves a concurrent empty directory untouched and reports t
         fs.renameSync(oldPath, newPath);
         if (basename(String(oldPath)) === "propr") {
           fs.mkdirSync(target);
+          fs.writeFileSync(join(target, "sentinel.bin"), replacementContent);
+          replacementBefore = snapshotTree(target);
         }
       },
     },
@@ -555,7 +679,9 @@ test("forced install leaves a concurrent empty directory untouched and reports t
   assert.match(result.detail ?? "", /content preserved at/);
   assert.match(result.detail ?? "", new RegExp(result.backupPath!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.equal(fs.readFileSync(join(result.backupPath!, "SKILL.md"), "utf8"), "foreign\n");
-  assert.deepEqual(fs.readdirSync(target), []);
+  assert.ok(replacementBefore);
+  assert.deepEqual(snapshotTree(target), replacementBefore);
+  assert.deepEqual(fs.readFileSync(join(target, "sentinel.bin")), replacementContent);
 });
 
 test("non-forced update preserves a detached tree changed after validation", async (t) => {
