@@ -83,11 +83,21 @@ export interface TaskAnalysisResponse {
 
 export interface QueueStats {
   active: number;
+  activeJobs?: LiveQueueJob[];
   waiting: number;
   completed: number;
   failed: number;
   delayed: number;
   paused: number;
+}
+
+export interface LiveQueueJob {
+  id: string;
+  taskId: string;
+  name: string;
+  title: string;
+  repository: string;
+  createdAt: string;
 }
 
 export interface GeneratingPlansResponse {

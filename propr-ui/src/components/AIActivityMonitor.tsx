@@ -56,7 +56,7 @@ const AIActivityMonitor: React.FC<AIActivityMonitorProps> = ({ runningItems, run
     if (item.type === 'plan') {
       navigate(`/studio/${item.id}`);
     } else {
-      navigate(`/tasks/${item.id}`);
+      navigate(`/tasks/${item.navigationId || item.id}`);
     }
   };
 
