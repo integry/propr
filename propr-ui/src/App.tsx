@@ -18,6 +18,7 @@ import {
 import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
 import type { CurrentUser, InstancePermission } from './api/proprTypes'
 import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
+import { ConnectAccountProvider } from './contexts/ConnectAccountContext'
 
 const AiAgentsPage = lazy(() => import('./pages/AiAgentsPage'))
 const AccessManagementPage = lazy(() => import('./pages/AccessManagementPage'))
@@ -224,9 +225,10 @@ const AppContent: React.FC = () => {
             <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
               <Router>
                 <HostedFlowRouteSync />
-                <RouteChunkErrorBoundary>
-                  <Suspense fallback={<LoadingSpinner />}>
-                    <Routes>
+                <ConnectAccountProvider disabled={isDemoMode || currentUser === null}>
+                  <RouteChunkErrorBoundary>
+                    <Suspense fallback={<LoadingSpinner />}>
+                      <Routes>
                     <Route path="/login" element={<LoginPage />} />
                     <Route path="/revert" element={<RevertPage />} />
                     <Route
@@ -339,9 +341,10 @@ const AppContent: React.FC = () => {
                         </Layout>
                       }
                     />
-                    </Routes>
-                  </Suspense>
-                </RouteChunkErrorBoundary>
+                      </Routes>
+                    </Suspense>
+                  </RouteChunkErrorBoundary>
+                </ConnectAccountProvider>
               </Router>
             </AuthProvider>
           </div>

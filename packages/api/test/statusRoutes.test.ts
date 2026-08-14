@@ -393,6 +393,167 @@ test('/api/status includes routing state published by the daemon', async () => {
   assert.deepEqual(body.routing, routingState);
 });
 
+test('/api/status exposes only validated UI-safe Connect account fields', async () => {
+  const connectAccount = {
+    installationId: 42,
+    accountLogin: 'octo-org',
+    plan: 'community',
+    hasPlusAccess: false,
+    activeSeats: 3,
+    allowedSeats: 3,
+    seatsRemaining: 0,
+    billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+    seatLimitBlockedAt: '2026-08-14T09:31:06.000Z',
+    sentAt: '2026-08-14T09:31:07.000Z',
+    polarCustomerId: 'must-not-be-exposed',
+  };
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) => key === 'system:status:routing'
+      ? JSON.stringify({
+          connected: true,
+          routingUrl: 'wss://routing.example',
+          lastDeliveryId: null,
+          lastAckAt: null,
+          connectAccount,
+        })
+      : Date.now().toString(),
+    sCard: async () => 1,
+  };
+
+  const body = await readStatus({ redisClient: redisClient as never });
+  assert.deepEqual(body.connectAccount, {
+    installationId: 42,
+    accountLogin: 'octo-org',
+    plan: 'community',
+    hasPlusAccess: false,
+    activeSeats: 3,
+    allowedSeats: 3,
+    seatsRemaining: 0,
+    billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+    seatLimitBlockedAt: '2026-08-14T09:31:06.000Z',
+    sentAt: '2026-08-14T09:31:07.000Z',
+  });
+  assert.deepEqual((body.routing as { connectAccount: unknown }).connectAccount, body.connectAccount);
+});
+
+test('/api/status rejects impossible account dates and preserves valid leap-day instants', async () => {
+  const connectAccount = {
+    installationId: 42,
+    accountLogin: 'octo-org',
+    plan: 'community',
+    hasPlusAccess: false,
+    activeSeats: 2,
+    allowedSeats: 3,
+    seatsRemaining: 1,
+    billingCycleResetAt: '2024-02-29T23:59:59.123456789Z',
+    seatLimitBlockedAt: '2024-02-29T12:30:45.5+05:30',
+    sentAt: '2024-02-29T08:15:00-04:00',
+  };
+  const readAccount = async (account: typeof connectAccount) => readStatus({
+    redisClient: {
+      ping: async () => 'PONG',
+      get: async (key: string) => key === 'system:status:routing'
+        ? JSON.stringify({
+            connected: true,
+            routingUrl: 'wss://routing.example',
+            lastDeliveryId: null,
+            lastAckAt: null,
+            connectAccount: account,
+          })
+        : Date.now().toString(),
+      sCard: async () => 1,
+    } as never,
+  });
+
+  assert.deepEqual((await readAccount(connectAccount)).connectAccount, connectAccount);
+
+  for (const field of ['billingCycleResetAt', 'seatLimitBlockedAt', 'sentAt'] as const) {
+    const body = await readAccount({
+      ...connectAccount,
+      [field]: '2026-02-30T00:00:00.000Z',
+    });
+    assert.equal('connectAccount' in body, false, `${field} must reject an impossible calendar date`);
+  }
+});
+
+test('/api/status drops malformed or disconnected Connect account state without assuming Community', async () => {
+  for (const routingState of [
+    {
+      connected: true,
+      routingUrl: 'wss://routing.example',
+      lastDeliveryId: null,
+      lastAckAt: null,
+      connectAccount: { installationId: 42, plan: 'community' },
+    },
+    {
+      connected: false,
+      routingUrl: 'wss://routing.example',
+      lastDeliveryId: null,
+      lastAckAt: null,
+      connectAccount: {
+        installationId: 42,
+        accountLogin: 'octo-org',
+        plan: 'community',
+        hasPlusAccess: false,
+        activeSeats: 1,
+        allowedSeats: 3,
+        seatsRemaining: 2,
+        billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+        sentAt: '2026-08-14T09:31:07.000Z',
+      },
+    },
+  ]) {
+    const redisClient = {
+      ping: async () => 'PONG',
+      get: async (key: string) => key === 'system:status:routing'
+        ? JSON.stringify(routingState)
+        : Date.now().toString(),
+      sCard: async () => 1,
+    };
+    const body = await readStatus({ redisClient: redisClient as never });
+    assert.equal('connectAccount' in body, false);
+    assert.equal(
+      'connectAccount' in (body.routing as Record<string, unknown>),
+      false,
+    );
+  }
+});
+
+test('/api/status does not expose Connect account state for a non-Connect intake mode', async () => {
+  const redisClient = {
+    ping: async () => 'PONG',
+    get: async (key: string) => key === 'system:status:routing'
+      ? JSON.stringify({
+          connected: true,
+          routingUrl: 'wss://routing.example',
+          lastDeliveryId: null,
+          lastAckAt: null,
+          connectAccount: {
+            installationId: 42,
+            accountLogin: 'octo-org',
+            plan: 'community',
+            hasPlusAccess: false,
+            activeSeats: 1,
+            allowedSeats: 3,
+            seatsRemaining: 2,
+            billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+            sentAt: '2026-08-14T09:31:07.000Z',
+          },
+        })
+      : Date.now().toString(),
+    sCard: async () => 1,
+  };
+  const body = await readStatus({ redisClient: redisClient as never }, () => {
+    process.env.GITHUB_EVENT_INTAKE_MODE = 'polling';
+  });
+  assert.equal('connectAccount' in body, false);
+  assert.equal(
+    'connectAccount' in (body.routing as Record<string, unknown>),
+    false,
+  );
+});
+
 test('/api/status reports connected githubAuth for relay-auth deployments', async () => {
   const body = await readStatus({}, () => {
     process.env.PROPR_GH_RELAY_URL = 'https://relay.example';
