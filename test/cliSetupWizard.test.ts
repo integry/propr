@@ -148,6 +148,9 @@ function diskActions(overrides: Partial<SetupActions> = {}): SetupActions {
     resolveUiUrl: async () => "http://localhost:3000",
     openUrl: async () => undefined,
     saveWhitelistSetting: async () => undefined,
+    // Most disk-focused tests start from an already authenticated CLI profile;
+    // individual login/recovery cases override this explicitly.
+    hasGithubToken: () => true,
     listAgents: async () => [],
     addAgent: async () => undefined,
     loginableAgents: async () => [],

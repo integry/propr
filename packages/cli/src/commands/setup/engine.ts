@@ -234,8 +234,9 @@ export interface SetupPrompts {
    */
   selectInstallation?(ctx: { installations: AuthorizedInstallation[] }): Promise<string>;
   /**
-   * Ask whether to run the interactive `propr login` (gh CLI) now, when Connect
-   * enrollment needs a GitHub token and none is stored. `reason` explains why.
+   * Ask whether to run the interactive `propr login` (gh CLI) now when Connect
+   * enrollment or protected local API steps need a user token and none is
+   * stored. `reason` explains which part of setup needs it.
    */
   confirmGithubLogin?(ctx: { reason: string }): Promise<boolean>;
   /** Offer to open the official hosted ProPR GitHub App installation page. */
@@ -367,7 +368,7 @@ export interface SetupActions extends AgentSetupActions {
    * left intact.
    */
   saveWhitelistSetting(rootDir: string, users: string[]): Promise<void>;
-  /** True when a GitHub token is stored (the Connect enrollment path needs it). */
+  /** True when a GitHub user token is stored (relay enrollment and protected local API calls need it). */
   hasGithubToken(): boolean;
   /**
    * List the relay installations the stored GitHub identity can access (drives
@@ -424,8 +425,15 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
   const localApiClient = async (rootDir: string): Promise<import("../../api/client.js").ApiClient> => {
     const { getHostConfig } = await import("../../orchestrator/index.js");
     const { cfg } = await getHostConfig({ configManager, root: rootDir });
-    const { createApiClient } = await import("../../api/client.js");
-    return createApiClient({ baseUrl: localhostServiceUrl(cfg.apiPort) });
+    const { createApiClient, createApiClientWithConfig } = await import("../../api/client.js");
+    const options = { baseUrl: localhostServiceUrl(cfg.apiPort) };
+    // Keep the local client on setup's active profile and, importantly, the
+    // token that an in-progress setup login just stored. Creating an unrelated
+    // manager here can otherwise lose profile context and call protected local
+    // endpoints without the token setup has already obtained.
+    return configManager
+      ? createApiClientWithConfig(configManager, options)
+      : createApiClient(options);
   };
 
   return {
@@ -1138,6 +1146,27 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         "Set PROPR_ADMIN_USERS to at least one GitHub username, repair the configured datastore, or re-run setup and enroll ProPR Connect with an authenticated GitHub account.",
     });
     return finish();
+  }
+
+  // The GitHub App authenticates the backend to GitHub, but it does not
+  // authenticate this CLI user to the backend. Everything setup does after the
+  // stack starts (/api/status, agent configuration, settings, and repositories)
+  // is protected by bearer auth, so obtain the same user token as `propr login`
+  // before making any of those calls. Connect enrollment already guarantees a
+  // token; this primarily closes the custom-App first-run and recovery paths.
+  if (resolvedAuth.mode !== "demo" && !actions.hasGithubToken()) {
+    const reason = "Finishing setup requires a GitHub user token for protected backend API steps.";
+    if (prompts.confirmGithubLogin && (await prompts.confirmGithubLogin({ reason }))) {
+      await actions.loginWithGithub({ onLog: log });
+    }
+    if (!actions.hasGithubToken()) {
+      settle("github-auth", {
+        status: "failed",
+        detail: `auth mode: ${resolvedAuth.mode}; GitHub user login is required to finish setup`,
+        nextAction: "Run `propr login`, then re-run `propr setup`; the existing stack configuration will be reused.",
+      });
+      return finish();
+    }
   }
 
   if (relayDoneDetail) {

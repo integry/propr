@@ -897,6 +897,114 @@ test("relay enrollment without a token (and no login hook) blocks startup and wr
   assert.equal(statusOf(result.state, "start-stack"), "pending");
 });
 
+test("custom-App setup obtains a user token before protected backend checks", async () => {
+  let appConfigured = false;
+  let tokenPresent = false;
+  let loginCalled = false;
+  let healthCalled = false;
+  let loginReason = "";
+
+  const result = await runSetup({
+    root: "/stack",
+    prompts: {
+      configureGithubAuth: async () => ({
+        mode: "app",
+        vars: {
+          GH_AUTH_MODE: "app",
+          GH_APP_ID: "123",
+          HOST_GH_PRIVATE_KEY: "/keys/app.pem",
+          GH_INSTALLATION_ID: "456",
+        },
+      }),
+      confirmGithubLogin: async ({ reason }) => {
+        loginReason = reason;
+        return true;
+      },
+    },
+    actions: mockActions({
+      detectGithubAuthMode: () => appConfigured ? APP_AUTH : NO_AUTH,
+      applyEnvSelection: (_root, vars) => {
+        if (vars.GH_AUTH_MODE === "app") appConfigured = true;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+      hasGithubToken: () => tokenPresent,
+      loginWithGithub: async () => {
+        loginCalled = true;
+        tokenPresent = true;
+        return true;
+      },
+      checkBackendHealth: async () => {
+        healthCalled = true;
+        assert.equal(tokenPresent, true, "the protected status client must be authenticated first");
+        return { healthy: true, detail: "API healthy" };
+      },
+    }),
+  });
+
+  assert.equal(loginCalled, true);
+  assert.match(loginReason, /protected backend API steps/);
+  assert.equal(healthCalled, true);
+  assert.equal(statusOf(result.state, "github-auth"), "done");
+  assert.equal(statusOf(result.state, "start-stack"), "done");
+  assert.equal(result.completed, true);
+});
+
+test("custom-App setup stops clearly without login and an authenticated rerun recovers", async () => {
+  let appConfigured = false;
+  let tokenPresent = false;
+  let healthCalls = 0;
+  const actions = mockActions({
+    detectGithubAuthMode: () => appConfigured ? APP_AUTH : NO_AUTH,
+    applyEnvSelection: (_root, vars) => {
+      if (vars.GH_AUTH_MODE === "app") appConfigured = true;
+      return { written: Object.keys(vars), skipped: [] };
+    },
+    hasGithubToken: () => tokenPresent,
+    checkBackendHealth: async () => {
+      healthCalls += 1;
+      return { healthy: true, detail: "API healthy" };
+    },
+  });
+
+  const interrupted = await runSetup({
+    root: "/stack",
+    prompts: {
+      configureGithubAuth: async () => ({
+        mode: "app",
+        vars: { GH_AUTH_MODE: "app", GH_APP_ID: "123", GH_INSTALLATION_ID: "456" },
+      }),
+      confirmGithubLogin: async () => false,
+    },
+    actions,
+  });
+
+  assert.equal(appConfigured, true, "the valid custom-App configuration is preserved");
+  assert.equal(statusOf(interrupted.state, "github-auth"), "failed");
+  assert.match(getStep(interrupted.state, "github-auth")?.detail ?? "", /user login is required/);
+  assert.match(getStep(interrupted.state, "github-auth")?.nextAction ?? "", /propr login.*re-run `propr setup`/);
+  assert.equal(statusOf(interrupted.state, "start-stack"), "pending");
+  assert.equal(healthCalls, 0, "setup must not poll protected status without a token");
+
+  // This is the documented recovery: `propr login`, then rerun setup. The
+  // existing App configuration is kept and setup proceeds directly to health.
+  tokenPresent = true;
+  const recovered = await runSetup({
+    root: "/stack",
+    prompts: {
+      configureGithubAuth: async () => ({ keep: true }),
+      confirmGithubLogin: async () => {
+        throw new Error("an authenticated rerun must not prompt for login");
+      },
+    },
+    actions,
+  });
+
+  assert.equal(healthCalls, 1);
+  assert.equal(statusOf(recovered.state, "github-auth"), "done");
+  assert.equal(statusOf(recovered.state, "start-stack"), "done");
+  assert.equal(recovered.completed, true);
+});
+
 test("a relay enrollment failure blocks startup", async () => {
   const result = await runSetup({
     root: "/stack",

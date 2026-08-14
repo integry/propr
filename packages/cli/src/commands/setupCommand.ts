@@ -46,13 +46,13 @@ export function canRenderInkSetup(
 /**
  * Authenticate before Ink enables terminal raw mode. Reuse an existing `gh`
  * session silently; otherwise ask one default-Yes question and let `gh auth
- * login` own the terminal. The setup engine can then enroll the default ProPR
- * Connect path without asking the user to quit and rerun another command.
+ * login` own the terminal. Both Connect enrollment and the protected local API
+ * steps used by a custom-App setup then have the user token they require.
  */
 async function prepareInkGithubLogin(configManager: ConfigManager, root?: string): Promise<void> {
   const { detectGithubAuthMode, resolveSetupRoot } = await import("./setup/state.js");
   const currentAuth = detectGithubAuthMode(resolveSetupRoot(configManager, root));
-  if (currentAuth.mode !== "none") return;
+  if (currentAuth.mode === "demo") return;
   if (configManager.getGithubToken()) return;
   const { loginWithGithubCli } = await import("../auth/githubLogin.js");
   const reused = await loginWithGithubCli(configManager, { interactive: false });
@@ -61,7 +61,7 @@ async function prepareInkGithubLogin(configManager: ConfigManager, root?: string
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   let answer = "";
   try {
-    answer = await readline.question("Log in to GitHub for the default ProPR Connect setup? [Y/n] ");
+    answer = await readline.question("Log in to GitHub to finish protected setup steps? [Y/n] ");
   } finally {
     readline.close();
   }
