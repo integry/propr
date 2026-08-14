@@ -37,11 +37,11 @@ test("followupTask posts the task follow-up body", async () => {
 test("stopTask posts to the canonical stop endpoint with encoded task IDs", async () => {
   const { client, calls } = clientWithCalls({ success: true, message: "stopped" });
 
-  await stopTask("task.alpha_beta-42", client);
+  await stopTask("task/id?attempt=2", client);
 
   assert.deepEqual(calls, [{
     method: "POST",
-    endpoint: "/api/task/task.alpha_beta-42/stop",
+    endpoint: "/api/task/task%2Fid%3Fattempt%3D2/stop",
     options: undefined,
   }]);
 });
