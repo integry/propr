@@ -227,14 +227,38 @@ interface PersistedQueueCandidate {
   persisted?: Record<string, unknown>;
 }
 
-function appendPersistedQueueCandidate(
+async function reconcilePersistedQueueCandidate(
   candidate: PersistedQueueCandidate,
   items: LiveActivityItem[],
   livePersistedTaskIds: Set<string>,
-): boolean {
+  deps: LiveActivityRoutesDeps,
+): Promise<boolean> {
   const { job, state, persisted } = candidate;
   if (!persisted || !jobMatchesPersistedExecution(job, persisted)) return false;
   const persistedTaskId = String(persisted.task_id);
+  if (!LIVE_JOB_STATES.has(state)) {
+    const liveness = await hasAuthoritativeLiveness(persisted, deps);
+    const itemIndex = items.findIndex(item => item.type === 'task' && item.id === persistedTaskId);
+    if (!liveness) {
+      if (itemIndex >= 0) items.splice(itemIndex, 1);
+      livePersistedTaskIds.delete(persistedTaskId);
+      return true;
+    }
+
+    const refreshedItem: LiveActivityItem = {
+      id: persistedTaskId,
+      type: 'task',
+      label: taskLabel(persisted),
+      repository: String(persisted.repository ?? 'unknown/unknown'),
+      status: liveness.source === 'queue' ? queueStatus(liveness.queueState) : 'Implementing',
+      createdAt: asIso(persisted.created_at),
+    };
+    if (itemIndex >= 0) items[itemIndex] = refreshedItem;
+    else items.push(refreshedItem);
+    livePersistedTaskIds.add(persistedTaskId);
+    return true;
+  }
+
   if (!livePersistedTaskIds.has(persistedTaskId)) {
     items.push({
       id: persistedTaskId,
@@ -310,17 +334,18 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
         const refreshedJob = await deps.taskQueue.getJob(String(candidate.job.id)) as Job | undefined;
         if (!refreshedJob || refreshedJob.id === undefined || !isTaskExecutionJob(refreshedJob)) continue;
         const refreshedState = await refreshedJob.getState();
-        if (!LIVE_JOB_STATES.has(refreshedState)) continue;
         const refreshedJobId = String(refreshedJob.id);
         const authoritativeTaskId = queuedTaskId(refreshedJob) ?? refreshedJobId;
         const importKey = queuedTaskImportAssociationKey(refreshedJob);
         const persisted = persistedExecutions.get(authoritativeTaskId)
           ?? (importKey ? persistedTaskImports.get(importKey) : undefined);
-        if (appendPersistedQueueCandidate(
+        if (await reconcilePersistedQueueCandidate(
           { job: refreshedJob, state: refreshedState, persisted },
           items,
           livePersistedTaskIds,
+          deps,
         )) continue;
+        if (!LIVE_JOB_STATES.has(refreshedState)) continue;
         items.push({
           id: authoritativeTaskId,
           type: 'task',
