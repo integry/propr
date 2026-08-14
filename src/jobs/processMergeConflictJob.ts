@@ -249,6 +249,10 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
 
+    if (job.data.taskId !== taskId) {
+        await job.updateData({ ...job.data, taskId });
+    }
+
     const lockStatus = await acquireMergeJobLock(lockKey, correlationId, job, correlatedLogger);
     if (!lockStatus.acquired) return lockStatus.result;
 

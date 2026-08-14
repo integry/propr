@@ -93,10 +93,12 @@ test('recovers completed and failed BullMQ outcomes through the shared finalizer
     const failed = makeTask('pr-comments-failed');
     const jobs = new Map([
         [completed.taskId, {
+            id: completed.taskId,
             returnvalue: { status: 'complete' },
             getState: async () => 'completed',
         }],
         [failed.taskId, {
+            id: failed.taskId,
             failedReason: 'agent crashed',
             getState: async () => 'failed',
         }],
@@ -145,7 +147,12 @@ test('recovers an expired-Redis issue snapshot and maps a skipped job to cancell
         queue: {
             getJob: async taskId => {
                 assert.equal(taskId, 'issue-job-1898');
-                return { returnvalue: { status: 'skipped', reason: 'Already done' }, getState: async () => 'completed' };
+                return {
+                    id: taskId,
+                    data: { taskId: issue.taskId },
+                    returnvalue: { status: 'skipped', reason: 'Already done' },
+                    getState: async () => 'completed',
+                };
             },
         },
         stateManager,
@@ -188,6 +195,40 @@ test('leaves a legacy issue unchanged when its exact BullMQ job mapping is unava
     assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
 });
 
+test('a reused issue job ID cannot revive or finalize an older execution', async () => {
+    const issue = makeTask('old-issue-execution', {
+        issueRef: {
+            type: 'issue',
+            number: 1898,
+            repoOwner: 'integry',
+            repoName: 'propr',
+            jobId: 'reused-issue-job',
+        },
+    });
+    const getState = mock.fn(async () => 'completed');
+    const result = await reconcileStalePRCommentTasks({
+        queue: {
+            getJob: async () => ({
+                id: 'reused-issue-job',
+                data: { taskId: 'new-issue-execution' },
+                returnvalue: { status: 'complete' },
+                getState,
+            }),
+        },
+        stateManager: createStateManager([issue]),
+        inspectContainer: async () => 'not_found',
+        inspectLegacyContainer: async () => 'not_found',
+        now: NOW,
+    });
+
+    assert.equal(result.summary.live, 0);
+    assert.equal(result.summary.recovered, 0);
+    assert.equal(result.summary.errors, 1);
+    assert.equal(getState.mock.calls.length, 0);
+    assert.equal(finalizeCompletedPRCommentTask.mock.calls.length, 0);
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
+});
+
 test('leaves every live queue state, recent, non-PR, and future-dated work untouched', async () => {
     const liveTasks = ['active', 'waiting', 'delayed', 'prioritized'].map(state => ({
         state,
@@ -207,7 +248,7 @@ test('leaves every live queue state, recent, non-PR, and future-dated work untou
         queue: {
             getJob: async taskId => {
                 const live = liveTasks.find(candidate => candidate.task.taskId === taskId);
-                return live ? { getState: async () => live.state } : null;
+                return live ? { id: taskId, getState: async () => live.state } : null;
             },
         },
         stateManager: createStateManager([
@@ -325,7 +366,7 @@ test('isolates a task lookup failure and continues the scan', async () => {
         queue: {
             getJob: async taskId => {
                 if (taskId === broken.taskId) throw new Error('Redis unavailable');
-                return { returnvalue: { status: 'complete' }, getState: async () => 'completed' };
+                return { id: taskId, returnvalue: { status: 'complete' }, getState: async () => 'completed' };
             },
         },
         stateManager: createStateManager([broken, completed]),
@@ -352,7 +393,8 @@ test('resumes the unprocessed part of a page before scanning the next cursor', a
 
     const resumedResult = await reconcileStalePRCommentTasks({
         queue: {
-            getJob: async () => ({
+            getJob: async taskId => ({
+                id: taskId,
                 returnvalue: { status: 'complete' },
                 getState: async () => 'completed',
             }),

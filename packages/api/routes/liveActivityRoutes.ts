@@ -9,6 +9,12 @@ import {
 const LIVE_JOB_TYPES = ['active', 'waiting', 'delayed', 'prioritized', 'waiting-children', 'paused'] as const;
 const LIVE_JOB_STATES = new Set<string>(LIVE_JOB_TYPES);
 const NONTERMINAL_TASK_STATES = ['pending', 'processing', 'claude_execution', 'post_processing'];
+const TASK_EXECUTION_JOB_NAMES = new Set([
+  'processGitHubIssue',
+  'processPullRequestComment',
+  'processTaskImport',
+  'processMergeConflict',
+]);
 const CANDIDATE_PAGE_SIZE = 100;
 const LIVENESS_CONCURRENCY = 10;
 
@@ -51,21 +57,59 @@ interface QueueActivityCandidate {
   item: LiveActivityItem;
 }
 
-function queuedIssueTaskId(job: Job): string | undefined {
+function persistedTaskType(row: Record<string, unknown>): string | undefined {
+  try {
+    const payload = typeof row.initial_job_data === 'string'
+      ? JSON.parse(row.initial_job_data)
+      : row.initial_job_data;
+    return typeof payload?.type === 'string' ? payload.type : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function queuedTaskId(job: Job): string | undefined {
   const data = job.data as Record<string, unknown>;
   if (typeof data.taskId === 'string' && data.taskId) return data.taskId;
+  if (job.name === 'processPullRequestComment' || job.name === 'processMergeConflict') {
+    return job.id === undefined ? undefined : String(job.id);
+  }
+  if (job.name !== 'processGitHubIssue') return undefined;
   const fields = ['repoOwner', 'repoName', 'agentAlias', 'modelName', 'correlationId'] as const;
   if (!fields.every(field => typeof data[field] === 'string' && data[field])
     || (typeof data.number !== 'number' && typeof data.number !== 'string')) return undefined;
   return `${data.repoOwner}-${data.repoName}-${data.number}-${data.agentAlias}-${data.modelName}-${data.correlationId}`;
 }
 
-function queuedIssueLabel(job: Job): string {
+function queuedTaskLabel(job: Job): string {
   const data = job.data as Record<string, unknown>;
   if (typeof data.title === 'string' && data.title) return data.title;
+  if (job.name === 'processTaskImport' && typeof data.taskDescription === 'string' && data.taskDescription) {
+    return data.taskDescription;
+  }
+  if (job.name === 'processPullRequestComment') {
+    return `PR #${String(data.pullRequestNumber ?? 'unknown')}`;
+  }
+  if (job.name === 'processMergeConflict') {
+    return `Resolve conflicts for PR #${String(data.pullRequestNumber ?? 'unknown')}`;
+  }
   const issuePayload = data.issuePayload as Record<string, unknown> | undefined;
   if (typeof issuePayload?.title === 'string' && issuePayload.title) return issuePayload.title;
   return `Issue #${String(data.number ?? 'unknown')}`;
+}
+
+function queuedRepository(job: Job): string {
+  const data = job.data as Record<string, unknown>;
+  if (typeof data.repository === 'string' && data.repository) return data.repository;
+  return `${String(data.repoOwner ?? 'unknown')}/${String(data.repoName ?? 'unknown')}`;
+}
+
+function isTaskExecutionJob(job: Job): boolean {
+  if (!TASK_EXECUTION_JOB_NAMES.has(job.name)) return false;
+  // This mirrors processGitHubIssueJob's dispatch predicate: falsey
+  // isChildJob values are matrix-dispatch parents and do not create tasks.
+  return job.name !== 'processGitHubIssue'
+    || Boolean((job.data as Record<string, unknown>).isChildJob);
 }
 
 function queueStatus(state: string): string {
@@ -75,29 +119,27 @@ function queueStatus(state: string): string {
   return 'Queued';
 }
 
-async function findLiveQueuedIssueJobs(deps: LiveActivityRoutesDeps): Promise<QueueActivityCandidate[]> {
+async function findLiveQueuedTaskJobs(deps: LiveActivityRoutesDeps): Promise<QueueActivityCandidate[]> {
   const jobs = await deps.taskQueue.getJobs([...LIVE_JOB_TYPES], 0, -1, true);
   const candidates: QueueActivityCandidate[] = [];
   for (let index = 0; index < jobs.length; index += LIVENESS_CONCURRENCY) {
     const batch = jobs.slice(index, index + LIVENESS_CONCURRENCY);
     const states = await Promise.all(batch.map(job => job.getState()));
     batch.forEach((job, offset) => {
-      const data = job.data as Record<string, unknown>;
       const state = states[offset];
-      if (job.name !== 'processGitHubIssue'
-        || data.isChildJob !== true
+      if (!isTaskExecutionJob(job as Job)
         || job.id === undefined
         || !LIVE_JOB_STATES.has(state)) return;
       const jobId = String(job.id);
-      const taskId = queuedIssueTaskId(job as Job);
+      const taskId = queuedTaskId(job as Job);
       candidates.push({
         jobId,
         taskId,
         item: {
           id: taskId ?? jobId,
           type: 'task',
-          label: queuedIssueLabel(job as Job),
-          repository: `${String(data.repoOwner ?? 'unknown')}/${String(data.repoName ?? 'unknown')}`,
+          label: queuedTaskLabel(job as Job),
+          repository: queuedRepository(job as Job),
           status: queueStatus(state),
           createdAt: asIso(job.timestamp),
         },
@@ -105,6 +147,18 @@ async function findLiveQueuedIssueJobs(deps: LiveActivityRoutesDeps): Promise<Qu
     });
   }
   return candidates;
+}
+
+function jobMatchesPersistedExecution(job: Job, row: Record<string, unknown>): boolean {
+  const taskId = String(row.task_id);
+  const data = job.data as Record<string, unknown>;
+  if (typeof data.taskId === 'string' && data.taskId) return data.taskId === taskId;
+  const isPRComment = persistedTaskType(row) === 'pr_comment'
+    || taskId.startsWith('pr-comment-')
+    || taskId.startsWith('pr-comments-');
+  return isPRComment
+    && job.id !== undefined
+    && String(job.id) === taskId;
 }
 
 async function hasAuthoritativeLiveness(
@@ -116,7 +170,8 @@ async function hasAuthoritativeLiveness(
   let queueAvailable = true;
   try {
     const job = await deps.taskQueue.getJob(jobId);
-    if (job && LIVE_JOB_STATES.has(await job.getState())) return true;
+    if (job && jobMatchesPersistedExecution(job as Job, row)
+      && LIVE_JOB_STATES.has(await job.getState())) return true;
   } catch (error) {
     queueAvailable = false;
     logger.warn({ taskId, jobId, error: (error as Error).message }, 'BullMQ liveness unavailable for header activity');
@@ -176,12 +231,11 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
         createdAt: asIso(row.created_at),
       }));
 
-      // Child jobs can be live before their worker creates a task/history row.
-      // Enumerate those states directly, then prefer a persisted task item once
-      // one exists for the same BullMQ execution.
-      const queuedCandidates = await findLiveQueuedIssueJobs(deps);
-      const persistedTaskIds = new Set<string>();
-      const persistedJobIds = new Set<string>();
+      // Task-producing jobs can be live before their worker creates a
+      // task/history row. Enumerate them directly, then prefer a persisted task
+      // only when both records identify the same execution.
+      const queuedCandidates = await findLiveQueuedTaskJobs(deps);
+      const persistedExecutions = new Set<string>();
 
       const latestHistory = deps.db('task_history')
         .select('task_id')
@@ -199,16 +253,15 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
           .orderBy('t.task_id', 'asc')
           .limit(CANDIDATE_PAGE_SIZE) as Array<Record<string, unknown>>;
         rows.forEach(row => {
-          persistedTaskIds.add(String(row.task_id));
-          if (row.job_id) persistedJobIds.add(String(row.job_id));
+          if (row.job_id) persistedExecutions.add(`${String(row.job_id)}\0${String(row.task_id)}`);
         });
         items.push(...await filterLivePage(rows, deps));
         if (rows.length < CANDIDATE_PAGE_SIZE) break;
         afterTaskId = String(rows[rows.length - 1].task_id);
       }
       queuedCandidates.forEach(candidate => {
-        if (persistedJobIds.has(candidate.jobId)
-          || (candidate.taskId && persistedTaskIds.has(candidate.taskId))) return;
+        if (candidate.taskId
+          && persistedExecutions.has(`${candidate.jobId}\0${candidate.taskId}`)) return;
         items.push(candidate.item);
       });
 

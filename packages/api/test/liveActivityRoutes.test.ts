@@ -68,7 +68,7 @@ test('header count and list share the exact live set beyond the historical 20-ro
   }));
   await db('tasks').insert([
     ...staleTasks,
-    { task_id: 'long-live', job_id: 'long-job', repository: 'integry/propr', created_at: '2026-06-01T00:00:00.000Z', initial_job_data: JSON.stringify({ title: 'Long running' }) },
+    { task_id: 'long-live', job_id: 'long-job', repository: 'integry/propr', created_at: '2026-06-01T00:00:00.000Z', initial_job_data: JSON.stringify({ title: 'Long running', type: 'issue' }) },
     { task_id: 'container-live', job_id: 'finished-job', repository: 'integry/propr', created_at: '2026-08-14T13:00:00.000Z', initial_job_data: '{}' },
   ]);
   await db('task_history').insert([...staleTasks.map(task => ({ task_id: task.task_id, state: 'processing' })),
@@ -78,7 +78,7 @@ test('header count and list share the exact live set beyond the historical 20-ro
   const queue = {
     getJobs: async () => [],
     getJob: async (jobId: string) => jobId === 'long-job'
-      ? { getState: async () => 'active' }
+      ? { id: jobId, data: { taskId: 'long-live' }, getState: async () => 'active' }
       : jobId === 'finished-job' ? { getState: async () => 'completed' } : null,
   };
   const routes = createLiveActivityRoutes({
@@ -94,7 +94,7 @@ test('header count and list share the exact live set beyond the historical 20-ro
   assert.equal(result.body.remaining, 0);
 });
 
-test('capped activity explicitly reports the undisplayed live remainder', async () => {
+test('demo queue preserves plan activity and reports the undisplayed live remainder', async () => {
   const db = await database();
   await db('task_drafts').insert([0, 1, 2].map(index => ({
     draft_id: `plan-${index}`, user_id: 'user-1', name: `Plan ${index}`,
@@ -108,9 +108,9 @@ test('capped activity explicitly reports the undisplayed live remainder', async 
   assert.equal(result.body.remaining, 1);
 });
 
-test('includes first-attempt child jobs in every accepted pre-execution queue state', async () => {
+test('includes first-attempt child jobs in every accepted live queue state', async () => {
   const db = await database();
-  const states = ['waiting', 'delayed', 'prioritized'] as const;
+  const states = ['active', 'waiting', 'delayed', 'prioritized', 'waiting-children', 'paused'] as const;
   const jobs = states.map((state, index) => ({
     id: `child-job-${state}`,
     name: 'processGitHubIssue',
@@ -139,9 +139,114 @@ test('includes first-attempt child jobs in every accepted pre-execution queue st
   const result = await invoke(routes.getLiveActivity);
 
   assert.equal(result.status, 200);
-  assert.equal(result.body.total, 3);
+  assert.equal(result.body.total, states.length);
   assert.deepEqual(
     new Set(result.body.items.map(item => item.id)),
     new Set(states.map((_, index) => `integry-propr-${1898 + index}-codex-gpt-5-correlation-${index}`)),
   );
+});
+
+test('includes every task-producing worker job kind but omits issue dispatch parents', async () => {
+  const db = await database();
+  const base = {
+    timestamp: Date.parse('2026-08-14T12:00:00.000Z'),
+    getState: async () => 'waiting',
+  };
+  const jobs = [
+    {
+      ...base,
+      id: 'issue-child',
+      name: 'processGitHubIssue',
+      data: {
+        isChildJob: true, repoOwner: 'integry', repoName: 'propr', number: 1898,
+        agentAlias: 'codex', modelName: 'gpt-5', correlationId: 'issue-correlation',
+      },
+    },
+    {
+      ...base,
+      id: 'pr-comment-job',
+      name: 'processPullRequestComment',
+      data: { repoOwner: 'integry', repoName: 'propr', pullRequestNumber: 1899 },
+    },
+    {
+      ...base,
+      id: 'task-import-job',
+      name: 'processTaskImport',
+      data: { repository: 'integry/propr', taskDescription: 'Import these tasks' },
+    },
+    {
+      ...base,
+      id: 'merge-job',
+      name: 'processMergeConflict',
+      data: { repoOwner: 'integry', repoName: 'propr', pullRequestNumber: 1899 },
+    },
+    {
+      ...base,
+      id: 'issue-parent',
+      name: 'processGitHubIssue',
+      data: { isChildJob: false, repoOwner: 'integry', repoName: 'propr', number: 1898 },
+    },
+    {
+      ...base,
+      id: 'system-task',
+      name: 'processSystemTask',
+      data: { owner: 'integry', repoName: 'propr' },
+    },
+  ];
+  const routes = createLiveActivityRoutes({
+    db,
+    taskQueue: { getJob: async () => null, getJobs: async () => jobs } as never,
+  });
+  const result = await invoke(routes.getLiveActivity);
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.total, 4);
+  assert.deepEqual(
+    new Set(result.body.items.map(item => item.id)),
+    new Set([
+      'integry-propr-1898-codex-gpt-5-issue-correlation',
+      'pr-comment-job',
+      'task-import-job',
+      'merge-job',
+    ]),
+  );
+});
+
+test('a reused issue job ID neither revives nor hides a historical execution', async () => {
+  const db = await database();
+  await db('tasks').insert({
+    task_id: 'old-execution',
+    job_id: 'reused-job',
+    repository: 'integry/propr',
+    created_at: '2026-08-14T11:00:00.000Z',
+    initial_job_data: JSON.stringify({ type: 'issue', title: 'Old execution' }),
+  });
+  await db('task_history').insert({ task_id: 'old-execution', state: 'processing' });
+  const reusedJob = {
+    id: 'reused-job',
+    name: 'processGitHubIssue',
+    timestamp: Date.parse('2026-08-14T12:00:00.000Z'),
+    data: {
+      isChildJob: true,
+      taskId: 'new-execution',
+      repoOwner: 'integry',
+      repoName: 'propr',
+      number: 1899,
+      title: 'New execution',
+    },
+    getState: async () => 'active',
+  };
+  const routes = createLiveActivityRoutes({
+    db,
+    taskQueue: {
+      getJob: async () => reusedJob,
+      getJobs: async () => [reusedJob],
+    } as never,
+    inspectContainer: async () => 'not_found',
+  });
+  const result = await invoke(routes.getLiveActivity);
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.total, 1);
+  assert.deepEqual(result.body.items.map(item => item.id), ['new-execution']);
 });

@@ -101,6 +101,8 @@ export interface TaskImportJobData {
     repository: string;
     correlationId: string;
     user?: string;
+    /** Exact task identity persisted once the processor initializes. */
+    taskId?: string;
 }
 
 export interface AnalysisJobData {
@@ -151,6 +153,8 @@ export interface MergeConflictJobData {
     triggerSource: 'pull_request' | 'push' | 'auto_merge' | 'comment';
     correlationId: string;
     systemGenerated: true;    // Distinguishes from user-authored follow-up comments
+    /** Exact task identity persisted once the processor initializes. */
+    taskId?: string;
 }
 
 export type JobData = IssueJobData | CommentJobData | TaskImportJobData | AnalysisJobData | SystemTaskJobData | IndexingJobData | MergeConflictJobData;

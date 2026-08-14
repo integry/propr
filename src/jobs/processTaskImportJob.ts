@@ -58,6 +58,9 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
     const taskId = `task-import-${repoOwner}-${repoName}-${Date.now()}`;
 
     try {
+        if (job.data.taskId !== taskId) {
+            await job.updateData({ ...job.data, taskId });
+        }
         await stateManager.createTaskState(taskId, {
             number: 0,
             repoOwner,

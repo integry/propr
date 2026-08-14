@@ -228,7 +228,7 @@ function createMockJob(overrides: Partial<{
     headBranch: string;
     baseBranch: string;
 }> = {}) {
-    return {
+    const job = {
         id: 'test-job-123',
         name: 'processMergeConflict',
         data: {
@@ -243,7 +243,11 @@ function createMockJob(overrides: Partial<{
             correlationId: 'test-corr-123',
             systemGenerated: true as const,
         },
-    } as never;
+        async updateData(data: Record<string, unknown>) {
+            job.data = data as typeof job.data;
+        },
+    };
+    return job as never;
 }
 
 function resetAllMocks() {

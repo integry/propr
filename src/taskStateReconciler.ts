@@ -16,6 +16,8 @@ export const DEFAULT_RECONCILIATION_STALE_MS = 15 * 60 * 1000;
 export const DEFAULT_RECONCILIATION_TIME_BUDGET_MS = 30 * 1000;
 
 export interface ReconciliationJob {
+    id?: string;
+    data?: unknown;
     failedReason?: string;
     returnvalue?: unknown;
     getState(): Promise<string>;
@@ -147,6 +149,22 @@ function asJobResult(value: unknown): JobResult | undefined {
         : undefined;
 }
 
+function jobMatchesTaskExecution(
+    task: TaskStateData,
+    job: ReconciliationJob,
+    kind: 'issue' | 'pr_comment',
+): boolean {
+    const persistedTaskId = job.data !== null && typeof job.data === 'object'
+        ? (job.data as { taskId?: unknown }).taskId
+        : undefined;
+    if (typeof persistedTaskId === 'string' && persistedTaskId) {
+        return persistedTaskId === task.taskId;
+    }
+    return kind === 'pr_comment'
+        && typeof job.id === 'string'
+        && job.id === task.taskId;
+}
+
 interface ReconciliationRunContext {
     options: TaskStateReconciliationOptions;
     summary: TaskStateReconciliationSummary;
@@ -243,10 +261,12 @@ async function reconcileTask(
     }
 
     if (job) {
-        const state = await runWithinRemainingBudget(() => job!.getState(), deadline, signal);
-        if (LIVE_JOB_STATES.has(state)) {
-            summary.live++;
-            return;
+        if (jobMatchesTaskExecution(task, job, kind)) {
+            const state = await runWithinRemainingBudget(() => job!.getState(), deadline, signal);
+            if (LIVE_JOB_STATES.has(state)) {
+                summary.live++;
+                return;
+            }
         }
     }
 
@@ -282,6 +302,13 @@ async function reconcileTask(
     if (legacyLiveness === 'unavailable') {
         logger.warn({ taskId: task.taskId, jobId, legacyContainerLiveness: legacyLiveness },
             'Leaving stale task unchanged because legacy container liveness is unavailable');
+        summary.errors++;
+        return;
+    }
+
+    if (job && !jobMatchesTaskExecution(task, job, kind)) {
+        logger.warn({ taskId: task.taskId, jobId },
+            'Leaving stale task unchanged because the BullMQ job belongs to a different execution');
         summary.errors++;
         return;
     }
