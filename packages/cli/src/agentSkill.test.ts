@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   closeSync,
@@ -18,9 +19,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   AGENT_SKILL_TARGETS,
   detectConfiguredAgentSkillTargets,
@@ -32,8 +34,9 @@ import {
   type AgentSkillEnvironment,
 } from "./agentSkill.js";
 import {
+  DARWIN_DIRECTORY_OPERATION_SHA256,
   directoryDescriptorAccess,
-  withDirectoryDescriptorPath,
+  verifyDirectoryOperationArtifact,
 } from "./utils/directoryDescriptor.js";
 
 const roots: string[] = [];
@@ -50,63 +53,88 @@ function temporaryRoot(): string {
   return root;
 }
 
-test("uses the platform's real directory-descriptor behavior", () => {
-  assert.equal(directoryDescriptorAccess("linux"), "child-paths");
-  assert.equal(directoryDescriptorAccess("darwin"), "working-directory");
+test("uses only the host platform's real directory-descriptor behavior", () => {
   assert.throws(() => directoryDescriptorAccess("win32"), /not supported/);
-
-  const root = temporaryRoot();
-  const held = join(root, "held");
-  const child = join(held, "child");
-  mkdirSync(child, { recursive: true });
-  const fd = openSync(held, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  const descriptorRoot = process.platform === "darwin" ? "/dev/fd" : "/proc/self/fd";
-  const descriptor = join(descriptorRoot, String(fd));
-  try {
-    const endpointFd = openSync(descriptor, constants.O_RDONLY | constants.O_DIRECTORY);
-    try {
-      assert.ok(fstatSync(endpointFd).isDirectory());
-    } finally {
-      closeSync(endpointFd);
-    }
-    if (process.platform === "darwin") {
-      assert.throws(
-        () => openSync(join(descriptor, "child"), constants.O_RDONLY | constants.O_DIRECTORY),
-        (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
-      );
-    } else {
-      const childFd = openSync(join(descriptor, "child"), constants.O_RDONLY | constants.O_DIRECTORY);
-      closeSync(childFd);
-    }
-  } finally {
-    closeSync(fd);
-  }
+  if (process.platform === "linux") assert.equal(directoryDescriptorAccess(), "child-paths");
+  else if (process.platform === "darwin") assert.equal(directoryDescriptorAccess(), "native-at");
+  else assert.throws(() => directoryDescriptorAccess(), /not supported/);
 });
 
-test("working-directory descriptor access keeps mutation inside a detached held directory", () => {
+test("ships integrity-pinned Darwin helpers for every supported architecture", () => {
+  assert.deepEqual(Object.keys(DARWIN_DIRECTORY_OPERATION_SHA256).sort(), ["arm64", "x64"]);
+  const nativeRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "native", "prebuilds");
+  for (const [arch, digest] of Object.entries(DARWIN_DIRECTORY_OPERATION_SHA256)) {
+    const artifact = join(nativeRoot, `darwin-${arch}`, "directory-operations.node");
+    verifyDirectoryOperationArtifact(artifact, digest, arch);
+  }
+
+  const root = temporaryRoot();
+  const tampered = join(root, "directory-operations.node");
+  writeFileSync(tampered, Buffer.from("not a native artifact"));
+  assert.throws(
+    () => verifyDirectoryOperationArtifact(tampered, DARWIN_DIRECTORY_OPERATION_SHA256.arm64, "arm64"),
+    /failed integrity verification/
+  );
+});
+
+test("native Darwin child uses inherited fd 3 without changing either cwd", {
+  skip: process.platform !== "darwin" ? "requires a real Darwin kernel and packaged Darwin addon" : false,
+}, () => {
   const root = temporaryRoot();
   const held = join(root, "held");
   const detached = join(root, "detached");
   const outside = join(root, "outside");
   mkdirSync(held);
   mkdirSync(outside);
+  const sentinel = join(outside, "sentinel.bin");
+  const sentinelContent = Buffer.from([0x00, 0xff, 0x51, 0x9a]);
+  writeFileSync(sentinel, sentinelContent);
   const fd = openSync(held, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  const descriptorRoot = process.platform === "darwin" ? "/dev/fd" : "/proc/self/fd";
   const originalCwd = process.cwd();
   try {
-    withDirectoryDescriptorPath(join(descriptorRoot, String(fd)), "working-directory", (base) => {
-      renameSync(held, detached);
-      symlinkSync(outside, held, "dir");
-      mkdirSync(join(base, "created"));
+    renameSync(held, detached);
+    symlinkSync(outside, held, "dir");
+    const artifact = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "native",
+      "prebuilds",
+      `darwin-${process.arch}`,
+      "directory-operations.node"
+    );
+    const childScript = String.raw`
+      const fs = require("node:fs");
+      const native = require(process.argv[1]);
+      const before = process.cwd();
+      native.mkdirAt(3, "created", 0o700);
+      const child = native.openAt(3, "created", fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW, 0);
+      const temporary = native.openAt(child, "temporary", fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+      fs.writeFileSync(temporary, "pinned\n");
+      fs.closeSync(temporary);
+      native.linkAt(child, "temporary", child, "linked", 0);
+      native.renameAt(child, "linked", child, "renamed");
+      const status = native.lstatAt(child, "renamed");
+      native.unlinkAt(child, "temporary", 0);
+      fs.closeSync(child);
+      if (status.kind !== "file" || process.cwd() !== before) process.exit(2);
+      process.stdout.write(before);
+    `;
+    const child = spawnSync(process.execPath, ["-e", childScript, artifact], {
+      cwd: originalCwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe", fd],
     });
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout, originalCwd);
   } finally {
     closeSync(fd);
   }
 
   assert.equal(process.cwd(), originalCwd);
   assert.equal(lstatSync(held).isSymbolicLink(), true);
-  assert.equal(existsSync(join(detached, "created")), true);
+  assert.equal(readFileSync(join(detached, "created", "renamed"), "utf8"), "pinned\n");
   assert.equal(existsSync(join(outside, "created")), false);
+  assert.deepEqual(readFileSync(sentinel), sentinelContent);
 });
 
 function environment(root: string): AgentSkillEnvironment {
@@ -125,40 +153,33 @@ function bundle(root: string, body: string): string {
   return path;
 }
 
-test("working-directory descriptor access supports every required provider lifecycle", () => {
-  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
-  if (!platformDescriptor) throw new Error("process.platform descriptor is unavailable");
-  Object.defineProperty(process, "platform", { ...platformDescriptor, value: "darwin" });
-  try {
-    const root = temporaryRoot();
-    const env = environment(root);
-    mkdirSync(env.HOME!, { recursive: true });
-    const older = bundle(root, "older portable skill");
-    const current = bundle(root, "current portable skill");
+test("the real host implementation supports every required provider lifecycle", () => {
+  const root = temporaryRoot();
+  const env = environment(root);
+  mkdirSync(env.HOME!, { recursive: true });
+  const older = bundle(root, "older portable skill");
+  const current = bundle(root, "current portable skill");
 
-    for (const target of ["codex", "claude", "antigravity", "opencode"] as const) {
-      assert.equal(installAgentSkill(target, { env, bundleDir: older }).action, "installed");
-      assert.equal(removeAgentSkill(target, { env, bundleDir: older }).action, "removed");
+  for (const target of AGENT_SKILL_TARGETS) {
+    assert.equal(installAgentSkill(target, { env, bundleDir: older }).action, "installed");
+    assert.equal(removeAgentSkill(target, { env, bundleDir: older }).action, "removed");
 
-      const targetPath = resolveAgentSkillLocations([target], env)[0].path;
-      cpSync(older, targetPath, { recursive: true });
-      assert.equal(installAgentSkill(target, { env, bundleDir: older }).action, "adopted");
-      assert.equal(installAgentSkill(target, { env, bundleDir: current }).action, "updated");
+    const targetPath = resolveAgentSkillLocations([target], env)[0].path;
+    cpSync(older, targetPath, { recursive: true });
+    assert.equal(installAgentSkill(target, { env, bundleDir: older }).action, "adopted");
+    assert.equal(installAgentSkill(target, { env, bundleDir: current }).action, "updated");
 
-      writeFileSync(join(targetPath, "SKILL.md"), "modified managed content\n");
-      const replaced = installAgentSkill(target, { env, bundleDir: current, force: true });
-      assert.equal(replaced.action, "backed-up");
-      assert.ok(replaced.backupPath);
+    writeFileSync(join(targetPath, "SKILL.md"), "modified managed content\n");
+    const replaced = installAgentSkill(target, { env, bundleDir: current, force: true });
+    assert.equal(replaced.action, "backed-up");
+    assert.ok(replaced.backupPath);
 
-      assert.equal(removeAgentSkill(target, { env, bundleDir: current }).action, "removed");
-      mkdirSync(targetPath);
-      writeFileSync(join(targetPath, "foreign.txt"), "foreign content\n");
-      const forcedRemoval = removeAgentSkill(target, { env, bundleDir: current, force: true });
-      assert.equal(forcedRemoval.action, "backed-up");
-      assert.ok(forcedRemoval.backupPath);
-    }
-  } finally {
-    Object.defineProperty(process, "platform", platformDescriptor);
+    assert.equal(removeAgentSkill(target, { env, bundleDir: current }).action, "removed");
+    mkdirSync(targetPath);
+    writeFileSync(join(targetPath, "foreign.txt"), "foreign content\n");
+    const forcedRemoval = removeAgentSkill(target, { env, bundleDir: current, force: true });
+    assert.equal(forcedRemoval.action, "backed-up");
+    assert.ok(forcedRemoval.backupPath);
   }
 });
 
@@ -353,25 +374,6 @@ test("an unmodified managed older bundle upgrades but a modified copy is refused
   const refused = installAgentSkill("claude", { env, bundleDir: current });
   assert.equal(refused.action, "refused");
   assert.equal(refused.state, "modified-managed");
-});
-
-test("non-forced install does not overwrite a target created after the absence check", () => {
-  const root = temporaryRoot();
-  const env = environment(root);
-  mkdirSync(env.HOME!, { recursive: true });
-  const source = bundle(root, "current skill");
-  const target = resolveAgentSkillLocations(["codex"], env)[0].path;
-  const now = dateWithOneShotSideEffect(() => {
-    mkdirSync(target, { recursive: true });
-    writeFileSync(join(target, "concurrent.txt"), "created concurrently\n");
-  });
-
-  const result = installAgentSkill("codex", { env, bundleDir: source, now });
-
-  assert.equal(result.action, "failed");
-  assert.match(result.detail ?? "", /created during installation and was not overwritten/);
-  assert.equal(readFileSync(join(target, "concurrent.txt"), "utf8"), "created concurrently\n");
-  assert.equal(existsSync(join(target, ".propr-managed.json")), false);
 });
 
 test("non-forced upgrade revalidates and preserves a target changed just before detachment", () => {

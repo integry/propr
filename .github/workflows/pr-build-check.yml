@@ -42,6 +42,47 @@ jobs:
           npm run build -w @propr/cli
           test -f packages/cli/dist/skill/propr/SKILL.md
           test -f packages/cli/dist/skill/propr/agents/openai.yaml
+          test -f packages/cli/dist/native/prebuilds/darwin-arm64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/darwin-x64/directory-operations.node
+
+  cli-agent-skill-darwin:
+    name: CLI Agent Skill (Darwin arm64, Node 22)
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the native Darwin Agent Skill workflow
+        run: |
+          test "$(node -p process.platform)" = darwin
+          test "$(node -p process.arch)" = arm64
+          npm run build -w @propr/shared
+          npm run typecheck -w @propr/cli
+          npx tsx --experimental-test-module-mocks --test \
+            packages/cli/src/agentSkill.test.ts \
+            packages/cli/src/commands/setupCommand.test.ts
+          npm run build -w @propr/cli
+          test -f packages/cli/dist/native/prebuilds/darwin-arm64/directory-operations.node
+          skill_fixture="$RUNNER_TEMP/propr-skill-artifact"
+          mkdir -p "$skill_fixture/home"
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill install all --json
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill status all --json
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill remove all --json
+          test ! -e "$skill_fixture/codex/skills/propr"
 
   validate:
     name: Validate Changes

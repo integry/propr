@@ -17,6 +17,7 @@
 // The staging package is written to <repoRoot>/dist-publish/propr-cli.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -84,6 +85,20 @@ cpSync(join(cliDir, "README.md"), join(stageDir, "README.md"));
 for (const requiredSkillFile of ["SKILL.md", join("agents", "openai.yaml")]) {
   const bundled = join(stageDir, "dist", "skill", "propr", requiredSkillFile);
   if (!existsSync(bundled)) throw new Error(`Bundled ProPR Agent Skill file is missing: ${bundled}`);
+}
+const darwinArtifacts = {
+  arm64: "aa380d388e6c8e3a0f14c9e9a5bdfbb59095ed17fb3325318e4aeaa621e71380",
+  x64: "e040b7c44a325e1c0c4b288917676a140da0402f3c98bba68a8f23d244049040",
+};
+for (const [arch, expected] of Object.entries(darwinArtifacts)) {
+  const artifact = join(stageDir, "dist", "native", "prebuilds", `darwin-${arch}`, "directory-operations.node");
+  if (!existsSync(artifact)) throw new Error(`Darwin directory-operations artifact is missing: ${artifact}`);
+  const actual = createHash("sha256").update(readFileSync(artifact)).digest("hex");
+  if (actual !== expected) throw new Error(`Darwin ${arch} directory-operations artifact failed integrity verification`);
+}
+for (const auditedFile of ["directory-operations.c", "README.md"]) {
+  const bundled = join(stageDir, "dist", "native", auditedFile);
+  if (!existsSync(bundled)) throw new Error(`Audited Darwin helper file is missing: ${bundled}`);
 }
 
 // 3. Vendor shared's compiled JS (dependency-free) into dist/vendor/shared.

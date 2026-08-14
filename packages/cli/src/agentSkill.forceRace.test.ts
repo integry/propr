@@ -100,7 +100,7 @@ test("forced install refuses an already-checked ancestor replaced before descend
   await assertParentCreationSymlinkRace(t, true);
 });
 
-test("failed provider child identity check preserves a raced replacement directory", async (t) => {
+test("created-child cleanup preserves a replacement swapped after identity match", async (t) => {
   const root = temporaryRoot(t, "propr-agent-skill-created-child-race-test-");
   const env = {
     HOME: join(root, "home"),
@@ -118,18 +118,36 @@ test("failed provider child identity check preserves a raced replacement directo
   const sentinel = join(createdChild, "provider-sentinel.bin");
   const sentinelContent = Buffer.from([0x00, 0xff, 0x51, 0x9a]);
   let injected = false;
+  let matchedFd: number | undefined;
+  let armed = false;
+  let nameDeletionAttempted = false;
 
   t.mock.module("node:fs", {
     namedExports: {
       ...fs,
-      lstatSync(path: fs.PathLike): fs.Stats {
-        if (!injected && String(path) === createdChild && fs.existsSync(createdChild)) {
+      fstatSync(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats {
+        const status = fs.fstatSync(fd, options as never);
+        if (!injected && fs.existsSync(createdChild)) {
+          const visible = fs.lstatSync(createdChild);
+          if (Number(status.dev) === visible.dev && Number(status.ino) === visible.ino) {
+            matchedFd = fd;
+            armed = true;
+          }
+        }
+        return status;
+      },
+      closeSync(fd: number): void {
+        if (!injected && armed && fd !== matchedFd && fs.existsSync(createdChild)) {
           injected = true;
           fs.renameSync(createdChild, detachedChild);
           fs.mkdirSync(createdChild);
           fs.writeFileSync(sentinel, sentinelContent);
         }
-        return fs.lstatSync(path);
+        fs.closeSync(fd);
+      },
+      rmSync(path: fs.PathLike, options?: fs.RmDirOptions): void {
+        if (String(path) === createdChild || String(path).includes(createdChild)) nameDeletionAttempted = true;
+        fs.rmSync(path, options);
       },
     },
   });
@@ -141,12 +159,13 @@ test("failed provider child identity check preserves a raced replacement directo
   assert.equal(injected, true);
   assert.equal(result.action, "failed");
   assert.match(result.detail ?? "", /directory changed/);
+  assert.equal(nameDeletionAttempted, false);
   assert.equal(fs.lstatSync(createdChild).isDirectory(), true);
   assert.deepEqual(fs.readFileSync(sentinel), sentinelContent);
   assert.equal(fs.lstatSync(detachedChild).isDirectory(), true);
 });
 
-test("staging cleanup preserves a raced replacement directory", async (t) => {
+test("post-identity publication substitution has no staging name-delete cleanup", async (t) => {
   const root = temporaryRoot(t, "propr-agent-skill-staging-cleanup-race-test-");
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
   fs.mkdirSync(env.HOME, { recursive: true });
@@ -156,23 +175,40 @@ test("staging cleanup preserves a raced replacement directory", async (t) => {
   fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
 
   const skillsParent = join(env.CODEX_HOME, "skills");
-  const staging = join(skillsParent, ".propr.installing-20260814102400000");
-  const detachedStaging = join(root, "detached-staging");
-  const sentinel = join(staging, "provider-sentinel.bin");
+  const target = join(skillsParent, "propr");
+  const detachedTarget = join(root, "detached-target");
+  const sentinel = join(target, "provider-sentinel.bin");
   const sentinelContent = Buffer.from([0x00, 0xff, 0x51, 0x9a]);
   let injected = false;
+  let targetIdentityMatches = 0;
+  let stagingCreated = false;
+  let nameDeletionAttempted = false;
 
   t.mock.module("node:fs", {
     namedExports: {
       ...fs,
+      fstatSync(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats {
+        const status = fs.fstatSync(fd, options as never);
+        if (fs.existsSync(target)) {
+          const visible = fs.lstatSync(target);
+          if (Number(status.dev) === visible.dev && Number(status.ino) === visible.ino) targetIdentityMatches += 1;
+        }
+        return status;
+      },
       mkdirSync(path: fs.PathLike, options?: fs.MakeDirectoryOptions & { recursive?: boolean }): string | undefined {
-        if (!injected && basename(String(path)) === "propr" && fs.existsSync(staging)) {
+        const name = basename(String(path));
+        if (name.startsWith(".propr.installing-")) stagingCreated = true;
+        if (!injected && targetIdentityMatches >= 2 && name === "agents") {
           injected = true;
-          fs.renameSync(staging, detachedStaging);
-          fs.mkdirSync(staging);
+          fs.renameSync(target, detachedTarget);
+          fs.mkdirSync(target);
           fs.writeFileSync(sentinel, sentinelContent);
         }
         return fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
+      },
+      rmSync(path: fs.PathLike, options?: fs.RmDirOptions): void {
+        if (String(path) === target || String(path).includes(".propr.installing-")) nameDeletionAttempted = true;
+        fs.rmSync(path, options);
       },
     },
   });
@@ -186,13 +222,53 @@ test("staging cleanup preserves a raced replacement directory", async (t) => {
   });
 
   assert.equal(injected, true);
-  assert.equal(result.action, "installed");
-  assert.equal(fs.lstatSync(staging).isDirectory(), true);
+  assert.equal(result.action, "failed");
+  assert.equal(stagingCreated, false);
+  assert.equal(nameDeletionAttempted, false);
+  assert.equal(fs.lstatSync(target).isDirectory(), true);
   assert.deepEqual(fs.readFileSync(sentinel), sentinelContent);
-  assert.equal(fs.lstatSync(detachedStaging).isDirectory(), true);
+  assert.equal(fs.lstatSync(detachedTarget).isDirectory(), true);
+  assert.equal(fs.readFileSync(join(detachedTarget, "SKILL.md"), "utf8").includes("current skill"), true);
 });
 
-test("adoption does not publish a marker through a target replaced by an outside symlink", async (t) => {
+test("non-forced claim preserves a target created after the absence inspection", async (t) => {
+  const root = temporaryRoot(t, "propr-agent-skill-concurrent-claim-test-");
+  const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
+  fs.mkdirSync(env.HOME, { recursive: true });
+  const source = join(root, "bundle");
+  fs.mkdirSync(join(source, "agents"), { recursive: true });
+  fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
+  fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+
+  const target = join(env.CODEX_HOME, "skills", "propr");
+  const sentinelContent = Buffer.from([0x00, 0xff, 0x51, 0x9a]);
+  let injected = false;
+  t.mock.module("node:fs", {
+    namedExports: {
+      ...fs,
+      mkdirSync(path: fs.PathLike, options?: fs.MakeDirectoryOptions & { recursive?: boolean }): string | undefined {
+        if (!injected && basename(String(path)) === "propr") {
+          injected = true;
+          fs.mkdirSync(target);
+          fs.writeFileSync(join(target, "sentinel.bin"), sentinelContent);
+        }
+        return fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
+      },
+    },
+  });
+  const agentSkillModule = new URL("./agentSkill.ts?concurrent-target-claim", import.meta.url);
+  const { installAgentSkill } = await import(agentSkillModule.href);
+
+  const result = installAgentSkill("codex", { env, bundleDir: source });
+
+  assert.equal(injected, true);
+  assert.equal(result.action, "failed");
+  assert.match(result.detail ?? "", /created during installation and was not overwritten/);
+  assert.deepEqual(fs.readFileSync(join(target, "sentinel.bin")), sentinelContent);
+  assert.deepEqual(fs.readdirSync(target), ["sentinel.bin"]);
+});
+
+test("adoption publishes only to the held tree after outside-symlink substitution", async (t) => {
   const root = temporaryRoot(t, "propr-agent-skill-adoption-target-race-test-");
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
   fs.mkdirSync(env.HOME, { recursive: true });
@@ -216,7 +292,7 @@ test("adoption does not publish a marker through a target replaced by an outside
     namedExports: {
       ...fs,
       writeFileSync(path: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions): void {
-        if (!injected && basename(String(path)).startsWith(".propr.marker-")) {
+        if (!injected && basename(String(path)) === ".propr-managed.json") {
           injected = true;
           fs.renameSync(target, detachedTarget);
           fs.symlinkSync(outside, target, "dir");
@@ -235,7 +311,8 @@ test("adoption does not publish a marker through a target replaced by an outside
   assert.match(result.detail ?? "", /symbolic link parent is not allowed|directory changed|target changed during adoption/);
   assert.equal(fs.lstatSync(target).isSymbolicLink(), true);
   assert.deepEqual(snapshotTree(outside), outsideBefore);
-  assert.deepEqual(snapshotTree(detachedTarget), targetBefore);
+  assert.deepEqual(snapshotTree(detachedTarget).filter(([path]) => path !== ".propr-managed.json"), targetBefore);
+  assert.equal(fs.lstatSync(join(detachedTarget, ".propr-managed.json")).isFile(), true);
 });
 
 test("forced backup rename cannot follow a replaced skills parent", async (t) => {
@@ -355,9 +432,9 @@ test("forced install fails and preserves both trees when the published bundle is
         renames.push([oldPath, newPath]);
         fs.renameSync(oldPath, newPath);
       },
-      linkSync(existingPath: fs.PathLike, newPath: fs.PathLike): void {
-        fs.linkSync(existingPath, newPath);
-        if (basename(String(newPath)) === ".propr-managed.json") {
+      writeFileSync(path: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions): void {
+        fs.writeFileSync(path, data, options);
+        if (basename(String(path)) === ".propr-managed.json") {
           injected = true;
           fs.writeFileSync(join(target, "SKILL.md"), "modified concurrently\n");
         }

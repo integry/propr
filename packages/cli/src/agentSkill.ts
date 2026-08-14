@@ -1,20 +1,17 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   accessSync,
   closeSync,
   constants,
   existsSync,
   fstatSync,
-  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
   renameSync,
-  rmSync,
   statSync,
-  unlinkSync,
   writeFileSync,
   type Stats,
 } from "node:fs";
@@ -22,7 +19,11 @@ import { delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep
 import { fileURLToPath } from "node:url";
 import {
   directoryDescriptorAccess,
-  withDirectoryDescriptorPath,
+  lstatAt,
+  mkdirAt,
+  openAt,
+  renameAt,
+  type DirectoryEntryIdentity,
   type DirectoryDescriptorAccess,
 } from "./utils/directoryDescriptor.js";
 
@@ -425,7 +426,8 @@ interface PinnedDirectory {
 }
 
 function descriptorRoot(access: DirectoryDescriptorAccess): string {
-  const candidates = access === "child-paths" ? ["/proc/self/fd", "/dev/fd"] : ["/dev/fd"];
+  if (access !== "child-paths") throw new Error("descriptor paths are only available on Linux");
+  const candidates = ["/proc/self/fd", "/dev/fd"];
   for (const root of candidates) {
     if (existsSync(root)) return root;
   }
@@ -437,25 +439,79 @@ function descriptorPath(root: string, fd: number): string {
 }
 
 function withPinnedPath<T>(directory: PinnedDirectory, operation: (base: string) => T): T {
-  return withDirectoryDescriptorPath(directory.path, directory.access, operation);
+  if (directory.access !== "child-paths") {
+    throw new Error("name-based descriptor paths are not used for native directory operations");
+  }
+  return operation(directory.path);
+}
+
+type PinnedEntryStat = Stats | DirectoryEntryIdentity;
+
+function isSymbolicLink(stat: PinnedEntryStat): boolean {
+  return "kind" in stat ? stat.kind === "symbolic-link" : stat.isSymbolicLink();
+}
+
+function isDirectory(stat: PinnedEntryStat): boolean {
+  return "kind" in stat ? stat.kind === "directory" : stat.isDirectory();
+}
+
+function pinnedLstatIfExists(parent: PinnedDirectory, name: string): PinnedEntryStat | undefined {
+  try {
+    return parent.access === "native-at"
+      ? lstatAt(parent.fd, name)
+      : withPinnedPath(parent, (base) => lstatSync(join(base, name)));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function mkdirPinnedChild(parent: PinnedDirectory, name: string, mode = 0o700): void {
+  if (parent.access === "native-at") mkdirAt(parent.fd, name, mode);
+  else withPinnedPath(parent, (base) => mkdirSync(join(base, name), { recursive: false, mode }));
+}
+
+function renamePinnedChild(parent: PinnedDirectory, oldName: string, newName: string): void {
+  if (parent.access === "native-at") renameAt(parent.fd, oldName, newName);
+  else withPinnedPath(parent, (base) => renameSync(join(base, oldName), join(base, newName)));
+}
+
+function writePinnedChildExclusively(
+  parent: PinnedDirectory,
+  name: string,
+  content: string | Buffer,
+  mode = 0o600
+): void {
+  if (parent.access === "native-at") {
+    const fd = openAt(parent.fd, name, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
+    try {
+      writeFileSync(fd, content);
+    } finally {
+      closeSync(fd);
+    }
+  } else {
+    withPinnedPath(parent, (base) => writeFileSync(join(base, name), content, { mode, flag: "wx" }));
+  }
 }
 
 function openDirectoryNoFollow(path: string): PinnedDirectory {
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   const access = directoryDescriptorAccess();
-  const root = descriptorRoot(access);
+  const root = access === "child-paths" ? descriptorRoot(access) : undefined;
   let fd = openSync(sep, flags);
   let visiblePath: string = sep;
   try {
     for (const component of resolve(path).split(sep).filter(Boolean)) {
-      const current = { fd, path: descriptorPath(root, fd), access };
-      const next = withPinnedPath(current, (base) => openSync(join(base, component), flags));
+      const current = { fd, path: root ? descriptorPath(root, fd) : "", access };
+      const next = current.access === "native-at"
+        ? openAt(current.fd, component, flags)
+        : withPinnedPath(current, (base) => openSync(join(base, component), flags));
       closeSync(fd);
       fd = next;
       visiblePath = join(visiblePath, component);
-      assertVisibleDirectoryIdentity(visiblePath, { fd, path: descriptorPath(root, fd), access });
+      assertVisibleDirectoryIdentity(visiblePath, { fd, path: root ? descriptorPath(root, fd) : "", access });
     }
-    return { fd, path: descriptorPath(root, fd), access };
+    return { fd, path: root ? descriptorPath(root, fd) : "", access };
   } catch (error) {
     closeSync(fd);
     throw error;
@@ -464,15 +520,21 @@ function openDirectoryNoFollow(path: string): PinnedDirectory {
 
 function openPinnedChild(parent: PinnedDirectory, name: string): PinnedDirectory {
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-  const fd = withPinnedPath(parent, (base) => openSync(join(base, name), flags));
-  return { fd, path: descriptorPath(dirname(parent.path), fd), access: parent.access };
+  const fd = parent.access === "native-at"
+    ? openAt(parent.fd, name, flags)
+    : withPinnedPath(parent, (base) => openSync(join(base, name), flags));
+  return {
+    fd,
+    path: parent.access === "child-paths" ? descriptorPath(dirname(parent.path), fd) : "",
+    access: parent.access,
+  };
 }
 
 function closePinnedDirectory(directory: PinnedDirectory): void {
   closeSync(directory.fd);
 }
 
-function sameFilesystemObject(left: Stats, right: Stats): boolean {
+function sameFilesystemObject(left: Pick<Stats, "dev" | "ino">, right: Pick<Stats, "dev" | "ino">): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
@@ -490,8 +552,8 @@ function assertVisibleEntryIdentity(parent: PinnedDirectory, visibleParent: stri
   assertVisibleDirectoryIdentity(visibleParent, parent);
   const visiblePath = join(visibleParent, name);
   const visible = lstatIfExists(visiblePath);
-  const pinned = withPinnedPath(parent, (base) => lstatIfExists(join(base, name)));
-  if (!visible || !pinned || visible.isSymbolicLink() || pinned.isSymbolicLink() || !sameFilesystemObject(visible, pinned)) {
+  const pinned = pinnedLstatIfExists(parent, name);
+  if (!visible || !pinned || visible.isSymbolicLink() || isSymbolicLink(pinned) || !sameFilesystemObject(visible, pinned)) {
     throw new Error(`target changed while it was being used: ${visiblePath}`);
   }
 }
@@ -508,7 +570,6 @@ function ensureProviderSkillsParent(location: AgentSkillLocation): PinnedDirecto
     for (const component of resolve(parent).split(sep).filter(Boolean)) {
       assertVisibleDirectoryIdentity(visibleCurrent, current);
       let child: PinnedDirectory | undefined;
-      let created = false;
       try {
         child = openPinnedChild(current, component);
       } catch (error) {
@@ -517,8 +578,7 @@ function ensureProviderSkillsParent(location: AgentSkillLocation): PinnedDirecto
         // pathname races after the check, a replacement symlink is never used.
         assertVisibleDirectoryIdentity(visibleCurrent, current);
         try {
-          withPinnedPath(current, (base) => mkdirSync(join(base, component), { recursive: false, mode: 0o700 }));
-          created = true;
+          mkdirPinnedChild(current, component);
         } catch (mkdirError) {
           if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
           const racedPath = join(visibleCurrent, component);
@@ -533,11 +593,9 @@ function ensureProviderSkillsParent(location: AgentSkillLocation): PinnedDirecto
       try {
         assertVisibleDirectoryIdentity(visibleChild, child);
       } catch (error) {
-        try {
-          if (created) removePinnedTreeIfSameDirectory(current, component, child);
-        } finally {
-          closePinnedDirectory(child);
-        }
+        // A directory cannot be unlinked through its held descriptor. Once
+        // created, preserve it rather than race a replacement at its name.
+        closePinnedDirectory(child);
         throw error;
       }
       closePinnedDirectory(current);
@@ -567,41 +625,11 @@ function uniqueSibling(
     assertVisibleDirectoryIdentity(visibleParent, parent);
     const suffix = attempt === 0 ? "" : `-${attempt}`;
     const name = `.propr.${label}-${stamp}${suffix}`;
-    if (!withPinnedPath(parent, (base) => lstatIfExists(join(base, name)))) {
+    if (!pinnedLstatIfExists(parent, name)) {
       return { name, path: join(visibleParent, name) };
     }
   }
   throw new Error(`could not allocate ${label} path beside ${join(visibleParent, "propr")}`);
-}
-
-function createPinnedSiblingDirectory(
-  parent: PinnedDirectory,
-  visibleParent: string,
-  label: string,
-  now?: Date
-): { directory: PinnedDirectory; name: string; path: string } {
-  for (;;) {
-    const candidate = uniqueSibling(parent, visibleParent, label, now);
-    assertVisibleDirectoryIdentity(visibleParent, parent);
-    let directory: PinnedDirectory | undefined;
-    let created = false;
-    try {
-      withPinnedPath(parent, (base) => mkdirSync(join(base, candidate.name), { recursive: false, mode: 0o700 }));
-      created = true;
-      directory = openPinnedChild(parent, candidate.name);
-      assertVisibleDirectoryIdentity(candidate.path, directory);
-      return { ...candidate, directory };
-    } catch (error) {
-      if (directory) {
-        try {
-          if (created) removePinnedTreeIfSameDirectory(parent, candidate.name, directory);
-        } finally {
-          closePinnedDirectory(directory);
-        }
-      }
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-  }
 }
 
 function renamePinnedEntry(
@@ -611,58 +639,8 @@ function renamePinnedEntry(
   newName: string
 ): void {
   assertVisibleEntryIdentity(parent, visibleParent, oldName);
-  withPinnedPath(parent, (base) => renameSync(join(base, oldName), join(base, newName)));
+  renamePinnedChild(parent, oldName, newName);
   assertVisibleDirectoryIdentity(visibleParent, parent);
-}
-
-function removePinnedTree(parent: PinnedDirectory, name: string): void {
-  withPinnedPath(parent, (base) => rmSync(join(base, name), { recursive: true, force: true }));
-}
-
-/** Remove only the entry represented by the held directory, never a raced replacement at its name. */
-function removePinnedTreeIfSameDirectory(
-  parent: PinnedDirectory,
-  name: string,
-  expected: PinnedDirectory
-): boolean {
-  const current = withPinnedPath(parent, (base) => lstatIfExists(join(base, name)));
-  if (
-    !current ||
-    current.isSymbolicLink() ||
-    !current.isDirectory() ||
-    !sameFilesystemObject(current, fstatSync(expected.fd))
-  ) {
-    return false;
-  }
-  removePinnedTree(parent, name);
-  return true;
-}
-
-function writeBundleContents(directory: PinnedDirectory, bundle: Bundle): void {
-  const directories = new Map<string, PinnedDirectory>([["", directory]]);
-  const opened: PinnedDirectory[] = [];
-  try {
-    for (const entry of bundle.entries) {
-      const separator = entry.path.lastIndexOf("/");
-      const parentPath = separator === -1 ? "" : entry.path.slice(0, separator);
-      const name = separator === -1 ? entry.path : entry.path.slice(separator + 1);
-      const entryParent = directories.get(parentPath);
-      if (!entryParent) throw new Error(`bundle parent was not written before its child: ${entry.path}`);
-      if (entry.kind === "directory") {
-        withPinnedPath(entryParent, (base) => mkdirSync(join(base, name), { recursive: false, mode: 0o700 }));
-        const child = openPinnedChild(entryParent, name);
-        directories.set(entry.path, child);
-        opened.push(child);
-      } else {
-        withPinnedPath(entryParent, (base) => writeFileSync(join(base, name), entry.content!, { mode: 0o600, flag: "wx" }));
-      }
-    }
-    withPinnedPath(directory, (base) =>
-      writeFileSync(join(base, MANAGED_FILE), managedMarkerContent(bundle.identity), { mode: 0o600, flag: "wx" })
-    );
-  } finally {
-    for (const openedDirectory of opened.reverse()) closePinnedDirectory(openedDirectory);
-  }
 }
 
 /** Claim the target through a pinned provider directory, without following raced symlinks. */
@@ -673,7 +651,7 @@ function claimTargetDirectory(location: AgentSkillLocation, pinnedParent: Pinned
   let pinnedTarget: PinnedDirectory | undefined;
   try {
     assertVisibleDirectoryIdentity(parent, pinnedParent);
-    withPinnedPath(pinnedParent, (base) => mkdirSync(join(base, "propr"), { recursive: false, mode: 0o700 }));
+    mkdirPinnedChild(pinnedParent, "propr");
     pinnedTarget = openPinnedChild(pinnedParent, "propr");
 
     const visible = lstatIfExists(location.path);
@@ -697,23 +675,12 @@ function writePinnedFileExclusively(
   directory: PinnedDirectory,
   name: string,
   content: string | Buffer,
-  temporaryLabel = "publish",
   beforePublish?: () => void
 ): void {
-  const temporary = `.propr.${temporaryLabel}-${process.pid}-${randomBytes(6).toString("hex")}`;
-  withPinnedPath(directory, (base) => {
-    try {
-      writeFileSync(join(base, temporary), content, { mode: 0o600, flag: "wx" });
-      beforePublish?.();
-      linkSync(join(base, temporary), join(base, name));
-    } finally {
-      try {
-        unlinkSync(join(base, temporary));
-      } catch {
-        // The temporary path may not have been created.
-      }
-    }
-  });
+  beforePublish?.();
+  // A failed exclusive write is preserved for inspection. There is no safe
+  // portable way to unlink a name while proving it still denotes this object.
+  writePinnedChildExclusively(directory, name, content);
 }
 
 /** Publish through pinned, no-follow handles without replacing any entry. */
@@ -728,7 +695,7 @@ function publishBundleExclusively(directory: PinnedDirectory, bundle: Bundle): v
       const parent = directories.get(parentPath);
       if (!parent) throw new Error(`bundle parent was not published before its child: ${entry.path}`);
       if (entry.kind === "directory") {
-        withPinnedPath(parent, (base) => mkdirSync(join(base, name), { mode: 0o700 }));
+        mkdirPinnedChild(parent, name);
         const child = openPinnedChild(parent, name);
         directories.set(entry.path, child);
         opened.push(child);
@@ -747,10 +714,10 @@ function managedMarkerContent(identity: string): string {
   return `${JSON.stringify(marker, null, 2)}\n`;
 }
 
-/** Add a fully-written marker through a held target without following a raced replacement. */
-function writeManagedMarkerAtomically(directory: PinnedDirectory, visiblePath: string, identity: string): void {
+/** Add a marker exclusively through a held target without following a raced replacement. */
+function writeManagedMarkerExclusively(directory: PinnedDirectory, visiblePath: string, identity: string): void {
   assertVisibleDirectoryIdentity(visiblePath, directory);
-  writePinnedFileExclusively(directory, MANAGED_FILE, managedMarkerContent(identity), "marker", () => {
+  writePinnedFileExclusively(directory, MANAGED_FILE, managedMarkerContent(identity), () => {
     assertVisibleDirectoryIdentity(visiblePath, directory);
   });
 }
@@ -788,7 +755,6 @@ function installAgentSkillWithoutOverwrite(
 ): AgentSkillOperationResult {
   const parent = dirname(location.path);
   let pinnedParent: PinnedDirectory | undefined;
-  let staged: { directory: PinnedDirectory; name: string; path: string } | undefined;
   let displaced: string | undefined;
   try {
     pinnedParent = ensureProviderSkillsParent(location);
@@ -796,9 +762,6 @@ function installAgentSkillWithoutOverwrite(
     if (!sameInspectedTree(status, refreshed)) {
       return operationFailure(refreshed, "failed", "target changed during installation; inspect it and retry");
     }
-
-    staged = createPinnedSiblingDirectory(pinnedParent, parent, "installing", options.now);
-    writeBundleContents(staged.directory, bundle);
 
     if (refreshed.state === "outdated-managed") {
       const replacement = uniqueSibling(pinnedParent, parent, "replaced", options.now);
@@ -853,14 +816,7 @@ function installAgentSkillWithoutOverwrite(
   } catch (error) {
     return preservedFailure(status, (error as Error).message, displaced);
   } finally {
-    try {
-      if (staged && pinnedParent) {
-        removePinnedTreeIfSameDirectory(pinnedParent, staged.name, staged.directory);
-      }
-    } finally {
-      if (staged) closePinnedDirectory(staged.directory);
-      if (pinnedParent) closePinnedDirectory(pinnedParent);
-    }
+    if (pinnedParent) closePinnedDirectory(pinnedParent);
   }
 }
 
@@ -882,7 +838,7 @@ function installAgentSkillAtLocation(
       if (refreshed.state !== status.state || refreshed.installedIdentity !== status.installedIdentity) {
         return operationFailure(refreshed, "failed", "target changed during adoption; inspect it and retry");
       }
-      writeManagedMarkerAtomically(pinnedTarget, location.path, bundle.identity);
+      writeManagedMarkerExclusively(pinnedTarget, location.path, bundle.identity);
       const next = inspectLocation(location, bundle);
       if (next.state !== "current-managed") {
         return operationFailure(next, "failed", "target changed during adoption; inspect it and retry");
@@ -904,7 +860,6 @@ function installAgentSkillAtLocation(
 
   const parent = dirname(location.path);
   let pinnedParent: PinnedDirectory | undefined;
-  let temporary: { directory: PinnedDirectory; name: string; path: string } | undefined;
   let displaced: string | undefined;
   let backupPath: string | undefined;
   try {
@@ -913,13 +868,6 @@ function installAgentSkillAtLocation(
     if (refreshed.state !== status.state || refreshed.installedIdentity !== status.installedIdentity) {
       return operationFailure(refreshed, "failed", "target changed during installation; inspect it and retry");
     }
-    temporary = createPinnedSiblingDirectory(
-      pinnedParent,
-      parent,
-      `tmp-${process.pid}-${randomBytes(6).toString("hex")}`,
-      options.now
-    );
-    writeBundleContents(temporary.directory, bundle);
     if (refreshed.state !== "absent") {
       const backup = uniqueSibling(pinnedParent, parent, "backup", options.now);
       displaced = backup.path;
@@ -969,10 +917,6 @@ function installAgentSkillAtLocation(
     }
     return operationFailure(status, "failed", (error as Error).message);
   } finally {
-    if (temporary) {
-      closePinnedDirectory(temporary.directory);
-      if (pinnedParent) removePinnedTree(pinnedParent, temporary.name);
-    }
     if (pinnedParent) closePinnedDirectory(pinnedParent);
   }
 }

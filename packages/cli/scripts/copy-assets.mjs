@@ -6,6 +6,7 @@
 //   docker/launcher/manifest.json     → src/orchestrator/ + dist/orchestrator/
 //   .env.example                      → src/assets/ + dist/assets/
 //   packages/cli/skill/propr          → dist/skill/propr/
+//   packages/cli/native               → dist/native/
 //
 // orchestrator.mjs sits next to its manifest.json so the orchestrator's default
 // `resolve(__dirname, 'manifest.json')` resolves correctly. The src/ copies let
@@ -75,6 +76,17 @@ if (!existsSync(skillSource)) {
   mkdirSync(dirname(skillDestination), { recursive: true });
   cpSync(skillSource, skillDestination, { recursive: true });
   copied += 2;
+}
+
+const nativeSource = join(cliDir, "native");
+const nativeDestination = join(cliDir, "dist", "native");
+if (!existsSync(nativeSource)) {
+  missing.push(nativeSource);
+  console.warn(`copy-assets: source not found, skipping: ${nativeSource}`);
+} else {
+  rmSync(nativeDestination, { recursive: true, force: true });
+  cpSync(nativeSource, nativeDestination, { recursive: true });
+  copied += 1;
 }
 
 if (isPack && missing.length > 0) {
