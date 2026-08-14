@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { findRunningDockerContainerForTask, getAuthenticatedOctokit, hashTaskAttemptToken, inspectLegacyDockerContainerLivenessForTask, logger, resolveCanonicalModelSelectionFromLabels, retryConfigs, runWithExecutionAbortSignal, withRetry } from '@propr/core';
+import { findRunningDockerContainerForTask, getAuthenticatedOctokit, hashTaskAttemptToken, inspectLegacyDockerContainerLivenessForTask, logger, retryConfigs, runWithExecutionAbortSignal, withRetry } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '@propr/core';
@@ -24,7 +24,7 @@ import {
 } from './prCommentJobUtils.js';
 import { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
-import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
+import { generateSummaryTitle, isProviderLimitRetrySuperseded, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
 import { retainOriginalScope } from './ultrafixOrchestrationService.js';
@@ -114,9 +114,7 @@ async function getPrimaryLabels(): Promise<string[]> {
     }
     // Fallback to environment variable or default
     const envLabels = process.env.PRIMARY_PROCESSING_LABELS;
-    if (envLabels) {
-        return envLabels.split(',').map(l => l.trim()).filter(l => l);
-    }
+    if (envLabels) return envLabels.split(',').map(l => l.trim()).filter(l => l);
     // Final fallback to PR_LABEL for backwards compatibility
     return [process.env.PR_LABEL || 'propr'];
 }
@@ -160,24 +158,8 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
         owner: repoOwner, repo: repoName, pull_number: pullRequestNumber,
         mediaType: { format: 'full' }  // Get body_html with signed image URLs
     }) as PRData;
-    if (context.isRetryFromRateLimit && context.agentAlias && context.modelName) {
-        const liveSelection = await resolveCanonicalModelSelectionFromLabels(
-            prData.data.labels,
-            process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
-        );
-        if (liveSelection && (
-            liveSelection.agentAlias.toLowerCase() !== context.agentAlias.toLowerCase()
-            || liveSelection.model.toLowerCase() !== context.modelName.toLowerCase()
-        )) {
-            correlatedLogger.info({
-                pullRequestNumber,
-                retryAgent: context.agentAlias,
-                retryModel: context.modelName,
-                liveAgent: liveSelection.agentAlias,
-                liveModel: liveSelection.model,
-            }, 'Skipping provider-limit retry superseded by a newer durable PR model selection');
-            return { skip: true, reason: 'provider_limit_retry_superseded' };
-        }
+    if (await isProviderLimitRetrySuperseded(prData.data.labels, context)) {
+        return { skip: true, reason: 'provider_limit_retry_superseded' };
     }
     const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr-dev[bot]';
     // Fetch ALL comments with pagination to handle PRs with 100+ comments
@@ -214,9 +196,7 @@ function checkTerminalStateAfterExecution(currentState: { state: string } | null
     const TERMINAL_STATES: string[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
     if (currentState && TERMINAL_STATES.includes(currentState.state)) {
         correlatedLogger.info({ taskId, currentState: currentState.state }, 'Task already in terminal state after agent execution, skipping state update');
-        if (currentState.state === TaskStates.CANCELLED) {
-            throw new Error('Execution aborted by user request');
-        }
+        if (currentState.state === TaskStates.CANCELLED) throw new Error('Execution aborted by user request');
         throw new Error(`Task already in terminal state: ${currentState.state}`);
     }
 }
@@ -470,9 +450,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
-        if (isUserCancelled) {
-            return { status: 'cancelled', reason: 'user_cancelled' };
-        }
+        if (isUserCancelled) return { status: 'cancelled', reason: 'user_cancelled' };
         if (!(error instanceof UsageLimitError)) throw error;
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {

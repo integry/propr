@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import { AgentRegistry, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
+import { AgentRegistry, resolveCanonicalModelSelectionFromLabels, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
 import { loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
 import type { AnalysisResult, ClaudeCodeResponse } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
@@ -260,6 +260,38 @@ export async function resolvePRCommentModelName(llm: string | null | undefined, 
     }
     if (!modelName) throw new NoDefaultModelConfiguredError();
     return modelName;
+}
+
+interface ProviderLimitRetryContext {
+    isRetryFromRateLimit?: boolean;
+    agentAlias?: string;
+    modelName?: string;
+    pullRequestNumber: number;
+    correlatedLogger: Logger;
+}
+
+export async function isProviderLimitRetrySuperseded(
+    labels: Array<string | { name: string }>,
+    context: ProviderLimitRetryContext,
+): Promise<boolean> {
+    if (!context.isRetryFromRateLimit || !context.agentAlias || !context.modelName) return false;
+    const liveSelection = await resolveCanonicalModelSelectionFromLabels(
+        labels,
+        process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
+    );
+    if (!liveSelection || (
+        liveSelection.agentAlias.toLowerCase() === context.agentAlias.toLowerCase()
+        && liveSelection.model.toLowerCase() === context.modelName.toLowerCase()
+    )) return false;
+
+    context.correlatedLogger.info({
+        pullRequestNumber: context.pullRequestNumber,
+        retryAgent: context.agentAlias,
+        retryModel: context.modelName,
+        liveAgent: liveSelection.agentAlias,
+        liveModel: liveSelection.model,
+    }, 'Skipping provider-limit retry superseded by a newer durable PR model selection');
+    return true;
 }
 
 export interface AgentExecutionParams {
