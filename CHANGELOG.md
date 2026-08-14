@@ -7,18 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.14] - 2026-08-13
+## [0.8.14] - 2026-08-14
 
 ### Changed
 
 - **Configurable live-E2E timeout**: model tasks can override the live-E2E
   timeout while retaining a bounded default when no override is configured.
+- **Safe coding-agent installation guidance**: added a copyable,
+  non-destructive setup prompt with human authorization gates and documented
+  Node.js 22 and 24 as the validated CLI runtimes.
+- **Packaged production defaults**: generated stacks set an explicit
+  production runtime, publish API and UI ports on loopback by default, and
+  wire browser-visible frontend and CORS origins.
 
 ### Fixed
 
 - **Interrupted setup recovery**: fresh and migrated stacks without a durable
   administrator can safely resume `propr setup` after pre-authentication
   interruption.
+- **CLI task stop compatibility**: `propr task stop` uses the canonical
+  singular endpoint while the API continues accepting `cancel` as a
+  compatibility alias.
+- **CLI task deletion compatibility**: `propr task delete` uses the canonical
+  endpoint while the API continues accepting the singular compatibility alias.
+- **Hosted UI tunnel isolation**: tunnel authority is scoped per browser tab,
+  popup OAuth uses the active managed tunnel, logout and navigation preserve
+  the active flow, and copied, raw, or foreign authority is rejected.
 
 ### Security
 
