@@ -46,7 +46,7 @@ export interface SwitchCommandMeta {
 
 export interface UseCommandMeta {
     mode: 'use';
-    /** Target model labels for single-run override */
+    /** Target model label for the durable PR model transition */
     models: string[];
     /** Extra instructions from lines below the command */
     instructions: string;

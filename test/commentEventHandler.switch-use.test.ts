@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import type { IssueCommentEvent, Label } from '@octokit/webhooks-types';
 import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent, createMockLabel } from './testHelpers.js';
 
+const actualLabelOperations = await import('../packages/core/src/utils/github/labelOperations.js');
+
 function manualRevisionIdentity(updatedAt: string, body: string, eventType = 'issue_comment'): string {
     const digest = createHash('sha256').update(`${eventType}\0${body}`).digest('hex').slice(0, 12);
     return `${updatedAt}:${digest}`;
@@ -224,6 +226,7 @@ after(async () => {
 
 function createMockRedis() {
     const store = new Map<string, string>();
+    const lists = new Map<string, string[]>();
     return {
         get: mock.fn(async (key: string) => store.get(key) ?? null),
         setex: mock.fn(async (key: string, _ttl: number, value: string) => {
@@ -237,14 +240,34 @@ function createMockRedis() {
         del: mock.fn(async (key: string) => {
             store.delete(key);
         }),
-        eval: mock.fn(async (_script: string, _keyCount: number, key: string, token: string) => {
+        eval: mock.fn(async (script: string, _keyCount: number, key: string, ...args: string[]) => {
+            if (script.includes("redis.call('LRANGE'")) {
+                const list = lists.get(key) ?? [];
+                const seen = new Set(list.map(raw => {
+                    const comment = JSON.parse(raw) as { type: string; id: number; updatedAt?: string; createdAt?: string };
+                    return `${comment.type}:${comment.id}:${comment.updatedAt ?? comment.createdAt ?? ''}`;
+                }));
+                const missing: string[] = [];
+                for (let index = 0; index < args.length; index += 2) {
+                    if (!seen.has(args[index])) {
+                        seen.add(args[index]);
+                        missing.push(args[index + 1]);
+                    }
+                }
+                lists.set(key, [...missing, ...list]);
+                return missing.length;
+            }
+            const token = args[0];
             if (store.get(key) !== token) return 0;
             store.delete(key);
             return 1;
         }),
-        rpush: mock.fn(async () => {}),
+        rpush: mock.fn(async (key: string, ...values: string[]) => {
+            lists.set(key, [...(lists.get(key) ?? []), ...values]);
+        }),
         expire: mock.fn(async () => {}),
         _store: store,
+        _lists: lists,
     };
 }
 
@@ -552,6 +575,110 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
     });
 
+    test('issue-comment transition preserves unrelated labels added and removed between live reads and writes', async () => {
+        mockSafeUpdateLabels.mock.mockImplementationOnce(actualLabelOperations.safeUpdateLabels);
+        const liveLabels = ['AI', 'security', 'workflow-ready', 'llm-claude-opus48'];
+        let issueReads = 0;
+        const endpoints: string[] = [];
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string, options: Record<string, unknown>) => {
+            endpoints.push(endpoint);
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                return { data: { head: { ref: 'feature-branch' }, labels: liveLabels.map(name => ({ name })) } };
+            }
+            if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
+                issueReads += 1;
+                const snapshot = [...liveLabels];
+                if (issueReads === 1) {
+                    liveLabels.push('release-blocker');
+                    liveLabels.splice(liveLabels.indexOf('workflow-ready'), 1);
+                }
+                return { data: { labels: snapshot.map(name => ({ name })) } };
+            }
+            if (endpoint === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+                const index = liveLabels.findIndex(name => name.toLowerCase() === String(options.name).toLowerCase());
+                if (index >= 0) liveLabels.splice(index, 1);
+                return { data: {} };
+            }
+            if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+                for (const name of options.labels as string[]) if (!liveLabels.includes(name)) liveLabels.push(name);
+                return { data: {} };
+            }
+            return { data: {} };
+        });
+
+        await processCommentEvent(createPRCommentEvent('/use opus'), 'issue_comment', 'corr-live-label-race', createTestConfig());
+
+        assert.deepStrictEqual(liveLabels, ['AI', 'security', 'release-blocker', 'llm-claude-opus5']);
+        assert.ok(!endpoints.some(endpoint => endpoint.startsWith('PUT ')), 'model transition must not replace the complete label set');
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+    });
+
+    test('stale review-comment payload uses live labels and retries a concurrent competing model label', async () => {
+        mockSafeUpdateLabels.mock.mockImplementationOnce(actualLabelOperations.safeUpdateLabels);
+        const liveLabels = ['AI', 'release-blocker', 'llm-claude-opus48'];
+        let issueReads = 0;
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string, options: Record<string, unknown>) => {
+            if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
+                issueReads += 1;
+                if (issueReads === 2) liveLabels.push('llm-claude-haiku');
+                return { data: { labels: liveLabels.map(name => ({ name })) } };
+            }
+            if (endpoint === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+                const index = liveLabels.findIndex(name => name.toLowerCase() === String(options.name).toLowerCase());
+                if (index >= 0) liveLabels.splice(index, 1);
+                return { data: {} };
+            }
+            if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+                for (const name of options.labels as string[]) if (!liveLabels.includes(name)) liveLabels.push(name);
+                return { data: {} };
+            }
+            return { data: {} };
+        });
+        const event = createPRReviewCommentEvent('/use opus');
+        event.pull_request.labels = [{ name: 'AI' }, { name: 'llm-claude-sonnet46' }] as typeof event.pull_request.labels;
+
+        await processCommentEvent(event, 'pull_request_review_comment', 'corr-stale-review-labels', createTestConfig());
+
+        assert.deepStrictEqual(liveLabels, ['AI', 'release-blocker', 'llm-claude-opus5']);
+        assert.strictEqual(issueReads, 4, 'verification conflict should force a second live read/mutate/verify attempt');
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+    });
+
+    test('/use does not enqueue or acknowledge when live model-label convergence cannot be verified', async () => {
+        mockSafeUpdateLabels.mock.mockImplementationOnce(actualLabelOperations.safeUpdateLabels);
+        const liveLabels = ['AI', 'release-blocker', 'llm-claude-opus48'];
+        let issueReads = 0;
+        let acknowledgements = 0;
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string, options: Record<string, unknown>) => {
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                return { data: { head: { ref: 'feature-branch' }, labels: liveLabels.map(name => ({ name })) } };
+            }
+            if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
+                issueReads += 1;
+                if (issueReads % 2 === 0 && !liveLabels.includes('llm-claude-haiku')) liveLabels.push('llm-claude-haiku');
+                return { data: { labels: liveLabels.map(name => ({ name })) } };
+            }
+            if (endpoint === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+                const index = liveLabels.findIndex(name => name.toLowerCase() === String(options.name).toLowerCase());
+                if (index >= 0) liveLabels.splice(index, 1);
+                return { data: {} };
+            }
+            if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+                for (const name of options.labels as string[]) if (!liveLabels.includes(name)) liveLabels.push(name);
+                return { data: {} };
+            }
+            if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') acknowledgements += 1;
+            return { data: {} };
+        });
+
+        await processCommentEvent(createPRCommentEvent('/use opus'), 'issue_comment', 'corr-nonconvergent-labels', createTestConfig());
+
+        assert.strictEqual(issueReads, 6);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(acknowledgements, 0);
+        assert.ok(liveLabels.includes('release-blocker'));
+    });
+
     test('/use persists canonical label, configured agent, and model on the queued job', async () => {
         const event = createPRCommentEvent('/use llm-claude-opus5\nContinue with the selected model');
         const config = createTestConfig();
@@ -603,15 +730,72 @@ describe('commentEventHandler — /use command', () => {
         }];
         const config = createTestConfig();
 
-        await processCommentEvent(createPRCommentEvent('/use opus'), 'issue_comment', 'corr-replace-retry', config);
+        const event = createPRCommentEvent('/use opus');
+        await processCommentEvent(event, 'issue_comment', 'corr-replace-retry', config);
 
         assert.strictEqual(removeRetry.mock.callCount(), 1);
-        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1, 'retry comments should be retained for the replacement');
+        const restored = config.redisClient._lists.get('pending-pr-comments:testowner:testrepo:42')!.map(raw => JSON.parse(raw) as { id: number });
+        assert.deepStrictEqual(restored.map(comment => comment.id), [7, event.comment.id], 'old and selected comments should both remain claimable in order');
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(jobData.agentAlias, 'default');
         assert.strictEqual(jobData.modelName, 'claude-opus-5');
         assert.strictEqual(mockQueueAdd.mock.calls[0].arguments[2].delay, 3000);
+    });
+
+    test('/use removal failure leaves old and selected comments recoverable without enqueueing a second writer', async () => {
+        const removalError = new Error('retry became active');
+        const removeRetry = mock.fn(async () => { throw removalError; });
+        mockDelayedJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-old-main-ratelimit-retry',
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                isRetryFromRateLimit: true,
+                comments: [{ id: 7, updatedAt: '2026-08-14T10:01:00Z', body: 'Original request', author: 'alice', type: 'issue' }],
+            },
+            remove: removeRetry,
+        }];
+        const config = createTestConfig();
+
+        const event = createPRCommentEvent('/use opus');
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-remove-race', config),
+            removalError,
+        );
+
+        const pending = config.redisClient._lists.get('pending-pr-comments:testowner:testrepo:42')!.map(raw => JSON.parse(raw) as { id: number });
+        assert.deepStrictEqual(pending.map(comment => comment.id), [7, event.comment.id]);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0, 'failed removal must not create an overlapping replacement writer');
+    });
+
+    test('/use enqueue failure after retry removal leaves all comments recoverable', async () => {
+        const enqueueError = new Error('queue unavailable');
+        mockQueueAdd.mock.mockImplementationOnce(async () => { throw enqueueError; });
+        mockDelayedJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-old-main-ratelimit-retry',
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                isRetryFromRateLimit: true,
+                comments: [{ id: 7, body: 'Original request', author: 'alice', type: 'issue' }],
+            },
+            remove: mock.fn(async () => {}),
+        }];
+        const config = createTestConfig();
+
+        const event = createPRCommentEvent('/use opus');
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-enqueue-race', config),
+            enqueueError,
+        );
+
+        const pending = config.redisClient._lists.get('pending-pr-comments:testowner:testrepo:42')!.map(raw => JSON.parse(raw) as { id: number });
+        assert.deepStrictEqual(pending.map(comment => comment.id), [7, event.comment.id]);
     });
 
     test('/use sets commandMode to "use" in job data', async () => {

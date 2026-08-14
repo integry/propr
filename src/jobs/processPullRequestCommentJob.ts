@@ -22,7 +22,12 @@ import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildPrompt,
     handleJobError, cleanupJob, toClaudeResult
 } from './prCommentJobUtils.js';
-import { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext } from './prPendingComments.js';
+import {
+    acknowledgePendingCommentClaim,
+    pickUpPendingCommentsWithClaim,
+    applyPendingCommentCommandContext,
+    restoreSupersededProviderLimitComments,
+} from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, isProviderLimitRetrySuperseded, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
@@ -133,8 +138,11 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
     const primaryProcessingLabels = await getPrimaryLabels();
     const isBatchJob = !!comments && Array.isArray(comments);
     const initialComments: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
-    const { commentsToProcess, pickedUpComments } = await pickUpPendingCommentsWithClaim(initialComments, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
+    const claimId = String(job.id ?? correlationId);
+    const { commentsToProcess, pickedUpComments } = await pickUpPendingCommentsWithClaim(initialComments, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient, claimId });
     applyPendingCommentCommandContext(job.data, commentsToProcess, correlatedLogger);
+    await job.updateData(job.data);
+    await acknowledgePendingCommentClaim({ repoOwner, repoName, pullRequestNumber, claimId, redisClient });
     const { branchName: jobBranchName, llm: jobLlm, agentAlias, modelName, modelLabel, isRetryFromRateLimit } = job.data;
     return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, agentAlias, modelName, modelLabel, isRetryFromRateLimit, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess, pickedUpComments, originalUltrafixMeta };
 }
@@ -442,12 +450,19 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
 
     try {
         // Branch early for review mode — read-only analysis, no commits or pushes
-        if (job.data.commandMode === 'review') {
-            return await runWithExecutionAbortSignal(executionController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments }), hashTaskAttemptToken(lockToken));
+        const result = job.data.commandMode === 'review'
+            ? await runWithExecutionAbortSignal(executionController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments }), hashTaskAttemptToken(lockToken))
+            : await runWithExecutionAbortSignal(executionController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }), hashTaskAttemptToken(lockToken));
+        if (result.reason === 'provider_limit_retry_superseded') {
+            await restoreSupersededProviderLimitComments(context, { repoOwner, repoName, pullRequestNumber, redisClient });
         }
-        return await runWithExecutionAbortSignal(executionController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }), hashTaskAttemptToken(lockToken));
+        return result;
     } catch (error) {
-        await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });
+        const errorDisposition = await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });
+        if (errorDisposition === 'provider_limit_retry_superseded') {
+            await restoreSupersededProviderLimitComments(context, { repoOwner, repoName, pullRequestNumber, redisClient });
+            return { status: 'skipped', reason: 'provider_limit_retry_superseded', pullRequestNumber };
+        }
         // Don't re-throw for user cancellations (not an error, just cancelled)
         const isUserCancelled = (error as Error).message?.includes('aborted by user');
         if (isUserCancelled) return { status: 'cancelled', reason: 'user_cancelled' };

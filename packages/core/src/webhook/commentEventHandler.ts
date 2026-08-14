@@ -6,6 +6,7 @@ import { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from '
 import { loadFollowupIgnoreKeywords, loadPrimaryProcessingLabels } from '../config/configManager.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPendingPrCommentsKey } from '../utils/constants.js';
+import { restorePendingCommentsIdempotently } from '../utils/pendingComments.js';
 import { withRetry } from '../utils/retryHandler.js';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
@@ -71,7 +72,7 @@ interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS:
 interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; commentRevisionIdentity?: string; modelSelection?: CanonicalModelSelection }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
-type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'agentAlias' | 'modelName' | 'modelLabel' | 'ultrafixMeta'> & { created_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'agentAlias' | 'modelName' | 'modelLabel' | 'ultrafixMeta'> & { created_at: string; updated_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
 type PRComment = { id: number; created_at: string; updated_at: string; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type ManualCommandTakeover = { workEpoch: number; hadAutomaticWork: boolean; commentRevisionIdentity: string };
@@ -345,41 +346,31 @@ async function transitionModelLabel(
     const labelsToRemove = existingModelLabels.filter(label => label.toLowerCase() !== selection.githubLabel.toLowerCase());
     const labelsToAdd = targetAlreadyPresent ? [] : [selection.githubLabel];
 
-    if (labelsToRemove.length === 0 && labelsToAdd.length === 0) {
-        return { success: true, updatedLabels: prLabels };
-    }
-
     const octokit = await getAuthenticatedOctokit();
     const result = await safeUpdateLabels(
         { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
         labelsToRemove,
         labelsToAdd,
-        prLabels.map(label => label.name),
+        {
+            targetLabel: selection.githubLabel,
+            isManagedLabel: labelName =>
+                modelLabelRegex.test(labelName)
+                || configuredCustomLabels.has(labelName.toLowerCase()),
+            maxAttempts: 3,
+        },
     );
     if (!result.success) {
-        // Restore the pre-command selection as best we can. In particular,
-        // remove a newly-added target before restoring any labels that were
-        // successfully removed, so a failed command does not advertise two
-        // different providers.
-        const rollbackRemove = !targetAlreadyPresent && result.added.includes(selection.githubLabel)
-            ? [selection.githubLabel]
-            : [];
-        const rollbackAdd = result.removed;
-        if (rollbackRemove.length > 0 || rollbackAdd.length > 0) {
-            await safeUpdateLabels(
-                { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
-                rollbackRemove,
-                rollbackAdd,
-            );
-        }
         correlatedLogger.error({ pullRequestNumber: prNumber, targetLabel: selection.githubLabel, errors: result.errors }, 'Model label transition failed; follow-up will not be queued');
         return { success: false, updatedLabels: prLabels };
     }
 
-    const retainedLabels = prLabels.filter(label => !labelsToRemove.includes(label.name));
-    const updatedLabels = targetAlreadyPresent
-        ? retainedLabels
-        : [...retainedLabels, { id: 0, name: selection.githubLabel, node_id: '', url: '', color: '', default: false, description: null } as Label];
+    const verifiedLabelNames = result.finalLabels ?? [
+        ...prLabels.filter(label => !labelsToRemove.includes(label.name)).map(label => label.name),
+        ...(!targetAlreadyPresent ? [selection.githubLabel] : []),
+    ];
+    const updatedLabels = verifiedLabelNames.map(name => ({
+        id: 0, name, node_id: '', url: '', color: '', default: false, description: null,
+    } as Label));
     return { success: true, updatedLabels };
 }
 
@@ -389,11 +380,8 @@ function isProviderLimitRetry(job: Job<PRJobData>): boolean {
 
 async function restoreSupersededRetryComments(jobs: Job<PRJobData>[], eventContext: CommentContext, redisClient: Redis): Promise<void> {
     const comments = jobs.flatMap(job => job.data.comments ?? []);
-    const uniqueComments = comments.filter((comment, index) => comments.findIndex(candidate => candidate.id === comment.id) === index);
-    if (uniqueComments.length === 0) return;
     const pendingCommentsKey = getPendingPrCommentsKey(eventContext.owner, eventContext.repo, eventContext.prNumber);
-    for (const comment of uniqueComments) await redisClient.rpush(pendingCommentsKey, JSON.stringify(comment));
-    await redisClient.expire(pendingCommentsKey, 3600);
+    await restorePendingCommentsIdempotently(redisClient, pendingCommentsKey, comments);
 }
 
 async function supersedeProviderLimitRetries(snapshot: PRCommentJobSnapshot, eventContext: CommentContext, redisClient: Redis): Promise<number> {
@@ -444,6 +432,17 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
         return;
     }
 
+    const hasQueuedProviderRetries = [...snapshot.waiting, ...snapshot.delayed].some(isProviderLimitRetry);
+    if (hasQueuedProviderRetries) {
+        // Make the selected follow-up recoverable before removing its previous
+        // owner. It is identity-deduplicated when the replacement claims it.
+        await storeCommentForBatch(
+            { ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) },
+            commentAuthor,
+            eventContext,
+            { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },
+        );
+    }
     const supersededRetries = await supersedeProviderLimitRetries(snapshot, eventContext, redisClient);
     const remainingQueuedJobs = [...snapshot.waiting, ...snapshot.delayed].filter(job => !isProviderLimitRetry(job));
     if (remainingQueuedJobs.length > 0) {
@@ -792,6 +791,7 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
     const pendingComment: UnprocessedComment = {
         id: comment.id,
         createdAt: comment.created_at,
+        updatedAt: comment.updated_at,
         body: pendingCommentBody,
         author: commentAuthor,
         type: reviewComment ? 'review' : 'issue',
@@ -830,7 +830,7 @@ async function getLivePRBranchAndLabels(repoContext: RepoContext): Promise<PRBra
     return { branchName: pr.head.ref, prLabels: pr.labels || [] };
 }
 
-function prepareComment(comment: { id: number; created_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventType: CommentEventType, keywords: string[]): { enhancedBody: string; unprocessedComment: UnprocessedComment; llmFromKeywords: string | null } {
+function prepareComment(comment: { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventType: CommentEventType, keywords: string[]): { enhancedBody: string; unprocessedComment: UnprocessedComment; llmFromKeywords: string | null } {
     const llmFromKeywords = keywords.length > 0 ? extractLlmFromKeywords(comment.body, keywords) : null;
     let enhancedBody = keywords.length > 0 ? stripKeywordsFromBody(comment.body, keywords) : comment.body;
 
@@ -840,7 +840,7 @@ function prepareComment(comment: { id: number; created_at: string; body: string;
     }
 
     const commentType = isReviewComment(comment, eventType) ? 'review' as const : 'issue' as const;
-    const unprocessedComment: UnprocessedComment = { id: comment.id, createdAt: comment.created_at, body: enhancedBody, author: commentAuthor, type: commentType, hasCodeContext: commentType === 'review' && !!comment.diff_hunk };
+    const unprocessedComment: UnprocessedComment = { id: comment.id, createdAt: comment.created_at, updatedAt: comment.updated_at, body: enhancedBody, author: commentAuthor, type: commentType, hasCodeContext: commentType === 'review' && !!comment.diff_hunk };
     return { enhancedBody, unprocessedComment, llmFromKeywords };
 }
 

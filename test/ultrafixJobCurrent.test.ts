@@ -12,6 +12,18 @@ await mock.module('@propr/core', {
         areAllChecksPassing: mock.fn(async () => true),
         getCurrentPRHead: mock.fn(async () => 'head-sha'),
         getPendingPrCommentsKey: (owner: string, repo: string, pr: number) => `pending-pr-comments:${owner}:${repo}:${pr}`,
+        getUnprocessedCommentIdentity: (comment: { type: string; id: number; updatedAt?: string; createdAt?: string }) =>
+            `${comment.type}:${comment.id}:${comment.updatedAt ?? comment.createdAt ?? ''}`,
+        dedupeUnprocessedComments: (comments: Array<{ type: string; id: number; updatedAt?: string; createdAt?: string }>) =>
+            comments.filter((comment, index) => comments.findIndex(candidate =>
+                `${candidate.type}:${candidate.id}:${candidate.updatedAt ?? candidate.createdAt ?? ''}`
+                === `${comment.type}:${comment.id}:${comment.updatedAt ?? comment.createdAt ?? ''}`) === index),
+        restorePendingCommentsIdempotently: async (redisClient: { lpush: (key: string, ...values: string[]) => Promise<number>; expire: (key: string, ttl: number) => Promise<number> }, key: string, comments: unknown[]) => {
+            if (comments.length === 0) return 0;
+            await redisClient.lpush(key, ...comments.map(comment => JSON.stringify(comment)).reverse());
+            await redisClient.expire(key, 3600);
+            return comments.length;
+        },
         issueQueue: {
             add: mockIssueQueueAdd,
             getActive: async () => mockActiveQueueJobs,

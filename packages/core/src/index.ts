@@ -25,6 +25,11 @@ export { formatResetTime, addModelSpecificDelay, parseResetTimeFromMessage, calc
 export { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from './utils/commentFilters.js';
 export { ensureGitRepository } from './utils/git/gitValidation.js';
 export { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from './utils/github/labelOperations.js';
+export {
+    getUnprocessedCommentIdentity,
+    dedupeUnprocessedComments,
+    restorePendingCommentsIdempotently,
+} from './utils/pendingComments.js';
 export type { LabelContext, UpdateResults } from './utils/github/labelOperations.js';
 export { createLogFiles, generateCompletionComment, redactSecrets } from './utils/github/logFiles.js';
 export { formatSubscriptionUsage } from './utils/github/formatSubscriptionUsage.js';

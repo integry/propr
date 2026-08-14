@@ -17,6 +17,91 @@ export interface UpdateResults {
     removed: string[];
     added: string[];
     errors: string[];
+    /** Labels observed by the final live verification read. */
+    finalLabels?: string[];
+}
+
+export interface ExclusiveLabelConvergence {
+    /** The one managed label that must remain after convergence. */
+    targetLabel: string;
+    /** Classifies labels owned by this transition. Unmanaged labels are never mutated. */
+    isManagedLabel: (labelName: string) => boolean;
+    /** Maximum live-read/mutate/verify attempts. */
+    maxAttempts?: number;
+}
+
+interface IssueLabelsResponse {
+    data: { labels?: Array<string | { name?: string }> };
+}
+
+function labelNames(response: IssueLabelsResponse): string[] {
+    return (response.data.labels ?? []).flatMap(label =>
+        typeof label === 'string' ? [label] : label.name ? [label.name] : []);
+}
+
+async function readLiveLabels(context: LabelContext): Promise<string[]> {
+    const response = await context.octokit.request<IssueLabelsResponse>(
+        'GET /repos/{owner}/{repo}/issues/{issue_number}',
+        { owner: context.owner, repo: context.repo, issue_number: context.issueNumber },
+    );
+    return labelNames(response);
+}
+
+async function convergeExclusiveLabel(
+    context: LabelContext,
+    convergence: ExclusiveLabelConvergence,
+    results: UpdateResults,
+): Promise<void> {
+    const { issueNumber, logger } = context;
+    const maxAttempts = Math.max(1, convergence.maxAttempts ?? 3);
+    const targetLower = convergence.targetLabel.toLowerCase();
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        let liveLabels: string[];
+        try {
+            liveLabels = await readLiveLabels(context);
+        } catch (error) {
+            const message = (error as Error).message;
+            results.errors.push(`Attempt ${attempt}: failed to read live labels: ${message}`);
+            logger.warn({ error: message, issueNumber, attempt }, 'Failed to read live labels before model-label transition');
+            continue;
+        }
+
+        const managedLabels = liveLabels.filter(convergence.isManagedLabel);
+        const labelsToRemove = managedLabels.filter(label => label.toLowerCase() !== targetLower);
+        const targetPresent = managedLabels.some(label => label.toLowerCase() === targetLower);
+
+        for (const label of labelsToRemove) {
+            if (await safeRemoveLabel(context, label)) results.removed.push(label);
+            else results.errors.push(`Attempt ${attempt}: failed to remove '${label}'`);
+        }
+        if (!targetPresent) {
+            if (await safeAddLabel(context, convergence.targetLabel)) results.added.push(convergence.targetLabel);
+            else results.errors.push(`Attempt ${attempt}: failed to add '${convergence.targetLabel}'`);
+        }
+
+        try {
+            const verifiedLabels = await readLiveLabels(context);
+            results.finalLabels = verifiedLabels;
+            const verifiedManagedLabels = verifiedLabels.filter(convergence.isManagedLabel);
+            if (
+                verifiedManagedLabels.length === 1
+                && verifiedManagedLabels[0].toLowerCase() === targetLower
+            ) {
+                results.success = true;
+                return;
+            }
+            results.errors.push(
+                `Attempt ${attempt}: model-label invariant not satisfied (found: ${verifiedManagedLabels.join(', ') || 'none'})`,
+            );
+        } catch (error) {
+            const message = (error as Error).message;
+            results.errors.push(`Attempt ${attempt}: failed to verify live labels: ${message}`);
+            logger.warn({ error: message, issueNumber, attempt }, 'Failed to verify live labels after model-label transition');
+        }
+    }
+
+    results.success = false;
 }
 
 export async function safeRemoveLabel(context: LabelContext, labelName: string): Promise<boolean> {
@@ -77,10 +162,12 @@ export async function safeUpdateLabels(
     context: LabelContext,
     labelsToRemove: string[] = [],
     labelsToAdd: string[] = [],
-    /** When supplied, replace the complete label set in one GitHub operation. */
-    currentLabels?: string[],
+    /** Replace a snapshot, or converge one managed label exclusively from live reads. */
+    currentLabelsOrConvergence?: string[] | ExclusiveLabelConvergence,
 ): Promise<UpdateResults> {
     const { issueNumber, logger } = context;
+    const currentLabels = Array.isArray(currentLabelsOrConvergence) ? currentLabelsOrConvergence : undefined;
+    const convergence = Array.isArray(currentLabelsOrConvergence) ? undefined : currentLabelsOrConvergence;
     const results: UpdateResults = {
         success: true,
         removed: [],
@@ -88,7 +175,12 @@ export async function safeUpdateLabels(
         errors: []
     };
 
-    if (currentLabels) {
+    if (convergence) {
+        // The model-selection path deliberately avoids PUT of a complete label
+        // set: only labels classified as model labels may be touched.
+        results.success = false;
+        await convergeExclusiveLabel(context, convergence, results);
+    } else if (currentLabels) {
         const removedNames = new Set(labelsToRemove.map(label => label.toLowerCase()));
         const desiredLabels = currentLabels.filter(label => !removedNames.has(label.toLowerCase()));
         for (const label of labelsToAdd) {
@@ -119,7 +211,7 @@ export async function safeUpdateLabels(
         }
     }
 
-    if (!currentLabels) for (const labelName of labelsToAdd) {
+    if (!convergence && !currentLabels) for (const labelName of labelsToAdd) {
         const added = await safeAddLabel(context, labelName);
         if (added) {
             results.added.push(labelName);

@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import type { CommentJobData, UnprocessedComment } from '@propr/core';
+import { dedupeUnprocessedComments, type CommentJobData, type UnprocessedComment } from '@propr/core';
 
 interface CommentChronology {
     id: number;
@@ -154,6 +154,9 @@ function applyModelOverride(jobData: CommentJobData, latestCommandComment: Unpro
 }
 
 export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): void {
+    // The worker owns every comment it claimed. Persist that complete ordered
+    // set before routing checks, provider retries, or superseded exits.
+    jobData.comments = dedupeUnprocessedComments(commentsToProcess);
     const {
         queuedCommandChronology,
         latestCommandComment,

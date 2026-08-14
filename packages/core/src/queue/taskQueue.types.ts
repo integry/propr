@@ -85,6 +85,8 @@ export interface UnprocessedComment {
     id: number;
     /** GitHub creation time used to order issue and review comments together. */
     createdAt?: string;
+    /** GitHub revision time used to distinguish edited comment deliveries. */
+    updatedAt?: string;
     body: string;
     body_html?: string;  // HTML with signed image URLs (from accept: application/vnd.github.full+json)
     author: string;

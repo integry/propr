@@ -201,7 +201,7 @@ async function postCancellationComment(params: CancellationCommentParams): Promi
     }
 }
 
-async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
+async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJobData>, options: JobErrorOptions): Promise<'requeued' | 'provider_limit_retry_superseded'> {
     const { pullRequestNumber, repoOwner, repoName, authorsText, octokit, correlatedLogger } = options;
     correlatedLogger.warn({ pullRequestNumber, resetTimestamp: error.resetTimestamp }, 'Claude usage limit hit during PR comment processing. Requeueing job.');
 
@@ -234,7 +234,7 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
                     liveAgent: liveSelection.agentAlias,
                     liveModel: liveSelection.model,
                 }, 'Provider-limit retry superseded by a newer durable PR model selection');
-                return;
+                return 'provider_limit_retry_superseded';
             }
         } catch (selectionError) {
             correlatedLogger.warn({ error: (selectionError as Error).message }, 'Could not verify live PR model before provider-limit requeue; preserving retry');
@@ -258,6 +258,7 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     }
 
     await issueQueue.add(job.name, buildProviderLimitRetryJobData(job.data), { jobId: requeueJobId, delay: Math.max(0, delay) });
+    return 'requeued';
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
@@ -295,7 +296,7 @@ async function handleGenericError(error: Error, options: JobErrorOptions): Promi
     }
 }
 
-export async function handleJobError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<void> {
+export async function handleJobError(error: Error, job: Job<CommentJobData>, options: JobErrorOptions): Promise<'provider_limit_retry_superseded' | undefined> {
     const { repoOwner, repoName, octokit, startingWorkComment, correlatedLogger, stateManager, taskId } = options;
 
     const isUserCancelled = error.message?.includes('aborted by user');
@@ -310,16 +311,18 @@ export async function handleJobError(error: Error, job: Job<CommentJobData>, opt
             await postCancellationComment({ octokit, repoOwner, repoName, commentId: startingWorkComment.data.id, correlatedLogger });
             correlatedLogger.info({ taskId, commentId: startingWorkComment.data.id }, 'Updated GitHub comment for cancelled task');
         }
-        return;
+        return undefined;
     }
 
     if (isUsageLimit) {
-        await handleUsageLimitError(error as UsageLimitError, job, options);
+        const disposition = await handleUsageLimitError(error as UsageLimitError, job, options);
+        return disposition === 'provider_limit_retry_superseded' ? disposition : undefined;
     } else if (isUserCancelled) {
         await handleUserCancellation(options, error.message);
     } else {
         await handleGenericError(error, options);
     }
+    return undefined;
 }
 
 export interface CleanupOptions {
