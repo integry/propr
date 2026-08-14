@@ -433,6 +433,58 @@ test("forced backup rename cannot follow a replaced skills parent", async (t) =>
   assert.equal(fs.readFileSync(join(detachedParent, ".propr.backup-20260814102400000", "SKILL.md"), "utf8"), "foreign\n");
 });
 
+test("backup move preserves a destination created immediately before rename and retries", async (t) => {
+  const root = temporaryRoot(t, "propr-agent-skill-backup-name-race-test-");
+  const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
+  fs.mkdirSync(env.HOME, { recursive: true });
+  const source = join(root, "bundle");
+  fs.mkdirSync(join(source, "agents"), { recursive: true });
+  fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
+  fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+
+  const skillsParent = join(env.CODEX_HOME, "skills");
+  const target = join(skillsParent, "propr");
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(join(target, "SKILL.md"), "foreign\n");
+  const occupied = join(skillsParent, ".propr.backup-20260814102400000");
+  let injected = false;
+
+  injectAtDarwinNativeBoundary(t, (event) => {
+    if (!injected && event.operation === "mkdirAt" && event.phase === "before" && event.name === basename(occupied)) {
+      injected = true;
+      fs.mkdirSync(occupied);
+    }
+  });
+
+  t.mock.module("node:fs", {
+    namedExports: {
+      ...fs,
+      mkdirSync(path: fs.PathLike, options?: fs.MakeDirectoryOptions & { recursive?: boolean }): string | undefined {
+        if (!injected && basename(String(path)) === basename(occupied)) {
+          injected = true;
+          fs.mkdirSync(occupied);
+        }
+        return fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
+      },
+    },
+  });
+  const agentSkillModule = new URL("./agentSkill.ts?backup-name-race", import.meta.url);
+  const { installAgentSkill } = await import(agentSkillModule.href);
+
+  const result = installAgentSkill("codex", {
+    env,
+    bundleDir: source,
+    force: true,
+    now: new Date("2026-08-14T10:24:00Z"),
+  });
+
+  assert.equal(result.action, "backed-up");
+  assert.equal(injected, true);
+  assert.equal(result.backupPath, `${occupied}-1`);
+  assert.deepEqual(fs.readdirSync(occupied), []);
+  assert.equal(fs.readFileSync(join(result.backupPath!, "SKILL.md"), "utf8"), "foreign\n");
+});
+
 test("removal rename cannot follow a replaced skills parent", async (t) => {
   const root = temporaryRoot(t, "propr-agent-skill-removal-parent-race-test-");
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };

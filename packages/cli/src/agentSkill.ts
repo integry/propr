@@ -614,9 +614,10 @@ function openProviderSkillsParent(location: AgentSkillLocation): PinnedDirectory
   return openDirectoryNoFollow(dirname(location.path));
 }
 
-function uniqueSibling(
+function moveToUniqueSibling(
   parent: PinnedDirectory,
   visibleParent: string,
+  oldName: string,
   label: string,
   now = new Date()
 ): { name: string; path: string } {
@@ -625,8 +626,26 @@ function uniqueSibling(
     assertVisibleDirectoryIdentity(visibleParent, parent);
     const suffix = attempt === 0 ? "" : `-${attempt}`;
     const name = `.propr.${label}-${stamp}${suffix}`;
-    if (!pinnedLstatIfExists(parent, name)) {
+    if (pinnedLstatIfExists(parent, name)) continue;
+
+    try {
+      // Atomically reserve the candidate before using ordinary POSIX rename,
+      // which may replace an existing empty directory. A concurrent creator
+      // wins mkdir instead and is preserved while we retry another name. Once
+      // reserved, added content makes the rename fail rather than be replaced.
+      mkdirPinnedChild(parent, name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+
+    try {
+      renamePinnedEntry(parent, visibleParent, oldName, name);
       return { name, path: join(visibleParent, name) };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (["EEXIST", "EISDIR", "ENOTDIR", "ENOTEMPTY"].includes(code ?? "")) continue;
+      throw error;
     }
   }
   throw new Error(`could not allocate ${label} path beside ${join(visibleParent, "propr")}`);
@@ -764,9 +783,8 @@ function installAgentSkillWithoutOverwrite(
     }
 
     if (refreshed.state === "outdated-managed") {
-      const replacement = uniqueSibling(pinnedParent, parent, "replaced", options.now);
+      const replacement = moveToUniqueSibling(pinnedParent, parent, "propr", "replaced", options.now);
       displaced = replacement.path;
-      renamePinnedEntry(pinnedParent, parent, "propr", replacement.name);
       const moved = inspectMovedTree(location, displaced, bundle);
       if (!sameInspectedTree(refreshed, moved)) {
         return preservedFailure(status, "target changed before replacement and was not overwritten", displaced);
@@ -869,9 +887,8 @@ function installAgentSkillAtLocation(
       return operationFailure(refreshed, "failed", "target changed during installation; inspect it and retry");
     }
     if (refreshed.state !== "absent") {
-      const backup = uniqueSibling(pinnedParent, parent, "backup", options.now);
+      const backup = moveToUniqueSibling(pinnedParent, parent, "propr", "backup", options.now);
       displaced = backup.path;
-      renamePinnedEntry(pinnedParent, parent, "propr", backup.name);
       backupPath = backup.path;
     }
     let claimed: PinnedDirectory;
@@ -963,8 +980,7 @@ function removeAgentSkillAtLocation(
       return operationFailure(refreshed, "failed", "target changed during removal; inspect it and retry");
     }
     if (options.force) {
-      const backup = uniqueSibling(pinnedParent, parent, "backup", options.now);
-      renamePinnedEntry(pinnedParent, parent, "propr", backup.name);
+      const backup = moveToUniqueSibling(pinnedParent, parent, "propr", "backup", options.now);
       return {
         ...status,
         state: "absent",
@@ -973,8 +989,7 @@ function removeAgentSkillAtLocation(
         detail: "target removed; content preserved as a backup",
       };
     }
-    const tombstone = uniqueSibling(pinnedParent, parent, "removing", options.now);
-    renamePinnedEntry(pinnedParent, parent, "propr", tombstone.name);
+    const tombstone = moveToUniqueSibling(pinnedParent, parent, "propr", "removing", options.now);
     const moved = inspectMovedTree(location, tombstone.path, bundle);
     if (!sameInspectedTree(refreshed, moved)) {
       return preservedFailure(status, "target changed before removal and was not deleted", tombstone.path);
