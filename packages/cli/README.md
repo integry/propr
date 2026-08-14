@@ -115,6 +115,21 @@ cd .propr && npm install <package>
 
 The generated `.propr/setup.sh` runs before each implementation execution. Use it for repository-local setup such as npm helper packages; install Debian system tools at the ProPR installation level with `propr runtime packages add <package> --wait`.
 
+## ProPR Operator Agent Skill
+
+`propr setup` detects configured agent tools and offers once to install the bundled ProPR Operator skill, showing every destination before writing. Skip the offer with `--no-skill`, or choose targets explicitly with `--install-skill codex,claude`. A setup-time skill error is reported with a recovery command and does not invalidate an otherwise healthy stack. Piped/CI setup never writes agent homes unless explicit targets are passed.
+
+The standalone command manages only the ProPR skill:
+
+```bash
+propr skill install codex claude
+propr skill status                 # all targets, with content identities
+propr skill remove codex           # refuses modified or foreign content
+propr skill install codex --force  # preserves a timestamped backup first
+```
+
+Target names map to `~/.codex/skills/propr` (or `$CODEX_HOME`), `~/.claude/skills/propr`, `~/.gemini/antigravity-cli/skills/propr`, `$XDG_CONFIG_HOME/opencode/skills/propr` (or `~/.config`), and `~/.vibe/skills/propr`. Run `propr skill --help` for the exact mapping.
+
 ### Authentication
 
 When no token is provided, `propr login` uses the GitHub CLI (`gh`) for interactive authentication:

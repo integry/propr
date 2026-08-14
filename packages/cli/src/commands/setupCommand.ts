@@ -21,6 +21,16 @@ import { createInterface } from "node:readline/promises";
 import { createConfigManager } from "../config/index.js";
 import type { ConfigManager } from "../config/index.js";
 import { runSequentialSetup, SequentialSetupUnavailableError } from "./setup/sequential.js";
+import {
+  detectConfiguredAgentSkillTargets,
+  installAgentSkill,
+  parseAgentSkillTargets,
+  resolveAgentSkillLocations,
+  type AgentSkillEnvironment,
+  type AgentSkillOperationResult,
+  type AgentSkillTarget,
+} from "../agentSkill.js";
+import { formatAgentSkillOperation } from "./agentSkillCommands.js";
 
 export interface SetupCommandOptions {
   root?: string;
@@ -28,6 +38,71 @@ export interface SetupCommandOptions {
   tui?: boolean;
   /** Commander sets this for `--skip-remote-image-check`. */
   skipRemoteImageCheck?: boolean;
+  /** Comma-separated explicit targets for non-interactive-safe installation. */
+  installSkill?: string;
+  /** Commander sets this to false for `--no-skill`. */
+  skill?: boolean;
+}
+
+export interface SetupSkillOfferOptions {
+  explicitTargets?: string;
+  enabled?: boolean;
+  interactive?: boolean;
+  env?: AgentSkillEnvironment;
+  ask?: (question: string) => Promise<string>;
+  log?: (line: string) => void;
+  install?: (target: AgentSkillTarget) => AgentSkillOperationResult;
+}
+
+/**
+ * Offer the bundled operator skill once during guided setup. A non-interactive
+ * invocation performs no home-directory writes unless explicit targets were
+ * supplied. Every target is independent: failures are reported with an exact
+ * recovery command and never become a stack-setup failure.
+ */
+export async function offerSetupAgentSkill(options: SetupSkillOfferOptions = {}): Promise<AgentSkillOperationResult[]> {
+  const env = options.env ?? process.env;
+  const log = options.log ?? ((line: string) => console.log(line));
+  const explicit = options.explicitTargets?.trim();
+  if (!explicit && (options.enabled === false || !options.interactive)) return [];
+
+  let targets: AgentSkillTarget[];
+  try {
+    if (explicit) {
+      targets = parseAgentSkillTargets([explicit]);
+    } else {
+      const detected = detectConfiguredAgentSkillTargets(env);
+      if (detected.length === 0) return [];
+      log("");
+      log("Install the ProPR Operator Agent Skill for detected tools?");
+      for (const location of detected) log(`  ${location.target}: ${location.path}`);
+      const answer = (await options.ask?.("Install these skills? [Y/n] ")) ?? "";
+      if (/^n(?:o)?$/i.test(answer.trim())) return [];
+      targets = detected.map(({ target }) => target);
+    }
+  } catch (error) {
+    log(`Agent Skill setup skipped: ${(error as Error).message}`);
+    return [];
+  }
+
+  const results: AgentSkillOperationResult[] = [];
+  for (const target of targets) {
+    try {
+      const result = options.install?.(target) ?? installAgentSkill(target, { env });
+      results.push(result);
+      log(formatAgentSkillOperation(result));
+      if (result.action === "failed" || result.action === "refused") {
+        log(`  Recovery: propr skill install ${target}${result.action === "refused" ? " --force" : ""}`);
+      }
+    } catch (error) {
+      const path = (() => {
+        try { return resolveAgentSkillLocations([target], env)[0].path; } catch { return target; }
+      })();
+      log(`${target}: agent skill installation failed at ${path}: ${(error as Error).message}`);
+      log(`  Recovery: propr skill install ${target}`);
+    }
+  }
+  return results;
 }
 
 /**
@@ -79,6 +154,8 @@ export function createSetupCommand(): Command {
     .description("Guided one-time setup for the local ProPR stack")
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
     .option("--no-tui", "Skip the full-screen wizard; prompt line-by-line instead")
+    .option("--install-skill <targets>", "Install the ProPR Operator skill for comma-separated targets")
+    .option("--no-skill", "Do not offer Agent Skill installation")
     .option(
       "--skip-remote-image-check",
       "Skip the slow registry round-trip when checking that stack images exist"
@@ -88,6 +165,7 @@ Examples:
   $ propr setup
   $ propr setup --no-tui
   $ propr setup --root ~/propr
+  $ propr setup --install-skill codex,claude
   $ propr setup --skip-remote-image-check
 
 Setup is safe to re-run at any time: it re-discovers your environment and skips
@@ -102,6 +180,21 @@ cannot prompt and exits with guidance — scaffold non-interactively instead wit
 `)
     .action(async (options: SetupCommandOptions) => {
       try {
+        let skillReadline: ReturnType<typeof createInterface> | undefined;
+        const canPromptForSkill = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+        await offerSetupAgentSkill({
+          explicitTargets: options.installSkill,
+          enabled: options.skill,
+          interactive: canPromptForSkill,
+          ask: canPromptForSkill
+            ? async (question) => {
+                skillReadline ??= createInterface({ input: process.stdin, output: process.stdout });
+                return skillReadline.question(question);
+              }
+            : undefined,
+        });
+        skillReadline?.close();
+
         const configManager = await createConfigManager();
         const { skipRemoteImageCheck } = options;
         const useInk = options.tui !== false && canRenderInkSetup();

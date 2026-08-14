@@ -1,0 +1,4 @@
+interface:
+  display_name: "ProPR Operator"
+  short_description: "Orchestrate safe ProPR issue-to-release workflows"
+  default_prompt: "Use $propr to coordinate this change through ProPR and verify it independently."

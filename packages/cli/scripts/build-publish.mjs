@@ -81,6 +81,10 @@ rmSync(stageDir, { recursive: true, force: true });
 mkdirSync(stageDir, { recursive: true });
 cpSync(join(cliDir, "dist"), join(stageDir, "dist"), { recursive: true });
 cpSync(join(cliDir, "README.md"), join(stageDir, "README.md"));
+for (const requiredSkillFile of ["SKILL.md", join("agents", "openai.yaml")]) {
+  const bundled = join(stageDir, "dist", "skill", "propr", requiredSkillFile);
+  if (!existsSync(bundled)) throw new Error(`Bundled ProPR Agent Skill file is missing: ${bundled}`);
+}
 
 // 3. Vendor shared's compiled JS (dependency-free) into dist/vendor/shared.
 const vendorDir = join(stageDir, "dist", "vendor", "shared");
