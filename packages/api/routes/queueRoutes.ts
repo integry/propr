@@ -10,16 +10,20 @@ interface QueueRoutesDeps {
 export function createQueueRoutes(deps: QueueRoutesDeps) {
   const { redisClient, taskQueue } = deps;
 
+  async function collectQueueStats(): Promise<Record<string, number>> {
+    const [waiting, active, completed, failed, delayed] = await Promise.all([
+      taskQueue.getWaitingCount(),
+      taskQueue.getActiveCount(),
+      taskQueue.getCompletedCount(),
+      taskQueue.getFailedCount(),
+      taskQueue.getDelayedCount()
+    ]);
+    return { waiting, active, completed, failed, delayed, total: waiting + active + completed + failed + delayed };
+  }
+
   async function getQueueStats(_req: Request, res: Response): Promise<void> {
     try {
-      const [waiting, active, completed, failed, delayed] = await Promise.all([
-        taskQueue.getWaitingCount(),
-        taskQueue.getActiveCount(),
-        taskQueue.getCompletedCount(),
-        taskQueue.getFailedCount(),
-        taskQueue.getDelayedCount()
-      ]);
-      res.json({ waiting, active, completed, failed, delayed, total: waiting + active + completed + failed + delayed });
+      res.json(await collectQueueStats());
     } catch (error) {
       console.error('Error in /api/queue/stats:', error);
       res.status(500).json({ error: 'Internal server error' });
@@ -65,7 +69,7 @@ export function createQueueRoutes(deps: QueueRoutesDeps) {
     }
   }
 
-  return { getQueueStats, getActivity, getMetrics };
+  return { collectQueueStats, getQueueStats, getActivity, getMetrics };
 }
 
 function parseActivityLog(activity: string, index: number): Record<string, unknown> {
