@@ -578,6 +578,7 @@ describe('commentEventHandler — /use command', () => {
         mockOctokit.request.mock.resetCalls();
         mockLoggerInstance.info.mock.resetCalls();
         mockLoggerInstance.warn.mock.resetCalls();
+        mockLoggerInstance.error.mock.resetCalls();
         mockActiveJobs = [];
         mockWaitingJobs = [];
         mockDelayedJobs = [];
@@ -607,10 +608,42 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-alias', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], ['llm-claude-sonnet5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
         assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[1], ['llm-claude-sonnet5']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[2], []);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('/use on a review comment replaces labels from the live PR instead of the stale payload', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [
+                    createMockLabel({ name: 'AI' }),
+                    createMockLabel({ name: 'llm-claude-sonnet5' }),
+                ],
+            },
+        }));
+        const event = createPRReviewCommentEvent('/use opus');
+        event.pull_request.labels = [createMockLabel({ name: 'llm-payload-stale' })];
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'pull_request_review_comment', 'corr-use-review-live-labels', config);
+
+        assert.strictEqual(mockOctokit.request.mock.callCount(), 1);
+        assert.strictEqual(
+            mockOctokit.request.mock.calls[0].arguments[0],
+            'GET /repos/{owner}/{repo}/pulls/{pull_number}',
+        );
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[1], ['llm-claude-sonnet5']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[2], []);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 
     test('/use accepts a full model label and selects the same canonical label', async () => {
@@ -808,6 +841,39 @@ describe('commentEventHandler — /use command', () => {
         );
         assert.strictEqual(successLog, undefined);
     });
+
+    test('/use target-add failure does not remove the existing managed label', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [createMockLabel({ name: 'llm-claude-sonnet5' })],
+            },
+        }));
+        mockSafeUpdateLabels.mock.mockImplementationOnce(async (_context, labelsToRemove, labelsToAdd) => ({
+            success: false,
+            removed: labelsToRemove,
+            added: [],
+            errors: [`Failed to add '${labelsToAdd[0]}'`],
+        }));
+        const event = createPRCommentEvent('/use opus');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-add-failure-preserves-old', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
+        const failureLog = mockLoggerInstance.error.mock.calls.find(
+            (call: { arguments: unknown[] }) => call.arguments[1] === '/use failed to update the PR model label',
+        );
+        assert.ok(failureLog, 'Expected the failed target addition to be logged');
+        const successLog = mockLoggerInstance.info.mock.calls.find(
+            (call: { arguments: unknown[] }) => call.arguments[1] === '/use updated the PR model label',
+        );
+        assert.strictEqual(successLog, undefined);
+    });
 });
 
 describe('commentEventHandler — commandMode serialization in job data', () => {
@@ -853,7 +919,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
 
         await processCommentEvent(event, 'issue_comment', 'corr-mode-use', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
@@ -875,7 +941,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-no-req', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });

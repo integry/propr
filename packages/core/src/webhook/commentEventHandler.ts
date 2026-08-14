@@ -372,8 +372,8 @@ async function resolveCanonicalModelLabel(
 }
 
 async function handleUseCommand(opts: UseCommandOptions): Promise<void> {
-    const { commandMeta, comment, commentAuthor, eventContext, payload, config, correlatedLogger } = opts;
-    const { eventType, prNumber, owner, repo } = eventContext;
+    const { commandMeta, comment, commentAuthor, eventContext, config, correlatedLogger } = opts;
+    const { prNumber, owner, repo } = eventContext;
 
     if (commandMeta.models.length === 0) {
         correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/use command requires a model argument, ignoring');
@@ -384,32 +384,46 @@ async function handleUseCommand(opts: UseCommandOptions): Promise<void> {
     const canonicalLabel = await resolveCanonicalModelLabel(commandMeta.models[0], modelLabelPattern, correlatedLogger, prNumber);
     if (!canonicalLabel) return;
 
-    const { prLabels } = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
+    const { prLabels } = await getLivePRBranchAndLabels({ owner, repo, prNumber });
     const modelLabelRegex = new RegExp(modelLabelPattern);
     const existingModelLabels = prLabels.filter(label => modelLabelRegex.test(label.name)).map(label => label.name);
     const labelsToRemove = existingModelLabels.filter(label => label !== canonicalLabel);
-    const labelsToAdd = existingModelLabels.includes(canonicalLabel) ? [] : [canonicalLabel];
+    const targetPresent = existingModelLabels.includes(canonicalLabel);
 
-    if (labelsToRemove.length === 0 && labelsToAdd.length === 0) {
+    if (labelsToRemove.length === 0 && targetPresent) {
         correlatedLogger.debug({ pullRequestNumber: prNumber, modelLabel: canonicalLabel }, '/use model label is already active');
         return;
     }
 
     const octokit = await getAuthenticatedOctokit();
-    const update = await safeUpdateLabels(
-        { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
-        labelsToRemove,
-        labelsToAdd,
-    );
-    if (!update.success) {
-        correlatedLogger.error(
-            { pullRequestNumber: prNumber, modelLabel: canonicalLabel, errors: update.errors },
-            '/use failed to update the PR model label',
-        );
-        return;
+    const labelContext = { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger };
+
+    if (!targetPresent) {
+        const addUpdate = await safeUpdateLabels(labelContext, [], [canonicalLabel]);
+        if (!addUpdate.success) {
+            correlatedLogger.error(
+                { pullRequestNumber: prNumber, modelLabel: canonicalLabel, errors: addUpdate.errors },
+                '/use failed to update the PR model label',
+            );
+            return;
+        }
     }
 
-    correlatedLogger.info({ pullRequestNumber: prNumber, modelLabel: canonicalLabel }, '/use updated the PR model label');
+    if (labelsToRemove.length > 0) {
+        const removalUpdate = await safeUpdateLabels(labelContext, labelsToRemove, []);
+        if (!removalUpdate.success) {
+            correlatedLogger.error(
+                { pullRequestNumber: prNumber, modelLabel: canonicalLabel, errors: removalUpdate.errors },
+                '/use failed to update the PR model label',
+            );
+            return;
+        }
+    }
+
+    correlatedLogger.info(
+        { pullRequestNumber: prNumber, modelLabel: canonicalLabel },
+        '/use updated the PR model label',
+    );
 }
 
 type SwitchCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'switch' } };
