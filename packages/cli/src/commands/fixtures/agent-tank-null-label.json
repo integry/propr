@@ -3,15 +3,20 @@
     "usage": {
       "fiveHour": null,
       "weekly": {
-        "label": "Weekly limit",
+        "label": null,
         "percentUsed": 12,
         "resetsIn": "3d 4h"
       },
-      "version": null
+      "unexpectedBoolean": false,
+      "unexpectedNumber": 7,
+      "unexpectedString": "not a metric"
     },
     "metadata": {
       "model": "gpt-5.6-luna"
     },
     "error": null
+  },
+  "claude": {
+    "error": "Claude usage unavailable"
   }
 }
