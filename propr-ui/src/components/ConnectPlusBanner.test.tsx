@@ -1,3 +1,4 @@
+import { useLayoutEffect } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
@@ -72,6 +73,22 @@ const banners = (user: CurrentUser = admin, disabled = false) => (
 function renderBanners(user: CurrentUser = admin, disabled = false) {
   return render(banners(user, disabled));
 }
+
+const CloseSoftBannerOnFirstRender = ({ onClose }: { onClose: () => void }) => {
+  const account = useConnectAccount();
+
+  useLayoutEffect(() => {
+    if (!account) return;
+    const close = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Dismiss ProPR Connect notice"]',
+    );
+    if (!close) return;
+    close.click();
+    onClose();
+  }, [account, onClose]);
+
+  return <ConnectSoftPromoBanner />;
+};
 
 const TunnelSwitchProbe = ({
   observations,
@@ -349,5 +366,36 @@ describe('Connect Plus banners', () => {
     await screen.findByText('Community seats are full — 3 of 3 active');
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss ProPR Connect notice' }));
     expect(screen.queryByText('Community seats are full — 3 of 3 active')).not.toBeInTheDocument();
+  });
+
+  it('does not overwrite an earliest-render close during mount or key synchronization', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+    let current = community();
+    mockGetSystemStatus.mockImplementation(async () => status(current));
+    const onClose = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <AuthProvider user={admin}>
+          <ConnectAccountProvider>
+            <CloseSoftBannerOnFirstRender onClose={onClose} />
+          </ConnectAccountProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
+
+    current = community({
+      installationId: 43,
+      sentAt: '2026-08-14T09:32:00.000Z',
+    });
+    fireEvent.focus(window);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(2));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
   });
 });

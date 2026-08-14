@@ -51,20 +51,21 @@ function useSoftDismissal(account: ConnectAccountStatus) {
     () => connectPlusDismissalKey(account.installationId, user?.login ?? ''),
     [account.installationId, user?.login],
   );
-  const [dismissed, setDismissed] = useState(() => readDismissal(key).soft);
-
-  useEffect(() => {
-    setDismissed(readDismissal(key).soft);
-  }, [key]);
+  const storedDismissed = useMemo(() => readDismissal(key).soft, [key]);
+  const [sessionDismissals, setSessionDismissals] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   const dismiss = useCallback(() => {
     const record = readDismissal(key);
     record.soft = true;
     storeDismissal(key, record);
-    setDismissed(true);
+    setSessionDismissals(current => current.has(key)
+      ? current
+      : new Set([...current, key]));
   }, [key]);
 
-  return { dismissed, dismiss };
+  return { dismissed: storedDismissed || sessionDismissals.has(key), dismiss };
 }
 
 interface CapacityFingerprintRequest {
