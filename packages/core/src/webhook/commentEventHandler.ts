@@ -19,7 +19,7 @@ import { parseSlashCommand, buildCommandMeta } from './slashCommandParser.js';
 import type { CommandMeta, UltrafixCommandMeta } from './slashCommandParser.js';
 import { safeUpdateLabels } from '../utils/github/labelOperations.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
-import { getAllCustomLabels, resolveCanonicalModelSelection, resolveCanonicalModelSelectionFromLabels, type CanonicalModelSelection } from '../config/modelLabelResolution.js';
+import { getAllCustomLabels, resolveCanonicalModelSelection, type CanonicalModelSelection } from '../config/modelLabelResolution.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
@@ -907,8 +907,7 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
 
     const { unprocessedComment, llmFromKeywords } = prepareComment(comment, commentAuthor, eventType, PR_FOLLOWUP_TRIGGER_KEYWORDS);
     const { branchName, prLabels } = prefetchedPRData || await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
-    const labelSelection = modelSelection ?? await resolveCanonicalModelSelectionFromLabels(prLabels, MODEL_LABEL_PATTERN);
-    const llm = labelSelection?.model ?? resolveLlm(llmFromKeywords, prLabels, { modelLabelPattern: MODEL_LABEL_PATTERN, prNumber, correlatedLogger, commandMeta });
+    const llm = modelSelection?.model ?? resolveLlm(llmFromKeywords, prLabels, { modelLabelPattern: MODEL_LABEL_PATTERN, prNumber, correlatedLogger, commandMeta });
 
     const jobData: CommentJobData = {
         pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),

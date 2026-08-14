@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { findRunningDockerContainerForTask, getAuthenticatedOctokit, hashTaskAttemptToken, inspectLegacyDockerContainerLivenessForTask, logger, retryConfigs, runWithExecutionAbortSignal, withRetry } from '@propr/core';
+import { AgentRegistry, findRunningDockerContainerForTask, getAuthenticatedOctokit, hashTaskAttemptToken, inspectLegacyDockerContainerLivenessForTask, logger, resolveLlmLabel, retryConfigs, runWithExecutionAbortSignal, withRetry } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
@@ -26,7 +26,7 @@ import {
     restoreSupersededProviderLimitComments,
 } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
-import { generateSummaryTitle, isProviderLimitRetrySuperseded, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
+import { generateSummaryTitle, isProviderLimitRetrySuperseded, resolveAndExecuteAgent, resolveDefaultAgentAndModel, resolvePRCommentModelName } from './prCommentAgentUtils.js';
 import { isReviewComment } from './reviewCommentFormatter.js';
 import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
 import { retainOriginalScope } from './ultrafixOrchestrationService.js';
@@ -170,7 +170,27 @@ function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: 
     return `🔄 **Starting work on follow-up changes** requested by ${authorsText}\n\nI'll analyze the ${unprocessedComments.length} request${plural} and implement the necessary changes.\n\n[View Task Progress](${taskUrl})${commentIdsSuffix}${evidenceMarker ? `\n${evidenceMarker}` : ''}`;
 }
 
-async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
+interface ActiveAttemptRouting {
+    agentAlias?: string;
+    modelName?: string;
+}
+
+async function resolveActiveAttemptRouting(context: PRJobContext, llm: string | null | undefined): Promise<Required<ActiveAttemptRouting>> {
+    if (context.agentAlias && context.modelName) {
+        return { agentAlias: context.agentAlias, modelName: context.modelName };
+    }
+    if (llm) {
+        const selection = await resolveLlmLabel(llm);
+        return { agentAlias: selection.agentAlias, modelName: selection.model };
+    }
+
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+    const selection = await resolveDefaultAgentAndModel(registry, context.correlatedLogger);
+    return { agentAlias: selection.resolvedAlias, modelName: selection.resolvedModel };
+}
+
+async function executeProcessing(params: ExecuteProcessingParams, activeAttemptRouting: ActiveAttemptRouting): Promise<JobResult> {
     const { job, context, taskId, stateManager, state, lockKey, lockToken } = params;
     let { llm } = params;
     const { pullRequestNumber, jobBranchName, repoOwner, repoName, correlationId, correlatedLogger } = context;
@@ -320,8 +340,11 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection });
 
+    const resolvedAttemptRouting = await resolveActiveAttemptRouting(context, llm);
+    activeAttemptRouting.agentAlias = resolvedAttemptRouting.agentAlias;
+    activeAttemptRouting.modelName = resolvedAttemptRouting.modelName;
     const { claudeResult, agentType } = await resolveAndExecuteAgent({
-        llm, agentAlias: context.agentAlias, modelName: context.modelName,
+        llm, agentAlias: resolvedAttemptRouting.agentAlias, modelName: resolvedAttemptRouting.modelName,
         worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
         pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
         reasoningLevel: job.data.reasoningLevel,
@@ -394,18 +417,19 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     }
 
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
+    const activeAttemptRouting: ActiveAttemptRouting = {};
 
     try {
         // Branch early for review mode — read-only analysis, no commits or pushes
         const result = job.data.commandMode === 'review'
             ? await runWithExecutionAbortSignal(executionController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments }), hashTaskAttemptToken(lockToken))
-            : await runWithExecutionAbortSignal(executionController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }), hashTaskAttemptToken(lockToken));
+            : await runWithExecutionAbortSignal(executionController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }, activeAttemptRouting), hashTaskAttemptToken(lockToken));
         if (result.reason === 'provider_limit_retry_superseded') {
             await restoreSupersededProviderLimitComments(context, { repoOwner, repoName, pullRequestNumber, redisClient });
         }
         return result;
     } catch (error) {
-        const errorDisposition = await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });
+        const errorDisposition = await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, runtimeAgentAlias: activeAttemptRouting.agentAlias, runtimeModelName: activeAttemptRouting.modelName });
         if (errorDisposition === 'provider_limit_retry_superseded') {
             await restoreSupersededProviderLimitComments(context, { repoOwner, repoName, pullRequestNumber, redisClient });
             return { status: 'skipped', reason: 'provider_limit_retry_superseded', pullRequestNumber };

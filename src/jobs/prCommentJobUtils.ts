@@ -170,6 +170,8 @@ export interface JobErrorOptions {
     startingWorkComment: { data: { id: number } } | null;
     claudeResult: ClaudeCodeResponse | null; correlationId: string;
     correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string;
+    /** Actual in-memory routing used by this attempt; never persisted for ordinary jobs. */
+    runtimeAgentAlias?: string; runtimeModelName?: string;
 }
 
 export class UsageLimitError extends Error {
@@ -212,7 +214,10 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     // `/use` may have switched the durable label while this writer was still
     // active. In that race, the pending selected follow-up is queued by cleanup;
     // recreating this old provider retry would only leave stale work behind it.
-    if (octokit && job.data.agentAlias && job.data.modelName) {
+    const hasRuntimeRouting = Boolean(options.runtimeAgentAlias && options.runtimeModelName);
+    const retryAgentAlias = hasRuntimeRouting ? options.runtimeAgentAlias : job.data.agentAlias;
+    const retryModelName = hasRuntimeRouting ? options.runtimeModelName : job.data.modelName;
+    if (octokit && retryAgentAlias && retryModelName) {
         try {
             const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
                 owner: repoOwner,
@@ -224,13 +229,13 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
                 process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
             );
             if (liveSelection && (
-                liveSelection.agentAlias.toLowerCase() !== job.data.agentAlias.toLowerCase()
-                || liveSelection.model.toLowerCase() !== job.data.modelName.toLowerCase()
+                liveSelection.agentAlias.toLowerCase() !== retryAgentAlias.toLowerCase()
+                || liveSelection.model.toLowerCase() !== retryModelName.toLowerCase()
             )) {
                 correlatedLogger.info({
                     pullRequestNumber,
-                    retryAgent: job.data.agentAlias,
-                    retryModel: job.data.modelName,
+                    retryAgent: retryAgentAlias,
+                    retryModel: retryModelName,
                     liveAgent: liveSelection.agentAlias,
                     liveModel: liveSelection.model,
                 }, 'Provider-limit retry superseded by a newer durable PR model selection');
@@ -359,7 +364,7 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
             await issueQueue.add('processPullRequestComment', {
                 pullRequestNumber, comments: [], repoOwner, repoName,
                 branchName: jobBranchName, llm: jobLlm, correlationId: generateCorrelationId(),
-                agentAlias: jobAgentAlias, modelName: jobModelName, modelLabel: jobModelLabel,
+                ...(jobAgentAlias && jobModelName ? { agentAlias: jobAgentAlias, modelName: jobModelName, modelLabel: jobModelLabel } : {}),
                 reasoningLevel: jobReasoningLevel,
             }, { jobId: followUpJobId, delay: 3000 });
 
