@@ -55,6 +55,72 @@ function dateWithOneShotSideEffect(sideEffect: () => void): Date {
   } as Date;
 }
 
+const canonicalSkill = readFileSync(new URL("../skill/propr/SKILL.md", import.meta.url), "utf8");
+const canonicalOpenAiMetadata = readFileSync(new URL("../skill/propr/agents/openai.yaml", import.meta.url), "utf8");
+
+test("bundled skill leads with ProPR delegation value and a GitHub-primary workflow", () => {
+  assert.match(canonicalSkill, /GitHub issues, managed labels, pull-request comments, and slash commands become durable tasks/);
+  assert.match(canonicalSkill, /agents run in isolated execution containers/);
+  assert.match(canonicalSkill, /ProPR deterministically owns worktrees, commits, branches, pushes, PR creation, task evidence, retries and recovery, and status/);
+  for (const value of [
+    "auditable issue-to-PR provenance",
+    "deterministic Git operations",
+    "isolated credentials and workspaces",
+    "model routing",
+    "safe parallel work across different PRs",
+    "durable recovery and observability",
+    "standardized independent review gates",
+  ]) {
+    assert.ok(canonicalSkill.includes(value), `missing why-delegate value: ${value}`);
+  }
+
+  assert.match(canonicalSkill, /GitHub as the primary and sufficient control surface/);
+  assert.match(canonicalSkill, /Through GitHub or `gh`, create or edit issues and labels, monitor the generated PR and checks/);
+  assert.match(canonicalSkill, /CLI is useful for installation, host lifecycle, and extra observability, but it is not mandatory for most orchestration/);
+  assert.match(canonicalSkill, /one narrowly scoped GitHub issue\. State the desired outcome, constraints, and testable acceptance criteria/);
+  assert.match(canonicalSkill, /Inspect the task status and evidence, the exact generated PR diff, and all required checks/);
+  assert.match(canonicalSkill, /factual natural-language PR comment describing the observed problem, expected result, and relevant evidence/);
+  assert.match(canonicalSkill, /Merge the PR only when authorized and only at the reviewed and tested head/);
+  assert.match(canonicalSkill, /Keep release publication and deployment as explicit later gates/);
+  for (const command of ["propr setup", "propr status", "propr repo list", "propr agent list", "propr check agents", "propr task list"]) {
+    assert.ok(canonicalSkill.includes(command), `missing optional CLI example: ${command}`);
+  }
+});
+
+test("bundled skill makes AI-only routing the default and model labels optional overrides", () => {
+  assert.match(canonicalSkill, /Normally add `AI` by itself\. ProPR then uses the configured default agent and default model/);
+  assert.match(canonicalSkill, /Only when an intentional model override is useful/);
+  assert.match(canonicalSkill, /`llm-<agent-or-provider-alias>-<model-alias>`/);
+  assert.match(canonicalSkill, /gh label list --repo OWNER\/REPO --search "llm-"/);
+  assert.match(canonicalSkill, /Prefer stable short-form aliases exposed by the repository/);
+  for (const label of ["llm-claude-opus", "llm-claude-sonnet", "llm-gemini-pro", "llm-vibe-mistral", "llm-codex-max"]) {
+    assert.ok(canonicalSkill.includes(label), `missing stable model-label example: ${label}`);
+  }
+  assert.match(canonicalSkill, /Version-specific labels age quickly; use one only when exact-model qualification is intentional/);
+  assert.match(canonicalSkill, /If no appropriate override label exists, use `AI` alone rather than guessing/);
+
+  const overrideLabel = "gh issue edit ISSUE --repo OWNER/REPO --add-label llm-codex-max";
+  const overrideSection = canonicalSkill.slice(canonicalSkill.indexOf("Intentional override"));
+  assert.ok(overrideSection.indexOf(overrideLabel) < overrideSection.indexOf("gh issue edit ISSUE --repo OWNER/REPO --add-label AI"));
+  assert.match(canonicalSkill, /Keep only one managed model label on a PR\. For later model transitions, use ProPR `\/use`/);
+});
+
+test("bundled skill fixes PR command meanings and the deterministic Git boundary", () => {
+  assert.match(canonicalSkill, /Natural-language comment: queue a scoped implementation or refinement follow-up/);
+  assert.match(canonicalSkill, /`\/fix` or `\/fix F…`: implement all pending review blockers or the selected findings/);
+  assert.match(canonicalSkill, /`\/review \[model\]`: request an independent AI review/);
+  assert.match(canonicalSkill, /`\/ultrafix goal=8 max=10`: alternate review and blocker fixes until the score goal or maximum-cycle boundary/);
+  assert.match(canonicalSkill, /`\/use <model>`: select the durable PR route for queued and future work and converge the PR to one managed model label/);
+  assert.match(canonicalSkill, /Use `\/switch` only if current PR help still lists it as a supported alias/);
+  assert.match(canonicalSkill, /`\/merge`: merge the base branch into the PR branch and resolve conflicts\. It does not merge the PR into the base branch/);
+  assert.match(canonicalSkill, /edit and test only\. Do not commit, push, repair Git permissions, or create another ProPR task recursively\. ProPR finalizes Git changes/);
+});
+
+test("OpenAI metadata stays aligned with the GitHub delegation workflow", () => {
+  assert.match(canonicalOpenAiMetadata, /short_description: "Delegate GitHub issue-to-PR work through ProPR"/);
+  assert.match(canonicalOpenAiMetadata, /default_prompt: "Use \$propr to delegate this change through GitHub and independently verify the resulting pull request\."/);
+});
+
 test("resolves every confirmed target with isolated HOME, CODEX_HOME, and XDG_CONFIG_HOME", () => {
   const root = temporaryRoot();
   const env = environment(root);
