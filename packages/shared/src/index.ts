@@ -136,6 +136,9 @@ export {
 // keys so the daemon publisher, API status route, and CLI cannot drift)
 export { ROUTING_STATUS_REDIS_KEY } from './statusKeys.js';
 
+// Export the timestamp contract used at every account-status trust boundary.
+export { isAccountStatusTimestamp } from './accountStatusTimestamp.js';
+
 export {
   PROPR_VERSION,
   PROPR_API_COMPATIBILITY,

@@ -1,5 +1,6 @@
 import logger from '../utils/logger.js';
 import {
+    ACCOUNT_STATUS_CAPABILITY,
     ROUTING_HUB_PROTOCOL_VERSION,
     type MinimalWebSocket,
     WS_OPEN,
@@ -92,6 +93,7 @@ export class RoutingWebSocketKeepalive {
                 socket.send(JSON.stringify({
                     type: 'hello',
                     protocolVersion: ROUTING_HUB_PROTOCOL_VERSION,
+                    capabilities: [ACCOUNT_STATUS_CAPABILITY],
                 }));
                 this.helloProbeOutstanding = true;
                 socket.ping();

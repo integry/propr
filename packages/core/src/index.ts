@@ -137,7 +137,7 @@ export { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, setUltra
 export { processWebhookEvent, initializeWebhookHandler, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
-export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike, DeliveryAckBilling, DeliveryAckEvidence, DeliveryAckStatus, DeliveryDisposition } from './intake/RoutingWebSocketIntakeService.js';
+export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, ConnectAccountStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike, DeliveryAckBilling, DeliveryAckEvidence, DeliveryAckStatus, DeliveryDisposition } from './intake/RoutingWebSocketIntakeService.js';
 // The routing wire-protocol primitives (BoundedDeliverySet, BoundedTokenCache,
 // DeliveryTracker, URL/payload/token helpers) are internal to the intake service
 // and are intentionally NOT part of the package's public API. Tests import them
@@ -280,7 +280,22 @@ export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult, Gene
 // Codex helpers exports
 export { buildCodexPrompt, parseCodexStreamOutput, storeCodexPromptInRedis } from './codex/codexHelpers.js';
 export type { BuildCodexPromptOptions, CodexEvent, CodexOutput, StoreCodexPromptOptions } from './codex/codexHelpers.js';
-export { parseAntigravityJsonl, filterAntigravityAnalysisEvents } from './agents/impl/utils/antigravityOutputParser.js';
+export {
+    aggregateDeltaMessages,
+    filterAntigravityAnalysisEvents,
+    getAntigravityAnalysisText,
+    parseAntigravityJsonl,
+} from './agents/impl/utils/antigravityOutputParser.js';
+export type {
+    AntigravityOutputEvent,
+    AntigravityParsedOutput,
+    AntigravityStreamEvent,
+    AntigravityStreamInitEvent,
+    AntigravityStreamStepUpdateEvent,
+    AntigravityStreamResultEvent,
+    AntigravityStreamUsage,
+    AntigravityTerminalStatus,
+} from './agents/impl/utils/antigravityOutputParser.js';
 
 export {
     getReposFromEnv,

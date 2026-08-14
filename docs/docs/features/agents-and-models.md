@@ -134,6 +134,7 @@ Antigravity is a multi-model CLI: one container and credential mount expose seve
 
 | Model | Label |
 |-------|-------|
+| Gemini 3.7 Flash Low / Medium / High | `llm-antigravity-flash37-low` / `-flash37-medium` / `-flash37-high` |
 | Gemini 3.6 Flash Low / Medium / High | `llm-antigravity-flash36-low` / `-flash36-medium` / `-flash36-high` |
 | Gemini 3.5 Flash Low / Medium / High | `llm-antigravity-flash-low` / `-flash-medium` / `-flash-high` |
 | Gemini 3.1 Pro Low / High | `llm-antigravity-pro-low` / `-pro-high` |

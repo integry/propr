@@ -5,6 +5,8 @@
 //   docker/launcher/orchestrator.mjs  → src/orchestrator/ + dist/orchestrator/
 //   docker/launcher/manifest.json     → src/orchestrator/ + dist/orchestrator/
 //   .env.example                      → src/assets/ + dist/assets/
+//   packages/cli/skill/propr          → dist/skill/propr/
+//   packages/cli/native               → dist/native/
 //
 // orchestrator.mjs sits next to its manifest.json so the orchestrator's default
 // `resolve(__dirname, 'manifest.json')` resolves correctly. The src/ copies let
@@ -13,7 +15,7 @@
 // docker/launcher/manifest.json remains the single source of truth (written by
 // scripts/build-images.sh); these copies are derived at CLI-build time.
 
-import { existsSync, mkdirSync, copyFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,6 +64,29 @@ for (const asset of assets) {
     copyFileSync(asset.src, dest);
     copied += 1;
   }
+}
+
+const skillSource = join(cliDir, "skill", "propr");
+const skillDestination = join(cliDir, "dist", "skill", "propr");
+if (!existsSync(skillSource)) {
+  missing.push(skillSource);
+  console.warn(`copy-assets: source not found, skipping: ${skillSource}`);
+} else {
+  rmSync(skillDestination, { recursive: true, force: true });
+  mkdirSync(dirname(skillDestination), { recursive: true });
+  cpSync(skillSource, skillDestination, { recursive: true });
+  copied += 2;
+}
+
+const nativeSource = join(cliDir, "native");
+const nativeDestination = join(cliDir, "dist", "native");
+if (!existsSync(nativeSource)) {
+  missing.push(nativeSource);
+  console.warn(`copy-assets: source not found, skipping: ${nativeSource}`);
+} else {
+  rmSync(nativeDestination, { recursive: true, force: true });
+  cpSync(nativeSource, nativeDestination, { recursive: true });
+  copied += 1;
 }
 
 if (isPack && missing.length > 0) {

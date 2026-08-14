@@ -35,6 +35,16 @@ test('agent build never downloads and executes the mutable installer script', ()
 test('the image build script uses the same pinned Antigravity version', () => {
   const dockerVersion = dockerfile.match(/ARG ANTIGRAVITY_CLI_VERSION=(\d+\.\d+\.\d+)/)?.[1];
   const scriptVersion = buildScript.match(/ANTIGRAVITY_CLI_VERSION="\$\{ANTIGRAVITY_CLI_VERSION:-(\d+\.\d+\.\d+)\}"/)?.[1];
+  const dockerReleaseId = dockerfile.match(/ARG ANTIGRAVITY_CLI_RELEASE_ID=(\d+)/)?.[1];
+  const scriptReleaseId = buildScript.match(/ANTIGRAVITY_CLI_RELEASE_ID="\$\{ANTIGRAVITY_CLI_RELEASE_ID:-(\d+)\}"/)?.[1];
+  const dockerSha512 = dockerfile.match(/ARG ANTIGRAVITY_CLI_SHA512=([a-f0-9]{128})/)?.[1];
+  const scriptSha512 = buildScript.match(/ANTIGRAVITY_CLI_SHA512="\$\{ANTIGRAVITY_CLI_SHA512:-([a-f0-9]{128})\}"/)?.[1];
   assert.ok(dockerVersion);
   assert.equal(scriptVersion, dockerVersion);
+  assert.ok(dockerReleaseId);
+  assert.equal(scriptReleaseId, dockerReleaseId);
+  assert.ok(dockerSha512);
+  assert.equal(scriptSha512, dockerSha512);
+  assert.match(buildScript, /"--build-arg" "ANTIGRAVITY_CLI_RELEASE_ID=\$ANTIGRAVITY_CLI_RELEASE_ID"/);
+  assert.match(buildScript, /"--build-arg" "ANTIGRAVITY_CLI_SHA512=\$ANTIGRAVITY_CLI_SHA512"/);
 });

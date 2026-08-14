@@ -18,6 +18,7 @@ import {
 import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
 import path from 'node:path';
 import os from 'node:os';
+import { applyRoutingStatus, parseConnectAccountStatus, type RoutingState } from './connectAccountStatus.js';
 
 interface StatusRoutesDeps {
   redisClient: RedisClientType;
@@ -142,9 +143,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       // default routing_websocket intake path is active. Included only when present
       // so non-routing deployments don't carry an empty field.
       const routing = await getRoutingState(redisClient);
-      if (routing) {
-        status.routing = routing;
-      }
+      applyRoutingStatus(status, intakeMode, routing);
 
       // The intake status is a stable, mode-aware health signal for the active
       // GitHub event delivery path so operators can tell a healthy intake from a
@@ -252,13 +251,6 @@ function resolveIntakeStatus(
   }
 }
 
-interface RoutingState {
-  connected: boolean;
-  routingUrl: string;
-  lastDeliveryId: string | null;
-  lastAckAt: string | null;
-}
-
 async function getRoutingState(redisClient: RedisClientType): Promise<RoutingState | undefined> {
   try {
     const raw = await redisClient.get(ROUTING_STATUS_REDIS_KEY);
@@ -266,19 +258,32 @@ async function getRoutingState(redisClient: RedisClientType): Promise<RoutingSta
     const parsed: unknown = JSON.parse(raw);
     // A stale or malformed Redis value should not produce confusing CLI output;
     // only expose routing state that matches the expected shape.
-    return isRoutingState(parsed) ? parsed : undefined;
+    return parseRoutingState(parsed);
   } catch {
     return undefined;
   }
 }
 
-function isRoutingState(value: unknown): value is RoutingState {
-  if (typeof value !== 'object' || value === null) return false;
+function parseRoutingState(value: unknown): RoutingState | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
   const state = value as Record<string, unknown>;
-  return typeof state.connected === 'boolean'
+  if (!(typeof state.connected === 'boolean'
     && typeof state.routingUrl === 'string'
     && (typeof state.lastDeliveryId === 'string' || state.lastDeliveryId === null)
-    && isNullableTimestamp(state.lastAckAt);
+    && isNullableTimestamp(state.lastAckAt))) return undefined;
+
+  const connectAccount = state.connectAccount === undefined
+    ? undefined
+    : parseConnectAccountStatus(state.connectAccount);
+  // A malformed optional account object invalidates only that additive object;
+  // legacy routing diagnostics remain available and no entitlement is guessed.
+  return {
+    connected: state.connected,
+    routingUrl: state.routingUrl,
+    lastDeliveryId: state.lastDeliveryId,
+    lastAckAt: state.lastAckAt as string | null,
+    ...(connectAccount ? { connectAccount } : {})
+  };
 }
 
 // lastAckAt is an ISO-8601 string when present (the routing service produces it

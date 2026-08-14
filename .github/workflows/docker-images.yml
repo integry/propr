@@ -273,6 +273,11 @@ jobs:
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: npm run images:smoke
 
+      - name: Verify authenticated Antigravity models from packaged agent image
+        env:
+          AGENT_TAG: ${{ env.DOCKERHUB_NS }}/agent:${{ steps.version.outputs.version }}
+        run: ./scripts/verify-antigravity-image.sh
+
       - name: Validate serialized SQLite startup with packaged images
         env:
           APP_TAG: ${{ env.DOCKERHUB_NS }}/app:${{ steps.version.outputs.version }}

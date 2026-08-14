@@ -46,5 +46,11 @@ export {
     type AntigravityOutputEvent,
     type AntigravityParsedOutput,
     type AntigravityEvent,
+    type AntigravityStreamEvent,
+    type AntigravityStreamInitEvent,
+    type AntigravityStreamStepUpdateEvent,
+    type AntigravityStreamResultEvent,
+    type AntigravityStreamUsage,
+    type AntigravityTerminalStatus,
     type AntigravityTranscriptEvent
 } from './antigravityOutputParser.js';
