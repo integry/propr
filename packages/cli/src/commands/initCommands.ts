@@ -186,7 +186,11 @@ Examples:
   $ propr init --force
   $ propr init stack
 `)
-    .action(async (options: { force?: boolean; json?: boolean }) => {
+    .action(async (
+      _options: { force?: boolean; json?: boolean },
+      actionCommand: Command,
+    ) => {
+      const options = actionCommand.optsWithGlobals() as { force?: boolean; json?: boolean };
       await runRepoScaffold(options);
     });
 
@@ -196,7 +200,14 @@ Examples:
     .description("Scaffold .propr repository setup files in the current directory")
     .option("-f, --force", "Overwrite existing scaffold files")
     .option("-j, --json", "Output result as JSON")
-    .action(async (options: { force?: boolean; json?: boolean }) => {
+    .action(async (
+      _options: { force?: boolean; json?: boolean },
+      actionCommand: Command,
+    ) => {
+      // Commander assigns duplicate parent/child options to `init`, leaving
+      // the subcommand's own options object empty. Include ancestor options so
+      // `init repo --json` and `init repo --force` behave as advertised.
+      const options = actionCommand.optsWithGlobals() as { force?: boolean; json?: boolean };
       await runRepoScaffold(options);
     });
 

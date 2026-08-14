@@ -10,6 +10,7 @@ const smokeScript = readFileSync('scripts/smoke-test-images.sh', 'utf8');
 const integrationScript = readFileSync('scripts/integration-test-images.sh', 'utf8');
 const antigravityVerificationScript = readFileSync('scripts/verify-antigravity-image.sh', 'utf8');
 const antigravity113VerifierFixturePath = new URL('./fixtures/antigravity-verifier-pinned-1.1.13.json', import.meta.url);
+const sqliteStartupScript = readFileSync('scripts/smoke-test-sqlite-startup.sh', 'utf8');
 
 function literalAssignment(source: string, name: string): string {
   const match = source.match(new RegExp(`^${name}=([^\\r\\n]+)$`, 'm'));
@@ -102,6 +103,27 @@ test('release image integration fixture satisfies production startup requirement
   assert.equal(validateSessionSecret(literalAssignment(integrationScript, 'SESSION_SECRET')), undefined);
   assert.equal(literalAssignment(integrationScript, 'PROPR_CONTAINERIZED'), '1');
   assert.match(literalAssignment(integrationScript, 'PROPR_ADMIN_USERS'), /PROPR_E2E_ADMIN_USER/);
+});
+
+test('direct-webhook smoke fixtures use the canonical webhook secret variable', () => {
+  const fixtures = [
+    ['image smoke', smokeScript],
+    ['image integration', integrationScript],
+    ['SQLite startup smoke', sqliteStartupScript],
+  ] as const;
+
+  assert.equal(literalAssignment(sqliteStartupScript, 'GITHUB_EVENT_INTAKE_MODE'), 'direct_webhook');
+
+  for (const [name, source] of fixtures) {
+    if (!/^GITHUB_EVENT_INTAKE_MODE=direct_webhook$/m.test(source)) continue;
+
+    assert.match(source, /^GH_WEBHOOK_SECRET=[^\r\n]+$/m, `${name} must set GH_WEBHOOK_SECRET`);
+    assert.doesNotMatch(
+      source,
+      /^GITHUB_WEBHOOK_SECRET=/m,
+      `${name} must not rely on the legacy GITHUB_WEBHOOK_SECRET name`,
+    );
+  }
 });
 
 test('unauthenticated image smoke probes only public API routes', () => {
