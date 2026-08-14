@@ -41,7 +41,7 @@ export const DARWIN_DIRECTORY_OPERATION_SHA256: Readonly<Record<string, string>>
 
 export const LINUX_DIRECTORY_OPERATION_SHA256: Readonly<Record<string, string>> = {
   arm64: "29b28b76ed8781f2567897ad9ba576798bbb669937048218e0416601788e0f1c",
-  x64: "e3171d114742e15ad764761c16292f4f16edc2d5155da53d72842b2bc8db8308",
+  x64: "7199378f1c7b443a05c596eae7c66f9a77cc01b4a493c07748df0df1083950f6",
 };
 
 let nativeOperations: NativeDirectoryOperations | undefined;

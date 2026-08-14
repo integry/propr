@@ -90,7 +90,7 @@ const nativeArtifacts = {
   "darwin-arm64": "88f07c0c7a4371f4fb227a4691009d09517de582ba49297d28d03ac94e586615",
   "darwin-x64": "62183c0f4083cb8c98e09e2d2c688f8f81703e12b0f22320c335b51e927eaf53",
   "linux-arm64": "29b28b76ed8781f2567897ad9ba576798bbb669937048218e0416601788e0f1c",
-  "linux-x64": "e3171d114742e15ad764761c16292f4f16edc2d5155da53d72842b2bc8db8308",
+  "linux-x64": "7199378f1c7b443a05c596eae7c66f9a77cc01b4a493c07748df0df1083950f6",
 };
 for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {
   const artifact = join(stageDir, "dist", "native", "prebuilds", platformArch, "directory-operations.node");

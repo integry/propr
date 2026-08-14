@@ -19,6 +19,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { rmSync } from "node:fs";
@@ -82,6 +83,47 @@ test("ships integrity-pinned native helpers for every supported platform and arc
     () => verifyDirectoryOperationArtifact(tampered, DARWIN_DIRECTORY_OPERATION_SHA256.arm64, "arm64"),
     /failed integrity verification/
   );
+});
+
+test("native Linux x64 helper loads, stats, and atomically refuses replacement", {
+  skip: process.platform !== "linux" || process.arch !== "x64"
+    ? "requires a real Linux x64 kernel and packaged Linux x64 addon"
+    : false,
+}, () => {
+  const root = temporaryRoot();
+  const source = join(root, "source");
+  const destination = join(root, "destination");
+  mkdirSync(source);
+  mkdirSync(destination);
+  writeFileSync(join(source, "source.txt"), "source\n");
+  writeFileSync(join(destination, "destination.txt"), "destination\n");
+  const fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const artifact = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "native",
+      "prebuilds",
+      "linux-x64",
+      "directory-operations.node"
+    );
+    const native = createRequire(import.meta.url)(artifact) as {
+      lstatAt(dirfd: number, name: string): { kind: string };
+      renameAt(oldDirfd: number, oldName: string, newDirfd: number, newName: string): void;
+    };
+
+    assert.equal(native.lstatAt(fd, "source").kind, "directory");
+    assert.throws(() => native.renameAt(fd, "source", fd, "destination"), /renameat2/);
+    assert.equal(readFileSync(join(source, "source.txt"), "utf8"), "source\n");
+    assert.equal(readFileSync(join(destination, "destination.txt"), "utf8"), "destination\n");
+
+    rmSync(destination, { recursive: true });
+    native.renameAt(fd, "source", fd, "destination");
+    assert.equal(existsSync(source), false);
+    assert.equal(readFileSync(join(destination, "source.txt"), "utf8"), "source\n");
+  } finally {
+    closeSync(fd);
+  }
 });
 
 test("native Darwin child uses inherited fd 3 without changing either cwd", {
