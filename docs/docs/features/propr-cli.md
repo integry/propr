@@ -45,6 +45,8 @@ Setup is **safe to re-run at any time**: it re-discovers your environment and sk
 |--------|-------------|
 | `--root <dir>` | Stack root directory where `.env`, `data/`, `logs/`, and `repos/` live (default: current directory) |
 | `--no-tui` | Skip the full-screen wizard and prompt line-by-line instead (use over SSH or in shells without raw-mode support) |
+| `--install-skill <targets>` | Install the ProPR Operator Agent Skill for comma-separated explicit targets |
+| `--no-skill` | Do not offer Agent Skill installation |
 | `--skip-remote-image-check` | Skip the slow registry round-trip that checks whether stack images already exist |
 
 The full-screen wizard requires an interactive terminal. Over SSH or in shells without raw-mode support, setup falls back to line-by-line prompts automatically (or pass `--no-tui`). When stdin is not a terminal at all (piped, redirected, CI), setup cannot prompt and exits with guidance — scaffold non-interactively with `propr init stack`, edit `<root>/.env`, then run `propr start`.
@@ -53,6 +55,20 @@ The full-screen wizard requires an interactive terminal. Over SSH or in shells w
 - `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally runs an image/CLI smoke test per agent.
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
 - `propr tank [on|off] [--url <url>]` toggles [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the state to print the current setting).
+
+### Agent Skill
+
+The CLI bundles the portable ProPR Operator Agent Skill for Codex, Claude Code, Antigravity CLI, OpenCode, and Vibe. Installation and removal accept `codex`, `claude`, `antigravity`, `opencode`, `vibe`, or `all`; status defaults to all targets:
+
+```bash
+propr skill install codex claude  # install, adopt an exact copy, or update a managed copy
+propr skill status                # inspect all target paths and content identities
+propr skill remove codex          # remove an unmodified ProPR-managed copy
+```
+
+Interactive `propr setup` detects configured tools, shows their exact target paths, and offers installation once; declining the prompt or passing `--no-skill` leaves them unchanged. Setup never installs the skill without this opt-in. When stdin is non-interactive, it does not infer targets or write to agent homes unless `--install-skill <comma-separated-targets>` explicitly names them.
+
+Skill operations refuse unsafe paths and, by default, refuse to overwrite foreign or user-modified content. `propr skill install <targets> --force` first moves replaced content to a timestamped sibling backup. Removal without `--force` accepts only unmodified ProPR-managed copies and preserves the removed tree as a timestamped backup; forced removal also preserves foreign or modified content as a backup rather than deleting it.
 
 :::warning[Breaking changes in the control-plane CLI]
 Running bare `propr` performs the same environment checks as `propr check` (including a Docker probe) and exits nonzero when prerequisites are missing — use `propr --help` for help text. `propr status` now reports the **local Docker stack**; use `propr remote-status` for the backend health/queue JSON that older scripts read from `propr status --json`.

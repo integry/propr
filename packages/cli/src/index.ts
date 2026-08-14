@@ -28,6 +28,7 @@ import {
   createBackendCommand,
   createInitCommand,
   createSetupCommand,
+  createAgentSkillCommand,
   createCheckCommand,
   createImagesCommand,
   createStartCommand,
@@ -125,6 +126,7 @@ drive the backend (plans, issues, tasks, repos, agents).
 Quick Start (local stack):
   $ propr                           Verify the environment (same as 'propr check')
   $ propr init stack                Scaffold .env + data/logs/repos, detect agents
+  $ propr skill install codex       Install the ProPR Operator Agent Skill
   $ propr images pull               Pull stack images without starting
   $ propr start                     Start the stack with a live dashboard
   $ propr status                    Show local stack status
@@ -164,6 +166,7 @@ Command Groups:
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
   Backend:        backend [status|queue], remote-status, queue
+  Agent Skills:   skill [install|status|remove]
   Shell:          completion [bash|zsh|fish]
 
 For more information on a command, run:
@@ -337,6 +340,7 @@ program.addCommand(createConfigCommand());
 // Setup + backend client command groups
 program.addCommand(createInitCommand());
 program.addCommand(createSetupCommand());
+program.addCommand(createAgentSkillCommand());
 program.addCommand(createPlanCommand());
 program.addCommand(createIssueCommand());
 program.addCommand(createTaskCommand());
