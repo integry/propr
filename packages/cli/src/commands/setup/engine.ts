@@ -326,6 +326,14 @@ export interface BackendHealthParams {
 export interface BackendHealth {
   healthy: boolean;
   detail: string;
+  /**
+   * True when the backend answered the probe (it is reachable and running) but
+   * rejected the request for authentication/authorization reasons rather than
+   * being genuinely unhealthy. Lets the caller avoid describing a running
+   * backend as "unhealthy" and point the user at `propr login` instead of at
+   * the service logs. A healthy backend is never reported as unhealthy.
+   */
+  authRequired?: boolean;
 }
 
 /**
@@ -539,6 +547,21 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
           }
           lastError = `API reports "${status.api}"`;
         } catch (error) {
+          // A 401/403 is not an unhealthy backend — the API answered, it just
+          // refused the request for lack of a valid user token. Retrying for the
+          // full timeout would stall on a *running* backend and then mislabel it
+          // as unhealthy (the exact symptom of issue #1879). Return immediately
+          // with an accurate, login-oriented message instead. `propr login` runs
+          // before this probe now, so this is defense-in-depth for an
+          // expired/invalid stored token.
+          const httpStatus = (error as { status?: number }).status;
+          if (httpStatus === 401 || httpStatus === 403) {
+            return {
+              healthy: false,
+              authRequired: true,
+              detail: `backend is running but rejected the status request as unauthorized (${(error as Error).message})`,
+            };
+          }
           lastError = (error as Error).message;
         }
         if (Date.now() >= deadline) break;
@@ -1302,7 +1325,13 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         settle("start-stack", {
           status: "failed",
           detail: health.detail,
-          nextAction: "Run `propr status` / `propr remote-status` and inspect the API logs, then re-run setup.",
+          // Point an unauthorized-but-running backend at login (the token, not
+          // the service, is the problem) rather than at the API logs — the
+          // backend is healthy, so telling the user to inspect its logs would be
+          // misleading.
+          nextAction: health.authRequired
+            ? "Run `propr login` to obtain a GitHub user token, then re-run `propr setup`; the running stack will be reused."
+            : "Run `propr status` / `propr remote-status` and inspect the API logs, then re-run setup.",
         });
       }
     }

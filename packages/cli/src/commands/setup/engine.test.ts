@@ -1078,6 +1078,28 @@ test("an unhealthy backend fails setup and does not launch the UI", async () => 
   assert.equal(result.completed, false);
 });
 
+test("an unauthorized-but-running backend is not described as unhealthy and points at login", async () => {
+  const result = await runSetup({
+    root: "/stack",
+    actions: mockActions({
+      isStackRunning: async () => false,
+      // The backend answered but rejected the protected status request (issue
+      // #1879): it is running, so setup must not call it unhealthy.
+      checkBackendHealth: async () => ({
+        healthy: false,
+        authRequired: true,
+        detail: "backend is running but rejected the status request as unauthorized (Unauthorized)",
+      }),
+    }),
+  });
+  assert.equal(statusOf(result.state, "start-stack"), "failed");
+  const step = getStep(result.state, "start-stack");
+  assert.match(step?.detail ?? "", /running but rejected/);
+  assert.doesNotMatch(step?.detail ?? "", /not healthy/);
+  assert.match(step?.nextAction ?? "", /propr login/);
+  assert.equal(result.completed, false);
+});
+
 test("an already-running stack is reused, not restarted", async () => {
   let started = false;
   const result = await runSetup({
