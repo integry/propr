@@ -112,7 +112,7 @@ test("an incomplete stack root (missing dirs) is re-scaffolded even when .env ex
       }),
       scaffoldStack: async ({ root }) => {
         scaffolded = true;
-        return { rootDir: root ?? "/stack", envCreated: false, envSkipped: true, envBackedUp: false, dirsCreated: ["repos"], detected: [], credentialsAppended: false, pendingCredentials: [] };
+        return { rootDir: root ?? "/stack", envCreated: false, envSkipped: true, envBackedUp: false, dirsCreated: ["repos"], dirsSkipped: ["data", "logs"], detected: [], credentialsAppended: false, pendingCredentials: [] };
       },
     }),
   });
@@ -139,6 +139,7 @@ test("fresh scaffolding persists the resolved root through setup's active config
         envSkipped: false,
         envBackedUp: false,
         dirsCreated: ["data", "logs", "repos"],
+        dirsSkipped: [],
         detected: [],
         credentialsAppended: false,
         pendingCredentials: [],
@@ -375,6 +376,7 @@ test("relay enrollment auto-selects a single installation and writes the relay v
         envSkipped: false,
         envBackedUp: false,
         dirsCreated: ["data", "logs", "repos"],
+        dirsSkipped: [],
         detected: [],
         credentialsAppended: false,
         pendingCredentials: [],
