@@ -468,37 +468,25 @@ async function handleUseCommand(opts: UseCommandOptions): Promise<void> {
         return;
     }
 
-    const octokit = await getAuthenticatedOctokit();
-    const labelContext = { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger };
+    const labels = [
+        ...prLabels.filter(label => !modelLabelRegex.test(label.name)).map(label => label.name),
+        canonicalLabel,
+    ];
 
-    if (!targetPresent) {
-        const addUpdate = await safeUpdateLabels(labelContext, [], [canonicalLabel]);
-        if (!addUpdate.success) {
-            correlatedLogger.error(
-                { pullRequestNumber: prNumber, modelLabel: canonicalLabel, errors: addUpdate.errors },
-                '/use failed to update the PR model label',
-            );
-            return;
-        }
-    }
-
-    if (labelsToRemove.length > 0) {
-        const removalUpdate = await safeUpdateLabels(labelContext, labelsToRemove, []);
-        if (!removalUpdate.success) {
-            const rollbackUpdate = !targetPresent
-                ? await safeUpdateLabels(labelContext, [canonicalLabel], [])
-                : null;
-            correlatedLogger.error(
-                {
-                    pullRequestNumber: prNumber,
-                    modelLabel: canonicalLabel,
-                    errors: removalUpdate.errors,
-                    rollbackErrors: rollbackUpdate?.success === false ? rollbackUpdate.errors : undefined,
-                },
-                '/use failed to update the PR model label',
-            );
-            return;
-        }
+    try {
+        const octokit = await getAuthenticatedOctokit();
+        await octokit.request('PUT /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner,
+            repo,
+            issue_number: prNumber,
+            labels,
+        });
+    } catch (error) {
+        correlatedLogger.error(
+            { pullRequestNumber: prNumber, modelLabel: canonicalLabel, error: (error as Error).message },
+            '/use failed to update the PR model label',
+        );
+        return;
     }
 
     correlatedLogger.info(

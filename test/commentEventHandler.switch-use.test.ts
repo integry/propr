@@ -20,6 +20,18 @@ const mockOctokit = {
     request: mock.fn(async () => ({ data: {} })),
 };
 
+function getLabelReplacementCalls() {
+    return mockOctokit.request.mock.calls.filter(
+        (call: { arguments: unknown[] }) => call.arguments[0] === 'PUT /repos/{owner}/{repo}/issues/{issue_number}/labels',
+    );
+}
+
+function assertSingleLabelReplacement(labels: string[]) {
+    const replacementCalls = getLabelReplacementCalls();
+    assert.strictEqual(replacementCalls.length, 1);
+    assert.deepStrictEqual((replacementCalls[0].arguments[1] as { labels: string[] }).labels, labels);
+}
+
 // Mock simple-git
 await mock.module('simple-git', {
     namedExports: {
@@ -609,11 +621,8 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-alias', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[1], ['llm-claude-sonnet5']);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[2], []);
+        assertSingleLabelReplacement(['AI', 'bug', 'release:next', 'llm-claude-opus5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -633,16 +642,18 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'pull_request_review_comment', 'corr-use-review-live-labels', config);
 
-        assert.strictEqual(mockOctokit.request.mock.callCount(), 1);
+        assert.strictEqual(mockOctokit.request.mock.callCount(), 2);
         assert.strictEqual(
             mockOctokit.request.mock.calls[0].arguments[0],
             'GET /repos/{owner}/{repo}/pulls/{pull_number}',
         );
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[1], ['llm-claude-sonnet5']);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[2], []);
+        const replacementCalls = getLabelReplacementCalls();
+        assert.strictEqual(replacementCalls.length, 1);
+        assert.deepStrictEqual((replacementCalls[0].arguments[1] as { labels: string[] }).labels, [
+            'AI',
+            'llm-claude-opus5',
+        ]);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
@@ -653,9 +664,8 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-full-label', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-codex-gpt56-sol']);
+        assertSingleLabelReplacement(['llm-codex-gpt56-sol']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -684,8 +694,8 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-agent-alias', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-custom-codex-gpt56-sol']);
+        assertSingleLabelReplacement(['llm-custom-codex-gpt56-sol']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -695,8 +705,8 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-model-id-case', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-codex-gpt56-sol']);
+        assertSingleLabelReplacement(['llm-codex-gpt56-sol']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -717,8 +727,8 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-dynamic-label', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], [dynamicLabel]);
+        assertSingleLabelReplacement([dynamicLabel]);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -740,8 +750,8 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-hashed-label', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], [dynamicLabel]);
+        assertSingleLabelReplacement([dynamicLabel]);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -762,8 +772,10 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-custom-prefix-hashed-label', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        const canonicalLabel = (mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[])[0];
+        const replacementCalls = getLabelReplacementCalls();
+        assert.strictEqual(replacementCalls.length, 1);
+        const canonicalLabel = ((replacementCalls[0].arguments[1] as { labels: string[] }).labels)[0];
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.ok(canonicalLabel.length <= 50, `Label should fit in 50 chars, got ${canonicalLabel.length}`);
         assert.match(canonicalLabel, /^ai-model-(.+)$/);
         assert.ok(canonicalLabel.endsWith(`-${shortHash(dynamicModel)}`), 'Expected the stable model hash to be preserved');
@@ -836,8 +848,8 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-trailing-text', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-sonnet5']);
+        assertSingleLabelReplacement(['llm-claude-sonnet5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
@@ -890,9 +902,8 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-converge', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], ['llm-claude-sonnet5']);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], []);
+        assertSingleLabelReplacement(['reviewed', 'llm-claude-opus5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -925,18 +936,19 @@ describe('commentEventHandler — /use command', () => {
     });
 
     test('/use label-update failure does not enqueue work or claim success', async () => {
-        mockSafeUpdateLabels.mock.mockImplementationOnce(async () => ({
-            success: false,
-            removed: [],
-            added: [],
-            errors: ['GitHub unavailable'],
-        }));
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint === 'PUT /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+                throw new Error('GitHub unavailable');
+            }
+            return { data: { head: { ref: 'feature-branch' }, labels: [] } };
+        });
         const event = createPRCommentEvent('/use opus');
         const config = createTestConfig();
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-update-failure', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(getLabelReplacementCalls().length, 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         const successLog = mockLoggerInstance.info.mock.calls.find(
             (call: { arguments: unknown[] }) => call.arguments[1] === '/use updated the PR model label',
@@ -944,27 +956,31 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(successLog, undefined);
     });
 
-    test('/use target-add failure does not remove the existing managed label', async () => {
-        mockOctokit.request.mock.mockImplementation(async () => ({
-            data: {
-                head: { ref: 'feature-branch' },
-                labels: [createMockLabel({ name: 'llm-claude-sonnet5' })],
-            },
-        }));
-        mockSafeUpdateLabels.mock.mockImplementationOnce(async (_context, labelsToRemove, labelsToAdd) => ({
-            success: false,
-            removed: labelsToRemove,
-            added: [],
-            errors: [`Failed to add '${labelsToAdd[0]}'`],
-        }));
+    test('/use replacement failure does not remove the existing managed label', async () => {
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint === 'PUT /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+                throw new Error('Failed to replace labels');
+            }
+            return {
+                data: {
+                    head: { ref: 'feature-branch' },
+                    labels: [createMockLabel({ name: 'llm-claude-sonnet5' })],
+                },
+            };
+        });
         const event = createPRCommentEvent('/use opus');
         const config = createTestConfig();
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-add-failure-preserves-old', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
+        assertSingleLabelReplacement(['llm-claude-opus5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(
+            mockOctokit.request.mock.calls.some(
+                (call: { arguments: unknown[] }) => call.arguments[0] === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}',
+            ),
+            false,
+        );
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
         const failureLog = mockLoggerInstance.error.mock.calls.find(
@@ -977,48 +993,25 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(successLog, undefined);
     });
 
-    test('/use removes a newly added target when stale-label removal fails', async () => {
+    test('/use converges multiple managed labels to only the selected label in one replacement', async () => {
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
                 head: { ref: 'feature-branch' },
-                labels: [createMockLabel({ name: 'llm-claude-sonnet5' })],
+                labels: [
+                    createMockLabel({ name: 'AI' }),
+                    createMockLabel({ name: 'llm-claude-sonnet5' }),
+                    createMockLabel({ name: 'llm-codex-gpt56-sol' }),
+                ],
             },
         }));
-        let updateCall = 0;
-        mockSafeUpdateLabels.mock.mockImplementation(async (_context, labelsToRemove, labelsToAdd) => {
-            updateCall += 1;
-            if (updateCall === 2) {
-                return {
-                    success: false,
-                    removed: [],
-                    added: [],
-                    errors: ["Failed to remove 'llm-claude-sonnet5'"],
-                };
-            }
-            return {
-                success: true,
-                removed: labelsToRemove,
-                added: labelsToAdd,
-                errors: [],
-            };
-        });
         const event = createPRCommentEvent('/use opus');
         const config = createTestConfig();
 
-        await processCommentEvent(event, 'issue_comment', 'corr-use-removal-failure-rollback', config);
+        await processCommentEvent(event, 'issue_comment', 'corr-use-single-managed-label', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 3);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[1], ['llm-claude-sonnet5']);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[2], []);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[2].arguments[1], ['llm-claude-opus5']);
-        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[2].arguments[2], []);
+        assertSingleLabelReplacement(['AI', 'llm-claude-opus5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-        const successLog = mockLoggerInstance.info.mock.calls.find(
-            (call: { arguments: unknown[] }) => call.arguments[1] === '/use updated the PR model label',
-        );
-        assert.strictEqual(successLog, undefined);
     });
 });
 
@@ -1065,7 +1058,8 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
 
         await processCommentEvent(event, 'issue_comment', 'corr-mode-use', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
+        assertSingleLabelReplacement(['llm-claude-haiku']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
@@ -1087,7 +1081,8 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-no-req', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 2);
+        assertSingleLabelReplacement(['llm-claude-sonnet5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
@@ -1170,12 +1165,14 @@ describe('commentEventHandler — slash command dedup protection', () => {
 
         // First delivery changes the label without enqueuing.
         await processCommentEvent(event, 'issue_comment', 'corr-dedup-1', config);
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assertSingleLabelReplacement(['llm-claude-opus5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
 
         // Simulate redelivery — same event, same comment id
         await processCommentEvent(event, 'issue_comment', 'corr-dedup-2', config);
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(getLabelReplacementCalls().length, 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -1236,7 +1233,8 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
 
         await processCommentEvent(event, 'issue_comment', 'corr-batch-1', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assertSingleLabelReplacement(['llm-claude-opus5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
@@ -1271,7 +1269,8 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
 
         await processCommentEvent(event, 'issue_comment', 'corr-batch-3', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assertSingleLabelReplacement(['llm-claude-opus5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
@@ -1498,7 +1497,8 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
 
         await processCommentEvent(event, 'pull_request_review_comment', 'corr-batch-review', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assertSingleLabelReplacement(['llm-claude-opus5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
