@@ -12,7 +12,6 @@ import {
     type TaskStateUpdateResult,
     type UpdateMetadata,
 } from './workerStateManager.types.js';
-import { compareAndSetTaskStateData } from './workerStateTransition.js';
 import {
     type TaskRecoveryLease,
     withTaskRecoveryReadLease,
@@ -169,22 +168,15 @@ export async function updateDatabaseTaskStateIfCurrent(
     const { taskId, expectation, newState, metadata } = options;
     return withTaskRecoveryWriteLease(redis, key, async lease => {
         const redisJson = await redis.get(key);
-        if (redisJson && !matchesPersistedExpectation(redisJson, expectation)) return null;
+        if (redisJson) return null;
         const result = await updatePersistedTaskStateIfCurrent(taskId, expectation, newState, metadata);
         if (!result) return null;
         await lease.assertOwned();
         await installDatabaseFallbackState(redis, {
-            key, stateExpiry, redisJson, state: result.state,
+            key, stateExpiry, state: result.state,
         });
         return result;
     });
-}
-
-function matchesPersistedExpectation(redisJson: string, expectation: TaskStateExpectation): boolean {
-    const state = JSON.parse(redisJson) as TaskStateData;
-    return state.state === expectation.state
-        && state.historyId === expectation.historyId
-        && state.correlationId === expectation.correlationId;
 }
 
 async function installDatabaseFallbackState(
@@ -192,23 +184,12 @@ async function installDatabaseFallbackState(
     options: {
         key: string;
         stateExpiry: number;
-        redisJson: string | null;
         state: TaskStateData;
     },
 ): Promise<void> {
     const { key, stateExpiry, state } = options;
-    let { redisJson } = options;
-    if (!redisJson) {
-        const installed = await redis.set(key, JSON.stringify(state), 'EX', stateExpiry, 'NX');
-        if (installed === 'OK') return;
-        redisJson = await redis.get(key);
-    }
-    if (redisJson && await compareAndSetTaskStateData(redis, {
-        key,
-        stateExpiry,
-        currentJson: redisJson,
-        state,
-    })) return;
+    const installed = await redis.set(key, JSON.stringify(state), 'EX', stateExpiry, 'NX');
+    if (installed === 'OK') return;
     throw new Error(`Database fallback lost Redis ownership for taskId: ${state.taskId}`);
 }
 
