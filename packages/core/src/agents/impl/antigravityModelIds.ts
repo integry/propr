@@ -56,3 +56,8 @@ export function toAntigravityCliModelId(modelName: string): string {
         ? withoutRoutePrefix.slice('antigravity-'.length)
         : withoutRoutePrefix;
 }
+
+export function antigravityModelIdsMatch(requestedModel: string, reportedModel: string): boolean {
+    return reportedModel === requestedModel
+        || reportedModel === toAntigravityCliModelId(requestedModel);
+}

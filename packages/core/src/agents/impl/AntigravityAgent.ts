@@ -23,7 +23,7 @@ import {
     type AntigravityOutputEvent
 } from './utils/antigravityOutputParser.js';
 import { estimateTokens } from '../../utils/tokenCalculation.js';
-import { toAntigravityCliModelId } from './antigravityModelIds.js';
+import { antigravityModelIdsMatch, toAntigravityCliModelId } from './antigravityModelIds.js';
 import { resolveAntigravityProtocolError } from './utils/antigravityProtocol.js';
 import fs from 'fs';
 import path from 'path';
@@ -53,7 +53,7 @@ function isSuccessfulAnalysisResult(
     return !protocolError && !result.timedOut && (result.exitCode === 0 || !!summary);
 }
 
-function resolveAntigravityModelIdentity(reportedModel: string | undefined, requestedModel: string | undefined): { modelUsed: string; error?: string } { const requested = requestedModel ? normalizeAntigravityModelId(requestedModel) : undefined; return { modelUsed: reportedModel ?? requested ?? 'unknown', error: !reportedModel || !requested || reportedModel === requested ? undefined : `Antigravity reported model "${reportedModel}" but "${requested}" was requested` }; }
+function resolveAntigravityModelIdentity(reportedModel: string | undefined, requestedModel: string | undefined, requireReportedModel: boolean): { modelUsed: string; error?: string } { const reported = reportedModel || undefined; const requested = requestedModel ? normalizeAntigravityModelId(requestedModel) : undefined; const missingReported = requireReportedModel && !!requested && !reported; const matches = !reported || !requested || antigravityModelIdsMatch(requested, reported); return { modelUsed: missingReported ? 'unknown' : matches && requested ? requested : reported ?? requested ?? 'unknown', error: missingReported ? `Antigravity stream did not report a model identity for requested model "${requested}"` : matches ? undefined : `Antigravity reported model "${reported}" but "${requested}" was requested` }; }
 
 function resolveAntigravityExecutionError(terminalStatus: 'success' | 'error' | undefined, protocolError: string | undefined, hasStreamEnvelopes: boolean, modelIdentityError: string | undefined): string | undefined { return resolveAntigravityProtocolError(terminalStatus, protocolError, hasStreamEnvelopes) ?? modelIdentityError; }
 
@@ -175,7 +175,7 @@ export class AntigravityAgent implements Agent {
         const { response } = await parsed;
 
         const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
-        const modelIdentity = resolveAntigravityModelIdentity(response.modelUsed, effectiveModel); const resolvedModel = modelIdentity.modelUsed;
+        const modelIdentity = resolveAntigravityModelIdentity(response.modelUsed, effectiveModel, response.hasStreamEnvelopes); const resolvedModel = modelIdentity.modelUsed;
         const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: result.stderr });
         const executionError = resolveAntigravityExecutionError(response.terminalStatus, response.protocolError, response.hasStreamEnvelopes, modelIdentity.error);
         const success = result.exitCode === 0 && !terminationReason && !executionError;
@@ -372,7 +372,7 @@ export class AntigravityAgent implements Agent {
             );
             const executionTimeMs = Date.now() - startTime;
             const { summary, tokenUsage, sessionId, modelUsed, terminalStatus, protocolError, hasStreamEnvelopes } = parseAntigravityJsonl(result.stdout);
-            const modelIdentity = resolveAntigravityModelIdentity(modelUsed, effectiveModel); const resolvedModel = modelIdentity.modelUsed;
+            const modelIdentity = resolveAntigravityModelIdentity(modelUsed, effectiveModel, hasStreamEnvelopes); const resolvedModel = modelIdentity.modelUsed;
             const resolvedProtocolError = resolveAntigravityExecutionError(terminalStatus, protocolError, hasStreamEnvelopes, modelIdentity.error);
 
             if (isSuccessfulAnalysisResult(result, summary, resolvedProtocolError)) {
