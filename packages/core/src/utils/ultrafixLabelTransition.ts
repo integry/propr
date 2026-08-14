@@ -30,8 +30,8 @@ function getLabelTransitionLockKey(identity: { owner: string; repo: string; pr: 
     return `${LABEL_TRANSITION_LOCK_KEY_PREFIX}:${identity.owner}:${identity.repo}:${identity.pr}`;
 }
 
-/** Serialize the shared GitHub label with epoch state publication and cleanup. */
-export async function withUltrafixLabelTransition<T>(
+/** Serialize all label-transition work for one owner/repository/PR. */
+export async function withLabelTransitionLease<T>(
     redis: Pick<Redis, 'set' | 'eval'>,
     identity: { owner: string; repo: string; pr: number },
     operation: () => Promise<T>,
@@ -45,7 +45,7 @@ export async function withUltrafixLabelTransition<T>(
     const token = randomUUID();
     const deadline = Date.now() + timing.waitMs;
     while (await redis.set(key, token, 'PX', timing.ttlMs, 'NX') !== 'OK') {
-        if (Date.now() >= deadline) throw new Error('Timed out waiting for Ultrafix label transition');
+        if (Date.now() >= deadline) throw new Error('Timed out waiting for PR label transition lease');
         await new Promise(resolve => setTimeout(resolve, 100));
     }
     let renewal: Promise<void> | null = null;
@@ -82,7 +82,7 @@ export async function withUltrafixLabelTransition<T>(
             String(timing.ttlMs),
         );
         if (Number(stillOwned) !== 1) leaseLost = true;
-        if (leaseLost) throw new Error('Ultrafix label transition lease was lost');
+        if (leaseLost) throw new Error('PR label transition lease was lost');
         return result;
     } finally {
         clearInterval(renewalTimer);
@@ -96,6 +96,9 @@ export async function withUltrafixLabelTransition<T>(
         }
     }
 }
+
+/** Serialize the shared GitHub label with epoch state publication and cleanup. */
+export const withUltrafixLabelTransition = withLabelTransitionLease;
 
 export type UltrafixLabelRemovalResult = 'cleared' | 'label_present' | 'unverified';
 

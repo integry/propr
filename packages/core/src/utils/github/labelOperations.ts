@@ -1,4 +1,6 @@
 import type { Logger } from 'pino';
+import type { Redis } from 'ioredis';
+import { withLabelTransitionLease } from '../ultrafixLabelTransition.js';
 
 interface OctokitLike {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -28,6 +30,8 @@ export interface ExclusiveLabelConvergence {
     isManagedLabel: (labelName: string) => boolean;
     /** Maximum live-read/mutate/verify attempts. */
     maxAttempts?: number;
+    /** Redis client used to serialize this PR's complete exclusive transition. */
+    redis: Pick<Redis, 'set' | 'eval'>;
 }
 
 interface IssueLabelsResponse {
@@ -267,9 +271,21 @@ export async function safeUpdateLabels(
 
     if (convergence) {
         // The model-selection path deliberately avoids PUT of a complete label
-        // set: only labels classified as model labels may be touched.
+        // set: only labels classified as model labels may be touched. Its lease
+        // covers the initial snapshot, convergence, verification, and rollback.
         results.success = false;
-        await convergeExclusiveLabel(context, convergence, results);
+        try {
+            await withLabelTransitionLease(
+                convergence.redis,
+                { owner: context.owner, repo: context.repo, pr: context.issueNumber },
+                () => convergeExclusiveLabel(context, convergence, results),
+            );
+        } catch (error) {
+            const message = (error as Error).message;
+            results.success = false;
+            results.errors.push(`Failed to hold PR label transition lease: ${message}`);
+            logger.warn({ error: message, issueNumber }, 'Exclusive label transition lease failed');
+        }
     } else if (currentLabels) {
         const removedNames = new Set(labelsToRemove.map(label => label.toLowerCase()));
         const desiredLabels = currentLabels.filter(label => !removedNames.has(label.toLowerCase()));

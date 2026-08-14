@@ -333,7 +333,7 @@ async function transitionModelLabel(
     prLabels: Label[],
     selection: CanonicalModelSelection,
 ): Promise<{ success: boolean; updatedLabels: Label[] }> {
-    const { eventContext: { owner, repo, prNumber }, config, correlatedLogger } = opts;
+    const { eventContext: { owner, repo, prNumber }, config: { redisClient }, config, correlatedLogger } = opts;
     const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';
     const modelLabelRegex = new RegExp(modelLabelPattern);
     const configuredCustomLabels = new Set((await getAllCustomLabels()).map(label => label.toLowerCase()));
@@ -359,6 +359,7 @@ async function transitionModelLabel(
                 modelLabelRegex.test(labelName)
                 || configuredCustomLabels.has(labelName.toLowerCase()),
             maxAttempts: 3,
+            redis: redisClient,
         },
     );
     if (!result.success) {

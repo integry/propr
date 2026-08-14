@@ -8,6 +8,23 @@ const logger = {
     warn: mock.fn(),
 } as never;
 
+function createTransitionRedis() {
+    const store = new Map<string, string>();
+    return {
+        async set(key: string, value: string, _mode: string, _ttl: number, condition: string) {
+            if (condition === 'NX' && store.has(key)) return null;
+            store.set(key, value);
+            return 'OK';
+        },
+        async eval(script: string, _keyCount: number, key: string, token: string) {
+            if (store.get(key) !== token) return 0;
+            if (script.includes("redis.call('PEXPIRE'")) return 1;
+            store.delete(key);
+            return 1;
+        },
+    };
+}
+
 test('safeUpdateLabels atomically replaces a known current label set', async () => {
     const request = mock.fn(async () => ({}));
     const result = await safeUpdateLabels(
@@ -77,6 +94,7 @@ test('exclusive convergence restores the prior model label when a later target a
             targetLabel: 'llm-codex-gpt56-sol',
             isManagedLabel: label => label.startsWith('llm-'),
             maxAttempts: 2,
+            redis: createTransitionRedis() as never,
         },
     );
 
@@ -118,6 +136,7 @@ test('exclusive convergence does not restore when the initial model-label snapsh
             targetLabel: 'llm-codex-gpt56-sol',
             isManagedLabel: label => label.startsWith('llm-'),
             maxAttempts: 1,
+            redis: createTransitionRedis() as never,
         },
     );
 
@@ -155,6 +174,7 @@ test('exclusive convergence removes an introduced target when verification fails
             targetLabel: 'llm-codex-gpt56-sol',
             isManagedLabel: label => label.startsWith('llm-'),
             maxAttempts: 1,
+            redis: createTransitionRedis() as never,
         },
     );
 
@@ -163,10 +183,12 @@ test('exclusive convergence removes an introduced target when verification fails
     assert.deepStrictEqual(result.finalLabels, ['AI']);
 });
 
-test('failed transition rollback preserves a newer verified singleton selection', async () => {
+test('failed transition rollback preserves a newer verified singleton when B starts before rollback', async () => {
     const labels = new Set(['AI', 'llm-claude-opus48']);
+    const redis = createTransitionRedis();
     let runningNewerTransition = false;
     let startedNewerTransition = false;
+    let newerPromise: Promise<Awaited<ReturnType<typeof safeUpdateLabels>>> | undefined;
     let newerResult: Awaited<ReturnType<typeof safeUpdateLabels>> | undefined;
     const context = { octokit: { request: undefined as never }, owner: 'integry', repo: 'propr', issueNumber: 42, logger };
     const request = mock.fn(async (endpoint: string, options: Record<string, unknown>) => {
@@ -174,12 +196,17 @@ test('failed transition rollback preserves a newer verified singleton selection'
             if (!runningNewerTransition && !startedNewerTransition && labels.has('llm-codex-gpt56-sol')) {
                 startedNewerTransition = true;
                 runningNewerTransition = true;
-                newerResult = await safeUpdateLabels(context, [], [], {
+                newerPromise = safeUpdateLabels(context, [], [], {
                     targetLabel: 'llm-gemini-3-pro',
                     isManagedLabel: label => label.startsWith('llm-'),
                     maxAttempts: 1,
+                    redis: redis as never,
+                }).then(result => {
+                    newerResult = result;
+                    runningNewerTransition = false;
+                    return result;
                 });
-                runningNewerTransition = false;
+                await Promise.resolve();
                 throw new Error('older transition verification failed');
             }
             return { data: { labels: [...labels] } };
@@ -200,11 +227,130 @@ test('failed transition rollback preserves a newer verified singleton selection'
         targetLabel: 'llm-codex-gpt56-sol',
         isManagedLabel: label => label.startsWith('llm-'),
         maxAttempts: 1,
+        redis: redis as never,
     });
+    await newerPromise;
 
     assert.strictEqual(newerResult?.success, true);
     assert.strictEqual(olderResult.success, false);
     assert.deepStrictEqual([...labels].sort(), ['AI', 'llm-gemini-3-pro']);
-    assert.deepStrictEqual(olderResult.finalLabels?.sort(), ['AI', 'llm-gemini-3-pro']);
-    assert.ok(olderResult.errors.some(error => error.includes('Skipped model-label restoration')));
+    assert.deepStrictEqual(olderResult.finalLabels?.sort(), ['AI', 'llm-claude-opus48']);
+});
+
+test('serializes a newer transition started after rollback ownership read and before restoration mutations', async () => {
+    const labels = new Set(['AI', 'llm-claude-opus48']);
+    const redis = createTransitionRedis();
+    let issueReads = 0;
+    let newerPromise: Promise<Awaited<ReturnType<typeof safeUpdateLabels>>> | undefined;
+    let newerResult: Awaited<ReturnType<typeof safeUpdateLabels>> | undefined;
+    let newerSucceededBeforeRestorationMutation = false;
+    const transitionOrder: string[] = [];
+    const context = { octokit: { request: undefined as never }, owner: 'integry', repo: 'propr', issueNumber: 42, logger };
+    const request = mock.fn(async (endpoint: string, options: Record<string, unknown>) => {
+        if (endpoint.startsWith('GET ')) {
+            issueReads += 1;
+            if (issueReads === 2) throw new Error('older transition verification failed');
+            const snapshot = [...labels];
+            if (issueReads === 3) {
+                transitionOrder.push('A-rollback-ownership-read');
+                newerPromise = safeUpdateLabels(context, [], [], {
+                    targetLabel: 'llm-gemini-3-pro',
+                    isManagedLabel: label => label.startsWith('llm-'),
+                    maxAttempts: 1,
+                    redis: redis as never,
+                }).then(result => {
+                    newerResult = result;
+                    transitionOrder.push('B-success');
+                    return result;
+                });
+                transitionOrder.push('B-started');
+                await Promise.resolve();
+            }
+            return { data: { labels: snapshot } };
+        }
+        if (endpoint.startsWith('POST ')) {
+            const label = (options.labels as string[])[0];
+            if (label === 'llm-claude-opus48') {
+                newerSucceededBeforeRestorationMutation = newerResult?.success === true;
+                transitionOrder.push('A-restoration-mutation');
+            }
+            labels.add(label);
+            return {};
+        }
+        if (endpoint.startsWith('DELETE ')) {
+            labels.delete(options.name as string);
+            return {};
+        }
+        throw new Error(`Unexpected endpoint: ${endpoint}`);
+    });
+    context.octokit.request = request as never;
+
+    const olderResult = await safeUpdateLabels(context, [], [], {
+        targetLabel: 'llm-codex-gpt56-sol',
+        isManagedLabel: label => label.startsWith('llm-'),
+        maxAttempts: 1,
+        redis: redis as never,
+    });
+    transitionOrder.push('A-complete');
+    await newerPromise;
+
+    assert.strictEqual(newerSucceededBeforeRestorationMutation, false);
+    assert.strictEqual(olderResult.success, false);
+    assert.strictEqual(newerResult?.success, true);
+    assert.deepStrictEqual(olderResult.finalLabels?.sort(), ['AI', 'llm-claude-opus48']);
+    assert.deepStrictEqual([...labels].sort(), ['AI', 'llm-gemini-3-pro']);
+    assert.deepStrictEqual(transitionOrder, [
+        'A-rollback-ownership-read',
+        'B-started',
+        'A-restoration-mutation',
+        'A-complete',
+        'B-success',
+    ]);
+});
+
+test('exclusive transition leases do not serialize unrelated PRs', async () => {
+    const redis = createTransitionRedis();
+    let releaseFirstMutation!: () => void;
+    let firstMutationStarted!: () => void;
+    const firstMutationGate = new Promise<void>(resolve => { releaseFirstMutation = resolve; });
+    const firstMutationStart = new Promise<void>(resolve => { firstMutationStarted = resolve; });
+    const firstLabels = new Set(['llm-claude-opus48']);
+    const secondLabels = new Set(['llm-claude-opus48']);
+    const createRequest = (labels: Set<string>, blockMutation: boolean) => mock.fn(async (endpoint: string, options: Record<string, unknown>) => {
+        if (endpoint.startsWith('GET ')) return { data: { labels: [...labels] } };
+        if (endpoint.startsWith('POST ')) {
+            labels.add((options.labels as string[])[0]);
+            if (blockMutation) {
+                firstMutationStarted();
+                await firstMutationGate;
+            }
+            return {};
+        }
+        if (endpoint.startsWith('DELETE ')) {
+            labels.delete(options.name as string);
+            return {};
+        }
+        throw new Error(`Unexpected endpoint: ${endpoint}`);
+    });
+    const first = safeUpdateLabels(
+        { octokit: { request: createRequest(firstLabels, true) }, owner: 'integry', repo: 'propr', issueNumber: 42, logger },
+        [], [],
+        { targetLabel: 'llm-codex-gpt56-sol', isManagedLabel: label => label.startsWith('llm-'), redis: redis as never },
+    );
+    await firstMutationStart;
+    const second = safeUpdateLabels(
+        { octokit: { request: createRequest(secondLabels, false) }, owner: 'integry', repo: 'propr', issueNumber: 43, logger },
+        [], [],
+        { targetLabel: 'llm-gemini-3-pro', isManagedLabel: label => label.startsWith('llm-'), redis: redis as never },
+    );
+    const secondWhileFirstHeld = await Promise.race([
+        second,
+        new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), 50)),
+    ]);
+    releaseFirstMutation();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    assert.strictEqual(secondWhileFirstHeld?.success, true);
+    assert.strictEqual(firstResult.success, true);
+    assert.strictEqual(secondResult.success, true);
 });

@@ -685,6 +685,49 @@ describe('commentEventHandler — /use command', () => {
         assert.ok(!liveLabels.includes('llm-claude-opus5'));
     });
 
+    for (const leaseFailure of ['acquisition', 'ownership'] as const) {
+        test(`/use does not enqueue or acknowledge when label-transition lease ${leaseFailure} fails`, async () => {
+            mockSafeUpdateLabels.mock.mockImplementationOnce(actualLabelOperations.safeUpdateLabels);
+            const liveLabels = ['AI', 'llm-claude-opus48'];
+            let acknowledgements = 0;
+            mockOctokit.request.mock.mockImplementation(async (endpoint: string, options: Record<string, unknown>) => {
+                if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                    return { data: { head: { ref: 'feature-branch' }, labels: liveLabels.map(name => ({ name })) } };
+                }
+                if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
+                    return { data: { labels: liveLabels.map(name => ({ name })) } };
+                }
+                if (endpoint === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+                    const index = liveLabels.findIndex(name => name.toLowerCase() === String(options.name).toLowerCase());
+                    if (index >= 0) liveLabels.splice(index, 1);
+                    return { data: {} };
+                }
+                if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+                    for (const name of options.labels as string[]) if (!liveLabels.includes(name)) liveLabels.push(name);
+                    return { data: {} };
+                }
+                if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') acknowledgements += 1;
+                return { data: {} };
+            });
+            const config = createTestConfig();
+            if (leaseFailure === 'acquisition') {
+                config.redisClient.set.mock.mockImplementation(async (key: string, value: string, ...args: string[]) => {
+                    if (key.startsWith('ultrafix:label-transition:')) throw new Error('redis unavailable');
+                    if (args.includes('NX') && config.redisClient._store.has(key)) return null;
+                    config.redisClient._store.set(key, value);
+                    return 'OK';
+                });
+            } else {
+                config.redisClient.eval.mock.mockImplementation(async () => 0);
+            }
+
+            await processCommentEvent(createPRCommentEvent('/use opus'), 'issue_comment', `corr-lease-${leaseFailure}`, config);
+
+            assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+            assert.strictEqual(acknowledgements, 0);
+        });
+    }
+
     test('/use persists canonical label, configured agent, and model on the queued job', async () => {
         const event = createPRCommentEvent('/use llm-claude-opus5\nContinue with the selected model');
         const config = createTestConfig();
