@@ -61,7 +61,7 @@ describe('AntigravityAgent Docker args', () => {
         }
     });
 
-    test('lets agy auto-read non-TTY stdin and passes the CLI display-name model', () => {
+    test('lets agy auto-read non-TTY stdin and passes the exact Gemini 3.7 external ID', () => {
         const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-model-'));
         fs.mkdirSync(path.join(tempHome, '.gemini'), { recursive: true });
 
@@ -77,7 +77,7 @@ describe('AntigravityAgent Docker args', () => {
             }).buildDockerArgs({
                 worktreePath: '/tmp/worktree',
                 githubToken: '',
-                modelName: 'antigravity-gpt-oss-120b-medium',
+                modelName: 'antigravity-gemini-3.7-flash-high',
                 issueNumber: 0
             });
 
@@ -88,11 +88,11 @@ describe('AntigravityAgent Docker args', () => {
             assert.doesNotMatch(shellCmd, /--print|\s-p(?:\s|$)/, 'shell command must leave the prompt unset so agy reads stdin');
             assert.match(shellCmd, /--dangerously-skip-permissions "\$@"/);
 
-            // Model must be the CLI display name, never the namespaced id.
+            // Model must be the canonical external ID, never the namespaced id.
             const modelIdx = args.indexOf('--model');
             assert.ok(modelIdx >= 0, '--model flag should be present');
-            assert.strictEqual(args[modelIdx + 1], 'GPT-OSS 120B (Medium)');
-            assert.ok(!args.includes('antigravity-gpt-oss-120b-medium'), 'prefixed id must not be passed to the CLI');
+            assert.strictEqual(args[modelIdx + 1], 'gemini-3.7-flash-high');
+            assert.ok(!args.includes('antigravity-gemini-3.7-flash-high'), 'prefixed id must not be passed to the CLI');
         } finally {
             fs.rmSync(tempHome, { recursive: true, force: true });
         }
@@ -122,10 +122,13 @@ describe('AntigravityAgent Docker args', () => {
 });
 
 describe('toAntigravityCliModelId', () => {
-    test('maps ProPR ids to the CLI display names accepted by --model', () => {
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-medium'), 'Gemini 3.7 Flash (Medium)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-high'), 'Gemini 3.7 Flash (High)');
-        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-low'), 'Gemini 3.7 Flash (Low)');
+    test('maps Gemini 3.7 ProPR ids to exact canonical external IDs', () => {
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-medium'), 'gemini-3.7-flash-medium');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-high'), 'gemini-3.7-flash-high');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-low'), 'gemini-3.7-flash-low');
+    });
+
+    test('maps older ProPR ids to the CLI display names accepted by --model', () => {
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.6-flash-high'), 'Gemini 3.6 Flash (High)');
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.5-flash-high'), 'Gemini 3.5 Flash (High)');
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.1-pro-high'), 'Gemini 3.1 Pro (High)');
@@ -135,6 +138,7 @@ describe('toAntigravityCliModelId', () => {
     });
 
     test('strips an optional antigravity: route prefix before mapping', () => {
+        assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-gemini-3.7-flash-low'), 'gemini-3.7-flash-low');
         assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-gemini-3.1-pro-low'), 'Gemini 3.1 Pro (Low)');
         assert.strictEqual(toAntigravityCliModelId('antigravity:antigravity-claude-sonnet-4.6-thinking'), 'Claude Sonnet 4.6 (Thinking)');
     });
