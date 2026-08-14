@@ -1,0 +1,104 @@
+{
+  "cliVersion": "1.1.13",
+  "models": [
+    {
+      "id": "gemini-3.7-flash-high",
+      "displayName": "Gemini 3.7 Flash (High)",
+      "stream": [
+        {
+          "event": "init",
+          "conversation_id": "fixture-conversation-high",
+          "init": {
+            "model": "gemini-3.7-flash-high",
+            "cwd": "/tmp",
+            "tools": []
+          }
+        },
+        {
+          "event": "step_update",
+          "step_update": {
+            "conversation_id": "fixture-conversation-high",
+            "step_index": 2,
+            "state": "DONE",
+            "step_type": "agent_response",
+            "text_delta": "STREAM_OK\n"
+          }
+        },
+        {
+          "event": "result",
+          "result": {
+            "conversation_id": "fixture-conversation-high",
+            "status": "SUCCESS",
+            "response": "STREAM_OK\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gemini-3.7-flash-medium",
+      "displayName": "Gemini 3.7 Flash (Medium)",
+      "stream": [
+        {
+          "event": "init",
+          "conversation_id": "fixture-conversation-medium",
+          "init": {
+            "model": "gemini-3.7-flash-medium",
+            "cwd": "/tmp",
+            "tools": []
+          }
+        },
+        {
+          "event": "step_update",
+          "step_update": {
+            "conversation_id": "fixture-conversation-medium",
+            "step_index": 2,
+            "state": "DONE",
+            "step_type": "agent_response",
+            "text_delta": "STREAM_OK\n"
+          }
+        },
+        {
+          "event": "result",
+          "result": {
+            "conversation_id": "fixture-conversation-medium",
+            "status": "SUCCESS",
+            "response": "STREAM_OK\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gemini-3.7-flash-low",
+      "displayName": "Gemini 3.7 Flash (Low)",
+      "stream": [
+        {
+          "event": "init",
+          "conversation_id": "fixture-conversation-low",
+          "init": {
+            "model": "gemini-3.7-flash-low",
+            "cwd": "/tmp",
+            "tools": []
+          }
+        },
+        {
+          "event": "step_update",
+          "step_update": {
+            "conversation_id": "fixture-conversation-low",
+            "step_index": 2,
+            "state": "DONE",
+            "step_type": "agent_response",
+            "text_delta": "STREAM_OK\n"
+          }
+        },
+        {
+          "event": "result",
+          "result": {
+            "conversation_id": "fixture-conversation-low",
+            "status": "SUCCESS",
+            "response": "STREAM_OK\n"
+          }
+        }
+      ]
+    }
+  ]
+}

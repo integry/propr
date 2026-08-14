@@ -18,6 +18,7 @@
 #   PROPR_E2E_VIBE_MODELS comma-separated Vibe models
 #   PROPR_E2E_ANTIGRAVITY_MODELS comma-separated Antigravity models
 #   PROPR_E2E_OPENCODE_MODELS comma-separated OpenCode models
+#   AGENT_TAG          unified agent image to verify (default: propr/agent:latest)
 #   PROPR_E2E_KEEP_STACK=1  leave containers/logs running after the script exits
 #   PROPR_E2E_REUSE_DATA=1  reuse /tmp/$STACK data from a previous run
 
@@ -30,6 +31,7 @@ STACK="${STACK:-propr-itest}"
 API_PORT="${API_PORT:-14001}"
 TEST_REPO="${PROPR_E2E_REPO:-integry/propr-test}"
 LAUNCHER_TAG="${LAUNCHER_TAG:-propr/launcher:latest}"
+AGENT_TAG="${AGENT_TAG:-propr/agent:latest}"
 
 TOKEN="${PROPR_E2E_TOKEN:-}"
 if [ -z "$TOKEN" ] && command -v gh >/dev/null 2>&1; then
@@ -180,6 +182,14 @@ elif [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
   exit 1
 fi
 
+if [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
+  echo ""
+  echo "▸ verifying Antigravity Gemini 3.7 image support"
+  AGENT_TAG="$AGENT_TAG" \
+    ANTIGRAVITY_CONFIG_PATH="$HOME/.gemini" \
+    ./scripts/verify-antigravity-image.sh
+fi
+
 LAUNCHER_ARGS+=("$LAUNCHER_TAG")
 
 echo "▸ starting stack via launcher"
@@ -232,7 +242,7 @@ echo "▸ configuring agents"
 ANTIGRAVITY_CFG="${HOME}/.gemini"
 VIBE_CFG="${HOME}/.vibe"
 VIBE_MODELS="${PROPR_E2E_VIBE_MODELS:-mistral-medium-3.5,devstral-small}"
-ANTIGRAVITY_MODELS="${PROPR_E2E_ANTIGRAVITY_MODELS:-antigravity-gemini-3.6-flash-medium,antigravity-gemini-3.6-flash-high,antigravity-gemini-3.6-flash-low,antigravity-gemini-3.5-flash-medium,antigravity-gemini-3.5-flash-high,antigravity-gemini-3.5-flash-low,antigravity-gemini-3.1-pro-low,antigravity-gemini-3.1-pro-high,antigravity-claude-sonnet-4.6-thinking,antigravity-claude-opus-4.6-thinking,antigravity-gpt-oss-120b-medium}"
+ANTIGRAVITY_MODELS="${PROPR_E2E_ANTIGRAVITY_MODELS:-antigravity-gemini-3.7-flash-medium,antigravity-gemini-3.7-flash-high,antigravity-gemini-3.7-flash-low,antigravity-gemini-3.6-flash-medium,antigravity-gemini-3.6-flash-high,antigravity-gemini-3.6-flash-low,antigravity-gemini-3.5-flash-medium,antigravity-gemini-3.5-flash-high,antigravity-gemini-3.5-flash-low,antigravity-gemini-3.1-pro-low,antigravity-gemini-3.1-pro-high,antigravity-claude-sonnet-4.6-thinking,antigravity-claude-opus-4.6-thinking,antigravity-gpt-oss-120b-medium}"
 OPENCODE_MODELS="${PROPR_E2E_OPENCODE_MODELS:-opencode-deepseek-v4-flash-free,opencode-go/qwen3.7-max,opencode-openai/gpt-5.5}"
 json_array_from_csv() {
   local csv="$1"
