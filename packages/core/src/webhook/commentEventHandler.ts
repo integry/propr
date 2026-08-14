@@ -457,11 +457,10 @@ async function handleUseCommand(opts: UseCommandOptions): Promise<void> {
     if (!canonicalLabel) return;
 
     const { prLabels } = await getLivePRBranchAndLabels({ owner, repo, prNumber });
-    const modelLabelRegex = new RegExp(modelLabelPattern);
-    const existingModelLabels = prLabels.filter(label => modelLabelRegex.test(label.name)).map(label => label.name);
     const canonicalLabelIdentity = canonicalLabel.toLowerCase();
+    const existingModelLabels = prLabels.filter(label => label.name.startsWith('llm-')).map(label => label.name);
     const labelsToRemove = existingModelLabels.filter(label => label.toLowerCase() !== canonicalLabelIdentity);
-    const targetPresent = existingModelLabels.some(label => label.toLowerCase() === canonicalLabelIdentity);
+    const targetPresent = prLabels.some(label => label.name.toLowerCase() === canonicalLabelIdentity);
 
     if (labelsToRemove.length === 0 && targetPresent) {
         correlatedLogger.debug({ pullRequestNumber: prNumber, modelLabel: canonicalLabel }, '/use model label is already active');
@@ -469,7 +468,9 @@ async function handleUseCommand(opts: UseCommandOptions): Promise<void> {
     }
 
     const labels = [
-        ...prLabels.filter(label => !modelLabelRegex.test(label.name)).map(label => label.name),
+        ...prLabels
+            .filter(label => !label.name.startsWith('llm-') && label.name.toLowerCase() !== canonicalLabelIdentity)
+            .map(label => label.name),
         canonicalLabel,
     ];
 

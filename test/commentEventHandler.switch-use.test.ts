@@ -626,6 +626,27 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
+    test('/use removes all llm-prefixed labels regardless of MODEL_LABEL_PATTERN', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [
+                    createMockLabel({ name: 'AI' }),
+                    createMockLabel({ name: 'llm-claude-sonnet5' }),
+                    createMockLabel({ name: 'release:next' }),
+                ],
+            },
+        }));
+        const event = createPRCommentEvent('/use llm-codex-gpt56-sol');
+        const config = createTestConfig({ MODEL_LABEL_PATTERN: '^llm-(codex-.+)$' });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-literal-llm-prefix', config);
+
+        assertSingleLabelReplacement(['AI', 'release:next', 'llm-codex-gpt56-sol']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
     test('/use on a review comment replaces labels from the live PR instead of the stale payload', async () => {
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
