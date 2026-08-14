@@ -912,7 +912,7 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
 
     const jobData: CommentJobData = {
         pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),
-        ...(labelSelection ? { agentAlias: labelSelection.agentAlias, modelName: labelSelection.model, modelLabel: labelSelection.githubLabel } : {}),
+        ...(modelSelection ? { agentAlias: modelSelection.agentAlias, modelName: modelSelection.model, modelLabel: modelSelection.githubLabel } : {}),
         ...(commandMeta ? {
             ...buildCommandJobFields(commandMeta),
             commandCommentId: comment.id,

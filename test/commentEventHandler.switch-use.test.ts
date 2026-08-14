@@ -194,6 +194,7 @@ const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js'
 const { applyPendingCommentCommandContext } = await import(
     '../src/jobs/prPendingComments.js'
 );
+const { extractModelFromLabels } = await import('../src/jobs/prCommentJobUtils.js');
 
 const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
 const mockHasAutomaticWork = mock.fn(async () => false);
@@ -1050,6 +1051,47 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.pullRequestNumber, 42);
         assert.strictEqual(jobData.repoOwner, 'testowner');
         assert.strictEqual(jobData.repoName, 'testrepo');
+    });
+});
+
+describe('commentEventHandler — routing provenance', () => {
+    beforeEach(() => {
+        mockQueueAdd.mock.resetCalls();
+        mockOctokit.request.mock.resetCalls();
+        mockActiveJobs = [];
+        mockWaitingJobs = [];
+        mockDelayedJobs = [];
+    });
+
+    test('ordinary jobs omit explicit provenance and follow the live PR label at execution', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [{ name: 'AI' }, { name: 'llm-codex-gpt55' }],
+            },
+        }));
+
+        await processCommentEvent(
+            createPRCommentEvent('Please apply the follow-up'),
+            'issue_comment',
+            'corr-ordinary-live-routing',
+            createTestConfig(),
+        );
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.llm, 'codex-gpt55', 'enqueue may retain label A as its ordinary fallback');
+        assert.ok(!Object.hasOwn(jobData, 'agentAlias'));
+        assert.ok(!Object.hasOwn(jobData, 'modelName'));
+        assert.ok(!Object.hasOwn(jobData, 'modelLabel'));
+
+        const workerLlm = extractModelFromLabels(
+            [{ name: 'AI' }, { name: 'llm-codex-gpt56-sol' }],
+            jobData.llm as string,
+            42,
+            mockLoggerInstance as never,
+        );
+        assert.strictEqual(workerLlm, 'codex-gpt56-sol', 'worker validation must prefer live label B over fallback A');
     });
 });
 
