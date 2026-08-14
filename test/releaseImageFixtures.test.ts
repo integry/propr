@@ -37,7 +37,14 @@ test('authenticated image integration verifies every Gemini 3.7 Flash tier witho
   }
   assert.match(antigravityVerificationScript, /run_agy models/);
   assert.match(antigravityVerificationScript, /--output-format stream-json/);
+  assert.match(antigravityVerificationScript, /event\?\.event === "init"/);
+  assert.match(antigravityVerificationScript, /event\.init\?\.model/);
   assert.match(antigravityVerificationScript, /event\?\.type === "init"/);
-  assert.match(antigravityVerificationScript, /reported_model.*3\.7/s);
+  assert.match(antigravityVerificationScript, /terminalStatus\.toUpperCase\(\) !== "SUCCESS"/);
+  assert.match(antigravityVerificationScript, /response !== process\.env\.EXPECTED_RESPONSE/);
+  assert.match(antigravityVerificationScript, /reported_model.*display_name/s);
+  for (const id of ['gemini-3.7-flash-high', 'gemini-3.7-flash-medium', 'gemini-3.7-flash-low']) {
+    assert.match(antigravityVerificationScript, new RegExp(id));
+  }
   assert.match(integrationScript, /\.\/scripts\/verify-antigravity-image\.sh/);
 });

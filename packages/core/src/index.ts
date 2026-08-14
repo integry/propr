@@ -275,6 +275,16 @@ export type { IssueLabel, IssueUser, IssueComment, ExecutionAnalysisResult, Gene
 export { buildCodexPrompt, parseCodexStreamOutput, storeCodexPromptInRedis } from './codex/codexHelpers.js';
 export type { BuildCodexPromptOptions, CodexEvent, CodexOutput, StoreCodexPromptOptions } from './codex/codexHelpers.js';
 export { parseAntigravityJsonl, filterAntigravityAnalysisEvents } from './agents/impl/utils/antigravityOutputParser.js';
+export type {
+    AntigravityOutputEvent,
+    AntigravityParsedOutput,
+    AntigravityStreamEvent,
+    AntigravityStreamInitEvent,
+    AntigravityStreamStepUpdateEvent,
+    AntigravityStreamResultEvent,
+    AntigravityStreamUsage,
+    AntigravityTerminalStatus,
+} from './agents/impl/utils/antigravityOutputParser.js';
 
 export {
     getReposFromEnv,
