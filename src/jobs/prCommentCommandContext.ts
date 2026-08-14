@@ -100,6 +100,11 @@ function latestCommentRevisions(comments: Array<UnprocessedComment & CommentChro
     return [...latestByComment.values()];
 }
 
+function latestCommentsForExecution(comments: UnprocessedComment[]): UnprocessedComment[] {
+    return latestCommentRevisions(orderedComments(comments))
+        .map(comment => comments[comment.ingestionOrder!]);
+}
+
 function findLatestComment<T extends CommentChronology>(
     comments: T[],
     predicate: (comment: T) => boolean,
@@ -223,17 +228,18 @@ function applyModelOverride(jobData: CommentJobData, latestCommandComment: Unpro
     }
 }
 
-export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): void {
+export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): UnprocessedComment[] {
     // The worker owns every comment it claimed. Persist that complete ordered
     // set before routing checks, provider retries, or superseded exits.
     jobData.comments = dedupeUnprocessedComments(commentsToProcess);
+    const commentsForExecution = latestCommentsForExecution(jobData.comments);
     const {
         queuedCommandChronology,
         latestCommandComment,
         latestPendingOverrideComment,
     } = resolvePendingCommandContext(jobData, jobData.comments);
 
-    if (!latestCommandComment && !latestPendingOverrideComment) return;
+    if (!latestCommandComment && !latestPendingOverrideComment) return commentsForExecution;
 
     const latestOverrideComment: ModelOverride | undefined = latestPendingOverrideComment
         ?? getQueuedOverride(jobData, queuedCommandChronology);
@@ -251,4 +257,5 @@ export function applyPendingCommentCommandContext(jobData: CommentJobData, comme
         queuedCommandCommentCreatedAt: queuedCommandChronology?.createdAt,
         overrideCommentId: latestOverrideComment?.id,
     }, 'Applied command context from pending batched comment');
+    return commentsForExecution;
 }

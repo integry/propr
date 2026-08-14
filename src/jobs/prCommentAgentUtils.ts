@@ -275,9 +275,24 @@ export async function isProviderLimitRetrySuperseded(
     context: ProviderLimitRetryContext,
 ): Promise<boolean> {
     if (!context.isRetryFromRateLimit || !context.agentAlias || !context.modelName) return false;
+    const modelLabelPattern = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
+    const managedLabels = (await Promise.all(labels.map(async label => {
+        const name = typeof label === 'string' ? label : label.name;
+        const selection = await resolveCanonicalModelSelectionFromLabels([label], modelLabelPattern);
+        return new RegExp(modelLabelPattern).test(name) || selection ? name : null;
+    }))).filter((label): label is string => label !== null);
+    if (managedLabels.length > 1) {
+        context.correlatedLogger.info({
+            pullRequestNumber: context.pullRequestNumber,
+            retryAgent: context.agentAlias,
+            retryModel: context.modelName,
+            managedLabels,
+        }, 'Skipping provider-limit retry while durable PR model labels are transitioning');
+        return true;
+    }
     const liveSelection = await resolveCanonicalModelSelectionFromLabels(
         labels,
-        process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
+        modelLabelPattern,
     );
     if (!liveSelection || (
         liveSelection.agentAlias.toLowerCase() === context.agentAlias.toLowerCase()

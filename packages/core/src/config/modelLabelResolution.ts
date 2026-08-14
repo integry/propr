@@ -118,13 +118,25 @@ async function resolveCanonicalModelSelectionFromLabels(
 ): Promise<CanonicalModelSelection | null> {
     const pattern = new RegExp(modelLabelPattern);
     const customLabels = new Set((await getAllCustomLabels()).map(label => label.toLowerCase()));
+    const managedLabels: string[] = [];
     for (const label of labels) {
         const name = typeof label === 'string' ? label : label.name;
-        if (customLabels.has(name.toLowerCase())) return resolveCanonicalModelSelection(name);
+        if (customLabels.has(name.toLowerCase())) {
+            managedLabels.push(name);
+            continue;
+        }
         const match = name.match(pattern);
-        if (match?.[1]) return resolveCanonicalModelSelection(match[1]);
+        if (match?.[1]) managedLabels.push(name);
     }
-    return null;
+    // Exclusive label convergence adds the target before removing the old
+    // label. Do not choose either routing while that transition is visible.
+    if (managedLabels.length !== 1) return null;
+
+    const [managedLabel] = managedLabels;
+    if (customLabels.has(managedLabel.toLowerCase())) {
+        return resolveCanonicalModelSelection(managedLabel);
+    }
+    return resolveCanonicalModelSelection(managedLabel.match(pattern)?.[1] ?? managedLabel);
 }
 
 /**

@@ -97,8 +97,8 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
     const isBatchJob = !!comments && Array.isArray(comments);
     const initialComments: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
     const claimId = String(job.id ?? correlationId);
-    const { commentsToProcess, pickedUpComments } = await pickUpPendingCommentsWithClaim(initialComments, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient, claimId });
-    applyPendingCommentCommandContext(job.data, commentsToProcess, correlatedLogger);
+    const { commentsToProcess: claimedComments, pickedUpComments } = await pickUpPendingCommentsWithClaim(initialComments, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient, claimId });
+    const commentsToProcess = applyPendingCommentCommandContext(job.data, claimedComments, correlatedLogger);
     await job.updateData(job.data);
     await acknowledgePendingCommentClaim({ repoOwner, repoName, pullRequestNumber, claimId, redisClient });
     const { branchName: jobBranchName, llm: jobLlm, agentAlias, modelName, modelLabel, isRetryFromRateLimit } = job.data;
