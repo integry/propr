@@ -20,7 +20,9 @@ export function parseAntigravityOutputToConversationResult(output: string): Conv
     content: getAntigravityAnalysisText(event) ?? '',
     timestamp: 'created_at' in event ? event.created_at : 'timestamp' in event ? event.timestamp : undefined
   })).filter(event => event.content);
-  const hasTokens = (parsed.tokenUsage.input_tokens ?? 0) > 0 || (parsed.tokenUsage.output_tokens ?? 0) > 0;
+  const hasTokens = (parsed.tokenUsage.input_tokens ?? 0) > 0
+    || (parsed.tokenUsage.output_tokens ?? 0) > 0
+    || (parsed.tokenUsage.cache_read_input_tokens ?? 0) > 0;
   return events.length || hasTokens ? {
     events,
     todos: [],
@@ -29,7 +31,7 @@ export function parseAntigravityOutputToConversationResult(output: string): Conv
       input_tokens: parsed.tokenUsage.input_tokens ?? 0,
       output_tokens: parsed.tokenUsage.output_tokens ?? 0,
       cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0
+      cache_read_input_tokens: parsed.tokenUsage.cache_read_input_tokens ?? 0
     } : null
   } : null;
 }

@@ -137,6 +137,27 @@ test('Antigravity 1.1.12 stream text remains visible through live details', asyn
   });
 });
 
+test('Antigravity cache-only stream usage remains visible through live details', async () => {
+  const { parseAntigravityOutputToConversationResult } = await import('../routes/liveDetailsOutputParsers.js');
+  const output = JSON.stringify({
+    event: 'result',
+    result: {
+      conversation_id: 'conversation-cache-only',
+      status: 'SUCCESS',
+      usage: { cache_read_tokens: 321 }
+    }
+  });
+
+  const parsed = parseAntigravityOutputToConversationResult(output);
+
+  assert.deepEqual(parsed?.tokenUsage, {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 321
+  });
+});
+
 test('stored output parsing filters Antigravity transcript tool items', async () => {
   process.env.GH_APP_ID = process.env.GH_APP_ID || '1';
   process.env.GH_PRIVATE_KEY_PATH = process.env.GH_PRIVATE_KEY_PATH || '/tmp/missing-key.pem';

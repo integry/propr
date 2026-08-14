@@ -17,7 +17,7 @@ function literalAssignment(source: string, name: string): string {
 }
 
 function runAntigravityVerification(
-  initModelEvidence = 'canonical',
+  initModelEvidence = 'display-name',
   modelsEvidence = 'mapped',
 ) {
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'propr-antigravity-script-test.'));
@@ -68,7 +68,7 @@ const evidence = process.env.FAKE_INIT_MODEL_EVIDENCE;
 const reportedModel = evidence === 'display-name'
   ? displayNames[modelId]
   : evidence === 'different-tier'
-    ? 'gemini-3.7-flash-medium'
+    ? (modelId === 'gemini-3.7-flash-high' ? displayNames['gemini-3.7-flash-medium'] : displayNames['gemini-3.7-flash-high'])
     : evidence === 'alias'
       ? 'flash37-high'
       : modelId;
@@ -156,8 +156,8 @@ test('authenticated image integration verifies every Gemini 3.7 Flash tier witho
   assert.match(antigravityVerificationScript, /event\?\.event === "init"/);
   assert.match(antigravityVerificationScript, /event\.init\?\.model/);
   assert.match(antigravityVerificationScript, /event\?\.type === "init"/);
-  assert.match(antigravityVerificationScript, /EXPECTED_MODEL_ID="\$model_id"/);
-  assert.match(antigravityVerificationScript, /reportedModel !== process\.env\.EXPECTED_MODEL_ID/);
+  assert.match(antigravityVerificationScript, /EXPECTED_MODEL_DISPLAY="\$display_name"/);
+  assert.match(antigravityVerificationScript, /reportedModel !== process\.env\.EXPECTED_MODEL_DISPLAY/);
   assert.match(antigravityVerificationScript, /terminalStatus\.toUpperCase\(\) !== "SUCCESS"/);
   assert.match(antigravityVerificationScript, /EXPECTED_RESPONSE=\$'STREAM_OK\\n'/);
   assert.match(antigravityVerificationScript, /response !== process\.env\.EXPECTED_RESPONSE/);
@@ -168,25 +168,25 @@ test('authenticated image integration verifies every Gemini 3.7 Flash tier witho
   assert.match(integrationScript, /\.\/scripts\/verify-antigravity-image\.sh/);
 });
 
-test('authenticated image verifier accepts realistic canonical init.model envelopes', () => {
+test('authenticated image verifier accepts captured display-name init.model envelopes', () => {
   const result = runAntigravityVerification();
 
   assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   for (const id of ['gemini-3.7-flash-high', 'gemini-3.7-flash-medium', 'gemini-3.7-flash-low']) {
-    assert.match(result.stdout, new RegExp(`${id} returned exact sentinel with SUCCESS and reported ${id}`));
+    assert.match(result.stdout, new RegExp(`${id} returned exact sentinel with SUCCESS and reported Gemini 3\\.7 Flash`));
   }
 });
 
-test('authenticated image verifier rejects non-canonical init.model evidence', () => {
-  for (const evidence of ['missing', 'different-tier', 'alias', 'display-name']) {
+test('authenticated image verifier rejects missing, alias, canonical-ID, and other-tier init.model evidence', () => {
+  for (const evidence of ['missing', 'different-tier', 'alias', 'canonical']) {
     const result = runAntigravityVerification(evidence);
     assert.notEqual(result.status, 0, `${evidence} evidence must not pass`);
-    assert.match(result.stderr, /expected init model "gemini-3\.7-flash-high", got/);
+    assert.match(result.stderr, /expected init model "Gemini 3\.7 Flash \(High\)", got/);
   }
 });
 
 test('authenticated image verifier requires each discovered ID and display name on the same mapping', () => {
-  const result = runAntigravityVerification('canonical', 'unmapped');
+  const result = runAntigravityVerification('display-name', 'unmapped');
 
   assert.notEqual(result.status, 0);
   assert.match(

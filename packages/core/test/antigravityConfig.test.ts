@@ -292,7 +292,7 @@ test('Antigravity final response remains usable when no agent-response step is p
     assert.deepEqual(converted.message.content, [{ type: 'text', text: 'RESULT_ONLY\n' }]);
 });
 
-test('Antigravity output parser rejects malformed nested events while retaining valid stream context', () => {
+test('Antigravity output parser tracks malformed stream envelopes as protocol failures', () => {
     const malformed = [
         { event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 42 } },
         { event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: '2', state: 'DONE', step_type: 'agent_response', text_delta: 'bad' } },
@@ -301,9 +301,10 @@ test('Antigravity output parser rejects malformed nested events while retaining 
     ].map(JSON.stringify);
     const parsed = parseAntigravityJsonl(malformed.join('\n'));
 
-    assert.equal(parsed.summary, malformed.join('\n'));
+    assert.equal(parsed.summary, undefined);
     assert.deepEqual(parsed.conversationLog, []);
     assert.equal(parsed.terminalStatus, undefined);
+    assert.equal(parsed.protocolError, 'Malformed Antigravity stream envelope: step_update');
 });
 
 test('Antigravity output parser ignores mixed diagnostics when a structured final response exists', () => {
@@ -377,6 +378,41 @@ test('Antigravity agent propagates conversation identity and rejects a terminal 
         message: { content: [{ type: 'text', text: 'provider failed' }], usage: {} },
     }]);
     assert.deepEqual(callbackIdentity, ['conversation-sanitized', 'conversation-sanitized']);
+});
+
+test('Antigravity agent rejects a malformed terminal result with exit code 0', async () => {
+    const stdout = [
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'DONE', response: 'must not succeed' } }),
+    ].join('\n');
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as {
+        persistImplementationLog(options: unknown): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+        }): Promise<{ success: boolean; error?: string; summary?: string }>;
+    };
+    internals.persistImplementationLog = async () => undefined;
+
+    const result = await internals.processExecutionResult({
+        result: { stdout, stderr: '', exitCode: 0 },
+        executionTime: 10,
+        issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+        effectiveModel: 'antigravity-gemini-3.7-flash-high',
+        prompt: 'test',
+        worktreePath: '/tmp',
+        worktreeGitContent: null,
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Malformed Antigravity stream envelope: result');
+    assert.equal(result.summary, undefined);
 });
 
 test('Antigravity output parser accepts camelCase result token stats', () => {

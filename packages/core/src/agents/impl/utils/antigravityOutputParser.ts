@@ -62,7 +62,7 @@ export interface AntigravityParsedOutput {
     summary: string | undefined;
     conversationLog: AntigravityOutputEvent[];
     tokenUsage: TokenUsage;
-    terminalStatus: AntigravityTerminalStatus | undefined;
+    terminalStatus: AntigravityTerminalStatus | undefined; protocolError: string | undefined;
 }
 
 export const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = {
@@ -319,7 +319,7 @@ export function filterAntigravityAnalysisEvents(events: AntigravityOutputEvent[]
 
 /** Parses legacy, transcript, and Antigravity 1.1.12+ JSONL; plain text remains a supported fallback. */
 export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
-    const events: AntigravityOutputEvent[] = [];
+    const events: AntigravityOutputEvent[] = []; let protocolError: string | undefined;
     const state: ParseState = { tokenUsage: {}, currentAssistantMessage: '', lastCompleteAssistantMessage: '' };
     const parsedLines: Array<{ line: string; value?: unknown }> = [];
     for (const line of output.split('\n')) {
@@ -333,6 +333,7 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
     const hasProtocolContext = parsedLines.some(({ value }) => isAntigravityFramingEvent(value));
     const plainLines: Array<{ line: string; isJson: boolean }> = [];
     for (const { line, value } of parsedLines) {
+        if (isRecord(value) && typeof value.event === 'string' && Object.hasOwn(STREAM_EVENT_VALIDATORS, value.event) && !STREAM_EVENT_VALIDATORS[value.event](value)) { protocolError ??= `Malformed Antigravity stream envelope: ${value.event}`; continue; }
         if (!isAntigravityOutputEvent(value, hasProtocolContext)) {
             plainLines.push({ line, isJson: value !== undefined });
             continue;
@@ -354,7 +355,7 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
         summary: state.lastCompleteAssistantMessage || plainTextSummary || undefined,
         conversationLog: events,
         tokenUsage: state.tokenUsage,
-        terminalStatus: state.terminalStatus,
+        terminalStatus: state.terminalStatus, protocolError,
     };
 }
 
