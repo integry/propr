@@ -365,7 +365,12 @@ Examples:
         } catch (error) {
           if (error instanceof NetworkError) {
             console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
-          } else if (error instanceof ApiError && (error as Error).message.includes("already exists")) {
+          } else if (
+            error instanceof ApiError &&
+            error.status !== 401 &&
+            error.status !== 403 &&
+            error.message.includes("already exists")
+          ) {
             console.error(`Error: ${(error as Error).message}`);
           } else {
             presentApiError(error, {
