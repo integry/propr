@@ -73,6 +73,7 @@ for model in "${models[@]}"; do
   model_id="${model%%|*}"
   display_name="${model#*|}"
   invocation_output="$(run_agy \
+    --dangerously-skip-permissions \
     --print \
     --print-timeout 5m \
     --output-format stream-json \
