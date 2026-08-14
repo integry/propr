@@ -7,6 +7,7 @@ import {
     type TaskStateExpectation,
     type UpdateMetadata,
 } from '../packages/core/src/utils/workerStateManager.types.js';
+import { getTerminalJobResultForAutomaticRetry as getRealTerminalJobResultForAutomaticRetry } from '../packages/core/src/utils/workerStateManagerHelpers.js';
 
 const timestamp = '2026-08-14T10:00:00.000Z';
 const taskId = 'integry-propr-1898-test-model-correlation-1898';
@@ -82,36 +83,14 @@ function stateStore(initialState: TaskState) {
             publication: { historyPersisted: true, eventPublished: true, errors: [] },
         };
     });
-    const resumeFailedTaskForAutomaticRetry = mock.fn(async (
-        _taskId: string,
-        state: TaskStateData,
-        attempt: { jobId: string | undefined; attemptsMade: number; totalAttempts: number | undefined },
-    ) => {
-        const isRemainingExactJobAttempt = state.state === TaskStates.FAILED
-            && attempt.attemptsMade > 0
-            && attempt.attemptsMade < (attempt.totalAttempts ?? 1)
-            && attempt.jobId !== undefined
-            && state.issueRef.jobId !== undefined
-            && String(state.issueRef.jobId) === String(attempt.jobId);
-        return isRemainingExactJobAttempt
-            ? updateTaskState(taskId, TaskStates.PROCESSING, { isRetry: true })
-            : structuredClone(state);
-    });
     const getTerminalJobResultForAutomaticRetry = mock.fn(async (
         id: string,
         state: TaskStateData,
         attempt: { jobId: string | undefined; attemptsMade: number; totalAttempts: number | undefined },
-    ) => {
-        const initialState = await resumeFailedTaskForAutomaticRetry(id, state, attempt);
-        if (initialState.state === TaskStates.COMPLETED) return { status: 'complete', reason: 'task_already_completed' };
-        if (initialState.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: 'task_already_cancelled' };
-        if (initialState.state === TaskStates.FAILED) return { status: 'failed', reason: 'task_already_failed' };
-        return undefined;
-    });
+    ) => getRealTerminalJobResultForAutomaticRetry(id, state, attempt, updateTaskState));
     return {
         createTaskState: mock.fn(async () => structuredClone(current)),
         associateTaskWithJob: mock.fn(async () => structuredClone(current)),
-        resumeFailedTaskForAutomaticRetry,
         getTerminalJobResultForAutomaticRetry,
         updateTaskState,
         updateTaskStateIfCurrentDetailed,

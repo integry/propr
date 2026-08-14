@@ -1,5 +1,7 @@
 import { test, mock, describe, beforeEach } from 'node:test';
 import assert from 'node:assert';
+import { getTerminalJobResultForAutomaticRetry } from '../packages/core/src/utils/workerStateManagerHelpers.js';
+import type { TaskStateData } from '../packages/core/src/utils/workerStateManager.types.js';
 
 // --- Mock Setup ---
 
@@ -7,6 +9,7 @@ const mockOctokit = {
     request: mock.fn(async () => ({ data: { id: 100, html_url: 'https://github.com/test' } })),
     auth: mock.fn(async () => ({ token: 'mock-github-token' })),
 };
+const mockGetAuthenticatedOctokit = mock.fn(async () => mockOctokit);
 
 const mockStateManager = {
     createTaskState: mock.fn(async () => {}),
@@ -160,7 +163,7 @@ await mock.module('@propr/core', {
             debug: mock.fn(),
             withCorrelation: mock.fn(() => mockLoggerInstance),
         },
-        getAuthenticatedOctokit: mock.fn(async () => mockOctokit),
+        getAuthenticatedOctokit: mockGetAuthenticatedOctokit,
         withRetry: mock.fn(async (fn: () => Promise<unknown>) => fn()),
         retryConfigs: { githubApi: {} },
         getStateManager: mock.fn(() => mockStateManager),
@@ -254,14 +257,53 @@ function createMockJob(overrides: Partial<{
     return job as never;
 }
 
+function makeTerminalTaskState(state: 'completed' | 'failed'): TaskStateData {
+    const timestamp = '2026-08-14T12:00:00.000Z';
+    return {
+        taskId: 'test-job-123',
+        issueRef: {
+            type: 'merge_conflict',
+            number: 42,
+            repoOwner: 'test-owner',
+            repoName: 'test-repo',
+            jobId: 'test-job-123',
+        },
+        correlationId: 'test-corr-123',
+        state,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        attempts: 1,
+        history: [],
+    };
+}
+
+function returnTerminalStateFromCreate(state: TaskStateData): void {
+    mockStateManager.createTaskState.mock.mockImplementation(async () => state);
+    mockStateManager.getTerminalJobResultForAutomaticRetry.mock.mockImplementation(
+        async (id, createdState, attempt) => getTerminalJobResultForAutomaticRetry(
+            id as string,
+            createdState as TaskStateData,
+            attempt as Parameters<typeof getTerminalJobResultForAutomaticRetry>[2],
+            async (updatedTaskId, newState, metadata) => {
+                await mockStateManager.updateTaskState(updatedTaskId, newState, metadata);
+                return { ...createdState as TaskStateData, state: newState };
+            },
+        ),
+    );
+}
+
 function resetAllMocks() {
     mockOctokit.request.mock.resetCalls();
     mockOctokit.auth.mock.resetCalls();
+    mockGetAuthenticatedOctokit.mock.resetCalls();
     mockStateManager.createTaskState.mock.resetCalls();
     mockStateManager.resumeFailedTaskForAutomaticRetry.mock.resetCalls();
     mockStateManager.getTerminalJobResultForAutomaticRetry.mock.resetCalls();
     mockStateManager.updateTaskState.mock.resetCalls();
     mockMergeBaseIntoBranch.mock.resetCalls();
+    mockEnsureGitRepository.mock.resetCalls();
+    mockEnsureRepoCloned.mock.resetCalls();
+    mockCreateWorktreeFromExistingBranch.mock.resetCalls();
     mockCommitChanges.mock.resetCalls();
     mockPushBranch.mock.resetCalls();
     mockAgent.executeTask.mock.resetCalls();
@@ -277,6 +319,8 @@ describe('processMergeConflictJob', () => {
         // Default: clean merge
         mockMergeResult = { outcome: 'clean' as const };
         mockMergeBaseIntoBranch.mock.mockImplementation(async () => mockMergeResult);
+        mockStateManager.createTaskState.mock.mockImplementation(async () => undefined);
+        mockStateManager.getTerminalJobResultForAutomaticRetry.mock.mockImplementation(async () => undefined);
         mockStateManager.getTaskState.mock.mockImplementation(async () => null);
         mockOctokit.request.mock.mockImplementation(async () => ({ data: { id: 100, html_url: 'https://github.com/test' } }));
     });
@@ -315,6 +359,57 @@ describe('processMergeConflictJob', () => {
             (c: { arguments: [string, string] }) => c.arguments[1] === 'completed'
         );
         assert.ok(completedCalls.length >= 1, 'Expected task state to be set to COMPLETED');
+    });
+
+    test('returns an idempotently created completed task before external work', async () => {
+        returnTerminalStateFromCreate(makeTerminalTaskState('completed'));
+
+        const result = await processMergeConflictJob(createMockJob());
+
+        assert.deepStrictEqual(result, {
+            status: 'complete',
+            reason: 'task_already_completed',
+            pullRequestNumber: 42,
+        });
+        assert.strictEqual(mockGetAuthenticatedOctokit.mock.callCount(), 0);
+        assert.strictEqual(mockOctokit.auth.mock.callCount(), 0);
+        assert.strictEqual(mockOctokit.request.mock.callCount(), 0);
+        assert.strictEqual(mockStateManager.updateTaskState.mock.callCount(), 0);
+        assert.strictEqual(mockEnsureGitRepository.mock.callCount(), 0);
+        assert.strictEqual(mockEnsureRepoCloned.mock.callCount(), 0);
+        assert.strictEqual(mockCreateWorktreeFromExistingBranch.mock.callCount(), 0);
+        assert.strictEqual(mockMergeBaseIntoBranch.mock.callCount(), 0);
+        assert.strictEqual(mockAgent.executeTask.mock.callCount(), 0);
+        assert.strictEqual(mockConfiguredAgent.executeTask.mock.callCount(), 0);
+        assert.strictEqual(mockCommitChanges.mock.callCount(), 0);
+        assert.strictEqual(mockPushBranch.mock.callCount(), 0);
+    });
+
+    test('returns an exhausted matching failed task before external work', async () => {
+        returnTerminalStateFromCreate(makeTerminalTaskState('failed'));
+        const job = createMockJob() as unknown as { attemptsMade: number; opts: { attempts: number } };
+        job.attemptsMade = 2;
+        job.opts.attempts = 2;
+
+        const result = await processMergeConflictJob(job as never);
+
+        assert.deepStrictEqual(result, {
+            status: 'failed',
+            reason: 'task_already_failed',
+            pullRequestNumber: 42,
+        });
+        assert.strictEqual(mockGetAuthenticatedOctokit.mock.callCount(), 0);
+        assert.strictEqual(mockOctokit.auth.mock.callCount(), 0);
+        assert.strictEqual(mockOctokit.request.mock.callCount(), 0);
+        assert.strictEqual(mockStateManager.updateTaskState.mock.callCount(), 0);
+        assert.strictEqual(mockEnsureGitRepository.mock.callCount(), 0);
+        assert.strictEqual(mockEnsureRepoCloned.mock.callCount(), 0);
+        assert.strictEqual(mockCreateWorktreeFromExistingBranch.mock.callCount(), 0);
+        assert.strictEqual(mockMergeBaseIntoBranch.mock.callCount(), 0);
+        assert.strictEqual(mockAgent.executeTask.mock.callCount(), 0);
+        assert.strictEqual(mockConfiguredAgent.executeTask.mock.callCount(), 0);
+        assert.strictEqual(mockCommitChanges.mock.callCount(), 0);
+        assert.strictEqual(mockPushBranch.mock.callCount(), 0);
     });
 
     test('conflict merge: invokes agent and pushes resolved conflicts', async () => {
