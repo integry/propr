@@ -361,6 +361,22 @@ describe('processMergeConflictJob', () => {
         assert.ok(completedCalls.length >= 1, 'Expected task state to be set to COMPLETED');
     });
 
+    test('propagates task-state initialization failure before external work', async () => {
+        const initializationError = new Error('task-state lookup unavailable');
+        mockStateManager.createTaskState.mock.mockImplementation(async () => { throw initializationError; });
+
+        await assert.rejects(processMergeConflictJob(createMockJob()), initializationError);
+
+        assert.strictEqual(mockStateManager.getTerminalJobResultForAutomaticRetry.mock.callCount(), 0);
+        assert.strictEqual(mockStateManager.updateTaskState.mock.callCount(), 0);
+        assert.strictEqual(mockGetAuthenticatedOctokit.mock.callCount(), 0);
+        assert.strictEqual(mockOctokit.request.mock.callCount(), 0);
+        assert.strictEqual(mockEnsureGitRepository.mock.callCount(), 0);
+        assert.strictEqual(mockEnsureRepoCloned.mock.callCount(), 0);
+        assert.strictEqual(mockCreateWorktreeFromExistingBranch.mock.callCount(), 0);
+        assert.strictEqual(mockAgent.executeTask.mock.callCount(), 0);
+    });
+
     test('returns an idempotently created completed task before external work', async () => {
         returnTerminalStateFromCreate(makeTerminalTaskState('completed'));
 

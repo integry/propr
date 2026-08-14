@@ -20,6 +20,7 @@ async function database(): Promise<Knex> {
   await db.schema.createTable('tasks', table => {
     table.text('task_id').primary();
     table.text('job_id');
+    table.text('correlation_id');
     table.text('repository');
     table.text('created_at');
     table.text('initial_job_data');
@@ -328,6 +329,47 @@ test('legacy PR-comment task without a persisted job ID is not counted again fro
   assert.equal(result.status, 200);
   assert.equal(result.body.total, 1);
   assert.deepEqual(result.body.items.map(item => item.id), [taskId]);
+});
+
+test('legacy task-import job shares one activity item with its persisted task and exact container', async () => {
+  const db = await database();
+  const taskId = 'task-import-integry-propr-legacy';
+  const correlationId = 'import-tasks-integry-propr-legacy-correlation';
+  await db('tasks').insert({
+    task_id: taskId,
+    job_id: null,
+    correlation_id: correlationId,
+    repository: 'integry/propr',
+    created_at: '2026-08-14T11:00:00.000Z',
+    initial_job_data: JSON.stringify({ number: 0, repoOwner: 'integry', repoName: 'propr' }),
+  });
+  await db('task_history').insert({ task_id: taskId, state: 'processing' });
+  const job = {
+    id: 'legacy-task-import-job',
+    name: 'processTaskImport',
+    timestamp: Date.parse('2026-08-14T12:00:00.000Z'),
+    data: {
+      repository: 'integry/propr',
+      correlationId,
+      taskDescription: 'Import legacy tasks',
+    },
+    getState: async () => 'active',
+  };
+  const inspectContainer = mock.fn(async (task: string) => task === taskId ? 'running' as const : 'not_found' as const);
+  const routes = createLiveActivityRoutes({
+    db,
+    taskQueue: {
+      getJob: async jobId => jobId === job.id ? job : null,
+      getJobs: async () => [job],
+    } as never,
+    inspectContainer,
+  });
+  const result = await invoke(routes.getLiveActivity);
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.total, 1);
+  assert.deepEqual(result.body.items.map(item => item.id), [taskId]);
+  assert.equal(inspectContainer.mock.callCount(), 1);
 });
 
 test('deduplicates a task initialized after queue enumeration', async () => {

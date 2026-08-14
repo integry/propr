@@ -274,6 +274,21 @@ test('processGitHubIssueJob does not swap labels for a terminal rate-limit retry
     assert.equal(safeAddLabel.mock.calls.length, 0);
 });
 
+test('processGitHubIssueJob propagates task-state initialization failure before external work', async () => {
+    activeStore = stateStore(TaskStates.PENDING);
+    const initializationError = new Error('task-state lookup unavailable');
+    activeStore.createTaskState.mock.mockImplementation(async () => { throw initializationError; });
+    getAuthenticatedClient.mock.resetCalls();
+    updatePlanIssueTaskId.mock.resetCalls();
+
+    await assert.rejects(processGitHubIssueJob(issueJob(['AI']) as never), initializationError);
+
+    assert.equal(activeStore.getTerminalJobResultForAutomaticRetry.mock.callCount(), 0);
+    assert.equal(getAuthenticatedClient.mock.callCount(), 0);
+    assert.equal(updatePlanIssueTaskId.mock.callCount(), 0);
+    assert.equal(activeStore.updateTaskState.mock.callCount(), 0);
+});
+
 test('processGitHubIssueJob resumes processing after a transient BullMQ attempt failure', async () => {
     activeStore = stateStore(TaskStates.PENDING);
     authenticationError = new Error('Transient GitHub authentication failure');

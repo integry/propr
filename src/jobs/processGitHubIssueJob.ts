@@ -36,13 +36,12 @@ function getTerminalIssueJobResult(state: string, issueNumber: number): JobResul
 async function reconcileInitialIssueTaskState(options: {
   stateManager: WorkerStateManager;
   taskId: string;
-  createdState: TaskStateData | undefined;
+  createdState: TaskStateData;
   job: Job<IssueJobData>;
   jobId: string | undefined;
   issueNumber: number;
 }): Promise<JobResult | undefined> {
   const { stateManager, taskId, createdState, job, jobId, issueNumber } = options;
-  if (!createdState) return undefined;
   const terminalResult = await stateManager.getTerminalJobResultForAutomaticRetry(taskId, createdState, {
     jobId: job.id, attemptsMade: job.attemptsMade, totalAttempts: job.opts.attempts,
   });
@@ -88,17 +87,12 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     await job.updateData({ ...job.data, taskId });
   }
 
-  let createdState: TaskStateData | undefined;
-  try {
-    createdState = await stateManager.createTaskState(taskId, {
-      ...issueRef,
-      modelName,
-      type: 'issue',
-      jobId: typeof jobId === 'string' ? jobId : undefined,
-    } as import('@propr/core').IssueRef, correlationId);
-  } catch (stateError) {
-    correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
-  }
+  const createdState = await stateManager.createTaskState(taskId, {
+    ...issueRef,
+    modelName,
+    type: 'issue',
+    jobId: typeof jobId === 'string' ? jobId : undefined,
+  } as import('@propr/core').IssueRef, correlationId);
   const terminalResult = await reconcileInitialIssueTaskState({ stateManager, taskId, createdState, job, jobId, issueNumber: issueRef.number });
   if (terminalResult) return terminalResult;
 

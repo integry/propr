@@ -18,6 +18,7 @@ const mockResolveAndExecuteAgent = mock.fn(async () => ({
 }));
 const mockExecuteReviewProcessing = mock.fn(async () => ({ status: 'complete' }));
 const mockHandlePostExecution = mock.fn(async () => ({ partial: false, commitHash: 'commit' }));
+const mockHandleJobError = mock.fn(async () => undefined);
 const mockCleanupJob = mock.fn(async () => undefined);
 
 let createdState: TaskStateData;
@@ -111,7 +112,7 @@ await mock.module('../src/jobs/prCommentJobUtils.js', {
         extractModelFromLabels: mock.fn((_labels, llm) => llm),
         fetchAllComments: mock.fn(async () => []),
         buildPrompt: mock.fn(() => ''),
-        handleJobError: mock.fn(async () => undefined),
+        handleJobError: mockHandleJobError,
         cleanupJob: mockCleanupJob,
         toClaudeResult: mock.fn((result) => result),
     },
@@ -260,10 +261,12 @@ function resetExternalWorkMocks(): void {
         mockResolveAndExecuteAgent,
         mockExecuteReviewProcessing,
         mockHandlePostExecution,
+        mockHandleJobError,
         mockStateManager.updateTaskState,
         mockCleanupJob,
     ]) fn.mock.resetCalls();
     mockStateManager.createTaskState.mock.resetCalls();
+    mockStateManager.createTaskState.mock.mockImplementation(async () => createdState);
     mockStateManager.getTerminalJobResultForAutomaticRetry.mock.resetCalls();
 }
 
@@ -308,6 +311,17 @@ describe('processPullRequestCommentJob terminal createTaskState results', () => 
             pullRequestNumber: 1899,
         });
         assert.equal(mockStateManager.createTaskState.mock.callCount(), 1);
+        assertNoExternalWork();
+    });
+
+    test('propagates task-state initialization failure before external work', async () => {
+        const initializationError = new Error('task-state lookup unavailable');
+        mockStateManager.createTaskState.mock.mockImplementation(async () => { throw initializationError; });
+
+        await assert.rejects(processPullRequestCommentJob(createJob()), initializationError);
+
+        assert.equal(mockStateManager.getTerminalJobResultForAutomaticRetry.mock.callCount(), 0);
+        assert.equal(mockHandleJobError.mock.callCount(), 0);
         assertNoExternalWork();
     });
 });

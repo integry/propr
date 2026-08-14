@@ -4,7 +4,7 @@ import { logger } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { withRetry, retryConfigs } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
-import type { TaskStateData, WorkerStateManager } from '@propr/core';
+import type { WorkerStateManager } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, mergeBaseIntoBranch } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
@@ -266,22 +266,17 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
     let recentComments: Awaited<ReturnType<typeof fetchAllComments>> = [];
     let jobSucceeded = false;
 
+    let terminalGatePassed = false;
     try {
-        let createdState: TaskStateData | undefined;
-        try {
-            createdState = await stateManager.createTaskState(taskId, {
-                number: pullRequestNumber, repoOwner, repoName, modelName,
-                type: 'merge_conflict', pullRequestNumber, jobId: job.id,
-            } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
-        } catch (stateError) {
-            correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state');
-        }
-        if (createdState) {
-            const terminalResult = await stateManager.getTerminalJobResultForAutomaticRetry(taskId, createdState, {
-                jobId: job.id, attemptsMade: job.attemptsMade, totalAttempts: job.opts.attempts,
-            });
-            if (terminalResult) return { ...terminalResult, pullRequestNumber };
-        }
+        const createdState = await stateManager.createTaskState(taskId, {
+            number: pullRequestNumber, repoOwner, repoName, modelName,
+            type: 'merge_conflict', pullRequestNumber, jobId: job.id,
+        } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
+        const terminalResult = await stateManager.getTerminalJobResultForAutomaticRetry(taskId, createdState, {
+            jobId: job.id, attemptsMade: job.attemptsMade, totalAttempts: job.opts.attempts,
+        });
+        if (terminalResult) return { ...terminalResult, pullRequestNumber };
+        terminalGatePassed = true;
 
         octokit = await withRetry(() => getAuthenticatedOctokit(), { ...retryConfigs.githubApi, correlationId }, 'get_authenticated_octokit');
         const githubToken = await octokit.auth({ type: "installation" }) as GitHubToken;
@@ -349,6 +344,7 @@ export async function processMergeConflictJob(job: Job<MergeConflictJobData>): P
         return result;
 
     } catch (error) {
+        if (!terminalGatePassed) throw error;
         return await handleMergeJobError(error as Error, {
             octokit, startingCommentId, stateManager, taskId,
             repoOwner, repoName, baseBranch, headBranch, pullRequestNumber, correlatedLogger,

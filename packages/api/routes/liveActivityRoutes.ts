@@ -70,6 +70,22 @@ function persistedTaskType(row: Record<string, unknown>): string | undefined {
   }
 }
 
+function taskImportAssociationKey(repository: unknown, correlationId: unknown): string | undefined {
+  if (typeof repository !== 'string' || !repository
+    || typeof correlationId !== 'string' || !correlationId) return undefined;
+  return JSON.stringify([repository, correlationId]);
+}
+
+function queuedTaskImportAssociationKey(job: Job): string | undefined {
+  if (job.name !== 'processTaskImport') return undefined;
+  const data = job.data as Record<string, unknown>;
+  return taskImportAssociationKey(data.repository, data.correlationId);
+}
+
+function persistedTaskImportAssociationKey(row: Record<string, unknown>): string | undefined {
+  return taskImportAssociationKey(row.repository, row.correlation_id);
+}
+
 function queuedTaskId(job: Job): string | undefined {
   const data = job.data as Record<string, unknown>;
   if (typeof data.taskId === 'string' && data.taskId) return data.taskId;
@@ -144,6 +160,8 @@ function jobMatchesPersistedExecution(job: Job, row: Record<string, unknown>): b
   const taskId = String(row.task_id);
   const data = job.data as Record<string, unknown>;
   if (typeof data.taskId === 'string' && data.taskId) return data.taskId === taskId;
+  const queuedImportKey = queuedTaskImportAssociationKey(job);
+  if (queuedImportKey && queuedImportKey === persistedTaskImportAssociationKey(row)) return true;
   const isPRComment = persistedTaskType(row) === 'pr_comment'
     || taskId.startsWith('pr-comment-')
     || taskId.startsWith('pr-comments-');
@@ -230,6 +248,8 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
       // only when both records identify the same execution.
       const queuedCandidates = await findLiveQueuedTaskJobs(deps);
       const persistedExecutions = new Map<string, Record<string, unknown>>();
+      const persistedTaskImports = new Map<string, Record<string, unknown>>();
+      const livePersistedTaskIds = new Set<string>();
 
       const latestHistory = deps.db('task_history')
         .select('task_id')
@@ -243,13 +263,17 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
           .join('task_history as h', 'h.history_id', 'latest.history_id')
           .whereIn('h.state', NONTERMINAL_TASK_STATES)
           .modify(query => { if (afterTaskId) query.where('t.task_id', '>', afterTaskId); })
-          .select('t.task_id', 't.job_id', 't.repository', 't.created_at', 't.initial_job_data')
+          .select('t.task_id', 't.job_id', 't.correlation_id', 't.repository', 't.created_at', 't.initial_job_data')
           .orderBy('t.task_id', 'asc')
           .limit(CANDIDATE_PAGE_SIZE) as Array<Record<string, unknown>>;
         rows.forEach(row => {
           persistedExecutions.set(String(row.task_id), row);
+          const importKey = persistedTaskImportAssociationKey(row);
+          if (importKey) persistedTaskImports.set(importKey, row);
         });
-        items.push(...await filterLivePage(rows, deps));
+        const liveItems = await filterLivePage(rows, deps);
+        liveItems.forEach(item => livePersistedTaskIds.add(item.id));
+        items.push(...liveItems);
         if (rows.length < CANDIDATE_PAGE_SIZE) break;
         afterTaskId = String(rows[rows.length - 1].task_id);
       }
@@ -261,8 +285,24 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
         if (!LIVE_JOB_STATES.has(refreshedState)) continue;
         const refreshedJobId = String(refreshedJob.id);
         const authoritativeTaskId = queuedTaskId(refreshedJob) ?? refreshedJobId;
-        const persisted = persistedExecutions.get(authoritativeTaskId);
-        if (persisted && jobMatchesPersistedExecution(refreshedJob, persisted)) continue;
+        const importKey = queuedTaskImportAssociationKey(refreshedJob);
+        const persisted = persistedExecutions.get(authoritativeTaskId)
+          ?? (importKey ? persistedTaskImports.get(importKey) : undefined);
+        if (persisted && jobMatchesPersistedExecution(refreshedJob, persisted)) {
+          const persistedTaskId = String(persisted.task_id);
+          if (!livePersistedTaskIds.has(persistedTaskId)) {
+            items.push({
+              id: persistedTaskId,
+              type: 'task',
+              label: taskLabel(persisted),
+              repository: String(persisted.repository ?? 'unknown/unknown'),
+              status: queueStatus(refreshedState),
+              createdAt: asIso(persisted.created_at),
+            });
+            livePersistedTaskIds.add(persistedTaskId);
+          }
+          continue;
+        }
         items.push({
           id: authoritativeTaskId,
           type: 'task',
