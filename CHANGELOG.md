@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.14] - 2026-08-14
+
+### Changed
+
+- **Configurable live-E2E timeout**: model tasks can override the live-E2E
+  timeout while retaining a bounded default when no override is configured.
+- **Safe coding-agent installation guidance**: added a copyable,
+  non-destructive setup prompt with human authorization gates and documented
+  Node.js 22 and 24 as the validated CLI runtimes.
+- **Packaged production defaults**: generated stacks set an explicit
+  production runtime, publish API and UI ports on loopback by default, and
+  wire browser-visible frontend and CORS origins.
+
+### Fixed
+
+- **Interrupted setup recovery**: fresh and migrated stacks without a durable
+  administrator can safely resume `propr setup` after pre-authentication
+  interruption.
+- **CLI task stop compatibility**: `propr task stop` uses the canonical
+  singular endpoint while the API continues accepting `cancel` as a
+  compatibility alias.
+- **CLI task deletion compatibility**: `propr task delete` uses the canonical
+  endpoint while the API continues accepting the singular compatibility alias.
+- **Hosted UI tunnel isolation**: tunnel authority is scoped per browser tab,
+  popup OAuth uses the active managed tunnel, logout and navigation preserve
+  the active flow, and copied, raw, or foreign authority is rejected.
+
 ### Security
 
 - **UI dependency refresh**: updated the transitive `nanoid` resolution to
@@ -306,6 +333,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.14]: https://github.com/integry/propr/compare/v0.8.13...v0.8.14
 [0.8.13]: https://github.com/integry/propr/releases/tag/v0.8.13
 [0.8.12]: https://github.com/integry/propr/releases/tag/v0.8.12
 [0.8.11]: https://github.com/integry/propr/releases/tag/v0.8.11
