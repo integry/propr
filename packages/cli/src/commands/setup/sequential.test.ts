@@ -368,6 +368,39 @@ test("runSequentialSetup drives the engine end to end through scripted answers",
   assert.match(text, /Setup complete/);
 });
 
+test("no-TUI custom-App setup logs in before polling protected status", async () => {
+  // Root + re-scaffold + agents; choose custom App and enter its three values;
+  // accept GitHub user login; then accept/skip the remaining defaults.
+  const io = scriptedIo(["", "n", "", "3", "123", "/keys/app.pem", "456", "", "", "", "", "n", "n"]);
+  let tokenPresent = false;
+  let loginCalled = false;
+  let healthCalled = false;
+
+  const result = await runSequentialSetup({
+    io,
+    root: "/stack",
+    actions: mockActions({
+      hasGithubToken: () => tokenPresent,
+      loginWithGithub: async () => {
+        loginCalled = true;
+        tokenPresent = true;
+        return true;
+      },
+      checkBackendHealth: async () => {
+        healthCalled = true;
+        assert.equal(tokenPresent, true, "setup must authenticate before GET /api/status");
+        return { healthy: true, detail: "API healthy" };
+      },
+    }),
+  });
+
+  assert.equal(loginCalled, true);
+  assert.equal(healthCalled, true);
+  assert.equal(result.completed, true);
+  assert.match(io.lines.join("\n"), /Log in to GitHub now\?/);
+  assert.match(io.lines.join("\n"), /protected backend API steps/);
+});
+
 test("runSequentialSetup reports an unfinished run when a required step fails", async () => {
   // The check step fails immediately, so no further prompts are consumed.
   const io = scriptedIo([]);
