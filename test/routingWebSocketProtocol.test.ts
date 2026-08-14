@@ -14,6 +14,7 @@ import {
     buildConnectUrl,
     extractPulledPayload,
     normalizeDisposition,
+    parseConnectAccountStatus,
     parseTokenExpiry,
     resolveInstallationToken,
     toHttpOrigin,
@@ -278,4 +279,79 @@ test('resolveInstallationToken prefers the frame token, then the cache, else und
     // Cache miss / no installation id: undefined.
     assert.equal(resolveInstallationToken({ installationId: 99 }, cache), undefined);
     assert.equal(resolveInstallationToken({}, cache), undefined);
+});
+
+test('parseConnectAccountStatus strictly validates and safely projects the additive frame', () => {
+    const frame = {
+        type: 'account_status',
+        installationId: 42,
+        accountLogin: 'octo-org',
+        plan: 'community',
+        hasPlusAccess: false,
+        activeSeats: 3,
+        allowedSeats: 3,
+        seatsRemaining: 0,
+        billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+        seatLimitBlockedAt: '2026-08-14T09:31:06.000Z',
+        sentAt: '2026-08-14T09:31:07.000Z',
+        polarCustomerId: 'must-not-pass-through',
+    };
+    assert.deepEqual(parseConnectAccountStatus(frame), {
+        installationId: 42,
+        accountLogin: 'octo-org',
+        plan: 'community',
+        hasPlusAccess: false,
+        activeSeats: 3,
+        allowedSeats: 3,
+        seatsRemaining: 0,
+        billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+        seatLimitBlockedAt: '2026-08-14T09:31:06.000Z',
+        sentAt: '2026-08-14T09:31:07.000Z',
+    });
+
+    assert.equal(parseConnectAccountStatus({ ...frame, installationId: 0 }), undefined);
+    assert.equal(parseConnectAccountStatus({ ...frame, plan: 'plus' }), undefined);
+    assert.equal(parseConnectAccountStatus({ ...frame, activeSeats: 1.5 }), undefined);
+    assert.equal(parseConnectAccountStatus({ ...frame, seatsRemaining: 2 }), undefined);
+    assert.equal(parseConnectAccountStatus({ ...frame, sentAt: 'not-iso' }), undefined);
+});
+
+test('parseConnectAccountStatus rejects impossible dates and preserves valid leap-day instants', () => {
+    const frame = {
+        type: 'account_status',
+        installationId: 42,
+        accountLogin: 'octo-org',
+        plan: 'community',
+        hasPlusAccess: false,
+        activeSeats: 2,
+        allowedSeats: 3,
+        seatsRemaining: 1,
+        billingCycleResetAt: '2024-02-29T23:59:59.123456789Z',
+        seatLimitBlockedAt: '2024-02-29T12:30:45.5+05:30',
+        sentAt: '2024-02-29T08:15:00-04:00',
+    };
+
+    assert.deepEqual(parseConnectAccountStatus(frame), {
+        installationId: 42,
+        accountLogin: 'octo-org',
+        plan: 'community',
+        hasPlusAccess: false,
+        activeSeats: 2,
+        allowedSeats: 3,
+        seatsRemaining: 1,
+        billingCycleResetAt: frame.billingCycleResetAt,
+        seatLimitBlockedAt: frame.seatLimitBlockedAt,
+        sentAt: frame.sentAt,
+    });
+
+    for (const field of ['billingCycleResetAt', 'seatLimitBlockedAt', 'sentAt'] as const) {
+        assert.equal(
+            parseConnectAccountStatus({
+                ...frame,
+                [field]: '2026-02-30T00:00:00.000Z',
+            }),
+            undefined,
+            `${field} must reject an impossible calendar date`,
+        );
+    }
 });

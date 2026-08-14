@@ -15,6 +15,7 @@ import { getTaskStats, getStatsOverview, TaskStatsResponse, StatsOverviewRespons
 import { Loader2, ChevronRight } from 'lucide-react';
 import { useSocket } from '../contexts/useSocket';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
+import { ConnectSoftPromoBanner } from './ConnectPlusBanner';
 
 interface QueueStats {
   active: number;
@@ -189,6 +190,8 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="bg-white min-h-full">
+      <ConnectSoftPromoBanner />
+
       {/* Error alert when no AI agent is configured */}
       {canManageAgents && !readinessLoading && (!hasAgents || !hasDefaultModel) && (
         <div className="px-6 pt-6">

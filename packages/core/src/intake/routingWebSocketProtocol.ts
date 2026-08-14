@@ -12,9 +12,11 @@ import {
 } from '@propr/shared';
 
 import { SUPPORTED_WEBHOOK_EVENTS, type WebhookEventType } from '../webhook/webhookHandler.js';
+import type { ConnectAccountStatus } from './routingConnectAccountStatus.js';
 import { parseWebhookPayload } from './webhookPayload.js';
 
 export { parseWebhookPayload } from './webhookPayload.js';
+export { ACCOUNT_STATUS_CAPABILITY, MAX_ACCOUNT_STATUS_FRAME_BYTES, parseConnectAccountStatus, type ConnectAccountStatus } from './routingConnectAccountStatus.js';
 
 /** Raw frame payload types `ws` can surface on a 'message' event. */
 export type RawData = string | Buffer | ArrayBuffer | Buffer[];
@@ -448,6 +450,17 @@ export interface RoutingFrame {
     deliveryId?: string;
     /** Present on `ping` frames; echoed back in the `pong` reply. */
     nonce?: string;
+
+    /** Present on capability-negotiated `account_status` frames. */
+    accountLogin?: string | null;
+    plan?: string;
+    hasPlusAccess?: boolean;
+    activeSeats?: number;
+    allowedSeats?: number;
+    seatsRemaining?: number;
+    billingCycleResetAt?: string;
+    seatLimitBlockedAt?: string | null;
+    sentAt?: string;
 }
 
 export function isSupportedEventType(value: string): value is WebhookEventType {
@@ -698,6 +711,11 @@ export interface RoutingWebSocketIntakeServiceOptions {
      */
     relayToken?: string;
     /**
+     * Installation this stack is attached to. Defaults to `GH_INSTALLATION_ID`
+     * and is used only to isolate account-status frames from mismatched attachments.
+     */
+    installationId?: number | string;
+    /**
      * Event dispatcher. Defaults to the shared `processWebhookEvent`, which
      * requires `initializeWebhookHandler` to have run first. See
      * {@link RoutingEventDispatch} for the optional disposition return.
@@ -757,4 +775,6 @@ export interface RoutingWebSocketStatus {
     lastDeliveryId: string | null;
     /** ISO-8601 timestamp of the most recent ACK sent to the relay, or null if none yet. */
     lastAckAt: string | null;
+    /** Connect entitlement/capacity for the current authenticated installation. */
+    connectAccount?: ConnectAccountStatus;
 }
