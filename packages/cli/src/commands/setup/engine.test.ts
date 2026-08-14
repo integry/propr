@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runSetup, type SetupActions, type SetupPrompts } from "./engine.js";
+import { classifyBackendAccessError, runSetup, type SetupActions, type SetupPrompts } from "./engine.js";
 import type { ChecksOutcome } from "../checkCommands.js";
 import type { AuthorizedInstallation } from "../../api/relay.js";
 import { DEFAULT_PROPR_GH_RELAY_URL, type GithubAuthModeResult } from "@propr/shared";
@@ -1075,6 +1075,64 @@ test("an unhealthy backend fails setup and does not launch the UI", async () => 
   assert.equal(statusOf(result.state, "start-stack"), "failed");
   assert.equal(statusOf(result.state, "launch-ui"), "skipped");
   assert.equal(uiPrompted, false);
+  assert.equal(result.completed, false);
+});
+
+test("backend access errors preserve the distinction between 401 and 403", () => {
+  assert.deepEqual(classifyBackendAccessError(Object.assign(new Error("Unauthorized"), { status: 401 })), {
+    healthy: false,
+    accessFailure: "unauthorized",
+    detail: "backend is running but rejected the status request as unauthorized (Unauthorized)",
+  });
+  assert.deepEqual(classifyBackendAccessError(Object.assign(new Error("Forbidden"), { status: 403 })), {
+    healthy: false,
+    accessFailure: "forbidden",
+    detail: "backend is running but rejected the status request as forbidden (Forbidden)",
+  });
+});
+
+test("an unauthorized-but-running backend is not described as unhealthy and points at login", async () => {
+  const result = await runSetup({
+    root: "/stack",
+    actions: mockActions({
+      isStackRunning: async () => false,
+      // The backend answered but rejected the protected status request (issue
+      // #1879): it is running, so setup must not call it unhealthy.
+      checkBackendHealth: async () => ({
+        healthy: false,
+        accessFailure: "unauthorized",
+        detail: "backend is running but rejected the status request as unauthorized (Unauthorized)",
+      }),
+    }),
+  });
+  assert.equal(statusOf(result.state, "start-stack"), "failed");
+  const step = getStep(result.state, "start-stack");
+  assert.match(step?.detail ?? "", /running but rejected/);
+  assert.doesNotMatch(step?.detail ?? "", /not healthy/);
+  assert.match(step?.nextAction ?? "", /propr login/);
+  assert.equal(result.completed, false);
+});
+
+test("a forbidden-but-running backend points at authorization checks instead of login", async () => {
+  const result = await runSetup({
+    root: "/stack",
+    actions: mockActions({
+      checkBackendHealth: async () => ({
+        healthy: false,
+        accessFailure: "forbidden",
+        detail: "backend is running but rejected the status request as forbidden (Forbidden)",
+      }),
+    }),
+  });
+
+  assert.equal(statusOf(result.state, "start-stack"), "failed");
+  const step = getStep(result.state, "start-stack");
+  assert.match(step?.detail ?? "", /running but rejected.*forbidden/);
+  assert.doesNotMatch(step?.detail ?? "", /not healthy/);
+  assert.match(step?.nextAction ?? "", /authenticated account/);
+  assert.match(step?.nextAction ?? "", /bootstrap-admin configuration/);
+  assert.match(step?.nextAction ?? "", /access permissions/);
+  assert.doesNotMatch(step?.nextAction ?? "", /propr login/);
   assert.equal(result.completed, false);
 });
 
