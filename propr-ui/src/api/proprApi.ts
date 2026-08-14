@@ -1,5 +1,7 @@
 import type { Task as ApiTask } from './tasks';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
+import { isHostedUiOrigin, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
+import { isProprProxyUrl } from '@propr/shared';
 
 export * from './apiClient';
 
@@ -191,7 +193,38 @@ export const getCurrentUser = async (): Promise<CurrentUser> => {
   return response.json();
 };
 
-export const logout = (): void => {
+export const HOSTED_LOGOUT_FAILED_MESSAGE =
+  'Unable to log out from the active hosted ProPR tunnel. Check the connection and try again.';
+
+let hostedLogoutInFlight: Promise<void> | null = null;
+
+const isHostedLogoutResponseComplete = (response: Response): boolean =>
+  response.ok || response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400);
+
+const hostedLogout = async (): Promise<void> => {
+  try {
+    const response = await fetch(new URL('/api/auth/logout', API_BASE_URL), {
+      credentials: 'include',
+      redirect: 'manual',
+    });
+    if (!isHostedLogoutResponseComplete(response)) {
+      throw new Error(`Hosted logout failed with HTTP ${response.status}`);
+    }
+    window.location.href = pathWithActiveHostedTunnelFlow('/login?logged_out=true');
+  } catch (error) {
+    console.error('[propr] Hosted logout failed; keeping the active hosted tunnel in this tab.', error);
+    window.alert(HOSTED_LOGOUT_FAILED_MESSAGE);
+  } finally {
+    hostedLogoutInFlight = null;
+  }
+};
+
+export const logout = (): void | Promise<void> => {
+  if (typeof window !== 'undefined' && isHostedUiOrigin(window.location.hostname) && isProprProxyUrl(API_BASE_URL)) {
+    hostedLogoutInFlight ??= hostedLogout();
+    return hostedLogoutInFlight;
+  }
+
   window.location.href = `${API_BASE_URL}/api/auth/logout`;
 };
 
