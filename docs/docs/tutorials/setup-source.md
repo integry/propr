@@ -4,10 +4,7 @@ sidebar_position: 6
 
 # Source Development Setup
 
-This path runs ProPR from a source checkout with Docker Compose. It serves two audiences:
-
-- **Contributors** changing ProPR code, running tests, validating docs, or building images.
-- **macOS and Windows evaluators** sent here by the [setup chooser](./setup.md): the CLI and launcher paths need a Linux host because they bind-mount host paths and the Docker socket directly, so under Docker Desktop this Compose-based stack is the supported way to run ProPR.
+This path runs ProPR from a source checkout with Docker Compose. Use it when changing ProPR code, running tests, validating docs, or building images. It is not required merely to evaluate ProPR on Apple Silicon; the prebuilt CLI and launcher path works through Docker Desktop's Linux `amd64` emulation as described in [Local Setup](./setup-local.md).
 
 ## Prerequisites
 
@@ -17,7 +14,7 @@ This path runs ProPR from a source checkout with Docker Compose. It serves two a
 - Redis, only if running services directly outside Docker Compose
 - A ProPR source checkout
 
-The published v0.8.10 stack is release-qualified on Linux `amd64`. Docker Desktop on macOS and Windows is the documented source-development path, but it has not completed the release qualification run. The current agent image has no `arm64` manifest, so Apple Silicon evaluation depends on `amd64` image emulation and remains untested.
+Linux `amd64` remains the native, recommended production path. On Apple Silicon macOS, Docker Desktop can run this development stack or the published Linux `amd64` images under emulation; native `arm64` images are not yet available.
 
 ## 1. Install Dependencies
 

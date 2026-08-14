@@ -16,7 +16,7 @@ You need:
 - Public URLs for the Web UI and OAuth callback
 - TLS through your reverse proxy or ingress
 
-Docker Compose is not part of the prebuilt production path. It is used for the source-development stack. The v0.8.10 release run completed on Docker Engine 29.1.3; ProPR does not enforce that exact version, and `propr check` validates the capabilities it needs before startup.
+Docker Compose is not part of the prebuilt production path. It is used for the source-development stack. ProPR does not enforce an exact Docker version; `propr check` validates the capabilities it needs before startup.
 
 ## Runtime Directory Layout
 
