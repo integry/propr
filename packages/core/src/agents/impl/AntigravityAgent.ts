@@ -46,10 +46,22 @@ const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASS
 function isSuccessfulAnalysisResult(
     result: { timedOut?: boolean; exitCode: number | null },
     summary: string | undefined,
-    terminalStatus?: 'success' | 'error',
     protocolError?: string,
 ): boolean {
-    return !protocolError && terminalStatus !== 'error' && !result.timedOut && (result.exitCode === 0 || !!summary);
+    return !protocolError && !result.timedOut && (result.exitCode === 0 || !!summary);
+}
+
+function resolveAntigravityProtocolError(
+    terminalStatus: 'success' | 'error' | undefined,
+    protocolError: string | undefined,
+    hasStreamEnvelopes: boolean,
+): string | undefined {
+    if (protocolError) return protocolError;
+    if (terminalStatus === 'error') return 'Antigravity reported an ERROR result';
+    if (hasStreamEnvelopes && terminalStatus !== 'success') {
+        return 'Antigravity stream ended without a terminal SUCCESS result';
+    }
+    return undefined;
 }
 
 function buildAgentEnvironmentArgs(
@@ -172,8 +184,11 @@ export class AntigravityAgent implements Agent {
         const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
         const resolvedModel = response.modelUsed || effectiveModel || 'unknown';
         const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: result.stderr });
-        const protocolError = response.protocolError
-            || (response.terminalStatus === 'error' ? 'Antigravity reported an ERROR result' : undefined);
+        const protocolError = resolveAntigravityProtocolError(
+            response.terminalStatus,
+            response.protocolError,
+            response.hasStreamEnvelopes,
+        );
         const success = result.exitCode === 0 && !terminationReason && !protocolError;
         const agentResult: AgentExecutionResult = {
             success, executionTimeMs: executionTime,
@@ -205,12 +220,13 @@ export class AntigravityAgent implements Agent {
         const modelUsed = parsedOutput.modelUsed || sessionOutput.modelUsed;
         const terminalStatus = parsedOutput.terminalStatus || sessionOutput.terminalStatus;
         const protocolError = parsedOutput.protocolError || sessionOutput.protocolError;
+        const hasStreamEnvelopes = parsedOutput.hasStreamEnvelopes || sessionOutput.hasStreamEnvelopes;
         if (sessionId && onSessionId) onSessionId(sessionId, conversationId);
         // rawConversationLog (full agentic trace: file views, searches, command
         // output, code edits) is kept for token estimation; conversationLog is
         // filtered and converted to the Claude-shaped representation consumed by
         // metrics persistence and execution analysis.
-        return { response: { sessionId, conversationId, summary, conversationLog, rawConversationLog, tokenUsage, modelUsed, terminalStatus, protocolError }, modelUsed };
+        return { response: { sessionId, conversationId, summary, conversationLog, rawConversationLog, tokenUsage, modelUsed, terminalStatus, protocolError, hasStreamEnvelopes }, modelUsed };
     }
 
     private createTransientTranscriptPath(taskId?: string): string {
@@ -228,8 +244,8 @@ export class AntigravityAgent implements Agent {
         catch { /* best-effort cleanup */ }
     }
 
-    private async readTransientSessionOutput(transcriptPath: string | undefined, parsedSessionId?: string): Promise<{ sessionId: string | undefined; conversationId?: string; summary: string | undefined; conversationLog: AntigravityOutputEvent[]; tokenUsage?: TokenUsage; modelUsed?: string; terminalStatus?: 'success' | 'error'; protocolError?: string }> {
-        if (!transcriptPath) return { sessionId: parsedSessionId, summary: undefined, conversationLog: [] };
+    private async readTransientSessionOutput(transcriptPath: string | undefined, parsedSessionId?: string): Promise<{ sessionId: string | undefined; conversationId?: string; summary: string | undefined; conversationLog: AntigravityOutputEvent[]; tokenUsage?: TokenUsage; modelUsed?: string; terminalStatus?: 'success' | 'error'; protocolError?: string; hasStreamEnvelopes: boolean }> {
+        if (!transcriptPath) return { sessionId: parsedSessionId, summary: undefined, conversationLog: [], hasStreamEnvelopes: false };
         try {
             const transcript = await fs.promises.readFile(transcriptPath, 'utf8');
             const parsed = parseAntigravityJsonl(transcript);
@@ -242,10 +258,11 @@ export class AntigravityAgent implements Agent {
                 modelUsed: parsed.modelUsed,
                 terminalStatus: parsed.terminalStatus,
                 protocolError: parsed.protocolError,
+                hasStreamEnvelopes: parsed.hasStreamEnvelopes,
             };
         } catch (error) {
             logger.debug({ transcriptPath, error: (error as Error).message, agentAlias: this.config.alias }, 'Could not read transient Antigravity transcript');
-            return { sessionId: parsedSessionId, summary: undefined, conversationLog: [] };
+            return { sessionId: parsedSessionId, summary: undefined, conversationLog: [], hasStreamEnvelopes: false };
         } finally {
             this.cleanupTransientTranscript(transcriptPath);
         }
@@ -365,9 +382,10 @@ export class AntigravityAgent implements Agent {
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
             const executionTimeMs = Date.now() - startTime;
-            const { summary, tokenUsage, sessionId, terminalStatus, protocolError } = parseAntigravityJsonl(result.stdout);
+            const { summary, tokenUsage, sessionId, terminalStatus, protocolError, hasStreamEnvelopes } = parseAntigravityJsonl(result.stdout);
+            const resolvedProtocolError = resolveAntigravityProtocolError(terminalStatus, protocolError, hasStreamEnvelopes);
 
-            if (isSuccessfulAnalysisResult(result, summary, terminalStatus, protocolError)) {
+            if (isSuccessfulAnalysisResult(result, summary, resolvedProtocolError)) {
                 const analysisText = (summary || '').trim();
                 // agy print mode emits plain text with no token stats, so
                 // parseAntigravityJsonl returns empty usage. Estimate from the
@@ -390,7 +408,7 @@ export class AntigravityAgent implements Agent {
                 return { response: analysisText, modelUsed: effectiveModel, executionTimeMs, success: true,
                     tokenUsage: antigravityTokenUsage, sessionId };
             }
-            return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${protocolError || result.stderr || 'No result returned'}` };
+            return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${resolvedProtocolError || result.stderr || 'No result returned'}` };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;

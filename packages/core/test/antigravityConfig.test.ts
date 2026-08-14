@@ -139,6 +139,7 @@ test('Antigravity output parser falls back to plain print output', () => {
 
     assert.equal(parsed.summary, 'antigravity-ok');
     assert.deepEqual(parsed.conversationLog, []);
+    assert.equal(parsed.hasStreamEnvelopes, false);
 });
 
 test('Antigravity output parser preserves plain responses that are valid JSON values', () => {
@@ -229,6 +230,7 @@ test('Antigravity output parser reads the sanitized 1.1.12 stream envelope exact
     assert.equal(parsed.modelUsed, 'Gemini 3.7 Flash (High)');
     assert.equal(parsed.summary, 'STREAM_OK\n');
     assert.equal(parsed.terminalStatus, 'success');
+    assert.equal(parsed.hasStreamEnvelopes, true);
     assert.deepEqual(parsed.tokenUsage, {
         input_tokens: 15050,
         output_tokens: 33,
@@ -413,6 +415,41 @@ test('Antigravity agent rejects a malformed terminal result with exit code 0', a
     assert.equal(result.success, false);
     assert.equal(result.error, 'Malformed Antigravity stream envelope: result');
     assert.equal(result.summary, undefined);
+});
+
+test('Antigravity agent rejects a truncated stream without a terminal result', async () => {
+    const stdout = [
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'must not succeed' } }),
+    ].join('\n');
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as {
+        persistImplementationLog(options: unknown): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+        }): Promise<{ success: boolean; error?: string; summary?: string }>;
+    };
+    internals.persistImplementationLog = async () => undefined;
+
+    const result = await internals.processExecutionResult({
+        result: { stdout, stderr: '', exitCode: 0 },
+        executionTime: 10,
+        issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+        effectiveModel: 'antigravity-gemini-3.7-flash-high',
+        prompt: 'test',
+        worktreePath: '/tmp',
+        worktreeGitContent: null,
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Antigravity stream ended without a terminal SUCCESS result');
+    assert.equal(result.summary, 'must not succeed');
 });
 
 test('Antigravity output parser accepts camelCase result token stats', () => {
