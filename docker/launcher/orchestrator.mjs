@@ -849,6 +849,11 @@ export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'analysis-worker', 'i
 export const TOGGLE_SERVICES = ['ui', 'docs', 'tunnel'];
 export const SERVICES = [...CORE_SERVICES, ...TOGGLE_SERVICES];
 const DATABASE_SERVICES = new Set(['daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']);
+// This value is intentionally module-private. A caller cannot opt a database
+// service out of its migration gate by passing an option to startService();
+// only startStack(), after its owner process exits successfully, can provide
+// the handoff capability.
+const MIGRATIONS_PREAPPLIED_HANDOFF = Symbol('migrations-preapplied-handoff');
 
 function imageTagForService(cfg, service) {
     if (service === 'redis') return cfg.images.redis;
@@ -903,11 +908,16 @@ function migrationSpec(cfg) {
     ]);
 }
 
-function withPreappliedMigrations(spec, service, migrationsPreapplied) {
-    if (!migrationsPreapplied || !DATABASE_SERVICES.has(service)) return spec;
+function withMigrationPolicy(spec, service, migrationHandoff) {
+    if (!DATABASE_SERVICES.has(service)) return spec;
     return {
         ...spec,
-        args: [...spec.args, '-e', 'PROPR_MIGRATIONS_PREAPPLIED=1'],
+        // This override is deliberately after --env-file. The marker is a
+        // launcher-internal handoff, never a trusted user configuration value.
+        args: [
+            ...spec.args,
+            '-e', `PROPR_MIGRATIONS_PREAPPLIED=${migrationHandoff === MIGRATIONS_PREAPPLIED_HANDOFF ? '1' : '0'}`,
+        ],
     };
 }
 
@@ -1053,10 +1063,11 @@ export function buildServiceSpec(cfg, service) {
  * the service image if it is missing so toggles (`propr docs on`) work even when
  * the image was skipped at startup.
  */
-export function startService(cfg, service, { onLog, pull = true, freshnessCache, migrationsPreapplied = false } = {}) {
+export function startService(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff } = {}) {
     const name = `${cfg.stack}-${service}`;
+    assertNoLiveMigrationOwner(cfg, service);
     if (pull) ensureServiceImage(cfg, service, onLog, { freshnessCache });
-    const spec = withPreappliedMigrations(buildServiceSpec(cfg, service), service, migrationsPreapplied);
+    const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
     removeIfExists(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
     dockerRunDetached(cfg, name, service, runArgs, spec.networkMode);
@@ -1109,7 +1120,7 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
                 // The one-shot phase above is the sole migration owner for a
                 // full stack launch. Direct startService callers retain the
                 // service's normal fail-closed migration gate.
-                migrationsPreapplied: DATABASE_SERVICES.has(service),
+                migrationHandoff: MIGRATIONS_PREAPPLIED_HANDOFF,
                 // The migration phase already verified/pulled this exact app
                 // image tag. Avoid repeating the freshness check for all five
                 // app containers.
@@ -1149,9 +1160,61 @@ function migrationFailure(res) {
     return new Error(`Database migration phase failed: ${detail}`);
 }
 
+function containerRunning(cfg, name) {
+    const res = docker(['ps', '--filter', `name=^${name}$`, '--format', '{{.Names}}'], { capture: true });
+    if (res.status !== 0) {
+        throw new Error(`Cannot safely inspect ${name} before database migration: ${firstLine(res.stderr || res.error?.message || 'docker ps failed')}`);
+    }
+    return res.stdout.trim().split('\n').includes(name);
+}
+
+function runningDatabaseServiceNames(cfg) {
+    return [...DATABASE_SERVICES]
+        .map((service) => `${cfg.stack}-${service}`)
+        .filter((name) => containerRunning(cfg, name));
+}
+
+function assertNoLiveMigrationOwner(cfg, service) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    const migrationName = `${cfg.stack}-migrate`;
+    if (containerRunning(cfg, migrationName)) {
+        throw new Error(`Refusing to start ${cfg.stack}-${service} while database migration owner ${migrationName} is running; the existing migration container was left untouched.`);
+    }
+}
+
+function assertMigrationCanStart(cfg) {
+    const running = runningDatabaseServiceNames(cfg);
+    if (running.length > 0) {
+        throw new Error(`Refusing to run database migrations while database services are running (${running.join(', ')}). Stop the stack first (for the CLI, run \`propr stop\`) and retry; existing containers were left untouched.`);
+    }
+
+    const migrationName = `${cfg.stack}-migrate`;
+    if (containerRunning(cfg, migrationName)) {
+        throw new Error(`Database migration owner ${migrationName} is already running; it was left untouched. Wait for it to finish, inspect its logs, or stop it explicitly before retrying.`);
+    }
+}
+
+function prepareMigrationOwner(cfg, onLog) {
+    assertMigrationCanStart(cfg);
+    const migrationName = `${cfg.stack}-migrate`;
+    if (!containerExists(cfg, migrationName)) return;
+
+    // Never use -f here. If the container became live after the check, Docker
+    // must reject this removal rather than killing a real migration owner.
+    onLog?.(`  · removing stopped migration container ${migrationName}`);
+    const removed = docker(['rm', migrationName], { capture: true });
+    if (removed.status !== 0) {
+        throw new Error(`Could not safely remove stopped migration container ${migrationName}; it may have started and was left untouched: ${firstLine(removed.stderr || removed.error?.message || 'docker rm failed')}`);
+    }
+}
+
 /** Run the sole schema-migration owner to completion before app services start. */
 export function runMigrationPhase(cfg, { onLog, freshnessCache } = {}) {
+    // Check before a potentially slow pull so an existing stack is rejected
+    // without side effects, then check again immediately before ownership.
+    assertMigrationCanStart(cfg);
     ensureServiceImage(cfg, 'daemon', onLog, { freshnessCache });
+    prepareMigrationOwner(cfg, onLog);
     onLog?.('  · running database migrations');
     const res = docker(migrationDockerArgs(cfg), { capture: true });
     if (res.status !== 0) throw migrationFailure(res);
@@ -1181,6 +1244,50 @@ async function removeIfExistsAsync(cfg, name, onLog) {
     if (await containerExistsAsync(cfg, name)) {
         onLog?.(`  · removing stale ${name}`);
         await dockerAsync(['rm', '-f', name]);
+    }
+}
+
+async function containerRunningAsync(cfg, name) {
+    const res = await dockerAsync(['ps', '--filter', `name=^${name}$`, '--format', '{{.Names}}']);
+    if (res.status !== 0) {
+        throw new Error(`Cannot safely inspect ${name} before database migration: ${firstLine(res.stderr || res.error?.message || 'docker ps failed')}`);
+    }
+    return res.stdout.trim().split('\n').includes(name);
+}
+
+async function assertNoLiveMigrationOwnerAsync(cfg, service) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    const migrationName = `${cfg.stack}-migrate`;
+    if (await containerRunningAsync(cfg, migrationName)) {
+        throw new Error(`Refusing to start ${cfg.stack}-${service} while database migration owner ${migrationName} is running; the existing migration container was left untouched.`);
+    }
+}
+
+async function assertMigrationCanStartAsync(cfg) {
+    const running = [];
+    for (const service of DATABASE_SERVICES) {
+        const name = `${cfg.stack}-${service}`;
+        if (await containerRunningAsync(cfg, name)) running.push(name);
+    }
+    if (running.length > 0) {
+        throw new Error(`Refusing to run database migrations while database services are running (${running.join(', ')}). Stop the stack first (for the CLI, run \`propr stop\`) and retry; existing containers were left untouched.`);
+    }
+
+    const migrationName = `${cfg.stack}-migrate`;
+    if (await containerRunningAsync(cfg, migrationName)) {
+        throw new Error(`Database migration owner ${migrationName} is already running; it was left untouched. Wait for it to finish, inspect its logs, or stop it explicitly before retrying.`);
+    }
+}
+
+async function prepareMigrationOwnerAsync(cfg, onLog) {
+    await assertMigrationCanStartAsync(cfg);
+    const migrationName = `${cfg.stack}-migrate`;
+    if (!(await containerExistsAsync(cfg, migrationName))) return;
+
+    onLog?.(`  · removing stopped migration container ${migrationName}`);
+    const removed = await dockerAsync(['rm', migrationName]);
+    if (removed.status !== 0) {
+        throw new Error(`Could not safely remove stopped migration container ${migrationName}; it may have started and was left untouched: ${firstLine(removed.stderr || removed.error?.message || 'docker rm failed')}`);
     }
 }
 
@@ -1240,10 +1347,11 @@ async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache } =
 }
 
 /** Async mirror of startService. */
-export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationsPreapplied = false } = {}) {
+export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff } = {}) {
     const name = `${cfg.stack}-${service}`;
+    await assertNoLiveMigrationOwnerAsync(cfg, service);
     if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache });
-    const spec = withPreappliedMigrations(buildServiceSpec(cfg, service), service, migrationsPreapplied);
+    const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
     await removeIfExistsAsync(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
     await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode);
@@ -1283,7 +1391,7 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
             await startServiceAsync(cfg, service, {
                 onLog,
                 freshnessCache,
-                migrationsPreapplied: DATABASE_SERVICES.has(service),
+                migrationHandoff: MIGRATIONS_PREAPPLIED_HANDOFF,
                 pull: !DATABASE_SERVICES.has(service),
             });
             started.push(service);
@@ -1304,7 +1412,9 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
 
 /** Async mirror of runMigrationPhase for the interactive setup UI. */
 export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache } = {}) {
+    await assertMigrationCanStartAsync(cfg);
     await ensureServiceImageAsync(cfg, 'daemon', onLog, { freshnessCache });
+    await prepareMigrationOwnerAsync(cfg, onLog);
     onLog?.('  · running database migrations');
     const res = await dockerAsync(migrationDockerArgs(cfg));
     if (res.status !== 0) throw migrationFailure(res);

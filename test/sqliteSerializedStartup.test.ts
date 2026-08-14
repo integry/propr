@@ -30,7 +30,7 @@ function runMigrationProcess(databasePath: string, migrationsPreapplied = false)
     });
 }
 
-test('blank SQLite startup migrates once before five production services proceed', async () => {
+test('migration command owns blank startup and the preapplied gate skips a second owner', async () => {
     const dataDirectory = await mkdtemp(join(tmpdir(), 'propr-serialized-startup-'));
     const databasePath = join(dataDirectory, 'propr.sqlite');
 
@@ -38,13 +38,11 @@ test('blank SQLite startup migrates once before five production services proceed
         const owner = await runMigrationProcess(databasePath);
         assert.equal(owner.code, 0, owner.output);
 
-        // These processes model the five packaged database users. The launcher
-        // supplies the marker only after the owner exits successfully, so none
-        // of them enters Knex's migration bootstrap or accepts work early.
-        const services = await Promise.all(
-            Array.from({ length: 5 }, () => runMigrationProcess(databasePath, true)),
-        );
-        for (const service of services) assert.equal(service.code, 0, service.output);
+        // This is a fast process-level check of the migration command and gate,
+        // not a model of production topology. The packaged five-service path is
+        // exercised by scripts/smoke-test-sqlite-startup.sh.
+        const skipped = await runMigrationProcess(databasePath, true);
+        assert.equal(skipped.code, 0, skipped.output);
 
         const database = new Database(databasePath, { readonly: true });
         try {
