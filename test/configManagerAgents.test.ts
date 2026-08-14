@@ -194,4 +194,22 @@ describe('agent config migration', () => {
         assert.strictEqual(migrateAgentConfig(agent), true);
         assert.strictEqual(agent.configPath, '~/.gemini');
     });
+
+    test('adds Gemini 3.7 tiers without changing an existing Antigravity default', () => {
+        const existingDefault = 'antigravity-gemini-3.6-flash-medium';
+        const agent = createAgent({
+            type: 'antigravity',
+            supportedModels: [existingDefault],
+            defaultModel: existingDefault,
+            cliVersionType: 'default',
+            cliVersionResolved: '1.1.11'
+        });
+
+        assert.strictEqual(migrateAgentConfig(agent), true);
+        assert.ok(agent.supportedModels.includes('antigravity-gemini-3.7-flash-high'));
+        assert.ok(agent.supportedModels.includes('antigravity-gemini-3.7-flash-medium'));
+        assert.ok(agent.supportedModels.includes('antigravity-gemini-3.7-flash-low'));
+        assert.strictEqual(agent.defaultModel, existingDefault);
+        assert.strictEqual(agent.cliVersionResolved, AGENT_DEFAULT_VERSIONS.antigravity);
+    });
 });

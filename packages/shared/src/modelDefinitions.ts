@@ -66,6 +66,9 @@ export const CODEX_MODELS: ModelInfo[] = [
 // these IDs are intentionally namespaced instead of treating every model as a
 // Google/Gemini model.
 export const ANTIGRAVITY_MODELS: ModelInfo[] = [
+  { id: 'antigravity-gemini-3.7-flash-medium', name: 'Antigravity Gemini 3.7 Flash Medium', shortName: 'Gemini 3.7 Flash Medium', shortAlias: 'flash37-medium', githubLabel: 'llm-antigravity-flash37-medium', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.7-flash', minAgentVersion: '1.1.12' },
+  { id: 'antigravity-gemini-3.7-flash-high', name: 'Antigravity Gemini 3.7 Flash High', shortName: 'Gemini 3.7 Flash High', shortAlias: 'flash37-high', githubLabel: 'llm-antigravity-flash37-high', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.7-flash', minAgentVersion: '1.1.12' },
+  { id: 'antigravity-gemini-3.7-flash-low', name: 'Antigravity Gemini 3.7 Flash Low', shortName: 'Gemini 3.7 Flash Low', shortAlias: 'flash37-low', githubLabel: 'llm-antigravity-flash37-low', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.7-flash', minAgentVersion: '1.1.12' },
   { id: 'antigravity-gemini-3.6-flash-medium', name: 'Antigravity Gemini 3.6 Flash Medium', shortName: 'Gemini 3.6 Flash Medium', shortAlias: 'flash36-medium', githubLabel: 'llm-antigravity-flash36-medium', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.6-flash' },
   { id: 'antigravity-gemini-3.6-flash-high', name: 'Antigravity Gemini 3.6 Flash High', shortName: 'Gemini 3.6 Flash High', shortAlias: 'flash36-high', githubLabel: 'llm-antigravity-flash36-high', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.6-flash' },
   { id: 'antigravity-gemini-3.6-flash-low', name: 'Antigravity Gemini 3.6 Flash Low', shortName: 'Gemini 3.6 Flash Low', shortAlias: 'flash36-low', githubLabel: 'llm-antigravity-flash36-low', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-3.6-flash' },
@@ -166,7 +169,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: ANTIGRAVITY_MODELS.map(m => m.id),
     defaultAlias: 'antigravity',
     npmPackage: 'https://antigravity.google/cli/install.sh',
-    defaultCliVersion: 'latest'
+    defaultCliVersion: '1.1.13'
   },
   opencode: {
     dockerImage: 'propr/agent:latest',

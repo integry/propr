@@ -5,6 +5,7 @@ import { validateSessionSecret } from '../packages/shared/src/sessionSecret.js';
 
 const smokeScript = readFileSync('scripts/smoke-test-images.sh', 'utf8');
 const integrationScript = readFileSync('scripts/integration-test-images.sh', 'utf8');
+const antigravityVerificationScript = readFileSync('scripts/verify-antigravity-image.sh', 'utf8');
 
 function literalAssignment(source: string, name: string): string {
   const match = source.match(new RegExp(`^${name}=([^\\r\\n]+)$`, 'm'));
@@ -28,4 +29,15 @@ test('unauthenticated image smoke probes only public API routes', () => {
   assert.match(smokeScript, /\$expected_origin\/api\/compatibility/);
   assert.doesNotMatch(smokeScript, /\$expected_origin\/api\/status/);
   assert.match(smokeScript, /\\"version\\":\\"\$\{EXPECTED_VERSION\}\\"/);
+});
+
+test('authenticated image integration verifies every Gemini 3.7 Flash tier without silent fallback', () => {
+  for (const tier of ['High', 'Medium', 'Low']) {
+    assert.match(antigravityVerificationScript, new RegExp(`Gemini 3\\.7 Flash \\(${tier}\\)`));
+  }
+  assert.match(antigravityVerificationScript, /run_agy models/);
+  assert.match(antigravityVerificationScript, /--output-format stream-json/);
+  assert.match(antigravityVerificationScript, /event\?\.type === "init"/);
+  assert.match(antigravityVerificationScript, /reported_model.*3\.7/s);
+  assert.match(integrationScript, /\.\/scripts\/verify-antigravity-image\.sh/);
 });

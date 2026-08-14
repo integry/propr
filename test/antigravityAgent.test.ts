@@ -123,6 +123,9 @@ describe('AntigravityAgent Docker args', () => {
 
 describe('toAntigravityCliModelId', () => {
     test('maps ProPR ids to the CLI display names accepted by --model', () => {
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-medium'), 'Gemini 3.7 Flash (Medium)');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-high'), 'Gemini 3.7 Flash (High)');
+        assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.7-flash-low'), 'Gemini 3.7 Flash (Low)');
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.6-flash-high'), 'Gemini 3.6 Flash (High)');
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.5-flash-high'), 'Gemini 3.5 Flash (High)');
         assert.strictEqual(toAntigravityCliModelId('antigravity-gemini-3.1-pro-high'), 'Gemini 3.1 Pro (High)');
