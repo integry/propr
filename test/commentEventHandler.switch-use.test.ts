@@ -2,6 +2,7 @@ import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
 import { createHash } from 'node:crypto';
 import type { IssueCommentEvent, Label } from '@octokit/webhooks-types';
+import { buildDynamicLlmLabel } from '@propr/shared';
 import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent, createMockLabel } from './testHelpers.js';
 
 function manualRevisionIdentity(updatedAt: string, body: string, eventType = 'issue_comment'): string {
@@ -106,24 +107,20 @@ await mock.module('../packages/core/src/utils/logger.js', {
     },
 });
 
-// Mock configManager
-const actualConfigManager = await import('../packages/core/src/config/configManager.js');
-await mock.module('../packages/core/src/config/configManager.js', {
-    namedExports: {
-        ...actualConfigManager,
-        loadFollowupIgnoreKeywords: mock.fn(async () => []),
-        loadMonitoredRepos: mock.fn(async () => []),
-        loadAiPrimaryTag: mock.fn(async () => 'AI'),
-        loadPrimaryProcessingLabels: mock.fn(async () => ['AI']),
-        loadSettings: mock.fn(async () => ({})),
-        loadAgentTankSettings: mock.fn(async () => ({})),
-        getConfig: mock.fn(async () => null),
-        saveConfig: mock.fn(async () => true),
-    },
-});
+// Keep model resolution isolated from the full agent runtime. This mock must be
+// installed before configManager is imported because that graph loads the
+// canonical model resolver.
+type MockAgent = {
+    config: {
+        alias: string;
+        type: 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe';
+        enabled: boolean;
+        supportedModels: string[];
+        defaultModel?: string;
+    };
+};
 
-// Keep the model-validation fallback isolated from the full agent runtime.
-const defaultMockAgents = [
+const defaultMockAgents: MockAgent[] = [
     {
         config: {
             alias: 'claude',
@@ -158,6 +155,22 @@ await mock.module('../packages/core/src/agents/AgentRegistry.js', {
             }
         },
         getAgentRegistry: mock.fn(() => mockAgentRegistry),
+    },
+});
+
+// Mock configManager
+const actualConfigManager = await import('../packages/core/src/config/configManager.js');
+await mock.module('../packages/core/src/config/configManager.js', {
+    namedExports: {
+        ...actualConfigManager,
+        loadFollowupIgnoreKeywords: mock.fn(async () => []),
+        loadMonitoredRepos: mock.fn(async () => []),
+        loadAiPrimaryTag: mock.fn(async () => 'AI'),
+        loadPrimaryProcessingLabels: mock.fn(async () => ['AI']),
+        loadSettings: mock.fn(async () => ({})),
+        loadAgentTankSettings: mock.fn(async () => ({})),
+        getConfig: mock.fn(async () => null),
+        saveConfig: mock.fn(async () => true),
     },
 });
 
@@ -609,6 +622,76 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
         assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-codex-gpt56-sol']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('/use resolves a configured agent alias to its default model label', async () => {
+        mockAgents = defaultMockAgents.map(agent => agent.config.type === 'codex'
+            ? { config: { ...agent.config, alias: 'custom-codex' } }
+            : agent);
+        const event = createPRCommentEvent('/use custom-codex');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-agent-alias', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-custom-codex-gpt56-sol']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('/use resolves supported model IDs case-insensitively', async () => {
+        const event = createPRCommentEvent('/use GPT-5.6-SOL');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-model-id-case', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-codex-gpt56-sol']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('/use round-trips a dynamic full label through the canonical resolver', async () => {
+        const dynamicModel = 'opencode-openai/gpt-5.5';
+        const dynamicLabel = buildDynamicLlmLabel('custom-opencode', dynamicModel);
+        mockAgents = [{
+            config: {
+                alias: 'custom-opencode',
+                type: 'opencode',
+                enabled: true,
+                supportedModels: [dynamicModel],
+                defaultModel: dynamicModel,
+            },
+        }];
+        const event = createPRCommentEvent(`/use ${dynamicLabel}`);
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-dynamic-label', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], [dynamicLabel]);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('/use round-trips a hashed dynamic full label through the canonical resolver', async () => {
+        const dynamicModel = 'opencode-provider-with-an-extremely-long-name/model-with-an-extremely-long-name';
+        const dynamicLabel = buildDynamicLlmLabel('custom-opencode', dynamicModel);
+        assert.ok(dynamicLabel.length <= 50);
+        mockAgents = [{
+            config: {
+                alias: 'custom-opencode',
+                type: 'opencode',
+                enabled: true,
+                supportedModels: [dynamicModel],
+                defaultModel: dynamicModel,
+            },
+        }];
+        const event = createPRCommentEvent(`/use ${dynamicLabel}`);
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-hashed-label', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], [dynamicLabel]);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 

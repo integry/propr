@@ -17,7 +17,7 @@ import { handleMergeCommand } from './mergeConflictDetector.js';
 import { parseSlashCommand, buildCommandMeta } from './slashCommandParser.js';
 import type { CommandMeta, UltrafixCommandMeta } from './slashCommandParser.js';
 import { safeUpdateLabels } from '../utils/github/labelOperations.js';
-import { resolveModelAlias } from '../config/modelAliases.js';
+import { resolveModelAlias, resolveReviewModels } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
@@ -327,31 +327,21 @@ async function resolveCanonicalModelLabel(
     prNumber: number,
 ): Promise<string | null> {
     try {
+        const [resolution] = await resolveReviewModels([target]);
         const registry = AgentRegistry.getInstance();
-        await registry.ensureInitialized();
-        const resolvedModel = resolveModelAlias(target);
-        const enabledAgents = registry.getAllAgents().filter(agent => agent.config.enabled);
-        const explicitlyNamedAgent = enabledAgents.find(agent =>
-            target.toLowerCase().startsWith(`${agent.config.alias.toLowerCase()}-`)
-            || target.toLowerCase().startsWith(`${agent.config.alias.toLowerCase()}~`)
-        );
-        const agent = explicitlyNamedAgent?.config.supportedModels.some(model => model.toLowerCase() === resolvedModel.toLowerCase())
-            ? explicitlyNamedAgent
-            : enabledAgents.find(candidate => candidate.config.supportedModels.some(
-                model => model.toLowerCase() === resolvedModel.toLowerCase()
-            ));
+        const agent = registry.getAgentByAlias(resolution.agentAlias);
         if (!agent) {
             correlatedLogger.warn(
-                { pullRequestNumber: prNumber, target, resolvedModel },
+                { pullRequestNumber: prNumber, target },
                 '/use target is unknown, disabled, or unsupported; model label was not changed',
             );
             return null;
         }
 
-        const modelInfo = MODEL_INFO_MAP[resolvedModel];
+        const modelInfo = MODEL_INFO_MAP[resolution.model];
         const defaultLabel = modelInfo
             ? buildAgentModelLlmLabel(agent.config.type, agent.config.alias, modelInfo)
-            : buildDynamicLlmLabel(agent.config.alias, resolvedModel);
+            : buildDynamicLlmLabel(agent.config.alias, resolution.model);
         const { prefix, derived } = modelLabelPrefix(modelLabelPattern);
         if (!derived) {
             correlatedLogger.warn(
