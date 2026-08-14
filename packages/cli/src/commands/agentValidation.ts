@@ -662,23 +662,11 @@ export function planAgentLogin(
 // Agent Tank — subscription usage (optional, external `agent-tank` CLI)
 // ---------------------------------------------------------------------------
 
-interface AgentTankMetric {
-  label?: string;
-  percent?: number;
-  percentUsed?: number;
-  resetsIn?: string;
-}
-
-interface AgentTankAgent {
-  usage?: Record<string, AgentTankMetric>;
-  metadata?: { email?: string; model?: string };
-  error?: string | null;
-}
-
 export interface AgentTankUsage {
   installed: boolean;
   version?: string;
-  usage?: Record<string, AgentTankAgent>;
+  /** Unvalidated JSON emitted by the external Agent Tank process. */
+  usage?: unknown;
   error?: string;
 }
 
@@ -696,7 +684,7 @@ export async function getAgentTankUsage(): Promise<AgentTankUsage> {
   const res = await execAsync("agent-tank", ["--once", "--json"], { timeoutMs: 90_000 });
   if (res.error?.code === "ETIMEDOUT") return { installed: true, version, error: "timed out reading usage" };
   try {
-    const data = JSON.parse(res.stdout.trim()) as Record<string, AgentTankAgent>;
+    const data: unknown = JSON.parse(res.stdout.trim());
     return { installed: true, version, usage: data };
   } catch {
     const reason = (res.stderr || res.stdout || "could not parse agent-tank output").trim().split("\n").pop();

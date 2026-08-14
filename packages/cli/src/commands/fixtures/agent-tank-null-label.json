@@ -1,0 +1,22 @@
+{
+  "codex": {
+    "usage": {
+      "fiveHour": null,
+      "weekly": {
+        "label": null,
+        "percentUsed": 12,
+        "resetsIn": "3d 4h"
+      },
+      "unexpectedBoolean": false,
+      "unexpectedNumber": 7,
+      "unexpectedString": "not a metric"
+    },
+    "metadata": {
+      "model": "gpt-5.6-luna"
+    },
+    "error": null
+  },
+  "claude": {
+    "error": "Claude usage unavailable"
+  }
+}
