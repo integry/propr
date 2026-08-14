@@ -35,8 +35,9 @@ jobs:
         run: |
           npm run build -w @propr/shared
           npm run typecheck -w @propr/cli
-          npx tsx --test \
+          npx tsx --experimental-test-module-mocks --test \
             packages/cli/src/agentSkill.test.ts \
+            packages/cli/src/agentSkill.forceRace.test.ts \
             packages/cli/src/commands/setupCommand.test.ts
           npm run build -w @propr/cli
           test -f packages/cli/dist/skill/propr/SKILL.md
