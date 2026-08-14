@@ -1,11 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   accessSync,
+  closeSync,
   constants,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -262,12 +265,19 @@ function readTree(root: string, excludeManaged = false): TreeEntry[] {
 
 function contentIdentity(entries: readonly TreeEntry[]): string {
   const hash = createHash("sha256");
+  const updateField = (value: string | Buffer): void => {
+    const bytes = typeof value === "string" ? Buffer.from(value) : value;
+    const length = Buffer.allocUnsafe(8);
+    length.writeBigUInt64BE(BigInt(bytes.length));
+    hash.update(length);
+    hash.update(bytes);
+  };
+
+  updateField("propr-skill-tree-v2");
   for (const entry of entries) {
-    hash.update(entry.kind === "directory" ? "D\0" : "F\0");
-    hash.update(entry.path);
-    hash.update("\0");
-    if (entry.content) hash.update(entry.content);
-    hash.update("\0");
+    updateField(entry.kind);
+    updateField(entry.path);
+    updateField(entry.content ?? Buffer.alloc(0));
   }
   return hash.digest("hex");
 }
@@ -447,17 +457,105 @@ function writeBundle(directory: string, bundle: Bundle): void {
   writeBundleContents(directory, bundle);
 }
 
-/** Publish a staged bundle into a directory claimed by this process without replacing any entry. */
-function publishBundleExclusively(directory: string, staged: string, bundle: Bundle): void {
-  for (const entry of bundle.entries) {
-    const output = join(directory, ...entry.path.split("/"));
-    if (entry.kind === "directory") {
-      mkdirSync(output, { mode: 0o700 });
-    } else {
-      linkSync(join(staged, ...entry.path.split("/")), output);
-    }
+interface PinnedDirectory {
+  fd: number;
+  path: string;
+}
+
+function descriptorPath(fd: number): string {
+  for (const root of ["/proc/self/fd", "/dev/fd"]) {
+    if (existsSync(root)) return join(root, String(fd));
   }
-  linkSync(join(staged, MANAGED_FILE), join(directory, MANAGED_FILE));
+  throw new Error("safe directory-handle publication is not supported on this platform");
+}
+
+function openDirectoryNoFollow(path: string): PinnedDirectory {
+  const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+  let fd = openSync(sep, flags);
+  try {
+    for (const component of resolve(path).split(sep).filter(Boolean)) {
+      const next = openSync(join(descriptorPath(fd), component), flags);
+      closeSync(fd);
+      fd = next;
+    }
+    return { fd, path: descriptorPath(fd) };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+function openPinnedChild(parent: PinnedDirectory, name: string): PinnedDirectory {
+  const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+  const fd = openSync(join(parent.path, name), flags);
+  return { fd, path: descriptorPath(fd) };
+}
+
+function closePinnedDirectory(directory: PinnedDirectory): void {
+  closeSync(directory.fd);
+}
+
+/** Claim the target through a pinned provider directory, without following raced symlinks. */
+function claimTargetDirectory(location: AgentSkillLocation): PinnedDirectory {
+  const parent = dirname(location.path);
+  const expectedParent = join(location.toolHome, "skills");
+  if (parent !== expectedParent || location.path !== join(expectedParent, "propr")) {
+    throw new Error(`unsafe ${location.target} skill target`);
+  }
+
+  const pinnedParent = openDirectoryNoFollow(parent);
+  let pinnedTarget: PinnedDirectory | undefined;
+  try {
+    const targetThroughParent = join(pinnedParent.path, "propr");
+    mkdirSync(targetThroughParent, { recursive: false, mode: 0o700 });
+    pinnedTarget = openPinnedChild(pinnedParent, "propr");
+
+    assertSafeFilesystemTarget(location);
+    const visible = lstatIfExists(location.path);
+    const pinned = fstatSync(pinnedTarget.fd);
+    if (
+      !visible ||
+      visible.isSymbolicLink() ||
+      !visible.isDirectory() ||
+      visible.dev !== pinned.dev ||
+      visible.ino !== pinned.ino
+    ) {
+      throw new Error("target changed while it was being claimed; no bundle content was published");
+    }
+    return pinnedTarget;
+  } catch (error) {
+    if (pinnedTarget) closePinnedDirectory(pinnedTarget);
+    throw error;
+  } finally {
+    closePinnedDirectory(pinnedParent);
+  }
+}
+
+/** Publish through pinned, no-follow handles without replacing any entry. */
+function publishBundleExclusively(directory: PinnedDirectory, staged: string, bundle: Bundle): void {
+  const directories = new Map<string, PinnedDirectory>([["", directory]]);
+  const opened: PinnedDirectory[] = [];
+  try {
+    for (const entry of bundle.entries) {
+      const separator = entry.path.lastIndexOf("/");
+      const parentPath = separator === -1 ? "" : entry.path.slice(0, separator);
+      const name = separator === -1 ? entry.path : entry.path.slice(separator + 1);
+      const parent = directories.get(parentPath);
+      if (!parent) throw new Error(`bundle parent was not published before its child: ${entry.path}`);
+      const output = join(parent.path, name);
+      if (entry.kind === "directory") {
+        mkdirSync(output, { mode: 0o700 });
+        const child = openPinnedChild(parent, name);
+        directories.set(entry.path, child);
+        opened.push(child);
+      } else {
+        linkSync(join(staged, ...entry.path.split("/")), output);
+      }
+    }
+    linkSync(join(staged, MANAGED_FILE), join(directory.path, MANAGED_FILE));
+  } finally {
+    for (const openedDirectory of opened.reverse()) closePinnedDirectory(openedDirectory);
+  }
 }
 
 function managedMarkerContent(identity: string): string {
@@ -548,12 +646,10 @@ function installAgentSkillWithoutOverwrite(
       }
     }
 
+    let claimed: PinnedDirectory;
     try {
       assertSafeFilesystemTarget(location);
-      // Claim an absent target with mkdir rather than rename: rename would replace
-      // content another process created after our last inspection.
-      mkdirSync(location.path, { recursive: false, mode: 0o700 });
-      assertSafeFilesystemTarget(location);
+      claimed = claimTargetDirectory(location);
     } catch (error) {
       const current = inspectLocation(location, bundle);
       const reason = current.state === "absent" ? (error as Error).message : "target was created during installation and was not overwritten";
@@ -561,13 +657,15 @@ function installAgentSkillWithoutOverwrite(
     }
 
     try {
-      publishBundleExclusively(location.path, staged, bundle);
+      publishBundleExclusively(claimed, staged, bundle);
     } catch (error) {
       return preservedFailure(
         inspectLocation(location, bundle),
         `installation stopped rather than overwrite content created concurrently: ${(error as Error).message}`,
         displaced
       );
+    } finally {
+      closePinnedDirectory(claimed);
     }
 
     const next = inspectLocation(location, bundle);
@@ -643,10 +741,10 @@ function installAgentSkillAtLocation(
       renameSync(location.path, displaced);
       backupPath = displaced;
     }
+    let claimed: PinnedDirectory;
     try {
       assertSafeFilesystemTarget(location);
-      mkdirSync(location.path, { recursive: false, mode: 0o700 });
-      assertSafeFilesystemTarget(location);
+      claimed = claimTargetDirectory(location);
     } catch (error) {
       const current = inspectLocation(location, bundle);
       const detail = current.state === "absent"
@@ -655,13 +753,15 @@ function installAgentSkillAtLocation(
       return preservedFailure(current, detail, backupPath);
     }
     try {
-      publishBundleExclusively(location.path, temporary, bundle);
+      publishBundleExclusively(claimed, temporary, bundle);
     } catch (error) {
       return preservedFailure(
         inspectLocation(location, bundle),
         `installation stopped rather than overwrite content created concurrently: ${(error as Error).message}`,
         backupPath
       );
+    } finally {
+      closePinnedDirectory(claimed);
     }
     const next = inspectLocation(location, bundle);
     if (next.state !== "current-managed") {

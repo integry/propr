@@ -244,6 +244,27 @@ test("never adopts non-exact unmanaged content", () => {
   assert.equal(existsSync(join(target, ".propr-managed.json")), false);
 });
 
+test("length-delimited identities reject a tree that collides under NUL-delimited entry encoding", () => {
+  const root = temporaryRoot();
+  const env = environment(root);
+  mkdirSync(env.HOME!, { recursive: true });
+  const source = bundle(root, "identity collision skill");
+  writeFileSync(join(source, "zA"), "x");
+  writeFileSync(join(source, "zB"), "y");
+
+  const target = resolveAgentSkillLocations(["claude"], env)[0].path;
+  cpSync(source, target, { recursive: true });
+  rmSync(join(target, "zB"));
+  writeFileSync(join(target, "zA"), Buffer.from("x\0F\0zB\0y"));
+
+  const inspected = inspectAgentSkills(["claude"], { env, bundleDir: source })[0];
+  assert.equal(inspected.state, "foreign");
+  const result = installAgentSkill("claude", { env, bundleDir: source });
+  assert.equal(result.action, "refused");
+  assert.equal(result.state, "foreign");
+  assert.equal(existsSync(join(target, ".propr-managed.json")), false);
+});
+
 test("foreign content is refused by default and force replacement keeps a timestamped backup", () => {
   const root = temporaryRoot();
   const env = environment(root);

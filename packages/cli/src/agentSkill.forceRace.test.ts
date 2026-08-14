@@ -117,7 +117,7 @@ test("forced install fails and preserves both trees when the published bundle is
       },
       linkSync(existingPath: fs.PathLike, newPath: fs.PathLike): void {
         fs.linkSync(existingPath, newPath);
-        if (String(newPath) === join(target, ".propr-managed.json")) {
+        if (String(newPath).endsWith("/.propr-managed.json")) {
           injected = true;
           fs.writeFileSync(join(target, "SKILL.md"), "modified concurrently\n");
         }
@@ -142,6 +142,58 @@ test("forced install fails and preserves both trees when the published bundle is
   assert.ok(result.backupPath);
   assert.equal(fs.readFileSync(join(target, "SKILL.md"), "utf8"), "modified concurrently\n");
   assert.equal(fs.readFileSync(join(result.backupPath!, "SKILL.md"), "utf8"), "foreign\n");
+});
+
+test("publication cannot follow a target replaced by an outside symlink after the final safety check", async (t) => {
+  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-target-publish-race-test-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
+  fs.mkdirSync(env.HOME, { recursive: true });
+  const source = join(root, "bundle");
+  fs.mkdirSync(join(source, "agents"), { recursive: true });
+  fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
+  fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+
+  const target = join(env.CODEX_HOME, "skills", "propr");
+  const outside = join(root, "outside");
+  fs.mkdirSync(outside);
+  fs.writeFileSync(join(outside, "sentinel.bin"), Buffer.from([0x00, 0xff, 0x51, 0x9a]));
+  const outsideBefore = snapshotTree(outside);
+  let targetClaimed = false;
+  let injected = false;
+
+  t.mock.module("node:fs", {
+    namedExports: {
+      ...fs,
+      mkdirSync(path: fs.PathLike, options?: fs.MakeDirectoryOptions & { recursive?: boolean }): string | undefined {
+        const value = String(path);
+        if (!injected && targetClaimed) {
+          injected = true;
+          fs.rmSync(target, { recursive: true });
+          fs.symlinkSync(outside, target, "dir");
+        }
+        const result = fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
+        if (value.endsWith("/propr")) targetClaimed = true;
+        return result;
+      },
+    },
+  });
+  const agentSkillModule = new URL("./agentSkill.ts?target-publication-symlink-race", import.meta.url);
+  const { installAgentSkill } = await import(agentSkillModule.href);
+
+  const result = installAgentSkill("codex", {
+    env,
+    bundleDir: source,
+    now: new Date("2026-08-14T10:24:00Z"),
+  });
+
+  assert.equal(targetClaimed, true);
+  assert.equal(injected, true);
+  assert.equal(result.action, "failed");
+  assert.equal(result.state, "unsafe");
+  assert.match(result.detail ?? "", /installation stopped rather than overwrite content created concurrently/);
+  assert.deepEqual(snapshotTree(outside), outsideBefore);
+  assert.equal(fs.lstatSync(target).isSymbolicLink(), true);
 });
 
 test("forced install leaves a concurrent empty directory untouched and reports the displaced original", async (t) => {
