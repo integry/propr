@@ -21,6 +21,7 @@ import {
 } from "../api/index.js";
 import { createConfigManager } from "../config/index.js";
 import { resolveProject, ProjectResolutionError, printOutput } from "../utils/index.js";
+import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Formats a plan status for display with color hints.
@@ -217,7 +218,10 @@ Examples:
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }
-        console.error(`Error fetching plans: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to view plans.",
+          fallbackMessage: (message) => `Error fetching plans: ${message}`,
+        });
         process.exit(1);
       }
     });
@@ -322,7 +326,10 @@ Examples:
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }
-        console.error(`Error creating plan: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to create plans.",
+          fallbackMessage: (message) => `Error creating plan: ${message}`,
+        });
         process.exit(1);
       }
     });
@@ -350,15 +357,27 @@ Examples:
 
         displayPlanDetails(fetchedPlan);
       } catch (error) {
-        const errorMessage = (error as Error).message;
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view this plan.",
+            fallbackMessage: `Error fetching plan: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Plan not found: ${draftId}`);
-        } else if (errorMessage.includes("401") || errorMessage.includes("unauthorized")) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
-        } else if (errorMessage.includes("403") || errorMessage.includes("forbidden")) {
-          console.error("Error: Access denied. You do not have permission to view this plan.");
         } else {
-          console.error(`Error fetching plan: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view this plan.",
+            fallbackMessage: `Error fetching plan: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -404,15 +423,27 @@ Examples:
         await deletePlan(draftId);
         console.log("Plan deleted successfully.");
       } catch (error) {
-        const errorMessage = (error as Error).message;
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to delete this plan.",
+            fallbackMessage: `Error deleting plan: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Plan not found: ${draftId}`);
-        } else if (errorMessage.includes("401") || errorMessage.includes("unauthorized")) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
-        } else if (errorMessage.includes("403") || errorMessage.includes("forbidden")) {
-          console.error("Error: Access denied. You do not have permission to delete this plan.");
         } else {
-          console.error(`Error deleting plan: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to delete this plan.",
+            fallbackMessage: `Error deleting plan: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -457,17 +488,32 @@ Example:
           process.exit(1);
         }
       } catch (error) {
-        const errorMessage = (error as Error).message;
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to abort this plan.",
+            fallbackMessage: `Error aborting plan: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Plan not found: ${draftId}`);
-        } else if (errorMessage.includes("400")) {
+        } else if (
+          classification.status === 400 ||
+          (classification.status === undefined && errorMessage.includes("400"))
+        ) {
           console.error("Error: Plan is not in a state that can be aborted (must be 'generating' or 'refining').");
-        } else if (errorMessage.includes("401") || errorMessage.includes("unauthorized")) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
-        } else if (errorMessage.includes("403") || errorMessage.includes("forbidden")) {
-          console.error("Error: Access denied. You do not have permission to abort this plan.");
         } else {
-          console.error(`Error aborting plan: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to abort this plan.",
+            fallbackMessage: `Error aborting plan: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -528,7 +574,10 @@ Examples:
 
         console.log(`Timeout after ${Math.round((Date.now() - startTime) / 1000)} seconds.`);
       } catch (error) {
-        console.error(`Error generating plan: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to generate this plan.",
+          fallbackMessage: (message) => `Error generating plan: ${message}`,
+        });
         process.exit(1);
       }
     });
@@ -560,7 +609,10 @@ Example:
           console.log(`Created ${result.issuesCreated} GitHub issue(s).`);
         }
       } catch (error) {
-        console.error(`Error finalizing plan: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to finalize this plan.",
+          fallbackMessage: (message) => `Error finalizing plan: ${message}`,
+        });
         process.exit(1);
       }
     });
@@ -612,7 +664,10 @@ Example:
         console.log("");
         console.log(`Total: ${issues.length} issue(s)`);
       } catch (error) {
-        console.error(`Error listing plan issues: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to view this plan's issues.",
+          fallbackMessage: (message) => `Error listing plan issues: ${message}`,
+        });
         process.exit(1);
       }
     });
