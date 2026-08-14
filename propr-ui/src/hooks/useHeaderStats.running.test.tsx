@@ -76,9 +76,9 @@ describe('useHeaderStats running activity', () => {
     expect(getTasks).toHaveBeenCalledWith({ limit: 30, forReview: true, excludeMerged: true });
   });
 
-  it('represents multiple active jobs once and keeps the count equal to the rendered list', async () => {
+  it('keeps every active job in the list while exposing only proven navigation IDs', async () => {
     vi.mocked(getQueueStats).mockResolvedValue({
-      active: 2,
+      active: 3,
       activeJobs: [
         {
           id: 'job-1',
@@ -96,6 +96,13 @@ describe('useHeaderStats running activity', () => {
           repository: 'integry/propr',
           createdAt: '2026-08-14T20:01:00.000Z',
         },
+        {
+          id: 'parent-job-3',
+          name: 'processGitHubIssue',
+          title: 'Matrix dispatcher',
+          repository: 'integry/propr',
+          createdAt: '2026-08-14T20:02:00.000Z',
+        },
       ],
       waiting: 7,
       delayed: 3,
@@ -107,10 +114,11 @@ describe('useHeaderStats running activity', () => {
     const { result } = renderHook(() => useHeaderStats());
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    expect(result.current.runningItems.map(item => item.id)).toEqual(['job-2', 'job-1']);
+    expect(result.current.runningItems.map(item => item.id)).toEqual(['parent-job-3', 'job-2', 'job-1']);
     expect(result.current.runningItems.find(item => item.id === 'job-1')?.navigationId).toBe('task-1');
+    expect(result.current.runningItems.find(item => item.id === 'parent-job-3')).not.toHaveProperty('navigationId');
     expect(result.current.runningCount).toBe(result.current.runningItems.length);
-    expect(result.current.runningCount).toBe(2);
+    expect(result.current.runningCount).toBe(3);
   });
 
   it('combines generating and refining plans with live jobs without using the augmented active count', async () => {

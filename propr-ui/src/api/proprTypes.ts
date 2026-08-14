@@ -93,7 +93,7 @@ export interface QueueStats {
 
 export interface LiveQueueJob {
   id: string;
-  taskId: string;
+  taskId?: string;
   name: string;
   title: string;
   repository: string;

@@ -4,7 +4,7 @@ import { Job, Queue } from 'bullmq';
 
 interface LiveQueueJob {
   id: string;
-  taskId: string;
+  taskId?: string;
   name: string;
   title: string;
   repository: string;
@@ -101,9 +101,10 @@ function serializeLiveJobs(jobs: Job[]): LiveQueueJob[] {
 
     const data = isRecord(job.data) ? job.data : {};
     const repository = getRepository(data);
+    const taskId = getNavigationTaskId(job.name, id, data);
     liveJobs.push({
       id,
-      taskId: getNavigationTaskId(job.name, id, data),
+      ...(taskId ? { taskId } : {}),
       name: job.name,
       title: getJobTitle(job.name, data),
       repository,
@@ -134,11 +135,17 @@ function getRepository(data: Record<string, unknown>): string {
   return owner && name ? `${owner}/${name}` : 'unknown/unknown';
 }
 
-function getNavigationTaskId(jobName: string, jobId: string, data: Record<string, unknown>): string {
+function getNavigationTaskId(jobName: string, jobId: string, data: Record<string, unknown>): string | undefined {
+  // PR comment and merge-conflict processors create task history under the
+  // BullMQ job ID, so that identity is safe to expose for navigation.
+  if (jobName === 'processPullRequestComment' || jobName === 'processMergeConflict') {
+    return jobId;
+  }
+
   // Issue child jobs currently use a task-history ID derived from their queue
   // metadata. Reproduce that existing identity for navigation only; do not
   // persist or reconcile it with either queue or task history state.
-  if (jobName !== 'processGitHubIssue' || data.isChildJob !== true) return jobId;
+  if (jobName !== 'processGitHubIssue' || data.isChildJob !== true) return undefined;
   const owner = nonEmptyString(data.repoOwner);
   const repo = nonEmptyString(data.repoName);
   const number = positiveNumber(data.number);
@@ -147,7 +154,7 @@ function getNavigationTaskId(jobName: string, jobId: string, data: Record<string
   const correlationId = nonEmptyString(data.correlationId);
   return owner && repo && number && agent && model && correlationId
     ? `${owner}-${repo}-${number}-${agent}-${model}-${correlationId}`
-    : jobId;
+    : undefined;
 }
 
 function getJobTitle(jobName: string, data: Record<string, unknown>): string {

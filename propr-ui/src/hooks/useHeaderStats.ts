@@ -173,7 +173,7 @@ function buildRunningItems(drafts: DraftListItem[], activeJobs: LiveQueueJob[]):
 
   runningItems.push(...activeJobs.map(job => ({
     id: job.id,
-    navigationId: job.taskId,
+    ...(job.taskId ? { navigationId: job.taskId } : {}),
     type: 'task' as const,
     label: job.title || `Task ${job.id.slice(0, 8)}`,
     repository: job.repository,
