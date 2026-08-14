@@ -160,6 +160,34 @@ test('recovers an expired-Redis issue snapshot and maps a skipped job to cancell
     assert.equal(options?.jobKind, 'issue');
 });
 
+test('leaves a legacy issue unchanged when its exact BullMQ job mapping is unavailable', async () => {
+    const issue = makeTask('legacy-issue-task-id', {
+        issueRef: {
+            type: 'issue',
+            number: 1898,
+            repoOwner: 'integry',
+            repoName: 'propr',
+        },
+        historyId: 42,
+        version: 42,
+    });
+    const queue = { getJob: mock.fn(async () => null) };
+    const inspectContainer = mock.fn(async () => 'not_found' as const);
+    const result = await reconcileStalePRCommentTasks({
+        queue,
+        stateManager: createStateManager([issue]),
+        inspectContainer,
+        now: NOW,
+    });
+
+    assert.equal(result.summary.errors, 1);
+    assert.equal(result.summary.recovered, 0);
+    assert.equal(queue.getJob.mock.calls.length, 0);
+    assert.equal(inspectContainer.mock.calls.length, 0);
+    assert.equal(finalizeCompletedPRCommentTask.mock.calls.length, 0);
+    assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
+});
+
 test('leaves every live queue state, recent, non-PR, and future-dated work untouched', async () => {
     const liveTasks = ['active', 'waiting', 'delayed', 'prioritized'].map(state => ({
         state,

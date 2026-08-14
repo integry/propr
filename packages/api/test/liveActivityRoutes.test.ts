@@ -76,6 +76,7 @@ test('header count and list share the exact live set beyond the historical 20-ro
   await db('task_drafts').insert({ draft_id: 'plan-live', user_id: 'user-1', name: 'Plan', repository: 'integry/propr', status: 'refining', created_at: '2026-08-14T14:00:00.000Z' });
 
   const queue = {
+    getJobs: async () => [],
     getJob: async (jobId: string) => jobId === 'long-job'
       ? { getState: async () => 'active' }
       : jobId === 'finished-job' ? { getState: async () => 'completed' } : null,
@@ -99,10 +100,48 @@ test('capped activity explicitly reports the undisplayed live remainder', async 
     draft_id: `plan-${index}`, user_id: 'user-1', name: `Plan ${index}`,
     repository: 'integry/propr', status: 'generating', created_at: `2026-08-14T1${index}:00:00.000Z`,
   })));
-  const routes = createLiveActivityRoutes({ db, taskQueue: { getJob: async () => null } as never });
+  const routes = createLiveActivityRoutes({ db, taskQueue: { getJob: async () => null, getJobs: async () => [] } as never });
   const result = await invoke(routes.getLiveActivity, 2);
 
   assert.equal(result.body.total, 3);
   assert.equal(result.body.items.length, 2);
   assert.equal(result.body.remaining, 1);
+});
+
+test('includes first-attempt child jobs in every accepted pre-execution queue state', async () => {
+  const db = await database();
+  const states = ['waiting', 'delayed', 'prioritized'] as const;
+  const jobs = states.map((state, index) => ({
+    id: `child-job-${state}`,
+    name: 'processGitHubIssue',
+    timestamp: Date.parse(`2026-08-14T12:0${index}:00.000Z`),
+    data: {
+      isChildJob: true,
+      repoOwner: 'integry',
+      repoName: 'propr',
+      number: 1898 + index,
+      agentAlias: 'codex',
+      modelName: 'gpt-5',
+      correlationId: `correlation-${index}`,
+      issuePayload: { title: `Queued issue ${index}` },
+    },
+    getState: async () => state,
+  }));
+  jobs.push({
+    ...jobs[0],
+    id: 'parent-job',
+    data: { ...jobs[0].data, isChildJob: false },
+  });
+  const routes = createLiveActivityRoutes({
+    db,
+    taskQueue: { getJob: async () => null, getJobs: async () => jobs } as never,
+  });
+  const result = await invoke(routes.getLiveActivity);
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.total, 3);
+  assert.deepEqual(
+    new Set(result.body.items.map(item => item.id)),
+    new Set(states.map((_, index) => `integry-propr-${1898 + index}-codex-gpt-5-correlation-${index}`)),
+  );
 });

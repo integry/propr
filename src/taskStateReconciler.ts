@@ -218,9 +218,16 @@ async function reconcileTask(
     }
     summary.stale++;
 
-    const jobId = typeof task.issueRef.jobId === 'string' && task.issueRef.jobId
+    const exactJobId = typeof task.issueRef.jobId === 'string' && task.issueRef.jobId
         ? task.issueRef.jobId
-        : task.taskId;
+        : undefined;
+    if (kind === 'issue' && !exactJobId) {
+        logger.warn({ taskId: task.taskId },
+            'Leaving stale issue task unchanged because its exact BullMQ job mapping is unavailable');
+        summary.errors++;
+        return;
+    }
+    const jobId = exactJobId ?? task.taskId;
     let job: ReconciliationJob | undefined | null;
     let jobLookupAvailable = true;
     try {

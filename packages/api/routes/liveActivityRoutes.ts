@@ -1,12 +1,13 @@
 import type { Request, Response } from 'express';
 import type { Knex } from 'knex';
-import type { Queue } from 'bullmq';
+import type { Job, Queue } from 'bullmq';
 import {
   inspectExactTaskContainerLivenessForTask,
   logger,
 } from '@propr/core';
 
-const LIVE_JOB_STATES = new Set(['active', 'waiting', 'delayed', 'prioritized', 'waiting-children', 'paused']);
+const LIVE_JOB_TYPES = ['active', 'waiting', 'delayed', 'prioritized', 'waiting-children', 'paused'] as const;
+const LIVE_JOB_STATES = new Set<string>(LIVE_JOB_TYPES);
 const NONTERMINAL_TASK_STATES = ['pending', 'processing', 'claude_execution', 'post_processing'];
 const CANDIDATE_PAGE_SIZE = 100;
 const LIVENESS_CONCURRENCY = 10;
@@ -22,12 +23,12 @@ export interface LiveActivityItem {
 
 interface LiveActivityRoutesDeps {
   db: Knex;
-  taskQueue: Pick<Queue, 'getJob'>;
+  taskQueue: Pick<Queue, 'getJob' | 'getJobs'>;
   inspectContainer?: (taskId: string) => Promise<'running' | 'not_found' | 'unavailable'>;
 }
 
 function asIso(value: unknown): string {
-  const parsed = new Date(String(value ?? ''));
+  const parsed = typeof value === 'number' ? new Date(value) : new Date(String(value ?? ''));
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : new Date(0).toISOString();
 }
 
@@ -42,6 +43,68 @@ function taskLabel(row: Record<string, unknown>): string {
     // A malformed historical payload should not hide otherwise-live work.
   }
   return `Task ${String(row.task_id).slice(0, 8)}`;
+}
+
+interface QueueActivityCandidate {
+  jobId: string;
+  taskId?: string;
+  item: LiveActivityItem;
+}
+
+function queuedIssueTaskId(job: Job): string | undefined {
+  const data = job.data as Record<string, unknown>;
+  if (typeof data.taskId === 'string' && data.taskId) return data.taskId;
+  const fields = ['repoOwner', 'repoName', 'agentAlias', 'modelName', 'correlationId'] as const;
+  if (!fields.every(field => typeof data[field] === 'string' && data[field])
+    || (typeof data.number !== 'number' && typeof data.number !== 'string')) return undefined;
+  return `${data.repoOwner}-${data.repoName}-${data.number}-${data.agentAlias}-${data.modelName}-${data.correlationId}`;
+}
+
+function queuedIssueLabel(job: Job): string {
+  const data = job.data as Record<string, unknown>;
+  if (typeof data.title === 'string' && data.title) return data.title;
+  const issuePayload = data.issuePayload as Record<string, unknown> | undefined;
+  if (typeof issuePayload?.title === 'string' && issuePayload.title) return issuePayload.title;
+  return `Issue #${String(data.number ?? 'unknown')}`;
+}
+
+function queueStatus(state: string): string {
+  if (state === 'active') return 'Implementing';
+  if (state === 'delayed') return 'Delayed';
+  if (state === 'paused') return 'Paused';
+  return 'Queued';
+}
+
+async function findLiveQueuedIssueJobs(deps: LiveActivityRoutesDeps): Promise<QueueActivityCandidate[]> {
+  const jobs = await deps.taskQueue.getJobs([...LIVE_JOB_TYPES], 0, -1, true);
+  const candidates: QueueActivityCandidate[] = [];
+  for (let index = 0; index < jobs.length; index += LIVENESS_CONCURRENCY) {
+    const batch = jobs.slice(index, index + LIVENESS_CONCURRENCY);
+    const states = await Promise.all(batch.map(job => job.getState()));
+    batch.forEach((job, offset) => {
+      const data = job.data as Record<string, unknown>;
+      const state = states[offset];
+      if (job.name !== 'processGitHubIssue'
+        || data.isChildJob !== true
+        || job.id === undefined
+        || !LIVE_JOB_STATES.has(state)) return;
+      const jobId = String(job.id);
+      const taskId = queuedIssueTaskId(job as Job);
+      candidates.push({
+        jobId,
+        taskId,
+        item: {
+          id: taskId ?? jobId,
+          type: 'task',
+          label: queuedIssueLabel(job as Job),
+          repository: `${String(data.repoOwner ?? 'unknown')}/${String(data.repoName ?? 'unknown')}`,
+          status: queueStatus(state),
+          createdAt: asIso(job.timestamp),
+        },
+      });
+    });
+  }
+  return candidates;
 }
 
 async function hasAuthoritativeLiveness(
@@ -113,6 +176,13 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
         createdAt: asIso(row.created_at),
       }));
 
+      // Child jobs can be live before their worker creates a task/history row.
+      // Enumerate those states directly, then prefer a persisted task item once
+      // one exists for the same BullMQ execution.
+      const queuedCandidates = await findLiveQueuedIssueJobs(deps);
+      const persistedTaskIds = new Set<string>();
+      const persistedJobIds = new Set<string>();
+
       const latestHistory = deps.db('task_history')
         .select('task_id')
         .max('history_id as history_id')
@@ -128,10 +198,19 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
           .select('t.task_id', 't.job_id', 't.repository', 't.created_at', 't.initial_job_data')
           .orderBy('t.task_id', 'asc')
           .limit(CANDIDATE_PAGE_SIZE) as Array<Record<string, unknown>>;
+        rows.forEach(row => {
+          persistedTaskIds.add(String(row.task_id));
+          if (row.job_id) persistedJobIds.add(String(row.job_id));
+        });
         items.push(...await filterLivePage(rows, deps));
         if (rows.length < CANDIDATE_PAGE_SIZE) break;
         afterTaskId = String(rows[rows.length - 1].task_id);
       }
+      queuedCandidates.forEach(candidate => {
+        if (persistedJobIds.has(candidate.jobId)
+          || (candidate.taskId && persistedTaskIds.has(candidate.taskId))) return;
+        items.push(candidate.item);
+      });
 
       items.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
       const visibleItems = items.slice(0, limit);
