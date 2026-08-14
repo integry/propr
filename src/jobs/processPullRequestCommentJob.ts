@@ -2,13 +2,10 @@ import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import { findRunningDockerContainerForTask, getAuthenticatedOctokit, hashTaskAttemptToken, inspectLegacyDockerContainerLivenessForTask, logger, retryConfigs, runWithExecutionAbortSignal, withRetry } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '@propr/core';
-import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
 import { createLogFiles } from '@propr/core';
 import { UsageLimitError } from '@propr/core';
-import type { ClaudeCodeResponse } from '@propr/core';
 import { recordLLMMetrics } from '@propr/core';
 import { issueQueue, type CommentJobData, type UnprocessedComment, type JobResult } from '@propr/core';
 import { Redis } from 'ioredis';
@@ -57,59 +54,20 @@ import {
     releasePRProcessingLock,
     startPRProcessingLockHeartbeat,
 } from './prProcessingLock.js';
+import type {
+    ExecuteProcessingParams,
+    LockParams,
+    PRData,
+    PRJobContext,
+    ProcessingState,
+    ValidationResult,
+} from './prCommentJobTypes.js';
 
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
     port: parseInt(process.env.REDIS_PORT || '6379', 10),
     maxRetriesPerRequest: null, enableReadyCheck: false,
 });
-
-interface PRData { data: { head: { ref: string; sha?: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
-interface PRComment { id: number; body: string; body_html?: string; user: { login: string; type?: string }; created_at: string; pull_request_review_id?: number }
-
-interface PRJobContext {
-    pullRequestNumber: number;
-    jobBranchName: string | undefined;
-    repoOwner: string;
-    repoName: string;
-    llm: string | null | undefined;
-    agentAlias?: string;
-    modelName?: string;
-    modelLabel?: string;
-    isRetryFromRateLimit?: boolean;
-    correlationId: string;
-    correlatedLogger: Logger;
-    primaryProcessingLabels: string[];
-    isBatchJob: boolean;
-    commentsToProcess: UnprocessedComment[];
-}
-
-interface ValidationResult {
-    skip: boolean;
-    reason?: string;
-    prData?: PRData;
-    validatedComments?: UnprocessedComment[];
-    unprocessedComments?: UnprocessedComment[];
-    llm?: string | null;
-    prCommentsForValidation?: PRComment[];
-}
-
-interface LockParams {
-    lockKey: string;
-    lockToken: string;
-    correlatedLogger: Logger;
-    job: Job<CommentJobData>;
-}
-
-interface ProcessingState {
-    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>> | null;
-    localRepoPath: string | undefined;
-    worktreeInfo: WorktreeInfo | undefined;
-    claudeResult: ClaudeCodeResponse | null;
-    authorsText: string;
-    unprocessedComments: UnprocessedComment[];
-    startingWorkComment: { data: { id: number; html_url: string } } | null;
-}
 
 async function getPrimaryLabels(): Promise<string[]> {
     try {
@@ -187,17 +145,6 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
     const unprocessedComments = filterUnprocessedComments(validatedComments, prCommentsForValidation, botUsername, { pullRequestNumber, correlatedLogger });
     if (unprocessedComments.length === 0) return { skip: true, reason: 'already_processed' };
     return { skip: false, prData, validatedComments, unprocessedComments, llm, prCommentsForValidation };
-}
-
-interface ExecuteProcessingParams {
-    job: Job<CommentJobData>;
-    context: PRJobContext;
-    llm: string | null | undefined;
-    taskId: string;
-    stateManager: WorkerStateManager;
-    state: ProcessingState;
-    lockKey: string;
-    lockToken: string;
 }
 
 function checkTerminalStateAfterExecution(currentState: { state: string } | null, taskId: string, correlatedLogger: Logger): void {
