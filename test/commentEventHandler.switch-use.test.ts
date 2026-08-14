@@ -151,12 +151,13 @@ await mock.module('../packages/core/src/utils/commentFilters.js', {
 });
 
 // Mock safeUpdateLabels — capture calls for assertions
-const mockSafeUpdateLabels = mock.fn(async (_context: unknown, removed: string[] = [], added: string[] = []) => ({
+const defaultSafeUpdateLabels = async (_context: unknown, removed: string[] = [], added: string[] = []) => ({
     success: true,
     removed,
     added,
     errors: [],
-}));
+});
+const mockSafeUpdateLabels = mock.fn(defaultSafeUpdateLabels);
 await mock.module('../packages/core/src/utils/github/labelOperations.js', {
     namedExports: {
         safeRemoveLabel: mock.fn(async () => true),
@@ -195,6 +196,7 @@ const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js'
 const { applyPendingCommentCommandContext } = await import(
     '../src/jobs/prPendingComments.js'
 );
+const { dedupeUnprocessedComments } = await import('../packages/core/src/utils/pendingComments.js');
 const { extractModelFromLabels } = await import('../src/jobs/prCommentJobUtils.js');
 
 const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
@@ -213,6 +215,7 @@ setUltrafixDeps({
 });
 
 beforeEach(() => {
+    mockSafeUpdateLabels.mock.mockImplementation(defaultSafeUpdateLabels);
     mockInvalidateAutomaticWork.mock.resetCalls();
     mockInvalidateAutomaticWork.mock.mockImplementation(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
     mockHasAutomaticWork.mock.resetCalls();
@@ -229,6 +232,7 @@ after(async () => {
 function createMockRedis() {
     const store = new Map<string, string>();
     const lists = new Map<string, string[]>();
+    const counters = new Map<string, number>();
     return {
         get: mock.fn(async (key: string) => store.get(key) ?? null),
         setex: mock.fn(async (key: string, _ttl: number, value: string) => {
@@ -241,6 +245,11 @@ function createMockRedis() {
         }),
         del: mock.fn(async (key: string) => {
             store.delete(key);
+        }),
+        incr: mock.fn(async (key: string) => {
+            const next = (counters.get(key) ?? 0) + 1;
+            counters.set(key, next);
+            return next;
         }),
         lrange: mock.fn(async (key: string) => [...(lists.get(key) ?? [])]),
         eval: mock.fn(async (script: string, _keyCount: number, key: string, ...args: string[]) => {
@@ -437,7 +446,7 @@ describe('commentEventHandler — /switch command', () => {
         assert.ok(comments[0].body.includes('Please review the auth module'), 'Comment body should contain the user instructions');
     });
 
-    test('/switch refuses to synthesize a noncanonical label for a custom MODEL_LABEL_PATTERN', async () => {
+    test('/switch derives a validated canonical label for a custom MODEL_LABEL_PATTERN', async () => {
         // Simulate PR with a custom-prefixed model label
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
@@ -453,7 +462,9 @@ describe('commentEventHandler — /switch command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-custom-pattern', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], ['ai-model-claude-opus-4-6']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['ai-model-claude-sonnet5']);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
@@ -492,7 +503,7 @@ describe('commentEventHandler — /switch command', () => {
         assert.deepStrictEqual(newLabels, ['llm-claude-haiku']);
     });
 
-    test('/switch does not replace a catalog label with a synthesized escaped-pattern label', async () => {
+    test('/switch supports a safely derived escaped-pattern label', async () => {
         // Escaped metacharacters like \- should be handled correctly by modelLabelPrefix,
         // deriving the literal prefix 'model-' which produces labels matching the pattern.
         const event = createPRCommentEvent('/switch opus');
@@ -500,7 +511,8 @@ describe('commentEventHandler — /switch command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-escaped', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['model-claude-opus5']);
     });
 
     test('/switch aborts when derived label prefix would not match MODEL_LABEL_PATTERN', async () => {
@@ -580,6 +592,18 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
     });
 
+    test('/use queues the validated label derived from a custom MODEL_LABEL_PATTERN', async () => {
+        const event = createPRCommentEvent('/use opus\nContinue the fix');
+        const config = createTestConfig({ MODEL_LABEL_PATTERN: '^ai-model-(.+)$' });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-custom-pattern', config);
+
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['ai-model-claude-opus5']);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.modelLabel, 'ai-model-claude-opus5');
+        assert.strictEqual(jobData.modelName, 'claude-opus-5');
+    });
+
     test('out-of-order /use revisions keep the durable label aligned with the newest queued routing', async () => {
         mockActiveJobs = [{
             name: 'processPullRequestComment',
@@ -613,6 +637,102 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(queuedData.agentAlias, 'default');
         assert.strictEqual(queuedData.modelName, 'claude-haiku-4-5-20251001');
         assert.strictEqual(queuedData.modelLabel, 'llm-claude-haiku');
+    });
+
+    test('concurrent older and newer /use commands reject the stale transition after lease acquisition', async () => {
+        mockSafeUpdateLabels.mock.mockImplementation(actualLabelOperations.safeUpdateLabels);
+        const liveLabels = ['AI', 'llm-claude-sonnet5'];
+        let releaseOlderPullRead!: () => void;
+        let olderReachedPullRead!: () => void;
+        const olderPullRead = new Promise<void>(resolve => { olderReachedPullRead = resolve; });
+        const olderPullGate = new Promise<void>(resolve => { releaseOlderPullRead = resolve; });
+        let pullReads = 0;
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string, options: Record<string, unknown>) => {
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                pullReads += 1;
+                if (pullReads === 1) {
+                    olderReachedPullRead();
+                    await olderPullGate;
+                }
+                return { data: { head: { ref: 'feature-branch' }, labels: liveLabels.map(name => ({ name })) } };
+            }
+            if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
+                return { data: { labels: liveLabels.map(name => ({ name })) } };
+            }
+            if (endpoint === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+                const index = liveLabels.findIndex(name => name.toLowerCase() === String(options.name).toLowerCase());
+                if (index >= 0) liveLabels.splice(index, 1);
+                return { data: {} };
+            }
+            if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+                for (const name of options.labels as string[]) if (!liveLabels.includes(name)) liveLabels.push(name);
+                return { data: {} };
+            }
+            return { data: {} };
+        });
+        const config = createTestConfig();
+        const older = createPRCommentEvent('/use opus\nOlder command');
+        older.comment.id = 100;
+        older.comment.created_at = '2026-08-14T10:00:00Z';
+        older.comment.updated_at = older.comment.created_at;
+        const newer = createPRCommentEvent('/use haiku\nNewer command');
+        newer.comment.id = 101;
+        newer.comment.created_at = '2026-08-14T10:01:00Z';
+        newer.comment.updated_at = newer.comment.created_at;
+
+        const olderProcessing = processCommentEvent(older, 'issue_comment', 'corr-concurrent-older', config);
+        await olderPullRead;
+        await processCommentEvent(newer, 'issue_comment', 'corr-concurrent-newer', config);
+        const claimedRevision = JSON.parse(
+            config.redisClient._store.get('pr-model-command-revision:testowner:testrepo:42') ?? 'null',
+        ) as { id: number } | null;
+        assert.strictEqual(claimedRevision?.id, newer.comment.id);
+        releaseOlderPullRead();
+        await olderProcessing;
+        const finalClaimedRevision = JSON.parse(
+            config.redisClient._store.get('pr-model-command-revision:testowner:testrepo:42') ?? 'null',
+        ) as { id: number; createdAt?: string } | null;
+        assert.strictEqual(finalClaimedRevision?.id, newer.comment.id, JSON.stringify(finalClaimedRevision));
+
+        assert.deepStrictEqual(liveLabels, ['AI', 'llm-claude-haiku']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const queued = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(queued.commandCommentId, newer.comment.id);
+        assert.strictEqual(queued.modelName, 'claude-haiku-4-5-20251001');
+    });
+
+    test('same-timestamp edits that only change /use routing keep distinct original-body revisions', async () => {
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+        const original = createPRCommentEvent('/use opus\nFix this');
+        original.comment.id = 12345;
+        original.comment.updated_at = '2026-08-14T10:00:00Z';
+        const config = createTestConfig({ processCommentEvent });
+
+        await processCommentEvent(original, 'issue_comment', 'corr-use-original-routing', config);
+        const edited = createPRCommentEvent('/use haiku\nFix this');
+        edited.comment.id = original.comment.id;
+        edited.comment.created_at = original.comment.created_at;
+        edited.comment.updated_at = original.comment.updated_at;
+        await handleCommentEdited(edited, 'issue_comment', 'corr-use-edited-routing', config);
+
+        const pending = [...config.redisClient._lists.values()].flat().map((raw: string) => JSON.parse(raw));
+        assert.strictEqual(pending.length, 2);
+        assert.deepStrictEqual(pending.map((comment: { body: string }) => comment.body), ['Fix this', 'Fix this']);
+        assert.deepStrictEqual(
+            pending.map((comment: { revisionIdentity: string }) => comment.revisionIdentity),
+            [
+                manualRevisionIdentity(original.comment.updated_at, original.comment.body),
+                manualRevisionIdentity(edited.comment.updated_at, edited.comment.body),
+            ],
+        );
+        assert.strictEqual(dedupeUnprocessedComments(pending).length, 2);
+        assert.deepStrictEqual(pending.map((comment: { modelName: string }) => comment.modelName), [
+            'claude-opus-5',
+            'claude-haiku-4-5-20251001',
+        ]);
     });
 
     test('issue-comment transition preserves unrelated labels added and removed between live reads and writes', async () => {
@@ -940,10 +1060,13 @@ describe('commentEventHandler — /use command', () => {
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        const comments = jobData.comments as Array<{ body: string }>;
+        const comments = jobData.comments as Array<{ body: string; revisionIdentity?: string }>;
         // /use body is stripped like /switch — only user instructions remain
         assert.ok(comments.length > 0);
         assert.strictEqual(comments[0].body, 'Refactor the utils');
+        const expectedRevision = manualRevisionIdentity(event.comment.updated_at, event.comment.body);
+        assert.strictEqual(comments[0].revisionIdentity, expectedRevision);
+        assert.strictEqual(jobData.commandCommentRevisionIdentity, expectedRevision);
     });
 
     test('/use with llm- prefixed argument strips prefix before resolving', async () => {

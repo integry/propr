@@ -12,7 +12,7 @@ import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 import { withUltrafixLabelTransition } from '../utils/ultrafixLabelTransition.js';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
-import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './commentEventHelpers.js';
+import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels, modelLabelPrefix } from './commentEventHelpers.js';
 import { handleMergeCommand } from './mergeConflictDetector.js';
 import { parseSlashCommand, buildCommandMeta } from './slashCommandParser.js';
 import type { CommandMeta, UltrafixCommandMeta } from './slashCommandParser.js';
@@ -71,7 +71,7 @@ interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS:
 interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; commentRevisionIdentity?: string; modelSelection?: CanonicalModelSelection; pendingOnly?: boolean }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
-type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'agentAlias' | 'modelName' | 'modelLabel' | 'ultrafixMeta'> & { created_at: string; updated_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'revisionIdentity' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'agentAlias' | 'modelName' | 'modelLabel' | 'ultrafixMeta'> & { created_at: string; updated_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
 type PRComment = { id: number; created_at: string; updated_at: string; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type ManualCommandTakeover = { workEpoch: number; hadAutomaticWork: boolean; commentRevisionIdentity: string };
@@ -268,11 +268,13 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     }
 
     const manualTakeover = await fenceManualCommand({ commandMeta, comment, eventContext, config, correlatedLogger });
+    const commentRevisionIdentity = manualTakeover?.commentRevisionIdentity
+        ?? getCommentRevisionIdentity(comment, eventContext.eventType);
 
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, command: commandMeta.mode }, `/${commandMeta.mode} command detected, enqueuing job`);
     // Strip the slash command line from the comment body so the downstream job
     // only sees the user's instructions, not the control syntax (consistent with /switch).
-    const strippedComment = { ...comment, body: commandMeta.instructions || '' };
+    const strippedComment = { ...comment, body: commandMeta.instructions || '', revisionIdentity: commentRevisionIdentity };
 
     // Check for existing active/waiting jobs for this PR (batching/concurrency guard).
     // The Redis loop state may already be inactive while its BullMQ job is still
@@ -293,7 +295,7 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         );
     }
 
-    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta, commentRevisionIdentity: manualTakeover?.commentRevisionIdentity });
+    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta, commentRevisionIdentity });
 }
 
 type ModelSelectionCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'switch' | 'use' } };
@@ -391,7 +393,7 @@ function latestPendingCommandChronologies(comments: UnprocessedComment[]): Comma
 }
 
 async function findNewerQueuedCommand(
-    comment: SlashCommandComment,
+    incoming: CommandChronology,
     eventContext: CommentContext,
     snapshot: PRCommentJobSnapshot,
     redisClient: Redis,
@@ -403,19 +405,66 @@ async function findNewerQueuedCommand(
         ...snapshot.waiting,
         ...snapshot.delayed,
     ].flatMap(getJobCommandChronologies).concat(latestPendingCommandChronologies(pendingComments));
-    const incoming: CommandChronology = {
-        id: comment.id,
-        createdAt: comment.created_at,
-        updatedAt: comment.updated_at,
-        revisionIdentity: getCommentRevisionIdentity(comment, eventContext.eventType),
-        type: eventContext.eventType === 'pull_request_review_comment' ? 'review' : 'issue',
-        ingestionOrder: existing.length,
-    };
     const orderedExisting = existing.map((record, ingestionOrder) => ({ ...record, ingestionOrder }));
     const useCreatedAt = [...orderedExisting, incoming].every(record => record.createdAt !== undefined);
     const latest = orderedExisting.reduce<CommandChronology | undefined>((current, record) =>
         !current || compareCommandChronology(record, current, useCreatedAt) > 0 ? record : current, undefined);
     return latest && compareCommandChronology(incoming, latest, useCreatedAt) < 0 ? latest : undefined;
+}
+
+function getModelCommandSequenceKey(eventContext: CommentContext): string {
+    return `pr-model-command-sequence:${eventContext.owner}:${eventContext.repo}:${eventContext.prNumber}`;
+}
+
+function getModelCommandRevisionKey(eventContext: CommentContext): string {
+    return `pr-model-command-revision:${eventContext.owner}:${eventContext.repo}:${eventContext.prNumber}`;
+}
+
+async function nextModelCommandIngestionOrder(redisClient: Redis, eventContext: CommentContext): Promise<number> {
+    const sequenceKey = getModelCommandSequenceKey(eventContext);
+    const ingestionOrder = await redisClient.incr(sequenceKey);
+    await redisClient.expire(sequenceKey, 86400);
+    return ingestionOrder;
+}
+
+async function claimLatestModelCommand(
+    redisClient: Redis,
+    eventContext: CommentContext,
+    incoming: CommandChronology,
+): Promise<boolean> {
+    const markerKey = getModelCommandRevisionKey(eventContext);
+    const rawMarker = await redisClient.get(markerKey);
+    if (rawMarker) {
+        const current = JSON.parse(rawMarker) as CommandChronology;
+        const useCreatedAt = current.createdAt !== undefined && incoming.createdAt !== undefined;
+        if (compareCommandChronology(incoming, current, useCreatedAt) < 0) return false;
+    }
+    await redisClient.set(markerKey, JSON.stringify(incoming), 'EX', 86400);
+    return true;
+}
+
+async function resolveCompatibleModelSelection(
+    selection: CanonicalModelSelection,
+    modelLabelPattern: string,
+): Promise<CanonicalModelSelection | null> {
+    const modelLabelRegex = new RegExp(modelLabelPattern);
+    const configuredCustomLabels = new Set((await getAllCustomLabels()).map(label => label.toLowerCase()));
+    if (modelLabelRegex.test(selection.githubLabel) || configuredCustomLabels.has(selection.githubLabel.toLowerCase())) {
+        return selection;
+    }
+
+    const { prefix, derived } = modelLabelPrefix(modelLabelPattern);
+    const canonicalSuffix = selection.githubLabel.match(/^llm-(.+)$/i)?.[1];
+    if (!derived || !canonicalSuffix) return null;
+
+    const candidate = `${prefix}${canonicalSuffix}`;
+    const match = candidate.match(modelLabelRegex);
+    if (!match || match.length !== 2 || !match[1]) return null;
+    const roundTrip = await resolveCanonicalModelSelection(match[1]);
+    if (!roundTrip
+        || roundTrip.agentAlias.toLowerCase() !== selection.agentAlias.toLowerCase()
+        || roundTrip.model.toLowerCase() !== selection.model.toLowerCase()) return null;
+    return { ...selection, githubLabel: candidate };
 }
 
 async function postModelSelectionAcknowledgement(
@@ -446,15 +495,12 @@ async function transitionModelLabel(
     opts: ModelSelectionCommandOptions,
     prLabels: Label[],
     selection: CanonicalModelSelection,
+    commandChronology: CommandChronology,
 ): Promise<{ success: boolean; updatedLabels: Label[] }> {
     const { eventContext: { owner, repo, prNumber }, config: { redisClient }, config, correlatedLogger } = opts;
     const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';
     const modelLabelRegex = new RegExp(modelLabelPattern);
     const configuredCustomLabels = new Set((await getAllCustomLabels()).map(label => label.toLowerCase()));
-    if (!modelLabelRegex.test(selection.githubLabel) && !configuredCustomLabels.has(selection.githubLabel.toLowerCase())) {
-        correlatedLogger.error({ pullRequestNumber: prNumber, targetLabel: selection.githubLabel, modelLabelPattern }, 'Canonical model label does not match MODEL_LABEL_PATTERN; refusing an invisible model selection');
-        return { success: false, updatedLabels: prLabels };
-    }
     const existingModelLabels = prLabels
         .filter(label => modelLabelRegex.test(label.name) || configuredCustomLabels.has(label.name.toLowerCase()))
         .map(label => label.name);
@@ -474,8 +520,13 @@ async function transitionModelLabel(
                 || configuredCustomLabels.has(labelName.toLowerCase()),
             maxAttempts: 3,
             redis: redisClient,
+            claimTransition: () => claimLatestModelCommand(redisClient, opts.eventContext, commandChronology),
         },
     );
+    if (result.skipped) {
+        correlatedLogger.info({ pullRequestNumber: prNumber, staleCommentId: commandChronology.id }, 'Ignoring stale model command after acquiring the label transition lease');
+        return { success: false, updatedLabels: prLabels };
+    }
     if (!result.success) {
         correlatedLogger.error({ pullRequestNumber: prNumber, targetLabel: selection.githubLabel, errors: result.errors }, 'Model label transition failed; follow-up will not be queued');
         return { success: false, updatedLabels: prLabels };
@@ -519,16 +570,32 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
         correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, `/${commandName} command requires a model argument, ignoring`);
         return;
     }
+    const ingestionOrder = await nextModelCommandIngestionOrder(redisClient, eventContext);
 
-    const selection = await resolveCanonicalModelSelection(commandMeta.models[0]);
-    if (!selection) {
+    const canonicalSelection = await resolveCanonicalModelSelection(commandMeta.models[0]);
+    if (!canonicalSelection) {
         correlatedLogger.warn({ pullRequestNumber: prNumber, requestedModel: commandMeta.models[0] }, `/${commandName} command contains an unrecognized model or an unconfigured model, ignoring`);
         return;
     }
+    const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';
+    const selection = await resolveCompatibleModelSelection(canonicalSelection, modelLabelPattern);
+    if (!selection) {
+        correlatedLogger.error({ pullRequestNumber: prNumber, targetLabel: canonicalSelection.githubLabel, modelLabelPattern }, 'Configured model label pattern cannot represent the selected model unambiguously');
+        return;
+    }
     const selectedCommandMeta = { ...commandMeta, models: [selection.model] } as CommandMeta & { mode: 'switch' | 'use' };
+    const commentRevisionIdentity = getCommentRevisionIdentity(comment, eventType);
+    const commandChronology: CommandChronology = {
+        id: comment.id,
+        createdAt: comment.created_at,
+        updatedAt: comment.updated_at,
+        revisionIdentity: commentRevisionIdentity,
+        type: eventType === 'pull_request_review_comment' ? 'review' : 'issue',
+        ingestionOrder,
+    };
 
     const chronologySnapshot = await getPRCommentJobSnapshot(prNumber, owner, repo);
-    const newerCommand = await findNewerQueuedCommand(comment, eventContext, chronologySnapshot, redisClient);
+    const newerCommand = await findNewerQueuedCommand(commandChronology, eventContext, chronologySnapshot, redisClient);
     if (newerCommand) {
         correlatedLogger.info({
             pullRequestNumber: prNumber,
@@ -542,7 +609,7 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
 
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, selection }, `/${commandName} command detected, updating PR model label`);
     const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
-    const transition = await transitionModelLabel(opts, prData.prLabels, selection);
+    const transition = await transitionModelLabel(opts, prData.prLabels, selection, commandChronology);
     if (!transition.success) return;
 
     const shouldQueue = commandMeta.mode === 'use' || Boolean(commandMeta.instructions);
@@ -557,7 +624,7 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
     // revision can be batched or queued.
     const manualTakeover = await fenceManualCommand({ commandMeta, comment, eventContext, config, correlatedLogger });
 
-    const strippedComment = { ...comment, body: commandMeta.instructions || '' };
+    const strippedComment = { ...comment, body: commandMeta.instructions || '', revisionIdentity: commentRevisionIdentity };
     const snapshot = await getPRCommentJobSnapshot(prNumber, owner, repo);
 
     if (snapshot.active.length > 0) {
@@ -576,7 +643,7 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
             payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
             MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId,
             commandMeta: selectedCommandMeta, prefetchedPRData: updatedPRData, modelSelection: selection,
-            commentRevisionIdentity: manualTakeover?.commentRevisionIdentity, pendingOnly: true,
+            commentRevisionIdentity, pendingOnly: true,
         });
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: active writer found, stored selected follow-up and queued its successor`);
         await postModelSelectionAcknowledgement(opts, selection, 'queued');
@@ -612,7 +679,7 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
         payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
         MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId,
         commandMeta: selectedCommandMeta, prefetchedPRData: updatedPRData, modelSelection: selection,
-        commentRevisionIdentity: manualTakeover?.commentRevisionIdentity,
+        commentRevisionIdentity,
     });
     correlatedLogger.info({ pullRequestNumber: prNumber, supersededRetries, selection }, `/${commandName} follow-up queued with durable model selection`);
     await postModelSelectionAcknowledgement(opts, selection, 'queued');
@@ -645,7 +712,8 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
     // A fresh loop must not be reinterpreted as an ordinary follow-up by the
     // worker that owns older PR work. When work is already in flight, queue a
     // conservative review behind it instead of duplicating a possibly active fix.
-    const strippedComment = { ...comment, body: commandMeta.instructions || '' };
+    const commentRevisionIdentity = getCommentRevisionIdentity(comment, eventContext.eventType);
+    const strippedComment = { ...comment, body: commandMeta.instructions || '', revisionIdentity: commentRevisionIdentity };
     const existingJob = await checkExistingJob(prNumber, owner, repo);
 
     const octokit = await getAuthenticatedOctokit();
@@ -733,6 +801,7 @@ async function handleUltrafixCommand(opts: UltrafixCommandOptions): Promise<void
             commandMeta: firstActionMeta,
             prefetchedPRData: prData,
             ultrafixMeta: loopMeta,
+            commentRevisionIdentity,
         });
     } catch (error) {
         correlatedLogger.error({ pullRequestNumber: prNumber, error }, '/ultrafix startup failed before job enqueue, rolling back');
@@ -948,7 +1017,7 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
         id: comment.id,
         createdAt: comment.created_at,
         updatedAt: comment.updated_at,
-        revisionIdentity: getUnprocessedCommentRevisionIdentity({
+        revisionIdentity: comment.revisionIdentity ?? getUnprocessedCommentRevisionIdentity({
             updatedAt: comment.updated_at,
             body: comment.body,
             type: reviewComment ? 'review' : 'issue',
@@ -991,7 +1060,13 @@ async function getLivePRBranchAndLabels(repoContext: RepoContext): Promise<PRBra
     return { branchName: pr.head.ref, prLabels: pr.labels || [] };
 }
 
-function prepareComment(comment: { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventType: CommentEventType, keywords: string[]): { enhancedBody: string; unprocessedComment: UnprocessedComment; llmFromKeywords: string | null } {
+function prepareComment(
+    comment: { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number },
+    commentAuthor: string,
+    eventType: CommentEventType,
+    options: { keywords: string[]; revisionIdentity?: string },
+): { enhancedBody: string; unprocessedComment: UnprocessedComment; llmFromKeywords: string | null } {
+    const { keywords, revisionIdentity } = options;
     const llmFromKeywords = keywords.length > 0 ? extractLlmFromKeywords(comment.body, keywords) : null;
     let enhancedBody = keywords.length > 0 ? stripKeywordsFromBody(comment.body, keywords) : comment.body;
 
@@ -1005,7 +1080,7 @@ function prepareComment(comment: { id: number; created_at: string; updated_at: s
         id: comment.id,
         createdAt: comment.created_at,
         updatedAt: comment.updated_at,
-        revisionIdentity: getUnprocessedCommentRevisionIdentity({ updatedAt: comment.updated_at, body: comment.body, type: commentType }),
+        revisionIdentity: revisionIdentity ?? getUnprocessedCommentRevisionIdentity({ updatedAt: comment.updated_at, body: comment.body, type: commentType }),
         body: enhancedBody,
         author: commentAuthor,
         type: commentType,
@@ -1075,7 +1150,10 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
     const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta, commentRevisionIdentity, modelSelection, pendingOnly = false } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
-    const { unprocessedComment, llmFromKeywords } = prepareComment(comment, commentAuthor, eventType, PR_FOLLOWUP_TRIGGER_KEYWORDS);
+    const { unprocessedComment, llmFromKeywords } = prepareComment(comment, commentAuthor, eventType, {
+        keywords: PR_FOLLOWUP_TRIGGER_KEYWORDS,
+        revisionIdentity: commentRevisionIdentity,
+    });
     const { branchName, prLabels } = prefetchedPRData || await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
     const llm = modelSelection?.model ?? resolveLlm(llmFromKeywords, prLabels, { modelLabelPattern: MODEL_LABEL_PATTERN, prNumber, correlatedLogger, commandMeta });
 

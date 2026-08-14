@@ -16,6 +16,8 @@ export interface LabelContext {
 
 export interface UpdateResults {
     success: boolean;
+    /** The transition was superseded before any labels were mutated. */
+    skipped?: boolean;
     removed: string[];
     added: string[];
     errors: string[];
@@ -32,6 +34,8 @@ export interface ExclusiveLabelConvergence {
     maxAttempts?: number;
     /** Redis client used to serialize this PR's complete exclusive transition. */
     redis: Pick<Redis, 'set' | 'eval'>;
+    /** Claim this transition while its per-PR lease is held. */
+    claimTransition?: () => Promise<boolean>;
 }
 
 interface IssueLabelsResponse {
@@ -278,7 +282,13 @@ export async function safeUpdateLabels(
             await withLabelTransitionLease(
                 convergence.redis,
                 { owner: context.owner, repo: context.repo, pr: context.issueNumber },
-                () => convergeExclusiveLabel(context, convergence, results),
+                async () => {
+                    if (convergence.claimTransition && !await convergence.claimTransition()) {
+                        results.skipped = true;
+                        return;
+                    }
+                    await convergeExclusiveLabel(context, convergence, results);
+                },
             );
         } catch (error) {
             const message = (error as Error).message;
