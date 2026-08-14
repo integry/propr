@@ -23,27 +23,9 @@ import {
     scanRecoverableTaskStates,
     updateDatabaseTaskStateIfCurrent,
 } from './workerStateDatabaseRecovery.js';
-
-const MAX_ATOMIC_UPDATE_ATTEMPTS = 8;
-const TERMINAL_TASK_STATES = new Set<TaskState>([
-    TaskStates.COMPLETED,
-    TaskStates.FAILED,
-    TaskStates.CANCELLED,
-]);
-
-async function waitForAtomicUpdateRetry(attempt: number): Promise<void> {
-    const delayMs = Math.min(5 * (2 ** attempt), 100);
-    await new Promise(resolve => setTimeout(resolve, delayMs));
-}
+import * as workerStateHelpers from './workerStateManagerHelpers.js';
 
 export { TaskStates, type TaskState, type IssueRef };
-
-function getTerminalTaskJobResult(state: string): { status: string; reason: string } | undefined {
-    if (state === TaskStates.COMPLETED) return { status: 'complete', reason: 'task_already_completed' };
-    if (state === TaskStates.CANCELLED) return { status: 'cancelled', reason: 'task_already_cancelled' };
-    if (state === TaskStates.FAILED) return { status: 'failed', reason: 'task_already_failed' };
-    return undefined;
-}
 
 /**
  * Worker state manager for persistent task state tracking
@@ -137,36 +119,14 @@ export class WorkerStateManager {
         return state;
     }
 
-    /**
-     * Reopens a failed task only when the same BullMQ job has another configured attempt.
-     * All other terminal states and exhausted or mismatched jobs remain unchanged.
-     */
-    async resumeFailedTaskForAutomaticRetry(
-        taskId: string,
-        state: TaskStateData,
-        attempt: { jobId: string | undefined; attemptsMade: number; totalAttempts: number | undefined },
-    ): Promise<TaskStateData> {
-        const totalAttempts = attempt.totalAttempts ?? 1;
-        const isRemainingExactJobAttempt = state.state === TaskStates.FAILED
-            && attempt.attemptsMade > 0
-            && attempt.attemptsMade < totalAttempts
-            && attempt.jobId !== undefined
-            && state.issueRef.jobId !== undefined
-            && String(state.issueRef.jobId) === String(attempt.jobId);
-        if (!isRemainingExactJobAttempt) return state;
-        return await this.updateTaskState(taskId, TaskStates.PROCESSING, {
-            reason: 'Retrying task after a failed BullMQ attempt',
-            isRetry: true,
-        });
-    }
-
     async getTerminalJobResultForAutomaticRetry(
         taskId: string,
         state: TaskStateData,
-        attempt: { jobId: string | undefined; attemptsMade: number; totalAttempts: number | undefined },
-    ): Promise<{ status: string; reason: string } | undefined> {
-        const initialState = await this.resumeFailedTaskForAutomaticRetry(taskId, state, attempt);
-        return getTerminalTaskJobResult(initialState.state);
+        attempt: workerStateHelpers.AutomaticRetryAttempt,
+    ): Promise<workerStateHelpers.TerminalAutomaticRetryResult | undefined> {
+        return await workerStateHelpers.getTerminalJobResultForAutomaticRetry(
+            taskId, state, attempt, this.updateTaskState.bind(this),
+        );
     }
 
     /**
@@ -178,7 +138,7 @@ export class WorkerStateManager {
      */
     async updateTaskState(taskId: string, newState: TaskState, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+        for (let attempt = 0; attempt < workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
             const stateJson = await this.redis.get(key);
             if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
@@ -186,7 +146,7 @@ export class WorkerStateManager {
             const isExplicitFailedRetry = current.state === TaskStates.FAILED
                 && newState === TaskStates.PROCESSING
                 && metadata.isRetry === true;
-            if (TERMINAL_TASK_STATES.has(current.state)
+            if (workerStateHelpers.TERMINAL_TASK_STATES.has(current.state)
                 && current.state !== newState
                 && !isExplicitFailedRetry) {
                 logger.warn({ taskId, currentState: current.state, requestedState: newState },
@@ -205,9 +165,9 @@ export class WorkerStateManager {
                 await publishTaskStateTransition(taskId, transition, metadata);
                 return transition.state;
             }
-            await waitForAtomicUpdateRetry(attempt);
+            await workerStateHelpers.waitForAtomicUpdateRetry(attempt);
         }
-        throw new Error(`Task state update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+        throw new Error(`Task state update conflicted ${workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
     }
 
     /**
@@ -277,7 +237,7 @@ export class WorkerStateManager {
      */
     async updateIssueRef(taskId: string, issueRefPatch: Partial<IssueRef>): Promise<TaskStateData | null> {
         const key = this.getTaskKey(taskId);
-        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+        for (let attempt = 0; attempt < workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
             const stateJson = await this.redis.get(key);
             if (!stateJson) return null;
 
@@ -292,7 +252,7 @@ export class WorkerStateManager {
                 state,
             });
             if (!updated) {
-                await waitForAtomicUpdateRetry(attempt);
+                await workerStateHelpers.waitForAtomicUpdateRetry(attempt);
                 continue;
             }
 
@@ -323,7 +283,7 @@ export class WorkerStateManager {
             }
             return state;
         }
-        throw new Error(`Task issue reference update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+        throw new Error(`Task issue reference update conflicted ${workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
     }
 
     /** Persist the exact BullMQ identity for liveness and recovery lookups. */
@@ -367,7 +327,7 @@ export class WorkerStateManager {
      */
     async updateHistoryMetadata(taskId: string, historyState: TaskState, metadata: Record<string, unknown> = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        for (let attempt = 0; attempt < MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+        for (let attempt = 0; attempt < workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
             const stateJson = await this.redis.get(key);
             if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
@@ -391,7 +351,7 @@ export class WorkerStateManager {
                 state,
             });
             if (!updated) {
-                await waitForAtomicUpdateRetry(attempt);
+                await workerStateHelpers.waitForAtomicUpdateRetry(attempt);
                 continue;
             }
 
@@ -417,7 +377,7 @@ export class WorkerStateManager {
             }
             return state;
         }
-        throw new Error(`Task history metadata update conflicted ${MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+        throw new Error(`Task history metadata update conflicted ${workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
     }
 
     /**
