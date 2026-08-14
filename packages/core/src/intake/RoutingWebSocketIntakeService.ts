@@ -59,6 +59,7 @@ import {
     RoutingWebSocketKeepalive,
 } from './routingWebSocketKeepalive.js';
 import {
+    ACCOUNT_STATUS_CAPABILITY,
     ACCEPTED_DISPOSITION,
     BoundedTokenCache,
     DEFAULT_MAX_DEDUPE_ENTRIES,
@@ -66,6 +67,8 @@ import {
     DEFAULT_PULL_TIMEOUT_MS,
     DeliveryTracker,
     IGNORED_UNSUPPORTED_DISPOSITION,
+    MAX_ACCOUNT_STATUS_FRAME_BYTES,
+    ROUTING_HUB_PROTOCOL_VERSION,
     WS_OPEN,
     buildAckFrame,
     buildConnectUrl,
@@ -73,10 +76,12 @@ import {
     isSupportedEventType,
     loadWebSocketCtor,
     normalizeDisposition,
+    parseConnectAccountStatus,
     parseTokenExpiry,
     rawDataToString,
     resolveDeliveryPayload,
     validateRoutingUrl,
+    type ConnectAccountStatus,
     type DeliveryDisposition,
     type FetchLike,
     type MinimalWebSocket,
@@ -89,6 +94,7 @@ import {
 } from './routingWebSocketProtocol.js';
 
 export type {
+    ConnectAccountStatus,
     DeliveryAckBilling,
     DeliveryAckStatus,
     DeliveryDisposition,
@@ -105,6 +111,7 @@ export type {
 export class RoutingWebSocketIntakeService {
     private readonly routingUrl: string;
     private readonly relayToken: string;
+    private readonly installationId: number | undefined;
     private readonly dispatch: RoutingEventDispatch;
     private readonly initialReconnectDelayMs: number;
     private readonly maxReconnectDelayMs: number;
@@ -130,6 +137,8 @@ export class RoutingWebSocketIntakeService {
     private connected = false;
     private lastDeliveryId: string | null = null;
     private lastAckAt: number | null = null;
+    private connectAccount: ConnectAccountStatus | undefined;
+    private accountStatusSocket: MinimalWebSocket | null = null;
 
     /**
      * Optional listener notified whenever the diagnostic status changes (connect,
@@ -159,6 +168,10 @@ export class RoutingWebSocketIntakeService {
         this.routingUrl =
             (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? DEFAULT_PROPR_ROUTING_URL).trim();
         this.relayToken = (options.relayToken ?? process.env.PROPR_GH_RELAY_TOKEN ?? '').trim();
+        const installationId = Number(options.installationId ?? process.env.GH_INSTALLATION_ID);
+        this.installationId = Number.isSafeInteger(installationId) && installationId > 0
+            ? installationId
+            : undefined;
         this.dispatch = options.dispatch ?? processWebhookEvent;
         this.initialReconnectDelayMs = options.reconnectDelayMs ?? 1_000;
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
@@ -254,8 +267,16 @@ export class RoutingWebSocketIntakeService {
         socket.on('open', () => {
             this.currentReconnectDelayMs = this.initialReconnectDelayMs;
             this.connected = true;
+            this.clearConnectAccount();
             logger.info('Routing WebSocket connected. Receiving GitHub events over routing relay.');
             this.keepalive.start(socket);
+            if (this.send({
+                type: 'hello',
+                protocolVersion: ROUTING_HUB_PROTOCOL_VERSION,
+                capabilities: [ACCOUNT_STATUS_CAPABILITY],
+            }, socket)) {
+                this.accountStatusSocket = socket;
+            }
             this.notifyStatusChange();
         });
 
@@ -280,6 +301,7 @@ export class RoutingWebSocketIntakeService {
             this.keepalive.stop();
             this.socket = null;
             this.connected = false;
+            this.clearConnectAccount();
             this.notifyStatusChange();
             if (this.stopped) {
                 logger.info('Routing WebSocket closed during shutdown');
@@ -291,9 +313,10 @@ export class RoutingWebSocketIntakeService {
     }
 
     private async handleMessage(data: RawData, socket: MinimalWebSocket): Promise<void> {
+        const rawFrame = rawDataToString(data);
         let frame: RoutingFrame;
         try {
-            frame = JSON.parse(rawDataToString(data)) as RoutingFrame;
+            frame = JSON.parse(rawFrame) as RoutingFrame;
         } catch (error) {
             logger.warn(
                 { error: (error as Error).message },
@@ -301,8 +324,15 @@ export class RoutingWebSocketIntakeService {
             );
             return;
         }
+        if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) {
+            logger.warn('Discarding malformed routing frame (expected an object)');
+            return;
+        }
 
         switch (frame.type) {
+            case 'account_status':
+                this.handleAccountStatusFrame(frame, socket, Buffer.byteLength(rawFrame, 'utf8'));
+                return;
             case 'event':
                 // Event frames are processed concurrently (a slow payload pull for
                 // one delivery must not block others). Ordering is safe because the
@@ -338,6 +368,46 @@ export class RoutingWebSocketIntakeService {
             default:
                 logger.debug({ type: frame.type }, 'Ignoring routing frame with unknown type');
         }
+    }
+
+    private handleAccountStatusFrame(frame: RoutingFrame, socket: MinimalWebSocket, frameBytes: number): void {
+        // The new frame is valid only on the current authenticated connection and
+        // only after this client explicitly advertised support on that socket.
+        if (!this.connected || socket !== this.socket || socket !== this.accountStatusSocket) {
+            logger.warn('Discarding unsolicited or stale-connection account-status frame');
+            return;
+        }
+        if (frameBytes > MAX_ACCOUNT_STATUS_FRAME_BYTES) {
+            logger.warn({ frameBytes }, 'Discarding oversized account-status frame');
+            return;
+        }
+
+        const account = parseConnectAccountStatus(frame);
+        if (!account) {
+            logger.warn('Discarding malformed account-status frame');
+            return;
+        }
+        if (this.installationId === undefined || account.installationId !== this.installationId) {
+            logger.warn(
+                { expectedInstallationId: this.installationId, frameInstallationId: account.installationId },
+                'Discarding installation-mismatched account-status frame',
+            );
+            return;
+        }
+        if (this.connectAccount && Date.parse(account.sentAt) <= Date.parse(this.connectAccount.sentAt)) {
+            logger.warn({ sentAt: account.sentAt }, 'Discarding stale account-status frame');
+            return;
+        }
+
+        this.connectAccount = account;
+        this.notifyStatusChange();
+    }
+
+    private clearConnectAccount(): void {
+        const changed = this.connectAccount !== undefined || this.accountStatusSocket !== null;
+        this.connectAccount = undefined;
+        this.accountStatusSocket = null;
+        if (changed) this.notifyStatusChange();
     }
 
     /** Register an event-handling promise so {@link stop} can drain it. */
@@ -567,6 +637,7 @@ export class RoutingWebSocketIntakeService {
             routingUrl: this.routingUrl,
             lastDeliveryId: this.lastDeliveryId,
             lastAckAt: this.lastAckAt === null ? null : new Date(this.lastAckAt).toISOString(),
+            ...(this.connectAccount ? { connectAccount: this.connectAccount } : {}),
         };
     }
 
@@ -592,6 +663,7 @@ export class RoutingWebSocketIntakeService {
     async stop(): Promise<void> {
         this.stopped = true;
         this.connected = false;
+        this.clearConnectAccount();
         // Clear the start guard so a deliberate stop()/start() cycle can reconnect.
         this.started = false;
 
@@ -636,6 +708,7 @@ export class RoutingWebSocketIntakeService {
     }
 
     private markDisconnected(): void {
+        this.clearConnectAccount();
         if (this.connected) {
             this.connected = false;
             this.notifyStatusChange();

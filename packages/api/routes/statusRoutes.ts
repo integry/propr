@@ -143,7 +143,11 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       // so non-routing deployments don't carry an empty field.
       const routing = await getRoutingState(redisClient);
       if (routing) {
-        status.routing = routing;
+        const { connectAccount, ...routingDiagnostics } = routing;
+        status.routing = intakeMode === 'routing_websocket' ? routing : routingDiagnostics;
+        if (intakeMode === 'routing_websocket' && routing.connected && routing.connectAccount) {
+          status.connectAccount = connectAccount;
+        }
       }
 
       // The intake status is a stable, mode-aware health signal for the active
@@ -257,6 +261,20 @@ interface RoutingState {
   routingUrl: string;
   lastDeliveryId: string | null;
   lastAckAt: string | null;
+  connectAccount?: ConnectAccountStatus;
+}
+
+interface ConnectAccountStatus {
+  installationId: number;
+  accountLogin: string | null;
+  plan: 'community' | 'plus';
+  hasPlusAccess: boolean;
+  activeSeats: number;
+  allowedSeats: number;
+  seatsRemaining: number;
+  billingCycleResetAt: string;
+  seatLimitBlockedAt?: string | null;
+  sentAt: string;
 }
 
 async function getRoutingState(redisClient: RedisClientType): Promise<RoutingState | undefined> {
@@ -266,19 +284,69 @@ async function getRoutingState(redisClient: RedisClientType): Promise<RoutingSta
     const parsed: unknown = JSON.parse(raw);
     // A stale or malformed Redis value should not produce confusing CLI output;
     // only expose routing state that matches the expected shape.
-    return isRoutingState(parsed) ? parsed : undefined;
+    return parseRoutingState(parsed);
   } catch {
     return undefined;
   }
 }
 
-function isRoutingState(value: unknown): value is RoutingState {
-  if (typeof value !== 'object' || value === null) return false;
+function parseRoutingState(value: unknown): RoutingState | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
   const state = value as Record<string, unknown>;
-  return typeof state.connected === 'boolean'
+  if (!(typeof state.connected === 'boolean'
     && typeof state.routingUrl === 'string'
     && (typeof state.lastDeliveryId === 'string' || state.lastDeliveryId === null)
-    && isNullableTimestamp(state.lastAckAt);
+    && isNullableTimestamp(state.lastAckAt))) return undefined;
+
+  const connectAccount = state.connectAccount === undefined
+    ? undefined
+    : parseConnectAccountStatus(state.connectAccount);
+  // A malformed optional account object invalidates only that additive object;
+  // legacy routing diagnostics remain available and no entitlement is guessed.
+  return {
+    connected: state.connected,
+    routingUrl: state.routingUrl,
+    lastDeliveryId: state.lastDeliveryId,
+    lastAckAt: state.lastAckAt as string | null,
+    ...(connectAccount ? { connectAccount } : {})
+  };
+}
+
+function parseConnectAccountStatus(value: unknown): ConnectAccountStatus | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const account = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(account.installationId) || (account.installationId as number) <= 0
+    || !(account.accountLogin === null
+      || (typeof account.accountLogin === 'string' && account.accountLogin.length > 0 && account.accountLogin.length <= 128))
+    || (account.plan !== 'community' && account.plan !== 'plus')
+    || typeof account.hasPlusAccess !== 'boolean'
+    || !isNonNegativeInteger(account.activeSeats)
+    || !isNonNegativeInteger(account.allowedSeats)
+    || !isNonNegativeInteger(account.seatsRemaining)
+    || !isNullableTimestamp(account.billingCycleResetAt) || account.billingCycleResetAt === null
+    || !(account.seatLimitBlockedAt === undefined || isNullableTimestamp(account.seatLimitBlockedAt))
+    || !isNullableTimestamp(account.sentAt) || account.sentAt === null) return undefined;
+  if ((account.plan === 'plus') !== account.hasPlusAccess) return undefined;
+  if (account.seatsRemaining !== Math.max(0, (account.allowedSeats as number) - (account.activeSeats as number))) return undefined;
+
+  return {
+    installationId: account.installationId as number,
+    accountLogin: account.accountLogin as string | null,
+    plan: account.plan,
+    hasPlusAccess: account.hasPlusAccess,
+    activeSeats: account.activeSeats as number,
+    allowedSeats: account.allowedSeats as number,
+    seatsRemaining: account.seatsRemaining as number,
+    billingCycleResetAt: account.billingCycleResetAt as string,
+    ...(account.seatLimitBlockedAt !== undefined
+      ? { seatLimitBlockedAt: account.seatLimitBlockedAt as string | null }
+      : {}),
+    sentAt: account.sentAt as string
+  };
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 // lastAckAt is an ISO-8601 string when present (the routing service produces it

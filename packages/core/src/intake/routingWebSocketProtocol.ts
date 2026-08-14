@@ -41,6 +41,16 @@ export interface MinimalWebSocket {
 /** RoutingHub wire protocol version used by application-heartbeat probes. */
 export const ROUTING_HUB_PROTOCOL_VERSION = 1;
 
+/** Additive Connect capability for installation entitlement and seat status. */
+export const ACCOUNT_STATUS_CAPABILITY = 'account_status';
+
+/** Account-status frames are deliberately tiny; reject padded/oversized frames. */
+export const MAX_ACCOUNT_STATUS_FRAME_BYTES = 16 * 1024;
+
+const MAX_ACCOUNT_LOGIN_LENGTH = 128;
+const ISO_TIMESTAMP_PATTERN =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
 export type WebSocketCtor = new (address: string, options?: Record<string, unknown>) => MinimalWebSocket;
 
 /** Minimal `fetch` shape used to pull payloads; matches the global `fetch`. */
@@ -448,6 +458,87 @@ export interface RoutingFrame {
     deliveryId?: string;
     /** Present on `ping` frames; echoed back in the `pong` reply. */
     nonce?: string;
+
+    /** Present on capability-negotiated `account_status` frames. */
+    accountLogin?: string | null;
+    plan?: string;
+    hasPlusAccess?: boolean;
+    activeSeats?: number;
+    allowedSeats?: number;
+    seatsRemaining?: number;
+    billingCycleResetAt?: string;
+    seatLimitBlockedAt?: string | null;
+    sentAt?: string;
+}
+
+/** UI-safe projection of Connect's authenticated installation account status. */
+export interface ConnectAccountStatus {
+    installationId: number;
+    accountLogin: string | null;
+    plan: 'community' | 'plus';
+    hasPlusAccess: boolean;
+    activeSeats: number;
+    allowedSeats: number;
+    seatsRemaining: number;
+    billingCycleResetAt: string;
+    seatLimitBlockedAt?: string | null;
+    sentAt: string;
+}
+
+function isTimestamp(value: unknown): value is string {
+    return typeof value === 'string'
+        && ISO_TIMESTAMP_PATTERN.test(value)
+        && !Number.isNaN(Date.parse(value));
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+    return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+/**
+ * Strictly validate and copy the additive Connect account-status frame. Returning
+ * a new object is intentional: unknown server fields never enter Redis or the UI.
+ */
+export function parseConnectAccountStatus(frame: RoutingFrame): ConnectAccountStatus | undefined {
+    if (frame.type !== 'account_status'
+        || !Number.isSafeInteger(frame.installationId)
+        || (frame.installationId as number) <= 0
+        || !(frame.accountLogin === null
+            || (typeof frame.accountLogin === 'string'
+                && frame.accountLogin.length > 0
+                && frame.accountLogin.length <= MAX_ACCOUNT_LOGIN_LENGTH))
+        || (frame.plan !== 'community' && frame.plan !== 'plus')
+        || typeof frame.hasPlusAccess !== 'boolean'
+        || !isNonNegativeSafeInteger(frame.activeSeats)
+        || !isNonNegativeSafeInteger(frame.allowedSeats)
+        || !isNonNegativeSafeInteger(frame.seatsRemaining)
+        || !isTimestamp(frame.billingCycleResetAt)
+        || !(frame.seatLimitBlockedAt === undefined
+            || frame.seatLimitBlockedAt === null
+            || isTimestamp(frame.seatLimitBlockedAt))
+        || !isTimestamp(frame.sentAt)) {
+        return undefined;
+    }
+
+    // These values are defined as derived pairs by the authoritative contract.
+    // Reject contradictory frames instead of guessing which field the UI should trust.
+    if ((frame.plan === 'plus') !== frame.hasPlusAccess) return undefined;
+    if (frame.seatsRemaining !== Math.max(0, frame.allowedSeats - frame.activeSeats)) return undefined;
+
+    return {
+        installationId: frame.installationId as number,
+        accountLogin: frame.accountLogin,
+        plan: frame.plan,
+        hasPlusAccess: frame.hasPlusAccess,
+        activeSeats: frame.activeSeats,
+        allowedSeats: frame.allowedSeats,
+        seatsRemaining: frame.seatsRemaining,
+        billingCycleResetAt: frame.billingCycleResetAt,
+        ...(frame.seatLimitBlockedAt !== undefined
+            ? { seatLimitBlockedAt: frame.seatLimitBlockedAt }
+            : {}),
+        sentAt: frame.sentAt,
+    };
 }
 
 export function isSupportedEventType(value: string): value is WebhookEventType {
@@ -698,6 +789,11 @@ export interface RoutingWebSocketIntakeServiceOptions {
      */
     relayToken?: string;
     /**
+     * Installation this stack is attached to. Defaults to `GH_INSTALLATION_ID`
+     * and is used only to isolate account-status frames from mismatched attachments.
+     */
+    installationId?: number | string;
+    /**
      * Event dispatcher. Defaults to the shared `processWebhookEvent`, which
      * requires `initializeWebhookHandler` to have run first. See
      * {@link RoutingEventDispatch} for the optional disposition return.
@@ -757,4 +853,6 @@ export interface RoutingWebSocketStatus {
     lastDeliveryId: string | null;
     /** ISO-8601 timestamp of the most recent ACK sent to the relay, or null if none yet. */
     lastAckAt: string | null;
+    /** Connect entitlement/capacity for the current authenticated installation. */
+    connectAccount?: ConnectAccountStatus;
 }

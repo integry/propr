@@ -100,6 +100,37 @@ describe('getSystemStatus', () => {
     });
   });
 
+  it('maps a valid connected Connect account and drops malformed or non-Connect data', async () => {
+    const account = {
+      installationId: 42,
+      accountLogin: 'octo-org',
+      plan: 'community',
+      hasPlusAccess: false,
+      activeSeats: 2,
+      allowedSeats: 3,
+      seatsRemaining: 1,
+      billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+      sentAt: '2026-08-14T09:31:07.000Z',
+    };
+    for (const [mode, status, connectAccount, expected] of [
+      ['routing_websocket', 'connected', account, account],
+      ['routing_websocket', 'connected', { ...account, allowedSeats: 'three' }, undefined],
+      ['polling', 'active', account, undefined],
+      ['routing_websocket', 'disconnected', account, undefined],
+    ] as const) {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        daemon: 'running', redis: 'connected', workerCount: 1,
+        githubAuth: 'connected', claudeAuth: 'connected', agents: [],
+        githubEventIntake: mode,
+        githubEventIntakeStatus: status,
+        connectAccount,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+      expect((await getSystemStatus()).connectAccount).toEqual(expected);
+      vi.restoreAllMocks();
+    }
+  });
+
   it('maps disconnected indexing explicitly to unavailable', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({
