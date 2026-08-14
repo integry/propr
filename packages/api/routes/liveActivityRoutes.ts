@@ -160,6 +160,7 @@ function jobMatchesPersistedExecution(job: Job, row: Record<string, unknown>): b
   const taskId = String(row.task_id);
   const data = job.data as Record<string, unknown>;
   if (typeof data.taskId === 'string' && data.taskId) return data.taskId === taskId;
+  if (queuedTaskId(job) === taskId) return true;
   const queuedImportKey = queuedTaskImportAssociationKey(job);
   if (queuedImportKey && queuedImportKey === persistedTaskImportAssociationKey(row)) return true;
   const isPRComment = persistedTaskType(row) === 'pr_comment'

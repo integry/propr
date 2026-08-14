@@ -20,7 +20,7 @@ import {
     associatePersistedTaskWithJob,
     restorePersistedTaskState,
     scanRecoverableTaskStates,
-    updateDatabaseTaskStateIfCurrent,
+    updateDatabaseTaskStateIfCurrent as updateDatabaseState,
 } from './workerStateDatabaseRecovery.js';
 import * as workerStateHelpers from './workerStateManagerHelpers.js';
 
@@ -212,11 +212,10 @@ export class WorkerStateManager {
             return { state: transition.state, publication };
         }
 
-        // Recovery may be operating from a persisted snapshot after the Redis
-        // key expired. Never fall back to the DB while any Redis owner exists:
-        // that owner may be a newer attempt whose history publication is racing.
-        if (expectation.historyId === undefined || await this.redis.get(this.getTaskKey(taskId))) return null;
-        return updateDatabaseTaskStateIfCurrent(taskId, expectation, newState, metadata);
+        // Serialize the DB fallback with restoration and recheck Redis inside
+        // that boundary before committing.
+        if (expectation.historyId === undefined) return null;
+        return updateDatabaseState(this.redis, this.getTaskKey(taskId), { taskId, expectation, newState, metadata });
     }
 
     /**
