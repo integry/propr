@@ -378,16 +378,45 @@ test('Antigravity output parser handles uppercase ERROR terminal results', () =>
     assert.equal(parsed.terminalStatus, 'error');
 });
 
-test('Antigravity output parser rejects conflicting stream terminal transitions', () => {
+test('Antigravity output parser rejects a changed-model second initialization', () => {
     const parsed = parseAntigravityJsonl([
         JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-low' } }),
         JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first' } }),
-        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'ERROR', response: 'second' } }),
+    ].join('\n'));
+
+    assert.equal(parsed.modelUsed, 'antigravity-gemini-3.7-flash-high');
+    assert.equal(parsed.terminalStatus, 'success');
+    assert.equal(parsed.protocolError, 'Conflicting Antigravity stream init model: antigravity-gemini-3.7-flash-high then antigravity-gemini-3.7-flash-low');
+    assert.equal(parsed.summary, 'first');
+    assert.equal(parsed.conversationLog.length, 2);
+});
+
+test('Antigravity output parser rejects stream updates after a terminal result', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first', usage: { output_tokens: 5 } } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'late', usage: { output_tokens: 99 } } }),
     ].join('\n'));
 
     assert.equal(parsed.terminalStatus, 'success');
-    assert.equal(parsed.protocolError, 'Conflicting Antigravity stream terminal results: success then error');
+    assert.equal(parsed.protocolError, 'Antigravity step_update envelope arrived after terminal result');
     assert.equal(parsed.summary, 'first');
+    assert.equal(parsed.tokenUsage.output_tokens, 5);
+    assert.equal(parsed.conversationLog.length, 2);
+});
+
+test('Antigravity output parser rejects duplicate terminal results', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'second' } }),
+    ].join('\n'));
+
+    assert.equal(parsed.terminalStatus, 'success');
+    assert.equal(parsed.protocolError, 'Antigravity result envelope arrived after terminal result');
+    assert.equal(parsed.summary, 'first');
+    assert.equal(parsed.conversationLog.length, 2);
 });
 
 test('Antigravity output parser requires a non-empty init before stream updates', () => {

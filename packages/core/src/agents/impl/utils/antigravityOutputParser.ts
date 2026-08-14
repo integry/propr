@@ -248,30 +248,29 @@ function processLegacyEvent(event: AntigravityEvent, state: ParseState): void {
     if (event.type !== 'message' && state.currentAssistantMessage) { state.lastCompleteAssistantMessage = state.currentAssistantMessage; state.currentAssistantMessage = ''; }
 }
 
-function processStreamEvent(event: AntigravityStreamEvent, state: ParseState): void {
+function processStreamEvent(event: AntigravityStreamEvent, state: ParseState, events: AntigravityOutputEvent[]): void {
+    if (state.streamTerminalStatus) { state.protocolError ??= `Antigravity ${event.event} envelope arrived after terminal result`; return; }
     if (event.event === 'init') {
-        const initiating = state.streamConversationId === undefined;
-        if (!correlateStreamEnvelope(state, event.event, event.conversation_id)) return;
-        if (initiating) {
-            state.modelUsed = normalizeAntigravityModelId(event.init.model); state.tokenUsage = {};
-            state.currentAssistantMessage = ''; state.lastCompleteAssistantMessage = '';
-        }
+        const model = normalizeAntigravityModelId(event.init.model);
+        if (state.streamConversationId !== undefined) {
+            if (event.conversation_id !== state.streamConversationId) correlateStreamEnvelope(state, event.event, event.conversation_id);
+            else state.protocolError ??= model === state.modelUsed ? `Repeated Antigravity stream init for conversation_id "${event.conversation_id}"` : `Conflicting Antigravity stream init model: ${state.modelUsed} then ${model}`;
+            return; }
+        events.push(event); if (!correlateStreamEnvelope(state, event.event, event.conversation_id)) return;
+        state.modelUsed = model; state.tokenUsage = {};
+        state.currentAssistantMessage = ''; state.lastCompleteAssistantMessage = '';
         return;
     }
     if (event.event === 'step_update') {
-        if (!correlateStreamEnvelope(state, event.event, event.step_update.conversation_id)) return;
+        events.push(event); if (!correlateStreamEnvelope(state, event.event, event.step_update.conversation_id)) return;
         mergeTokenUsageByMax(state.tokenUsage, normalizeStreamTokenUsage(event.step_update.usage));
         if (normalizeTranscriptIdentifier(event.step_update.step_type) === 'AGENT_RESPONSE' && event.step_update.text_delta) {
             state.currentAssistantMessage += event.step_update.text_delta;
         }
         return;
     }
-    if (!correlateStreamEnvelope(state, event.event, event.result.conversation_id)) return;
+    events.push(event); if (!correlateStreamEnvelope(state, event.event, event.result.conversation_id)) return;
     const terminalStatus = event.result.status.toUpperCase() === 'SUCCESS' ? 'success' : 'error';
-    if (state.streamTerminalStatus && state.streamTerminalStatus !== terminalStatus) {
-        state.protocolError ??= `Conflicting Antigravity stream terminal results: ${state.streamTerminalStatus} then ${terminalStatus}`;
-        return;
-    }
     state.streamTerminalStatus = terminalStatus;
     // result.usage is the terminal cumulative snapshot; its reported fields win
     // over interim step snapshots while omitted fields retain their step value.
@@ -312,13 +311,15 @@ export function filterAntigravityAnalysisEvents(events: AntigravityOutputEvent[]
     });
 }
 
+function splitAntigravityOutput(output: string): string[] { try { const document = JSON.parse(output) as unknown; if (Array.isArray(document) && document.some(value => isRecord(value) && typeof value.event === 'string' && Object.hasOwn(STREAM_EVENT_VALIDATORS, value.event))) return document.map(value => JSON.stringify(value) ?? 'null'); } catch { /* JSONL/plain text use line parsing. */ } return output.split('\n'); }
+
 /** Parses legacy, transcript, and Antigravity 1.1.12+ JSONL; plain text remains a supported fallback. */
 export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
     const events: AntigravityOutputEvent[] = [];
     let hasStreamEnvelopes = false;
     const state: ParseState = { tokenUsage: {}, currentAssistantMessage: '', lastCompleteAssistantMessage: '' };
     const parsedLines: Array<{ line: string; value?: unknown }> = [];
-    for (const line of output.split('\n')) {
+    for (const line of splitAntigravityOutput(output)) {
         if (!line.trim()) { parsedLines.push({ line }); continue; }
         try { parsedLines.push({ line, value: JSON.parse(line) as unknown }); }
         catch {
@@ -340,12 +341,11 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
             plainLines.push({ line, isJson: value !== undefined });
             continue;
         }
-        events.push(value);
-        if (isTranscriptEvent(value)) {
+        if (isAntigravityStreamEvent(value)) processStreamEvent(value, state, events);
+        else { events.push(value); if (isTranscriptEvent(value)) {
             if (!state.streamConversationId && normalizeTranscriptIdentifier(value.source) === 'MODEL'
                 && typeof value.content === 'string' && value.content.trim()) state.lastCompleteAssistantMessage = value.content;
-        } else if (isAntigravityStreamEvent(value)) processStreamEvent(value, state);
-        else processLegacyEvent(value, state);
+        } else processLegacyEvent(value, state); }
     }
     if (state.currentAssistantMessage) state.lastCompleteAssistantMessage = state.currentAssistantMessage;
     const plainTextSummary = extractLegacyFallback(plainLines, hasStreamEnvelopes);

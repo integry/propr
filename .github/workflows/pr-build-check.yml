@@ -536,6 +536,45 @@ jobs:
         if: steps.build.outcome == 'failure'
         run: exit 1
 
+  antigravity-packaged-image:
+    name: Antigravity Packaged Image Identity
+    needs: validate
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: [self-hosted, linux, x64, propr]
+    timeout-minutes: 60
+    # PR-head code runs with authenticated Antigravity state, so this
+    # environment must require maintainer approval before the job starts.
+    environment: antigravity-image-validation
+    permissions:
+      contents: read
+    env:
+      PR_AGENT_NAMESPACE: propr-pr-${{ github.run_id }}-${{ github.run_attempt }}
+      AGENT_TAG: propr-pr-${{ github.run_id }}-${{ github.run_attempt }}/agent:${{ github.event.pull_request.head.sha }}
+
+    steps:
+      - name: Checkout pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Check authenticated image-validation host
+        run: |
+          set -euo pipefail
+          node --version
+          docker version
+          test -f "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+
+      - name: Build pull request head agent image
+        env:
+          DOCKERHUB_NS: ${{ env.PR_AGENT_NAMESPACE }}
+          GIT_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_LATEST: 'false'
+        run: ./scripts/build-images.sh --only agent
+
+      - name: Verify all Antigravity 3.7 tiers from packaged image
+        run: ./scripts/verify-antigravity-image.sh
+
   cli-init-json:
     name: CLI init JSON (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest

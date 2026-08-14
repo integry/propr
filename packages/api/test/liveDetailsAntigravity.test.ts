@@ -142,6 +142,29 @@ test('Antigravity 1.1.12 stream text remains visible through live details', asyn
   });
 });
 
+test('stored output detection and live-details rendering consume Antigravity stream arrays', async () => {
+  const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
+  const output = JSON.stringify([
+    { event: 'init', conversation_id: 'conversation-array', init: { model: 'gemini-3.7-flash-medium' } },
+    { event: 'step_update', step_update: { conversation_id: 'conversation-array', step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'ARRAY_OK\n', usage: { input_tokens: 12, output_tokens: 3 } } },
+    { event: 'result', result: { conversation_id: 'conversation-array', status: 'SUCCESS', response: 'ARRAY_OK\n', usage: { input_tokens: 12, output_tokens: 3 } } },
+  ]);
+
+  assert.equal(detectStoredOutputFormat(output), 'antigravity');
+  const parsed = parseStoredOutputContent(output);
+
+  assert.equal(parsed.format, 'antigravity');
+  assert.deepEqual(parsed.parsed?.events.map(event => ({ type: event.type, content: event.content })), [
+    { type: 'thought', content: 'ARRAY_OK\n' }
+  ]);
+  assert.deepEqual(parsed.parsed?.tokenUsage, {
+    input_tokens: 12,
+    output_tokens: 3,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0
+  });
+});
+
 test('Antigravity cache-only stream usage remains visible through live details', async () => {
   const { parseAntigravityOutputToConversationResult } = await import('../routes/liveDetailsOutputParsers.js');
   const output = JSON.stringify({
