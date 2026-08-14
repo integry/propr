@@ -14,6 +14,7 @@ import {
 } from './workerStateManager.types.js';
 import { compareAndSetTaskStateData } from './workerStateTransition.js';
 import {
+    type TaskRecoveryLease,
     withTaskRecoveryReadLease,
     withTaskRecoveryWriteLease,
 } from './workerStateRecoveryLease.js';
@@ -100,32 +101,39 @@ export async function restorePersistedTaskState(
     stateExpiry: number,
     taskId: string,
 ): Promise<TaskStateData | null> {
-    return withTaskRecoveryReadLease(redis, key, async lease => {
-        const existingJson = await redis.get(key);
-        if (existingJson) {
-            logger.info({ taskId }, 'Task state already exists; preserving the current attempt');
-            return JSON.parse(existingJson) as TaskStateData;
-        }
-        const persistedState = await loadPersistedTaskState(taskId);
-        if (!persistedState) return null;
-        const validated = await validatePersistedTaskState(persistedState);
+    return withTaskRecoveryReadLease(redis, key, lease => restorePersistedTaskStateWithLease(
+        redis, { key, stateExpiry, taskId }, lease,
+    ));
+}
+
+export async function restorePersistedTaskStateWithLease(
+    redis: TaskStateRedis,
+    options: { key: string; stateExpiry: number; taskId: string },
+    lease: TaskRecoveryLease,
+): Promise<TaskStateData | null> {
+    const { key, stateExpiry, taskId } = options;
+    const existingJson = await redis.get(key);
+    if (existingJson) {
+        logger.info({ taskId }, 'Task state already exists; preserving the current attempt');
+        return JSON.parse(existingJson) as TaskStateData;
+    }
+    const persistedState = await loadPersistedTaskState(taskId);
+    if (!persistedState) return null;
+    const validated = await validatePersistedTaskState(persistedState);
+    await lease.assertOwned();
+    const restored = await redis.set(key, JSON.stringify(validated), 'EX', stateExpiry, 'NX');
+    if (restored === 'OK') {
         await lease.assertOwned();
-        const restored = await redis.set(
-            key, JSON.stringify(validated), 'EX', stateExpiry, 'NX',
-        );
-        if (restored === 'OK') {
-            await lease.assertOwned();
-            const ownerJson = await redis.get(key);
-            if (ownerJson !== JSON.stringify(validated)) {
-                throw new Error(`Task state restoration lost Redis ownership for taskId: ${taskId}`);
-            }
-            logger.info({ taskId, state: validated.state }, 'Restored task state from persisted history');
-            return validated;
+        const ownerJson = await redis.get(key);
+        if (ownerJson !== JSON.stringify(validated)) {
+            throw new Error(`Task state restoration lost Redis ownership for taskId: ${taskId}`);
         }
-        const winnerJson = await redis.get(key);
-        if (winnerJson) return JSON.parse(winnerJson) as TaskStateData;
-        throw new Error(`Task state restoration raced with removal for taskId: ${taskId}`);
-    });
+        logger.info({ taskId, state: validated.state }, 'Restored task state from persisted history');
+        return validated;
+    }
+    const winnerJson = await redis.get(key);
+    if (winnerJson) return JSON.parse(winnerJson) as TaskStateData;
+    throw new Error(`Task state restoration raced with removal for taskId: ${taskId}`);
 }
 
 export async function readTaskStateWithRecoveryLease(

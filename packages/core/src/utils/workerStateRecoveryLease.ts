@@ -153,19 +153,29 @@ class RecoveryLease {
     }
 }
 
+export type TaskRecoveryLease = Pick<RecoveryLease, 'assertOwned'>;
+
+async function acquireTaskRecoveryReadLease(
+    redis: RecoveryLeaseRedis,
+    taskKey: string,
+): Promise<{ lease: RecoveryLease; writerIntentKey: string }> {
+    const { leaseKey, writerIntentKey } = recoveryProtocolKeys(taskKey);
+    const lease = await RecoveryLease.acquire(
+        redis,
+        leaseKey,
+        ACQUIRE_READER_SCRIPT,
+        writerIntentKey,
+    );
+    return { lease, writerIntentKey };
+}
+
 export async function withTaskRecoveryReadLease<T>(
     redis: RecoveryLeaseRedis,
     taskKey: string,
-    operation: (lease: Pick<RecoveryLease, 'assertOwned'>) => Promise<T>,
+    operation: (lease: TaskRecoveryLease) => Promise<T>,
 ): Promise<T> {
-    const { leaseKey, writerIntentKey } = recoveryProtocolKeys(taskKey);
     while (true) {
-        const lease = await RecoveryLease.acquire(
-            redis,
-            leaseKey,
-            ACQUIRE_READER_SCRIPT,
-            writerIntentKey,
-        );
+        const { lease, writerIntentKey } = await acquireTaskRecoveryReadLease(redis, taskKey);
         try {
             const result = await operation(lease);
             if (await lease.finishReader(writerIntentKey) === 'return') return result;
@@ -175,10 +185,30 @@ export async function withTaskRecoveryReadLease<T>(
     }
 }
 
+/**
+ * Serializes an ordinary task-key mutation with recovery without replaying a
+ * mutation when a recovery writer queues after it acquired the lease.
+ */
+export async function withTaskRecoveryMutationLease<T>(
+    redis: RecoveryLeaseRedis,
+    taskKey: string,
+    operation: (lease: TaskRecoveryLease) => Promise<T>,
+): Promise<T> {
+    const { lease } = await acquireTaskRecoveryReadLease(redis, taskKey);
+    try {
+        await lease.assertOwned();
+        const result = await operation(lease);
+        await lease.assertOwned();
+        return result;
+    } finally {
+        await lease.release();
+    }
+}
+
 export async function withTaskRecoveryWriteLease<T>(
     redis: RecoveryLeaseRedis,
     taskKey: string,
-    operation: (lease: Pick<RecoveryLease, 'assertOwned'>) => Promise<T>,
+    operation: (lease: TaskRecoveryLease) => Promise<T>,
 ): Promise<T> {
     const { leaseKey, writerIntentKey } = recoveryProtocolKeys(taskKey);
     const intent = await RecoveryLease.acquire(

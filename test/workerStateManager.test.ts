@@ -15,6 +15,14 @@ const mockRedisInstance = {
     del: mock.fn(async () => 1)
 };
 
+function isRecoveryLeaseScript(value: unknown): boolean {
+    return typeof value === 'string' && value.includes('worker-state-recovery');
+}
+
+function taskStateEvalCalls() {
+    return mockRedisInstance.eval.mock.calls.filter(call => !isRecoveryLeaseScript(call.arguments[0]));
+}
+
 await mock.module('ioredis', {
     namedExports: {
         Redis: function Redis() {
@@ -1076,8 +1084,8 @@ test('updateTaskState persists to Redis with TTL renewal', async () => {
     await stateManager.updateTaskState('task-redis-persist', TaskStates.PROCESSING);
 
     // Verify the atomic Redis write used the correct key and renewed TTL
-    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
-    const evalCall = mockRedisInstance.eval.mock.calls[0];
+    assert.strictEqual(taskStateEvalCalls().length, 1);
+    const evalCall = taskStateEvalCalls()[0];
     assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-redis-persist`);
     assert.strictEqual(evalCall.arguments[4], TEST_STATE_EXPIRY);
 
@@ -1594,8 +1602,8 @@ test('markTaskFailed persists failure to Redis', async () => {
     await stateManager.markTaskFailed('task-fail-redis', error);
 
     // Verify the atomic Redis write was called
-    assert.strictEqual(mockRedisInstance.eval.mock.calls.length, 1);
-    const evalCall = mockRedisInstance.eval.mock.calls[0];
+    assert.strictEqual(taskStateEvalCalls().length, 1);
+    const evalCall = taskStateEvalCalls()[0];
     assert.strictEqual(evalCall.arguments[2], `${TEST_KEY_PREFIX}task-fail-redis`);
     assert.strictEqual(evalCall.arguments[4], TEST_STATE_EXPIRY);
 
@@ -2995,9 +3003,9 @@ test('updateTaskStateIfCurrent atomically updates a matching task snapshot', asy
     );
 
     assert.equal(updated?.state, TaskStates.COMPLETED);
-    assert.equal(mockRedisInstance.eval.mock.calls.length, 1);
-    assert.equal(mockRedisInstance.eval.mock.calls[0].arguments[2], `${TEST_KEY_PREFIX}${current.taskId}`);
-    assert.equal(mockRedisInstance.eval.mock.calls[0].arguments[3], JSON.stringify(current));
+    assert.equal(taskStateEvalCalls().length, 1);
+    assert.equal(taskStateEvalCalls()[0].arguments[2], `${TEST_KEY_PREFIX}${current.taskId}`);
+    assert.equal(taskStateEvalCalls()[0].arguments[3], JSON.stringify(current));
     assert.equal(mockRedisInstance.setex.mock.calls.length, 0);
     await stateManager.close();
 });
@@ -3018,7 +3026,9 @@ test('updateTaskStateIfCurrent does not publish a lost compare-and-set race', as
         }],
     } satisfies TaskStateData;
     mockRedisInstance.get.mock.mockImplementation(async () => JSON.stringify(current));
-    mockRedisInstance.eval.mock.mockImplementation(async () => 0);
+    mockRedisInstance.eval.mock.mockImplementation(async (script: string) => (
+        isRecoveryLeaseScript(script) ? 1 : 0
+    ));
     mockDbHistoryInsert.mock.resetCalls();
     mockPublishTaskUpdate.mock.resetCalls();
 
@@ -3067,6 +3077,7 @@ test('stale metadata updates retry without resurrecting a finalized task', async
 
     mockRedisInstance.get.mock.mockImplementation(async () => storedJson);
     mockRedisInstance.eval.mock.mockImplementation(async (...args: unknown[]) => {
+        if (isRecoveryLeaseScript(args[0])) return 1;
         const expectedJson = args[3] as string;
         const nextJson = args[5] as string;
         if (isFirstEval) {
@@ -3139,7 +3150,7 @@ test('ordinary state writers cannot move a terminal task back to processing', as
 
     assert.equal(result.state, TaskStates.CANCELLED);
     assert.equal(result.version, 4);
-    assert.equal(mockRedisInstance.eval.mock.calls.length, 0);
+    assert.equal(taskStateEvalCalls().length, 0);
     await stateManager.close();
 });
 
@@ -3169,6 +3180,7 @@ test('a retry writer that loses to cancellation cannot resurrect the task', asyn
     mockRedisInstance.get.mock.mockImplementation(async () => storedJson);
     mockRedisInstance.eval.mock.resetCalls();
     mockRedisInstance.eval.mock.mockImplementation(async (...args: unknown[]) => {
+        if (isRecoveryLeaseScript(args[0])) return 1;
         const expectedJson = args[3] as string;
         const nextJson = args[5] as string;
         if (pauseNextEval) {
@@ -3203,6 +3215,6 @@ test('a retry writer that loses to cancellation cannot resurrect the task', asyn
     assert.equal(cancellation.state, TaskStates.CANCELLED);
     assert.equal(retryResult.state, TaskStates.CANCELLED);
     assert.equal((JSON.parse(storedJson) as TaskStateData).state, TaskStates.CANCELLED);
-    assert.equal(mockRedisInstance.eval.mock.calls.length, 2);
+    assert.equal(taskStateEvalCalls().length, 2);
     await stateManager.close();
 });

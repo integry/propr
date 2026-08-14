@@ -1,6 +1,5 @@
 import { Redis } from 'ioredis';
 import logger, { generateCorrelationId } from './logger.js';
-import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
@@ -16,13 +15,19 @@ import {
     publishTaskStateTransition,
 } from './workerStateTransition.js';
 import { scanNonTerminalTaskStates } from './workerStateScan.js';
+import { publishCreatedTaskState } from './workerStateCreationPublication.js';
 import {
     associatePersistedTaskWithJob,
     readTaskStateWithRecoveryLease,
-    restorePersistedTaskState,
+    restorePersistedTaskStateWithLease,
     scanRecoverableTaskStates,
     updateDatabaseTaskStateIfCurrent as updateDatabaseState,
 } from './workerStateDatabaseRecovery.js';
+import {
+    type TaskRecoveryLease,
+    withTaskRecoveryMutationLease,
+    withTaskRecoveryReadLease,
+} from './workerStateRecoveryLease.js';
 import * as workerStateHelpers from './workerStateManagerHelpers.js';
 
 export { TaskStates, type TaskState, type IssueRef };
@@ -59,67 +64,32 @@ export class WorkerStateManager {
      */
     async createTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        const persistedState = await restorePersistedTaskState(this.redis, key, this.stateExpiry, taskId);
-        if (persistedState) return persistedState;
+        return withTaskRecoveryReadLease(this.redis, key, async lease => {
+            const persistedState = await restorePersistedTaskStateWithLease(
+                this.redis, { key, stateExpiry: this.stateExpiry, taskId }, lease,
+            );
+            if (persistedState) return persistedState;
 
-        const timestamp = new Date().toISOString();
-        const state: TaskStateData = {
-            taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
-            state: TaskStates.PENDING, createdAt: timestamp,
-            updatedAt: timestamp, version: 1, attempts: 0,
-            history: [{ state: TaskStates.PENDING, timestamp, reason: 'Task created' }]
-        };
-        const created = await this.redis.set(key, JSON.stringify(state), 'EX', this.stateExpiry, 'NX');
-        if (created !== 'OK') {
-            const existingJson = await this.redis.get(key);
-            if (existingJson) {
-                logger.info({ taskId }, 'Task state already exists; preserving the current attempt');
-                return JSON.parse(existingJson) as TaskStateData;
+            const timestamp = new Date().toISOString();
+            const state: TaskStateData = {
+                taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
+                state: TaskStates.PENDING, createdAt: timestamp,
+                updatedAt: timestamp, version: 1, attempts: 0,
+                history: [{ state: TaskStates.PENDING, timestamp, reason: 'Task created' }]
+            };
+            await lease.assertOwned();
+            const created = await this.redis.set(key, JSON.stringify(state), 'EX', this.stateExpiry, 'NX');
+            if (created !== 'OK') {
+                const existingJson = await this.redis.get(key);
+                if (existingJson) {
+                    logger.info({ taskId }, 'Task state already exists; preserving the current attempt');
+                    return JSON.parse(existingJson) as TaskStateData;
+                }
+                throw new Error(`Task state creation raced with removal for taskId: ${taskId}`);
             }
-            throw new Error(`Task state creation raced with removal for taskId: ${taskId}`);
-        }
-        const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-        correlatedLogger.info({
-            taskId, issueNumber: issueRef.number,
-            repository: `${issueRef.repoOwner}/${issueRef.repoName}`, state: TaskStates.PENDING
-        }, 'Task state created');
-
-        try {
-            // Validate repository name components before storing
-            const repoOwner = issueRef.repoOwner ?? 'unknown';
-            const repoName = issueRef.repoName ?? 'unknown';
-            const repository = `${repoOwner}/${repoName}`;
-            const taskData = {
-                task_id: taskId,
-                job_id: typeof issueRef.jobId === 'string' ? issueRef.jobId : null,
-                correlation_id: state.correlationId,
-                repository,
-                issue_number: issueRef.number, task_type: issueRef.type ?? 'issue',
-                model_name: issueRef.modelName ?? null, created_at: state.createdAt,
-                initial_job_data: JSON.stringify(issueRef)
-            };
-            await db('tasks').insert(taskData).onConflict('task_id').ignore();
-            const historyData = {
-                task_id: taskId, state: TaskStates.PENDING,
-                timestamp: state.createdAt, reason: 'Task created', metadata: JSON.stringify({})
-            };
-            await db('task_history').insert(historyData);
-            correlatedLogger.debug({ taskId }, 'Task state persisted to database');
-
-            // Publish real-time event for task creation
-            const eventPublisher = getEventPublisher();
-            await eventPublisher.publishTaskUpdate({
-                taskId,
-                state: TaskStates.PENDING,
-                repository,
-                issueNumber: issueRef.number,
-                timestamp: state.updatedAt,
-                version: state.version,
-            });
-        } catch (error) {
-            correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
-        }
-        return state;
+            await publishCreatedTaskState(state);
+            return state;
+        });
     }
 
     async getTerminalJobResultForAutomaticRetry(
@@ -141,36 +111,39 @@ export class WorkerStateManager {
      */
     async updateTaskState(taskId: string, newState: TaskState, metadata: UpdateMetadata = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        for (let attempt = 0; attempt < workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
-            const stateJson = await this.redis.get(key);
-            if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
+        return withTaskRecoveryMutationLease(this.redis, key, async lease => {
+            for (let attempt = 0; attempt < workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+                const stateJson = await this.redis.get(key);
+                if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-            const current = JSON.parse(stateJson) as TaskStateData;
-            const isExplicitFailedRetry = current.state === TaskStates.FAILED
-                && newState === TaskStates.PROCESSING
-                && metadata.isRetry === true;
-            if (workerStateHelpers.TERMINAL_TASK_STATES.has(current.state)
-                && current.state !== newState
-                && !isExplicitFailedRetry) {
-                logger.warn({ taskId, currentState: current.state, requestedState: newState },
-                    'Ignored state transition from a terminal task');
-                return current;
-            }
+                const current = JSON.parse(stateJson) as TaskStateData;
+                const isExplicitFailedRetry = current.state === TaskStates.FAILED
+                    && newState === TaskStates.PROCESSING
+                    && metadata.isRetry === true;
+                if (workerStateHelpers.TERMINAL_TASK_STATES.has(current.state)
+                    && current.state !== newState
+                    && !isExplicitFailedRetry) {
+                    logger.warn({ taskId, currentState: current.state, requestedState: newState },
+                        'Ignored state transition from a terminal task');
+                    return current;
+                }
 
-            const transition = buildTaskStateTransition(current, newState, metadata);
-            const updated = await compareAndSetTaskStateData(this.redis, {
-                key,
-                stateExpiry: this.stateExpiry,
-                currentJson: stateJson,
-                state: transition.state,
-            });
-            if (updated) {
-                await publishTaskStateTransition(taskId, transition, metadata);
-                return transition.state;
+                const transition = buildTaskStateTransition(current, newState, metadata);
+                await lease.assertOwned();
+                const updated = await compareAndSetTaskStateData(this.redis, {
+                    key,
+                    stateExpiry: this.stateExpiry,
+                    currentJson: stateJson,
+                    state: transition.state,
+                });
+                if (updated) {
+                    await publishTaskStateTransition(taskId, transition, metadata);
+                    return transition.state;
+                }
+                await workerStateHelpers.waitForAtomicUpdateRetry(attempt);
             }
-            await workerStateHelpers.waitForAtomicUpdateRetry(attempt);
-        }
-        throw new Error(`Task state update conflicted ${workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+            throw new Error(`Task state update conflicted ${workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+        });
     }
 
     /**
@@ -201,21 +174,21 @@ export class WorkerStateManager {
         newState: TaskState,
         metadata: UpdateMetadata = {},
     ): Promise<TaskStateUpdateResult | null> {
-        const transition = await compareAndSetTaskState(this.redis, {
-            key: this.getTaskKey(taskId),
-            stateExpiry: this.stateExpiry,
-            expectation,
-            newState,
-            metadata,
-        });
-        if (transition) {
+        const key = this.getTaskKey(taskId);
+        const result = await withTaskRecoveryMutationLease(this.redis, key, async lease => {
+            await lease.assertOwned();
+            const transition = await compareAndSetTaskState(this.redis, {
+                key, stateExpiry: this.stateExpiry, expectation, newState, metadata,
+            });
+            if (!transition) return null;
             const publication = await publishTaskStateTransition(taskId, transition, metadata);
             return { state: transition.state, publication };
-        }
+        });
+        if (result) return result;
 
-        // Serialize the DB fallback with restoration and recheck Redis before committing.
+        // Release the ordinary/read lease before entering the DB fallback write lease.
         if (expectation.historyId === undefined) return null;
-        return updateDatabaseState(this.redis, this.getTaskKey(taskId), this.stateExpiry, { taskId, expectation, newState, metadata });
+        return updateDatabaseState(this.redis, key, this.stateExpiry, { taskId, expectation, newState, metadata });
     }
 
     /**
@@ -235,6 +208,17 @@ export class WorkerStateManager {
      */
     async updateIssueRef(taskId: string, issueRefPatch: Partial<IssueRef>): Promise<TaskStateData | null> {
         const key = this.getTaskKey(taskId);
+        return withTaskRecoveryMutationLease(this.redis, key, lease => (
+            this.updateIssueRefWithLease(taskId, issueRefPatch, lease)
+        ));
+    }
+
+    private async updateIssueRefWithLease(
+        taskId: string,
+        issueRefPatch: Partial<IssueRef>,
+        lease: TaskRecoveryLease,
+    ): Promise<TaskStateData | null> {
+        const key = this.getTaskKey(taskId);
         for (let attempt = 0; attempt < workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
             const stateJson = await this.redis.get(key);
             if (!stateJson) return null;
@@ -243,6 +227,7 @@ export class WorkerStateManager {
             const state = buildTaskStateMutation(current, next => {
                 next.issueRef = { ...next.issueRef, ...issueRefPatch };
             });
+            await lease.assertOwned();
             const updated = await compareAndSetTaskStateData(this.redis, {
                 key,
                 stateExpiry: this.stateExpiry,
@@ -286,8 +271,12 @@ export class WorkerStateManager {
 
     /** Persist the exact BullMQ identity for liveness and recovery lookups. */
     async associateTaskWithJob(taskId: string, jobId: string): Promise<TaskStateData | null> {
-        await associatePersistedTaskWithJob(taskId, jobId);
-        return this.updateIssueRef(taskId, { jobId });
+        const key = this.getTaskKey(taskId);
+        return withTaskRecoveryMutationLease(this.redis, key, async lease => {
+            await associatePersistedTaskWithJob(taskId, jobId);
+            await lease.assertOwned();
+            return this.updateIssueRefWithLease(taskId, { jobId }, lease);
+        });
     }
 
     /**
@@ -325,57 +314,60 @@ export class WorkerStateManager {
      */
     async updateHistoryMetadata(taskId: string, historyState: TaskState, metadata: Record<string, unknown> = {}): Promise<TaskStateData> {
         const key = this.getTaskKey(taskId);
-        for (let attempt = 0; attempt < workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
-            const stateJson = await this.redis.get(key);
-            if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
+        return withTaskRecoveryMutationLease(this.redis, key, async lease => {
+            for (let attempt = 0; attempt < workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS; attempt++) {
+                const stateJson = await this.redis.get(key);
+                if (!stateJson) throw new Error(`Task state not found for taskId: ${taskId}`);
 
-            const current = JSON.parse(stateJson) as TaskStateData;
-            const historyIndex = current.history.findLastIndex(h => h.state === historyState);
-            if (historyIndex < 0) {
-                logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
-                return current;
-            }
+                const current = JSON.parse(stateJson) as TaskStateData;
+                const historyIndex = current.history.findLastIndex(h => h.state === historyState);
+                if (historyIndex < 0) {
+                    logger.warn({ taskId, historyState }, 'Could not find history entry to update metadata');
+                    return current;
+                }
 
-            const state = buildTaskStateMutation(current, next => {
-                next.history[historyIndex].metadata = {
-                    ...next.history[historyIndex].metadata,
-                    ...metadata,
-                };
-            });
-            const updated = await compareAndSetTaskStateData(this.redis, {
-                key,
-                stateExpiry: this.stateExpiry,
-                currentJson: stateJson,
-                state,
-            });
-            if (!updated) {
-                await workerStateHelpers.waitForAtomicUpdateRetry(attempt);
-                continue;
-            }
-
-            const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
-            correlatedLogger.debug({ taskId, historyState, metadata, version: state.version }, 'Updated history metadata');
-
-            // Publish real-time event for metadata update so UI can refresh
-            try {
-                await getEventPublisher().publishTaskUpdate({
-                    taskId,
-                    state: state.state,
-                    repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
-                    issueNumber: state.issueRef.number,
-                    timestamp: state.updatedAt,
-                    version: state.version,
-                    metadata: {
-                        metadataUpdate: true,
-                        updatedFields: Object.keys(metadata)
-                    }
+                const state = buildTaskStateMutation(current, next => {
+                    next.history[historyIndex].metadata = {
+                        ...next.history[historyIndex].metadata,
+                        ...metadata,
+                    };
                 });
-            } catch (error) {
-                correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish metadata update event');
+                await lease.assertOwned();
+                const updated = await compareAndSetTaskStateData(this.redis, {
+                    key,
+                    stateExpiry: this.stateExpiry,
+                    currentJson: stateJson,
+                    state,
+                });
+                if (!updated) {
+                    await workerStateHelpers.waitForAtomicUpdateRetry(attempt);
+                    continue;
+                }
+
+                const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
+                correlatedLogger.debug({ taskId, historyState, metadata, version: state.version }, 'Updated history metadata');
+
+                // Publish real-time event for metadata update so UI can refresh
+                try {
+                    await getEventPublisher().publishTaskUpdate({
+                        taskId,
+                        state: state.state,
+                        repository: `${state.issueRef.repoOwner}/${state.issueRef.repoName}`,
+                        issueNumber: state.issueRef.number,
+                        timestamp: state.updatedAt,
+                        version: state.version,
+                        metadata: {
+                            metadataUpdate: true,
+                            updatedFields: Object.keys(metadata)
+                        }
+                    });
+                } catch (error) {
+                    correlatedLogger.warn({ error: (error as Error).message, taskId }, 'Failed to publish metadata update event');
+                }
+                return state;
             }
-            return state;
-        }
-        throw new Error(`Task history metadata update conflicted ${workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+            throw new Error(`Task history metadata update conflicted ${workerStateHelpers.MAX_ATOMIC_UPDATE_ATTEMPTS} times for taskId: ${taskId}`);
+        });
     }
 
     /**
@@ -486,18 +478,21 @@ export class WorkerStateManager {
 
         for (const key of keys) {
             try {
-                const stateJson = await this.redis.get(key);
-                if (!stateJson) continue;
-                const state: TaskStateData = JSON.parse(stateJson);
-                const cleanupStates: TaskState[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
-                if (cleanupStates.includes(state.state)) {
+                const cleaned = await withTaskRecoveryMutationLease(this.redis, key, async lease => {
+                    const stateJson = await this.redis.get(key);
+                    if (!stateJson) return false;
+                    const state: TaskStateData = JSON.parse(stateJson);
+                    const cleanupStates: TaskState[] = [TaskStates.COMPLETED, TaskStates.FAILED, TaskStates.CANCELLED];
                     const updatedAt = new Date(state.updatedAt).getTime();
-                    if (updatedAt < cutoffTime) {
+                    if (cleanupStates.includes(state.state) && updatedAt < cutoffTime) {
+                        await lease.assertOwned();
                         await this.redis.del(key);
-                        cleanedCount++;
                         logger.debug({ taskId: state.taskId, state: state.state, age: Date.now() - updatedAt }, 'Cleaned up old task state');
+                        return true;
                     }
-                }
+                    return false;
+                });
+                if (cleaned) cleanedCount++;
             } catch (error) {
                 logger.warn({ key, error: (error as Error).message }, 'Failed to cleanup task state');
             }
