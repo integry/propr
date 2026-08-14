@@ -6,7 +6,7 @@ import { handleError } from '../utils/errorHandler.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { resolveRepositoryWorktreePath } from './repositoryPaths.js';
 import { redactAuthenticatedGitUrl } from './repoBranching.js';
-import { applyWorktreeOwnership, type WorktreeOwnershipExecutor } from './worktreePermissions.js';
+import { applyWorktreeOwnership } from './worktreePermissions.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
@@ -278,10 +278,9 @@ export async function setupWorktreePermissions(
     localRepoPath: string,
     branchName: string,
     issueId: number | string | null,
-    executeOwnershipChange: WorktreeOwnershipExecutor = executeWorktreeOwnershipChange,
 ): Promise<void> {
     try {
-        const ownershipTargets = await applyWorktreeOwnership(worktreePath, localRepoPath, executeOwnershipChange);
+        const ownershipTargets = await applyWorktreeOwnership(worktreePath, localRepoPath, executeWorktreeOwnershipChange);
         logger.debug({ worktreePath, branchName, issueId, ownershipTargets }, 'Set worktree ownership to UID 1000 for container compatibility');
     } catch (chownError) {
         logger.warn({ worktreePath, branchName, issueId, error: (chownError as Error).message }, 'Failed to set worktree ownership - container may have permission issues');
