@@ -50,6 +50,22 @@ function persistedRowToTaskState(row: Record<string, unknown>): TaskStateData {
     };
 }
 
+export async function loadPersistedTaskState(taskId: string): Promise<TaskStateData | null> {
+    const task = await db('tasks').where({ task_id: taskId }).first();
+    if (!task) return null;
+    const latestHistory = await db('task_history')
+        .where({ task_id: taskId })
+        .orderBy('history_id', 'desc')
+        .first();
+    if (!latestHistory) return null;
+    return persistedRowToTaskState({
+        ...task,
+        history_id: latestHistory.history_id,
+        state: latestHistory.state,
+        state_timestamp: latestHistory.timestamp,
+    });
+}
+
 export async function associatePersistedTaskWithJob(taskId: string, jobId: string): Promise<void> {
     await db('tasks')
         .where({ task_id: taskId })

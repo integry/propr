@@ -94,6 +94,48 @@ test('header count and list share the exact live set beyond the historical 20-ro
   assert.equal(result.body.remaining, 0);
 });
 
+test('persisted tasks use their authoritative queue state for activity status', async () => {
+  const db = await database();
+  const states = ['active', 'waiting', 'delayed', 'paused'] as const;
+  await db('tasks').insert(states.map(state => ({
+    task_id: `persisted-${state}`,
+    job_id: `job-${state}`,
+    repository: 'integry/propr',
+    created_at: '2026-08-14T12:00:00.000Z',
+    initial_job_data: JSON.stringify({ type: 'issue', title: state }),
+  })));
+  await db('task_history').insert(states.map(state => ({
+    task_id: `persisted-${state}`,
+    state: 'processing',
+  })));
+  const jobs = states.map(state => ({
+    id: `job-${state}`,
+    name: 'processGitHubIssue',
+    data: { taskId: `persisted-${state}` },
+    getState: async () => state,
+  }));
+  const routes = createLiveActivityRoutes({
+    db,
+    taskQueue: {
+      getJobs: async () => [],
+      getJob: async jobId => jobs.find(job => job.id === jobId) ?? null,
+    } as never,
+    inspectContainer: async () => 'not_found',
+  });
+
+  const result = await invoke(routes.getLiveActivity);
+
+  assert.deepEqual(
+    Object.fromEntries(result.body.items.map(item => [item.id, item.status])),
+    {
+      'persisted-active': 'Implementing',
+      'persisted-waiting': 'Queued',
+      'persisted-delayed': 'Delayed',
+      'persisted-paused': 'Paused',
+    },
+  );
+});
+
 test('demo queue preserves plan activity and reports the undisplayed live remainder', async () => {
   const db = await database();
   await db('task_drafts').insert([0, 1, 2].map(index => ({

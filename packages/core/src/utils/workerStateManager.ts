@@ -20,6 +20,7 @@ import {
 import { scanNonTerminalTaskStates } from './workerStateScan.js';
 import {
     associatePersistedTaskWithJob,
+    loadPersistedTaskState,
     scanRecoverableTaskStates,
     updateDatabaseTaskStateIfCurrent,
 } from './workerStateDatabaseRecovery.js';
@@ -74,6 +75,23 @@ export class WorkerStateManager {
                 return JSON.parse(existingJson) as TaskStateData;
             }
             throw new Error(`Task state creation raced with removal for taskId: ${taskId}`);
+        }
+
+        const persistedState = await loadPersistedTaskState(taskId);
+        if (persistedState) {
+            const restored = await compareAndSetTaskStateData(this.redis, {
+                key,
+                stateExpiry: this.stateExpiry,
+                currentJson: JSON.stringify(state),
+                state: persistedState,
+            });
+            if (restored) {
+                logger.info({ taskId, state: persistedState.state }, 'Restored task state from persisted history');
+                return persistedState;
+            }
+            const currentJson = await this.redis.get(key);
+            if (currentJson) return JSON.parse(currentJson) as TaskStateData;
+            throw new Error(`Task state restoration raced with removal for taskId: ${taskId}`);
         }
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({

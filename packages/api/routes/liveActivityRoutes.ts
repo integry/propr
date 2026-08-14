@@ -55,6 +55,10 @@ interface QueueActivityCandidate {
   job: Job;
 }
 
+type AuthoritativeLiveness =
+  | { source: 'queue'; queueState: string }
+  | { source: 'container' };
+
 function persistedTaskType(row: Record<string, unknown>): string | undefined {
   try {
     const payload = typeof row.initial_job_data === 'string'
@@ -151,26 +155,28 @@ function jobMatchesPersistedExecution(job: Job, row: Record<string, unknown>): b
 async function hasAuthoritativeLiveness(
   row: Record<string, unknown>,
   deps: LiveActivityRoutesDeps,
-): Promise<boolean> {
+): Promise<AuthoritativeLiveness | null> {
   const taskId = String(row.task_id);
   const jobId = row.job_id ? String(row.job_id) : taskId;
   let queueAvailable = true;
   try {
     const job = await deps.taskQueue.getJob(jobId);
-    if (job && jobMatchesPersistedExecution(job as Job, row)
-      && LIVE_JOB_STATES.has(await job.getState())) return true;
+    if (job && jobMatchesPersistedExecution(job as Job, row)) {
+      const queueState = await job.getState();
+      if (LIVE_JOB_STATES.has(queueState)) return { source: 'queue', queueState };
+    }
   } catch (error) {
     queueAvailable = false;
     logger.warn({ taskId, jobId, error: (error as Error).message }, 'BullMQ liveness unavailable for header activity');
   }
 
   const container = await (deps.inspectContainer ?? inspectExactTaskContainerLivenessForTask)(taskId);
-  if (container === 'running') return true;
+  if (container === 'running') return { source: 'container' };
   if (!queueAvailable || container === 'unavailable') {
     logger.warn({ taskId, jobId, queueAvailable, container },
       'Omitting task from header because authoritative liveness is unavailable');
   }
-  return false;
+  return null;
 }
 
 async function filterLivePage(
@@ -182,13 +188,14 @@ async function filterLivePage(
     const batch = rows.slice(index, index + LIVENESS_CONCURRENCY);
     const live = await Promise.all(batch.map(row => hasAuthoritativeLiveness(row, deps)));
     batch.forEach((row, offset) => {
-      if (!live[offset]) return;
+      const liveness = live[offset];
+      if (!liveness) return;
       items.push({
         id: String(row.task_id),
         type: 'task',
         label: taskLabel(row),
         repository: String(row.repository ?? 'unknown/unknown'),
-        status: 'Implementing',
+        status: liveness.source === 'queue' ? queueStatus(liveness.queueState) : 'Implementing',
         createdAt: asIso(row.created_at),
       });
     });

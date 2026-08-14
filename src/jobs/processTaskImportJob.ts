@@ -55,19 +55,25 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
     let localRepoPath: string | undefined;
     let worktreeInfo: WorktreeInfo | undefined;
     const [repoOwner, repoName] = repository.split('/');
-    const taskId = `task-import-${repoOwner}-${repoName}-${Date.now()}`;
+    const taskId = job.data.taskId ?? `task-import-${repoOwner}-${repoName}-${Date.now()}`;
 
     try {
-        if (job.data.taskId !== taskId) {
+        if (job.data.taskId === undefined) {
             await job.updateData({ ...job.data, taskId });
         }
-        await stateManager.createTaskState(taskId, {
+        const createdState = await stateManager.createTaskState(taskId, {
             number: 0,
             repoOwner,
             repoName,
             type: 'task_import',
             jobId: job.id,
         }, correlationId);
+        const terminalResult = await stateManager.getTerminalJobResultForAutomaticRetry(taskId, createdState, {
+            jobId: job.id,
+            attemptsMade: job.attemptsMade,
+            totalAttempts: job.opts.attempts,
+        });
+        if (terminalResult) return { ...terminalResult, repository };
 
         octokit = await withRetry(
             () => getAuthenticatedOctokit(),

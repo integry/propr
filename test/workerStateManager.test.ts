@@ -31,13 +31,23 @@ const mockDbTasksInsert = mock.fn(() => ({
 }));
 
 const mockDbHistoryInsert = mock.fn(async () => [1]);
+const mockDbTaskFirst = mock.fn(async () => null as Record<string, unknown> | null);
+const mockDbHistoryFirst = mock.fn(async () => null as Record<string, unknown> | null);
 
 const mockDb = (tableName: string) => {
     if (tableName === 'tasks') {
-        return { insert: mockDbTasksInsert };
+        return {
+            insert: mockDbTasksInsert,
+            where: mock.fn(() => ({ first: mockDbTaskFirst })),
+        };
     }
     if (tableName === 'task_history') {
-        return { insert: mockDbHistoryInsert };
+        return {
+            insert: mockDbHistoryInsert,
+            where: mock.fn(() => ({
+                orderBy: mock.fn(() => ({ first: mockDbHistoryFirst })),
+            })),
+        };
     }
     return { insert: mock.fn(async () => [1]) };
 };
@@ -189,6 +199,51 @@ test('createTaskState preserves an existing terminal attempt under retry', async
     assert.strictEqual(mockDbTasksInsert.mock.calls.length, 0);
     assert.strictEqual(mockDbHistoryInsert.mock.calls.length, 0);
     assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 0);
+    await stateManager.close();
+});
+
+test('createTaskState restores a terminal database snapshot after Redis expiry', async () => {
+    const taskId = 'task-persisted-terminal';
+    mockDbTaskFirst.mock.mockImplementationOnce(async () => ({
+        task_id: taskId,
+        job_id: 'bull-job-1899',
+        correlation_id: 'persisted-correlation',
+        repository: 'integry/propr',
+        issue_number: 1899,
+        task_type: 'issue',
+        created_at: '2026-08-14T12:00:00.000Z',
+        initial_job_data: JSON.stringify({
+            number: 1899,
+            repoOwner: 'integry',
+            repoName: 'propr',
+            type: 'issue',
+        }),
+    }));
+    mockDbHistoryFirst.mock.mockImplementationOnce(async () => ({
+        history_id: 7,
+        state: TaskStates.COMPLETED,
+        timestamp: '2026-08-14T12:10:00.000Z',
+        reason: 'Task completed successfully',
+        metadata: JSON.stringify({ attempts: 1 }),
+    }));
+    mockDbTasksInsert.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+
+    const result = await stateManager.createTaskState(taskId, {
+        number: 1899,
+        repoOwner: 'integry',
+        repoName: 'propr',
+    }, 'retry-correlation');
+
+    assert.equal(result.state, TaskStates.COMPLETED);
+    assert.equal(result.issueRef.jobId, 'bull-job-1899');
+    assert.equal(result.historyId, 7);
+    assert.equal(result.correlationId, 'persisted-correlation');
+    assert.equal(mockDbTasksInsert.mock.calls.length, 0);
+    assert.equal(mockDbHistoryInsert.mock.calls.length, 0);
+    assert.equal(mockPublishTaskUpdate.mock.calls.length, 0);
     await stateManager.close();
 });
 
