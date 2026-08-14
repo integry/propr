@@ -21,15 +21,65 @@ const memoryStorage = (initial: Record<string, string> = {}) => {
   };
 };
 
+type MemoryStorage = ReturnType<typeof memoryStorage>;
+
+type RuntimeConfigTestWindow = {
+  __PROPR_CONFIG__?: { apiBaseUrl?: string };
+  history: { replaceState: ReturnType<typeof vi.fn> };
+  localStorage: MemoryStorage;
+  location: Pick<Location, 'hash' | 'hostname' | 'pathname' | 'search'>;
+  name: string;
+  sessionStorage: MemoryStorage;
+};
+
+const stubHostedWindow = ({
+  config,
+  name = 'original-window-name',
+  pathname = '/login',
+  search,
+  sessionInitial = {},
+}: {
+  config?: { apiBaseUrl?: string };
+  name?: string;
+  pathname?: string;
+  search: string;
+  sessionInitial?: Record<string, string>;
+}): RuntimeConfigTestWindow => {
+  const hostedWindow: RuntimeConfigTestWindow = {
+    __PROPR_CONFIG__: config,
+    history: { replaceState: vi.fn() },
+    localStorage: memoryStorage(),
+    location: {
+      hash: '',
+      hostname: 'app.propr.dev',
+      pathname,
+      search,
+    },
+    name,
+    sessionStorage: memoryStorage(sessionInitial),
+  };
+  vi.stubGlobal('window', hostedWindow);
+  return hostedWindow;
+};
+
+const expectNoSessionStorageAccess = (storage: MemoryStorage): void => {
+  expect(storage.getItem).not.toHaveBeenCalled();
+  expect(storage.setItem).not.toHaveBeenCalled();
+  expect(storage.removeItem).not.toHaveBeenCalled();
+};
+
 describe('getApiBaseUrl', () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
     vi.resetModules();
+    window.history.replaceState(null, '', '/');
     delete window.__PROPR_CONFIG__;
     vi.unstubAllEnvs();
   });
 
   afterEach(() => {
     delete window.__PROPR_CONFIG__;
+    vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
 
@@ -86,6 +136,85 @@ describe('getApiBaseUrl', () => {
     vi.stubEnv('VITE_API_BASE_URL', '  https://app.propr.dev/  ');
     const getApiBaseUrl = await loadGetApiBaseUrl();
     expect(getApiBaseUrl()).toBe('https://app.propr.dev');
+  });
+
+  it('returns empty on the hosted OAuth completion route with a tunnel without touching hosted session state', async () => {
+    const hostedWindow = stubHostedWindow({
+      search: '?oauth_complete=true&tunnel=t-attacker.propr.dev',
+    });
+
+    const { getActiveHostedTunnelFlowId, getApiBaseUrl, HOSTED_TUNNEL_API_BASE_STORAGE_KEY } =
+      await import('./runtimeConfig');
+
+    expect(getApiBaseUrl()).toBe('');
+    expectNoSessionStorageAccess(hostedWindow.sessionStorage);
+    expect(hostedWindow.localStorage.getItem).not.toHaveBeenCalled();
+    expect(hostedWindow.localStorage.setItem).not.toHaveBeenCalled();
+    expect(hostedWindow.localStorage.removeItem).toHaveBeenCalledTimes(1);
+    expect(hostedWindow.localStorage.removeItem).toHaveBeenCalledWith(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
+    expect(hostedWindow.history.replaceState).not.toHaveBeenCalled();
+    expect(hostedWindow.name).toBe('original-window-name');
+    expect(getActiveHostedTunnelFlowId()).toBeNull();
+  });
+
+  it('returns empty on the hosted OAuth completion route with a matching stored flow without reading storage', async () => {
+    const hostedWindow = stubHostedWindow({
+      name: 'propr-hosted-flow-context:stored-context|preserved',
+      search: '?oauth_complete=true&flow=stored-flow',
+      sessionInitial: {
+        'propr.hostedTunnelApiBaseUrl': 'https://t-stored.propr.dev',
+        'propr.hostedTunnelContextId': 'stored-context',
+        'propr.hostedTunnelFlowId': 'stored-flow',
+      },
+    });
+
+    const { getActiveHostedTunnelFlowId, getApiBaseUrl, HOSTED_TUNNEL_API_BASE_STORAGE_KEY } =
+      await import('./runtimeConfig');
+
+    expect(getApiBaseUrl()).toBe('');
+    expectNoSessionStorageAccess(hostedWindow.sessionStorage);
+    expect(hostedWindow.localStorage.getItem).not.toHaveBeenCalled();
+    expect(hostedWindow.localStorage.setItem).not.toHaveBeenCalled();
+    expect(hostedWindow.localStorage.removeItem).toHaveBeenCalledTimes(1);
+    expect(hostedWindow.localStorage.removeItem).toHaveBeenCalledWith(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
+    expect(hostedWindow.history.replaceState).not.toHaveBeenCalled();
+    expect(hostedWindow.name).toBe('propr-hosted-flow-context:stored-context|preserved');
+    expect(getActiveHostedTunnelFlowId()).toBeNull();
+  });
+
+  it('returns empty on the hosted OAuth completion route despite runtime and build API config', async () => {
+    vi.stubEnv('VITE_API_BASE_URL', 'https://t-build.propr.dev');
+    const hostedWindow = stubHostedWindow({
+      config: { apiBaseUrl: 'https://t-runtime.propr.dev' },
+      search: '?oauth_complete=true',
+    });
+
+    const { getActiveHostedTunnelFlowId, getApiBaseUrl, HOSTED_TUNNEL_API_BASE_STORAGE_KEY } =
+      await import('./runtimeConfig');
+
+    expect(getApiBaseUrl()).toBe('');
+    expectNoSessionStorageAccess(hostedWindow.sessionStorage);
+    expect(hostedWindow.localStorage.getItem).not.toHaveBeenCalled();
+    expect(hostedWindow.localStorage.setItem).not.toHaveBeenCalled();
+    expect(hostedWindow.localStorage.removeItem).toHaveBeenCalledTimes(1);
+    expect(hostedWindow.localStorage.removeItem).toHaveBeenCalledWith(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
+    expect(hostedWindow.history.replaceState).not.toHaveBeenCalled();
+    expect(hostedWindow.name).toBe('original-window-name');
+    expect(getActiveHostedTunnelFlowId()).toBeNull();
+  });
+
+  it('keeps ordinary hosted login tunnel selection unchanged', async () => {
+    const hostedWindow = stubHostedWindow({
+      search: '?tunnel=t-ordinary.propr.dev',
+    });
+
+    const { getActiveHostedTunnelFlowId, getApiBaseUrl } = await import('./runtimeConfig');
+
+    expect(getApiBaseUrl()).toBe('https://t-ordinary.propr.dev');
+    expect(hostedWindow.sessionStorage.setItem).toHaveBeenCalled();
+    expect(hostedWindow.history.replaceState).toHaveBeenCalled();
+    expect(hostedWindow.name).not.toBe('original-window-name');
+    expect(getActiveHostedTunnelFlowId()).toBeTruthy();
   });
 });
 

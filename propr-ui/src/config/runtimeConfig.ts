@@ -489,11 +489,23 @@ if (typeof window !== 'undefined') {
  * normalizes the values it injects, but a hand-served `public/config.js`,
  * `VITE_API_BASE_URL`, or manually set apiBaseUrl can still carry one.
  */
-export const getApiBaseUrl = (): string =>
-  resolveApiBaseUrl(
+export const getApiBaseUrl = (): string => {
+  if (
+    typeof window !== 'undefined' &&
+    isHostedOAuthCompletionRoute(
+      window.location.hostname,
+      window.location.pathname,
+      window.location.search
+    )
+  ) {
+    return '';
+  }
+
+  return resolveApiBaseUrl(
     typeof window !== 'undefined' ? window.location.hostname : '',
     typeof window !== 'undefined' ? window.location.search : '',
     runtimeConfig,
     import.meta.env.VITE_API_BASE_URL,
     storageForWindow()
   );
+};
