@@ -92,6 +92,12 @@ for model in "${models[@]}"; do
       let completeResponse;
       let conversationId;
       let correlationError;
+      let initializationSeen = false;
+      let terminalResultSeen = false;
+      let streamEnvelopeSeen = false;
+      const rejectProtocol = message => {
+        if (!correlationError) correlationError = message;
+      };
       const correlateConversation = (envelope, candidateId, initiating = false) => {
         if (correlationError) return;
         if (typeof candidateId !== "string" || candidateId.length === 0) {
@@ -112,28 +118,50 @@ for model in "${models[@]}"; do
         if (!line.trim()) continue;
         try {
           const event = JSON.parse(line);
+          const streamEnvelope = typeof event?.event === "string" ? event.event : undefined;
+          const legacyEnvelope = event?.type === "init" || event?.type === "message" || event?.type === "result"
+            ? event.type
+            : undefined;
+
+          if (terminalResultSeen && (streamEnvelope || legacyEnvelope)) {
+            rejectProtocol(streamEnvelope === "result"
+              ? "duplicate terminal stream result"
+              : "protocol envelope arrived after terminal stream result");
+            continue;
+          }
+          if (legacyEnvelope) {
+            rejectProtocol(streamEnvelopeSeen
+              ? `legacy ${legacyEnvelope} envelope cannot be combined with stream evidence`
+              : `expected stream-json envelope, got legacy ${legacyEnvelope} envelope`);
+            continue;
+          }
+          if (!streamEnvelope) continue;
+          streamEnvelopeSeen = true;
+
           if (event?.event === "init") {
+            if (initializationSeen) {
+              rejectProtocol("repeated stream init envelope");
+              continue;
+            }
+            initializationSeen = true;
             correlateConversation("init", event.conversation_id, true);
             if (typeof event.init?.model === "string") reportedModel = event.init.model;
-          } else if (event?.type === "init" && typeof event.model === "string") {
-            reportedModel = event.model;
           }
           if (event?.event === "step_update") {
             correlateConversation("step_update", event.step_update?.conversation_id);
             if (event.step_update?.step_type === "agent_response" && typeof event.step_update.text_delta === "string") {
               streamedResponse += event.step_update.text_delta;
             }
-          } else if (event?.type === "message" && event.role === "assistant" && typeof event.content === "string") {
-            if (event.delta) streamedResponse += event.content;
-            else completeResponse = event.content;
           }
-          if (event?.event === "result" && event.result) {
+          if (event?.event === "result") {
+            terminalResultSeen = true;
+            if (!event.result || typeof event.result !== "object") {
+              rejectProtocol("stream result envelope has no result payload");
+              continue;
+            }
             correlateConversation("result", event.result.conversation_id);
             terminalStatus = event.result.status;
             if (typeof event.result.response === "string") completeResponse = event.result.response;
-          } else if (event?.type === "result") {
-            terminalStatus = event.status;
-            if (typeof event.response === "string") completeResponse = event.response;
           }
         } catch { /* non-protocol diagnostic */ }
       }
@@ -143,6 +171,9 @@ for model in "${models[@]}"; do
         process.exitCode = 1;
       } else if (conversationId === undefined) {
         process.stderr.write("expected an initiating Antigravity conversation_id\n");
+        process.exitCode = 1;
+      } else if (!terminalResultSeen) {
+        process.stderr.write("expected exactly one terminal stream result\n");
         process.exitCode = 1;
       } else if (reportedModel !== process.env.EXPECTED_MODEL_ID) {
         process.stderr.write(`expected init model ${JSON.stringify(process.env.EXPECTED_MODEL_ID)}, got ${JSON.stringify(reportedModel)}\n`);
