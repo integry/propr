@@ -22,6 +22,7 @@ function literalAssignment(source: string, name: string): string {
 function runAntigravityVerification(
   initModelEvidence = 'pinned-1.1.13-canonical',
   modelsEvidence = 'mapped',
+  conversationEvidence = 'consistent',
 ) {
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'propr-antigravity-script-test.'));
   const binDirectory = join(fixtureRoot, 'bin');
@@ -70,6 +71,13 @@ else if (evidence === 'different-tier') {
   init.init.model = fixture.models.find(candidate => candidate.id !== modelId).id;
 } else if (evidence === 'alias') init.init.model = 'flash37-high';
 else if (evidence === 'display-name') init.init.model = modelFixture.displayName;
+if (process.env.FAKE_CONVERSATION_EVIDENCE === 'mixed') {
+  const stepUpdate = events.find(event => event.event === 'step_update');
+  const result = events.find(event => event.event === 'result');
+  if (!stepUpdate || !result) throw new Error(\`missing correlation fixture for model: \${modelId}\`);
+  stepUpdate.step_update.conversation_id = \`\${init.conversation_id}-step\`;
+  result.result.conversation_id = \`\${init.conversation_id}-result\`;
+}
 process.stdout.write(\`\${events.map(JSON.stringify).join('\\n')}\\n\`);
 `,
   );
@@ -86,6 +94,7 @@ process.stdout.write(\`\${events.map(JSON.stringify).join('\\n')}\\n\`);
         ANTIGRAVITY_VERIFIER_FIXTURE: antigravity113VerifierFixturePath.pathname,
         FAKE_INIT_MODEL_EVIDENCE: initModelEvidence,
         FAKE_MODELS_EVIDENCE: modelsEvidence,
+        FAKE_CONVERSATION_EVIDENCE: conversationEvidence,
         PATH: `${binDirectory}:${process.env.PATH}`,
       },
     });
@@ -183,6 +192,16 @@ test('authenticated image verifier rejects missing, alias, display-name, and oth
     assert.notEqual(result.status, 0, `${evidence} evidence must not pass`);
     assert.match(result.stderr, /expected init model "gemini-3\.7-flash-high", got/);
   }
+});
+
+test('authenticated image verifier rejects mixed-conversation stream evidence', () => {
+  const result = runAntigravityVerification('pinned-1.1.13-canonical', 'mapped', 'mixed');
+
+  assert.notEqual(result.status, 0);
+  assert.match(
+    result.stderr,
+    /step_update envelope expected conversation_id "fixture-conversation-high", got "fixture-conversation-high-step"/,
+  );
 });
 
 test('authenticated image verifier requires each discovered ID and display name on the same mapping', () => {

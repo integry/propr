@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { after, test } from 'node:test';
-import { detectStoredOutputFormat } from '../routes/liveDetailsStoredOutputFormat.js';
 
 process.env.NODE_ENV = 'test';
+process.env.GH_APP_ID = process.env.GH_APP_ID || '1';
+process.env.GH_PRIVATE_KEY_PATH = process.env.GH_PRIVATE_KEY_PATH || '/tmp/missing-key.pem';
+process.env.GH_INSTALLATION_ID = process.env.GH_INSTALLATION_ID || '1';
+
+const { detectStoredOutputFormat } = await import('../routes/liveDetailsStoredOutputFormat.js');
 
 after(async () => {
   const { db } = await import('@propr/core');
@@ -121,15 +125,16 @@ test('stored output parsing renders only Antigravity analysis events through liv
 });
 
 test('Antigravity 1.1.12 stream text remains visible through live details', async () => {
-  const { parseAntigravityOutputToConversationResult } = await import('../routes/liveDetailsOutputParsers.js');
+  const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
   const output = fs.readFileSync(new URL('../../core/test/fixtures/antigravity-stream-1.1.12.jsonl', import.meta.url), 'utf8');
 
-  const parsed = parseAntigravityOutputToConversationResult(output);
+  const parsed = parseStoredOutputContent(output);
 
-  assert.deepEqual(parsed?.events.map(event => ({ type: event.type, content: event.content })), [
+  assert.equal(parsed.format, 'antigravity');
+  assert.deepEqual(parsed.parsed?.events.map(event => ({ type: event.type, content: event.content })), [
     { type: 'thought', content: 'STREAM_OK\n' }
   ]);
-  assert.deepEqual(parsed?.tokenUsage, {
+  assert.deepEqual(parsed.parsed?.tokenUsage, {
     input_tokens: 15050,
     output_tokens: 33,
     cache_creation_input_tokens: 0,

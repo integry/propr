@@ -89,22 +89,45 @@ for model in "${models[@]}"; do
       let terminalStatus;
       let streamedResponse = "";
       let completeResponse;
+      let conversationId;
+      let correlationError;
+      const correlateConversation = (envelope, candidateId, initiating = false) => {
+        if (correlationError) return;
+        if (typeof candidateId !== "string" || candidateId.length === 0) {
+          correlationError = `${envelope} envelope has no conversation_id`;
+          return;
+        }
+        if (initiating && conversationId === undefined) {
+          conversationId = candidateId;
+          return;
+        }
+        if (conversationId === undefined) {
+          correlationError = `${envelope} envelope arrived before an initiating conversation_id`;
+        } else if (candidateId !== conversationId) {
+          correlationError = `${envelope} envelope expected conversation_id ${JSON.stringify(conversationId)}, got ${JSON.stringify(candidateId)}`;
+        }
+      };
       for (const line of input.split(/\r?\n/)) {
         if (!line.trim()) continue;
         try {
           const event = JSON.parse(line);
-          if (event?.event === "init" && typeof event.init?.model === "string") {
-            reportedModel = event.init.model;
+          if (event?.event === "init") {
+            correlateConversation("init", event.conversation_id, true);
+            if (typeof event.init?.model === "string") reportedModel = event.init.model;
           } else if (event?.type === "init" && typeof event.model === "string") {
             reportedModel = event.model;
           }
-          if (event?.event === "step_update" && event.step_update?.step_type === "agent_response" && typeof event.step_update.text_delta === "string") {
-            streamedResponse += event.step_update.text_delta;
+          if (event?.event === "step_update") {
+            correlateConversation("step_update", event.step_update?.conversation_id);
+            if (event.step_update?.step_type === "agent_response" && typeof event.step_update.text_delta === "string") {
+              streamedResponse += event.step_update.text_delta;
+            }
           } else if (event?.type === "message" && event.role === "assistant" && typeof event.content === "string") {
             if (event.delta) streamedResponse += event.content;
             else completeResponse = event.content;
           }
           if (event?.event === "result" && event.result) {
+            correlateConversation("result", event.result.conversation_id);
             terminalStatus = event.result.status;
             if (typeof event.result.response === "string") completeResponse = event.result.response;
           } else if (event?.type === "result") {
@@ -114,7 +137,13 @@ for model in "${models[@]}"; do
         } catch { /* non-protocol diagnostic */ }
       }
       const response = completeResponse ?? streamedResponse;
-      if (reportedModel !== process.env.EXPECTED_MODEL_ID) {
+      if (correlationError) {
+        process.stderr.write(`${correlationError}\n`);
+        process.exitCode = 1;
+      } else if (conversationId === undefined) {
+        process.stderr.write("expected an initiating Antigravity conversation_id\n");
+        process.exitCode = 1;
+      } else if (reportedModel !== process.env.EXPECTED_MODEL_ID) {
         process.stderr.write(`expected init model ${JSON.stringify(process.env.EXPECTED_MODEL_ID)}, got ${JSON.stringify(reportedModel)}\n`);
         process.exitCode = 1;
       } else if (typeof terminalStatus !== "string" || terminalStatus.toUpperCase() !== "SUCCESS") {
