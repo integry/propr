@@ -192,7 +192,7 @@ function createDemoTaskQueue(): Queue {
     add: async () => { throw new Error('Task queue is disabled in demo mode'); },
     close: async () => undefined,
     getWaitingCount: async () => 0,
-    getActiveCount: async () => 0,
+    getActiveCount: async () => 0, getJobs: async () => [],
     getCompletedCount: async () => 0,
     getFailedCount: async () => 0,
     getDelayedCount: async () => 0,

@@ -130,7 +130,7 @@ function positiveNumber(value: unknown): number | undefined {
 function getRepository(data: Record<string, unknown>): string {
   const repository = nonEmptyString(data.repository);
   if (repository) return repository;
-  const owner = nonEmptyString(data.repoOwner);
+  const owner = nonEmptyString(data.repoOwner) ?? nonEmptyString(data.owner);
   const name = nonEmptyString(data.repoName);
   return owner && name ? `${owner}/${name}` : 'unknown/unknown';
 }

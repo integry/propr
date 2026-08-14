@@ -133,7 +133,7 @@ test('/api/queue/stats represents every active job once and exposes only proven 
         id: 'system-job-5',
         name: 'processSystemTask',
         title: 'processSystemTask',
-        repository: 'unknown/unknown',
+        repository: 'integry/propr',
         createdAt: '2026-08-14T20:04:00.000Z',
       },
       {
