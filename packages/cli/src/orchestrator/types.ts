@@ -133,6 +133,8 @@ export interface OnLogOption {
   onLog?: (line: string) => void;
   pull?: boolean;
   freshnessCache?: Map<string, ImageFreshnessResult>;
+  /** Internal full-stack startup signal; direct service starts leave this false. */
+  migrationsPreapplied?: boolean;
 }
 
 /** Public surface of orchestrator.mjs consumed by the CLI. */
@@ -169,6 +171,14 @@ export interface OrchestratorModule {
 
   startService(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): ServiceState | undefined;
   startServiceAsync(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): Promise<ServiceState | undefined>;
+  runMigrationPhase(
+    cfg: OrchestratorConfig,
+    opts?: { onLog?: (line: string) => void; freshnessCache?: Map<string, ImageFreshnessResult> }
+  ): void;
+  runMigrationPhaseAsync(
+    cfg: OrchestratorConfig,
+    opts?: { onLog?: (line: string) => void; freshnessCache?: Map<string, ImageFreshnessResult> }
+  ): Promise<void>;
   stopService(cfg: OrchestratorConfig, service: string, opts?: { remove?: boolean; onLog?: (line: string) => void }): void;
   startStack(
     cfg: OrchestratorConfig,

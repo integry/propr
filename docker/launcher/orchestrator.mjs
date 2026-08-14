@@ -848,6 +848,7 @@ export function ensureServiceImage(cfg, service, onLog, { freshnessCache } = {})
 export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api'];
 export const TOGGLE_SERVICES = ['ui', 'docs', 'tunnel'];
 export const SERVICES = [...CORE_SERVICES, ...TOGGLE_SERVICES];
+const DATABASE_SERVICES = new Set(['daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']);
 
 function imageTagForService(cfg, service) {
     if (service === 'redis') return cfg.images.redis;
@@ -892,6 +893,22 @@ function appBaseArgs(cfg) {
 
 function appSpec(cfg, command, extraArgs = []) {
     return { image: cfg.images.app, args: [...appBaseArgs(cfg), ...extraArgs], command: ['node', ...command] };
+}
+
+function migrationSpec(cfg) {
+    // Force migration ownership even if an internal handoff marker was left in
+    // the user-managed env file. appSpec places this override after --env-file.
+    return appSpec(cfg, ['dist/src/migrate.js'], [
+        '-e', 'PROPR_MIGRATIONS_PREAPPLIED=0',
+    ]);
+}
+
+function withPreappliedMigrations(spec, service, migrationsPreapplied) {
+    if (!migrationsPreapplied || !DATABASE_SERVICES.has(service)) return spec;
+    return {
+        ...spec,
+        args: [...spec.args, '-e', 'PROPR_MIGRATIONS_PREAPPLIED=1'],
+    };
 }
 
 // Returns { image, args, command? } for a canonical service name.
@@ -1036,10 +1053,10 @@ export function buildServiceSpec(cfg, service) {
  * the service image if it is missing so toggles (`propr docs on`) work even when
  * the image was skipped at startup.
  */
-export function startService(cfg, service, { onLog, pull = true, freshnessCache } = {}) {
+export function startService(cfg, service, { onLog, pull = true, freshnessCache, migrationsPreapplied = false } = {}) {
     const name = `${cfg.stack}-${service}`;
     if (pull) ensureServiceImage(cfg, service, onLog, { freshnessCache });
-    const spec = buildServiceSpec(cfg, service);
+    const spec = withPreappliedMigrations(buildServiceSpec(cfg, service), service, migrationsPreapplied);
     removeIfExists(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
     dockerRunDetached(cfg, name, service, runArgs, spec.networkMode);
@@ -1084,8 +1101,20 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
     const started = [];
     const freshnessCache = new Map();
     try {
+        runMigrationPhase(cfg, { onLog, freshnessCache });
         for (const service of toStart) {
-            startService(cfg, service, { onLog, freshnessCache });
+            startService(cfg, service, {
+                onLog,
+                freshnessCache,
+                // The one-shot phase above is the sole migration owner for a
+                // full stack launch. Direct startService callers retain the
+                // service's normal fail-closed migration gate.
+                migrationsPreapplied: DATABASE_SERVICES.has(service),
+                // The migration phase already verified/pulled this exact app
+                // image tag. Avoid repeating the freshness check for all five
+                // app containers.
+                pull: !DATABASE_SERVICES.has(service),
+            });
             started.push(service);
         }
     } catch (err) {
@@ -1100,6 +1129,33 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
         throw err;
     }
     return getStackStatus(cfg);
+}
+
+function migrationDockerArgs(cfg) {
+    const spec = migrationSpec(cfg);
+    return [
+        'run', '--rm', '--init', '--name', `${cfg.stack}-migrate`,
+        '--network', cfg.network,
+        '--label', `propr.stack=${cfg.stack}`,
+        '--label', 'propr.service=migrate',
+        ...spec.args,
+        spec.image,
+        ...spec.command,
+    ];
+}
+
+function migrationFailure(res) {
+    const detail = firstLine(res.stderr || res.stdout || res.error?.message || 'migration container exited unsuccessfully');
+    return new Error(`Database migration phase failed: ${detail}`);
+}
+
+/** Run the sole schema-migration owner to completion before app services start. */
+export function runMigrationPhase(cfg, { onLog, freshnessCache } = {}) {
+    ensureServiceImage(cfg, 'daemon', onLog, { freshnessCache });
+    onLog?.('  · running database migrations');
+    const res = docker(migrationDockerArgs(cfg), { capture: true });
+    if (res.status !== 0) throw migrationFailure(res);
+    onLog?.('  [ok] database migrations completed');
 }
 
 // ---------------------------------------------------------------------------
@@ -1184,10 +1240,10 @@ async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache } =
 }
 
 /** Async mirror of startService. */
-export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache } = {}) {
+export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationsPreapplied = false } = {}) {
     const name = `${cfg.stack}-${service}`;
     if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache });
-    const spec = buildServiceSpec(cfg, service);
+    const spec = withPreappliedMigrations(buildServiceSpec(cfg, service), service, migrationsPreapplied);
     await removeIfExistsAsync(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
     await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode);
@@ -1222,8 +1278,14 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
     const started = [];
     const freshnessCache = new Map();
     try {
+        await runMigrationPhaseAsync(cfg, { onLog, freshnessCache });
         for (const service of toStart) {
-            await startServiceAsync(cfg, service, { onLog, freshnessCache });
+            await startServiceAsync(cfg, service, {
+                onLog,
+                freshnessCache,
+                migrationsPreapplied: DATABASE_SERVICES.has(service),
+                pull: !DATABASE_SERVICES.has(service),
+            });
             started.push(service);
         }
     } catch (err) {
@@ -1238,6 +1300,15 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
         throw err;
     }
     return getStackStatusAsync(cfg);
+}
+
+/** Async mirror of runMigrationPhase for the interactive setup UI. */
+export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache } = {}) {
+    await ensureServiceImageAsync(cfg, 'daemon', onLog, { freshnessCache });
+    onLog?.('  · running database migrations');
+    const res = await dockerAsync(migrationDockerArgs(cfg));
+    if (res.status !== 0) throw migrationFailure(res);
+    onLog?.('  [ok] database migrations completed');
 }
 
 /** Async mirror of getStackStatus. */
