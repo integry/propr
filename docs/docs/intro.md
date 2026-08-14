@@ -12,7 +12,7 @@ ProPR connects to your GitHub repositories and keeps the pull request as the cen
 
 ## First 15 Minutes
 
-You need a Docker-capable Linux host, Node.js 22 or 24 for the CLI path, and a login for at least one coding agent — reuse one already on the host (Claude Code's `claude auth login`, Antigravity's `agy login`, …) or create it through the agent's own Docker image with `propr agent login <agent>`. Then:
+You need a supported Docker host (Linux `amd64` is native and recommended; Apple Silicon macOS works through Docker Desktop running the published Linux `amd64` images under emulation; native `arm64` images are not yet available), Node.js 22+ for the CLI path, and a login for at least one coding agent — reuse one already on the host (Claude Code's `claude auth login`, Antigravity's `agy login`, …) or create it through the agent's own Docker image with `propr agent login <agent>`. Then:
 
 ```bash
 npm install -g propr-cli

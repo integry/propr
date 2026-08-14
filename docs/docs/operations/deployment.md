@@ -4,7 +4,7 @@ Use this page when ProPR should run on a shared server. For a laptop install, st
 
 ## Recommended Path
 
-Use the prebuilt images, started by the ProPR CLI control plane (`propr init stack --root /srv/propr`, `propr check`, `propr start --no-tui`; Node.js 22 or 24) or by the published launcher container. Both run the same orchestrator: it reads a pinned image manifest, pulls each image, creates a Docker network, and starts the ProPR service containers as siblings through the mounted Docker socket.
+Use the prebuilt images, started by the ProPR CLI control plane (`propr init stack --root /srv/propr`, `propr check`, `propr start --no-tui`; Node.js 22+) or by the published launcher container. Both run the same orchestrator: it reads a pinned image manifest, pulls each image, creates a Docker network, and starts the ProPR service containers as siblings through the mounted Docker socket.
 
 You need:
 
@@ -16,7 +16,7 @@ You need:
 - Public URLs for the Web UI and OAuth callback
 - TLS through your reverse proxy or ingress
 
-Docker Compose is not part of the prebuilt production path. It is used for the source-development stack. The v0.8.10 release run completed on Docker Engine 29.1.3; ProPR does not enforce that exact version, and `propr check` validates the capabilities it needs before startup.
+Docker Compose is not part of the prebuilt production path. It is used for the source-development stack. ProPR does not enforce an exact Docker version; `propr check` validates the capabilities it needs before startup.
 
 ## Runtime Directory Layout
 
@@ -177,7 +177,7 @@ To stay within limits:
 
 ### Option A — CLI (Recommended)
 
-The ProPR CLI (`propr-cli`, Node.js 22 or 24) is the recommended control plane. It
+The ProPR CLI (`propr-cli`, Node.js 22+) is the recommended control plane. It
 reads `.env`, pulls images, creates the Docker network, and starts service
 containers — the same orchestration the launcher performs, but managed from the
 host rather than from inside a container.

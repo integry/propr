@@ -7,22 +7,23 @@ sidebar_position: 1
 ProPR runs from prebuilt Docker images, started by the ProPR CLI. The fastest path is the guided `propr setup` wizard — it scaffolds the runtime directory, verifies the host, configures GitHub access and issue intake, and starts the stack in one pass:
 
 ```bash
-npm install -g propr-cli   # Node.js 22 or 24
+npm install -g propr-cli   # Node.js 22+
+propr --version            # confirm the public CLI is on PATH
 mkdir propr-deploy && cd propr-deploy
 propr setup                # guided, re-runnable bootstrap
 ```
 
-`propr setup` is safe to re-run: it skips steps that are already satisfied and never overwrites existing configuration or data.
+Keep the terminal interactive and complete GitHub and provider authorization yourself when setup pauses. When it finishes, verify the installation with `propr check` and `propr status`. `propr setup` is safe to re-run: it skips steps that are already satisfied and never overwrites existing configuration or data.
 
 ## System Requirements
 
-The published prebuilt stack is release-qualified on **Linux x86_64 (`amd64`)**. The v0.8.10 end-to-end release run used Ubuntu 26.04, Docker Engine 29.1.3, 2 vCPU, 4 GB RAM, and a 40 GB provisioned disk (38 GiB usable). Those values record the tested baseline; Docker 29 and a 40 GB disk are not enforced minimums.
+**Linux x86_64 (`amd64`) is the native, recommended production path.** ProPR has also been exercised successfully on Apple Silicon macOS through Docker Desktop, which runs the published Linux `amd64` images under emulation. Native `arm64` images are not yet available.
 
 | Area | Requirement |
 | --- | --- |
-| Host platform | Linux on `amd64` for the CLI and launcher paths. The current agent and launcher images are published for `linux/amd64`. The Docker Desktop source path is documented for macOS and Windows, but it is outside the current release qualification. |
-| Docker | A maintained Docker Engine release, with the CLI installed and the daemon reachable by the ProPR user. That user must be able to run `docker info` and read/write `/var/run/docker.sock` without an interactive `sudo` prompt. Linux containers, user-defined bridge networks, bind mounts, named volumes, restart policies, `--init`, and container resource limits must be available. `propr check` verifies the CLI, daemon, socket, and image access before startup. |
-| Node.js | Node.js 22 or 24 and npm are the validated public CLI paths; the published `propr-cli` package keeps its engine minimum at Node.js `>=22`. The `propr/launcher` container runs the same stack orchestrator without host Node.js. |
+| Host platform | Linux on `amd64` is native and recommended for production. On Apple Silicon macOS, the CLI and launcher work through Docker Desktop running the published Linux `amd64` agent and launcher images under emulation; native `arm64` images are not yet available. |
+| Docker | A maintained Docker Engine release, with the CLI installed and the daemon reachable by the ProPR user. On Linux, that user must be able to run `docker info` and read/write `/var/run/docker.sock` without an interactive `sudo` prompt. On Apple Silicon, Docker Desktop must be running Linux containers and provide the default Docker socket to the CLI and launcher. Linux containers, user-defined bridge networks, bind mounts, named volumes, restart policies, `--init`, and container resource limits must be available. `propr check` verifies the CLI, daemon, socket, and image access before startup. |
+| Node.js | Node.js 22+ and npm are required for the public CLI path. The `propr/launcher` container runs the same stack orchestrator without host Node.js. |
 | Capacity | Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for a single-task evaluation. Use 8 GB RAM or more for normal use, concurrent work, or large repositories, and allow extra disk for image updates, clones, worktrees, and logs. On a 4 GB host, start with `WORKER_CONCURRENCY=1`. The automatically selected agent CPU ceiling will not exceed detected host capacity. |
 | Network and accounts | Outbound HTTPS and WebSocket access to Docker Hub, npm (for the CLI path), GitHub, the selected model providers, and ProPR Connect when using the shared App or managed tunnel. The default WebSocket intake path needs no inbound public port. The guided Connect default uses the GitHub CLI (`gh`) for browser login; alternatively authenticate first with `propr login <token>`. GitHub repository access and at least one coding-agent provider account are required. |
 
@@ -39,90 +40,69 @@ Access to `/var/run/docker.sock` is root-equivalent control of the host. Limit i
 | Your Linux laptop or workstation | [Local Setup](./setup-local.md) | The shortest path: localhost URLs, no proxy, no public endpoint. |
 | A shared or production Linux server | [Server Setup](./setup-server.md) | Adds stable paths, public URLs, TLS behind a reverse proxy, and the advanced intake options (polling, own-App webhook). |
 | A brand-new Linux VPS | [Secure VPS Deployment](./setup-vps.md) | Start-to-finish host hardening plus the install: SSH lockdown, firewall, localhost port binding, TLS. [Advanced VPS Hardening](./setup-vps-hardening.md) optionally removes all public inbound traffic with a Cloudflare Tunnel and an SSO gate. |
-| macOS or Windows (Docker Desktop) | [Source Development Setup](./setup-source.md) | The documented evaluation path on these platforms. The CLI and launcher need a Linux host because they bind-mount host paths and the Docker socket directly; this Compose-based path is outside the current release qualification. |
+| Apple Silicon Mac with Docker Desktop | [Local Setup](./setup-local.md) | Runs the published Linux `amd64` images under emulation for local evaluation; native `arm64` images are not yet available. |
 | A source checkout, changing ProPR itself | [Source Development Setup](./setup-source.md) | Development Compose, direct service commands, tests, docs validation, and image builds. |
 
 ## Prerequisites For Every Path
 
 - A host that meets the [system requirements](#system-requirements)
-- Node.js 22 or 24 for the CLI path (the `propr/launcher:latest` container alternative needs no Node.js)
+- Node.js 22+ for the CLI path (the `propr/launcher:latest` container alternative needs no Node.js)
 - GitHub access for the backend. By default `propr setup` enrolls the shared, hosted ProPR GitHub App through ProPR Connect; accepting the defaults handles login through the GitHub CLI (`gh`) and installation when needed. You can instead run `propr login <token>` first. Running your own GitHub App is the advanced alternative. See [GitHub Authentication](../operations/github-auth.md).
 - A provider account for at least one coding agent (Claude Code, Codex, Antigravity, OpenCode, or Mistral Vibe) — reuse host credentials, run `propr agent login <agent>`, or add the agent and log in directly from the Web UI
 - Disk space for data, logs, and repository workspaces
 
-## Give This To Your Coding Agent
+## Give this to your coding agent
 
-Use this block when you want a coding agent to bootstrap ProPR on a host you control. Fill in the placeholders first, and keep the terminal interactive so you can authorize external services yourself.
+Use this block when you want a coding agent to bootstrap ProPR on a host you control. Keep its terminal interactive so you can authorize external services yourself.
 
 ```text
 Install ProPR safely on this host.
 
-Placeholders:
-- Stack root: <STACK_ROOT, absolute path only, for example /srv/propr or
-  $HOME/propr-deploy resolved before running commands>
-- GitHub account/repository to connect: <GITHUB_ACCOUNT_OR_OWNER/REPO>
-- Selected coding agent: <claude|codex|antigravity|opencode|vibe>
-- ProPR Connect/shared GitHub App: <yes|no>
-- Managed app.propr.dev tunnel: <yes|no, only if my plan includes it and my account is entitled>
-
-Follow the public ProPR docs, starting with System Requirements:
+Follow the public setup docs, starting with System Requirements:
 https://docs.propr.dev/docs/tutorials/setup#system-requirements
 
-Before installing, verify and report: Linux amd64, CPU/RAM/disk capacity,
-outbound HTTPS/WebSocket access to Docker Hub/npm/GitHub/selected provider
-and ProPR Connect if selected, Docker Engine + CLI, direct read/write access
-to /var/run/docker.sock without interactive sudo, Node.js 22 or 24, npm, Git,
-and authenticated GitHub CLI access (`gh auth status`). Resolve <STACK_ROOT>
-to an absolute path before using it in quoted command arguments.
+Before making changes, identify the host OS and architecture. Report whether it
+is the native, recommended Linux amd64 production path or Apple Silicon macOS
+using Docker Desktop to emulate the published Linux amd64 images. Native arm64
+images are not available.
 
-Install the current public CLI with `npm install -g propr-cli`, then run
-`propr --version`. If this is an existing stack root, run
-`propr check --root "<STACK_ROOT>"` first and report failures. On a fresh root,
-continue to the guided setup after host prerequisites pass.
+Verify Node.js 22+ and npm; Docker Engine and CLI; a reachable daemon; `docker
+info`; daemon/socket access for the current user; Git; the documented CPU, RAM,
+disk, and outbound network requirements; and any existing installation. On
+Apple Silicon, verify that Docker Desktop is running Linux containers and makes
+its default Docker socket available to the CLI and launcher.
 
-Run `propr setup --root "<STACK_ROOT>"` in an interactive terminal. Use
-`--no-tui` only for SSH or limited terminals that cannot run the full-screen
-wizard. Accept only choices I have authorized.
+Ask me to choose an absolute location for the ProPR data folder, the directory
+containing `.env`, `data/`, `logs/`, and `repos/`. If that location already
+exists, inspect it before changing anything, preserve all existing contents,
+and verify its contents and permissions. If an existing-folder or prerequisite
+check fails, stop and report the non-sensitive failure. Never delete,
+reinitialize, overwrite, or broadly clean up existing configuration, data,
+logs, repositories, Docker volumes, ports, firewall rules, or TLS.
 
-Pause and ask me to complete any GitHub device/browser authorization, GitHub
-App installation or repository-scope decision, ProPR Connect/plan choice, or
-coding-agent provider login. Do not ask me to paste credentials, tokens, private
-keys, cookies, or one-time codes into chat or logs.
+Install the public CLI with `npm install -g propr-cli` and verify it with
+`propr --version`. If the chosen folder is already initialized, run `propr
+check` there and stop on failure. Then change into it and run interactive `propr
+setup` (`--no-tui` only when the terminal cannot use the full-screen wizard).
 
-Preserve existing host data. Do not delete, reinitialize, or overwrite an
-existing stack, .env, Docker volume, repository checkout, logs, or data
-directory. Do not change explicit port bindings, publish fresh direct UI/API
-ports publicly, install an unrequested GitHub App scope, or weaken firewall/TLS
-settings. Fresh direct ports should remain loopback-only.
+Pause for me to complete all GitHub browser/device authorization, GitHub App
+installation and repository-scope choices, ProPR Connect or plan choices, and
+coding-provider login. Never request credentials, tokens, private keys, cookies,
+device codes, or one-time authorization codes in prompts, chat, or logs.
 
-Verify with:
-- `propr check --root "<STACK_ROOT>"`
-- `propr status --root "<STACK_ROOT>"`
-- loopback UI/API access, normally http://127.0.0.1:5173 and
-  http://127.0.0.1:4000/api/status
-- before backend-client checks, preserve the current CLI remote configuration
-  (`propr config list`), inspect existing profiles, choose an unused
-  temporary verification profile name (for example,
-  `setup-verify-<timestamp>`), switch to it, point it at this stack's
-  discovered API URL (normally `propr config profile use
-  setup-verify-<timestamp>` then `propr remote http://127.0.0.1:4000`), and
-  run `propr login` interactively if the profile is not already authenticated
-- configured repository visibility against that temporary profile with
-  `propr repo list` and `propr repo status`
-- configured agent visibility against that temporary profile with
-  `propr agent list`
-- restore the previous active CLI remote profile/configuration after these
-  backend-client checks, then remove the temporary verification profile if the
-  CLI supports deleting profiles
-- `propr tunnel verify` only when the managed app.propr.dev tunnel was selected,
-  entitled, configured, and enabled
+Setup may offer the bundled ProPR Operator Agent Skill when it detects Codex,
+Claude Code, Antigravity, OpenCode, or Vibe. Installation is opt-in. Explain the
+choice and wait for my approval. The manual commands are `propr skill install
+<target>`, `propr skill status`, and `propr skill remove <target>`. Foreign or
+modified copies are preserved and refused by default. An AI agent using the
+skill must never recursively delegate ProPR-orchestration work back into ProPR.
 
-If anything fails, report the exact non-sensitive command, output, and likely
-cause, then stop. Redact all credentials, tokens, one-time codes, cookies,
-private-key material, and sensitive URLs from commands and output while
-preserving the useful diagnostic text. Do not apply destructive recovery or
-broad cleanup without my explicit approval.
+Finish by running `propr check` and `propr status` from the chosen folder. If
+either fails, stop and report the exact non-sensitive command, output, and likely
+cause. Redact all secrets and authorization material.
 ```
+
+After setup, GitHub is the primary orchestration surface: create issues and PRs, normally trigger work with `AI`, and optionally choose one existing stable short model label when an override is intentional. PR comments and `/review`, `/fix`, `/merge`, `/switch`, `/use`, and `/ultrafix` drive follow-up work. The CLI is useful for installation, host lifecycle, and observability, but it is not required for ordinary orchestration.
 
 For the details behind the prompt, see [Local Setup](./setup-local.md) or [Server Setup](./setup-server.md), [GitHub Authentication](../operations/github-auth.md), [ProPR Connect](../operations/propr-connect.md), [Production Deployment](../operations/deployment.md), [Hosted UI Tunnel](../operations/hosted-ui-tunnel.md), [Security Overview](../concepts/security-overview.md), and [Troubleshooting](../operations/troubleshooting.md).
 

@@ -16,6 +16,8 @@ npm install -g propr-cli
 
 The host CLI is validated on **Node.js 22 and 24** (the Docker launcher image is separate and unaffected). The published package engine minimum remains Node.js `>=22`. The package is published at [npmjs.com/package/propr-cli](https://www.npmjs.com/package/propr-cli); the installed command is `propr`.
 
+Linux `amd64` is the native, recommended production path. The CLI and launcher have also been exercised successfully on Apple Silicon macOS through Docker Desktop running the published Linux `amd64` images under emulation; native `arm64` images are not yet available. See [System Requirements](../tutorials/setup.md#system-requirements) for the full host contract.
+
 ## Local Stack Control Plane
 
 Bring up a complete ProPR stack from the terminal:
@@ -68,7 +70,9 @@ propr skill remove codex          # remove an unmodified ProPR-managed copy
 
 Interactive `propr setup` detects configured tools, shows their exact target paths, and offers installation once; declining the prompt or passing `--no-skill` leaves them unchanged. Setup never installs the skill without this opt-in. When stdin is non-interactive, it does not infer targets or write to agent homes unless `--install-skill <comma-separated-targets>` explicitly names them.
 
-Skill operations refuse unsafe paths and, by default, refuse to overwrite foreign or user-modified content. `propr skill install <targets> --force` first moves replaced content to a timestamped sibling backup. Removal without `--force` accepts only unmodified ProPR-managed copies and preserves the removed tree as a timestamped backup; forced removal also preserves foreign or modified content as a backup rather than deleting it.
+Skill operations refuse unsafe paths and, by default, refuse to overwrite or remove foreign or user-modified content. `propr skill install <targets> --force` first moves replaced content to a timestamped sibling backup. Removal without `--force` accepts only unmodified ProPR-managed copies and preserves the removed tree as a timestamped backup; forced removal also preserves foreign or modified content as a backup rather than deleting it.
+
+The skill treats GitHub as the primary orchestration surface and the CLI as an optional aid for installation, host lifecycle, and observability. AI agents using it must not recursively delegate ProPR-orchestration work back into ProPR.
 
 :::warning[Breaking changes in the control-plane CLI]
 Running bare `propr` performs the same environment checks as `propr check` (including a Docker probe) and exits nonzero when prerequisites are missing — use `propr --help` for help text. `propr status` now reports the **local Docker stack**; use `propr remote-status` for the backend health/queue JSON that older scripts read from `propr status --json`.
