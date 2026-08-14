@@ -44,6 +44,8 @@ jobs:
           test -f packages/cli/dist/skill/propr/agents/openai.yaml
           test -f packages/cli/dist/native/prebuilds/darwin-arm64/directory-operations.node
           test -f packages/cli/dist/native/prebuilds/darwin-x64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/linux-arm64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/linux-x64/directory-operations.node
 
   cli-agent-skill-darwin:
     name: CLI Agent Skill (Darwin arm64, Node 22)

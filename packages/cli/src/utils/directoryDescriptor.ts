@@ -35,14 +35,19 @@ export interface NativeDirectoryOperationTestEvent {
 type NativeDirectoryOperationTestHook = (event: NativeDirectoryOperationTestEvent) => void;
 
 export const DARWIN_DIRECTORY_OPERATION_SHA256: Readonly<Record<string, string>> = {
-  arm64: "aa380d388e6c8e3a0f14c9e9a5bdfbb59095ed17fb3325318e4aeaa621e71380",
-  x64: "e040b7c44a325e1c0c4b288917676a140da0402f3c98bba68a8f23d244049040",
+  arm64: "88f07c0c7a4371f4fb227a4691009d09517de582ba49297d28d03ac94e586615",
+  x64: "62183c0f4083cb8c98e09e2d2c688f8f81703e12b0f22320c335b51e927eaf53",
+};
+
+export const LINUX_DIRECTORY_OPERATION_SHA256: Readonly<Record<string, string>> = {
+  arm64: "29b28b76ed8781f2567897ad9ba576798bbb669937048218e0416601788e0f1c",
+  x64: "e3171d114742e15ad764761c16292f4f16edc2d5155da53d72842b2bc8db8308",
 };
 
 let nativeOperations: NativeDirectoryOperations | undefined;
 let nativeOperationTestHook: NativeDirectoryOperationTestHook | undefined;
 
-/** Install a deterministic race injector around the Darwin addon boundary. */
+/** Install a deterministic race injector around a native descriptor-operation boundary. */
 export function setNativeDirectoryOperationTestHook(hook?: NativeDirectoryOperationTestHook): void {
   nativeOperationTestHook = hook;
 }
@@ -54,38 +59,43 @@ export function directoryDescriptorAccess(platform: NodeJS.Platform = process.pl
   throw new Error(`safe directory-handle publication is not supported on ${platform}`);
 }
 
-function nativeArtifactPath(arch: string): string {
-  const expected = DARWIN_DIRECTORY_OPERATION_SHA256[arch];
-  if (!expected) throw new Error(`safe Darwin directory operations are not packaged for ${arch}`);
+function nativeArtifactPath(platform: NodeJS.Platform, arch: string): string {
+  const digests = platform === "darwin"
+    ? DARWIN_DIRECTORY_OPERATION_SHA256
+    : platform === "linux"
+      ? LINUX_DIRECTORY_OPERATION_SHA256
+      : undefined;
+  const expected = digests?.[arch];
+  if (!expected) throw new Error(`safe ${platform} directory operations are not packaged for ${arch}`);
   const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-  const relativeArtifact = join("prebuilds", `darwin-${arch}`, "directory-operations.node");
+  const relativeArtifact = join("prebuilds", `${platform}-${arch}`, "directory-operations.node");
   const candidates = [
     join(moduleDirectory, "..", "native", relativeArtifact),
     join(moduleDirectory, "..", "..", "native", relativeArtifact),
   ];
   const artifact = candidates.find((candidate) => existsSync(candidate));
-  if (!artifact) throw new Error(`packaged Darwin directory-operations artifact is missing for ${arch}`);
-  verifyDirectoryOperationArtifact(artifact, expected, arch);
+  if (!artifact) throw new Error(`packaged ${platform} directory-operations artifact is missing for ${arch}`);
+  verifyDirectoryOperationArtifact(artifact, expected, `${platform}-${arch}`);
   return artifact;
 }
 
 export function verifyDirectoryOperationArtifact(artifact: string, expected: string, arch: string): void {
   const actual = createHash("sha256").update(readFileSync(artifact)).digest("hex");
   if (actual !== expected) {
-    throw new Error(`packaged Darwin directory-operations artifact failed integrity verification for ${arch}`);
+    throw new Error(`packaged directory-operations artifact failed integrity verification for ${arch}`);
   }
 }
 
-function darwinOperations(): NativeDirectoryOperations {
-  if (process.platform !== "darwin") {
-    throw new Error("native Darwin directory operations were requested on a non-Darwin host");
+function hostOperations(): NativeDirectoryOperations {
+  if (process.platform !== "darwin" && process.platform !== "linux") {
+    throw new Error(`native directory operations were requested on unsupported platform ${process.platform}`);
   }
-  nativeOperations ??= createRequire(import.meta.url)(nativeArtifactPath(process.arch)) as NativeDirectoryOperations;
+  nativeOperations ??= createRequire(import.meta.url)(nativeArtifactPath(process.platform, process.arch)) as NativeDirectoryOperations;
   return nativeOperations;
 }
 
 export function openAt(dirfd: number, name: string, flags: number, mode = 0): number {
-  const operations = darwinOperations();
+  const operations = hostOperations();
   nativeOperationTestHook?.({ operation: "openAt", phase: "before", dirfd, name, flags, mode });
   const result = operations.openAt(dirfd, name, flags, mode);
   nativeOperationTestHook?.({ operation: "openAt", phase: "after", dirfd, name, flags, mode, result });
@@ -93,27 +103,28 @@ export function openAt(dirfd: number, name: string, flags: number, mode = 0): nu
 }
 
 export function mkdirAt(dirfd: number, name: string, mode: number): void {
-  const operations = darwinOperations();
+  const operations = hostOperations();
   nativeOperationTestHook?.({ operation: "mkdirAt", phase: "before", dirfd, name, mode });
   operations.mkdirAt(dirfd, name, mode);
   nativeOperationTestHook?.({ operation: "mkdirAt", phase: "after", dirfd, name, mode });
 }
 
+/** Atomically move one child without replacing an entry already at newName. */
 export function renameAt(dirfd: number, oldName: string, newName: string): void {
-  const operations = darwinOperations();
+  const operations = hostOperations();
   nativeOperationTestHook?.({ operation: "renameAt", phase: "before", dirfd, name: oldName, newName });
   operations.renameAt(dirfd, oldName, dirfd, newName);
   nativeOperationTestHook?.({ operation: "renameAt", phase: "after", dirfd, name: oldName, newName });
 }
 
 export function linkAt(dirfd: number, oldName: string, newName: string): void {
-  darwinOperations().linkAt(dirfd, oldName, dirfd, newName, 0);
+  hostOperations().linkAt(dirfd, oldName, dirfd, newName, 0);
 }
 
 export function unlinkAt(dirfd: number, name: string): void {
-  darwinOperations().unlinkAt(dirfd, name, 0);
+  hostOperations().unlinkAt(dirfd, name, 0);
 }
 
 export function lstatAt(dirfd: number, name: string): DirectoryEntryIdentity {
-  return darwinOperations().lstatAt(dirfd, name);
+  return hostOperations().lstatAt(dirfd, name);
 }

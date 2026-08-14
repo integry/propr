@@ -1,4 +1,5 @@
 #define NAPI_VERSION 8
+#define _GNU_SOURCE
 #include <node_api.h>
 
 #include <errno.h>
@@ -8,6 +9,13 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#if defined(__linux__)
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#elif defined(__APPLE__)
+#include <stdio.h>
+#endif
 
 static napi_value throw_errno(napi_env env, const char *operation) {
   int error = errno;
@@ -33,6 +41,7 @@ static napi_value throw_errno(napi_env env, const char *operation) {
     case ENOENT: code = "ENOENT"; break;
     case ENOTDIR: code = "ENOTDIR"; break;
     case ENOTEMPTY: code = "ENOTEMPTY"; break;
+    case ENOSYS: code = "ENOSYS"; break;
     case EPERM: code = "EPERM"; break;
   }
   napi_throw_error(env, code, message);
@@ -112,9 +121,19 @@ static napi_value rename_at(napi_env env, napi_callback_info info) {
   char new_path[4096];
   if (!path_argument(env, arguments[1], old_path, sizeof(old_path)) ||
       !path_argument(env, arguments[3], new_path, sizeof(new_path))) return NULL;
-  if (renameat(int32_argument(env, arguments[0]), old_path, int32_argument(env, arguments[2]), new_path) == -1) {
-    return throw_errno(env, "renameat");
-  }
+  int result;
+#if defined(__linux__)
+  result = (int)syscall(SYS_renameat2, int32_argument(env, arguments[0]), old_path,
+                        int32_argument(env, arguments[2]), new_path, RENAME_NOREPLACE);
+  if (result == -1) return throw_errno(env, "renameat2");
+#elif defined(__APPLE__)
+  result = renameatx_np(int32_argument(env, arguments[0]), old_path,
+                        int32_argument(env, arguments[2]), new_path, RENAME_EXCL);
+  if (result == -1) return throw_errno(env, "renameatx_np");
+#else
+  errno = ENOSYS;
+  return throw_errno(env, "atomic no-replace rename");
+#endif
   napi_value value;
   napi_get_undefined(env, &value);
   return value;

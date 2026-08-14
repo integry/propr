@@ -86,19 +86,21 @@ for (const requiredSkillFile of ["SKILL.md", join("agents", "openai.yaml")]) {
   const bundled = join(stageDir, "dist", "skill", "propr", requiredSkillFile);
   if (!existsSync(bundled)) throw new Error(`Bundled ProPR Agent Skill file is missing: ${bundled}`);
 }
-const darwinArtifacts = {
-  arm64: "aa380d388e6c8e3a0f14c9e9a5bdfbb59095ed17fb3325318e4aeaa621e71380",
-  x64: "e040b7c44a325e1c0c4b288917676a140da0402f3c98bba68a8f23d244049040",
+const nativeArtifacts = {
+  "darwin-arm64": "88f07c0c7a4371f4fb227a4691009d09517de582ba49297d28d03ac94e586615",
+  "darwin-x64": "62183c0f4083cb8c98e09e2d2c688f8f81703e12b0f22320c335b51e927eaf53",
+  "linux-arm64": "29b28b76ed8781f2567897ad9ba576798bbb669937048218e0416601788e0f1c",
+  "linux-x64": "e3171d114742e15ad764761c16292f4f16edc2d5155da53d72842b2bc8db8308",
 };
-for (const [arch, expected] of Object.entries(darwinArtifacts)) {
-  const artifact = join(stageDir, "dist", "native", "prebuilds", `darwin-${arch}`, "directory-operations.node");
-  if (!existsSync(artifact)) throw new Error(`Darwin directory-operations artifact is missing: ${artifact}`);
+for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {
+  const artifact = join(stageDir, "dist", "native", "prebuilds", platformArch, "directory-operations.node");
+  if (!existsSync(artifact)) throw new Error(`Native directory-operations artifact is missing: ${artifact}`);
   const actual = createHash("sha256").update(readFileSync(artifact)).digest("hex");
-  if (actual !== expected) throw new Error(`Darwin ${arch} directory-operations artifact failed integrity verification`);
+  if (actual !== expected) throw new Error(`${platformArch} directory-operations artifact failed integrity verification`);
 }
 for (const auditedFile of ["directory-operations.c", "README.md"]) {
   const bundled = join(stageDir, "dist", "native", auditedFile);
-  if (!existsSync(bundled)) throw new Error(`Audited Darwin helper file is missing: ${bundled}`);
+  if (!existsSync(bundled)) throw new Error(`Audited native helper file is missing: ${bundled}`);
 }
 
 // 3. Vendor shared's compiled JS (dependency-free) into dist/vendor/shared.

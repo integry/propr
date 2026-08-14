@@ -8,11 +8,10 @@ import {
   type NativeDirectoryOperationTestEvent,
 } from "./utils/directoryDescriptor.js";
 
-function injectAtDarwinNativeBoundary(
+function injectAtNativeMoveBoundary(
   t: TestContext,
   inject: (event: NativeDirectoryOperationTestEvent) => void
 ): void {
-  if (process.platform !== "darwin") return;
   setNativeDirectoryOperationTestHook(inject);
   t.after(() => setNativeDirectoryOperationTestHook());
 }
@@ -73,7 +72,7 @@ async function assertParentCreationSymlinkRace(t: TestContext, force: boolean): 
   const missingDescendant = join(checkedAncestor, "codex-home");
   let injected = false;
 
-  injectAtDarwinNativeBoundary(t, (event) => {
+  injectAtNativeMoveBoundary(t, (event) => {
     if (!injected && event.operation === "mkdirAt" && event.phase === "before" && event.name === basename(missingDescendant)) {
       injected = true;
       fs.renameSync(checkedAncestor, detachedAncestor);
@@ -210,7 +209,7 @@ test("post-identity publication substitution has no staging name-delete cleanup"
   let nameDeletionAttempted = false;
   let replacementBefore: Array<[string, string | Buffer]> | undefined;
 
-  injectAtDarwinNativeBoundary(t, (event) => {
+  injectAtNativeMoveBoundary(t, (event) => {
     if (!injected && targetIdentityMatches >= 2 && event.operation === "mkdirAt" && event.phase === "before" && event.name === "agents") {
       injected = true;
       fs.renameSync(target, detachedTarget);
@@ -283,7 +282,7 @@ test("non-forced claim preserves a target created after the absence inspection",
   const sentinelContent = Buffer.from([0x00, 0xff, 0x51, 0x9a]);
   let injected = false;
   let replacementBefore: Array<[string, string | Buffer]> | undefined;
-  injectAtDarwinNativeBoundary(t, (event) => {
+  injectAtNativeMoveBoundary(t, (event) => {
     if (!injected && event.operation === "mkdirAt" && event.phase === "before" && event.name === "propr") {
       injected = true;
       fs.mkdirSync(target);
@@ -338,7 +337,7 @@ test("adoption publishes only to the held tree after outside-symlink substitutio
   const outsideBefore = snapshotTree(outside);
   let injected = false;
 
-  injectAtDarwinNativeBoundary(t, (event) => {
+  injectAtNativeMoveBoundary(t, (event) => {
     if (!injected && event.operation === "openAt" && event.phase === "before" && event.name === ".propr-managed.json") {
       injected = true;
       fs.renameSync(target, detachedTarget);
@@ -393,7 +392,7 @@ test("forced backup rename cannot follow a replaced skills parent", async (t) =>
   const outsideBefore = snapshotTree(outside);
   let injected = false;
 
-  injectAtDarwinNativeBoundary(t, (event) => {
+  injectAtNativeMoveBoundary(t, (event) => {
     if (
       !injected &&
       event.operation === "renameAt" &&
@@ -433,56 +432,97 @@ test("forced backup rename cannot follow a replaced skills parent", async (t) =>
   assert.equal(fs.readFileSync(join(detachedParent, ".propr.backup-20260814102400000", "SKILL.md"), "utf8"), "foreign\n");
 });
 
-test("backup move preserves a destination created immediately before rename and retries", async (t) => {
-  const root = temporaryRoot(t, "propr-agent-skill-backup-name-race-test-");
+async function assertUniqueMovePreservesConcurrentDestination(
+  t: TestContext,
+  label: "backup" | "replaced" | "removing"
+): Promise<void> {
+  const root = temporaryRoot(t, `propr-agent-skill-${label}-name-race-test-`);
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
   fs.mkdirSync(env.HOME, { recursive: true });
-  const source = join(root, "bundle");
-  fs.mkdirSync(join(source, "agents"), { recursive: true });
-  fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
-  fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+  const current = join(root, "current");
+  const older = join(root, "older");
+  for (const [source, description] of [[current, "current skill"], [older, "older skill"]] as const) {
+    fs.mkdirSync(join(source, "agents"), { recursive: true });
+    fs.writeFileSync(join(source, "SKILL.md"), `---\nname: propr\ndescription: ${description}\n---\n\n# ProPR\n`);
+    fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+  }
 
   const skillsParent = join(env.CODEX_HOME, "skills");
   const target = join(skillsParent, "propr");
-  fs.mkdirSync(target, { recursive: true });
-  fs.writeFileSync(join(target, "SKILL.md"), "foreign\n");
-  const occupied = join(skillsParent, ".propr.backup-20260814102400000");
-  let injected = false;
+  if (label === "backup") {
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(join(target, "SKILL.md"), "foreign\n");
+  } else {
+    const setupModule = new URL(`./agentSkill.ts?${label}-name-race-setup`, import.meta.url);
+    const { installAgentSkill: setupSkill } = await import(setupModule.href);
+    const source = label === "replaced" ? older : current;
+    assert.equal(setupSkill("codex", { env, bundleDir: source }).action, "installed");
+  }
 
-  injectAtDarwinNativeBoundary(t, (event) => {
-    if (!injected && event.operation === "mkdirAt" && event.phase === "before" && event.name === basename(occupied)) {
-      injected = true;
-      fs.mkdirSync(occupied);
+  const occupied = join(skillsParent, `.propr.${label}-20260814102400000`);
+  let injected = false;
+  let replacementIdentity: { ino: number; mode: number } | undefined;
+
+  const replaceReservation = (oldName: string, newName: string): void => {
+    if (injected || basename(oldName) !== "propr" || basename(newName) !== basename(occupied)) return;
+    injected = true;
+    if (fs.existsSync(occupied)) fs.rmdirSync(occupied);
+    fs.mkdirSync(occupied, { mode: 0o711 });
+    fs.chmodSync(occupied, 0o711);
+    const replacement = fs.lstatSync(occupied);
+    replacementIdentity = { ino: replacement.ino, mode: replacement.mode & 0o777 };
+  };
+
+  injectAtNativeMoveBoundary(t, (event) => {
+    if (event.operation === "renameAt" && event.phase === "before" && event.newName) {
+      replaceReservation(event.name, event.newName);
     }
   });
 
   t.mock.module("node:fs", {
     namedExports: {
       ...fs,
-      mkdirSync(path: fs.PathLike, options?: fs.MakeDirectoryOptions & { recursive?: boolean }): string | undefined {
-        if (!injected && basename(String(path)) === basename(occupied)) {
-          injected = true;
-          fs.mkdirSync(occupied);
-        }
-        return fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
+      renameSync(oldPath: fs.PathLike, newPath: fs.PathLike): void {
+        replaceReservation(String(oldPath), String(newPath));
+        fs.renameSync(oldPath, newPath);
       },
     },
   });
-  const agentSkillModule = new URL("./agentSkill.ts?backup-name-race", import.meta.url);
-  const { installAgentSkill } = await import(agentSkillModule.href);
+  const agentSkillModule = new URL(`./agentSkill.ts?${label}-name-race`, import.meta.url);
+  const operation = await import(agentSkillModule.href);
+  const options = { env, bundleDir: current, now: new Date("2026-08-14T10:24:00Z") };
+  const result = label === "removing"
+    ? operation.removeAgentSkill("codex", options)
+    : operation.installAgentSkill("codex", { ...options, force: label === "backup" });
 
-  const result = installAgentSkill("codex", {
-    env,
-    bundleDir: source,
-    force: true,
-    now: new Date("2026-08-14T10:24:00Z"),
-  });
-
-  assert.equal(result.action, "backed-up");
   assert.equal(injected, true);
+  assert.ok(replacementIdentity);
   assert.equal(result.backupPath, `${occupied}-1`);
+  const replacementAfter = fs.lstatSync(occupied);
+  assert.deepEqual(
+    { ino: replacementAfter.ino, mode: replacementAfter.mode & 0o777 },
+    replacementIdentity
+  );
   assert.deepEqual(fs.readdirSync(occupied), []);
-  assert.equal(fs.readFileSync(join(result.backupPath!, "SKILL.md"), "utf8"), "foreign\n");
+  if (label === "backup") {
+    assert.equal(result.action, "backed-up");
+    assert.equal(fs.readFileSync(join(result.backupPath!, "SKILL.md"), "utf8"), "foreign\n");
+  } else {
+    assert.equal(result.action, label === "replaced" ? "updated" : "removed");
+    assert.match(fs.readFileSync(join(result.backupPath!, "SKILL.md"), "utf8"), /older skill|current skill/);
+  }
+}
+
+test("backup move preserves a replacement created at the real move boundary and retries", async (t) => {
+  await assertUniqueMovePreservesConcurrentDestination(t, "backup");
+});
+
+test("managed replacement preserves a replacement created at the real move boundary and retries", async (t) => {
+  await assertUniqueMovePreservesConcurrentDestination(t, "replaced");
+});
+
+test("removal tombstone preserves a replacement created at the real move boundary and retries", async (t) => {
+  await assertUniqueMovePreservesConcurrentDestination(t, "removing");
 });
 
 test("removal rename cannot follow a replaced skills parent", async (t) => {
@@ -505,7 +545,7 @@ test("removal rename cannot follow a replaced skills parent", async (t) => {
   const outsideBefore = snapshotTree(outside);
   let injected = false;
 
-  injectAtDarwinNativeBoundary(t, (event) => {
+  injectAtNativeMoveBoundary(t, (event) => {
     if (
       !injected &&
       event.operation === "renameAt" &&
@@ -569,7 +609,7 @@ test("forced install fails and preserves both trees when the published bundle is
 
   const renames: Array<[fs.PathLike, fs.PathLike]> = [];
   let injected = false;
-  injectAtDarwinNativeBoundary(t, (event) => {
+  injectAtNativeMoveBoundary(t, (event) => {
     if (event.operation === "renameAt" && event.phase === "before") {
       renames.push([event.name, event.newName!]);
     }
@@ -632,7 +672,7 @@ test("publication cannot follow a target replaced by an outside symlink after th
   let targetClaimed = false;
   let injected = false;
 
-  injectAtDarwinNativeBoundary(t, (event) => {
+  injectAtNativeMoveBoundary(t, (event) => {
     if (event.operation !== "mkdirAt") return;
     if (!injected && targetClaimed && event.phase === "before") {
       injected = true;
@@ -694,7 +734,7 @@ test("forced install leaves a concurrent replacement untouched and reports the d
   const replacementContent = Buffer.from([0x00, 0xff, 0x51, 0x9a]);
   let replacementBefore: Array<[string, string | Buffer]> | undefined;
 
-  injectAtDarwinNativeBoundary(t, (event) => {
+  injectAtNativeMoveBoundary(t, (event) => {
     if (event.operation === "renameAt" && event.phase === "after" && event.name === "propr") {
       fs.mkdirSync(target);
       fs.writeFileSync(join(target, "sentinel.bin"), replacementContent);

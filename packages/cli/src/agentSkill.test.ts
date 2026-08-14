@@ -35,6 +35,7 @@ import {
 } from "./agentSkill.js";
 import {
   DARWIN_DIRECTORY_OPERATION_SHA256,
+  LINUX_DIRECTORY_OPERATION_SHA256,
   directoryDescriptorAccess,
   verifyDirectoryOperationArtifact,
 } from "./utils/directoryDescriptor.js";
@@ -60,12 +61,18 @@ test("uses only the host platform's real directory-descriptor behavior", () => {
   else assert.throws(() => directoryDescriptorAccess(), /not supported/);
 });
 
-test("ships integrity-pinned Darwin helpers for every supported architecture", () => {
+test("ships integrity-pinned native helpers for every supported platform and architecture", () => {
   assert.deepEqual(Object.keys(DARWIN_DIRECTORY_OPERATION_SHA256).sort(), ["arm64", "x64"]);
+  assert.deepEqual(Object.keys(LINUX_DIRECTORY_OPERATION_SHA256).sort(), ["arm64", "x64"]);
   const nativeRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "native", "prebuilds");
-  for (const [arch, digest] of Object.entries(DARWIN_DIRECTORY_OPERATION_SHA256)) {
-    const artifact = join(nativeRoot, `darwin-${arch}`, "directory-operations.node");
-    verifyDirectoryOperationArtifact(artifact, digest, arch);
+  for (const [platform, digests] of [
+    ["darwin", DARWIN_DIRECTORY_OPERATION_SHA256],
+    ["linux", LINUX_DIRECTORY_OPERATION_SHA256],
+  ] as const) {
+    for (const [arch, digest] of Object.entries(digests)) {
+      const artifact = join(nativeRoot, `${platform}-${arch}`, "directory-operations.node");
+      verifyDirectoryOperationArtifact(artifact, digest, `${platform}-${arch}`);
+    }
   }
 
   const root = temporaryRoot();

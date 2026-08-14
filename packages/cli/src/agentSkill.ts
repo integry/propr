@@ -10,7 +10,6 @@ import {
   openSync,
   readFileSync,
   readdirSync,
-  renameSync,
   statSync,
   writeFileSync,
   type Stats,
@@ -471,9 +470,8 @@ function mkdirPinnedChild(parent: PinnedDirectory, name: string, mode = 0o700): 
   else withPinnedPath(parent, (base) => mkdirSync(join(base, name), { recursive: false, mode }));
 }
 
-function renamePinnedChild(parent: PinnedDirectory, oldName: string, newName: string): void {
-  if (parent.access === "native-at") renameAt(parent.fd, oldName, newName);
-  else withPinnedPath(parent, (base) => renameSync(join(base, oldName), join(base, newName)));
+function renamePinnedChildNoReplace(parent: PinnedDirectory, oldName: string, newName: string): void {
+  renameAt(parent.fd, oldName, newName);
 }
 
 function writePinnedChildExclusively(
@@ -629,17 +627,6 @@ function moveToUniqueSibling(
     if (pinnedLstatIfExists(parent, name)) continue;
 
     try {
-      // Atomically reserve the candidate before using ordinary POSIX rename,
-      // which may replace an existing empty directory. A concurrent creator
-      // wins mkdir instead and is preserved while we retry another name. Once
-      // reserved, added content makes the rename fail rather than be replaced.
-      mkdirPinnedChild(parent, name);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
-      throw error;
-    }
-
-    try {
       renamePinnedEntry(parent, visibleParent, oldName, name);
       return { name, path: join(visibleParent, name) };
     } catch (error) {
@@ -658,7 +645,7 @@ function renamePinnedEntry(
   newName: string
 ): void {
   assertVisibleEntryIdentity(parent, visibleParent, oldName);
-  renamePinnedChild(parent, oldName, newName);
+  renamePinnedChildNoReplace(parent, oldName, newName);
   assertVisibleDirectoryIdentity(visibleParent, parent);
 }
 
