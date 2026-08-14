@@ -71,6 +71,10 @@ export interface CommentJobData {
     commandCommentId?: number;
     /** Creation time of the GitHub comment that established the queued command context. */
     commandCommentCreatedAt?: string;
+    /** Revision time of the GitHub comment that established the queued command context. */
+    commandCommentUpdatedAt?: string;
+    /** Timestamp-and-body identity of the revision that established the queued command context. */
+    commandCommentRevisionIdentity?: string;
     /** GitHub resource type of the comment that established the queued command context. */
     commandCommentType?: 'review' | 'issue';
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
@@ -87,6 +91,8 @@ export interface UnprocessedComment {
     createdAt?: string;
     /** GitHub revision time used to distinguish edited comment deliveries. */
     updatedAt?: string;
+    /** Stable timestamp-and-body identity used across webhook, queue, and retry storage. */
+    revisionIdentity?: string;
     body: string;
     body_html?: string;  // HTML with signed image URLs (from accept: application/vnd.github.full+json)
     author: string;

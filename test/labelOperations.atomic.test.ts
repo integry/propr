@@ -162,3 +162,49 @@ test('exclusive convergence removes an introduced target when verification fails
     assert.deepStrictEqual([...labels], ['AI']);
     assert.deepStrictEqual(result.finalLabels, ['AI']);
 });
+
+test('failed transition rollback preserves a newer verified singleton selection', async () => {
+    const labels = new Set(['AI', 'llm-claude-opus48']);
+    let runningNewerTransition = false;
+    let startedNewerTransition = false;
+    let newerResult: Awaited<ReturnType<typeof safeUpdateLabels>> | undefined;
+    const context = { octokit: { request: undefined as never }, owner: 'integry', repo: 'propr', issueNumber: 42, logger };
+    const request = mock.fn(async (endpoint: string, options: Record<string, unknown>) => {
+        if (endpoint.startsWith('GET ')) {
+            if (!runningNewerTransition && !startedNewerTransition && labels.has('llm-codex-gpt56-sol')) {
+                startedNewerTransition = true;
+                runningNewerTransition = true;
+                newerResult = await safeUpdateLabels(context, [], [], {
+                    targetLabel: 'llm-gemini-3-pro',
+                    isManagedLabel: label => label.startsWith('llm-'),
+                    maxAttempts: 1,
+                });
+                runningNewerTransition = false;
+                throw new Error('older transition verification failed');
+            }
+            return { data: { labels: [...labels] } };
+        }
+        if (endpoint.startsWith('POST ')) {
+            labels.add((options.labels as string[])[0]);
+            return {};
+        }
+        if (endpoint.startsWith('DELETE ')) {
+            labels.delete(options.name as string);
+            return {};
+        }
+        throw new Error(`Unexpected endpoint: ${endpoint}`);
+    });
+    context.octokit.request = request as never;
+
+    const olderResult = await safeUpdateLabels(context, [], [], {
+        targetLabel: 'llm-codex-gpt56-sol',
+        isManagedLabel: label => label.startsWith('llm-'),
+        maxAttempts: 1,
+    });
+
+    assert.strictEqual(newerResult?.success, true);
+    assert.strictEqual(olderResult.success, false);
+    assert.deepStrictEqual([...labels].sort(), ['AI', 'llm-gemini-3-pro']);
+    assert.deepStrictEqual(olderResult.finalLabels?.sort(), ['AI', 'llm-gemini-3-pro']);
+    assert.ok(olderResult.errors.some(error => error.includes('Skipped model-label restoration')));
+});

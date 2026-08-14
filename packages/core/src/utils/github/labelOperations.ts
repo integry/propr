@@ -62,6 +62,31 @@ async function restoreManagedLabels(
         return;
     }
 
+    const transitionLabelNames = new Set([
+        ...priorManagedLabels.map(label => label.toLowerCase()),
+        convergence.targetLabel.toLowerCase(),
+    ]);
+    const liveManagedLabels = liveLabels.filter(convergence.isManagedLabel);
+    const newerSingletonSelection = liveManagedLabels.length === 1
+        && !transitionLabelNames.has(liveManagedLabels[0].toLowerCase())
+        ? liveManagedLabels[0]
+        : undefined;
+    if (newerSingletonSelection) {
+        // Another transition has established a valid singleton selection that
+        // this failed attempt never owned. Restoring our snapshot would
+        // overwrite that newer durable source of truth.
+        results.finalLabels = liveLabels;
+        results.errors.push(
+            `Skipped model-label restoration because live selection changed to: ${newerSingletonSelection}`,
+        );
+        context.logger.warn({
+            issueNumber: context.issueNumber,
+            targetLabel: convergence.targetLabel,
+            newerSingletonSelection,
+        }, 'Skipped stale model-label restoration after a concurrent transition');
+        return;
+    }
+
     for (const label of priorManagedLabels) {
         if (liveLabels.some(liveLabel => liveLabel.toLowerCase() === label.toLowerCase())) continue;
         if (await safeAddLabel(context, label)) results.added.push(label);

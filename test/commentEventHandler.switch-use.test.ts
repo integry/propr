@@ -7,7 +7,8 @@ import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCrea
 const actualLabelOperations = await import('../packages/core/src/utils/github/labelOperations.js');
 
 function manualRevisionIdentity(updatedAt: string, body: string, eventType = 'issue_comment'): string {
-    const digest = createHash('sha256').update(`${eventType}\0${body}`).digest('hex').slice(0, 12);
+    const commentType = eventType === 'pull_request_review_comment' ? 'review' : 'issue';
+    const digest = createHash('sha256').update(`${commentType}\0${body}`).digest('hex').slice(0, 12);
     return `${updatedAt}:${digest}`;
 }
 
@@ -245,14 +246,16 @@ function createMockRedis() {
             if (script.includes("redis.call('LRANGE'")) {
                 const list = lists.get(key) ?? [];
                 const seen = new Set(list.map(raw => {
-                    const comment = JSON.parse(raw) as { type: string; id: number; updatedAt?: string; createdAt?: string };
-                    return `${comment.type}:${comment.id}:${comment.updatedAt ?? comment.createdAt ?? ''}`;
+                    const comment = JSON.parse(raw) as { type: string; id: number; revisionIdentity?: string; updatedAt?: string; createdAt?: string; body: string };
+                    const revision = comment.updatedAt ?? comment.createdAt ?? '';
+                    const digest = createHash('sha256').update(`${comment.type}\0${comment.body}`).digest('hex').slice(0, 12);
+                    return `${comment.type}:${comment.id}:${comment.revisionIdentity ?? `${revision}:${digest}`}`;
                 }));
                 const missing: string[] = [];
-                for (let index = 0; index < args.length; index += 2) {
+                for (let index = 0; index < args.length; index += 3) {
                     if (!seen.has(args[index])) {
                         seen.add(args[index]);
-                        missing.push(args[index + 1]);
+                        missing.push(args[index + 2]);
                     }
                 }
                 lists.set(key, [...missing, ...list]);

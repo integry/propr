@@ -1,6 +1,6 @@
 import { test, mock, after } from 'node:test';
 import assert from 'node:assert';
-import type { UnprocessedComment } from '@propr/core';
+import { getUnprocessedCommentIdentity, type UnprocessedComment } from '@propr/core';
 import {
     acknowledgePendingCommentClaim,
     pickUpPendingCommentsWithClaim,
@@ -48,14 +48,14 @@ class MemoryRedis {
         const existing = this.lists.get(pendingKey) ?? [];
         const identity = (raw: string): string => {
             const value = JSON.parse(raw) as UnprocessedComment;
-            return `${value.type}:${value.id}:${value.updatedAt ?? value.createdAt ?? ''}`;
+            return getUnprocessedCommentIdentity(value);
         };
         const seen = new Set(existing.map(identity));
         const missing: string[] = [];
-        for (let index = 0; index < identityPayloadPairs.length; index += 2) {
+        for (let index = 0; index < identityPayloadPairs.length; index += 3) {
             if (!seen.has(identityPayloadPairs[index])) {
                 seen.add(identityPayloadPairs[index]);
-                missing.push(identityPayloadPairs[index + 1]);
+                missing.push(identityPayloadPairs[index + 2]);
             }
         }
         this.lists.set(pendingKey, [...missing, ...existing]);
@@ -101,16 +101,86 @@ test('comment identity preserves issue/review ID collisions, revisions, order, a
     const comments = [issue(7, 'issue request', 'issue-r1')];
     processPendingComments(comments, [
         JSON.stringify({ id: 7, body: 'review r1', updatedAt: 'review-r1', author: 'bob', type: 'review', hasCodeContext: true }),
-        JSON.stringify({ id: 7, body: 'review r1 duplicate', updatedAt: 'review-r1', author: 'bob', type: 'review', hasCodeContext: true }),
+        JSON.stringify({ id: 7, body: 'review r1', updatedAt: 'review-r1', author: 'bob', type: 'review', hasCodeContext: true }),
+        JSON.stringify({ id: 7, body: 'review changed at same timestamp', updatedAt: 'review-r1', author: 'bob', type: 'review', hasCodeContext: true }),
         JSON.stringify({ id: 7, body: 'review r2', updatedAt: 'review-r2', author: 'bob', type: 'review', hasCodeContext: true }),
     ], logger as never);
 
     assert.deepStrictEqual(comments.map(comment => `${comment.type}:${comment.id}:${comment.updatedAt}`), [
         'issue:7:issue-r1',
         'review:7:review-r1',
+        'review:7:review-r1',
         'review:7:review-r2',
     ]);
-    assert.deepStrictEqual(comments.filter(comment => comment.type === 'review').map(comment => comment.hasCodeContext), [true, true]);
+    assert.deepStrictEqual(comments.filter(comment => comment.type === 'review').map(comment => comment.hasCodeContext), [true, true, true]);
+});
+
+test('out-of-order revisions of one edited /use comment keep the newest model selection', () => {
+    const createdAt = '2026-08-14T10:00:00Z';
+    const newer = {
+        ...issue(20, '/use codex', '2026-08-14T10:05:00Z'),
+        createdAt,
+        commandMode: 'use' as const,
+        requestedModels: ['gpt-5.6-sol'],
+        llmOverride: 'gpt-5.6-sol',
+        agentAlias: 'codex',
+        modelName: 'gpt-5.6-sol',
+        modelLabel: 'llm-codex-gpt56-sol',
+    };
+    const older = {
+        ...issue(20, '/use opus', '2026-08-14T10:01:00Z'),
+        createdAt,
+        commandMode: 'use' as const,
+        requestedModels: ['claude-opus-4-8'],
+        llmOverride: 'claude-opus-4-8',
+        agentAlias: 'claude',
+        modelName: 'claude-opus-4-8',
+        modelLabel: 'llm-claude-opus48',
+    };
+    const jobData = {
+        pullRequestNumber: 42, repoOwner: 'integry', repoName: 'propr', correlationId: 'edited-use-order',
+        commandMode: 'default' as const, llm: 'initial-model',
+    };
+
+    applyPendingCommentCommandContext(jobData, [newer, older], logger as never);
+
+    assert.strictEqual(jobData.llm, 'gpt-5.6-sol');
+    assert.strictEqual(jobData.modelLabel, 'llm-codex-gpt56-sol');
+    assert.strictEqual(jobData.commandCommentUpdatedAt, newer.updatedAt);
+});
+
+test('same-timestamp edit ties use durable ingestion order without collapsing either body', () => {
+    const timestamp = '2026-08-14T10:05:00Z';
+    const first = {
+        ...issue(20, '/use opus', timestamp),
+        createdAt: '2026-08-14T10:00:00Z',
+        commandMode: 'use' as const,
+        requestedModels: ['claude-opus-4-8'],
+        llmOverride: 'claude-opus-4-8',
+        modelLabel: 'llm-claude-opus48',
+    };
+    const liveTieWinner = {
+        ...issue(20, '/use codex', timestamp),
+        createdAt: '2026-08-14T10:00:00Z',
+        commandMode: 'use' as const,
+        requestedModels: ['gpt-5.6-sol'],
+        llmOverride: 'gpt-5.6-sol',
+        modelLabel: 'llm-codex-gpt56-sol',
+    };
+    const jobData = {
+        pullRequestNumber: 42, repoOwner: 'integry', repoName: 'propr', correlationId: 'edited-use-tie',
+        commandMode: 'default' as const, llm: 'initial-model',
+    };
+
+    applyPendingCommentCommandContext(jobData, [first, liveTieWinner], logger as never);
+
+    assert.strictEqual(jobData.llm, 'gpt-5.6-sol');
+    assert.strictEqual(jobData.modelLabel, 'llm-codex-gpt56-sol');
+    assert.strictEqual(jobData.comments?.length, 2);
+    assert.notStrictEqual(
+        getUnprocessedCommentIdentity(jobData.comments![0]),
+        getUnprocessedCommentIdentity(jobData.comments![1]),
+    );
 });
 
 test('claim replay and repeated restoration are idempotent and crash recoverable', async () => {

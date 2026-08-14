@@ -1,10 +1,19 @@
 import type { Redis } from 'ioredis';
+import { createHash } from 'node:crypto';
 import type { UnprocessedComment } from '../queue/taskQueue.types.js';
+
+export function getUnprocessedCommentRevisionIdentity(
+    comment: Pick<UnprocessedComment, 'body' | 'createdAt' | 'updatedAt' | 'type' | 'revisionIdentity'>,
+): string {
+    if (comment.revisionIdentity) return comment.revisionIdentity;
+    const revision = comment.updatedAt ?? comment.createdAt ?? '';
+    const bodyDigest = createHash('sha256').update(`${comment.type}\0${comment.body}`).digest('hex').slice(0, 12);
+    return `${revision}:${bodyDigest}`;
+}
 
 /** Identity is namespaced because issue and review comments have independent ID sequences. */
 export function getUnprocessedCommentIdentity(comment: UnprocessedComment): string {
-    const revision = comment.updatedAt ?? comment.createdAt ?? '';
-    return `${comment.type}:${comment.id}:${revision}`;
+    return `${comment.type}:${comment.id}:${getUnprocessedCommentRevisionIdentity(comment)}`;
 }
 
 /** Preserve first-seen order and the complete first payload for each comment revision. */
@@ -26,16 +35,22 @@ for _, raw in ipairs(existing) do
     if ok and value then
         local commentType = value.type or 'issue'
         local revision = value.updatedAt or value.createdAt or ''
-        seen[commentType .. ':' .. tostring(value.id) .. ':' .. revision] = true
+        local legacyIdentity = commentType .. ':' .. tostring(value.id) .. ':' .. revision .. ':' .. (value.body or '')
+        seen[legacyIdentity] = true
+        if value.revisionIdentity then
+            seen[commentType .. ':' .. tostring(value.id) .. ':' .. value.revisionIdentity] = true
+        end
     end
 end
 
 local missing = {}
-for index = 1, #ARGV, 2 do
+for index = 1, #ARGV, 3 do
     local identity = ARGV[index]
-    if not seen[identity] then
-        table.insert(missing, ARGV[index + 1])
+    local legacyIdentity = ARGV[index + 1]
+    if not seen[identity] and not seen[legacyIdentity] then
+        table.insert(missing, ARGV[index + 2])
         seen[identity] = true
+        seen[legacyIdentity] = true
     end
 end
 
@@ -57,9 +72,14 @@ export async function restorePendingCommentsIdempotently(
 ): Promise<number> {
     const uniqueComments = dedupeUnprocessedComments(comments);
     if (uniqueComments.length === 0) return 0;
-    const args = uniqueComments.flatMap(comment => [
-        getUnprocessedCommentIdentity(comment),
-        JSON.stringify(comment),
-    ]);
+    const args = uniqueComments.flatMap(comment => {
+        const revisionIdentity = getUnprocessedCommentRevisionIdentity(comment);
+        const revision = comment.updatedAt ?? comment.createdAt ?? '';
+        return [
+            `${comment.type}:${comment.id}:${revisionIdentity}`,
+            `${comment.type}:${comment.id}:${revision}:${comment.body}`,
+            JSON.stringify({ ...comment, revisionIdentity }),
+        ];
+    });
     return Number(await redisClient.eval(RESTORE_PENDING_COMMENTS_SCRIPT, 1, pendingCommentsKey, ...args));
 }

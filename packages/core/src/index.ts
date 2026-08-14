@@ -27,6 +27,7 @@ export { ensureGitRepository } from './utils/git/gitValidation.js';
 export { safeRemoveLabel, safeAddLabel, safeUpdateLabels } from './utils/github/labelOperations.js';
 export {
     getUnprocessedCommentIdentity,
+    getUnprocessedCommentRevisionIdentity,
     dedupeUnprocessedComments,
     restorePendingCommentsIdempotently,
 } from './utils/pendingComments.js';

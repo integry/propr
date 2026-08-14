@@ -6,11 +6,10 @@ import { filterCommentByAuthor, checkCommentTrigger, checkCommentIgnore } from '
 import { loadFollowupIgnoreKeywords, loadPrimaryProcessingLabels } from '../config/configManager.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { getPendingPrCommentsKey } from '../utils/constants.js';
-import { restorePendingCommentsIdempotently } from '../utils/pendingComments.js';
+import { getUnprocessedCommentRevisionIdentity, restorePendingCommentsIdempotently } from '../utils/pendingComments.js';
 import { withRetry } from '../utils/retryHandler.js';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
-import { createHash } from 'node:crypto';
 import { withUltrafixLabelTransition } from '../utils/ultrafixLabelTransition.js';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
 import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './commentEventHelpers.js';
@@ -78,8 +77,11 @@ type PRComment = { id: number; created_at: string; updated_at: string; body: str
 type ManualCommandTakeover = { workEpoch: number; hadAutomaticWork: boolean; commentRevisionIdentity: string };
 
 function getCommentRevisionIdentity(comment: Pick<PRComment, 'updated_at' | 'body'>, eventType: CommentEventType): string {
-    const contentDigest = createHash('sha256').update(`${eventType}\0${comment.body}`).digest('hex').slice(0, 12);
-    return `${comment.updated_at}:${contentDigest}`;
+    return getUnprocessedCommentRevisionIdentity({
+        updatedAt: comment.updated_at,
+        body: comment.body,
+        type: eventType === 'pull_request_review_comment' ? 'review' : 'issue',
+    });
 }
 
 async function claimCommentForProcessing(redisClient: Redis, key: string): Promise<boolean> {
@@ -818,6 +820,11 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
         id: comment.id,
         createdAt: comment.created_at,
         updatedAt: comment.updated_at,
+        revisionIdentity: getUnprocessedCommentRevisionIdentity({
+            updatedAt: comment.updated_at,
+            body: comment.body,
+            type: reviewComment ? 'review' : 'issue',
+        }),
         body: pendingCommentBody,
         author: commentAuthor,
         type: reviewComment ? 'review' : 'issue',
@@ -866,7 +873,16 @@ function prepareComment(comment: { id: number; created_at: string; updated_at: s
     }
 
     const commentType = isReviewComment(comment, eventType) ? 'review' as const : 'issue' as const;
-    const unprocessedComment: UnprocessedComment = { id: comment.id, createdAt: comment.created_at, updatedAt: comment.updated_at, body: enhancedBody, author: commentAuthor, type: commentType, hasCodeContext: commentType === 'review' && !!comment.diff_hunk };
+    const unprocessedComment: UnprocessedComment = {
+        id: comment.id,
+        createdAt: comment.created_at,
+        updatedAt: comment.updated_at,
+        revisionIdentity: getUnprocessedCommentRevisionIdentity({ updatedAt: comment.updated_at, body: comment.body, type: commentType }),
+        body: enhancedBody,
+        author: commentAuthor,
+        type: commentType,
+        hasCodeContext: commentType === 'review' && !!comment.diff_hunk,
+    };
     return { enhancedBody, unprocessedComment, llmFromKeywords };
 }
 
@@ -942,6 +958,8 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
             ...buildCommandJobFields(commandMeta),
             commandCommentId: comment.id,
             commandCommentCreatedAt: comment.created_at,
+            commandCommentUpdatedAt: comment.updated_at,
+            commandCommentRevisionIdentity: unprocessedComment.revisionIdentity,
             commandCommentType: unprocessedComment.type,
         } : {}),
         ...(ultrafixMeta ? { ultrafixMeta } : {}),
