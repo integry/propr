@@ -263,7 +263,7 @@ const SoftBannerContent: React.FC<{ account: ConnectAccountStatus }> = ({ accoun
           href={connectUpgradeUrl(account.installationId)}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex w-fit shrink-0 items-center justify-center rounded-md border border-blue-700 bg-white px-3 py-1.5 text-sm font-medium text-blue-800 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2"
+          className="inline-flex w-fit shrink-0 items-center justify-center rounded-md border border-transparent bg-primary-700 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-teal-800 focus:outline-none focus:ring-2 focus:ring-primary-700 focus:ring-offset-2 focus:ring-offset-blue-50"
         >
           Explore Plus
         </a>

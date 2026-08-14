@@ -135,7 +135,22 @@ describe('Connect Plus banners', () => {
       'href',
       'https://connect.propr.dev/dashboard?installation_id=42&focus=billing',
     );
-    expect(cta).toHaveClass('border-blue-700', 'bg-white', 'text-blue-800', 'focus:ring-2');
+    expect(cta).toHaveClass(
+      'border-transparent',
+      'bg-primary-700',
+      'text-white',
+      'shadow-sm',
+      'hover:bg-teal-800',
+      'focus:ring-2',
+      'focus:ring-primary-700',
+      'focus:ring-offset-2',
+      'focus:ring-offset-blue-50',
+    );
+    expect(cta).not.toHaveClass('border-blue-700');
+    expect(cta).not.toHaveClass('bg-white');
+    expect(cta).not.toHaveClass('text-blue-800');
+    expect(cta).not.toHaveClass('hover:bg-blue-100');
+    expect(cta).not.toHaveClass('focus:ring-blue-600');
     const promotion = screen.getByLabelText('ProPR Connect Plus');
     expect(promotion).toHaveClass('min-w-0');
     expect(within(promotion).getByText('PLUS', { selector: 'span' })).toHaveClass(
