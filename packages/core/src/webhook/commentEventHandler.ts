@@ -22,7 +22,7 @@ import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
-import { buildAgentModelLlmLabel, buildDynamicLlmLabel } from '@propr/shared';
+import { buildAgentModelLlmLabel, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH, shortHash } from '@propr/shared';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -320,6 +320,43 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
 
 type UseCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'use' } };
 
+function buildPrefixedDynamicModelLabel(prefix: string, agentAlias: string, modelId: string): string | null {
+    const canonicalLabel = `${prefix}${agentAlias}~${modelId}`;
+    if (canonicalLabel.length <= MAX_GITHUB_LABEL_LENGTH) return canonicalLabel;
+
+    const hash = shortHash(modelId);
+    const maxAliasLength = Math.max(1, MAX_GITHUB_LABEL_LENGTH - `${prefix}~-x-${hash}`.length);
+    const sanitizedAlias = agentAlias
+        .replace(/[^a-zA-Z0-9_.-]/g, '-')
+        .slice(0, maxAliasLength)
+        .replace(/[^a-zA-Z0-9]+$/, '');
+    const labelAlias = sanitizedAlias || 'agent'.slice(0, maxAliasLength);
+    const modelPrefixBudget = MAX_GITHUB_LABEL_LENGTH - `${prefix}${labelAlias}~-${hash}`.length;
+    const fallbackPrefix = 'model'.slice(0, Math.max(1, modelPrefixBudget));
+    const modelPrefix = modelId
+        .replace(/[^a-zA-Z0-9_.-]/g, '-')
+        .slice(0, Math.max(1, modelPrefixBudget))
+        .replace(/[^a-zA-Z0-9]+$/, '');
+    const hashedLabel = `${prefix}${labelAlias}~${modelPrefix || fallbackPrefix}-${hash}`;
+    return hashedLabel.length <= MAX_GITHUB_LABEL_LENGTH ? hashedLabel : null;
+}
+
+function applyModelLabelPrefix(defaultLabel: string, prefix: string, agentAlias: string, modelId: string): string | null {
+    if (!defaultLabel.startsWith('llm-')) {
+        return defaultLabel.length <= MAX_GITHUB_LABEL_LENGTH ? defaultLabel : null;
+    }
+
+    const suffix = defaultLabel.slice('llm-'.length);
+    if (suffix.includes('~')) {
+        return buildPrefixedDynamicModelLabel(prefix, agentAlias, modelId);
+    }
+
+    const staticLabel = `${prefix}${suffix}`;
+    return staticLabel.length <= MAX_GITHUB_LABEL_LENGTH
+        ? staticLabel
+        : buildPrefixedDynamicModelLabel(prefix, agentAlias, modelId);
+}
+
 async function resolveCanonicalModelLabel(
     target: string,
     modelLabelPattern: string,
@@ -351,9 +388,14 @@ async function resolveCanonicalModelLabel(
             return null;
         }
 
-        const canonicalLabel = defaultLabel.startsWith('llm-')
-            ? `${prefix}${defaultLabel.slice('llm-'.length)}`
-            : defaultLabel;
+        const canonicalLabel = applyModelLabelPrefix(defaultLabel, prefix, agent.config.alias, resolution.model);
+        if (!canonicalLabel) {
+            correlatedLogger.error(
+                { pullRequestNumber: prNumber, modelLabelPattern },
+                '/use could not build a canonical model label within GitHub\'s label length limit',
+            );
+            return null;
+        }
         if (!new RegExp(modelLabelPattern).test(canonicalLabel)) {
             correlatedLogger.error(
                 { pullRequestNumber: prNumber, canonicalLabel, modelLabelPattern },
@@ -412,8 +454,16 @@ async function handleUseCommand(opts: UseCommandOptions): Promise<void> {
     if (labelsToRemove.length > 0) {
         const removalUpdate = await safeUpdateLabels(labelContext, labelsToRemove, []);
         if (!removalUpdate.success) {
+            const rollbackUpdate = !targetPresent
+                ? await safeUpdateLabels(labelContext, [canonicalLabel], [])
+                : null;
             correlatedLogger.error(
-                { pullRequestNumber: prNumber, modelLabel: canonicalLabel, errors: removalUpdate.errors },
+                {
+                    pullRequestNumber: prNumber,
+                    modelLabel: canonicalLabel,
+                    errors: removalUpdate.errors,
+                    rollbackErrors: rollbackUpdate?.success === false ? rollbackUpdate.errors : undefined,
+                },
                 '/use failed to update the PR model label',
             );
             return;

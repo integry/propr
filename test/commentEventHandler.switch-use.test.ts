@@ -2,7 +2,7 @@ import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
 import { createHash } from 'node:crypto';
 import type { IssueCommentEvent, Label } from '@octokit/webhooks-types';
-import { buildDynamicLlmLabel } from '@propr/shared';
+import { buildDynamicLlmLabel, shortHash } from '@propr/shared';
 import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent, createMockLabel } from './testHelpers.js';
 
 function manualRevisionIdentity(updatedAt: string, body: string, eventType = 'issue_comment'): string {
@@ -223,6 +223,7 @@ await mock.module('../packages/core/src/utils/retryHandler.js', {
 const { processCommentEvent, handleCommentDeleted, handleCommentEdited, setUltrafixDeps } = await import(
     '../packages/core/src/webhook/commentEventHandler.js'
 );
+const { resolveLlmLabel } = await import('../packages/core/src/config/modelAliases.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 const { shutdownQueue } = await import('../packages/core/src/queue/taskQueue.js');
 const { applyPendingCommentCommandContext } = await import(
@@ -728,6 +729,36 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
+    test('/use budgets a hashed dynamic label against a longer custom prefix', async () => {
+        const dynamicModel = 'opencode-provider-with-an-extremely-long-name/model-with-an-extremely-long-name';
+        const dynamicLabel = buildDynamicLlmLabel('custom-opencode', dynamicModel);
+        mockAgents = [{
+            config: {
+                alias: 'custom-opencode',
+                type: 'opencode',
+                enabled: true,
+                supportedModels: [dynamicModel],
+                defaultModel: dynamicModel,
+            },
+        }];
+        const event = createPRCommentEvent(`/use ${dynamicLabel}`);
+        const config = createTestConfig({ MODEL_LABEL_PATTERN: '^ai-model-(.+)$' });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-custom-prefix-hashed-label', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        const canonicalLabel = (mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[])[0];
+        assert.ok(canonicalLabel.length <= 50, `Label should fit in 50 chars, got ${canonicalLabel.length}`);
+        assert.match(canonicalLabel, /^ai-model-(.+)$/);
+        assert.ok(canonicalLabel.endsWith(`-${shortHash(dynamicModel)}`), 'Expected the stable model hash to be preserved');
+
+        const routingToken = canonicalLabel.match(/^ai-model-(.+)$/)?.[1];
+        assert.ok(routingToken);
+        const roundTrip = await resolveLlmLabel(routingToken);
+        assert.deepStrictEqual(roundTrip, { agentAlias: 'custom-opencode', model: dynamicModel });
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
     test('/use without model argument warns and returns early', async () => {
         const event = createPRCommentEvent('/use');
         const config = createTestConfig();
@@ -869,6 +900,50 @@ describe('commentEventHandler — /use command', () => {
             (call: { arguments: unknown[] }) => call.arguments[1] === '/use failed to update the PR model label',
         );
         assert.ok(failureLog, 'Expected the failed target addition to be logged');
+        const successLog = mockLoggerInstance.info.mock.calls.find(
+            (call: { arguments: unknown[] }) => call.arguments[1] === '/use updated the PR model label',
+        );
+        assert.strictEqual(successLog, undefined);
+    });
+
+    test('/use removes a newly added target when stale-label removal fails', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [createMockLabel({ name: 'llm-claude-sonnet5' })],
+            },
+        }));
+        let updateCall = 0;
+        mockSafeUpdateLabels.mock.mockImplementation(async (_context, labelsToRemove, labelsToAdd) => {
+            updateCall += 1;
+            if (updateCall === 2) {
+                return {
+                    success: false,
+                    removed: [],
+                    added: [],
+                    errors: ["Failed to remove 'llm-claude-sonnet5'"],
+                };
+            }
+            return {
+                success: true,
+                removed: labelsToRemove,
+                added: labelsToAdd,
+                errors: [],
+            };
+        });
+        const event = createPRCommentEvent('/use opus');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-removal-failure-rollback', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 3);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[1], ['llm-claude-sonnet5']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[1].arguments[2], []);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[2].arguments[1], ['llm-claude-opus5']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[2].arguments[2], []);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         const successLog = mockLoggerInstance.info.mock.calls.find(
             (call: { arguments: unknown[] }) => call.arguments[1] === '/use updated the PR model label',
         );
