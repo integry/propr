@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { after, test } from 'node:test';
-import { detectStoredOutputFormat } from '../routes/liveDetailsStoredOutputFormat.js';
 
 process.env.NODE_ENV = 'test';
+process.env.GH_APP_ID = process.env.GH_APP_ID || '1';
+process.env.GH_PRIVATE_KEY_PATH = process.env.GH_PRIVATE_KEY_PATH || '/tmp/missing-key.pem';
+process.env.GH_INSTALLATION_ID = process.env.GH_INSTALLATION_ID || '1';
+
+const { detectStoredOutputFormat } = await import('../routes/liveDetailsStoredOutputFormat.js');
 
 after(async () => {
   const { db } = await import('@propr/core');
@@ -116,6 +121,68 @@ test('stored output parsing renders only Antigravity analysis events through liv
     output_tokens: 2,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0
+  });
+});
+
+test('Antigravity 1.1.12 stream text remains visible through live details', async () => {
+  const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
+  const output = fs.readFileSync(new URL('../../core/test/fixtures/antigravity-stream-1.1.12.jsonl', import.meta.url), 'utf8');
+
+  const parsed = parseStoredOutputContent(output);
+
+  assert.equal(parsed.format, 'antigravity');
+  assert.deepEqual(parsed.parsed?.events.map(event => ({ type: event.type, content: event.content })), [
+    { type: 'thought', content: 'STREAM_OK\n' }
+  ]);
+  assert.deepEqual(parsed.parsed?.tokenUsage, {
+    input_tokens: 15050,
+    output_tokens: 33,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0
+  });
+});
+
+test('stored output detection and live-details rendering consume Antigravity stream arrays', async () => {
+  const { parseStoredOutputContent } = await import('../routes/liveDetailsRoutes.js');
+  const output = JSON.stringify([
+    { event: 'init', conversation_id: 'conversation-array', init: { model: 'gemini-3.7-flash-medium' } },
+    { event: 'step_update', step_update: { conversation_id: 'conversation-array', step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'ARRAY_OK\n', usage: { input_tokens: 12, output_tokens: 3 } } },
+    { event: 'result', result: { conversation_id: 'conversation-array', status: 'SUCCESS', response: 'ARRAY_OK\n', usage: { input_tokens: 12, output_tokens: 3 } } },
+  ]);
+
+  assert.equal(detectStoredOutputFormat(output), 'antigravity');
+  const parsed = parseStoredOutputContent(output);
+
+  assert.equal(parsed.format, 'antigravity');
+  assert.deepEqual(parsed.parsed?.events.map(event => ({ type: event.type, content: event.content })), [
+    { type: 'thought', content: 'ARRAY_OK\n' }
+  ]);
+  assert.deepEqual(parsed.parsed?.tokenUsage, {
+    input_tokens: 12,
+    output_tokens: 3,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0
+  });
+});
+
+test('Antigravity cache-only stream usage remains visible through live details', async () => {
+  const { parseAntigravityOutputToConversationResult } = await import('../routes/liveDetailsOutputParsers.js');
+  const output = JSON.stringify({
+    event: 'result',
+    result: {
+      conversation_id: 'conversation-cache-only',
+      status: 'SUCCESS',
+      usage: { cache_read_tokens: 321 }
+    }
+  });
+
+  const parsed = parseAntigravityOutputToConversationResult(output);
+
+  assert.deepEqual(parsed?.tokenUsage, {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 321
   });
 });
 

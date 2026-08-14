@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { AGENT_DEFAULTS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
+import { AGENT_DEFAULTS, ANTIGRAVITY_MODELS, CLAUDE_MODELS, CODEX_MODELS, MODEL_INFO_MAP, OPENCODE_MODELS } from '../packages/shared/src/modelDefinitions.ts';
 import { buildAgentModelLlmLabel } from '../packages/shared/src/labelUtils.ts';
 import { AGENT_DEFAULT_VERSIONS } from '../packages/core/src/agents/version/types.ts';
 
@@ -57,6 +57,27 @@ test('GPT-5.6 Sol is the preferred Codex default and Codex CLI pin supports it',
         AGENT_DEFAULT_VERSIONS.codex.localeCompare('0.144.0', undefined, { numeric: true }) >= 0,
         `Codex CLI default ${AGENT_DEFAULT_VERSIONS.codex} should be >= 0.144.0`
     );
+});
+
+test('Gemini 3.7 Flash tiers are namespaced Antigravity models with 1M limits', () => {
+    const expectedModels = [
+        ['medium', 'llm-antigravity-flash37-medium'],
+        ['high', 'llm-antigravity-flash37-high'],
+        ['low', 'llm-antigravity-flash37-low'],
+    ] as const;
+
+    for (const [tier, githubLabel] of expectedModels) {
+        const modelId = `antigravity-gemini-3.7-flash-${tier}`;
+        const model = MODEL_INFO_MAP[modelId];
+        assert.ok(ANTIGRAVITY_MODELS.some(candidate => candidate.id === modelId));
+        assert.strictEqual(model?.githubLabel, githubLabel);
+        assert.strictEqual(model?.shortAlias, `flash37-${tier}`);
+        assert.strictEqual(model?.openRouterId, 'google/gemini-3.7-flash');
+        assert.strictEqual(model?.minAgentVersion, '1.1.12');
+        assert.strictEqual(model?.contextWindow, '1M');
+        assert.strictEqual(model?.maxTokens, 1_000_000);
+    }
+    assert.strictEqual(AGENT_DEFAULTS.antigravity.defaultCliVersion, AGENT_DEFAULT_VERSIONS.antigravity);
 });
 
 test('long model labels use the configured agent alias', () => {

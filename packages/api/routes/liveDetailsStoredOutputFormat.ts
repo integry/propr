@@ -1,4 +1,4 @@
-import { isOpenCodeJsonlEvent } from '@propr/core';
+import { isOpenCodeJsonlEvent, parseAntigravityJsonl } from '@propr/core';
 
 interface StoredExecutionOutputLine {
   type?: string;
@@ -38,14 +38,15 @@ const CLAUDE_STORED_OUTPUT_TYPES = new Set(['assistant', 'user']);
 const ANTIGRAVITY_TRANSCRIPT_SOURCES = new Set(['MODEL', 'USER_EXPLICIT', 'SYSTEM']);
 
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
+  if (hasValidatedAntigravityStreamEnvelope(output)) return 'antigravity';
+
   const wholeDocumentFormat = detectWholeDocumentStoredOutputFormat(output.trim());
   if (wholeDocumentFormat !== 'unknown') return wholeDocumentFormat;
 
   const lines = output.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-  // Check for antigravity stream events across all lines
   if (lines.some(line => {
     const parsed = parseStoredOutputLine(line);
-    return parsed && isAntigravityStreamEvent(parsed);
+    return parsed && isAntigravityLegacyOrTranscriptEvent(parsed);
   })) {
     return 'antigravity';
   }
@@ -88,7 +89,7 @@ function isStoredOutputObject(value: unknown): value is StoredExecutionOutputLin
 function detectStoredOutputEvents(events: StoredExecutionOutputLine[]): StoredOutputFormat {
   let detectedFormat: StoredOutputFormat = 'unknown';
   for (const event of events) {
-    if (isAntigravityStreamEvent(event)) return 'antigravity';
+    if (isAntigravityLegacyOrTranscriptEvent(event)) return 'antigravity';
     const immediateFormat = getImmediateStoredOutputFormat(event);
     if (immediateFormat) return immediateFormat;
     const deferredFormat = getDeferredStoredOutputFormat(event);
@@ -117,7 +118,22 @@ function getDeferredStoredOutputFormat(parsed: StoredExecutionOutputLine): Store
   return isCodexStoredOutputLine(parsed) ? 'codex' : 'unknown';
 }
 
-function isAntigravityStreamEvent(parsed: StoredExecutionOutputLine): boolean {
+function hasValidatedAntigravityStreamEnvelope(output: string): boolean {
+  let parserInput = output;
+  try {
+    const document = JSON.parse(output) as unknown;
+    if (Array.isArray(document)) parserInput = document.map(event => JSON.stringify(event)).join('\n');
+  } catch {
+    // JSONL is the normal stream representation.
+  }
+  const parsed = parseAntigravityJsonl(parserInput);
+  return parsed.conversationLog.some(event =>
+    'event' in event
+    && (event.event === 'init' || event.event === 'step_update' || event.event === 'result')
+  );
+}
+
+function isAntigravityLegacyOrTranscriptEvent(parsed: StoredExecutionOutputLine): boolean {
   if (typeof parsed.source === 'string' && ANTIGRAVITY_TRANSCRIPT_SOURCES.has(parsed.source) && typeof parsed.type === 'string') return true;
   return (parsed.type === 'init' || parsed.type === 'message' || parsed.type === 'result')
     && hasAntigravityModel(parsed);

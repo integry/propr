@@ -1,0 +1,3 @@
+{"event":"init","conversation_id":"conversation-sanitized","init":{"model":"Gemini 3.7 Flash (High)","cwd":"/tmp","tools":["sanitized-tool"]}}
+{"event":"step_update","step_update":{"conversation_id":"conversation-sanitized","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"STREAM_OK\n","usage":{"input_tokens":14952,"output_tokens":30,"thinking_tokens":27,"cache_read_tokens":0,"total_tokens":14982}}}
+{"event":"result","result":{"conversation_id":"conversation-sanitized","status":"SUCCESS","response":"STREAM_OK\n","duration_seconds":1.87,"num_turns":1,"usage":{"input_tokens":15050,"output_tokens":33,"thinking_tokens":27,"cache_read_tokens":0,"total_tokens":15083}}}
