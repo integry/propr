@@ -273,6 +273,7 @@ function createMockRedis() {
             }
             const token = args[0];
             if (store.get(key) !== token) return 0;
+            if (script.includes("redis.call('PEXPIRE'")) return 1;
             store.delete(key);
             return 1;
         }),
@@ -699,6 +700,104 @@ describe('commentEventHandler — /use command', () => {
         const queued = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
         assert.strictEqual(queued.commandCommentId, newer.comment.id);
         assert.strictEqual(queued.modelName, 'claude-haiku-4-5-20251001');
+    });
+
+    test('queue publication stays inside the model transition lease so a newer /use becomes the only executable routing', async () => {
+        mockSafeUpdateLabels.mock.mockImplementation(actualLabelOperations.safeUpdateLabels);
+        const liveLabels = ['AI', 'llm-claude-sonnet5'];
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string, options: Record<string, unknown>) => {
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                return { data: { head: { ref: 'feature-branch' }, labels: liveLabels.map(name => ({ name })) } };
+            }
+            if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
+                return { data: { labels: liveLabels.map(name => ({ name })) } };
+            }
+            if (endpoint === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+                const index = liveLabels.findIndex(name => name.toLowerCase() === String(options.name).toLowerCase());
+                if (index >= 0) liveLabels.splice(index, 1);
+                return { data: {} };
+            }
+            if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+                for (const name of options.labels as string[]) if (!liveLabels.includes(name)) liveLabels.push(name);
+                return { data: {} };
+            }
+            return { data: {} };
+        });
+
+        const config = createTestConfig();
+        let observeLeaseWait!: () => void;
+        const leaseWaitObserved = new Promise<void>(resolve => { observeLeaseWait = resolve; });
+        let leaseWaitSignalled = false;
+        config.redisClient.set.mock.mockImplementation(async (key: string, value: string, ...args: string[]) => {
+            if (args.includes('NX') && config.redisClient._store.has(key)) {
+                if (key.startsWith('ultrafix:label-transition:') && !leaseWaitSignalled) {
+                    leaseWaitSignalled = true;
+                    observeLeaseWait();
+                }
+                return null;
+            }
+            config.redisClient._store.set(key, value);
+            return 'OK';
+        });
+
+        let releaseOlderQueue!: () => void;
+        let observeOlderQueue!: () => void;
+        const olderQueueReached = new Promise<void>(resolve => { observeOlderQueue = resolve; });
+        const olderQueueGate = new Promise<void>(resolve => { releaseOlderQueue = resolve; });
+        const durableJobs: Array<{ id: string; name: string; data: Record<string, unknown>; remove: ReturnType<typeof mock.fn> }> = [];
+        mockQueueAdd.mock.mockImplementationOnce(async (_name: string, data: Record<string, unknown>, options: { jobId: string }) => {
+            observeOlderQueue();
+            await olderQueueGate;
+            const job = { id: options.jobId, name: 'processPullRequestComment', data, remove: mock.fn(async () => {}) };
+            durableJobs.push(job);
+            mockWaitingJobs = [...durableJobs];
+        });
+
+        const older = createPRCommentEvent('/use opus\nOlder follow-up');
+        older.comment.id = 100;
+        older.comment.created_at = '2026-08-14T10:00:00Z';
+        older.comment.updated_at = older.comment.created_at;
+        const newer = createPRCommentEvent('/use haiku\nNewer follow-up');
+        newer.comment.id = 101;
+        newer.comment.created_at = '2026-08-14T10:01:00Z';
+        newer.comment.updated_at = newer.comment.created_at;
+
+        const olderProcessing = processCommentEvent(older, 'issue_comment', 'corr-publication-older', config);
+        await olderQueueReached;
+        let newerCompleted = false;
+        const newerProcessing = processCommentEvent(newer, 'issue_comment', 'corr-publication-newer', config)
+            .then(() => { newerCompleted = true; });
+        await leaseWaitObserved;
+        assert.strictEqual(newerCompleted, false, 'newer delivery must wait while the older queue publication owns the PR lease');
+
+        releaseOlderQueue();
+        await Promise.all([olderProcessing, newerProcessing]);
+
+        assert.deepStrictEqual(liveLabels, ['AI', 'llm-claude-haiku']);
+        assert.strictEqual(durableJobs.length, 1, 'serialized publication must not create a second explicit job');
+        const pending = (config.redisClient._lists.get('pending-pr-comments:testowner:testrepo:42') ?? [])
+            .map(raw => JSON.parse(raw));
+        assert.deepStrictEqual(pending.map(comment => comment.id), [newer.comment.id]);
+
+        const executableData = { ...durableJobs[0].data };
+        const executableComments = [
+            ...((durableJobs[0].data.comments as unknown[]) ?? []),
+            ...pending,
+        ];
+        const commentsForExecution = applyPendingCommentCommandContext(
+            executableData,
+            executableComments,
+            mockLoggerInstance as never,
+        );
+        assert.strictEqual(executableData.agentAlias, 'default');
+        assert.strictEqual(executableData.modelName, 'claude-haiku-4-5-20251001');
+        assert.strictEqual(executableData.modelLabel, 'llm-claude-haiku');
+        assert.deepStrictEqual(commentsForExecution.map(comment => comment.id), [older.comment.id, newer.comment.id]);
+        assert.deepStrictEqual(
+            (executableData.comments as Array<{ id: number }>).map(comment => comment.id),
+            [older.comment.id, newer.comment.id],
+            'both comments must remain durable exactly once',
+        );
     });
 
     test('same-timestamp edits that only change /use routing keep distinct original-body revisions', async () => {

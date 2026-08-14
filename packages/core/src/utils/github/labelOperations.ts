@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
-import { withLabelTransitionLease } from '../ultrafixLabelTransition.js';
+import { LabelTransitionLeaseError, withLabelTransitionLease, type LabelTransitionLease } from '../ultrafixLabelTransition.js';
 
 interface OctokitLike {
     request: <T = unknown>(endpoint: string, options: Record<string, unknown>) => Promise<T>;
@@ -36,6 +36,8 @@ export interface ExclusiveLabelConvergence {
     redis: Pick<Redis, 'set' | 'eval'>;
     /** Claim this transition while its per-PR lease is held. */
     claimTransition?: () => Promise<boolean>;
+    /** The caller's verified lease when publication extends beyond convergence. */
+    lease?: LabelTransitionLease;
 }
 
 interface IssueLabelsResponse {
@@ -202,6 +204,31 @@ async function convergeExclusiveLabel(
     }
 }
 
+async function runExclusiveLabelTransition(
+    context: LabelContext,
+    convergence: ExclusiveLabelConvergence,
+    transition: () => Promise<void>,
+): Promise<void> {
+    if (!convergence.lease) {
+        await withLabelTransitionLease(
+            convergence.redis,
+            { owner: context.owner, repo: context.repo, pr: context.issueNumber },
+            transition,
+        );
+        return;
+    }
+
+    const { identity } = convergence.lease;
+    if (
+        identity.owner !== context.owner
+        || identity.repo !== context.repo
+        || identity.pr !== context.issueNumber
+    ) throw new LabelTransitionLeaseError('PR label transition lease identity does not match label context');
+    await convergence.lease.assertOwned();
+    await transition();
+    await convergence.lease.assertOwned();
+}
+
 export async function safeRemoveLabel(context: LabelContext, labelName: string): Promise<boolean> {
     const { octokit, owner, repo, issueNumber, logger } = context;
     try {
@@ -279,17 +306,14 @@ export async function safeUpdateLabels(
         // covers the initial snapshot, convergence, verification, and rollback.
         results.success = false;
         try {
-            await withLabelTransitionLease(
-                convergence.redis,
-                { owner: context.owner, repo: context.repo, pr: context.issueNumber },
-                async () => {
-                    if (convergence.claimTransition && !await convergence.claimTransition()) {
-                        results.skipped = true;
-                        return;
-                    }
-                    await convergeExclusiveLabel(context, convergence, results);
-                },
-            );
+            const transition = async (): Promise<void> => {
+                if (convergence.claimTransition && !await convergence.claimTransition()) {
+                    results.skipped = true;
+                    return;
+                }
+                await convergeExclusiveLabel(context, convergence, results);
+            };
+            await runExclusiveLabelTransition(context, convergence, transition);
         } catch (error) {
             const message = (error as Error).message;
             results.success = false;

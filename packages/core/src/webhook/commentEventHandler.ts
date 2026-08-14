@@ -10,7 +10,12 @@ import { getUnprocessedCommentRevisionIdentity, restorePendingCommentsIdempotent
 import { withRetry } from '../utils/retryHandler.js';
 import type { Job } from 'bullmq';
 import type { Redis } from 'ioredis';
-import { withUltrafixLabelTransition } from '../utils/ultrafixLabelTransition.js';
+import {
+    LabelTransitionLeaseError,
+    withLabelTransitionLease,
+    withUltrafixLabelTransition,
+    type LabelTransitionLease,
+} from '../utils/ultrafixLabelTransition.js';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
 import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels, modelLabelPrefix } from './commentEventHelpers.js';
 import { handleMergeCommand } from './mergeConflictDetector.js';
@@ -495,7 +500,7 @@ async function transitionModelLabel(
     opts: ModelSelectionCommandOptions,
     prLabels: Label[],
     selection: CanonicalModelSelection,
-    commandChronology: CommandChronology,
+    lease: LabelTransitionLease,
 ): Promise<{ success: boolean; updatedLabels: Label[] }> {
     const { eventContext: { owner, repo, prNumber }, config: { redisClient }, config, correlatedLogger } = opts;
     const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';
@@ -520,13 +525,9 @@ async function transitionModelLabel(
                 || configuredCustomLabels.has(labelName.toLowerCase()),
             maxAttempts: 3,
             redis: redisClient,
-            claimTransition: () => claimLatestModelCommand(redisClient, opts.eventContext, commandChronology),
+            lease,
         },
     );
-    if (result.skipped) {
-        correlatedLogger.info({ pullRequestNumber: prNumber, staleCommentId: commandChronology.id }, 'Ignoring stale model command after acquiring the label transition lease');
-        return { success: false, updatedLabels: prLabels };
-    }
     if (!result.success) {
         correlatedLogger.error({ pullRequestNumber: prNumber, targetLabel: selection.githubLabel, errors: result.errors }, 'Model label transition failed; follow-up will not be queued');
         return { success: false, updatedLabels: prLabels };
@@ -609,80 +610,102 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
 
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, selection }, `/${commandName} command detected, updating PR model label`);
     const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
-    const transition = await transitionModelLabel(opts, prData.prLabels, selection, commandChronology);
-    if (!transition.success) return;
+    let acknowledgementOutcome: 'label-only' | 'queued' | 'pending' | undefined;
+    try {
+        await withLabelTransitionLease(redisClient, { owner, repo, pr: prNumber }, async lease => {
+            if (!await claimLatestModelCommand(redisClient, eventContext, commandChronology)) {
+                correlatedLogger.info({ pullRequestNumber: prNumber, staleCommentId: commandChronology.id }, 'Ignoring stale model command after acquiring the label transition lease');
+                return;
+            }
 
-    const shouldQueue = commandMeta.mode === 'use' || Boolean(commandMeta.instructions);
-    if (!shouldQueue) {
-        correlatedLogger.info({ pullRequestNumber: prNumber, selection }, '/switch command has no instructions, durable model switch complete');
-        await postModelSelectionAcknowledgement(opts, selection, 'label-only');
-        return;
-    }
+            const transition = await transitionModelLabel(opts, prData.prLabels, selection, lease);
+            if (!transition.success) return;
 
-    // /use is a manual takeover just like /fix and /review. Fence automatic
-    // work only after the durable label transition succeeds, but before this
-    // revision can be batched or queued.
-    const manualTakeover = await fenceManualCommand({ commandMeta, comment, eventContext, config, correlatedLogger });
+            const shouldQueue = commandMeta.mode === 'use' || Boolean(commandMeta.instructions);
+            if (!shouldQueue) {
+                correlatedLogger.info({ pullRequestNumber: prNumber, selection }, '/switch command has no instructions, durable model switch complete');
+                acknowledgementOutcome = 'label-only';
+                return;
+            }
 
-    const strippedComment = { ...comment, body: commandMeta.instructions || '', revisionIdentity: commentRevisionIdentity };
-    const snapshot = await getPRCommentJobSnapshot(prNumber, owner, repo);
+            // /use is a manual takeover just like /fix and /review. Keep the
+            // fence and every queue-or-pending handoff under the same PR lease
+            // as the freshness claim and verified label convergence.
+            await lease.assertOwned();
+            const manualTakeover = await fenceManualCommand({ commandMeta, comment, eventContext, config, correlatedLogger });
+            const strippedComment = { ...comment, body: commandMeta.instructions || '', revisionIdentity: commentRevisionIdentity };
+            const snapshot = await getPRCommentJobSnapshot(prNumber, owner, repo);
 
-    if (snapshot.active.length > 0) {
-        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
-        if (commandMeta.mode !== 'use') {
-            correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: active writer found, stored selected follow-up for the next run`);
-            await postModelSelectionAcknowledgement(opts, selection, 'pending');
-            return;
-        }
-        // The active worker may already have crossed its final pending-comment
-        // check while BullMQ still reports it as active. Always enqueue a
-        // deterministic pending-only successor after the write so one of the
-        // two jobs is guaranteed to claim this revision.
-        const updatedPRData = { branchName: prData.branchName, prLabels: transition.updatedLabels };
-        await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
-            payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
-            MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId,
-            commandMeta: selectedCommandMeta, prefetchedPRData: updatedPRData, modelSelection: selection,
-            commentRevisionIdentity, pendingOnly: true,
+            if (snapshot.active.length > 0) {
+                await lease.assertOwned();
+                await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
+                if (commandMeta.mode !== 'use') {
+                    correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: active writer found, stored selected follow-up for the next run`);
+                    acknowledgementOutcome = 'pending';
+                    return;
+                }
+                // The active worker may already have crossed its final pending-comment
+                // check while BullMQ still reports it as active. Always enqueue a
+                // deterministic pending-only successor after the write so one of the
+                // two jobs is guaranteed to claim this revision.
+                const updatedPRData = { branchName: prData.branchName, prLabels: transition.updatedLabels };
+                await lease.assertOwned();
+                await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
+                    payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+                    MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId,
+                    commandMeta: selectedCommandMeta, prefetchedPRData: updatedPRData, modelSelection: selection,
+                    commentRevisionIdentity, pendingOnly: true,
+                });
+                correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: active writer found, stored selected follow-up and queued its successor`);
+                acknowledgementOutcome = 'queued';
+                return;
+            }
+
+            const hasQueuedProviderRetries = [...snapshot.waiting, ...snapshot.delayed].some(isProviderLimitRetry);
+            if (hasQueuedProviderRetries) {
+                // Make the selected follow-up recoverable before removing its previous
+                // owner. It is identity-deduplicated when the replacement claims it.
+                await lease.assertOwned();
+                await storeCommentForBatch(
+                    { ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) },
+                    commentAuthor,
+                    eventContext,
+                    { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },
+                );
+            }
+            await lease.assertOwned();
+            const supersededRetries = await supersedeProviderLimitRetries(snapshot, eventContext, redisClient);
+            const remainingQueuedJobs = [...snapshot.waiting, ...snapshot.delayed].filter(job => !isProviderLimitRetry(job));
+            const requiresIndependentTakeover = shouldEnqueueIndependentManualTakeover(remainingQueuedJobs, manualTakeover);
+            if (remainingQueuedJobs.length > 0 && !requiresIndependentTakeover) {
+                await lease.assertOwned();
+                await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
+                correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: queued writer found, stored selected follow-up for batching`);
+                acknowledgementOutcome = 'pending';
+                return;
+            }
+            if (remainingQueuedJobs.length > 0) {
+                correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: fenced automatic work will be replaced by an independent durable job`);
+            }
+
+            const updatedPRData = { branchName: prData.branchName, prLabels: transition.updatedLabels };
+            await lease.assertOwned();
+            await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
+                payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+                MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId,
+                commandMeta: selectedCommandMeta, prefetchedPRData: updatedPRData, modelSelection: selection,
+                commentRevisionIdentity,
+            });
+            correlatedLogger.info({ pullRequestNumber: prNumber, supersededRetries, selection }, `/${commandName} follow-up queued with durable model selection`);
+            acknowledgementOutcome = 'queued';
         });
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: active writer found, stored selected follow-up and queued its successor`);
-        await postModelSelectionAcknowledgement(opts, selection, 'queued');
+    } catch (error) {
+        if (!(error instanceof LabelTransitionLeaseError)) throw error;
+        correlatedLogger.warn({ error: error.message, pullRequestNumber: prNumber }, 'Model command failed to hold its complete PR transition lease');
         return;
     }
 
-    const hasQueuedProviderRetries = [...snapshot.waiting, ...snapshot.delayed].some(isProviderLimitRetry);
-    if (hasQueuedProviderRetries) {
-        // Make the selected follow-up recoverable before removing its previous
-        // owner. It is identity-deduplicated when the replacement claims it.
-        await storeCommentForBatch(
-            { ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) },
-            commentAuthor,
-            eventContext,
-            { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS },
-        );
-    }
-    const supersededRetries = await supersedeProviderLimitRetries(snapshot, eventContext, redisClient);
-    const remainingQueuedJobs = [...snapshot.waiting, ...snapshot.delayed].filter(job => !isProviderLimitRetry(job));
-    const requiresIndependentTakeover = shouldEnqueueIndependentManualTakeover(remainingQueuedJobs, manualTakeover);
-    if (remainingQueuedJobs.length > 0 && !requiresIndependentTakeover) {
-        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: queued writer found, stored selected follow-up for batching`);
-        await postModelSelectionAcknowledgement(opts, selection, 'pending');
-        return;
-    }
-    if (remainingQueuedJobs.length > 0) {
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: fenced automatic work will be replaced by an independent durable job`);
-    }
-
-    const updatedPRData = { branchName: prData.branchName, prLabels: transition.updatedLabels };
-    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
-        payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
-        MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId,
-        commandMeta: selectedCommandMeta, prefetchedPRData: updatedPRData, modelSelection: selection,
-        commentRevisionIdentity,
-    });
-    correlatedLogger.info({ pullRequestNumber: prNumber, supersededRetries, selection }, `/${commandName} follow-up queued with durable model selection`);
-    await postModelSelectionAcknowledgement(opts, selection, 'queued');
+    if (acknowledgementOutcome) await postModelSelectionAcknowledgement(opts, selection, acknowledgementOutcome);
 }
 
 type UltrafixCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: UltrafixCommandMeta };
