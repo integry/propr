@@ -23,6 +23,7 @@ function runAntigravityVerification(
   initModelEvidence = 'pinned-1.1.13-canonical',
   modelsEvidence = 'mapped',
   conversationEvidence = 'consistent',
+  streamEvidence = 'canonical',
 ) {
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'propr-antigravity-script-test.'));
   const binDirectory = join(fixtureRoot, 'bin');
@@ -78,6 +79,45 @@ if (process.env.FAKE_CONVERSATION_EVIDENCE === 'mixed') {
   stepUpdate.step_update.conversation_id = \`\${init.conversation_id}-step\`;
   result.result.conversation_id = \`\${init.conversation_id}-result\`;
 }
+const stepUpdate = events.find(event => event.event === 'step_update');
+const result = events.find(event => event.event === 'result');
+if (!stepUpdate || !result) throw new Error(\`missing stream fixture for model: \${modelId}\`);
+switch (process.env.FAKE_STREAM_EVIDENCE) {
+  case 'legacy-init':
+    events.splice(1, 0, { type: 'init', model: modelId });
+    break;
+  case 'legacy-message':
+    events.splice(-1, 0, { type: 'message', role: 'assistant', content: 'STREAM_OK\\n' });
+    break;
+  case 'legacy-result':
+    events.splice(-1, 0, { type: 'result', status: 'SUCCESS', response: 'STREAM_OK\\n' });
+    break;
+  case 'repeated-init':
+    events.splice(1, 0, JSON.parse(JSON.stringify(init)));
+    break;
+  case 'duplicate-result':
+    events.push(JSON.parse(JSON.stringify(result)));
+    break;
+  case 'post-terminal-envelope':
+    events.push(JSON.parse(JSON.stringify(stepUpdate)));
+    break;
+  case 'result-before-init':
+    events.splice(events.indexOf(result), 1);
+    events.unshift(result);
+    break;
+  case 'non-object-result-payload':
+    result.result = 'SUCCESS';
+    break;
+  case 'truncated':
+    events.splice(events.indexOf(result), 1);
+    break;
+  case 'wrong-sentinel':
+    result.result.response = 'NOT_STREAM_OK\\n';
+    break;
+  case 'failed-result':
+    result.result.status = 'FAILURE';
+    break;
+}
 process.stdout.write(\`\${events.map(JSON.stringify).join('\\n')}\\n\`);
 `,
   );
@@ -95,6 +135,7 @@ process.stdout.write(\`\${events.map(JSON.stringify).join('\\n')}\\n\`);
         FAKE_INIT_MODEL_EVIDENCE: initModelEvidence,
         FAKE_MODELS_EVIDENCE: modelsEvidence,
         FAKE_CONVERSATION_EVIDENCE: conversationEvidence,
+        FAKE_STREAM_EVIDENCE: streamEvidence,
         PATH: `${binDirectory}:${process.env.PATH}`,
       },
     });
@@ -203,6 +244,59 @@ test('authenticated image verifier rejects mixed-conversation stream evidence', 
     result.stderr,
     /step_update envelope expected conversation_id "fixture-conversation-high", got "fixture-conversation-high-step"/,
   );
+});
+
+test('authenticated image verifier rejects malformed or mixed stream protocol evidence', async t => {
+  const cases = [
+    ['legacy init', 'legacy-init', /legacy init envelope cannot be combined with stream evidence/],
+    ['legacy message', 'legacy-message', /legacy message envelope cannot be combined with stream evidence/],
+    ['legacy result', 'legacy-result', /legacy result envelope cannot be combined with stream evidence/],
+    ['repeated init', 'repeated-init', /repeated stream init envelope/],
+    ['duplicate terminal result', 'duplicate-result', /duplicate terminal stream result/],
+    ['post-terminal envelope', 'post-terminal-envelope', /protocol envelope arrived after terminal stream result/],
+    [
+      'result before init',
+      'result-before-init',
+      /result envelope arrived before an initiating conversation_id/,
+    ],
+    ['non-object result payload', 'non-object-result-payload', /stream result envelope has no result payload/],
+    ['truncated stream', 'truncated', /expected exactly one terminal stream result/],
+  ] as const;
+
+  for (const [name, evidence, expectedError] of cases) {
+    await t.test(name, () => {
+      const result = runAntigravityVerification(
+        'pinned-1.1.13-canonical',
+        'mapped',
+        'consistent',
+        evidence,
+      );
+
+      assert.notEqual(result.status, 0, `${name} evidence must not pass`);
+      assert.match(result.stderr, expectedError);
+    });
+  }
+});
+
+test('authenticated image verifier retains exact sentinel and SUCCESS validation', async t => {
+  const cases = [
+    ['wrong sentinel', 'wrong-sentinel', /expected exact sentinel "STREAM_OK\\n", got "NOT_STREAM_OK\\n"/],
+    ['failed result', 'failed-result', /expected final SUCCESS, got "FAILURE"/],
+  ] as const;
+
+  for (const [name, evidence, expectedError] of cases) {
+    await t.test(name, () => {
+      const result = runAntigravityVerification(
+        'pinned-1.1.13-canonical',
+        'mapped',
+        'consistent',
+        evidence,
+      );
+
+      assert.notEqual(result.status, 0, `${name} evidence must not pass`);
+      assert.match(result.stderr, expectedError);
+    });
+  }
 });
 
 test('authenticated image verifier requires each discovered ID and display name on the same mapping', () => {
