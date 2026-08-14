@@ -7,7 +7,7 @@
 
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
-import { resolveProject, ProjectResolutionError, normalizeProjectSlug, printOutput } from "../utils/index.js";
+import { parsePositiveInteger, resolveProject, resolveOptionalProject, ProjectResolutionError, printOutput } from "../utils/index.js";
 import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 import {
   listTasks,
@@ -21,6 +21,17 @@ import {
   getTaskStatus,
   TaskStatus,
 } from "../api/index.js";
+
+const TASK_LIST_STATUSES = [
+  "pending",
+  "queued",
+  "processing",
+  "completed",
+  "failed",
+  "cancelled",
+  "all",
+] as const;
+const TASK_LIST_STATUS_SET = new Set<string>(TASK_LIST_STATUSES);
 
 /**
  * Formats a task status for display.
@@ -372,18 +383,22 @@ Examples:
             search?: string;
           } = {};
 
-          if (options.status && options.status !== "all") {
-            listOptions.status = options.status.toLowerCase();
+          const status = options.status.toLowerCase();
+          if (!TASK_LIST_STATUS_SET.has(status)) {
+            throw new Error(
+              `Invalid status "${options.status}". Expected one of: ${TASK_LIST_STATUSES.join(", ")}.`
+            );
+          }
+          if (status !== "all") {
+            listOptions.status = status;
           }
 
-          if (options.project) {
-            listOptions.repository = options.project;
+          const project = resolveOptionalProject(options);
+          if (project !== undefined) {
+            listOptions.repository = project;
           }
 
-          const limit = parseInt(options.limit, 10);
-          if (!isNaN(limit) && limit > 0) {
-            listOptions.limit = limit;
-          }
+          listOptions.limit = parsePositiveInteger(options.limit, "Limit");
 
           if (options.search) {
             listOptions.search = options.search;
@@ -400,11 +415,11 @@ Examples:
           if (result.tasks.length === 0) {
             console.log("");
             console.log("No tasks found.");
-            if (options.project) {
-              console.log(`Project filter: ${options.project}`);
+            if (project !== undefined) {
+              console.log(`Project filter: ${project}`);
             }
-            if (options.status !== "all") {
-              console.log(`Status filter: ${options.status}`);
+            if (status !== "all") {
+              console.log(`Status filter: ${status}`);
             }
             return;
           }
@@ -421,10 +436,14 @@ Examples:
             );
           }
         } catch (error) {
-          presentApiError(error, {
-            forbiddenMessage: "Error: Access denied. You do not have permission to view tasks.",
-            fallbackMessage: (message) => `Error listing tasks: ${message}`,
-          });
+          if (error instanceof ProjectResolutionError) {
+            console.error(`Error: ${error.message}`);
+          } else {
+            presentApiError(error, {
+              forbiddenMessage: "Error: Access denied. You do not have permission to view tasks.",
+              fallbackMessage: (message) => `Error listing tasks: ${message}`,
+            });
+          }
           process.exit(1);
         }
       }
@@ -718,13 +737,7 @@ Examples:
     .action(async (descriptionArg: string[] | undefined, options: { project?: string; file?: string; stdin?: boolean }) => {
       try {
         const configManager = await createConfigManager();
-        const rawProject = resolveProject(options, configManager);
-        const project = normalizeProjectSlug(rawProject);
-        if (project === null) {
-          throw new ProjectResolutionError(
-            `Invalid project "${rawProject}". Expected owner/repo format.`
-          );
-        }
+        const project = resolveProject(options, configManager);
         const taskDescription =
           (await resolveTextInput(descriptionArg, options)) ?? "Reconcile and recover tasks from GitHub";
         const result = await importTasks(project, taskDescription);

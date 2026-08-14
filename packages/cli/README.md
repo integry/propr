@@ -137,6 +137,12 @@ To use a Personal Access Token instead:
 | `-V, --version` | Output the version number |
 | `-h, --help` | Display help information |
 
+Project may be supplied globally (`propr -p owner/repo plan list`) or on a
+command that advertises the option (`propr plan list -p owner/repo`). If both
+forms are present, the nested command option wins; otherwise the global option
+wins, followed by the configured default project. Project values are trimmed
+and must use `owner/repo` format.
+
 Most commands support `--json` (`-j`) for machine-readable output.
 
 ---

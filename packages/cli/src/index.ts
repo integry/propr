@@ -7,6 +7,12 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { createConfigManager } from "./config/index.js";
 import { completionScript } from "./completion.js";
+import { isValidRemoteUrl } from "./commands/configCommands.js";
+import {
+  configureProjectOptionInheritance,
+  normalizeProjectSlug,
+  ProjectResolutionError,
+} from "./utils/index.js";
 import {
   createIssueCommand,
   createPlanCommand,
@@ -78,6 +84,8 @@ export type {
 // Re-export utilities module for programmatic use
 export {
   resolveProject,
+  resolveOptionalProject,
+  configureProjectOptionInheritance,
   ProjectResolutionError,
   isValidProjectSlug,
   normalizeProjectSlug,
@@ -162,6 +170,8 @@ For more information on a command, run:
   $ propr <command> --help
 `);
 
+configureProjectOptionInheritance(program);
+
 // Remote command - set the API base URL
 program
   .command("remote <url>")
@@ -172,6 +182,9 @@ Example:
 `)
   .action(async (url: string) => {
     try {
+      if (!isValidRemoteUrl(url)) {
+        throw new Error("Invalid remote URL. Expected an http:// or https:// URL.");
+      }
       const configManager = await createConfigManager();
       await configManager.setRemoteUrl(url);
       console.log(`Remote URL set to: ${url}`);
@@ -196,8 +209,14 @@ Example:
   .action(async (project: string) => {
     try {
       const configManager = await createConfigManager();
-      await configManager.setDefaultProject(project);
-      console.log(`Default project set to: ${project}`);
+      const normalizedProject = normalizeProjectSlug(project);
+      if (normalizedProject === null) {
+        throw new ProjectResolutionError(
+          `Invalid project "${project}". Expected owner/repo format.`
+        );
+      }
+      await configManager.setDefaultProject(normalizedProject);
+      console.log(`Default project set to: ${normalizedProject}`);
       console.log(`Configuration saved to: ${configManager.getConfigFilePath()}`);
     } catch (error) {
       console.error(`Error setting default project: ${(error as Error).message}`);

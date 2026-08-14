@@ -6,6 +6,7 @@
  */
 
 import { parseProjectSlug } from "@propr/shared";
+import type { Command } from "commander";
 import { ConfigManager } from "../config/index.js";
 
 /**
@@ -49,6 +50,52 @@ export function isValidProjectSlug(project: string): boolean {
   return normalizeProjectSlug(project) !== null;
 }
 
+function normalizeResolvedProject(project: string): string {
+  const normalized = normalizeProjectSlug(project);
+  if (normalized === null) {
+    throw new ProjectResolutionError(
+      `Invalid project "${project}". Expected owner/repo format.`
+    );
+  }
+  return normalized;
+}
+
+/**
+ * Returns a normalized explicitly supplied project, without consulting config.
+ * This is used by commands where project is an optional filter or assertion.
+ */
+export function resolveOptionalProject(
+  options: ProjectOptions
+): string | undefined {
+  if (options.project === undefined) {
+    return undefined;
+  }
+  return normalizeResolvedProject(options.project);
+}
+
+/**
+ * Configures Commander so a project may be supplied either before the command
+ * tree (global form) or on a leaf command (nested form).
+ *
+ * Commander otherwise lets the root option consume a same-named nested option.
+ * Positional parsing preserves option ownership, and the pre-action hook applies
+ * the documented precedence: nested option, then global option. The configured
+ * default remains the final fallback in {@link resolveProject}.
+ */
+export function configureProjectOptionInheritance(program: Command): void {
+  program.enablePositionalOptions();
+  program.hook("preAction", (_hookCommand, actionCommand) => {
+    if (actionCommand.getOptionValue("project") !== undefined) {
+      return;
+    }
+
+    const globalProject = program.getOptionValue("project");
+    if (globalProject !== undefined) {
+      actionCommand.setOptionValueWithSource("project", globalProject, "cli");
+    }
+  });
+}
+
 /**
  * Resolves the target project by checking command options first,
  * then falling back to the configured default project.
@@ -76,15 +123,16 @@ export function resolveProject(
   configManager: ConfigManager
 ): string {
   // First, check if a project was provided via the command options
-  if (options.project) {
-    return options.project;
+  const explicitProject = resolveOptionalProject(options);
+  if (explicitProject !== undefined) {
+    return explicitProject;
   }
 
   // Fall back to the configured default project
   const defaultProject = configManager.getDefaultProject();
 
   if (defaultProject) {
-    return defaultProject;
+    return normalizeResolvedProject(defaultProject);
   }
 
   // No project could be resolved - throw a helpful error
