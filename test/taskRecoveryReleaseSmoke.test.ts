@@ -229,12 +229,31 @@ test('release-equivalent SQLite/API smoke reconciles stale rows and preserves th
         status: 'generating',
         created_at: '2026-08-14T11:00:00.000Z',
     });
-    const jobs = new Map<string, { returnvalue?: unknown; getState(): Promise<string> }>([
-        ['stale-success-job', { returnvalue: { status: 'complete' }, getState: async () => 'completed' }],
-        ['stale-skipped-job', { returnvalue: { status: 'skipped' }, getState: async () => 'completed' }],
+    const jobs = new Map<string, {
+        id: string;
+        data: { taskId: string };
+        returnvalue?: unknown;
+        getState(): Promise<string>;
+    }>([
+        ['stale-success-job', {
+            id: 'stale-success-job',
+            data: { taskId: 'stale-success' },
+            returnvalue: { status: 'complete' },
+            getState: async () => 'completed',
+        }],
+        ['stale-skipped-job', {
+            id: 'stale-skipped-job',
+            data: { taskId: 'stale-skipped' },
+            returnvalue: { status: 'skipped' },
+            getState: async () => 'completed',
+        }],
         ...liveTasks.map(({ taskId, state }) => [
             `${taskId}-job`,
-            { getState: async () => state },
+            {
+                id: `${taskId}-job`,
+                data: { taskId },
+                getState: async () => state,
+            },
         ] as const),
     ]);
     const queue = { getJob: async (jobId: string) => jobs.get(jobId) ?? null, getJobs: async () => [] };
