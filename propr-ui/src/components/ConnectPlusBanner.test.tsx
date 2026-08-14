@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { getSystemStatus } from '../api/proprApi';
@@ -58,17 +58,19 @@ const status = (connectAccount?: ConnectAccountStatus): SystemStatus => ({
   githubEventIntakeStatus: 'Connected', agents: [], connectAccount,
 });
 
+const banners = (user: CurrentUser = admin, disabled = false) => (
+  <MemoryRouter>
+    <AuthProvider user={user}>
+      <ConnectAccountProvider disabled={disabled}>
+        <ConnectCapacityBanner />
+        <ConnectSoftPromoBanner />
+      </ConnectAccountProvider>
+    </AuthProvider>
+  </MemoryRouter>
+);
+
 function renderBanners(user: CurrentUser = admin, disabled = false) {
-  return render(
-    <MemoryRouter>
-      <AuthProvider user={user}>
-        <ConnectAccountProvider disabled={disabled}>
-          <ConnectCapacityBanner />
-          <ConnectSoftPromoBanner />
-        </ConnectAccountProvider>
-      </AuthProvider>
-    </MemoryRouter>,
-  );
+  return render(banners(user, disabled));
 }
 
 beforeEach(() => {
@@ -183,24 +185,83 @@ describe('Connect Plus banners', () => {
     expect(await screen.findByText('Community seats are full — 3 of 3 active')).toBeInTheDocument();
   });
 
-  it('fingerprints capacity dismissal and reappears after relevant block state changes', async () => {
-    let current = community({ activeSeats: 3, seatsRemaining: 0 });
+  it('stores only an opaque capacity digest and keeps the same state dismissed after remount', async () => {
+    const current = community({
+      activeSeats: 3,
+      seatsRemaining: 0,
+      billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+      seatLimitBlockedAt: '2026-08-14T09:35:00.000Z',
+    });
+    mockGetSystemStatus.mockResolvedValue(status(current));
+    renderBanners();
+    await screen.findByText('Community seats are full — 3 of 3 active');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss ProPR Connect notice' }));
+
+    const key = connectPlusDismissalKey(42, 'AdminUser');
+    const serialized = window.localStorage.getItem(key) ?? '';
+    const stored = JSON.parse(serialized) as { capacity?: unknown[] };
+    expect(serialized).not.toContain(current.billingCycleResetAt);
+    expect(serialized).not.toContain(current.seatLimitBlockedAt);
+    expect(stored.capacity).toEqual([expect.stringMatching(/^sha256:[0-9a-f]{64}$/)]);
+
+    cleanup();
+    const storageRead = vi.spyOn(Storage.prototype, 'getItem');
+    renderBanners();
+    await waitFor(() => expect(storageRead).toHaveBeenCalledWith(key));
+    expect(screen.queryByText('Community seats are full — 3 of 3 active')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['seat count', { activeSeats: 4, allowedSeats: 4 }],
+    ['billing reset timestamp', { billingCycleResetAt: '2026-10-01T00:00:00.000Z' }],
+    ['block event timestamp', { seatLimitBlockedAt: '2026-08-14T09:36:00.000Z' }],
+  ] as const)('reappears after a relevant %s change', async (_label, change) => {
+    let current = community({
+      activeSeats: 3,
+      seatsRemaining: 0,
+      seatLimitBlockedAt: '2026-08-14T09:35:00.000Z',
+    });
     mockGetSystemStatus.mockImplementation(async () => status(current));
     renderBanners();
     await screen.findByText('Community seats are full — 3 of 3 active');
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss ProPR Connect notice' }));
     expect(screen.queryByText('Community seats are full — 3 of 3 active')).not.toBeInTheDocument();
 
-    const oldFingerprint = capacityFingerprint(current);
     current = community({
       activeSeats: 3,
       seatsRemaining: 0,
       seatLimitBlockedAt: '2026-08-14T09:35:00.000Z',
       sentAt: '2026-08-14T09:35:01.000Z',
+      ...change,
     });
-    expect(capacityFingerprint(current)).not.toBe(oldFingerprint);
     fireEvent.focus(window);
-    expect(await screen.findByText('Community seats are full — 3 of 3 active')).toBeInTheDocument();
+    expect(await screen.findByText(/Community seats are full/)).toBeInTheDocument();
+  });
+
+  it('does not apply a stale capacity digest to a different authenticated login', async () => {
+    const current = community({ activeSeats: 3, seatsRemaining: 0 });
+    const adminFingerprint = await capacityFingerprint(current);
+    window.localStorage.setItem(
+      connectPlusDismissalKey(42, admin.login),
+      JSON.stringify({ soft: false, capacity: [adminFingerprint] }),
+    );
+
+    const digest = window.crypto.subtle.digest.bind(window.crypto.subtle);
+    let releaseFirstDigest: (() => Promise<void>) | undefined;
+    const digestSpy = vi.spyOn(window.crypto.subtle, 'digest')
+      .mockImplementationOnce((algorithm, data) => new Promise(resolve => {
+        releaseFirstDigest = async () => resolve(await digest(algorithm, data));
+      }))
+      .mockImplementation((algorithm, data) => digest(algorithm, data));
+    mockGetSystemStatus.mockResolvedValue(status(current));
+
+    const view = renderBanners(admin);
+    await waitFor(() => expect(digestSpy).toHaveBeenCalledTimes(1));
+    view.rerender(banners(member));
+    expect(await screen.findByText('Ask an instance administrator')).toBeInTheDocument();
+
+    await act(async () => { await releaseFirstDigest?.(); });
+    expect(screen.getByText('Ask an instance administrator')).toBeInTheDocument();
   });
 
   it('keeps rendering and closing when localStorage access fails', async () => {
@@ -212,5 +273,12 @@ describe('Connect Plus banners', () => {
     await screen.findByText('Open ProPR securely from anywhere');
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss ProPR Connect notice' }));
     expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
+
+    cleanup();
+    mockGetSystemStatus.mockResolvedValue(status(community({ activeSeats: 3, seatsRemaining: 0 })));
+    renderBanners();
+    await screen.findByText('Community seats are full — 3 of 3 active');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss ProPR Connect notice' }));
+    expect(screen.queryByText('Community seats are full — 3 of 3 active')).not.toBeInTheDocument();
   });
 });

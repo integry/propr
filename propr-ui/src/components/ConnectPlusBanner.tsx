@@ -7,6 +7,7 @@ import {
   capacityFingerprint,
   connectPlusDismissalKey,
   connectUpgradeUrl,
+  type CapacityFingerprintInput,
 } from './connectPlusBannerState';
 
 interface DismissalRecord {
@@ -15,6 +16,7 @@ interface DismissalRecord {
 }
 
 const emptyDismissal = (): DismissalRecord => ({ soft: false, capacity: [] });
+const CAPACITY_FINGERPRINT_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 const readDismissal = (key: string): DismissalRecord => {
   try {
@@ -24,7 +26,9 @@ const readDismissal = (key: string): DismissalRecord => {
     return {
       soft: record.soft === true,
       capacity: Array.isArray(record.capacity)
-        ? record.capacity.filter((value): value is string => typeof value === 'string').slice(-10)
+        ? record.capacity.filter((value): value is string => (
+          typeof value === 'string' && CAPACITY_FINGERPRINT_PATTERN.test(value)
+        )).slice(-10)
         : [],
     };
   } catch {
@@ -41,32 +45,117 @@ const storeDismissal = (key: string, record: DismissalRecord): void => {
   }
 };
 
-function useDismissal(account: ConnectAccountStatus, variant: 'soft' | 'capacity') {
+function useSoftDismissal(account: ConnectAccountStatus) {
   const user = useCurrentUser();
   const key = useMemo(
     () => connectPlusDismissalKey(account.installationId, user?.login ?? ''),
     [account.installationId, user?.login],
   );
-  const fingerprint = variant === 'capacity' ? capacityFingerprint(account) : 'soft';
-  const [dismissed, setDismissed] = useState(() => {
-    const record = readDismissal(key);
-    return variant === 'soft' ? record.soft : record.capacity.includes(fingerprint);
-  });
+  const [dismissed, setDismissed] = useState(() => readDismissal(key).soft);
 
   useEffect(() => {
-    const record = readDismissal(key);
-    setDismissed(variant === 'soft' ? record.soft : record.capacity.includes(fingerprint));
-  }, [fingerprint, key, variant]);
+    setDismissed(readDismissal(key).soft);
+  }, [key]);
 
   const dismiss = useCallback(() => {
     const record = readDismissal(key);
-    if (variant === 'soft') record.soft = true;
-    else record.capacity = [...record.capacity.filter(value => value !== fingerprint), fingerprint].slice(-10);
+    record.soft = true;
     storeDismissal(key, record);
     setDismissed(true);
-  }, [fingerprint, key, variant]);
+  }, [key]);
 
   return { dismissed, dismiss };
+}
+
+interface CapacityFingerprintRequest {
+  key: string;
+  account: CapacityFingerprintInput;
+}
+
+interface CapacityDismissalState {
+  request: CapacityFingerprintRequest | null;
+  fingerprint: string | null;
+  ready: boolean;
+  dismissed: boolean;
+}
+
+function useCapacityDismissal(account: ConnectAccountStatus) {
+  const user = useCurrentUser();
+  const key = useMemo(
+    () => connectPlusDismissalKey(account.installationId, user?.login ?? ''),
+    [account.installationId, user?.login],
+  );
+  const request = useMemo<CapacityFingerprintRequest>(() => ({
+    key,
+    account: {
+      activeSeats: account.activeSeats,
+      allowedSeats: account.allowedSeats,
+      seatsRemaining: account.seatsRemaining,
+      billingCycleResetAt: account.billingCycleResetAt,
+      seatLimitBlockedAt: account.seatLimitBlockedAt,
+    },
+  }), [
+    account.activeSeats,
+    account.allowedSeats,
+    account.billingCycleResetAt,
+    account.seatLimitBlockedAt,
+    account.seatsRemaining,
+    key,
+  ]);
+  const [state, setState] = useState<CapacityDismissalState>({
+    request: null,
+    fingerprint: null,
+    ready: false,
+    dismissed: false,
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const resolveDismissal = async () => {
+      try {
+        const fingerprint = await capacityFingerprint(request.account);
+        if (cancelled) return;
+        setState({
+          request,
+          fingerprint,
+          ready: true,
+          dismissed: readDismissal(request.key).capacity.includes(fingerprint),
+        });
+      } catch {
+        if (cancelled) return;
+        // Web Crypto should be present in supported browsers. If it is not,
+        // preserve the storage-unavailable behavior: render and allow a close
+        // for this mounted session without persisting sensitive source data.
+        setState({ request, fingerprint: null, ready: true, dismissed: false });
+      }
+    };
+
+    void resolveDismissal();
+    return () => { cancelled = true; };
+  }, [request]);
+
+  const isCurrentRequest = state.request === request;
+  const dismiss = useCallback(() => {
+    if (!isCurrentRequest || !state.ready) return;
+    if (state.fingerprint) {
+      const record = readDismissal(request.key);
+      record.capacity = [
+        ...record.capacity.filter(value => value !== state.fingerprint),
+        state.fingerprint,
+      ].slice(-10);
+      storeDismissal(request.key, record);
+    }
+    setState(current => current.request === request
+      ? { ...current, dismissed: true }
+      : current);
+  }, [isCurrentRequest, request, state.fingerprint, state.ready]);
+
+  return {
+    ready: isCurrentRequest && state.ready,
+    dismissed: isCurrentRequest && state.dismissed,
+    dismiss,
+  };
 }
 
 const isCapacityState = (account: ConnectAccountStatus): boolean =>
@@ -94,8 +183,8 @@ export const ConnectCapacityBanner: React.FC = () => {
 const CapacityBannerContent: React.FC<{ account: ConnectAccountStatus }> = ({ account }) => {
   const user = useCurrentUser();
   const canManageMembers = userHasPermission(user, 'instance.manage_members');
-  const { dismissed, dismiss } = useDismissal(account, 'capacity');
-  if (dismissed) return null;
+  const { ready, dismissed, dismiss } = useCapacityDismissal(account);
+  if (!ready || dismissed) return null;
 
   const isFull = account.activeSeats >= account.allowedSeats || account.seatsRemaining === 0;
   const title = isFull
@@ -147,7 +236,7 @@ export const ConnectSoftPromoBanner: React.FC = () => {
 };
 
 const SoftBannerContent: React.FC<{ account: ConnectAccountStatus }> = ({ account }) => {
-  const { dismissed, dismiss } = useDismissal(account, 'soft');
+  const { dismissed, dismiss } = useSoftDismissal(account);
   if (dismissed) return null;
 
   return (
