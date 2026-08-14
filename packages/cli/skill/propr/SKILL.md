@@ -78,6 +78,7 @@ Inspect the current PR help or completion-comment command reference before actin
 ## Keep the deterministic boundary
 
 - Inside a ProPR implementation task, edit and test only. Do not commit, push, repair Git permissions, or create another ProPR task recursively. ProPR finalizes Git changes.
+- Never grant or broaden repository, provider, system, membership, or access-control permissions. Leave all such operations to a human administrator.
 - Do not copy credentials or modify provider credential files. Never put secrets, tokens, device codes, or private configuration in issues, comments, logs, or command arguments.
 - Diagnose without mutation unless implementation was requested. Treat merging the PR, publishing, deploying, account changes, and destructive cleanup as distinct authority.
 - Preserve existing worktrees and user data. Prefer non-destructive validation with isolated stacks, ports, and data directories.
