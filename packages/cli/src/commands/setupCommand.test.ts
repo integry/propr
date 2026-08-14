@@ -48,6 +48,23 @@ function installed(target: AgentSkillTarget): AgentSkillOperationResult {
   };
 }
 
+for (const action of ["failed", "refused"] as const) {
+  for (const state of ["foreign", "modified-managed"] as const) {
+    test(`setup recovery uses --force for a ${action} ${state} skill install`, async () => {
+      const lines: string[] = [];
+      await offerSetupAgentSkill({
+        interactive: false,
+        explicitTargets: "codex",
+        env: { HOME: "/tmp/propr-recovery" },
+        log: (line) => lines.push(line),
+        install: (target) => ({ ...installed(target), action, state }),
+      });
+
+      assert.ok(lines.includes("  Recovery: propr skill install codex --force"));
+    });
+  }
+}
+
 test("guided setup prompts once, shows exact detected paths, and installs the selected detected tools", async () => {
   const lines: string[] = [];
   const questions: string[] = [];

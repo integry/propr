@@ -98,8 +98,7 @@ export async function offerSetupAgentSkill(options: SetupSkillOfferOptions = {})
           log(`  Unsafe target: ${result.detail ?? "unsafe target"}`);
           log(`  Recovery: correct the unsafe target condition, then run: propr skill install ${target}`);
         } else {
-          const force = result.action === "refused" &&
-            (result.state === "foreign" || result.state === "modified-managed");
+          const force = result.state === "foreign" || result.state === "modified-managed";
           log(`  Recovery: propr skill install ${target}${force ? " --force" : ""}`);
         }
       }

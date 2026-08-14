@@ -100,6 +100,98 @@ test("forced install refuses an already-checked ancestor replaced before descend
   await assertParentCreationSymlinkRace(t, true);
 });
 
+test("failed provider child identity check preserves a raced replacement directory", async (t) => {
+  const root = temporaryRoot(t, "propr-agent-skill-created-child-race-test-");
+  const env = {
+    HOME: join(root, "home"),
+    CODEX_HOME: join(root, "provider-parent", "codex-home"),
+  };
+  fs.mkdirSync(env.HOME, { recursive: true });
+  fs.mkdirSync(dirname(env.CODEX_HOME), { recursive: true });
+  const source = join(root, "bundle");
+  fs.mkdirSync(join(source, "agents"), { recursive: true });
+  fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
+  fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+
+  const createdChild = env.CODEX_HOME;
+  const detachedChild = join(root, "detached-codex-home");
+  const sentinel = join(createdChild, "provider-sentinel.bin");
+  const sentinelContent = Buffer.from([0x00, 0xff, 0x51, 0x9a]);
+  let injected = false;
+
+  t.mock.module("node:fs", {
+    namedExports: {
+      ...fs,
+      lstatSync(path: fs.PathLike): fs.Stats {
+        if (!injected && String(path) === createdChild && fs.existsSync(createdChild)) {
+          injected = true;
+          fs.renameSync(createdChild, detachedChild);
+          fs.mkdirSync(createdChild);
+          fs.writeFileSync(sentinel, sentinelContent);
+        }
+        return fs.lstatSync(path);
+      },
+    },
+  });
+  const agentSkillModule = new URL("./agentSkill.ts?created-child-directory-race", import.meta.url);
+  const { installAgentSkill } = await import(agentSkillModule.href);
+
+  const result = installAgentSkill("codex", { env, bundleDir: source });
+
+  assert.equal(injected, true);
+  assert.equal(result.action, "failed");
+  assert.match(result.detail ?? "", /directory changed/);
+  assert.equal(fs.lstatSync(createdChild).isDirectory(), true);
+  assert.deepEqual(fs.readFileSync(sentinel), sentinelContent);
+  assert.equal(fs.lstatSync(detachedChild).isDirectory(), true);
+});
+
+test("staging cleanup preserves a raced replacement directory", async (t) => {
+  const root = temporaryRoot(t, "propr-agent-skill-staging-cleanup-race-test-");
+  const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
+  fs.mkdirSync(env.HOME, { recursive: true });
+  const source = join(root, "bundle");
+  fs.mkdirSync(join(source, "agents"), { recursive: true });
+  fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
+  fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+
+  const skillsParent = join(env.CODEX_HOME, "skills");
+  const staging = join(skillsParent, ".propr.installing-20260814102400000");
+  const detachedStaging = join(root, "detached-staging");
+  const sentinel = join(staging, "provider-sentinel.bin");
+  const sentinelContent = Buffer.from([0x00, 0xff, 0x51, 0x9a]);
+  let injected = false;
+
+  t.mock.module("node:fs", {
+    namedExports: {
+      ...fs,
+      mkdirSync(path: fs.PathLike, options?: fs.MakeDirectoryOptions & { recursive?: boolean }): string | undefined {
+        if (!injected && basename(String(path)) === "propr" && fs.existsSync(staging)) {
+          injected = true;
+          fs.renameSync(staging, detachedStaging);
+          fs.mkdirSync(staging);
+          fs.writeFileSync(sentinel, sentinelContent);
+        }
+        return fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
+      },
+    },
+  });
+  const agentSkillModule = new URL("./agentSkill.ts?staging-cleanup-directory-race", import.meta.url);
+  const { installAgentSkill } = await import(agentSkillModule.href);
+
+  const result = installAgentSkill("codex", {
+    env,
+    bundleDir: source,
+    now: new Date("2026-08-14T10:24:00Z"),
+  });
+
+  assert.equal(injected, true);
+  assert.equal(result.action, "installed");
+  assert.equal(fs.lstatSync(staging).isDirectory(), true);
+  assert.deepEqual(fs.readFileSync(sentinel), sentinelContent);
+  assert.equal(fs.lstatSync(detachedStaging).isDirectory(), true);
+});
+
 test("adoption does not publish a marker through a target replaced by an outside symlink", async (t) => {
   const root = temporaryRoot(t, "propr-agent-skill-adoption-target-race-test-");
   const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };

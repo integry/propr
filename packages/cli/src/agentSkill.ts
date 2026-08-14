@@ -533,8 +533,11 @@ function ensureProviderSkillsParent(location: AgentSkillLocation): PinnedDirecto
       try {
         assertVisibleDirectoryIdentity(visibleChild, child);
       } catch (error) {
-        closePinnedDirectory(child);
-        if (created) removePinnedTree(current, component);
+        try {
+          if (created) removePinnedTreeIfSameDirectory(current, component, child);
+        } finally {
+          closePinnedDirectory(child);
+        }
         throw error;
       }
       closePinnedDirectory(current);
@@ -589,8 +592,13 @@ function createPinnedSiblingDirectory(
       assertVisibleDirectoryIdentity(candidate.path, directory);
       return { ...candidate, directory };
     } catch (error) {
-      if (directory) closePinnedDirectory(directory);
-      if (created) removePinnedTree(parent, candidate.name);
+      if (directory) {
+        try {
+          if (created) removePinnedTreeIfSameDirectory(parent, candidate.name, directory);
+        } finally {
+          closePinnedDirectory(directory);
+        }
+      }
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
   }
@@ -609,6 +617,25 @@ function renamePinnedEntry(
 
 function removePinnedTree(parent: PinnedDirectory, name: string): void {
   withPinnedPath(parent, (base) => rmSync(join(base, name), { recursive: true, force: true }));
+}
+
+/** Remove only the entry represented by the held directory, never a raced replacement at its name. */
+function removePinnedTreeIfSameDirectory(
+  parent: PinnedDirectory,
+  name: string,
+  expected: PinnedDirectory
+): boolean {
+  const current = withPinnedPath(parent, (base) => lstatIfExists(join(base, name)));
+  if (
+    !current ||
+    current.isSymbolicLink() ||
+    !current.isDirectory() ||
+    !sameFilesystemObject(current, fstatSync(expected.fd))
+  ) {
+    return false;
+  }
+  removePinnedTree(parent, name);
+  return true;
 }
 
 function writeBundleContents(directory: PinnedDirectory, bundle: Bundle): void {
@@ -826,11 +853,14 @@ function installAgentSkillWithoutOverwrite(
   } catch (error) {
     return preservedFailure(status, (error as Error).message, displaced);
   } finally {
-    if (staged) {
-      closePinnedDirectory(staged.directory);
-      if (pinnedParent) removePinnedTree(pinnedParent, staged.name);
+    try {
+      if (staged && pinnedParent) {
+        removePinnedTreeIfSameDirectory(pinnedParent, staged.name, staged.directory);
+      }
+    } finally {
+      if (staged) closePinnedDirectory(staged.directory);
+      if (pinnedParent) closePinnedDirectory(pinnedParent);
     }
-    if (pinnedParent) closePinnedDirectory(pinnedParent);
   }
 }
 
