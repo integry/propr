@@ -22,13 +22,14 @@ import {
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
 import { planAgentLogin, loginableAgents } from "./agentValidation.js";
-import { ApiError, NetworkError, NotFoundError, UnauthorizedError } from "../api/errors.js";
+import { ApiError, NetworkError, NotFoundError } from "../api/errors.js";
 import {
   printOutput,
   readJsonInput,
   validateJsonFields,
   JsonInputError,
 } from "../utils/index.js";
+import { presentApiError } from "../utils/apiErrorPresentation.js";
 
 const AGENT_TYPE_LIST = AGENT_TYPES.join(", ");
 
@@ -177,12 +178,13 @@ Examples:
         console.log("");
         console.log(`Total: ${result.agents.length} agent(s)`);
       } catch (error) {
-        if (error instanceof UnauthorizedError) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
-        } else if (error instanceof NetworkError) {
+        if (error instanceof NetworkError) {
           console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
         } else {
-          console.error(`Error listing agents: ${(error as Error).message}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view agents.",
+            fallbackMessage: (message) => `Error listing agents: ${message}`,
+          });
         }
         process.exit(1);
       }
@@ -361,14 +363,20 @@ Examples:
             process.exit(1);
           }
         } catch (error) {
-          if (error instanceof UnauthorizedError) {
-            console.error("Error: Unauthorized. Please run 'propr login' first.");
-          } else if (error instanceof NetworkError) {
+          if (error instanceof NetworkError) {
             console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
-          } else if (error instanceof ApiError && (error as Error).message.includes("already exists")) {
+          } else if (
+            error instanceof ApiError &&
+            error.status !== 401 &&
+            error.status !== 403 &&
+            error.message.includes("already exists")
+          ) {
             console.error(`Error: ${(error as Error).message}`);
           } else {
-            console.error(`Error adding agent: ${(error as Error).message}`);
+            presentApiError(error, {
+              forbiddenMessage: "Error: Access denied. You do not have permission to add agents.",
+              fallbackMessage: (message) => `Error adding agent: ${message}`,
+            });
           }
           process.exit(1);
         }
@@ -390,12 +398,11 @@ Examples:
         console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
       } else if (error instanceof NotFoundError || (error instanceof Error && error.message.includes("not found"))) {
         console.error(`Error: Agent '${alias}' not found`);
-      } else if (error instanceof UnauthorizedError) {
-        console.error("Error: Unauthorized. Please run 'propr login' first.");
-      } else if (error instanceof ApiError) {
-        console.error(`Error updating agent: ${error.message}`);
       } else {
-        console.error(`Error updating agent: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to update agents.",
+          fallbackMessage: (message) => `Error updating agent: ${message}`,
+        });
       }
       process.exit(1);
     }
@@ -463,14 +470,15 @@ Examples:
           process.exit(1);
         }
       } catch (error) {
-        if (error instanceof UnauthorizedError) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
-        } else if (error instanceof NotFoundError) {
+        if (error instanceof NotFoundError) {
           console.error(`Error: Agent '${alias}' not found`);
         } else if (error instanceof NetworkError) {
           console.error("Error: cannot reach the ProPR backend. Start the stack first: propr start");
         } else {
-          console.error(`Error deleting agent: ${(error as Error).message}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to delete agents.",
+            fallbackMessage: (message) => `Error deleting agent: ${message}`,
+          });
         }
         process.exit(1);
       }

@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { isValidRemoteUrl, sanitizeRemoteProfile, sanitizeRemoteProfiles } from "./configCommands.js";
+import { Command } from "commander";
+import { ConfigManager } from "../config/index.js";
+import { configureProjectOptionInheritance } from "../utils/index.js";
+import {
+  createConfigCommand,
+  isValidRemoteUrl,
+  sanitizeRemoteProfile,
+  sanitizeRemoteProfiles,
+} from "./configCommands.js";
 
 test("sanitizeRemoteProfile redacts GitHub tokens for JSON-safe views", () => {
   assert.deepEqual(
@@ -50,4 +61,40 @@ test("isValidRemoteUrl accepts only trimmed http and https URLs", () => {
   assert.equal(isValidRemoteUrl(" https://api.example.com"), false);
   assert.equal(isValidRemoteUrl("not-a-url"), false);
   assert.equal(isValidRemoteUrl("ssh://api.example.com"), false);
+});
+
+test("profile set persists its nested project option", async () => {
+  const temporaryHome = await mkdtemp(join(tmpdir(), "propr-cli-profile-project-"));
+  const previousHome = process.env.HOME;
+  const originalLog = console.log;
+  process.env.HOME = temporaryHome;
+  console.log = () => {};
+
+  try {
+    const program = new Command()
+      .exitOverride()
+      .option("-p, --project <project>");
+    configureProjectOptionInheritance(program);
+    program.addCommand(createConfigCommand());
+
+    await program.parseAsync(
+      ["config", "profile", "set", "audit-project-only", "--project", " mcptestio/propr-e2e "],
+      { from: "user" }
+    );
+
+    const manager = new ConfigManager(join(temporaryHome, ".propr"));
+    await manager.init();
+    assert.equal(
+      manager.getRemoteProfiles()["audit-project-only"].defaultProject,
+      "mcptestio/propr-e2e"
+    );
+  } finally {
+    console.log = originalLog;
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    await rm(temporaryHome, { recursive: true, force: true });
+  }
 });

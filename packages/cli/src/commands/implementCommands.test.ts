@@ -17,7 +17,7 @@ test("resolveOptionalImplementationRepository asserts only an explicit project",
 test("resolveOptionalImplementationRepository rejects invalid repositories", () => {
   assert.throws(
     () => resolveOptionalImplementationRepository({ project: "not a repository" }),
-    /Invalid project format/
+    /Invalid project/
   );
 });
 
