@@ -115,6 +115,34 @@ test('comment identity preserves issue/review ID collisions, revisions, order, a
     assert.deepStrictEqual(comments.filter(comment => comment.type === 'review').map(comment => comment.hasCodeContext), [true, true, true]);
 });
 
+test('execution receives only the newest revision per exact comment type and ID while job data retains every revision', () => {
+    const revisions: UnprocessedComment[] = [
+        issue(7, 'issue r2', '2026-08-14T10:03:00Z'),
+        { id: 7, body: 'review r1', updatedAt: '2026-08-14T10:02:00Z', author: 'bob', type: 'review', hasCodeContext: true },
+        issue(7, 'issue r1', '2026-08-14T10:01:00Z'),
+        { id: 7, body: 'review r2', updatedAt: '2026-08-14T10:04:00Z', author: 'bob', type: 'review', hasCodeContext: true },
+    ];
+    const jobData = {
+        pullRequestNumber: 42,
+        repoOwner: 'integry',
+        repoName: 'propr',
+        correlationId: 'latest-comment-revisions',
+    };
+
+    const commentsForExecution = applyPendingCommentCommandContext(jobData, revisions, logger as never);
+
+    assert.deepStrictEqual(commentsForExecution.map(comment => `${comment.type}:${comment.id}:${comment.body}`), [
+        'issue:7:issue r2',
+        'review:7:review r2',
+    ]);
+    assert.deepStrictEqual(jobData.comments.map(comment => `${comment.type}:${comment.id}:${comment.body}`), [
+        'issue:7:issue r2',
+        'review:7:review r1',
+        'issue:7:issue r1',
+        'review:7:review r2',
+    ]);
+});
+
 test('out-of-order revisions of one edited /use comment keep the newest model selection', () => {
     const createdAt = '2026-08-14T10:00:00Z';
     const newer = {
