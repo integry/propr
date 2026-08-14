@@ -174,6 +174,35 @@ export interface JobErrorOptions {
     runtimeAgentAlias?: string; runtimeModelName?: string;
 }
 
+interface ProviderLimitRetryRouting {
+    runtimeAgentAlias?: string;
+    runtimeModelName?: string;
+}
+
+/** Persist the concrete provider route used by the failed attempt. */
+export function buildRuntimeProviderLimitRetryJobData(
+    jobData: CommentJobData,
+    routing: ProviderLimitRetryRouting,
+): CommentJobData {
+    const retryData = buildProviderLimitRetryJobData(jobData);
+    if (!routing.runtimeAgentAlias || !routing.runtimeModelName) return retryData;
+
+    return {
+        ...retryData,
+        agentAlias: routing.runtimeAgentAlias,
+        modelName: routing.runtimeModelName,
+        llm: routing.runtimeModelName,
+    };
+}
+
+/** Build a deterministic retry identity from the persisted concrete route. */
+export function buildProviderLimitRetryJobId(jobData: CommentJobData): string {
+    const routingSlug = `${jobData.agentAlias || 'default'}-${jobData.modelName || jobData.llm || 'default'}`
+        .replace(/[^a-zA-Z0-9-]/g, '-');
+    const branchSlug = (jobData.branchName || 'main').replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 30);
+    return `pr-comments-batch-${jobData.repoOwner}-${jobData.repoName}-${jobData.pullRequestNumber}-${routingSlug}-${branchSlug}-ratelimit-retry`;
+}
+
 export class UsageLimitError extends Error {
     resetTimestamp?: number;
     constructor(message: string, resetTimestamp?: number) {
@@ -214,9 +243,9 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     // `/use` may have switched the durable label while this writer was still
     // active. In that race, the pending selected follow-up is queued by cleanup;
     // recreating this old provider retry would only leave stale work behind it.
-    const hasRuntimeRouting = Boolean(options.runtimeAgentAlias && options.runtimeModelName);
-    const retryAgentAlias = hasRuntimeRouting ? options.runtimeAgentAlias : job.data.agentAlias;
-    const retryModelName = hasRuntimeRouting ? options.runtimeModelName : job.data.modelName;
+    const retryJobData = buildRuntimeProviderLimitRetryJobData(job.data, options);
+    const retryAgentAlias = retryJobData.agentAlias;
+    const retryModelName = retryJobData.modelName;
     if (octokit && retryAgentAlias && retryModelName) {
         try {
             const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
@@ -228,18 +257,21 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
                 response.data.labels,
                 process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
             );
-            if (liveSelection && (
-                liveSelection.agentAlias.toLowerCase() !== retryAgentAlias.toLowerCase()
-                || liveSelection.model.toLowerCase() !== retryModelName.toLowerCase()
-            )) {
-                correlatedLogger.info({
-                    pullRequestNumber,
-                    retryAgent: retryAgentAlias,
-                    retryModel: retryModelName,
-                    liveAgent: liveSelection.agentAlias,
-                    liveModel: liveSelection.model,
-                }, 'Provider-limit retry superseded by a newer durable PR model selection');
-                return 'provider_limit_retry_superseded';
+            if (liveSelection) {
+                if (
+                    liveSelection.agentAlias.toLowerCase() !== retryAgentAlias.toLowerCase()
+                    || liveSelection.model.toLowerCase() !== retryModelName.toLowerCase()
+                ) {
+                    correlatedLogger.info({
+                        pullRequestNumber,
+                        retryAgent: retryAgentAlias,
+                        retryModel: retryModelName,
+                        liveAgent: liveSelection.agentAlias,
+                        liveModel: liveSelection.model,
+                    }, 'Provider-limit retry superseded by a newer durable PR model selection');
+                    return 'provider_limit_retry_superseded';
+                }
+                retryJobData.modelLabel = liveSelection.githubLabel;
             }
         } catch (selectionError) {
             correlatedLogger.warn({ error: (selectionError as Error).message }, 'Could not verify live PR model before provider-limit requeue; preserving retry');
@@ -247,9 +279,7 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     }
 
     // Use deterministic jobId to prevent duplicate jobs if requeue is triggered multiple times
-    const llmSlug = (job.data.llm || 'default').replace(/[^a-zA-Z0-9-]/g, '-');
-    const branchSlug = (job.data.branchName || 'main').replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 30);
-    const requeueJobId = `pr-comments-batch-${repoOwner}-${repoName}-${pullRequestNumber}-${llmSlug}-${branchSlug}-ratelimit-retry`;
+    const requeueJobId = buildProviderLimitRetryJobId(retryJobData);
 
     if (octokit) {
         try {
@@ -262,7 +292,7 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
         }
     }
 
-    await issueQueue.add(job.name, buildProviderLimitRetryJobData(job.data), { jobId: requeueJobId, delay: Math.max(0, delay) });
+    await issueQueue.add(job.name, retryJobData, { jobId: requeueJobId, delay: Math.max(0, delay) });
     return 'requeued';
 }
 

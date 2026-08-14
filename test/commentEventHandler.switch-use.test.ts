@@ -242,6 +242,7 @@ function createMockRedis() {
         del: mock.fn(async (key: string) => {
             store.delete(key);
         }),
+        lrange: mock.fn(async (key: string) => [...(lists.get(key) ?? [])]),
         eval: mock.fn(async (script: string, _keyCount: number, key: string, ...args: string[]) => {
             if (script.includes("redis.call('LRANGE'")) {
                 const list = lists.get(key) ?? [];
@@ -577,6 +578,41 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+    });
+
+    test('out-of-order /use revisions keep the durable label aligned with the newest queued routing', async () => {
+        mockActiveJobs = [{
+            name: 'processPullRequestComment',
+            data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
+        }];
+        const newer = createPRCommentEvent('/use haiku\nUse the newer revision');
+        newer.comment.id = 12345;
+        newer.comment.created_at = '2026-08-14T10:00:00Z';
+        newer.comment.updated_at = '2026-08-14T10:05:00Z';
+        const config = createTestConfig({ processCommentEvent });
+
+        await processCommentEvent(newer, 'issue_comment', 'corr-newer-use-revision', config);
+
+        const queuedData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        mockWaitingJobs = [{
+            id: mockQueueAdd.mock.calls[0].arguments[2].jobId,
+            name: 'processPullRequestComment',
+            data: queuedData,
+            remove: mock.fn(async () => {}),
+        }];
+        const older = createPRCommentEvent('/use opus\nUse the older revision');
+        older.comment.id = newer.comment.id;
+        older.comment.created_at = newer.comment.created_at;
+        older.comment.updated_at = '2026-08-14T10:01:00Z';
+
+        await handleCommentEdited(older, 'issue_comment', 'corr-older-use-revision', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1, 'stale delivery must not mutate the model label');
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-haiku']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1, 'stale delivery must not enqueue different routing');
+        assert.strictEqual(queuedData.agentAlias, 'default');
+        assert.strictEqual(queuedData.modelName, 'claude-haiku-4-5-20251001');
+        assert.strictEqual(queuedData.modelLabel, 'llm-claude-haiku');
     });
 
     test('issue-comment transition preserves unrelated labels added and removed between live reads and writes', async () => {

@@ -304,6 +304,120 @@ interface PRCommentJobSnapshot {
     delayed: Job<PRJobData>[];
 }
 
+interface CommandChronology {
+    id: number;
+    createdAt?: string;
+    updatedAt?: string;
+    revisionIdentity?: string;
+    type?: UnprocessedComment['type'];
+    ingestionOrder?: number;
+}
+
+function compareOptionalStrings(left: string | undefined, right: string | undefined): number {
+    if (left === right) return 0;
+    if (left === undefined) return -1;
+    if (right === undefined) return 1;
+    return left.localeCompare(right);
+}
+
+function compareCommandTypes(left: CommandChronology['type'], right: CommandChronology['type']): number {
+    if (left === right) return 0;
+    if (left === undefined) return -1;
+    if (right === undefined) return 1;
+    return left === 'issue' ? -1 : 1;
+}
+
+function compareCommandChronology(left: CommandChronology, right: CommandChronology, useCreatedAt: boolean): number {
+    if (left.id === right.id && left.type === right.type) {
+        const revisionOrder = compareOptionalStrings(left.updatedAt ?? left.createdAt, right.updatedAt ?? right.createdAt);
+        if (revisionOrder !== 0) return revisionOrder;
+        if (left.ingestionOrder !== right.ingestionOrder) return (left.ingestionOrder ?? -1) - (right.ingestionOrder ?? -1);
+        return compareOptionalStrings(left.revisionIdentity, right.revisionIdentity);
+    }
+
+    if (useCreatedAt && left.createdAt !== undefined && right.createdAt !== undefined) {
+        const createdAtOrder = left.createdAt.localeCompare(right.createdAt);
+        if (createdAtOrder !== 0) return createdAtOrder;
+        const typeOrder = compareCommandTypes(left.type, right.type);
+        if (typeOrder !== 0) return typeOrder;
+    }
+
+    const idOrder = left.id - right.id;
+    if (idOrder !== 0 || useCreatedAt) return idOrder;
+    return compareCommandTypes(left.type, right.type);
+}
+
+function getJobCommandChronologies(job: Job<PRJobData>): CommandChronology[] {
+    const data = job.data;
+    if (!data.commandMode || data.commandMode === 'default') return [];
+    if (data.commandCommentId === undefined) {
+        return data.comments ?? (data.commentId === undefined ? [] : [{ id: data.commentId }]);
+    }
+
+    const candidates = (data.comments ?? []).map((comment, ingestionOrder) => ({
+        ...comment,
+        revisionIdentity: getUnprocessedCommentRevisionIdentity(comment),
+        ingestionOrder,
+    })).filter(comment => comment.id === data.commandCommentId
+        && (data.commandCommentType === undefined || comment.type === data.commandCommentType));
+    const ownerComment = candidates.find(comment => data.commandCommentRevisionIdentity !== undefined
+        && comment.revisionIdentity === data.commandCommentRevisionIdentity)
+        ?? candidates.find(comment => data.commandCommentUpdatedAt !== undefined
+            && comment.updatedAt === data.commandCommentUpdatedAt)
+        ?? candidates[0];
+    return [{
+        id: data.commandCommentId,
+        createdAt: data.commandCommentCreatedAt ?? ownerComment?.createdAt,
+        updatedAt: data.commandCommentUpdatedAt ?? ownerComment?.updatedAt,
+        revisionIdentity: data.commandCommentRevisionIdentity ?? ownerComment?.revisionIdentity,
+        type: data.commandCommentType ?? ownerComment?.type,
+    }];
+}
+
+function latestPendingCommandChronologies(comments: UnprocessedComment[]): CommandChronology[] {
+    const latestByComment = new Map<string, CommandChronology>();
+    comments.forEach((comment, ingestionOrder) => {
+        if ((!comment.commandMode || comment.commandMode === 'default') && comment.llmOverride === undefined) return;
+        const chronology = {
+            ...comment,
+            revisionIdentity: getUnprocessedCommentRevisionIdentity(comment),
+            ingestionOrder,
+        };
+        const key = `${comment.type}:${comment.id}`;
+        const latest = latestByComment.get(key);
+        if (!latest || compareCommandChronology(chronology, latest, true) > 0) latestByComment.set(key, chronology);
+    });
+    return [...latestByComment.values()];
+}
+
+async function findNewerQueuedCommand(
+    comment: SlashCommandComment,
+    eventContext: CommentContext,
+    snapshot: PRCommentJobSnapshot,
+    redisClient: Redis,
+): Promise<CommandChronology | undefined> {
+    const pendingKey = getPendingPrCommentsKey(eventContext.owner, eventContext.repo, eventContext.prNumber);
+    const pendingComments = (await redisClient.lrange(pendingKey, 0, -1)).map(raw => JSON.parse(raw) as UnprocessedComment);
+    const existing = [
+        ...snapshot.active,
+        ...snapshot.waiting,
+        ...snapshot.delayed,
+    ].flatMap(getJobCommandChronologies).concat(latestPendingCommandChronologies(pendingComments));
+    const incoming: CommandChronology = {
+        id: comment.id,
+        createdAt: comment.created_at,
+        updatedAt: comment.updated_at,
+        revisionIdentity: getCommentRevisionIdentity(comment, eventContext.eventType),
+        type: eventContext.eventType === 'pull_request_review_comment' ? 'review' : 'issue',
+        ingestionOrder: existing.length,
+    };
+    const orderedExisting = existing.map((record, ingestionOrder) => ({ ...record, ingestionOrder }));
+    const useCreatedAt = [...orderedExisting, incoming].every(record => record.createdAt !== undefined);
+    const latest = orderedExisting.reduce<CommandChronology | undefined>((current, record) =>
+        !current || compareCommandChronology(record, current, useCreatedAt) > 0 ? record : current, undefined);
+    return latest && compareCommandChronology(incoming, latest, useCreatedAt) < 0 ? latest : undefined;
+}
+
 async function postModelSelectionAcknowledgement(
     opts: Pick<ModelSelectionCommandOptions, 'eventContext' | 'correlatedLogger'>,
     selection: CanonicalModelSelection,
@@ -412,6 +526,19 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
         return;
     }
     const selectedCommandMeta = { ...commandMeta, models: [selection.model] } as CommandMeta & { mode: 'switch' | 'use' };
+
+    const chronologySnapshot = await getPRCommentJobSnapshot(prNumber, owner, repo);
+    const newerCommand = await findNewerQueuedCommand(comment, eventContext, chronologySnapshot, redisClient);
+    if (newerCommand) {
+        correlatedLogger.info({
+            pullRequestNumber: prNumber,
+            staleCommentId: comment.id,
+            staleCommentUpdatedAt: comment.updated_at,
+            newerCommentId: newerCommand.id,
+            newerCommentUpdatedAt: newerCommand.updatedAt,
+        }, `Ignoring stale /${commandName} delivery before model label transition`);
+        return;
+    }
 
     correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, selection }, `/${commandName} command detected, updating PR model label`);
     const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
