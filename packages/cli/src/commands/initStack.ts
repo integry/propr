@@ -128,6 +128,7 @@ export interface InitStackResult {
   envSkipped: boolean;
   envBackedUp: boolean;
   dirsCreated: string[];
+  dirsSkipped: string[];
   detected: DetectedCred[];
   credentialsAppended: boolean;
   pendingCredentials: DetectedCred[];
@@ -158,6 +159,7 @@ export async function scaffoldStack(
     envSkipped: false,
     envBackedUp: false,
     dirsCreated: [],
+    dirsSkipped: [],
     detected: [],
     credentialsAppended: false,
     pendingCredentials: [],
@@ -170,7 +172,7 @@ export async function scaffoldStack(
     const dir = join(rootDir, sub);
     const created = !existsSync(dir);
     ensurePrivateDirectory(dir);
-    if (created) result.dirsCreated.push(sub);
+    (created ? result.dirsCreated : result.dirsSkipped).push(sub);
   }
 
   // 2. Load the environment content that will be used below.
@@ -312,8 +314,20 @@ Examples:
   $ propr init stack --root ~/propr
   $ propr init stack --force
 `)
-    .action(async (options: { root?: string; force?: boolean; json?: boolean }) => {
+    .action(async (
+      _options: { root?: string; force?: boolean; json?: boolean },
+      command: Command,
+    ) => {
       try {
+        // `init` and its subcommands intentionally advertise the same common
+        // options. Commander stores a duplicate option on the parent command,
+        // even when it appears after the subcommand, so the child-only options
+        // object can omit --json/--force. Resolve the complete command chain.
+        const options = command.optsWithGlobals() as {
+          root?: string;
+          force?: boolean;
+          json?: boolean;
+        };
         const result = await scaffoldStack({ root: options.root, force: options.force });
         if (options.json) {
           console.log(JSON.stringify(result, null, 2));

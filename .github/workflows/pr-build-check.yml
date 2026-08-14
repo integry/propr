@@ -108,7 +108,8 @@ jobs:
               --exclude=SC2016 \
               scripts/build-images.sh \
               scripts/ci-redis.sh \
-              scripts/smoke-test-images.sh
+              scripts/smoke-test-images.sh \
+              scripts/smoke-test-sqlite-startup.sh
           } > >(tee -a build_log.txt) 2>&1
 
       - name: Enforce pre-setup validation
@@ -566,6 +567,36 @@ jobs:
       - name: Fail Job
         if: steps.build.outcome == 'failure'
         run: exit 1
+
+  cli-init-json:
+    name: CLI init JSON (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build shared package
+        run: npm run build --workspace=@propr/shared
+
+      - name: Parse init JSON output
+        run: npx tsx --test packages/cli/src/commands/initCommands.test.ts
 
   comment:
     name: Report Build Failure

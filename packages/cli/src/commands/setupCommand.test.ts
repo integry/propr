@@ -8,7 +8,12 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canRenderInkSetup, createSetupCommand, offerSetupAgentSkill } from "./setupCommand.js";
+import {
+  canRenderInkSetup,
+  createSetupCommand,
+  offerSetupAgentSkill,
+  shouldPrepareInkGithubLogin,
+} from "./setupCommand.js";
 import type { AgentSkillOperationResult, AgentSkillTarget } from "../agentSkill.js";
 
 const rawTty = { isTTY: true, setRawMode() {} };
@@ -117,3 +122,15 @@ test("--no-skill conflicts with --install-skill", async () => {
   );
   assert.match(errors.join(""), /cannot be used with/);
 });
+
+for (const proprDemoMode of [undefined, "false"] as const) {
+  test(`Ink login is required for GH_AUTH_MODE=demo when PROPR_DEMO_MODE is ${proprDemoMode ?? "absent"}`, () => {
+    assert.equal(shouldPrepareInkGithubLogin(proprDemoMode, false), true);
+  });
+}
+
+for (const proprDemoMode of ["true", "1", "yes", "on"] as const) {
+  test(`Ink login is bypassed when PROPR_DEMO_MODE is ${proprDemoMode}`, () => {
+    assert.equal(shouldPrepareInkGithubLogin(proprDemoMode, false), false);
+  });
+}
