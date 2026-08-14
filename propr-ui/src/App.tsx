@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketProvider } from './contexts/SocketProvider'
@@ -9,7 +9,12 @@ import DemoModeBanner from './components/DemoModeBanner'
 import './App.css'
 import { getCurrentUser, INSTANCE_AUTHORIZATION_CHANGED_EVENT } from './api/proprApi'
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
-import { hostedUiConnectionIssue, isHostedUiOrigin } from './config/runtimeConfig'
+import {
+  hostedUiConnectionIssue,
+  isHostedOAuthCompletionRoute,
+  isHostedUiOrigin,
+  pathWithActiveHostedTunnelFlow,
+} from './config/runtimeConfig'
 import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/AuthContext'
 import type { CurrentUser, InstancePermission } from './api/proprTypes'
 import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
@@ -80,6 +85,16 @@ const HostedConnectionBlocked: React.FC<{ title: string; message: string }> = ({
   </div>
 );
 
+const HostedOAuthCompletion: React.FC = () => (
+  <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+    <main className="text-center">
+      <img src="/media/logo-and-name.png" alt="ProPR" className="mx-auto mb-4 h-12 w-auto" />
+      <h1 className="text-xl font-semibold text-gray-950">GitHub sign-in complete</h1>
+      <p className="mt-3 text-sm text-gray-600">You can close this window and return to ProPR.</p>
+    </main>
+  </div>
+);
+
 const PermissionRequired: React.FC<{
   permission: InstancePermission;
   children: React.ReactNode;
@@ -95,6 +110,29 @@ const PermissionRequired: React.FC<{
     </div>
   );
 };
+
+export const HostedFlowRouteSync: React.FC<{ hostname?: string }> = ({ hostname }) => {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const currentPath = `${location.pathname}${location.search}${location.hash}`;
+    const nextPath = pathWithActiveHostedTunnelFlow(currentPath, hostname);
+    if (nextPath !== currentPath) navigate(nextPath, { replace: true, state: location.state });
+  }, [hostname, location, navigate]);
+
+  return null;
+};
+
+export const NotFoundRouteContent: React.FC<{ hostname?: string }> = ({ hostname }) => (
+  <div className="text-center py-20">
+    <h2 className="text-xl font-semibold text-gray-700 mb-2">Page not found</h2>
+    <p className="text-gray-500 mb-4">This page does not exist or has moved.</p>
+    <Link to={pathWithActiveHostedTunnelFlow('/', hostname)} className="text-primary-600 hover:text-primary-700 underline">
+      Back to dashboard
+    </Link>
+  </div>
+);
 
 const AppContent: React.FC = () => {
   const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
@@ -185,6 +223,7 @@ const AppContent: React.FC = () => {
           <div className="min-h-0 flex-1">
             <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
               <Router>
+                <HostedFlowRouteSync />
                 <RouteChunkErrorBoundary>
                   <Suspense fallback={<LoadingSpinner />}>
                     <Routes>
@@ -296,13 +335,7 @@ const AppContent: React.FC = () => {
                       path="*"
                       element={
                         <Layout>
-                          <div className="text-center py-20">
-                            <h2 className="text-xl font-semibold text-gray-700 mb-2">Page not found</h2>
-                            <p className="text-gray-500 mb-4">This page does not exist or has moved.</p>
-                            <a href="/" className="text-primary-600 hover:text-primary-700 underline">
-                              Back to dashboard
-                            </a>
-                          </div>
+                          <NotFoundRouteContent />
                         </Layout>
                       }
                     />
@@ -325,17 +358,24 @@ const App: React.FC = () => {
   // there is nothing to gate: start 'ready' (no spinner flash, no network
   // round-trip) and keep local development working (issue #1627).
   const isHosted = isHostedUiOrigin(window.location.hostname);
-  const connectionIssue = hostedUiConnectionIssue(
+  const isHostedOAuthCompletion = isHostedOAuthCompletionRoute(
     window.location.hostname,
-    window.__PROPR_CONFIG__,
+    window.location.pathname,
     window.location.search
   );
+  const connectionIssue = isHostedOAuthCompletion
+    ? null
+    : hostedUiConnectionIssue(
+      window.location.hostname,
+      window.__PROPR_CONFIG__,
+      window.location.search
+    );
   const [compatibility, setCompatibility] = useState<CompatibilityState>(
-    isHosted && !connectionIssue ? { status: 'checking' } : { status: 'ready' }
+    isHosted && !isHostedOAuthCompletion && !connectionIssue ? { status: 'checking' } : { status: 'ready' }
   );
 
   useEffect(() => {
-    if (!isHosted || connectionIssue) return;
+    if (!isHosted || isHostedOAuthCompletion || connectionIssue) return;
     let cancelled = false;
 
     checkProprApiCompatibility()
@@ -383,8 +423,11 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [isHosted, connectionIssue]);
+  }, [isHosted, isHostedOAuthCompletion, connectionIssue]);
 
+  if (isHostedOAuthCompletion) {
+    return <HostedOAuthCompletion />;
+  }
   if (connectionIssue) {
     return <HostedConnectionBlocked title={connectionIssue.title} message={connectionIssue.message} />;
   }
