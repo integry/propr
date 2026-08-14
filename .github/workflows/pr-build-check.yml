@@ -9,6 +9,140 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cli-node-matrix:
+    name: CLI Agent Skill (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and test the CLI Agent Skill
+        run: |
+          npm run build -w @propr/shared
+          npm run typecheck -w @propr/cli
+          npx tsx --experimental-test-module-mocks --test \
+            packages/cli/src/agentSkill.test.ts \
+            packages/cli/src/agentSkill.forceRace.test.ts \
+            packages/cli/src/commands/setupCommand.test.ts
+          npm run build -w @propr/cli
+          test -f packages/cli/dist/skill/propr/SKILL.md
+          test -f packages/cli/dist/skill/propr/agents/openai.yaml
+          test -f packages/cli/dist/native/prebuilds/darwin-arm64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/darwin-x64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/linux-arm64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/linux-x64/directory-operations.node
+
+  cli-agent-skill-glibc-231:
+    name: CLI Agent Skill (Linux x64, glibc 2.31, Node 22)
+    runs-on: ubuntu-latest
+    container:
+      image: node:22.22.3-bullseye-slim@sha256:f81e523790f0a2c86827ff6356a28fad2edbe0fe36bc3c4275a4d1e16304bf43
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Prepare the checked-out workspace for the non-root test user
+        run: |
+          test "$(id -u node)" -ne 0
+          chown -R node:node "$GITHUB_WORKSPACE"
+
+      - name: Verify the supported compatibility baseline as non-root
+        run: |
+          runuser --user node -- env HOME=/home/node bash -euo pipefail <<'NON_ROOT'
+          test "$(node -p 'process.geteuid()')" -ne 0
+          test "$(uname -m)" = x86_64
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.31"
+          test "$(node -p 'process.platform')" = linux
+          test "$(node -p 'process.arch')" = x64
+          test "$(node -p 'process.versions.node.split(".")[0]')" = 22
+          NON_ROOT
+
+      - name: Install dependencies as non-root
+        run: runuser --user node -- env HOME=/home/node npm ci --ignore-scripts
+
+      - name: Load and exercise the Linux x64 helper with the focused Agent Skill suite as non-root
+        run: |
+          runuser --user node -- env HOME=/home/node bash -euo pipefail <<'NON_ROOT'
+          test "$(node -p 'process.geteuid()')" -ne 0
+          npm run build -w @propr/shared
+          npx tsx --experimental-test-module-mocks --test \
+            packages/cli/src/agentSkill.test.ts \
+            packages/cli/src/agentSkill.forceRace.test.ts \
+            packages/cli/src/commands/setupCommand.test.ts
+          NON_ROOT
+
+  cli-agent-skill-darwin:
+    name: CLI Agent Skill (Darwin arm64, Node 22)
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the native Darwin Agent Skill workflow
+        run: |
+          test "$(node -p process.platform)" = darwin
+          test "$(node -p process.arch)" = arm64
+          npm run build -w @propr/shared
+          npm run typecheck -w @propr/cli
+          npx tsx --experimental-test-module-mocks --test \
+            packages/cli/src/agentSkill.test.ts \
+            packages/cli/src/agentSkill.forceRace.test.ts \
+            packages/cli/src/commands/setupCommand.test.ts
+          npm run build -w @propr/cli
+          test -f packages/cli/dist/native/prebuilds/darwin-arm64/directory-operations.node
+          skill_fixture="$RUNNER_TEMP/propr-skill-built-cli"
+          mkdir -p "$skill_fixture/home"
+          skill_targets=(codex claude antigravity opencode)
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill install "${skill_targets[@]}" --json > "$skill_fixture/install.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.action!=="installed")) process.exit(1)' \
+            "$skill_fixture/install.json"
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill status "${skill_targets[@]}" --json > "$skill_fixture/status.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.state!=="current-managed")) process.exit(1)' \
+            "$skill_fixture/status.json"
+          printf '\nBuilt-CLI managed update fixture.\n' >> packages/cli/dist/skill/propr/SKILL.md
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill install "${skill_targets[@]}" --json > "$skill_fixture/update.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.action!=="updated")) process.exit(1)' \
+            "$skill_fixture/update.json"
+          env HOME="$skill_fixture/home" CODEX_HOME="$skill_fixture/codex" XDG_CONFIG_HOME="$skill_fixture/xdg" \
+            node packages/cli/dist/index.js skill remove "${skill_targets[@]}" --json > "$skill_fixture/remove.json"
+          node -e 'const r=require(process.argv[1]); if(r.length!==4||r.some(x=>x.action!=="removed")) process.exit(1)' \
+            "$skill_fixture/remove.json"
+          test ! -e "$skill_fixture/codex/skills/propr"
+          test ! -e "$skill_fixture/home/.claude/skills/propr"
+          test ! -e "$skill_fixture/home/.gemini/antigravity-cli/skills/propr"
+          test ! -e "$skill_fixture/xdg/opencode/skills/propr"
+
   validate:
     name: Validate Changes
     runs-on: ubuntu-latest
