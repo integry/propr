@@ -23,7 +23,7 @@ function createJsonResponse(): {
   return { response, status: () => statusCode, body: () => payload };
 }
 
-test('/api/queue/stats represents every active job once and exposes only proven task navigation IDs', async () => {
+test('/api/queue/stats represents every active job once and exposes only safe presentation and navigation metadata', async () => {
   const requestedStates: string[][] = [];
   const taskQueue = {
     getWaitingCount: async () => 3,
@@ -76,7 +76,7 @@ test('/api/queue/stats represents every active job once and exposes only proven 
           id: 'import-job-6',
           name: 'processTaskImport',
           timestamp: Date.parse('2026-08-14T20:05:00.000Z'),
-          data: { repository: 'integry/propr', taskDescription: 'Import these tasks' },
+          data: { repository: 'integry/propr', taskDescription: 'Sensitive imported task instructions' },
         },
         {
           id: 'issue-job-1',
@@ -139,7 +139,7 @@ test('/api/queue/stats represents every active job once and exposes only proven 
       {
         id: 'import-job-6',
         name: 'processTaskImport',
-        title: 'Import these tasks',
+        title: 'processTaskImport',
         repository: 'integry/propr',
         createdAt: '2026-08-14T20:05:00.000Z',
       },

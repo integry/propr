@@ -175,7 +175,7 @@ function getJobTitle(jobName: string, data: Record<string, unknown>): string {
   const issueNumber = positiveNumber(data.number) ?? positiveNumber(data.issueNumber);
   if (issueNumber) return `Issue #${issueNumber}`;
 
-  return nonEmptyString(data.taskDescription) || jobName;
+  return jobName;
 }
 
 function parseActivityLog(activity: string, index: number): Record<string, unknown> {
