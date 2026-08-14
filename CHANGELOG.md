@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.15] - 2026-08-15
+
+ProPR 0.8.15 is the first public release.
+
+### Added
+
+- **Expanded coding-agent support**: added Antigravity Gemini 3.7 Flash High,
+  Medium, and Low models with a pinned packaged CLI and strict no-fallback
+  verification, plus an opt-in bundled ProPR orchestration skill for supported
+  coding agents.
+- **Connect Plus experience**: eligible Community Connect accounts can see and
+  dismiss a privacy-safe capacity banner, and start the Connect Plus purchase
+  path while preserving their authorized GitHub installation and billing choice.
+
+### Changed
+
+- **Validated public setup path**: documented Apple Silicon Docker Desktop,
+  ProPR data-folder handoff, and safe CLI installation and management of the
+  bundled Agent Skill.
+
+### Fixed
+
+- **Task stopping**: `propr task stop` sends one URL-encoded request to the
+  supported task `/stop` endpoint and never uses the obsolete `/cancel` route.
+- **Release hardening**: incorporated setup, migration, authentication, CLI
+  validation, and Agent Tank reliability fixes validated for the public package.
+
 ## [0.8.14] - 2026-08-14
 
 ### Changed
@@ -333,6 +360,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
+[0.8.15]: https://github.com/integry/propr/compare/v0.8.14...v0.8.15
 [0.8.14]: https://github.com/integry/propr/compare/v0.8.13...v0.8.14
 [0.8.13]: https://github.com/integry/propr/releases/tag/v0.8.13
 [0.8.12]: https://github.com/integry/propr/releases/tag/v0.8.12

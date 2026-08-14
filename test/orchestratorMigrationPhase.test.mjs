@@ -165,7 +165,7 @@ test('migration owner argv contains only its data bind and forced migration runt
     const run = fake.lines().find(line => line.startsWith('run --rm --init --name propr-migrate '));
     assert.equal(
       run,
-      'run --rm --init --name propr-migrate --network propr-net --label propr.stack=propr --label propr.service=migrate --env-file /stack/.env -e NODE_ENV=production -e PROPR_CONTAINERIZED=1 -e PROPR_MIGRATIONS_PREAPPLIED=0 -v /stack/data:/usr/src/app/data propr/app:0.8.14 node dist/src/migrate.js',
+      'run --rm --init --name propr-migrate --network propr-net --label propr.stack=propr --label propr.service=migrate --env-file /stack/.env -e NODE_ENV=production -e PROPR_CONTAINERIZED=1 -e PROPR_MIGRATIONS_PREAPPLIED=0 -v /stack/data:/usr/src/app/data propr/app:0.8.15 node dist/src/migrate.js',
     );
   } finally {
     fake.restore();
