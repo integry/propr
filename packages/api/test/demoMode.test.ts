@@ -179,6 +179,7 @@ test('demo Express GET routes work with the in-memory Redis facade', async () =>
   const taskQueue = {
     getWaitingCount: async () => 0,
     getActiveCount: async () => 0,
+    getJobs: async () => [],
     getCompletedCount: async () => 0,
     getFailedCount: async () => 0,
     getDelayedCount: async () => 0,
@@ -191,6 +192,7 @@ test('demo Express GET routes work with the in-memory Redis facade', async () =>
   const statusRoutes = createStatusRoutes({ redisClient: redis });
   const queueRoutes = createQueueRoutes({ redisClient: redis, taskQueue });
   app.get('/api/status', statusRoutes.getStatus);
+  app.get('/api/queue/stats', queueRoutes.getQueueStats);
   app.get('/api/activity', queueRoutes.getActivity);
   app.post('/api/activity', (_req, res) => res.json({ ok: true }));
 
@@ -200,6 +202,12 @@ test('demo Express GET routes work with the in-memory Redis facade', async () =>
   assert.equal(statusBody.redis, 'connected');
   assert.equal(statusBody.worker, 'running');
   assert.equal(statusBody.workerCount, 3);
+
+  const queueStatsResponse = await fetchFromApp(app, '/api/queue/stats');
+  assert.equal(queueStatsResponse.status, 200);
+  const queueStatsBody = await queueStatsResponse.json() as { active: number; activeJobs: unknown[] };
+  assert.equal(queueStatsBody.active, 0);
+  assert.deepEqual(queueStatsBody.activeJobs, []);
 
   const activityResponse = await fetchFromApp(app, '/api/activity');
   assert.equal(activityResponse.status, 200);

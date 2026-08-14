@@ -1,6 +1,15 @@
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
-import { Queue } from 'bullmq';
+import { Job, Queue } from 'bullmq';
+
+interface LiveQueueJob {
+  id: string;
+  taskId?: string;
+  name: string;
+  title: string;
+  repository: string;
+  createdAt: string;
+}
 
 interface QueueRoutesDeps {
   redisClient: RedisClientType;
@@ -12,14 +21,27 @@ export function createQueueRoutes(deps: QueueRoutesDeps) {
 
   async function getQueueStats(_req: Request, res: Response): Promise<void> {
     try {
-      const [waiting, active, completed, failed, delayed] = await Promise.all([
+      // The header has always treated only active jobs as Running. Waiting and
+      // delayed jobs remain separate queue statistics and are intentionally not
+      // included in this presentation snapshot.
+      const [waiting, activeJobs, completed, failed, delayed] = await Promise.all([
         taskQueue.getWaitingCount(),
-        taskQueue.getActiveCount(),
+        taskQueue.getJobs(['active']),
         taskQueue.getCompletedCount(),
         taskQueue.getFailedCount(),
         taskQueue.getDelayedCount()
       ]);
-      res.json({ waiting, active, completed, failed, delayed, total: waiting + active + completed + failed + delayed });
+      const liveJobs = serializeLiveJobs(activeJobs);
+      const active = liveJobs.length;
+      res.json({
+        waiting,
+        active,
+        activeJobs: liveJobs,
+        completed,
+        failed,
+        delayed,
+        total: waiting + active + completed + failed + delayed
+      });
     } catch (error) {
       console.error('Error in /api/queue/stats:', error);
       res.status(500).json({ error: 'Internal server error' });
@@ -66,6 +88,94 @@ export function createQueueRoutes(deps: QueueRoutesDeps) {
   }
 
   return { getQueueStats, getActivity, getMetrics };
+}
+
+function serializeLiveJobs(jobs: Job[]): LiveQueueJob[] {
+  const seenIds = new Set<string>();
+  const liveJobs: LiveQueueJob[] = [];
+
+  for (const job of jobs) {
+    const id = typeof job.id === 'string' ? job.id : undefined;
+    if (!id || seenIds.has(id)) continue;
+    seenIds.add(id);
+
+    const data = isRecord(job.data) ? job.data : {};
+    const repository = getRepository(data);
+    const taskId = getNavigationTaskId(job.name, id, data);
+    liveJobs.push({
+      id,
+      ...(taskId ? { taskId } : {}),
+      name: job.name,
+      title: getJobTitle(job.name, data),
+      repository,
+      createdAt: new Date(job.timestamp).toISOString(),
+    });
+  }
+
+  return liveJobs;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function getRepository(data: Record<string, unknown>): string {
+  const repository = nonEmptyString(data.repository);
+  if (repository) return repository;
+  const owner = nonEmptyString(data.repoOwner) ?? nonEmptyString(data.owner);
+  const name = nonEmptyString(data.repoName);
+  return owner && name ? `${owner}/${name}` : 'unknown/unknown';
+}
+
+function getNavigationTaskId(jobName: string, jobId: string, data: Record<string, unknown>): string | undefined {
+  // PR comment and merge-conflict processors create task history under the
+  // BullMQ job ID, so that identity is safe to expose for navigation.
+  if (jobName === 'processPullRequestComment' || jobName === 'processMergeConflict') {
+    return jobId;
+  }
+
+  // Issue child jobs currently use a task-history ID derived from their queue
+  // metadata. Reproduce that existing identity for navigation only; do not
+  // persist or reconcile it with either queue or task history state.
+  if (jobName !== 'processGitHubIssue' || data.isChildJob !== true) return undefined;
+  const owner = nonEmptyString(data.repoOwner);
+  const repo = nonEmptyString(data.repoName);
+  const number = positiveNumber(data.number);
+  const agent = nonEmptyString(data.agentAlias);
+  const model = nonEmptyString(data.modelName);
+  const correlationId = nonEmptyString(data.correlationId);
+  return owner && repo && number && agent && model && correlationId
+    ? `${owner}-${repo}-${number}-${agent}-${model}-${correlationId}`
+    : undefined;
+}
+
+function getJobTitle(jobName: string, data: Record<string, unknown>): string {
+  const explicitTitle = nonEmptyString(data.title);
+  if (explicitTitle) return explicitTitle;
+
+  const issuePayload = isRecord(data.issuePayload) ? data.issuePayload : undefined;
+  const issueTitle = nonEmptyString(issuePayload?.title);
+  if (issueTitle) return issueTitle;
+
+  const pullRequestNumber = positiveNumber(data.pullRequestNumber);
+  if (pullRequestNumber) {
+    return jobName === 'processMergeConflict'
+      ? `Resolve merge conflicts for PR #${pullRequestNumber}`
+      : `Pull request #${pullRequestNumber}`;
+  }
+
+  const issueNumber = positiveNumber(data.number) ?? positiveNumber(data.issueNumber);
+  if (issueNumber) return `Issue #${issueNumber}`;
+
+  return jobName;
 }
 
 function parseActivityLog(activity: string, index: number): Record<string, unknown> {
