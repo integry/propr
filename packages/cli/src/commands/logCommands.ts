@@ -8,6 +8,7 @@
 import { Command } from "commander";
 import { listLlmLogs, LlmLogEntry } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
+import { presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Truncates a string to a maximum length.
@@ -215,17 +216,10 @@ Examples:
             );
           }
         } catch (error) {
-          const errorMessage = (error as Error).message;
-          if (
-            errorMessage.includes("401") ||
-            errorMessage.includes("unauthorized")
-          ) {
-            console.error(
-              "Error: Unauthorized. Please run 'propr login' first."
-            );
-          } else {
-            console.error(`Error listing logs: ${errorMessage}`);
-          }
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view logs.",
+            fallbackMessage: (message) => `Error listing logs: ${message}`,
+          });
           process.exit(1);
         }
       }

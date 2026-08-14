@@ -13,6 +13,7 @@ import {
   QueueStats,
 } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
+import { getErrorMessage, presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Formats a status value with color-like indicators for terminal display.
@@ -281,21 +282,19 @@ Examples:
 
         displaySystemStatus(status);
       } catch (error) {
-        const errorMessage = (error as Error).message;
+        const errorMessage = getErrorMessage(error);
         if (
-          errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
-        ) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
-        } else if (
           errorMessage.includes("ECONNREFUSED") ||
-          errorMessage.includes("network")
+          errorMessage.toLowerCase().includes("network")
         ) {
           console.error(
             "Error: Cannot connect to ProPR backend. Is the server running?"
           );
         } else {
-          console.error(`Error checking system status: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view system status.",
+            fallbackMessage: `Error checking system status: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -335,21 +334,19 @@ Examples:
 
         displayQueueStats(stats);
       } catch (error) {
-        const errorMessage = (error as Error).message;
+        const errorMessage = getErrorMessage(error);
         if (
-          errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
-        ) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
-        } else if (
           errorMessage.includes("ECONNREFUSED") ||
-          errorMessage.includes("network")
+          errorMessage.toLowerCase().includes("network")
         ) {
           console.error(
             "Error: Cannot connect to ProPR backend. Is the server running?"
           );
         } else {
-          console.error(`Error fetching queue statistics: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view queue statistics.",
+            fallbackMessage: `Error fetching queue statistics: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }

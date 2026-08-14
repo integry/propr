@@ -8,6 +8,7 @@
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
 import { resolveProject, ProjectResolutionError, printOutput } from "../utils/index.js";
+import { getErrorMessage, presentApiError } from "../utils/apiErrorPresentation.js";
 import {
   listTodos,
   getTodo,
@@ -207,7 +208,10 @@ Examples:
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }
-        console.error(`Error listing to-dos: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to view to-dos.",
+          fallbackMessage: (message) => `Error listing to-dos: ${message}`,
+        });
         process.exit(1);
       }
     });
@@ -235,13 +239,14 @@ Examples:
 
         displayTodoDetails(result);
       } catch (error) {
-        const errorMessage = (error as Error).message;
+        const errorMessage = getErrorMessage(error);
         if (errorMessage.includes("404") || errorMessage.includes("not found")) {
           console.error(`Error: To-do not found: ${todoId}`);
-        } else if (errorMessage.includes("401") || errorMessage.includes("unauthorized")) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
         } else {
-          console.error(`Error fetching to-do: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view this to-do.",
+            fallbackMessage: `Error fetching to-do: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -286,7 +291,10 @@ Examples:
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }
-        console.error(`Error creating to-do: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to create to-dos.",
+          fallbackMessage: (message) => `Error creating to-do: ${message}`,
+        });
         process.exit(1);
       }
     });
@@ -317,13 +325,14 @@ Examples:
         const action = isCompleted ? "completed" : "reopened";
         console.log(`To-do ${action}: ${result.content}`);
       } catch (error) {
-        const errorMessage = (error as Error).message;
+        const errorMessage = getErrorMessage(error);
         if (errorMessage.includes("404") || errorMessage.includes("not found")) {
           console.error(`Error: To-do not found: ${todoId}`);
-        } else if (errorMessage.includes("401") || errorMessage.includes("unauthorized")) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
         } else {
-          console.error(`Error updating to-do: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to update this to-do.",
+            fallbackMessage: `Error updating to-do: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -368,13 +377,14 @@ Examples:
         await deleteTodo(todoId);
         console.log("To-do deleted successfully.");
       } catch (error) {
-        const errorMessage = (error as Error).message;
+        const errorMessage = getErrorMessage(error);
         if (errorMessage.includes("404") || errorMessage.includes("not found")) {
           console.error(`Error: To-do not found: ${todoId}`);
-        } else if (errorMessage.includes("401") || errorMessage.includes("unauthorized")) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
         } else {
-          console.error(`Error deleting to-do: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to delete this to-do.",
+            fallbackMessage: `Error deleting to-do: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -445,11 +455,14 @@ Examples:
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }
-        const errorMessage = (error as Error).message;
+        const errorMessage = getErrorMessage(error);
         if (errorMessage.includes("404") || errorMessage.includes("not found")) {
           console.error(`Error: To-do not found: ${todoId}`);
         } else {
-          console.error(`Error moving to-do: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to move this to-do.",
+            fallbackMessage: `Error moving to-do: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -518,7 +531,10 @@ Examples:
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }
-        console.error(`Error listing categories: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to view to-do categories.",
+          fallbackMessage: (message) => `Error listing categories: ${message}`,
+        });
         process.exit(1);
       }
     });
@@ -556,7 +572,10 @@ Examples:
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }
-        console.error(`Error creating category: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to create to-do categories.",
+          fallbackMessage: (message) => `Error creating category: ${message}`,
+        });
         process.exit(1);
       }
     });
@@ -584,11 +603,14 @@ Example:
 
         console.log(`Category renamed to: ${result.name}`);
       } catch (error) {
-        const errorMessage = (error as Error).message;
+        const errorMessage = getErrorMessage(error);
         if (errorMessage.includes("404") || errorMessage.includes("not found")) {
           console.error(`Error: Category not found: ${categoryId}`);
         } else {
-          console.error(`Error renaming category: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to rename this category.",
+            fallbackMessage: `Error renaming category: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -623,11 +645,14 @@ Examples:
         await deleteCategory(categoryId);
         console.log("Category deleted successfully. Todos moved to uncategorized.");
       } catch (error) {
-        const errorMessage = (error as Error).message;
+        const errorMessage = getErrorMessage(error);
         if (errorMessage.includes("404") || errorMessage.includes("not found")) {
           console.error(`Error: Category not found: ${categoryId}`);
         } else {
-          console.error(`Error deleting category: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to delete this category.",
+            fallbackMessage: `Error deleting category: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -684,7 +709,10 @@ Examples:
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }
-        console.error(`Error moving category: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to move this category.",
+          fallbackMessage: (message) => `Error moving category: ${message}`,
+        });
         process.exit(1);
       }
     });
