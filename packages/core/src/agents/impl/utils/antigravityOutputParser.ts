@@ -290,20 +290,20 @@ function processStreamEvent(event: AntigravityStreamEvent, state: ParseState): v
     }
 }
 
-export function isAntigravityAnalysisEvent(event: AntigravityOutputEvent): boolean {
-    if (isTranscriptEvent(event)) {
-        return normalizeTranscriptIdentifier(event.source) === 'MODEL'
-            && normalizeTranscriptIdentifier(event.type) === 'PLANNER_RESPONSE'
-            && typeof event.content === 'string' && event.content.trim().length > 0;
-    }
+/** Returns the assistant text carried by an analysis event across supported Antigravity protocols. */
+export function getAntigravityAnalysisText(event: AntigravityOutputEvent): string | undefined {
+    if (isTranscriptEvent(event)) return normalizeTranscriptIdentifier(event.source) === 'MODEL'
+        && normalizeTranscriptIdentifier(event.type) === 'PLANNER_RESPONSE' ? event.content : undefined;
     if (isAntigravityStreamEvent(event)) {
-        if (event.event === 'step_update') {
-            return normalizeTranscriptIdentifier(event.step_update.step_type) === 'AGENT_RESPONSE'
-                && typeof event.step_update.text_delta === 'string' && event.step_update.text_delta.trim().length > 0;
-        }
-        return event.event === 'result' && typeof event.result.response === 'string' && event.result.response.trim().length > 0;
+        if (event.event === 'step_update') return normalizeTranscriptIdentifier(event.step_update.step_type) === 'AGENT_RESPONSE'
+            ? event.step_update.text_delta : undefined;
+        return event.event === 'result' ? event.result.response : undefined;
     }
-    return event.type === 'message' && event.role === 'assistant' && event.content.trim().length > 0;
+    return event.type === 'message' && event.role === 'assistant' ? event.content : undefined;
+}
+
+export function isAntigravityAnalysisEvent(event: AntigravityOutputEvent): boolean {
+    return Boolean(getAntigravityAnalysisText(event)?.trim());
 }
 
 export function filterAntigravityAnalysisEvents(events: AntigravityOutputEvent[]): AntigravityOutputEvent[] {
@@ -363,12 +363,34 @@ function flushPendingMessage(result: AntigravityOutputEvent[], pending: { conten
     return null;
 }
 
-/** Aggregates consecutive legacy delta messages into single messages. */
+function flushPendingStreamMessage(result: AntigravityOutputEvent[], pending: AntigravityStreamStepUpdateEvent | null): null { if (pending) result.push(pending); return null; }
+
+/** Aggregates consecutive legacy and stream delta messages into single assistant messages. */
 export function aggregateDeltaMessages(events: AntigravityOutputEvent[]): AntigravityOutputEvent[] {
     const result: AntigravityOutputEvent[] = [];
     let pending: { content: string; timestamp?: string; role: 'user' | 'assistant' } | null = null;
+    let pendingStream: AntigravityStreamStepUpdateEvent | null = null;
     for (const event of events) {
-        if (isTranscriptEvent(event) || isAntigravityStreamEvent(event)) { pending = flushPendingMessage(result, pending); result.push(event); continue; }
+        if (isAntigravityStreamEvent(event)) {
+            pending = flushPendingMessage(result, pending);
+            if (event.event === 'step_update' && normalizeTranscriptIdentifier(event.step_update.step_type) === 'AGENT_RESPONSE'
+                && typeof event.step_update.text_delta === 'string') {
+                const update = event.step_update;
+                if (pendingStream && pendingStream.step_update.conversation_id === update.conversation_id
+                    && pendingStream.step_update.step_index === update.step_index) {
+                    pendingStream.step_update.text_delta = (pendingStream.step_update.text_delta ?? '') + update.text_delta;
+                    pendingStream.step_update.state = update.state; pendingStream.step_update.usage = update.usage ?? pendingStream.step_update.usage;
+                } else {
+                    pendingStream = flushPendingStreamMessage(result, pendingStream);
+                    pendingStream = { ...event, step_update: { ...update } };
+                }
+            } else {
+                pendingStream = flushPendingStreamMessage(result, pendingStream); result.push(event);
+            }
+            continue;
+        }
+        pendingStream = flushPendingStreamMessage(result, pendingStream);
+        if (isTranscriptEvent(event)) { pending = flushPendingMessage(result, pending); result.push(event); continue; }
         if (event.type !== 'message') { pending = flushPendingMessage(result, pending); result.push(event); continue; }
         if (event.role !== 'assistant') { pending = flushPendingMessage(result, pending); result.push(event); continue; }
         if (event.delta) {
@@ -377,6 +399,7 @@ export function aggregateDeltaMessages(events: AntigravityOutputEvent[]): Antigr
         } else { pending = flushPendingMessage(result, pending); result.push(event); }
     }
     flushPendingMessage(result, pending);
+    flushPendingStreamMessage(result, pendingStream);
     return result;
 }
 

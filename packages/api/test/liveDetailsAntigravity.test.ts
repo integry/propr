@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { after, test } from 'node:test';
 import { detectStoredOutputFormat } from '../routes/liveDetailsStoredOutputFormat.js';
 
@@ -114,6 +115,23 @@ test('stored output parsing renders only Antigravity analysis events through liv
   assert.deepEqual(parsed.parsed?.tokenUsage, {
     input_tokens: 10,
     output_tokens: 2,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0
+  });
+});
+
+test('Antigravity 1.1.12 stream text remains visible through live details', async () => {
+  const { parseAntigravityOutputToConversationResult } = await import('../routes/liveDetailsOutputParsers.js');
+  const output = fs.readFileSync(new URL('../../core/test/fixtures/antigravity-stream-1.1.12.jsonl', import.meta.url), 'utf8');
+
+  const parsed = parseAntigravityOutputToConversationResult(output);
+
+  assert.deepEqual(parsed?.events.map(event => ({ type: event.type, content: event.content })), [
+    { type: 'thought', content: 'STREAM_OK\n' }
+  ]);
+  assert.deepEqual(parsed?.tokenUsage, {
+    input_tokens: 15050,
+    output_tokens: 33,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0
   });

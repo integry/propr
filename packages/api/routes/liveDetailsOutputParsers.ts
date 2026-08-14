@@ -1,4 +1,10 @@
-import { filterAntigravityAnalysisEvents, parseAntigravityJsonl, parseVibeConversationLog } from '@propr/core';
+import {
+  aggregateDeltaMessages,
+  filterAntigravityAnalysisEvents,
+  getAntigravityAnalysisText,
+  parseAntigravityJsonl,
+  parseVibeConversationLog,
+} from '@propr/core';
 import {
   appendClaudeAssistantMessageEvents,
   appendClaudeUserMessageEvents,
@@ -9,9 +15,9 @@ import type { TokenUsage, ConversationResult, TodoItem, PendingSubagent } from '
 
 export function parseAntigravityOutputToConversationResult(output: string): ConversationResult | null {
   const parsed = parseAntigravityJsonl(output);
-  const events = filterAntigravityAnalysisEvents(parsed.conversationLog).map(event => ({
+  const events = filterAntigravityAnalysisEvents(aggregateDeltaMessages(parsed.conversationLog)).map(event => ({
     type: 'thought',
-    content: 'content' in event && typeof event.content === 'string' ? event.content : '',
+    content: getAntigravityAnalysisText(event) ?? '',
     timestamp: 'created_at' in event ? event.created_at : 'timestamp' in event ? event.timestamp : undefined
   })).filter(event => event.content);
   const hasTokens = (parsed.tokenUsage.input_tokens ?? 0) > 0 || (parsed.tokenUsage.output_tokens ?? 0) > 0;

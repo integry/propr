@@ -14,7 +14,7 @@ import { getModelHardLimit } from '../src/config/modelLimits.js';
 import { resolveLlmLabel, resolveModelAlias } from '../src/config/modelAliases.js';
 import { AgentRegistry } from '../src/agents/AgentRegistry.js';
 import { AntigravityAgent } from '../src/agents/impl/AntigravityAgent.js';
-import { convertEventToClaudeFormat, filterAntigravityAnalysisEvents, parseAntigravityJsonl } from '../src/agents/impl/utils/antigravityOutputParser.js';
+import { aggregateDeltaMessages, convertEventToClaudeFormat, filterAntigravityAnalysisEvents, parseAntigravityJsonl } from '../src/agents/impl/utils/antigravityOutputParser.js';
 import type { AntigravityOutputEvent } from '../src/agents/impl/utils/antigravityOutputParser.js';
 import type { Agent, AgentConfig } from '../src/agents/types.js';
 import { db } from '../src/db/connection.js';
@@ -257,6 +257,25 @@ test('Antigravity stream response is useful in analysis and conversation logs wi
         reasoning_output_tokens: 27,
     });
     assert.doesNotMatch(JSON.stringify(converted.message.content), /\\{\"event\"/);
+});
+
+test('Antigravity stream response deltas remain one assistant turn without duplicating the result', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)' } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'RUNNING', step_type: 'agent_response', text_delta: 'STREAM' } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'RUNNING', step_type: 'agent_response', text_delta: ' ' } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'OK\n' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'STREAM OK\n' } }),
+    ].join('\n'));
+    const analysisEvents = filterAntigravityAnalysisEvents(aggregateDeltaMessages(parsed.conversationLog));
+
+    assert.equal(analysisEvents.length, 1);
+    const converted = convertEventToClaudeFormat(analysisEvents[0]) as {
+        type: string;
+        message: { content: Array<{ type: string; text: string }> };
+    };
+    assert.equal(converted.type, 'assistant');
+    assert.deepEqual(converted.message.content, [{ type: 'text', text: 'STREAM OK\n' }]);
 });
 
 test('Antigravity final response remains usable when no agent-response step is present', () => {

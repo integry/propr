@@ -197,7 +197,7 @@ export class AntigravityAgent implements Agent {
         const conversationId = parsedOutput.conversationId || sessionOutput.conversationId;
         const summary = sessionOutput.summary || parsedOutput.summary;
         const rawConversationLog = sessionOutput.conversationLog.length > 0 ? sessionOutput.conversationLog : parsedOutput.conversationLog;
-        const conversationLog = aggregateDeltaMessages(filterAntigravityAnalysisEvents(rawConversationLog))
+        const conversationLog = filterAntigravityAnalysisEvents(aggregateDeltaMessages(rawConversationLog))
             .map(convertEventToClaudeFormat);
         const tokenUsage = this.mergeTokenUsage(parsedOutput.tokenUsage, sessionOutput.tokenUsage);
         const modelUsed = parsedOutput.modelUsed || sessionOutput.modelUsed;
