@@ -5,6 +5,7 @@ import {
     generateCorrelationId, handleError, getAuthenticatedOctokit, cleanupWorktree,
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
     resolveModelAlias, getPendingPrCommentsKey,
+    resolveCanonicalModelSelectionFromLabels,
     describeAgentTermination, resolveAgentTerminationReason,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager,
@@ -15,6 +16,8 @@ import { extractModelLabelToken } from './prModelLabelUtils.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import type { ReasoningLevel } from '@propr/shared';
 import { releasePRProcessingLock } from './prProcessingLock.js';
+import { buildProviderLimitRetryJobData } from './prCommentRouting.js';
+export { buildProviderLimitRetryJobData } from './prCommentRouting.js';
 
 export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
     return {
@@ -206,6 +209,38 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
     const delay = (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
     const readableResetTime = formatResetTime(error.resetTimestamp);
 
+    // `/use` may have switched the durable label while this writer was still
+    // active. In that race, the pending selected follow-up is queued by cleanup;
+    // recreating this old provider retry would only leave stale work behind it.
+    if (octokit && job.data.agentAlias && job.data.modelName) {
+        try {
+            const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                owner: repoOwner,
+                repo: repoName,
+                pull_number: pullRequestNumber,
+            }) as { data: { labels: Array<{ name: string }> } };
+            const liveSelection = await resolveCanonicalModelSelectionFromLabels(
+                response.data.labels,
+                process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
+            );
+            if (liveSelection && (
+                liveSelection.agentAlias.toLowerCase() !== job.data.agentAlias.toLowerCase()
+                || liveSelection.model.toLowerCase() !== job.data.modelName.toLowerCase()
+            )) {
+                correlatedLogger.info({
+                    pullRequestNumber,
+                    retryAgent: job.data.agentAlias,
+                    retryModel: job.data.modelName,
+                    liveAgent: liveSelection.agentAlias,
+                    liveModel: liveSelection.model,
+                }, 'Provider-limit retry superseded by a newer durable PR model selection');
+                return;
+            }
+        } catch (selectionError) {
+            correlatedLogger.warn({ error: (selectionError as Error).message }, 'Could not verify live PR model before provider-limit requeue; preserving retry');
+        }
+    }
+
     // Use deterministic jobId to prevent duplicate jobs if requeue is triggered multiple times
     const llmSlug = (job.data.llm || 'default').replace(/[^a-zA-Z0-9-]/g, '-');
     const branchSlug = (job.data.branchName || 'main').replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 30);
@@ -222,7 +257,7 @@ async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJob
         }
     }
 
-    await issueQueue.add(job.name, job.data, { jobId: requeueJobId, delay: Math.max(0, delay) });
+    await issueQueue.add(job.name, buildProviderLimitRetryJobData(job.data), { jobId: requeueJobId, delay: Math.max(0, delay) });
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {
@@ -292,12 +327,13 @@ export interface CleanupOptions {
     localRepoPath: string | undefined; worktreeInfo: WorktreeInfo | undefined;
     repoOwner: string; repoName: string; pullRequestNumber: number;
     jobBranchName: string | undefined; jobLlm: string | null | undefined;
+    jobAgentAlias?: string; jobModelName?: string; jobModelLabel?: string;
     jobReasoningLevel?: ReasoningLevel;
     correlatedLogger: Logger; redisClient: Redis;
 }
 
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
-    const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
+    const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobAgentAlias, jobModelName, jobModelLabel, jobReasoningLevel, correlatedLogger, redisClient } = options;
     if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
         correlatedLogger.debug('Released PR processing lock');
     }
@@ -320,6 +356,7 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
             await issueQueue.add('processPullRequestComment', {
                 pullRequestNumber, comments: [], repoOwner, repoName,
                 branchName: jobBranchName, llm: jobLlm, correlationId: generateCorrelationId(),
+                agentAlias: jobAgentAlias, modelName: jobModelName, modelLabel: jobModelLabel,
                 reasoningLevel: jobReasoningLevel,
             }, { jobId: followUpJobId, delay: 3000 });
 

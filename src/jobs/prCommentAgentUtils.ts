@@ -264,6 +264,8 @@ export async function resolvePRCommentModelName(llm: string | null | undefined, 
 
 export interface AgentExecutionParams {
     llm: string | null | undefined;
+    agentAlias?: string;
+    modelName?: string;
     worktreePath: string;
     branchName: string;
     prompt: string;
@@ -279,7 +281,7 @@ export interface AgentExecutionParams {
 }
 
 export async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
-    const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken, redisClient, reasoningLevel } = params;
+    const { llm, agentAlias: explicitAgentAlias, modelName: explicitModelName, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken, redisClient, reasoningLevel } = params;
 
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
@@ -287,7 +289,10 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
     let agentAlias: string;
     let modelToUse: string;
 
-    if (llm) {
+    if (explicitAgentAlias && explicitModelName) {
+        agentAlias = explicitAgentAlias;
+        modelToUse = explicitModelName;
+    } else if (llm) {
         const resolution = await resolveLlmLabel(llm);
         agentAlias = resolution.agentAlias;
         modelToUse = resolution.model;

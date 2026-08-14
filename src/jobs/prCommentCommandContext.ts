@@ -10,6 +10,9 @@ interface CommentChronology {
 interface ModelOverride extends CommentChronology {
     commandMode?: UnprocessedComment['commandMode'];
     llmOverride?: string | null;
+    agentAlias?: string;
+    modelName?: string;
+    modelLabel?: string;
 }
 
 interface PendingCommandContext {
@@ -115,6 +118,9 @@ function getQueuedOverride(jobData: CommentJobData, queuedCommandChronology: Com
         ...queuedCommandChronology,
         commandMode: 'use',
         llmOverride: jobData.requestedModels?.[0] ?? jobData.llm,
+        agentAlias: jobData.agentAlias,
+        modelName: jobData.modelName,
+        modelLabel: jobData.modelLabel,
     } : undefined;
 }
 
@@ -127,10 +133,16 @@ function applyCommandComment(jobData: CommentJobData, comment: UnprocessedCommen
     jobData.commandCommentCreatedAt = comment.createdAt;
     jobData.commandCommentType = comment.type;
     jobData.ultrafixMeta = comment.ultrafixMeta;
+    jobData.agentAlias = comment.agentAlias;
+    jobData.modelName = comment.modelName;
+    jobData.modelLabel = comment.modelLabel;
 }
 
 function applyModelOverride(jobData: CommentJobData, latestCommandComment: UnprocessedComment | undefined, latestOverrideComment: ModelOverride | undefined): void {
     if (latestOverrideComment?.llmOverride !== undefined) jobData.llm = latestOverrideComment.llmOverride;
+    if (latestOverrideComment?.agentAlias) jobData.agentAlias = latestOverrideComment.agentAlias;
+    if (latestOverrideComment?.modelName) jobData.modelName = latestOverrideComment.modelName;
+    if (latestOverrideComment?.modelLabel) jobData.modelLabel = latestOverrideComment.modelLabel;
     if (
         latestCommandComment?.commandMode === 'review'
         && !latestCommandComment.requestedModels?.length

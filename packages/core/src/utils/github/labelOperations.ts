@@ -73,7 +73,13 @@ export async function safeAddLabel(context: LabelContext, labelName: string): Pr
     }
 }
 
-export async function safeUpdateLabels(context: LabelContext, labelsToRemove: string[] = [], labelsToAdd: string[] = []): Promise<UpdateResults> {
+export async function safeUpdateLabels(
+    context: LabelContext,
+    labelsToRemove: string[] = [],
+    labelsToAdd: string[] = [],
+    /** When supplied, replace the complete label set in one GitHub operation. */
+    currentLabels?: string[],
+): Promise<UpdateResults> {
     const { issueNumber, logger } = context;
     const results: UpdateResults = {
         success: true,
@@ -82,7 +88,28 @@ export async function safeUpdateLabels(context: LabelContext, labelsToRemove: st
         errors: []
     };
 
-    for (const labelName of labelsToRemove) {
+    if (currentLabels) {
+        const removedNames = new Set(labelsToRemove.map(label => label.toLowerCase()));
+        const desiredLabels = currentLabels.filter(label => !removedNames.has(label.toLowerCase()));
+        for (const label of labelsToAdd) {
+            if (!desiredLabels.some(existing => existing.toLowerCase() === label.toLowerCase())) desiredLabels.push(label);
+        }
+        try {
+            await context.octokit.request('PUT /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+                owner: context.owner,
+                repo: context.repo,
+                issue_number: issueNumber,
+                labels: desiredLabels,
+            });
+            results.removed.push(...labelsToRemove);
+            results.added.push(...labelsToAdd);
+        } catch (error) {
+            const err = error as Error & { status?: number };
+            results.success = false;
+            results.errors.push(`Failed to atomically replace labels: ${err.message}`);
+            logger.warn({ error: err.message, issueNumber, status: err.status }, 'Failed to atomically replace issue labels');
+        }
+    } else for (const labelName of labelsToRemove) {
         const removed = await safeRemoveLabel(context, labelName);
         if (removed) {
             results.removed.push(labelName);
@@ -92,7 +119,7 @@ export async function safeUpdateLabels(context: LabelContext, labelsToRemove: st
         }
     }
 
-    for (const labelName of labelsToAdd) {
+    if (!currentLabels) for (const labelName of labelsToAdd) {
         const added = await safeAddLabel(context, labelName);
         if (added) {
             results.added.push(labelName);

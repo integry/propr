@@ -148,7 +148,12 @@ await mock.module('../packages/core/src/utils/commentFilters.js', {
 });
 
 // Mock safeUpdateLabels — capture calls for assertions
-const mockSafeUpdateLabels = mock.fn(async () => {});
+const mockSafeUpdateLabels = mock.fn(async (_context: unknown, removed: string[] = [], added: string[] = []) => ({
+    success: true,
+    removed,
+    added,
+    errors: [],
+}));
 await mock.module('../packages/core/src/utils/github/labelOperations.js', {
     namedExports: {
         safeRemoveLabel: mock.fn(async () => true),
@@ -307,7 +312,7 @@ describe('commentEventHandler — /switch command', () => {
         const call = mockSafeUpdateLabels.mock.calls[0];
         const newLabels = call.arguments[2] as string[];
         // "opus" should be resolved via the current configured alias.
-        assert.deepStrictEqual(newLabels, ['llm-claude-opus-5']);
+        assert.deepStrictEqual(newLabels, ['llm-claude-opus5']);
     });
 
     test('/switch with full model ID preserves it in label', async () => {
@@ -318,7 +323,7 @@ describe('commentEventHandler — /switch command', () => {
 
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const newLabels = mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[];
-        assert.deepStrictEqual(newLabels, ['llm-claude-sonnet-4-6']);
+        assert.deepStrictEqual(newLabels, ['llm-claude-sonnet46']);
     });
 
     test('/switch removes existing LLM labels and adds new one', async () => {
@@ -341,7 +346,7 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
         assert.deepStrictEqual(existingLlmLabels, ['llm-claude-opus-4-6']);
-        assert.deepStrictEqual(newLabels, ['llm-claude-sonnet-5']);
+        assert.deepStrictEqual(newLabels, ['llm-claude-sonnet5']);
     });
 
     test('/switch without model argument warns and returns early', async () => {
@@ -404,7 +409,7 @@ describe('commentEventHandler — /switch command', () => {
         assert.ok(comments[0].body.includes('Please review the auth module'), 'Comment body should contain the user instructions');
     });
 
-    test('/switch with custom MODEL_LABEL_PATTERN uses pattern-derived prefix for new labels', async () => {
+    test('/switch refuses to synthesize a noncanonical label for a custom MODEL_LABEL_PATTERN', async () => {
         // Simulate PR with a custom-prefixed model label
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
@@ -420,11 +425,8 @@ describe('commentEventHandler — /switch command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-custom-pattern', config);
 
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
-        assert.deepStrictEqual(existingLlmLabels, ['ai-model-claude-opus-4-6']);
-        // New label should use the custom prefix, not hardcoded 'llm-'
-        assert.deepStrictEqual(newLabels, ['ai-model-claude-sonnet-5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
     test('/switch with llm- prefixed argument strips prefix before resolving', async () => {
@@ -436,7 +438,7 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const newLabels = mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[];
         // "llm-haiku" → normalizeModelLabel strips "llm-" → "haiku" → resolveModelAlias → "claude-haiku-4-5-20251001"
-        assert.deepStrictEqual(newLabels, ['llm-claude-haiku-4-5-20251001']);
+        assert.deepStrictEqual(newLabels, ['llm-claude-haiku']);
     });
 
     test('/switch removes multiple existing LLM labels', async () => {
@@ -459,10 +461,10 @@ describe('commentEventHandler — /switch command', () => {
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const [, existingLlmLabels, newLabels] = mockSafeUpdateLabels.mock.calls[0].arguments;
         assert.deepStrictEqual(existingLlmLabels, ['llm-claude-opus-4-6', 'llm-claude-sonnet-4-6']);
-        assert.deepStrictEqual(newLabels, ['llm-claude-haiku-4-5-20251001']);
+        assert.deepStrictEqual(newLabels, ['llm-claude-haiku']);
     });
 
-    test('/switch works with escaped metacharacters in MODEL_LABEL_PATTERN like ^model\\-(.+)$', async () => {
+    test('/switch does not replace a catalog label with a synthesized escaped-pattern label', async () => {
         // Escaped metacharacters like \- should be handled correctly by modelLabelPrefix,
         // deriving the literal prefix 'model-' which produces labels matching the pattern.
         const event = createPRCommentEvent('/switch opus');
@@ -470,10 +472,7 @@ describe('commentEventHandler — /switch command', () => {
 
         await processCommentEvent(event, 'issue_comment', 'corr-escaped', config);
 
-        // Should call safeUpdateLabels with the derived prefix 'model-'
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
-        const newLabels = mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[];
-        assert.deepStrictEqual(newLabels, ['model-claude-opus-5']);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
     });
 
     test('/switch aborts when derived label prefix would not match MODEL_LABEL_PATTERN', async () => {
@@ -499,7 +498,7 @@ describe('commentEventHandler — /switch command', () => {
         // Should still update labels using the first model
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         const newLabels = mockSafeUpdateLabels.mock.calls[0].arguments[2] as string[];
-        assert.deepStrictEqual(newLabels, ['llm-claude-opus-5']);
+        assert.deepStrictEqual(newLabels, ['llm-claude-opus5']);
         // Should have logged a warning about extra arguments
         const warnCalls = mockLoggerInstance.warn.mock.calls;
         const extraWarn = warnCalls.find(
@@ -542,16 +541,77 @@ describe('commentEventHandler — /use command', () => {
         }));
     });
 
-    test('/use enqueues a job without updating labels', async () => {
+    test('/use updates the durable model label before enqueueing', async () => {
         const event = createPRCommentEvent('/use opus');
         const config = createTestConfig();
 
         await processCommentEvent(event, 'issue_comment', 'corr-10', config);
 
-        // /use should NOT update labels
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
-        // /use SHOULD enqueue a job
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+    });
+
+    test('/use persists canonical label, configured agent, and model on the queued job', async () => {
+        const event = createPRCommentEvent('/use llm-claude-opus5\nContinue with the selected model');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-canonical-codex', config);
+
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.agentAlias, 'default');
+        assert.strictEqual(jobData.modelName, 'claude-opus-5');
+        assert.strictEqual(jobData.modelLabel, 'llm-claude-opus5');
+        assert.strictEqual(jobData.llm, 'claude-opus-5');
+    });
+
+    test('/use does not queue or acknowledge when the label transition fails', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [{ id: 1, name: 'llm-claude-opus48', color: '000', default: false, description: null, node_id: 'L_1', url: '' }],
+            },
+        }));
+        mockSafeUpdateLabels.mock.mockImplementationOnce(async () => ({
+            success: false,
+            removed: [],
+            added: [],
+            errors: ['failed'],
+        }));
+
+        await processCommentEvent(createPRCommentEvent('/use sonnet'), 'issue_comment', 'corr-label-failure', createTestConfig());
+
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(mockOctokit.request.mock.callCount(), 1, 'only the PR read should occur; no success acknowledgement');
+    });
+
+    test('/use supersedes a delayed provider-limit retry and runs the replacement immediately', async () => {
+        const removeRetry = mock.fn(async () => {});
+        mockDelayedJobs = [{
+            id: 'pr-comments-batch-testowner-testrepo-42-claude-opus48-main-ratelimit-retry',
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                llm: 'claude-opus-4-8',
+                isRetryFromRateLimit: true,
+                comments: [{ id: 7, createdAt: '2026-08-14T10:00:00Z', body: 'Original request', author: 'alice', type: 'issue' }],
+            },
+            remove: removeRetry,
+        }];
+        const config = createTestConfig();
+
+        await processCommentEvent(createPRCommentEvent('/use opus'), 'issue_comment', 'corr-replace-retry', config);
+
+        assert.strictEqual(removeRetry.mock.callCount(), 1);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1, 'retry comments should be retained for the replacement');
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(jobData.agentAlias, 'default');
+        assert.strictEqual(jobData.modelName, 'claude-opus-5');
+        assert.strictEqual(mockQueueAdd.mock.calls[0].arguments[2].delay, 3000);
     });
 
     test('/use sets commandMode to "use" in job data', async () => {
@@ -711,7 +771,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.commandMode, 'switch');
         const meta = jobData.commandMeta as { mode: string; models: string[]; instructions: string };
         assert.strictEqual(meta.mode, 'switch');
-        assert.deepStrictEqual(meta.models, ['sonnet']);
+        assert.deepStrictEqual(meta.models, ['claude-sonnet-5']);
         assert.strictEqual(meta.instructions, 'Do a review');
         assert.strictEqual(jobData.commandInstructions, 'Do a review');
     });
@@ -727,7 +787,7 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.commandMode, 'use');
         const meta = jobData.commandMeta as { mode: string; models: string[]; instructions: string };
         assert.strictEqual(meta.mode, 'use');
-        assert.deepStrictEqual(meta.models, ['haiku']);
+        assert.deepStrictEqual(meta.models, ['claude-haiku-4-5-20251001']);
         assert.strictEqual(jobData.commandInstructions, 'Summarize changes');
         // LLM should be resolved from /use command
         assert.strictEqual(jobData.llm, 'claude-haiku-4-5-20251001');
@@ -909,6 +969,9 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(pendingComment.commandMode, 'use');
         assert.strictEqual(pendingComment.commandInstructions, 'Fix the bug');
         assert.strictEqual(pendingComment.llmOverride, 'claude-opus-5');
+        assert.strictEqual(pendingComment.agentAlias, 'default');
+        assert.strictEqual(pendingComment.modelName, 'claude-opus-5');
+        assert.strictEqual(pendingComment.modelLabel, 'llm-claude-opus5');
     });
 
     test('/switch with instructions is batched when an existing job is active', async () => {
@@ -1312,6 +1375,9 @@ describe('applyPendingCommentCommandContext', () => {
                 author: 'alice',
                 type: 'issue' as const,
                 llmOverride: 'claude-opus-4-6',
+                agentAlias: 'claude-prod',
+                modelName: 'claude-opus-4-6',
+                modelLabel: 'production-opus',
             },
             {
                 id: 200,
@@ -1355,6 +1421,9 @@ describe('applyPendingCommentCommandContext', () => {
             );
 
             assert.strictEqual(jobData.llm, 'claude-opus-4-6', `permutation ${permutation.join(',')}`);
+            assert.strictEqual(jobData.agentAlias, 'claude-prod', `permutation ${permutation.join(',')}`);
+            assert.strictEqual(jobData.modelName, 'claude-opus-4-6', `permutation ${permutation.join(',')}`);
+            assert.strictEqual(jobData.modelLabel, 'production-opus', `permutation ${permutation.join(',')}`);
         }
     });
 

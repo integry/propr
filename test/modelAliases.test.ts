@@ -11,6 +11,7 @@ const {
     getPreferredModelForAgent,
     MODEL_ALIASES,
     resolveLlmLabel,
+    resolveCanonicalModelSelection,
     ALL_MODELS,
     findMatchingModel,
     getModelShortName,
@@ -178,6 +179,39 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         const result = await resolveLlmLabel('codex-gpt56-sol');
         assert.strictEqual(result.agentAlias, 'codex', 'Should resolve to codex agent');
         assert.strictEqual(result.model, 'gpt-5.6-sol', 'Should resolve to GPT-5.6 Sol');
+    });
+
+    await t.test('canonicalizes GPT-5.6 Sol aliases and full labels to one configured label', async () => {
+        for (const token of ['gpt-5.6-sol', 'codex-gpt56-sol', 'llm-codex-gpt56-sol']) {
+            const result = await resolveCanonicalModelSelection(token);
+            assert.deepStrictEqual(result, {
+                agentAlias: 'codex',
+                model: 'gpt-5.6-sol',
+                githubLabel: 'llm-codex-gpt56-sol',
+            });
+        }
+    });
+
+    await t.test('uses a configured per-model custom label as the canonical label', async () => {
+        mockAgentConfigs[2].config.modelCustomLabels = { 'gpt-5.6-sol': 'codex-production' };
+        try {
+            const byModel = await resolveCanonicalModelSelection('gpt-5.6-sol');
+            const byCustomLabel = await resolveCanonicalModelSelection('codex-production');
+            assert.strictEqual(byModel?.githubLabel, 'codex-production');
+            assert.deepStrictEqual(byCustomLabel, byModel);
+        } finally {
+            delete mockAgentConfigs[2].config.modelCustomLabels;
+        }
+    });
+
+    await t.test('rejects unknown and disabled model selections', async () => {
+        assert.strictEqual(await resolveCanonicalModelSelection('not-a-real-model'), null);
+        mockAgentConfigs[2].config.enabled = false;
+        try {
+            assert.strictEqual(await resolveCanonicalModelSelection('gpt-5.6-sol'), null);
+        } finally {
+            mockAgentConfigs[2].config.enabled = true;
+        }
     });
 
     await t.test('routes an alias-aware GPT-5.6 Sol label to the selected Codex agent', async () => {

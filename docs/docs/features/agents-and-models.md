@@ -84,7 +84,7 @@ The same aliases work in PR comments (the `llm-` prefix is optional; the raw cat
 
 ```
 /switch claude-opus5      # future follow-ups on this PR use this model
-/use codex-gpt56-sol      # one follow-up with this model
+/use codex-gpt56-sol      # switch the PR and run one follow-up with this model
 /review claude-opus5 codex-gpt56-sol   # independent reviews from two models
 ```
 

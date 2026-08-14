@@ -48,6 +48,12 @@ export interface CommentJobData {
     repoOwner: string;
     repoName: string;
     llm?: string | null;
+    /** Durable explicit routing selected by /use or /switch. */
+    agentAlias?: string;
+    modelName?: string;
+    modelLabel?: string;
+    /** Marks the reconstructable delayed job created after a provider limit. */
+    isRetryFromRateLimit?: boolean;
     correlationId: string;
     title?: string;
     subtitle?: string;
@@ -90,6 +96,10 @@ export interface UnprocessedComment {
     requestedModels?: string[];
     commandInstructions?: string;
     llmOverride?: string | null;
+    /** Explicit routing carried through pending-comment batching. */
+    agentAlias?: string;
+    modelName?: string;
+    modelLabel?: string;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
 }

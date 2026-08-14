@@ -12,15 +12,14 @@ import type { Redis } from 'ioredis';
 import { createHash } from 'node:crypto';
 import { withUltrafixLabelTransition } from '../utils/ultrafixLabelTransition.js';
 import type { IssueCommentEvent, PullRequestReviewCommentEvent, Label } from '@octokit/webhooks-types';
-import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels, modelLabelPrefix } from './commentEventHelpers.js';
+import { extractLlmFromKeywords, stripKeywordsFromBody, buildCodeContext, isReviewComment, extractLlmFromLabels } from './commentEventHelpers.js';
 import { handleMergeCommand } from './mergeConflictDetector.js';
 import { parseSlashCommand, buildCommandMeta } from './slashCommandParser.js';
 import type { CommandMeta, UltrafixCommandMeta } from './slashCommandParser.js';
 import { safeUpdateLabels } from '../utils/github/labelOperations.js';
 import { resolveModelAlias } from '../config/modelAliases.js';
-import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
+import { getAllCustomLabels, resolveCanonicalModelSelection, resolveCanonicalModelSelectionFromLabels, type CanonicalModelSelection } from '../config/modelLabelResolution.js';
 import { getBotUsername } from '../daemon/configLoader.js';
-import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
 
 export interface UltrafixDeps {
@@ -49,24 +48,6 @@ function loadUltrafixDeps(): UltrafixDeps {
     return _ultrafixDeps;
 }
 
-async function isKnownOrConfiguredModel(model: string): Promise<boolean> {
-    if (MODEL_INFO_MAP[model]) {
-        return true;
-    }
-
-    try {
-        const registry = AgentRegistry.getInstance();
-        await registry.ensureInitialized();
-        return registry.getAllAgents().some(agent =>
-            agent.config.enabled && agent.config.supportedModels.some(
-                supportedModel => supportedModel.toLowerCase() === model.toLowerCase()
-            )
-        );
-    } catch {
-        return false;
-    }
-}
-
 export type CommentEventType = 'issue_comment' | 'pull_request_review_comment';
 
 export interface CommentEventConfig {
@@ -87,10 +68,10 @@ interface PRJobData extends CommentJobData {
 
 interface CommentContext { eventType: CommentEventType; prNumber: number; owner: string; repo: string }
 interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[] }
-interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; commentRevisionIdentity?: string }
+interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; commentRevisionIdentity?: string; modelSelection?: CanonicalModelSelection }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
-type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'ultrafixMeta'> & { created_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
+type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'agentAlias' | 'modelName' | 'modelLabel' | 'ultrafixMeta'> & { created_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type CommandJobFields = Pick<CommentJobData, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions'>;
 type PRComment = { id: number; created_at: string; updated_at: string; body: string; user: { login: string; type?: string }; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
 type ManualCommandTakeover = { workEpoch: number; hadAutomaticWork: boolean; commentRevisionIdentity: string };
@@ -278,22 +259,9 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         return;
     }
 
-    if (commandMeta.mode === 'switch') {
-        await handleSwitchCommand({ commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger });
+    if (commandMeta.mode === 'switch' || commandMeta.mode === 'use') {
+        await handleModelSelectionCommand({ commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger });
         return;
-    }
-
-    if (commandMeta.mode === 'use' && commandMeta.models.length === 0) {
-        correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/use command requires a model argument, ignoring');
-        return;
-    }
-
-    if (commandMeta.mode === 'use' && commandMeta.models.length > 0) {
-        const resolvedModel = resolveModelAlias(commandMeta.models[0]);
-        if (!await isKnownOrConfiguredModel(resolvedModel)) {
-            correlatedLogger.warn({ pullRequestNumber: prNumber, invalidModels: [resolvedModel] }, '/use command contains unrecognized model(s), ignoring');
-            return;
-        }
     }
 
     const manualTakeover = await fenceManualCommand({ commandMeta, comment, eventContext, config, correlatedLogger });
@@ -325,81 +293,174 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta, commentRevisionIdentity: manualTakeover?.commentRevisionIdentity });
 }
 
-type SwitchCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'switch' } };
+type ModelSelectionCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'switch' | 'use' } };
 
-async function handleSwitchCommand(opts: SwitchCommandOptions): Promise<void> {
-    const { commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
-    const { eventType, prNumber, owner, repo } = eventContext;
-    const { redisClient } = config;
+interface PRCommentJobSnapshot {
+    active: Job<PRJobData>[];
+    waiting: Job<PRJobData>[];
+    delayed: Job<PRJobData>[];
+}
 
-    if (commandMeta.models.length === 0) {
-        correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/switch command requires a model argument, ignoring');
-        return;
+async function postModelSelectionAcknowledgement(
+    opts: Pick<ModelSelectionCommandOptions, 'eventContext' | 'correlatedLogger'>,
+    selection: CanonicalModelSelection,
+    outcome: 'label-only' | 'queued' | 'pending',
+): Promise<void> {
+    const { owner, repo, prNumber } = opts.eventContext;
+    const suffix = outcome === 'pending'
+        ? ' The follow-up is saved for the active writer.'
+        : outcome === 'queued'
+            ? ' The follow-up has been queued.'
+            : '';
+    try {
+        const octokit = await getAuthenticatedOctokit();
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner,
+            repo,
+            issue_number: prNumber,
+            body: `✅ Model switched to \`${selection.githubLabel}\` (\`${selection.agentAlias}:${selection.model}\`).${suffix}`,
+        });
+    } catch (error) {
+        opts.correlatedLogger.warn({ pullRequestNumber: prNumber, error: (error as Error).message }, 'Model switch succeeded but acknowledgement could not be posted');
     }
+}
 
-    const resolvedModels = commandMeta.models.map(m => resolveModelAlias(m));
-    const invalidModels: string[] = [];
-    for (const model of resolvedModels) {
-        if (!await isKnownOrConfiguredModel(model)) {
-            invalidModels.push(model);
-        }
-    }
-    if (invalidModels.length > 0) {
-        correlatedLogger.warn({ pullRequestNumber: prNumber, invalidModels }, '/switch command contains unrecognized model(s), ignoring');
-        return;
-    }
-
-    correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, models: commandMeta.models }, '/switch command detected, updating PR labels');
-    const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
-    const { prLabels } = prData;
+async function transitionModelLabel(
+    opts: ModelSelectionCommandOptions,
+    prLabels: Label[],
+    selection: CanonicalModelSelection,
+): Promise<{ success: boolean; updatedLabels: Label[] }> {
+    const { eventContext: { owner, repo, prNumber }, config, correlatedLogger } = opts;
     const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';
     const modelLabelRegex = new RegExp(modelLabelPattern);
-
-    const existingLlmLabels = prLabels.filter(l => modelLabelRegex.test(l.name)).map(l => l.name);
-    const { prefix, derived } = modelLabelPrefix(modelLabelPattern);
-    if (!derived) {
-        correlatedLogger.warn({ pullRequestNumber: prNumber, modelLabelPattern }, 'Could not derive label prefix from MODEL_LABEL_PATTERN, falling back to default "llm-". Labels may be mismatched.');
+    const configuredCustomLabels = new Set((await getAllCustomLabels()).map(label => label.toLowerCase()));
+    if (!modelLabelRegex.test(selection.githubLabel) && !configuredCustomLabels.has(selection.githubLabel.toLowerCase())) {
+        correlatedLogger.error({ pullRequestNumber: prNumber, targetLabel: selection.githubLabel, modelLabelPattern }, 'Canonical model label does not match MODEL_LABEL_PATTERN; refusing an invisible model selection');
+        return { success: false, updatedLabels: prLabels };
     }
-    const newLabels = resolvedModels.map(m => `${prefix}${m}`);
+    const existingModelLabels = prLabels
+        .filter(label => modelLabelRegex.test(label.name) || configuredCustomLabels.has(label.name.toLowerCase()))
+        .map(label => label.name);
+    const targetAlreadyPresent = existingModelLabels.some(label => label.toLowerCase() === selection.githubLabel.toLowerCase());
+    const labelsToRemove = existingModelLabels.filter(label => label.toLowerCase() !== selection.githubLabel.toLowerCase());
+    const labelsToAdd = targetAlreadyPresent ? [] : [selection.githubLabel];
 
-    // Validate that newly constructed labels match the configured regex.
-    // If they don't, a future /switch would fail to detect them as existing
-    // model labels, causing duplicates instead of replacements.
-    const mismatchedLabels = newLabels.filter(l => !modelLabelRegex.test(l));
-    if (mismatchedLabels.length > 0) {
-        correlatedLogger.error({ pullRequestNumber: prNumber, mismatchedLabels, modelLabelPattern, derivedPrefix: prefix }, '/switch: derived label prefix produces labels that do not match MODEL_LABEL_PATTERN — aborting to prevent label duplication');
-        return;
+    if (labelsToRemove.length === 0 && labelsToAdd.length === 0) {
+        return { success: true, updatedLabels: prLabels };
     }
 
     const octokit = await getAuthenticatedOctokit();
-    await safeUpdateLabels(
+    const result = await safeUpdateLabels(
         { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
-        existingLlmLabels,
-        newLabels
+        labelsToRemove,
+        labelsToAdd,
+        prLabels.map(label => label.name),
     );
+    if (!result.success) {
+        // Restore the pre-command selection as best we can. In particular,
+        // remove a newly-added target before restoring any labels that were
+        // successfully removed, so a failed command does not advertise two
+        // different providers.
+        const rollbackRemove = !targetAlreadyPresent && result.added.includes(selection.githubLabel)
+            ? [selection.githubLabel]
+            : [];
+        const rollbackAdd = result.removed;
+        if (rollbackRemove.length > 0 || rollbackAdd.length > 0) {
+            await safeUpdateLabels(
+                { octokit, owner, repo, issueNumber: prNumber, logger: correlatedLogger },
+                rollbackRemove,
+                rollbackAdd,
+            );
+        }
+        correlatedLogger.error({ pullRequestNumber: prNumber, targetLabel: selection.githubLabel, errors: result.errors }, 'Model label transition failed; follow-up will not be queued');
+        return { success: false, updatedLabels: prLabels };
+    }
 
-    if (!commandMeta.instructions) {
-        correlatedLogger.info({ pullRequestNumber: prNumber }, '/switch command has no instructions, label update complete');
+    const retainedLabels = prLabels.filter(label => !labelsToRemove.includes(label.name));
+    const updatedLabels = targetAlreadyPresent
+        ? retainedLabels
+        : [...retainedLabels, { id: 0, name: selection.githubLabel, node_id: '', url: '', color: '', default: false, description: null } as Label];
+    return { success: true, updatedLabels };
+}
+
+function isProviderLimitRetry(job: Job<PRJobData>): boolean {
+    return job.data.isRetryFromRateLimit === true || String(job.id ?? '').endsWith('-ratelimit-retry');
+}
+
+async function restoreSupersededRetryComments(jobs: Job<PRJobData>[], eventContext: CommentContext, redisClient: Redis): Promise<void> {
+    const comments = jobs.flatMap(job => job.data.comments ?? []);
+    const uniqueComments = comments.filter((comment, index) => comments.findIndex(candidate => candidate.id === comment.id) === index);
+    if (uniqueComments.length === 0) return;
+    const pendingCommentsKey = getPendingPrCommentsKey(eventContext.owner, eventContext.repo, eventContext.prNumber);
+    for (const comment of uniqueComments) await redisClient.rpush(pendingCommentsKey, JSON.stringify(comment));
+    await redisClient.expire(pendingCommentsKey, 3600);
+}
+
+async function supersedeProviderLimitRetries(snapshot: PRCommentJobSnapshot, eventContext: CommentContext, redisClient: Redis): Promise<number> {
+    const retryJobs = [...snapshot.waiting, ...snapshot.delayed].filter(isProviderLimitRetry);
+    if (retryJobs.length === 0) return 0;
+    await restoreSupersededRetryComments(retryJobs, eventContext, redisClient);
+    for (const job of retryJobs) await job.remove();
+    return retryJobs.length;
+}
+
+async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): Promise<void> {
+    const { commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger } = opts;
+    const { eventType, prNumber, owner, repo } = eventContext;
+    const { redisClient } = config;
+    const commandName = commandMeta.mode;
+
+    if (commandMeta.models.length === 0) {
+        correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, `/${commandName} command requires a model argument, ignoring`);
         return;
     }
 
-    correlatedLogger.info({ pullRequestNumber: prNumber }, '/switch command has instructions, enqueuing follow-up job');
-    // Strip the /switch command line from the comment body so the downstream job
-    // only sees the user's instructions, not the control syntax.
-    const strippedComment = { ...comment, body: commandMeta.instructions };
+    const selection = await resolveCanonicalModelSelection(commandMeta.models[0]);
+    if (!selection) {
+        correlatedLogger.warn({ pullRequestNumber: prNumber, requestedModel: commandMeta.models[0] }, `/${commandName} command contains an unrecognized model or an unconfigured model, ignoring`);
+        return;
+    }
+    const selectedCommandMeta = { ...commandMeta, models: [selection.model] } as CommandMeta & { mode: 'switch' | 'use' };
 
-    // Check for existing active/waiting jobs for this PR (batching/concurrency guard)
-    const existingSwitchJob = await checkExistingJob(prNumber, owner, repo);
-    if (existingSwitchJob) {
-        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(commandMeta) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id }, '/switch command: existing job found for PR, stored follow-up instructions for batch processing');
+    correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor, selection }, `/${commandName} command detected, updating PR model label`);
+    const prData = await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
+    const transition = await transitionModelLabel(opts, prData.prLabels, selection);
+    if (!transition.success) return;
+
+    const shouldQueue = commandMeta.mode === 'use' || Boolean(commandMeta.instructions);
+    if (!shouldQueue) {
+        correlatedLogger.info({ pullRequestNumber: prNumber, selection }, '/switch command has no instructions, durable model switch complete');
+        await postModelSelectionAcknowledgement(opts, selection, 'label-only');
         return;
     }
 
-    // Re-use already-fetched PR data to avoid a redundant GitHub API call.
-    // The labels have been updated above, so reflect the new labels in the prefetched data.
-    const updatedPRData = { branchName: prData.branchName, prLabels: [...prLabels.filter(l => !existingLlmLabels.includes(l.name)), ...newLabels.map(n => ({ id: 0, name: n, node_id: '', url: '', color: '', default: false, description: null }))] as Label[] };
-    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta, prefetchedPRData: updatedPRData });
+    const strippedComment = { ...comment, body: commandMeta.instructions || '' };
+    const snapshot = await getPRCommentJobSnapshot(prNumber, owner, repo);
+
+    if (snapshot.active.length > 0) {
+        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: active writer found, stored selected follow-up for the next run`);
+        await postModelSelectionAcknowledgement(opts, selection, 'pending');
+        return;
+    }
+
+    const supersededRetries = await supersedeProviderLimitRetries(snapshot, eventContext, redisClient);
+    const remainingQueuedJobs = [...snapshot.waiting, ...snapshot.delayed].filter(job => !isProviderLimitRetry(job));
+    if (remainingQueuedJobs.length > 0) {
+        await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: queued writer found, stored selected follow-up for batching`);
+        await postModelSelectionAcknowledgement(opts, selection, 'pending');
+        return;
+    }
+
+    const updatedPRData = { branchName: prData.branchName, prLabels: transition.updatedLabels };
+    await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
+        payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+        MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId,
+        commandMeta: selectedCommandMeta, prefetchedPRData: updatedPRData, modelSelection: selection,
+    });
+    correlatedLogger.info({ pullRequestNumber: prNumber, supersededRetries, selection }, `/${commandName} follow-up queued with durable model selection`);
+    await postModelSelectionAcknowledgement(opts, selection, 'queued');
 }
 
 type UltrafixCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: UltrafixCommandMeta };
@@ -676,14 +737,26 @@ async function checkExistingJob(prNumber: number, owner: string, repo: string): 
 }
 
 async function getExistingPRCommentJobs(prNumber: number, owner: string, repo: string): Promise<Job<PRJobData>[]> {
+    const snapshot = await getPRCommentJobSnapshot(prNumber, owner, repo);
+    return [...snapshot.active, ...snapshot.waiting, ...snapshot.delayed];
+}
+
+async function getPRCommentJobSnapshot(prNumber: number, owner: string, repo: string): Promise<PRCommentJobSnapshot> {
     const queue = await getIssueQueue();
     const [activeJobs, waitingJobs, delayedJobs] = await Promise.all([
         queue.getActive(),
         queue.getWaiting(),
         queue.getDelayed(),
     ]);
-    const existingJobs = [...activeJobs, ...waitingJobs, ...delayedJobs] as Job<PRJobData>[];
-    return existingJobs.filter(job => job.name === 'processPullRequestComment' && job.data.pullRequestNumber === prNumber && job.data.repoOwner === owner && job.data.repoName === repo);
+    const belongsToPR = (job: Job<PRJobData>): boolean => job.name === 'processPullRequestComment'
+        && job.data.pullRequestNumber === prNumber
+        && job.data.repoOwner === owner
+        && job.data.repoName === repo;
+    return {
+        active: (activeJobs as Job<PRJobData>[]).filter(belongsToPR),
+        waiting: (waitingJobs as Job<PRJobData>[]).filter(belongsToPR),
+        delayed: (delayedJobs as Job<PRJobData>[]).filter(belongsToPR),
+    };
 }
 
 function shouldEnqueueIndependentManualTakeover(
@@ -728,6 +801,9 @@ async function storeCommentForBatch(comment: BatchComment, commentAuthor: string
         requestedModels: comment.requestedModels,
         commandInstructions: comment.commandInstructions,
         llmOverride: comment.llmOverride,
+        agentAlias: comment.agentAlias,
+        modelName: comment.modelName,
+        modelLabel: comment.modelLabel,
         ultrafixMeta: comment.ultrafixMeta,
     };
     await redisClient.rpush(pendingCommentsKey, JSON.stringify(pendingComment));
@@ -812,26 +888,31 @@ function buildCommandJobFields(commandMeta: CommandMeta): CommandJobFields {
     };
 }
 
-function buildPendingCommandFields(commandMeta: CommandMeta): Pick<UnprocessedComment, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride'> {
+function buildPendingCommandFields(commandMeta: CommandMeta, modelSelection?: CanonicalModelSelection): Pick<UnprocessedComment, 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'agentAlias' | 'modelName' | 'modelLabel'> {
     return {
         ...buildCommandJobFields(commandMeta),
         llmOverride: (commandMeta.mode === 'switch' || commandMeta.mode === 'use') && commandMeta.models.length > 0
             ? resolveModelAlias(commandMeta.models[0])
             : undefined,
+        agentAlias: modelSelection?.agentAlias,
+        modelName: modelSelection?.model,
+        modelLabel: modelSelection?.githubLabel,
     };
 }
 
 async function enqueueNewCommentJob(comment: { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
-    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta, commentRevisionIdentity } = options;
+    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta, commentRevisionIdentity, modelSelection } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { unprocessedComment, llmFromKeywords } = prepareComment(comment, commentAuthor, eventType, PR_FOLLOWUP_TRIGGER_KEYWORDS);
     const { branchName, prLabels } = prefetchedPRData || await getPRBranchAndLabels(eventType, payload, { owner, repo, prNumber });
-    const llm = resolveLlm(llmFromKeywords, prLabels, { modelLabelPattern: MODEL_LABEL_PATTERN, prNumber, correlatedLogger, commandMeta });
+    const labelSelection = modelSelection ?? await resolveCanonicalModelSelectionFromLabels(prLabels, MODEL_LABEL_PATTERN);
+    const llm = labelSelection?.model ?? resolveLlm(llmFromKeywords, prLabels, { modelLabelPattern: MODEL_LABEL_PATTERN, prNumber, correlatedLogger, commandMeta });
 
     const jobData: CommentJobData = {
         pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),
+        ...(labelSelection ? { agentAlias: labelSelection.agentAlias, modelName: labelSelection.model, modelLabel: labelSelection.githubLabel } : {}),
         ...(commandMeta ? {
             ...buildCommandJobFields(commandMeta),
             commandCommentId: comment.id,
@@ -840,9 +921,9 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
         } : {}),
         ...(ultrafixMeta ? { ultrafixMeta } : {}),
     };
-    const manualCommand = commandMeta?.mode === 'fix' || commandMeta?.mode === 'review';
+    const deterministicCommand = commandMeta != null;
     const commentRevisionSlug = (commentRevisionIdentity ?? getCommentRevisionIdentity(comment, eventType)).replace(/[^a-zA-Z0-9_-]/g, '-');
-    const jobId = manualCommand
+    const jobId = deterministicCommand
         ? `pr-comments-batch-${owner}-${repo}-${prNumber}-${comment.id}-${commentRevisionSlug}`
         : `pr-comments-batch-${owner}-${repo}-${prNumber}-${Date.now()}`;
     const commentTrackingKey = `pr-comment-processed:${owner}:${repo}:${prNumber}:${comment.id}`;

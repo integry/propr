@@ -1,6 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { findRunningDockerContainerForTask, getAuthenticatedOctokit, hashTaskAttemptToken, inspectLegacyDockerContainerLivenessForTask, logger, retryConfigs, runWithExecutionAbortSignal, withRetry } from '@propr/core';
+import { findRunningDockerContainerForTask, getAuthenticatedOctokit, hashTaskAttemptToken, inspectLegacyDockerContainerLivenessForTask, logger, resolveCanonicalModelSelectionFromLabels, retryConfigs, runWithExecutionAbortSignal, withRetry } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '@propr/core';
@@ -68,6 +68,10 @@ interface PRJobContext {
     repoOwner: string;
     repoName: string;
     llm: string | null | undefined;
+    agentAlias?: string;
+    modelName?: string;
+    modelLabel?: string;
+    isRetryFromRateLimit?: boolean;
     correlationId: string;
     correlatedLogger: Logger;
     primaryProcessingLabels: string[];
@@ -133,8 +137,8 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
     const initialComments: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
     const { commentsToProcess, pickedUpComments } = await pickUpPendingCommentsWithClaim(initialComments, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
     applyPendingCommentCommandContext(job.data, commentsToProcess, correlatedLogger);
-    const { branchName: jobBranchName, llm: jobLlm } = job.data;
-    return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess, pickedUpComments, originalUltrafixMeta };
+    const { branchName: jobBranchName, llm: jobLlm, agentAlias, modelName, modelLabel, isRetryFromRateLimit } = job.data;
+    return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, agentAlias, modelName, modelLabel, isRetryFromRateLimit, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess, pickedUpComments, originalUltrafixMeta };
 }
 
 async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
@@ -156,6 +160,25 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
         owner: repoOwner, repo: repoName, pull_number: pullRequestNumber,
         mediaType: { format: 'full' }  // Get body_html with signed image URLs
     }) as PRData;
+    if (context.isRetryFromRateLimit && context.agentAlias && context.modelName) {
+        const liveSelection = await resolveCanonicalModelSelectionFromLabels(
+            prData.data.labels,
+            process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
+        );
+        if (liveSelection && (
+            liveSelection.agentAlias.toLowerCase() !== context.agentAlias.toLowerCase()
+            || liveSelection.model.toLowerCase() !== context.modelName.toLowerCase()
+        )) {
+            correlatedLogger.info({
+                pullRequestNumber,
+                retryAgent: context.agentAlias,
+                retryModel: context.modelName,
+                liveAgent: liveSelection.agentAlias,
+                liveModel: liveSelection.model,
+            }, 'Skipping provider-limit retry superseded by a newer durable PR model selection');
+            return { skip: true, reason: 'provider_limit_retry_superseded' };
+        }
+    }
     const botUsername = process.env.GITHUB_BOT_USERNAME || 'propr-dev[bot]';
     // Fetch ALL comments with pagination to handle PRs with 100+ comments
     const allCommentsForValidation = await fetchAllComments(octokit, repoOwner, repoName, pullRequestNumber);
@@ -165,7 +188,12 @@ async function validatePRAndComments(octokit: Awaited<ReturnType<typeof getAuthe
     if (validatedComments.length === 0) return { skip: true, reason: 'all_comments_deleted' };
     // Check if PR has ANY of the primary processing labels (e.g., 'AI' or 'gitfix')
     if (!prData.data.labels.some(label => primaryProcessingLabels.includes(label.name))) return { skip: true, reason: 'missing_required_label' };
-    const llm = extractModelFromLabels(prData.data.labels, initialLlm, pullRequestNumber, correlatedLogger);
+    // A slash-command selection is persisted independently of the label so a
+    // reconstructed retry cannot drift providers. Ordinary jobs continue to
+    // derive routing from the durable PR label.
+    const llm = context.agentAlias && context.modelName
+        ? context.modelName
+        : extractModelFromLabels(prData.data.labels, initialLlm, pullRequestNumber, correlatedLogger);
     const unprocessedComments = filterUnprocessedComments(validatedComments, prCommentsForValidation, botUsername, { pullRequestNumber, correlatedLogger });
     if (unprocessedComments.length === 0) return { skip: true, reason: 'already_processed' };
     return { skip: false, prData, validatedComments, unprocessedComments, llm, prCommentsForValidation };
@@ -358,7 +386,8 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const prompt = buildPrompt({ pullRequestNumber, combinedCommentBody: localizedCombinedCommentBody, commentHistory, originalTaskSpec: localizedOriginalTaskSpec, worktreeInfo: state.worktreeInfo, repoOwner, repoName, commentCount: state.unprocessedComments.length, commandMode: job.data.commandMode || 'default', reviewCommentsSection });
 
     const { claudeResult, agentType } = await resolveAndExecuteAgent({
-        llm, worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
+        llm, agentAlias: context.agentAlias, modelName: context.modelName,
+        worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName, prompt,
         pullRequestNumber, repoOwner, repoName, stateManager, correlatedLogger, githubToken: githubToken.token, taskId, redisClient,
         reasoningLevel: job.data.reasoningLevel,
     });
@@ -396,7 +425,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
     if (await restorePendingCommentsIfUltrafixJobSuperseded(job, { repoOwner, repoName, pullRequestNumber, redisClient }, context.pickedUpComments, context.originalUltrafixMeta)) return { status: 'cancelled', reason: 'ultrafix_superseded' };
 
-    const modelName = await resolvePRCommentModelName(llm, correlatedLogger);
+    const modelName = context.modelName ?? await resolvePRCommentModelName(llm, correlatedLogger);
 
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();
@@ -448,6 +477,6 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {
         await stopLockHeartbeat();
-        await cleanupJob({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
+        await cleanupJob({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobAgentAlias: context.agentAlias, jobModelName: context.modelName, jobModelLabel: context.modelLabel, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
     }
 }
