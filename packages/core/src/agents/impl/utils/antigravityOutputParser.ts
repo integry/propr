@@ -1,6 +1,6 @@
 import type { TokenUsage } from '../../types.js';
 import logger from '../../../utils/logger.js';
-import { ANTIGRAVITY_MODEL_LABELS } from '../antigravityModelIds.js';
+import { ANTIGRAVITY_MODEL_LABELS, toAntigravityCliModelId } from '../antigravityModelIds.js';
 
 export { ANTIGRAVITY_MODEL_LABELS };
 
@@ -80,6 +80,9 @@ function stripAnsiCodes(text: string): string { return text.replace(ANSI_REGEX, 
 function normalizeTranscriptIdentifier(value: string): string { return value.trim().toUpperCase(); }
 function isRecord(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function isFiniteNonNegativeNumber(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= 0; }
+
+/** Converts CLI canonical IDs and display names back to ProPR's namespaced model ID. */
+export function normalizeAntigravityModelId(modelId: string): string { const unscoped = modelId.startsWith('antigravity:') ? modelId.slice('antigravity:'.length) : modelId; return Object.entries(ANTIGRAVITY_MODEL_LABELS).find(([proprId, displayName]) => unscoped === proprId || unscoped === displayName || unscoped === toAntigravityCliModelId(proprId))?.[0] ?? unscoped; }
 
 function extractAntigravityResult(lines: Array<{ line: string; isJson: boolean }>): string | undefined {
     const resultLines: string[] = [];
@@ -234,7 +237,7 @@ function applyIdentity(state: ParseState, conversationId: string): void {
 function processLegacyEvent(event: AntigravityEvent, state: ParseState): void {
     if (event.type === 'init') {
         state.sessionId = event.session_id;
-        state.modelUsed = event.model;
+        state.modelUsed = normalizeAntigravityModelId(event.model);
         return;
     }
     if (event.type === 'message' && event.role === 'assistant') {
@@ -255,7 +258,7 @@ function processLegacyEvent(event: AntigravityEvent, state: ParseState): void {
 function processStreamEvent(event: AntigravityStreamEvent, state: ParseState): void {
     if (event.event === 'init') {
         applyIdentity(state, event.conversation_id);
-        state.modelUsed = event.init.model;
+        state.modelUsed = normalizeAntigravityModelId(event.init.model);
         return;
     }
     if (event.event === 'step_update') {
@@ -295,13 +298,15 @@ export function isAntigravityAnalysisEvent(event: AntigravityOutputEvent): boole
 }
 
 export function filterAntigravityAnalysisEvents(events: AntigravityOutputEvent[]): AntigravityOutputEvent[] {
-    const hasStreamedAgentResponse = events.some(event => isAntigravityStreamEvent(event) && event.event === 'step_update'
-        && normalizeTranscriptIdentifier(event.step_update.step_type) === 'AGENT_RESPONSE'
-        && Boolean(event.step_update.text_delta?.trim()));
+    const streamedResponses = new Map<string, string>(); for (const event of events) { if (isAntigravityStreamEvent(event) && event.event === 'step_update' && normalizeTranscriptIdentifier(event.step_update.step_type) === 'AGENT_RESPONSE') { const update = event.step_update; if (update.text_delta !== undefined) streamedResponses.set(update.conversation_id, (streamedResponses.get(update.conversation_id) ?? '') + update.text_delta); } }
+    const terminalSupersedesStream = (conversationId: string): boolean => events.some(event => isAntigravityStreamEvent(event) && event.event === 'result' && event.result.conversation_id === conversationId && (event.result.status.toUpperCase() === 'ERROR' || (event.result.response !== undefined && event.result.response !== streamedResponses.get(conversationId))));
     return events.filter(event => {
-        if (!isAntigravityAnalysisEvent(event)) return false;
-        // A result.response repeats the agent_response deltas in 1.1.12+ streams.
-        return !(hasStreamedAgentResponse && isAntigravityStreamEvent(event) && event.event === 'result');
+        if (!isAntigravityStreamEvent(event)) return isAntigravityAnalysisEvent(event);
+        if (event.event === 'step_update') return isAntigravityAnalysisEvent(event) && !terminalSupersedesStream(event.step_update.conversation_id);
+        if (event.event !== 'result') return false; if (event.result.status.toUpperCase() === 'ERROR') return true;
+        // Suppress only a successful terminal response that exactly duplicates
+        // the aggregate streamed response for this conversation.
+        if (!isAntigravityAnalysisEvent(event)) return false; return event.result.response !== streamedResponses.get(event.result.conversation_id);
     });
 }
 

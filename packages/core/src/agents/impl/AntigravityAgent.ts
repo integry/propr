@@ -19,6 +19,7 @@ import {
     convertEventToClaudeFormat,
     parseAntigravityJsonl,
     filterAntigravityAnalysisEvents,
+    normalizeAntigravityModelId,
     type AntigravityOutputEvent
 } from './utils/antigravityOutputParser.js';
 import { estimateTokens } from '../../utils/tokenCalculation.js';
@@ -51,6 +52,10 @@ function isSuccessfulAnalysisResult(
 ): boolean {
     return !protocolError && !result.timedOut && (result.exitCode === 0 || !!summary);
 }
+
+function resolveAntigravityModelIdentity(reportedModel: string | undefined, requestedModel: string | undefined): { modelUsed: string; error?: string } { const requested = requestedModel ? normalizeAntigravityModelId(requestedModel) : undefined; return { modelUsed: reportedModel ?? requested ?? 'unknown', error: !reportedModel || !requested || reportedModel === requested ? undefined : `Antigravity reported model "${reportedModel}" but "${requested}" was requested` }; }
+
+function resolveAntigravityExecutionError(terminalStatus: 'success' | 'error' | undefined, protocolError: string | undefined, hasStreamEnvelopes: boolean, modelIdentityError: string | undefined): string | undefined { return resolveAntigravityProtocolError(terminalStatus, protocolError, hasStreamEnvelopes) ?? modelIdentityError; }
 
 function buildAgentEnvironmentArgs(
     repositoryInspection: boolean,
@@ -167,31 +172,27 @@ export class AntigravityAgent implements Agent {
         logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, executionTime, outputLength: result.stdout?.length || 0, success: result.exitCode === 0, exitCode: result.exitCode, agentAlias: this.config.alias }, 'Antigravity agent execution completed');
 
         const parsed = this.resolveSessionOutput(result.stdout, transcriptPath, onSessionId);
-        const { response, modelUsed } = await parsed;
+        const { response } = await parsed;
 
         const finalTokenUsage = this.resolveTokenUsage(response.tokenUsage, prompt, response.summary, response.rawConversationLog);
-        const resolvedModel = response.modelUsed || effectiveModel || 'unknown';
+        const modelIdentity = resolveAntigravityModelIdentity(response.modelUsed, effectiveModel); const resolvedModel = modelIdentity.modelUsed;
         const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, error: result.stderr });
-        const protocolError = resolveAntigravityProtocolError(
-            response.terminalStatus,
-            response.protocolError,
-            response.hasStreamEnvelopes,
-        );
-        const success = result.exitCode === 0 && !terminationReason && !protocolError;
+        const executionError = resolveAntigravityExecutionError(response.terminalStatus, response.protocolError, response.hasStreamEnvelopes, modelIdentity.error);
+        const success = result.exitCode === 0 && !terminationReason && !executionError;
         const agentResult: AgentExecutionResult = {
             success, executionTimeMs: executionTime,
             logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
             exitCode: result.exitCode, rawOutput: result.stdout, modelUsed: resolvedModel, modifiedFiles: [],
             commitMessage: null, summary: response.summary ?? undefined, prompt, sessionId: response.sessionId, conversationId: response.conversationId, conversationLog: response.conversationLog,
             tokenUsage: finalTokenUsage, usageMetrics: usageMetrics ?? undefined,
-            error: success ? undefined : result.stderr || protocolError || 'Antigravity execution failed',
+            error: success ? undefined : result.stderr || executionError || 'Antigravity execution failed',
             terminationReason
         };
 
         await this.persistImplementationLog({ executionTime, issueRef, resolvedModel, finalTokenUsage, agentResult, taskId, prNumber, isRetry, retryReason, usageMetrics });
 
         if (!agentResult.success) logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias }, 'Antigravity agent execution failed');
-        else { logger.info({ issueNumber: issueRef.number, model: modelUsed, agentAlias: this.config.alias }, 'Antigravity agent execution succeeded'); verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent); }
+        else { logger.info({ issueNumber: issueRef.number, model: resolvedModel, agentAlias: this.config.alias }, 'Antigravity agent execution succeeded'); verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent); }
         return agentResult;
     }
 
@@ -370,8 +371,9 @@ export class AntigravityAgent implements Agent {
                 ANALYSIS_AGENT_TANK_TIMEOUT_MS
             );
             const executionTimeMs = Date.now() - startTime;
-            const { summary, tokenUsage, sessionId, terminalStatus, protocolError, hasStreamEnvelopes } = parseAntigravityJsonl(result.stdout);
-            const resolvedProtocolError = resolveAntigravityProtocolError(terminalStatus, protocolError, hasStreamEnvelopes);
+            const { summary, tokenUsage, sessionId, modelUsed, terminalStatus, protocolError, hasStreamEnvelopes } = parseAntigravityJsonl(result.stdout);
+            const modelIdentity = resolveAntigravityModelIdentity(modelUsed, effectiveModel); const resolvedModel = modelIdentity.modelUsed;
+            const resolvedProtocolError = resolveAntigravityExecutionError(terminalStatus, protocolError, hasStreamEnvelopes, modelIdentity.error);
 
             if (isSuccessfulAnalysisResult(result, summary, resolvedProtocolError)) {
                 const analysisText = (summary || '').trim();
@@ -381,22 +383,22 @@ export class AntigravityAgent implements Agent {
                 // still report (estimated) token counts and cost, matching the
                 // executeTask path. Reported counts win when present.
                 const antigravityTokenUsage = this.resolveTokenUsage(tokenUsage, fullPrompt, analysisText, []);
-                logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: effectiveModel, executionTimeMs, inputTokens: antigravityTokenUsage?.input_tokens, outputTokens: antigravityTokenUsage?.output_tokens, estimatedTokens: !(tokenUsage.input_tokens || tokenUsage.output_tokens), usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null }, 'Lightweight analysis completed');
+                logger.info({ agentAlias: this.config.alias, responseLength: analysisText.length, model: resolvedModel, executionTimeMs, inputTokens: antigravityTokenUsage?.input_tokens, outputTokens: antigravityTokenUsage?.output_tokens, estimatedTokens: !(tokenUsage.input_tokens || tokenUsage.output_tokens), usageMetrics: usageMetrics ? { delta: usageMetrics.delta } : null }, 'Lightweight analysis completed');
 
                 if (!suppressLlmLog) {
                     const usage = formatUsageMetrics(usageMetrics);
                     await persistLlmLog(createLlmLogFromAnalysis({
-                        executionType: (executionType || 'other') as ExecutionType, modelUsed: effectiveModel, executionTimeMs, success: true, tokenUsage: antigravityTokenUsage,
+                        executionType: (executionType || 'other') as ExecutionType, modelUsed: resolvedModel, executionTimeMs, success: true, tokenUsage: antigravityTokenUsage,
                         sessionId, draftId: taskId, correlationId, repository, metadata, agentAlias: this.config.alias,
                         usageMetrics: usage.metrics, usageMetricRecords: usage.records,
                         workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber, prNumber }),
                     }));
                 }
 
-                return { response: analysisText, modelUsed: effectiveModel, executionTimeMs, success: true,
+                return { response: analysisText, modelUsed: resolvedModel, executionTimeMs, success: true,
                     tokenUsage: antigravityTokenUsage, sessionId };
             }
-            return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${resolvedProtocolError || result.stderr || 'No result returned'}` };
+            return { response: '', modelUsed: resolvedModel, executionTimeMs, success: false, error: `Analysis failed: ${resolvedProtocolError || result.stderr || 'No result returned'}` };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
