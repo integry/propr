@@ -47,6 +47,61 @@ async function readLiveLabels(context: LabelContext): Promise<string[]> {
     return labelNames(response);
 }
 
+async function restoreManagedLabels(
+    context: LabelContext,
+    convergence: ExclusiveLabelConvergence,
+    priorManagedLabels: string[],
+    results: UpdateResults,
+): Promise<void> {
+    if (priorManagedLabels.length === 0) return;
+
+    const priorLabelNames = new Set(priorManagedLabels.map(label => label.toLowerCase()));
+    let liveLabels: string[];
+    try {
+        liveLabels = await readLiveLabels(context);
+    } catch (error) {
+        results.errors.push(`Failed to read live labels for restoration: ${(error as Error).message}`);
+        return;
+    }
+
+    for (const label of priorManagedLabels) {
+        if (liveLabels.some(liveLabel => liveLabel.toLowerCase() === label.toLowerCase())) continue;
+        if (await safeAddLabel(context, label)) results.added.push(label);
+        else results.errors.push(`Failed to restore '${label}'`);
+    }
+
+    try {
+        liveLabels = await readLiveLabels(context);
+    } catch (error) {
+        results.errors.push(`Failed to verify restored model labels: ${(error as Error).message}`);
+        return;
+    }
+
+    const allPriorLabelsPresent = priorManagedLabels.every(label =>
+        liveLabels.some(liveLabel => liveLabel.toLowerCase() === label.toLowerCase()));
+    if (!allPriorLabelsPresent) {
+        results.finalLabels = liveLabels;
+        results.errors.push('Could not restore the prior model-label set');
+        return;
+    }
+
+    for (const label of liveLabels.filter(convergence.isManagedLabel)) {
+        if (priorLabelNames.has(label.toLowerCase())) continue;
+        if (await safeRemoveLabel(context, label)) results.removed.push(label);
+        else results.errors.push(`Failed to remove partial transition label '${label}' during restoration`);
+    }
+
+    try {
+        results.finalLabels = await readLiveLabels(context);
+        const restoredManagedLabels = results.finalLabels.filter(convergence.isManagedLabel);
+        const restoredExactly = restoredManagedLabels.length === priorManagedLabels.length
+            && restoredManagedLabels.every(label => priorLabelNames.has(label.toLowerCase()));
+        if (!restoredExactly) results.errors.push('Prior model-label set was not restored exactly');
+    } catch (error) {
+        results.errors.push(`Failed to verify final restored labels: ${(error as Error).message}`);
+    }
+}
+
 async function convergeExclusiveLabel(
     context: LabelContext,
     convergence: ExclusiveLabelConvergence,
@@ -55,6 +110,7 @@ async function convergeExclusiveLabel(
     const { issueNumber, logger } = context;
     const maxAttempts = Math.max(1, convergence.maxAttempts ?? 3);
     const targetLower = convergence.targetLabel.toLowerCase();
+    let priorManagedLabels: string[] | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         let liveLabels: string[];
@@ -68,16 +124,24 @@ async function convergeExclusiveLabel(
         }
 
         const managedLabels = liveLabels.filter(convergence.isManagedLabel);
-        const labelsToRemove = managedLabels.filter(label => label.toLowerCase() !== targetLower);
+        priorManagedLabels ??= managedLabels;
         const targetPresent = managedLabels.some(label => label.toLowerCase() === targetLower);
+        let targetEstablished = targetPresent;
+        if (!targetPresent) {
+            targetEstablished = await safeAddLabel(context, convergence.targetLabel);
+            if (targetEstablished) {
+                results.added.push(convergence.targetLabel);
+            } else {
+                results.errors.push(`Attempt ${attempt}: failed to add '${convergence.targetLabel}'; prior model labels were retained`);
+            }
+        }
 
+        const labelsToRemove = targetEstablished
+            ? managedLabels.filter(label => label.toLowerCase() !== targetLower)
+            : [];
         for (const label of labelsToRemove) {
             if (await safeRemoveLabel(context, label)) results.removed.push(label);
             else results.errors.push(`Attempt ${attempt}: failed to remove '${label}'`);
-        }
-        if (!targetPresent) {
-            if (await safeAddLabel(context, convergence.targetLabel)) results.added.push(convergence.targetLabel);
-            else results.errors.push(`Attempt ${attempt}: failed to add '${convergence.targetLabel}'`);
         }
 
         try {
@@ -102,6 +166,7 @@ async function convergeExclusiveLabel(
     }
 
     results.success = false;
+    await restoreManagedLabels(context, convergence, priorManagedLabels ?? [], results);
 }
 
 export async function safeRemoveLabel(context: LabelContext, labelName: string): Promise<boolean> {

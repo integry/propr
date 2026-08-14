@@ -335,13 +335,12 @@ export interface CleanupOptions {
     localRepoPath: string | undefined; worktreeInfo: WorktreeInfo | undefined;
     repoOwner: string; repoName: string; pullRequestNumber: number;
     jobBranchName: string | undefined; jobLlm: string | null | undefined;
-    jobAgentAlias?: string; jobModelName?: string; jobModelLabel?: string;
     jobReasoningLevel?: ReasoningLevel;
     correlatedLogger: Logger; redisClient: Redis;
 }
 
 export async function cleanupJob(options: CleanupOptions): Promise<void> {
-    const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobAgentAlias, jobModelName, jobModelLabel, jobReasoningLevel, correlatedLogger, redisClient } = options;
+    const { lockKey, lockToken, localRepoPath, worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName, jobLlm, jobReasoningLevel, correlatedLogger, redisClient } = options;
     if (await releasePRProcessingLock(redisClient, lockKey, lockToken)) {
         correlatedLogger.debug('Released PR processing lock');
     }
@@ -364,7 +363,6 @@ export async function cleanupJob(options: CleanupOptions): Promise<void> {
             await issueQueue.add('processPullRequestComment', {
                 pullRequestNumber, comments: [], repoOwner, repoName,
                 branchName: jobBranchName, llm: jobLlm, correlationId: generateCorrelationId(),
-                ...(jobAgentAlias && jobModelName ? { agentAlias: jobAgentAlias, modelName: jobModelName, modelLabel: jobModelLabel } : {}),
                 reasoningLevel: jobReasoningLevel,
             }, { jobId: followUpJobId, delay: 3000 });
 

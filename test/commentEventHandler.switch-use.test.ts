@@ -674,10 +674,12 @@ describe('commentEventHandler — /use command', () => {
 
         await processCommentEvent(createPRCommentEvent('/use opus'), 'issue_comment', 'corr-nonconvergent-labels', createTestConfig());
 
-        assert.strictEqual(issueReads, 6);
+        assert.strictEqual(issueReads, 9);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(acknowledgements, 0);
         assert.ok(liveLabels.includes('release-blocker'));
+        assert.ok(liveLabels.includes('llm-claude-opus48'));
+        assert.ok(!liveLabels.includes('llm-claude-opus5'));
     });
 
     test('/use persists canonical label, configured agent, and model on the queued job', async () => {

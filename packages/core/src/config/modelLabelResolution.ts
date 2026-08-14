@@ -2,7 +2,7 @@ import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
 import { toProprOpenCodeModelId } from '../agents/impl/openCodeModelIds.js';
 import { shortHash } from '@propr/shared';
-import { buildDynamicLlmLabel } from '@propr/shared';
+import { buildAgentModelLlmLabel, buildDynamicLlmLabel } from '@propr/shared';
 import { ALL_MODELS, MODEL_INFO_MAP, type AgentType } from './modelDefinitions.js';
 import {
     MODEL_ALIASES,
@@ -100,12 +100,12 @@ async function resolveCanonicalModelSelection(requested: string): Promise<Canoni
             ([model]) => model.toLowerCase() === configuredModel.toLowerCase()
         )?.[1];
     const modelInfo = MODEL_INFO_MAP[configuredModel];
+    const labelAgentAlias = agent.config.alias === 'default'
+        ? agent.config.type
+        : agent.config.alias;
     const githubLabel = configuredCustomLabel
         || matchedCustomLabel
-        // A catalog definition owns its canonical public label. In particular,
-        // aliases such as gpt-5.6-sol must not turn into llm-gpt-5.6-sol or an
-        // incidental registry alias.
-        || modelInfo?.githubLabel
+        || (modelInfo && buildAgentModelLlmLabel(agent.config.type, labelAgentAlias, modelInfo))
         || buildDynamicLlmLabel(agent.config.alias, configuredModel);
 
     return { agentAlias: agent.config.alias, model: configuredModel, githubLabel };

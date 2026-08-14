@@ -43,6 +43,8 @@ export interface PRJobContext {
     primaryProcessingLabels: string[];
     isBatchJob: boolean;
     commentsToProcess: UnprocessedComment[];
+    pickedUpComments: UnprocessedComment[];
+    originalUltrafixMeta: CommentJobData['ultrafixMeta'];
 }
 
 export interface ValidationResult {

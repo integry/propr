@@ -82,7 +82,7 @@ async function getPrimaryLabels(): Promise<string[]> {
     return [process.env.PR_LABEL || 'propr'];
 }
 
-async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobContext & { pickedUpComments: UnprocessedComment[]; originalUltrafixMeta: CommentJobData['ultrafixMeta'] }> {
+async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobContext> {
     const { pullRequestNumber, commentId, commentBody, commentAuthor, comments, repoOwner, repoName, correlationId, ultrafixMeta: originalUltrafixMeta } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
@@ -441,6 +441,6 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         return { status: 'requeued', reason: 'usage_limit' };
     } finally {
         await stopLockHeartbeat();
-        await cleanupJob({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobAgentAlias: context.agentAlias, jobModelName: context.modelName, jobModelLabel: context.modelLabel, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
+        await cleanupJob({ stateManager, lockKey, lockToken, localRepoPath: state.localRepoPath, worktreeInfo: state.worktreeInfo, repoOwner, repoName, pullRequestNumber, jobBranchName: context.jobBranchName, jobLlm: context.llm, jobReasoningLevel: job.data.reasoningLevel, correlatedLogger, redisClient });
     }
 }

@@ -192,6 +192,28 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         }
     });
 
+    await t.test('canonicalizes a configured agent alias and its full model label to that agent label', async () => {
+        const codexProdAgent = {
+            config: {
+                ...mockAgentConfigs[2].config,
+                id: 'codex-agent-prod',
+                alias: 'codex-prod',
+            },
+        };
+        mockAgentConfigs.push(codexProdAgent);
+        try {
+            for (const token of ['codex-prod:gpt-5.6-sol', 'llm-codex-prod-gpt56-sol']) {
+                assert.deepStrictEqual(await resolveCanonicalModelSelection(token), {
+                    agentAlias: 'codex-prod',
+                    model: 'gpt-5.6-sol',
+                    githubLabel: 'llm-codex-prod-gpt56-sol',
+                });
+            }
+        } finally {
+            mockAgentConfigs.pop();
+        }
+    });
+
     await t.test('uses a configured per-model custom label as the canonical label', async () => {
         mockAgentConfigs[2].config.modelCustomLabels = { 'gpt-5.6-sol': 'codex-production' };
         try {
