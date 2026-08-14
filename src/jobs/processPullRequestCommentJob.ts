@@ -425,13 +425,9 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
 
     try {
         await stateManager.createTaskState(taskId, {
-            number: pullRequestNumber,
-            repoOwner,
-            repoName,
-            comments: job.data.comments,
-            modelName,
-            type: 'pr_comment',
-            jobId: job.id,
+            number: pullRequestNumber, repoOwner, repoName,
+            comments: job.data.comments, modelName,
+            type: 'pr_comment', jobId: job.id,
         } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
     } catch (stateError) {
         correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state, continuing anyway');

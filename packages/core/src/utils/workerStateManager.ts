@@ -18,6 +18,11 @@ import {
     publishTaskStateTransition,
 } from './workerStateTransition.js';
 import { scanNonTerminalTaskStates } from './workerStateScan.js';
+import {
+    associatePersistedTaskWithJob,
+    scanRecoverableTaskStates,
+    updateDatabaseTaskStateIfCurrent,
+} from './workerStateDatabaseRecovery.js';
 
 const MAX_ATOMIC_UPDATE_ATTEMPTS = 8;
 const TERMINAL_TASK_STATES = new Set<TaskState>([
@@ -25,45 +30,6 @@ const TERMINAL_TASK_STATES = new Set<TaskState>([
     TaskStates.FAILED,
     TaskStates.CANCELLED,
 ]);
-
-function normalizeTimestamp(value: unknown): string {
-    const parsed = new Date(String(value ?? ''));
-    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : new Date().toISOString();
-}
-
-function parsePersistedIssueRef(value: unknown, fallback: IssueRef): IssueRef {
-    try {
-        const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-        if (parsed && typeof parsed === 'object') return { ...fallback, ...parsed as IssueRef };
-    } catch {
-        // Malformed historical payloads still remain recoverable from task columns.
-    }
-    return fallback;
-}
-
-function persistedRowToTaskState(row: Record<string, unknown>): TaskStateData {
-    const repository = String(row.repository ?? 'unknown/unknown');
-    const [repoOwner = 'unknown', repoName = 'unknown'] = repository.split('/');
-    const issueRef = parsePersistedIssueRef(row.initial_job_data, {
-        number: Number(row.issue_number ?? 0),
-        repoOwner,
-        repoName,
-        type: String(row.task_type ?? 'issue'),
-    });
-    if (row.job_id) issueRef.jobId = String(row.job_id);
-    return {
-        taskId: String(row.task_id),
-        issueRef,
-        correlationId: String(row.correlation_id ?? ''),
-        state: row.state as TaskState,
-        createdAt: normalizeTimestamp(row.created_at),
-        updatedAt: normalizeTimestamp(row.state_timestamp),
-        version: Number(row.history_id),
-        historyId: Number(row.history_id),
-        attempts: 0,
-        history: [],
-    };
-}
 
 async function waitForAtomicUpdateRetry(attempt: number): Promise<void> {
     const delayMs = Math.min(5 * (2 ** attempt), 100);
@@ -249,76 +215,7 @@ export class WorkerStateManager {
         // key expired. Never fall back to the DB while any Redis owner exists:
         // that owner may be a newer attempt whose history publication is racing.
         if (expectation.historyId === undefined || await this.redis.get(this.getTaskKey(taskId))) return null;
-        return this.updateDatabaseTaskStateIfCurrent(taskId, expectation, newState, metadata);
-    }
-
-    private async updateDatabaseTaskStateIfCurrent(
-        taskId: string,
-        expectation: TaskStateExpectation,
-        newState: TaskState,
-        metadata: UpdateMetadata,
-    ): Promise<TaskStateUpdateResult | null> {
-        const timestamp = new Date().toISOString();
-        const reason = metadata.reason ?? `State changed from ${expectation.state}`;
-        const inserted = await db.transaction(async trx => {
-            const latest = await trx('task_history')
-                .where({ task_id: taskId })
-                .orderBy('history_id', 'desc')
-                .first();
-            if (!latest
-                || Number(latest.history_id) !== expectation.historyId
-                || latest.state !== expectation.state) return null;
-            const [historyId] = await trx('task_history').insert({
-                task_id: taskId,
-                state: newState,
-                timestamp,
-                reason,
-                metadata: JSON.stringify({
-                    ...(metadata.historyMetadata ?? {}),
-                    previousState: expectation.state,
-                    error: metadata.error,
-                    recoveredFromHistoryId: expectation.historyId,
-                }),
-            });
-            return Number(historyId);
-        });
-        if (inserted === null) return null;
-
-        const task = await db('tasks').where({ task_id: taskId }).first();
-        const repository = String(task?.repository ?? 'unknown/unknown');
-        const [repoOwner = 'unknown', repoName = 'unknown'] = repository.split('/');
-        const issueRef = parsePersistedIssueRef(task?.initial_job_data, {
-            number: Number(task?.issue_number ?? 0), repoOwner, repoName,
-        });
-        const state: TaskStateData = {
-            taskId,
-            issueRef,
-            correlationId: String(task?.correlation_id ?? expectation.correlationId),
-            state: newState,
-            createdAt: normalizeTimestamp(task?.created_at),
-            updatedAt: timestamp,
-            version: inserted,
-            historyId: inserted,
-            attempts: 0,
-            history: [{ state: newState, timestamp, reason, metadata: metadata.historyMetadata }],
-        };
-        const publication = { historyPersisted: true, eventPublished: false, errors: [] as string[] };
-        try {
-            publication.eventPublished = await getEventPublisher().publishTaskUpdate({
-                taskId,
-                state: newState,
-                previousState: expectation.state,
-                repository,
-                issueNumber: issueRef.number,
-                timestamp,
-                version: inserted,
-                metadata: { reason, recoveredFromHistoryId: expectation.historyId },
-            });
-            if (!publication.eventPublished) publication.errors.push('event: publisher returned false');
-        } catch (error) {
-            publication.errors.push(`event: ${(error as Error).message}`);
-        }
-        return { state, publication };
+        return updateDatabaseTaskStateIfCurrent(taskId, expectation, newState, metadata);
     }
 
     /**
@@ -392,10 +289,7 @@ export class WorkerStateManager {
 
     /** Persist the exact BullMQ identity for liveness and recovery lookups. */
     async associateTaskWithJob(taskId: string, jobId: string): Promise<TaskStateData | null> {
-        await db('tasks')
-            .where({ task_id: taskId })
-            .whereNull('job_id')
-            .update({ job_id: jobId });
+        await associatePersistedTaskWithJob(taskId, jobId);
         return this.updateIssueRef(taskId, { jobId });
     }
 
@@ -576,42 +470,10 @@ export class WorkerStateManager {
      * nonterminal history after the ephemeral Redis state has expired.
      */
     async scanRecoverableTasks(cursor = 'redis:0', count = 100): Promise<NonTerminalTaskScanResult> {
-        if (!cursor.startsWith('database:')) {
-            const redisCursor = cursor.startsWith('redis:') ? cursor.slice('redis:'.length) : cursor;
-            const page = await this.scanNonTerminalTasks(redisCursor || '0', count);
-            return {
-                tasks: page.tasks,
-                nextCursor: page.nextCursor === '0' ? 'database:' : `redis:${page.nextCursor}`,
-            };
-        }
-
-        const afterTaskId = cursor.slice('database:'.length);
-        const latestHistory = db('task_history')
-            .select('task_id')
-            .max('history_id as history_id')
-            .groupBy('task_id')
-            .as('latest');
-        const rows = await db('tasks as t')
-            .join(latestHistory, 'latest.task_id', 't.task_id')
-            .join('task_history as h', 'h.history_id', 'latest.history_id')
-            .whereIn('h.state', [
-                TaskStates.PENDING,
-                TaskStates.PROCESSING,
-                TaskStates.CLAUDE_EXECUTION,
-                TaskStates.POST_PROCESSING,
-            ])
-            .modify(query => { if (afterTaskId) query.where('t.task_id', '>', afterTaskId); })
-            .select('t.*', 'h.history_id', 'h.state', 'h.timestamp as state_timestamp')
-            .orderBy('t.task_id', 'asc')
-            .limit(Math.max(1, count));
-
-        const tasks = rows.map((row: Record<string, unknown>) => persistedRowToTaskState(row));
-        return {
-            tasks,
-            nextCursor: rows.length < Math.max(1, count)
-                ? 'redis:0'
-                : `database:${String(rows[rows.length - 1].task_id)}`,
-        };
+        return scanRecoverableTaskStates(
+            (redisCursor, pageSize) => this.scanNonTerminalTasks(redisCursor, pageSize),
+            cursor, count,
+        );
     }
 
     /**

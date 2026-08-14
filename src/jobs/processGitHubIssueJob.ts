@@ -11,7 +11,7 @@ import {
 import type { IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
-import type { PostProcessingResult } from './issueJobHelpers.js';
+import type { GenericErrorOptions, PostProcessingResult } from './issueJobHelpers.js';
 import { performFinalValidation } from './issueJobPostProcessing.js';
 import {
   initializeJobContext, getAuthenticatedClient, checkLabelConditions,
@@ -19,6 +19,39 @@ import {
 } from './issueJob/index.js';
 import type { GitHubToken, CurrentIssueData } from './issueJob/index.js';
 import { finalizeSkippedIssueTask } from './issueTaskFinalizer.js';
+
+function getTerminalIssueJobResult(state: string, issueNumber: number): JobResult | undefined {
+  if (state === TaskStates.COMPLETED) {
+    return { status: 'complete', reason: 'task_already_completed', issueNumber };
+  }
+  if (state === TaskStates.CANCELLED) {
+    return { status: 'cancelled', reason: 'task_already_cancelled', issueNumber };
+  }
+  if (state === TaskStates.FAILED) {
+    return { status: 'failed', reason: 'task_already_failed', issueNumber };
+  }
+  return undefined;
+}
+
+async function handleIssueJobError(
+  error: unknown,
+  job: Job<IssueJobData>,
+  issueRef: IssueJobData,
+  options: GenericErrorOptions,
+): Promise<JobResult> {
+  if (error instanceof UsageLimitError) {
+    await handleUsageLimitError(error, job, issueRef, options);
+    return { status: 'requeued', reason: 'rate_limit' };
+  }
+
+  const jobError = error as Error;
+  await handleGenericError(jobError, job, issueRef, options);
+  const isUserCancelled = jobError.message?.includes('aborted by user') || jobError.name === 'ExecutionAbortedError';
+  if (isUserCancelled) {
+    return { status: 'cancelled', reason: 'user_request' };
+  }
+  throw error;
+}
 
 export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
   logger.debug({ jobId: job.id, isChildJob: job.data.isChildJob, hasModelName: !!job.data.modelName }, 'Checking if job should be dispatched');
@@ -97,15 +130,8 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
 
   try {
     const processingState = await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting issue processing' });
-    if (processingState.state === TaskStates.COMPLETED) {
-      return { status: 'complete', reason: 'task_already_completed', issueNumber: issueRef.number };
-    }
-    if (processingState.state === TaskStates.CANCELLED) {
-      return { status: 'cancelled', reason: 'task_already_cancelled', issueNumber: issueRef.number };
-    }
-    if (processingState.state === TaskStates.FAILED) {
-      return { status: 'failed', reason: 'task_already_failed', issueNumber: issueRef.number };
-    }
+    const terminalResult = getTerminalIssueJobResult(processingState.state, issueRef.number);
+    if (terminalResult) return terminalResult;
 
     const currentIssueData: CurrentIssueData = issueRef.issuePayload ? { data: issueRef.issuePayload as CurrentIssueData['data'] } :
       await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
@@ -162,20 +188,10 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
     return buildFinalResult(issueRef, localRepoPath || '', { worktreeInfo, claudeResult, postProcessingResult, commitResult });
 
   } catch (error) {
-    if (error instanceof UsageLimitError) {
-      await handleUsageLimitError(error, job, issueRef, {
-        octokit, correlatedLogger, stateManager, taskId,
-        AI_PROCESSING_TAG, AI_WAITING_TAG
-      });
-      return { status: 'requeued', reason: 'rate_limit' };
-    } else {
-      await handleGenericError(error as Error, job, issueRef, { octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId, AI_PROCESSING_TAG });
-      const isUserCancelled = (error as Error).message?.includes('aborted by user') || (error as Error).name === 'ExecutionAbortedError';
-      if (isUserCancelled) {
-        return { status: 'cancelled', reason: 'user_request' };
-      }
-      throw error;
-    }
+    return handleIssueJobError(error, job, issueRef, {
+      octokit, claudeResult, worktreeInfo, correlatedLogger, stateManager, taskId,
+      AI_PROCESSING_TAG, AI_WAITING_TAG
+    });
   }
 }
 
