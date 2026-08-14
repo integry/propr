@@ -228,6 +228,32 @@ test('rejects unsolicited, malformed, stale, and installation-mismatched account
     await service.stop();
 });
 
+test('orders account status at full fractional precision after normalizing offsets', async () => {
+    const { service } = makeService();
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    socket.emit('message', accountStatusFrame({ sentAt: '2026-08-14T09:31:07.123456789Z' }));
+    socket.emit('message', accountStatusFrame({
+        activeSeats: 2,
+        seatsRemaining: 1,
+        sentAt: '2026-08-14T11:31:07.123456790+02:00',
+    }));
+    socket.emit('message', accountStatusFrame({
+        activeSeats: 1,
+        seatsRemaining: 2,
+        sentAt: '2026-08-14T04:31:07.123456789-05:00',
+    }));
+
+    assert.equal(service.getStatus().connectAccount?.activeSeats, 2);
+    assert.equal(
+        service.getStatus().connectAccount?.sentAt,
+        '2026-08-14T11:31:07.123456790+02:00',
+    );
+    await service.stop();
+});
+
 test('clears account status on disconnect and isolates late frames from the stale socket', async () => {
     const { service } = makeService({ reconnectDelayMs: 5, maxReconnectDelayMs: 5 });
     await service.start();

@@ -124,9 +124,8 @@ function useCapacityDismissal(account: ConnectAccountStatus) {
         });
       } catch {
         if (cancelled) return;
-        // Web Crypto should be present in supported browsers. If it is not,
-        // preserve the storage-unavailable behavior: render and allow a close
-        // for this mounted session without persisting sensitive source data.
+        // Fingerprinting includes a Web Crypto-independent path. Preserve a
+        // session-only close if an unexpected browser failure still escapes it.
         setState({ request, fingerprint: null, ready: true, dismissed: false });
       }
     };

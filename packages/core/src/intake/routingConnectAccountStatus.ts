@@ -9,6 +9,14 @@ export const ACCOUNT_STATUS_CAPABILITY = 'account_status';
 export const MAX_ACCOUNT_STATUS_FRAME_BYTES = 16 * 1024;
 
 const MAX_ACCOUNT_LOGIN_LENGTH = 128;
+const NANOSECONDS_PER_MILLISECOND = 1_000_000n;
+
+function accountStatusInstantNanoseconds(timestamp: string): bigint {
+    const fractionalSeconds = /\.(\d{1,9})(?:Z|[+-]\d{2}:\d{2})$/.exec(timestamp)?.[1] ?? '';
+    const subMillisecondNanoseconds = fractionalSeconds.padEnd(9, '0').slice(3);
+    return BigInt(Date.parse(timestamp)) * NANOSECONDS_PER_MILLISECOND
+        + BigInt(subMillisecondNanoseconds);
+}
 
 /** UI-safe projection of Connect's authenticated installation account status. */
 export interface ConnectAccountStatus {
@@ -172,7 +180,9 @@ export class ConnectAccountStatusTracker {
             );
             return;
         }
-        if (this.account && Date.parse(account.sentAt) <= Date.parse(this.account.sentAt)) {
+        if (this.account
+            && accountStatusInstantNanoseconds(account.sentAt)
+                <= accountStatusInstantNanoseconds(this.account.sentAt)) {
             logger.warn({ sentAt: account.sentAt }, 'Discarding stale account-status frame');
             return;
         }

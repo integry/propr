@@ -513,6 +513,10 @@ test('/api/status drops malformed or disconnected Connect account state without 
     };
     const body = await readStatus({ redisClient: redisClient as never });
     assert.equal('connectAccount' in body, false);
+    assert.equal(
+      'connectAccount' in (body.routing as Record<string, unknown>),
+      false,
+    );
   }
 });
 
@@ -544,6 +548,10 @@ test('/api/status does not expose Connect account state for a non-Connect intake
     process.env.GITHUB_EVENT_INTAKE_MODE = 'polling';
   });
   assert.equal('connectAccount' in body, false);
+  assert.equal(
+    'connectAccount' in (body.routing as Record<string, unknown>),
+    false,
+  );
 });
 
 test('/api/status reports connected githubAuth for relay-auth deployments', async () => {

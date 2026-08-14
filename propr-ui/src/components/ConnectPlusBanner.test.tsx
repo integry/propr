@@ -211,6 +211,27 @@ describe('Connect Plus banners', () => {
     expect(screen.queryByText('Community seats are full — 3 of 3 active')).not.toBeInTheDocument();
   });
 
+  it('persists capacity dismissal when Web Crypto digest is unusable', async () => {
+    const current = community({ activeSeats: 3, seatsRemaining: 0 });
+    const expectedFingerprint = await capacityFingerprint(current);
+    const digestSpy = vi.spyOn(window.crypto.subtle, 'digest')
+      .mockRejectedValue(new Error('SubtleCrypto unavailable'));
+    mockGetSystemStatus.mockResolvedValue(status(current));
+
+    renderBanners();
+    await screen.findByText('Community seats are full — 3 of 3 active');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss ProPR Connect notice' }));
+
+    const key = connectPlusDismissalKey(42, 'AdminUser');
+    const stored = JSON.parse(window.localStorage.getItem(key) ?? '{}') as { capacity?: string[] };
+    expect(stored.capacity).toEqual([expectedFingerprint]);
+
+    cleanup();
+    renderBanners();
+    await waitFor(() => expect(digestSpy).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Community seats are full — 3 of 3 active')).not.toBeInTheDocument();
+  });
+
   it.each([
     ['seat count', { activeSeats: 4, allowedSeats: 4 }],
     ['billing reset timestamp', { billingCycleResetAt: '2026-10-01T00:00:00.000Z' }],

@@ -35,8 +35,12 @@ export function applyRoutingStatus(
     status.routing = routingDiagnostics;
     return;
   }
+  if (!routing.connected) {
+    status.routing = routingDiagnostics;
+    return;
+  }
   status.routing = routing;
-  if (routing.connected && connectAccount) status.connectAccount = connectAccount;
+  if (connectAccount) status.connectAccount = connectAccount;
 }
 
 function isNonNegativeInteger(value: unknown): value is number {
