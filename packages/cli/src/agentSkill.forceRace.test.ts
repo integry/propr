@@ -2,7 +2,92 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
+
+function snapshotTree(path: string): Array<[string, string | Buffer]> {
+  const entries: Array<[string, string | Buffer]> = [];
+  const visit = (directory: string, prefix = ""): void => {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const relativePath = prefix ? `${prefix}/${name}` : name;
+      const fullPath = join(directory, name);
+      const stat = fs.lstatSync(fullPath);
+      if (stat.isDirectory()) {
+        entries.push([relativePath, "directory"]);
+        visit(fullPath, relativePath);
+      } else {
+        entries.push([relativePath, fs.readFileSync(fullPath)]);
+      }
+    }
+  };
+  visit(path);
+  return entries;
+}
+
+async function assertParentCreationSymlinkRace(t: TestContext, force: boolean): Promise<void> {
+  const root = fs.mkdtempSync(join(tmpdir(), `propr-agent-skill-parent-race-${force ? "force" : "normal"}-`));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = {
+    HOME: join(root, "home"),
+    CODEX_HOME: join(root, "missing-provider-parent", "codex-home"),
+  };
+  fs.mkdirSync(env.HOME);
+  const source = join(root, "bundle");
+  fs.mkdirSync(join(source, "agents"), { recursive: true });
+  fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
+  fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+
+  const outside = join(root, "outside");
+  const outsideSentinel = join(outside, "sentinel.bin");
+  const existingTarget = join(outside, "existing-target");
+  const existingBackup = join(outside, "existing-backup");
+  fs.mkdirSync(existingTarget, { recursive: true });
+  fs.mkdirSync(existingBackup);
+  fs.writeFileSync(outsideSentinel, Buffer.from([0x00, 0xff, 0x51, 0x9a]));
+  fs.writeFileSync(join(existingTarget, "SKILL.md"), "existing target\n");
+  fs.writeFileSync(join(existingBackup, "SKILL.md"), "existing backup\n");
+  const outsideBefore = snapshotTree(outside);
+  const sentinelBefore = fs.readFileSync(outsideSentinel);
+  const racedComponent = join(root, "missing-provider-parent");
+  let injected = false;
+
+  t.mock.module("node:fs", {
+    namedExports: {
+      ...fs,
+      mkdirSync(path: fs.PathLike, options?: fs.MakeDirectoryOptions & { recursive?: boolean }): string | undefined {
+        if (!injected && String(path) === racedComponent) {
+          injected = true;
+          fs.symlinkSync(outside, racedComponent, "dir");
+        }
+        return fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
+      },
+    },
+  });
+  const agentSkillModule = new URL(`./agentSkill.ts?parent-symlink-race-${force ? "force" : "normal"}`, import.meta.url);
+  const { installAgentSkill } = await import(agentSkillModule.href);
+
+  const result = installAgentSkill("codex", {
+    env,
+    bundleDir: source,
+    force,
+    now: new Date("2026-08-14T10:24:00Z"),
+  });
+
+  assert.equal(injected, true);
+  assert.equal(result.action, "failed");
+  assert.match(result.detail ?? "", /symbolic link parent is not allowed/);
+  assert.deepEqual(snapshotTree(outside), outsideBefore);
+  assert.deepEqual(fs.readFileSync(outsideSentinel), sentinelBefore);
+  assert.equal(fs.readFileSync(join(existingTarget, "SKILL.md"), "utf8"), "existing target\n");
+  assert.equal(fs.readFileSync(join(existingBackup, "SKILL.md"), "utf8"), "existing backup\n");
+}
+
+test("non-forced install refuses a missing parent replaced by an outside symlink", async (t) => {
+  await assertParentCreationSymlinkRace(t, false);
+});
+
+test("forced install refuses a missing parent replaced by an outside symlink", async (t) => {
+  await assertParentCreationSymlinkRace(t, true);
+});
 
 test("forced install fails and preserves both trees when the published bundle is modified before final inspection", async (t) => {
   const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-force-race-test-"));

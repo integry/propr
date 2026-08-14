@@ -315,6 +315,41 @@ function assertSafeFilesystemTarget(location: AgentSkillLocation): void {
   }
 }
 
+function assertRealDirectory(path: string, stat: Stats): void {
+  if (stat.isSymbolicLink()) throw new Error(`symbolic link parent is not allowed: ${path}`);
+  if (!stat.isDirectory()) throw new Error(`parent is not a directory: ${path}`);
+}
+
+/** Create only the exact provider skills parent, refusing every unsafe raced entry. */
+function ensureProviderSkillsParent(location: AgentSkillLocation): void {
+  const parent = dirname(location.path);
+  const expectedParent = join(location.toolHome, "skills");
+  if (parent !== expectedParent || location.path !== join(expectedParent, "propr")) {
+    throw new Error(`unsafe ${location.target} skill target`);
+  }
+
+  assertSafeFilesystemTarget(location);
+
+  let current: string = sep;
+  for (const component of resolve(parent).split(sep).filter(Boolean)) {
+    current = join(current, component);
+    let stat = lstatIfExists(current);
+    if (!stat) {
+      try {
+        mkdirSync(current, { recursive: false, mode: 0o700 });
+      } catch (error) {
+        stat = lstatIfExists(current);
+        if (!stat) throw error;
+      }
+      stat = lstatIfExists(current);
+      if (!stat) throw new Error(`directory creation did not create a directory: ${current}`);
+    }
+    assertRealDirectory(current, stat);
+  }
+
+  assertSafeFilesystemTarget(location);
+}
+
 function readMarker(path: string): ManagedMarker | undefined {
   try {
     const markerPath = join(path, MANAGED_FILE);
@@ -495,13 +530,13 @@ function installAgentSkillWithoutOverwrite(
   let stagedOwned = false;
   let displaced: string | undefined;
   try {
-    mkdirSync(parent, { recursive: true, mode: 0o700 });
-    assertSafeFilesystemTarget(location);
+    ensureProviderSkillsParent(location);
     const refreshed = inspectLocation(location, bundle);
     if (!sameInspectedTree(status, refreshed)) {
       return operationFailure(refreshed, "failed", "target changed during installation; inspect it and retry");
     }
 
+    assertSafeFilesystemTarget(location);
     staged = uniqueSibling(location.path, "installing", options.now);
     mkdirSync(staged, { recursive: false, mode: 0o700 });
     stagedOwned = true;
@@ -517,9 +552,11 @@ function installAgentSkillWithoutOverwrite(
     }
 
     try {
+      assertSafeFilesystemTarget(location);
       // Claim an absent target with mkdir rather than rename: rename would replace
       // content another process created after our last inspection.
       mkdirSync(location.path, { recursive: false, mode: 0o700 });
+      assertSafeFilesystemTarget(location);
     } catch (error) {
       const current = inspectLocation(location, bundle);
       const reason = current.state === "absent" ? (error as Error).message : "target was created during installation and was not overwritten";
@@ -596,12 +633,12 @@ function installAgentSkillAtLocation(
   let displaced: string | undefined;
   let backupPath: string | undefined;
   try {
-    mkdirSync(parent, { recursive: true, mode: 0o700 });
-    assertSafeFilesystemTarget(location);
+    ensureProviderSkillsParent(location);
     const refreshed = inspectLocation(location, bundle);
     if (refreshed.state !== status.state || refreshed.installedIdentity !== status.installedIdentity) {
       return operationFailure(refreshed, "failed", "target changed during installation; inspect it and retry");
     }
+    assertSafeFilesystemTarget(location);
     temporary = join(parent, `.propr.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
     writeBundle(temporary, bundle);
     if (refreshed.state !== "absent") {
@@ -610,7 +647,9 @@ function installAgentSkillAtLocation(
       backupPath = displaced;
     }
     try {
+      assertSafeFilesystemTarget(location);
       mkdirSync(location.path, { recursive: false, mode: 0o700 });
+      assertSafeFilesystemTarget(location);
     } catch (error) {
       const current = inspectLocation(location, bundle);
       const detail = current.state === "absent"
