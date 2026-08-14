@@ -197,7 +197,7 @@ const { applyPendingCommentCommandContext } = await import(
     '../src/jobs/prPendingComments.js'
 );
 const { dedupeUnprocessedComments } = await import('../packages/core/src/utils/pendingComments.js');
-const { extractModelFromLabels } = await import('../src/jobs/prCommentJobUtils.js');
+const { extractModelFromLabels, handleJobError, UsageLimitError } = await import('../src/jobs/prCommentJobUtils.js');
 
 const mockInvalidateAutomaticWork = mock.fn(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
 const mockHasAutomaticWork = mock.fn(async () => false);
@@ -1045,6 +1045,92 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(jobData.agentAlias, 'default');
         assert.strictEqual(jobData.modelName, 'claude-opus-5');
         assert.strictEqual(mockQueueAdd.mock.calls[0].arguments[2].delay, 3000);
+    });
+
+    test('/use queue snapshot cannot race ahead of an old-provider retry publication', async () => {
+        const config = createTestConfig();
+        let retryReadStarted!: () => void;
+        let usePrReadStarted!: () => void;
+        let releaseRetryRead!: () => void;
+        const retryRead = new Promise<void>(resolve => { retryReadStarted = resolve; });
+        const usePrRead = new Promise<void>(resolve => { usePrReadStarted = resolve; });
+        const retryReadGate = new Promise<void>(resolve => { releaseRetryRead = resolve; });
+        let pullReads = 0;
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                pullReads += 1;
+                if (pullReads === 1) {
+                    retryReadStarted();
+                    await retryReadGate;
+                } else {
+                    usePrReadStarted();
+                }
+                return {
+                    data: {
+                        head: { ref: 'feature-branch' },
+                        labels: [{ name: 'llm-claude-opus48' }],
+                    },
+                };
+            }
+            return { data: {} };
+        });
+
+        const removeRetry = mock.fn(async () => { mockDelayedJobs = []; });
+        mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: Record<string, unknown>, queueOptions: Record<string, unknown>) => {
+            mockDelayedJobs = [{
+                id: queueOptions.jobId,
+                name,
+                data,
+                remove: removeRetry,
+            }];
+        });
+
+        const usageLimitHandling = handleJobError(
+            new UsageLimitError('usage limit', Math.floor(Date.now() / 1000) + 3600),
+            {
+                name: 'processPullRequestComment',
+                data: {
+                    pullRequestNumber: 42,
+                    repoOwner: 'testowner',
+                    repoName: 'testrepo',
+                    branchName: 'feature-branch',
+                    comments: [{ id: 7, body: 'Original request', author: 'alice', type: 'issue' }],
+                    llm: 'claude-opus-4-8',
+                },
+            } as never,
+            {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                authorsText: '@alice',
+                unprocessedComments: [],
+                octokit: mockOctokit as never,
+                startingWorkComment: null,
+                claudeResult: null,
+                correlationId: 'corr-retry-use-race',
+                correlatedLogger: mockLoggerInstance as never,
+                stateManager: { getTaskState: async () => null } as never,
+                taskId: 'retry-use-race',
+                redisClient: config.redisClient as never,
+                runtimeAgentAlias: 'default',
+                runtimeModelName: 'claude-opus-4-8',
+            },
+        );
+        await retryRead;
+
+        const event = createPRCommentEvent('/use opus');
+        const useHandling = processCommentEvent(event, 'issue_comment', 'corr-use-retry-race', config);
+        await usePrRead;
+        releaseRetryRead();
+
+        await Promise.all([usageLimitHandling, useHandling]);
+
+        assert.strictEqual(removeRetry.mock.callCount(), 1, 'the retry published first must be visible to the /use snapshot');
+        assert.strictEqual(mockDelayedJobs.length, 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 2);
+        assert.ok(String(mockQueueAdd.mock.calls[0].arguments[2].jobId).endsWith('-ratelimit-retry'));
+        const replacementData = mockQueueAdd.mock.calls[1].arguments[1] as Record<string, unknown>;
+        assert.strictEqual(replacementData.modelName, 'claude-opus-5');
     });
 
     test('/use removal failure leaves old and selected comments recoverable without enqueueing a second writer', async () => {

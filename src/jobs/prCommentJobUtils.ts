@@ -6,6 +6,7 @@ import {
     formatResetTime, recordLLMMetrics, issueQueue, TaskStates, getDefaultModel,
     resolveModelAlias, getPendingPrCommentsKey,
     resolveCanonicalModelSelectionFromLabels,
+    withUltrafixLabelTransition,
     describeAgentTermination, resolveAgentTerminationReason,
     type WorktreeInfo, type ClaudeCodeResponse, type ClaudeResult,
     type CommentJobData, type UnprocessedComment, type WorkerStateManager,
@@ -170,6 +171,7 @@ export interface JobErrorOptions {
     startingWorkComment: { data: { id: number } } | null;
     claudeResult: ClaudeCodeResponse | null; correlationId: string;
     correlatedLogger: Logger; stateManager: WorkerStateManager; taskId: string;
+    redisClient: Redis;
     /** Actual in-memory routing used by this attempt; never persisted for ordinary jobs. */
     runtimeAgentAlias?: string; runtimeModelName?: string;
 }
@@ -233,67 +235,76 @@ async function postCancellationComment(params: CancellationCommentParams): Promi
 }
 
 async function handleUsageLimitError(error: UsageLimitError, job: Job<CommentJobData>, options: JobErrorOptions): Promise<'requeued' | 'provider_limit_retry_superseded'> {
-    const { pullRequestNumber, repoOwner, repoName, authorsText, octokit, correlatedLogger } = options;
+    const { pullRequestNumber, repoOwner, repoName, authorsText, octokit, correlatedLogger, redisClient } = options;
     correlatedLogger.warn({ pullRequestNumber, resetTimestamp: error.resetTimestamp }, 'Claude usage limit hit during PR comment processing. Requeueing job.');
 
     const resetTimeUTC = error.resetTimestamp ? (error.resetTimestamp * 1000) : (Date.now() + 60 * 60 * 1000);
     const delay = (resetTimeUTC - Date.now()) + REQUEUE_BUFFER_MS + Math.floor(Math.random() * REQUEUE_JITTER_MS);
     const readableResetTime = formatResetTime(error.resetTimestamp);
 
-    // `/use` may have switched the durable label while this writer was still
-    // active. In that race, the pending selected follow-up is queued by cleanup;
-    // recreating this old provider retry would only leave stale work behind it.
-    const retryJobData = buildRuntimeProviderLimitRetryJobData(job.data, options);
-    const retryAgentAlias = retryJobData.agentAlias;
-    const retryModelName = retryJobData.modelName;
-    if (octokit && retryAgentAlias && retryModelName) {
-        try {
-            const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-                owner: repoOwner,
-                repo: repoName,
-                pull_number: pullRequestNumber,
-            }) as { data: { labels: Array<{ name: string }> } };
-            const liveSelection = await resolveCanonicalModelSelectionFromLabels(
-                response.data.labels,
-                process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
-            );
-            if (liveSelection) {
-                if (
-                    liveSelection.agentAlias.toLowerCase() !== retryAgentAlias.toLowerCase()
-                    || liveSelection.model.toLowerCase() !== retryModelName.toLowerCase()
-                ) {
-                    correlatedLogger.info({
-                        pullRequestNumber,
-                        retryAgent: retryAgentAlias,
-                        retryModel: retryModelName,
-                        liveAgent: liveSelection.agentAlias,
-                        liveModel: liveSelection.model,
-                    }, 'Provider-limit retry superseded by a newer durable PR model selection');
-                    return 'provider_limit_retry_superseded';
+    return withUltrafixLabelTransition(
+        redisClient,
+        { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
+        async lease => {
+            // `/use` holds this same per-PR lease through label convergence and
+            // its queue snapshot. Re-read the canonical selection while holding
+            // it, then publish before releasing it, so a retry is either visible
+            // to `/use` or observes the newly selected provider and yields.
+            const retryJobData = buildRuntimeProviderLimitRetryJobData(job.data, options);
+            const retryAgentAlias = retryJobData.agentAlias;
+            const retryModelName = retryJobData.modelName;
+            if (octokit && retryAgentAlias && retryModelName) {
+                try {
+                    const response = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+                        owner: repoOwner,
+                        repo: repoName,
+                        pull_number: pullRequestNumber,
+                    }) as { data: { labels: Array<{ name: string }> } };
+                    const liveSelection = await resolveCanonicalModelSelectionFromLabels(
+                        response.data.labels,
+                        process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$',
+                    );
+                    if (liveSelection) {
+                        if (
+                            liveSelection.agentAlias.toLowerCase() !== retryAgentAlias.toLowerCase()
+                            || liveSelection.model.toLowerCase() !== retryModelName.toLowerCase()
+                        ) {
+                            correlatedLogger.info({
+                                pullRequestNumber,
+                                retryAgent: retryAgentAlias,
+                                retryModel: retryModelName,
+                                liveAgent: liveSelection.agentAlias,
+                                liveModel: liveSelection.model,
+                            }, 'Provider-limit retry superseded by a newer durable PR model selection');
+                            return 'provider_limit_retry_superseded';
+                        }
+                        retryJobData.modelLabel = liveSelection.githubLabel;
+                    }
+                } catch (selectionError) {
+                    correlatedLogger.warn({ error: (selectionError as Error).message }, 'Could not verify live PR model before provider-limit requeue; preserving retry');
                 }
-                retryJobData.modelLabel = liveSelection.githubLabel;
             }
-        } catch (selectionError) {
-            correlatedLogger.warn({ error: (selectionError as Error).message }, 'Could not verify live PR model before provider-limit requeue; preserving retry');
-        }
-    }
 
-    // Use deterministic jobId to prevent duplicate jobs if requeue is triggered multiple times
-    const requeueJobId = buildProviderLimitRetryJobId(retryJobData);
+            // Use deterministic jobId to prevent duplicate jobs if requeue is triggered multiple times
+            const requeueJobId = buildProviderLimitRetryJobId(retryJobData);
 
-    if (octokit) {
-        try {
-            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`
-            });
-        } catch (commentError) {
-            correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to PR.');
-        }
-    }
+            if (octokit) {
+                try {
+                    await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+                        owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
+                        body: `⌛ **Processing Delayed:** Claude's usage limit was reached while processing requests from ${authorsText}.\n\nThe job has been automatically rescheduled and will restart ${readableResetTime}.\n\n---\n*Job ID: ${requeueJobId} will run again after delay.*`
+                    });
+                } catch (commentError) {
+                    correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post usage limit delay comment to PR.');
+                }
+            }
 
-    await issueQueue.add(job.name, retryJobData, { jobId: requeueJobId, delay: Math.max(0, delay) });
-    return 'requeued';
+            await lease.assertOwned();
+            await issueQueue.add(job.name, retryJobData, { jobId: requeueJobId, delay: Math.max(0, delay) });
+            await lease.assertOwned();
+            return 'requeued';
+        },
+    );
 }
 
 async function handleUserCancellation(options: JobErrorOptions, errorMessage: string): Promise<void> {

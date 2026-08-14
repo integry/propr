@@ -429,7 +429,7 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         }
         return result;
     } catch (error) {
-        const errorDisposition = await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, runtimeAgentAlias: activeAttemptRouting.agentAlias, runtimeModelName: activeAttemptRouting.modelName });
+        const errorDisposition = await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId, redisClient, runtimeAgentAlias: activeAttemptRouting.agentAlias, runtimeModelName: activeAttemptRouting.modelName });
         if (errorDisposition === 'provider_limit_retry_superseded') {
             await restoreSupersededProviderLimitComments(context, { repoOwner, repoName, pullRequestNumber, redisClient });
             return { status: 'skipped', reason: 'provider_limit_retry_superseded', pullRequestNumber };

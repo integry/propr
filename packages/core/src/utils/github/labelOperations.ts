@@ -62,7 +62,9 @@ async function restoreManagedLabels(
     convergence: ExclusiveLabelConvergence,
     priorManagedLabels: string[],
     results: UpdateResults,
+    lease: LabelTransitionLease,
 ): Promise<void> {
+    await lease.assertOwned();
     const priorLabelNames = new Set(priorManagedLabels.map(label => label.toLowerCase()));
     let liveLabels: string[];
     try {
@@ -99,10 +101,14 @@ async function restoreManagedLabels(
 
     for (const label of priorManagedLabels) {
         if (liveLabels.some(liveLabel => liveLabel.toLowerCase() === label.toLowerCase())) continue;
-        if (await safeAddLabel(context, label)) results.added.push(label);
+        await lease.assertOwned();
+        const added = await safeAddLabel(context, label);
+        await lease.assertOwned();
+        if (added) results.added.push(label);
         else results.errors.push(`Failed to restore '${label}'`);
     }
 
+    await lease.assertOwned();
     try {
         liveLabels = await readLiveLabels(context);
     } catch (error) {
@@ -120,10 +126,14 @@ async function restoreManagedLabels(
 
     for (const label of liveLabels.filter(convergence.isManagedLabel)) {
         if (priorLabelNames.has(label.toLowerCase())) continue;
-        if (await safeRemoveLabel(context, label)) results.removed.push(label);
+        await lease.assertOwned();
+        const removed = await safeRemoveLabel(context, label);
+        await lease.assertOwned();
+        if (removed) results.removed.push(label);
         else results.errors.push(`Failed to remove partial transition label '${label}' during restoration`);
     }
 
+    await lease.assertOwned();
     try {
         results.finalLabels = await readLiveLabels(context);
         const restoredManagedLabels = results.finalLabels.filter(convergence.isManagedLabel);
@@ -139,6 +149,7 @@ async function convergeExclusiveLabel(
     context: LabelContext,
     convergence: ExclusiveLabelConvergence,
     results: UpdateResults,
+    lease: LabelTransitionLease,
 ): Promise<void> {
     const { issueNumber, logger } = context;
     const maxAttempts = Math.max(1, convergence.maxAttempts ?? 3);
@@ -146,6 +157,10 @@ async function convergeExclusiveLabel(
     let priorManagedLabels: string[] | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        // Fence every attempt as well as every mutation. If ownership expires
+        // during a GitHub request, the post-mutation check prevents this stale
+        // transition from issuing any further managed-label writes.
+        await lease.assertOwned();
         let liveLabels: string[];
         try {
             liveLabels = await readLiveLabels(context);
@@ -161,7 +176,9 @@ async function convergeExclusiveLabel(
         const targetPresent = managedLabels.some(label => label.toLowerCase() === targetLower);
         let targetEstablished = targetPresent;
         if (!targetPresent) {
+            await lease.assertOwned();
             targetEstablished = await safeAddLabel(context, convergence.targetLabel);
+            await lease.assertOwned();
             if (targetEstablished) {
                 results.added.push(convergence.targetLabel);
             } else {
@@ -173,10 +190,14 @@ async function convergeExclusiveLabel(
             ? managedLabels.filter(label => label.toLowerCase() !== targetLower)
             : [];
         for (const label of labelsToRemove) {
-            if (await safeRemoveLabel(context, label)) results.removed.push(label);
+            await lease.assertOwned();
+            const removed = await safeRemoveLabel(context, label);
+            await lease.assertOwned();
+            if (removed) results.removed.push(label);
             else results.errors.push(`Attempt ${attempt}: failed to remove '${label}'`);
         }
 
+        await lease.assertOwned();
         try {
             const verifiedLabels = await readLiveLabels(context);
             results.finalLabels = verifiedLabels;
@@ -200,14 +221,14 @@ async function convergeExclusiveLabel(
 
     results.success = false;
     if (priorManagedLabels !== undefined) {
-        await restoreManagedLabels(context, convergence, priorManagedLabels, results);
+        await restoreManagedLabels(context, convergence, priorManagedLabels, results, lease);
     }
 }
 
 async function runExclusiveLabelTransition(
     context: LabelContext,
     convergence: ExclusiveLabelConvergence,
-    transition: () => Promise<void>,
+    transition: (lease: LabelTransitionLease) => Promise<void>,
 ): Promise<void> {
     if (!convergence.lease) {
         await withLabelTransitionLease(
@@ -225,7 +246,7 @@ async function runExclusiveLabelTransition(
         || identity.pr !== context.issueNumber
     ) throw new LabelTransitionLeaseError('PR label transition lease identity does not match label context');
     await convergence.lease.assertOwned();
-    await transition();
+    await transition(convergence.lease);
     await convergence.lease.assertOwned();
 }
 
@@ -306,12 +327,12 @@ export async function safeUpdateLabels(
         // covers the initial snapshot, convergence, verification, and rollback.
         results.success = false;
         try {
-            const transition = async (): Promise<void> => {
+            const transition = async (lease: LabelTransitionLease): Promise<void> => {
                 if (convergence.claimTransition && !await convergence.claimTransition()) {
                     results.skipped = true;
                     return;
                 }
-                await convergeExclusiveLabel(context, convergence, results);
+                await convergeExclusiveLabel(context, convergence, results, lease);
             };
             await runExclusiveLabelTransition(context, convergence, transition);
         } catch (error) {

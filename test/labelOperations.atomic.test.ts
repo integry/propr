@@ -308,6 +308,102 @@ test('serializes a newer transition started after rollback ownership read and be
     ]);
 });
 
+test('lease loss during convergence fences all later managed-label mutations', async () => {
+    const labels = new Set(['AI', 'llm-claude-opus48']);
+    const mutations: string[] = [];
+    let leaseOwned = true;
+    const lease = {
+        identity: { owner: 'integry', repo: 'propr', pr: 42 },
+        assertOwned: async () => {
+            if (!leaseOwned) throw new Error('lease lost during label mutation');
+        },
+    };
+    const request = mock.fn(async (endpoint: string, options: Record<string, unknown>) => {
+        if (endpoint.startsWith('GET ')) return { data: { labels: [...labels] } };
+        mutations.push(`${endpoint}:${String((options.labels as string[] | undefined)?.[0] ?? options.name)}`);
+        if (endpoint.startsWith('POST ')) {
+            labels.add((options.labels as string[])[0]);
+            // The lease expires while the add is in flight and a newer owner
+            // establishes its selection before the stale request returns.
+            leaseOwned = false;
+            labels.clear();
+            labels.add('AI');
+            labels.add('llm-gemini-3-pro');
+            return {};
+        }
+        if (endpoint.startsWith('DELETE ')) labels.delete(options.name as string);
+        return {};
+    });
+
+    const result = await safeUpdateLabels(
+        { octokit: { request }, owner: 'integry', repo: 'propr', issueNumber: 42, logger },
+        [], [],
+        {
+            targetLabel: 'llm-codex-gpt56-sol',
+            isManagedLabel: label => label.startsWith('llm-'),
+            redis: createTransitionRedis() as never,
+            lease,
+        },
+    );
+
+    assert.strictEqual(result.success, false);
+    assert.deepStrictEqual(mutations, [
+        'POST /repos/{owner}/{repo}/issues/{issue_number}/labels:llm-codex-gpt56-sol',
+    ]);
+    assert.deepStrictEqual([...labels].sort(), ['AI', 'llm-gemini-3-pro']);
+});
+
+test('lease loss during restoration cannot continue by deleting a newer selection', async () => {
+    const labels = new Set(['AI', 'llm-claude-opus48']);
+    const mutations: string[] = [];
+    let leaseOwned = true;
+    const lease = {
+        identity: { owner: 'integry', repo: 'propr', pr: 42 },
+        assertOwned: async () => {
+            if (!leaseOwned) throw new Error('lease lost during restoration mutation');
+        },
+    };
+    const request = mock.fn(async (endpoint: string, options: Record<string, unknown>) => {
+        if (endpoint.startsWith('GET ')) return { data: { labels: [...labels] } };
+        const label = String((options.labels as string[] | undefined)?.[0] ?? options.name);
+        mutations.push(`${endpoint}:${label}`);
+        if (endpoint.startsWith('POST ')) {
+            labels.add(label);
+            if (label === 'llm-claude-opus48') {
+                leaseOwned = false;
+                labels.clear();
+                labels.add('AI');
+                labels.add('llm-claude-opus48');
+                labels.add('llm-gemini-3-pro');
+            }
+            return {};
+        }
+        labels.delete(label);
+        if (label === 'llm-claude-opus48') labels.delete('llm-codex-gpt56-sol');
+        return {};
+    });
+
+    const result = await safeUpdateLabels(
+        { octokit: { request }, owner: 'integry', repo: 'propr', issueNumber: 42, logger },
+        [], [],
+        {
+            targetLabel: 'llm-codex-gpt56-sol',
+            isManagedLabel: label => label.startsWith('llm-'),
+            maxAttempts: 1,
+            redis: createTransitionRedis() as never,
+            lease,
+        },
+    );
+
+    assert.strictEqual(result.success, false);
+    assert.deepStrictEqual(mutations, [
+        'POST /repos/{owner}/{repo}/issues/{issue_number}/labels:llm-codex-gpt56-sol',
+        'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}:llm-claude-opus48',
+        'POST /repos/{owner}/{repo}/issues/{issue_number}/labels:llm-claude-opus48',
+    ]);
+    assert.deepStrictEqual([...labels].sort(), ['AI', 'llm-claude-opus48', 'llm-gemini-3-pro']);
+});
+
 test('exclusive transition leases do not serialize unrelated PRs', async () => {
     const redis = createTransitionRedis();
     let releaseFirstMutation!: () => void;
