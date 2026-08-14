@@ -26,6 +26,8 @@ export interface IssueJobData {
     subtitle?: string;
     issueNumber?: number;
     isRetryFromRateLimit?: boolean;  // Set when job is retried after rate limit
+    /** Exact task identity persisted once the child processor initializes. */
+    taskId?: string;
 }
 
 export type SystemAction = 'auto_resolve_merge_conflicts';

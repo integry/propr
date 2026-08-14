@@ -1,6 +1,7 @@
 import {
-    executeDockerCommand,
+    inspectExactTaskContainerLivenessForTask,
     logger,
+    TaskStates,
     taskStateExpectation,
     type JobResult,
     type TaskStateData,
@@ -27,7 +28,7 @@ export interface ReconciliationQueue {
 export type ReconciliationStateManager = Pick<
     WorkerStateManager,
     'scanNonTerminalTasks' | 'getTaskState' | 'updateTaskStateIfCurrentDetailed'
->;
+> & Partial<Pick<WorkerStateManager, 'scanRecoverableTasks'>>;
 
 export type TaskContainerLiveness = 'running' | 'not_found' | 'unavailable';
 
@@ -125,10 +126,12 @@ async function runWithinRemainingBudget<T>(
     });
 }
 
-function isPRCommentTask(task: TaskStateData): boolean {
-    if (task.issueRef.type !== undefined) return task.issueRef.type === 'pr_comment';
-    return task.taskId.startsWith('pr-comment-')
-        || task.taskId.startsWith('pr-comments-');
+function taskKind(task: TaskStateData): 'issue' | 'pr_comment' | null {
+    if (task.issueRef.type === 'issue') return 'issue';
+    if (task.issueRef.type === 'pr_comment') return 'pr_comment';
+    if (task.taskId.startsWith('pr-comment-')
+        || task.taskId.startsWith('pr-comments-')) return 'pr_comment';
+    return null;
 }
 
 export function taskAgeMs(updatedAt: string, now = Date.now()): number | null {
@@ -141,32 +144,6 @@ function asJobResult(value: unknown): JobResult | undefined {
     return value !== null && typeof value === 'object'
         ? value as JobResult
         : undefined;
-}
-
-export async function inspectLegacyTaskContainerLiveness(
-    taskId: string,
-    executor: typeof executeDockerCommand = executeDockerCommand,
-): Promise<TaskContainerLiveness> {
-    const shortTaskId = taskId.slice(-8);
-    if (!shortTaskId) return 'not_found';
-    const escapedSuffix = shortTaskId.replace(/[.*+?^$()|[\]\\{}]/g, '\\$&');
-    try {
-        const result = await executor('docker', [
-            'ps',
-            '--filter', `name=${escapedSuffix}$`,
-            '--format', '{{.ID}}',
-        ], { timeout: 10_000 });
-        if (result.exitCode !== 0) {
-            logger.warn({ taskId, stderr: result.stderr }, 'Docker liveness check failed during task reconciliation');
-            return 'unavailable';
-        }
-        return result.stdout.split('\n').some(line => line.trim())
-            ? 'running'
-            : 'not_found';
-    } catch (error) {
-        logger.warn({ taskId, error: (error as Error).message }, 'Docker liveness check was unavailable during task reconciliation');
-        return 'unavailable';
-    }
 }
 
 interface ReconciliationRunContext {
@@ -186,6 +163,8 @@ async function finalizeFromJob(
     const finalizationOptions = {
         expectation: taskStateExpectation(task),
         signal,
+        currentTask: task,
+        skippedState: taskKind(task) === 'issue' ? TaskStates.CANCELLED : TaskStates.COMPLETED,
     };
     if (LIVE_JOB_STATES.has(jobState)) {
         summary.live++;
@@ -231,24 +210,42 @@ async function reconcileTask(
 ): Promise<void> {
     const { options, summary, deadline, signal } = context;
     const age = taskAgeMs(task.updatedAt, options.now);
-    if (!isPRCommentTask(task) || age === null || age < (options.staleMs ?? DEFAULT_RECONCILIATION_STALE_MS)) {
+    const kind = taskKind(task);
+    if (!kind || age === null || age < (options.staleMs ?? DEFAULT_RECONCILIATION_STALE_MS)) {
         summary.skipped++;
         return;
     }
     summary.stale++;
 
-    const job = await runWithinRemainingBudget(
-        () => options.queue.getJob(task.taskId),
-        deadline,
-        signal,
-    );
-    if (job) {
-        await finalizeFromJob(task, job, context);
-        return;
+    const jobId = typeof task.issueRef.jobId === 'string' && task.issueRef.jobId
+        ? task.issueRef.jobId
+        : task.taskId;
+    let job: ReconciliationJob | undefined | null;
+    let jobLookupAvailable = true;
+    try {
+        job = await runWithinRemainingBudget(
+            () => options.queue.getJob(jobId),
+            deadline,
+            signal,
+        );
+    } catch (error) {
+        jobLookupAvailable = false;
+        logger.warn({ taskId: task.taskId, jobId, error: (error as Error).message },
+            'Cannot reconcile task because BullMQ liveness is unavailable');
     }
 
+    if (job) {
+        const state = await runWithinRemainingBudget(() => job!.getState(), deadline, signal);
+        if (LIVE_JOB_STATES.has(state)) {
+            summary.live++;
+            return;
+        }
+    }
+
+    // Even a terminal/missing job is not enough to finalize: its exact labeled
+    // container may still be running during a start/completion race.
     const liveness = await runWithinRemainingBudget(
-        () => (options.inspectContainer ?? inspectLegacyTaskContainerLiveness)(task.taskId),
+        () => (options.inspectContainer ?? inspectExactTaskContainerLivenessForTask)(task.taskId),
         deadline,
         signal,
     );
@@ -256,8 +253,15 @@ async function reconcileTask(
         summary.live++;
         return;
     }
-    if (liveness === 'unavailable') {
+    if (liveness === 'unavailable' || !jobLookupAvailable) {
+        logger.warn({ taskId: task.taskId, jobId, jobLookupAvailable, containerLiveness: liveness },
+            'Leaving stale task unchanged; verify BullMQ and Docker connectivity before retrying recovery');
         summary.errors++;
+        return;
+    }
+
+    if (job) {
+        await finalizeFromJob(task, job, context);
         return;
     }
 
@@ -269,6 +273,7 @@ async function reconcileTask(
             {
                 expectation: taskStateExpectation(task),
                 signal,
+                currentTask: task,
             },
         ),
         deadline,
@@ -300,7 +305,8 @@ export async function reconcileStalePRCommentTasks(
         const page = carriedBacklog.length > 0
             ? { tasks: carriedBacklog, nextCursor: options.cursor ?? '0' }
             : await runWithinRemainingBudget(
-                () => options.stateManager.scanNonTerminalTasks(
+                () => (options.stateManager.scanRecoverableTasks ?? options.stateManager.scanNonTerminalTasks).call(
+                    options.stateManager,
                     options.cursor ?? '0',
                     options.batchSize ?? 100,
                 ),
@@ -341,7 +347,7 @@ export async function reconcileStalePRCommentTasks(
                 logger.error({
                     taskId: page.tasks[index].taskId,
                     error: (error as Error).message,
-                }, 'Failed to reconcile stale PR comment task');
+                }, 'Failed to reconcile stale task');
                 summary.errors++;
             }
         }

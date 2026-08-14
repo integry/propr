@@ -109,6 +109,27 @@ export const getQueueStats = async (): Promise<QueueStats> => {
 
 export interface GetTasksResponse { tasks: ApiTask[]; total?: number; offset?: number; limit?: number; }
 
+export interface LiveActivityItem {
+  id: string;
+  type: 'plan' | 'task';
+  label: string;
+  repository: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface LiveActivityResponse {
+  items: LiveActivityItem[];
+  total: number;
+  remaining: number;
+}
+
+export const getLiveActivity = async (limit = 50): Promise<LiveActivityResponse> => {
+  const response = await apiFetch(`${API_BASE_URL}/api/live-activity?limit=${limit}`, { credentials: 'include' });
+  await handleApiResponse(response);
+  return response.json();
+};
+
 export const getTasks = async (
   statusOrOptions: string | GetTasksOptions = 'all', limit = 50, offset = 0, repository = 'all', search = ''
 ): Promise<GetTasksResponse> => {

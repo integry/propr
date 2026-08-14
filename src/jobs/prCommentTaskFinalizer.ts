@@ -39,6 +39,10 @@ export interface PRCommentTaskFinalizationResult {
 export interface PRCommentTaskFinalizationOptions {
     expectation?: TaskStateExpectation;
     signal?: AbortSignal;
+    /** DB-backed snapshot used when the Redis state key has expired. */
+    currentTask?: import('@propr/core').TaskStateData;
+    /** Issue jobs treat label-based skipped outcomes as cancellation. */
+    skippedState?: TaskState;
 }
 
 interface FinalTransition {
@@ -61,7 +65,10 @@ async function waitForFinalizationRetry(attempt: number): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, delayMs));
 }
 
-function completedTransition(result: JobResult | undefined): FinalTransition {
+function completedTransition(
+    result: JobResult | undefined,
+    skippedState: TaskState = TaskStates.COMPLETED,
+): FinalTransition {
     const status = result?.status;
     const safeStatus = sanitizedProcessorText(status);
     const reason = result ? sanitizedProcessorText(result.reason) : undefined;
@@ -77,10 +84,10 @@ function completedTransition(result: JobResult | undefined): FinalTransition {
         case 'partial':
         case 'skipped':
             return {
-                state: TaskStates.COMPLETED,
+                state: skippedState,
                 metadata: {
                     reason: status === 'skipped'
-                        ? sanitizeErrorMessage(`PR comment job skipped${reason ? `: ${reason}` : ''}`)
+                        ? sanitizeErrorMessage(`Task skipped${reason ? `: ${reason}` : ''}`)
                         : 'PR comment job completed',
                     historyMetadata,
                 },
@@ -126,7 +133,9 @@ async function applyFinalTransition(
 ): Promise<PRCommentTaskFinalizationResult> {
     for (let attempt = 0; ; attempt++) {
         options.signal?.throwIfAborted();
-        const current = await stateManager.getTaskState(taskId);
+        const current = attempt === 0 && options.currentTask
+            ? options.currentTask
+            : await stateManager.getTaskState(taskId);
         options.signal?.throwIfAborted();
         if (!current) return { outcome: 'task_missing', stateChanged: false };
         if (TERMINAL_STATES.has(current.state)) {
@@ -160,7 +169,12 @@ export async function finalizeCompletedPRCommentTask(
     stateManager: TaskStateStore,
     options?: PRCommentTaskFinalizationOptions,
 ): Promise<PRCommentTaskFinalizationResult> {
-    return applyFinalTransition(taskId, completedTransition(result), stateManager, options);
+    return applyFinalTransition(
+        taskId,
+        completedTransition(result, options?.skippedState),
+        stateManager,
+        options,
+    );
 }
 
 export async function finalizeFailedPRCommentTask(

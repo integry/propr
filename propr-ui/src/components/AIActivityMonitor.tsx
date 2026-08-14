@@ -45,6 +45,7 @@ const AIActivityMonitor: React.FC<AIActivityMonitorProps> = ({ runningItems, run
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useClickOutside(() => setIsOpen(false), isOpen);
+  const remainingCount = Math.max(0, runningCount - runningItems.length);
 
   // Don't render if nothing is running
   if (runningCount === 0) {
@@ -144,6 +145,11 @@ const AIActivityMonitor: React.FC<AIActivityMonitorProps> = ({ runningItems, run
                   </div>
                 </div>
               ))
+            )}
+            {remainingCount > 0 && (
+              <div className="px-4 py-3 text-center text-xs font-medium text-slate-500 bg-slate-50 border-t border-slate-200">
+                +{remainingCount} more running {remainingCount === 1 ? 'activity' : 'activities'}
+              </div>
             )}
           </div>
         </div>

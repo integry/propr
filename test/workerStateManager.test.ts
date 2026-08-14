@@ -3,6 +3,8 @@ import assert from 'node:assert';
 
 // Mock Redis
 const mockRedisInstance = {
+    set: mock.fn(async (key: string, value: string, _mode: string, ttl: number) =>
+        mockRedisInstance.setex(key, ttl, value)),
     setex: mock.fn(async () => 'OK'),
     get: mock.fn(async () => null),
     eval: mock.fn(async () => 1),
@@ -159,6 +161,34 @@ test('createTaskState stores state in Redis with TTL', async () => {
     assert.strictEqual(storedState.state, TaskStates.PENDING);
     assert.strictEqual(storedState.issueRef.number, 100);
 
+    await stateManager.close();
+});
+
+test('createTaskState preserves an existing terminal attempt under retry', async () => {
+    const existing: TaskStateData = {
+        taskId: 'task-idempotent-create',
+        issueRef: { number: 1898, repoOwner: 'integry', repoName: 'propr', type: 'issue' },
+        correlationId: 'existing-correlation',
+        state: TaskStates.CANCELLED,
+        createdAt: '2026-08-14T12:00:00.000Z',
+        updatedAt: '2026-08-14T12:01:00.000Z',
+        version: 3,
+        attempts: 0,
+        history: [],
+    };
+    mockRedisInstance.set.mock.mockImplementationOnce(async () => null);
+    mockRedisInstance.get.mock.mockImplementationOnce(async () => JSON.stringify(existing));
+    mockDbTasksInsert.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+
+    const result = await stateManager.createTaskState(existing.taskId, existing.issueRef, 'retry-correlation');
+
+    assert.deepStrictEqual(result, existing);
+    assert.strictEqual(mockDbTasksInsert.mock.calls.length, 0);
+    assert.strictEqual(mockDbHistoryInsert.mock.calls.length, 0);
+    assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 0);
     await stateManager.close();
 });
 

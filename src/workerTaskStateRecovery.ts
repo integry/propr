@@ -15,7 +15,7 @@ import {
     type TaskStateReconciliationResult,
 } from './taskStateReconciler.js';
 
-const RECONCILIATION_LEASE_KEY = 'lock:worker:pr-task-state-reconciliation';
+const RECONCILIATION_LEASE_KEY = 'lock:worker:task-state-reconciliation';
 const RELEASE_LEASE_SCRIPT = `
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
@@ -259,11 +259,11 @@ export async function startWorkerTaskStateRecovery(
             );
             cursor = result.nextCursor;
             backlog = result.backlog ?? [];
-            logger.info(result.summary, 'Reconciled stale PR comment task states');
+            logger.info(result.summary, 'Reconciled stale task states');
             return true;
         } catch (error) {
             if (!closed) {
-                logger.error({ error: (error as Error).message }, 'Failed to reconcile stale PR comment task states');
+                logger.error({ error: (error as Error).message }, 'Failed to reconcile stale task states');
             }
             return false;
         } finally {

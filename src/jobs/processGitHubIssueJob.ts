@@ -18,6 +18,7 @@ import {
   ensureProcessingLabel, executeWorktreeOperations, markTaskComplete
 } from './issueJob/index.js';
 import type { GitHubToken, CurrentIssueData } from './issueJob/index.js';
+import { finalizeSkippedIssueTask } from './issueTaskFinalizer.js';
 
 export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<JobResult> {
   logger.debug({ jobId: job.id, isChildJob: job.data.isChildJob, hasModelName: !!job.data.modelName }, 'Checking if job should be dispatched');
@@ -32,8 +33,18 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
 
   await addModelSpecificDelay(modelName);
 
+  if (job.data.taskId !== taskId) {
+    await job.updateData({ ...job.data, taskId });
+  }
+
   try {
-    await stateManager.createTaskState(taskId, { number: issueRef.number, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName } as import('@propr/core').IssueRef, correlationId);
+    await stateManager.createTaskState(taskId, {
+      ...issueRef,
+      modelName,
+      type: 'issue',
+      jobId: typeof jobId === 'string' ? jobId : undefined,
+    } as import('@propr/core').IssueRef, correlationId);
+    if (typeof jobId === 'string') await stateManager.associateTaskWithJob(taskId, jobId);
   } catch (stateError) {
     correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');
   }
@@ -49,7 +60,17 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
 
   correlatedLogger.info({ jobId, taskId, issueNumber: issueRef.number, repo: `${issueRef.repoOwner}/${issueRef.repoName}` }, 'Processing job started');
 
-  const octokit = await getAuthenticatedClient(context);
+  let octokit: Awaited<ReturnType<typeof getAuthenticatedClient>>;
+  try {
+    octokit = await getAuthenticatedClient(context);
+  } catch (error) {
+    try {
+      await stateManager.markTaskFailed(taskId, error as Error, { errorCategory: 'github_auth' });
+    } catch (stateError) {
+      correlatedLogger.error({ taskId, error: (stateError as Error).message }, 'Failed to terminalize task after GitHub authentication failure');
+    }
+    throw error;
+  }
 
   // Handle retry from rate limit - swap AI-waiting back to AI-processing
   if (job.data.isRetryFromRateLimit) {
@@ -75,7 +96,16 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   let commitResult: CommitResult | null = null;
 
   try {
-    await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting issue processing' });
+    const processingState = await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting issue processing' });
+    if (processingState.state === TaskStates.COMPLETED) {
+      return { status: 'complete', reason: 'task_already_completed', issueNumber: issueRef.number };
+    }
+    if (processingState.state === TaskStates.CANCELLED) {
+      return { status: 'cancelled', reason: 'task_already_cancelled', issueNumber: issueRef.number };
+    }
+    if (processingState.state === TaskStates.FAILED) {
+      return { status: 'failed', reason: 'task_already_failed', issueNumber: issueRef.number };
+    }
 
     const currentIssueData: CurrentIssueData = issueRef.issuePayload ? { data: issueRef.issuePayload as CurrentIssueData['data'] } :
       await withRetry(() => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
@@ -85,7 +115,11 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
 
     const currentLabels = currentIssueData.data.labels.map(label => label.name);
     const labelCheck = checkLabelConditions(currentLabels, context);
-    if (labelCheck.skip) return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
+    if (labelCheck.skip) {
+      const outcome = await finalizeSkippedIssueTask(taskId, labelCheck.reason, stateManager, processingState);
+      correlatedLogger.info({ taskId, reason: labelCheck.reason, outcome }, 'Finalized label-based issue skip');
+      return { status: 'skipped', reason: labelCheck.reason, issueNumber: issueRef.number };
+    }
 
     await ensureProcessingLabel(currentLabels, context, octokit);
 

@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import {
     addTaskAttemptLabelsToDockerArgs,
     findTaskContainer,
+    inspectExactTaskContainerLivenessForTask,
     inspectLegacyDockerContainerLivenessForTask,
     type ExecutionResult,
 } from '../packages/core/src/claude/docker/dockerExecutor.js';
@@ -71,6 +72,26 @@ describe('running Docker task container lookup', () => {
         assert.ok(receivedArgs.includes(`label=propr.task.id=${firstTask}`));
         assert.ok(!receivedArgs.includes(`label=propr.task.id=${secondTask}`));
         assert.ok(!receivedArgs.some(arg => arg.includes('12345678$')));
+    });
+
+    test('exact liveness fails closed and never falls back to a name substring', async () => {
+        let receivedArgs: string[] = [];
+        const running = await inspectExactTaskContainerLivenessForTask(
+            'task-with-shared-suffix',
+            async (_command, args) => {
+                receivedArgs = args;
+                return result('container-id\n');
+            },
+        );
+        const unavailable = await inspectExactTaskContainerLivenessForTask(
+            'task-with-shared-suffix',
+            async () => { throw new Error('Docker unavailable'); },
+        );
+
+        assert.strictEqual(running, 'running');
+        assert.strictEqual(unavailable, 'unavailable');
+        assert.ok(receivedArgs.includes('label=propr.task.id=task-with-shared-suffix'));
+        assert.ok(!receivedArgs.some(arg => arg.startsWith('name=')));
     });
 
     test('adds attempt labels to every protected Docker run', () => {

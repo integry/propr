@@ -13,6 +13,7 @@ function expectationFor(task: TaskStateData): TaskStateExpectation {
         updatedAt: task.updatedAt,
         correlationId: task.correlationId,
         version: task.version,
+        historyId: task.historyId,
     };
 }
 
@@ -33,7 +34,8 @@ await mock.module('../src/jobs/prCommentTaskFinalizer.js', {
 });
 await mock.module('@propr/core', {
     namedExports: {
-        executeDockerCommand: mock.fn(),
+        inspectExactTaskContainerLivenessForTask: mock.fn(async () => 'not_found'),
+        TaskStates,
         logger: {
             error: mock.fn(),
             warn: mock.fn(),
@@ -43,7 +45,6 @@ await mock.module('@propr/core', {
 });
 
 const {
-    inspectLegacyTaskContainerLiveness,
     reconcileStalePRCommentTasks,
     taskAgeMs,
 } = await import('../src/taskStateReconciler.js');
@@ -126,13 +127,45 @@ test('recovers completed and failed BullMQ outcomes through the shared finalizer
     );
 });
 
+test('recovers an expired-Redis issue snapshot and maps a skipped job to cancellation', async () => {
+    const issue = makeTask('issue-expired-redis', {
+        issueRef: {
+            type: 'issue',
+            number: 1898,
+            repoOwner: 'integry',
+            repoName: 'propr',
+            jobId: 'issue-job-1898',
+        },
+        historyId: 41,
+        version: 41,
+    });
+    const stateManager = createStateManager([issue]);
+    const result = await reconcileStalePRCommentTasks({
+        queue: {
+            getJob: async taskId => {
+                assert.equal(taskId, 'issue-job-1898');
+                return { returnvalue: { status: 'skipped', reason: 'Already done' }, getState: async () => 'completed' };
+            },
+        },
+        stateManager,
+        inspectContainer: async () => 'not_found',
+        now: NOW,
+    });
+
+    assert.equal(result.summary.recovered, 1);
+    const options = finalizeCompletedPRCommentTask.mock.calls[0].arguments[3];
+    assert.equal(options?.currentTask, issue);
+    assert.equal(options?.expectation?.historyId, 41);
+    assert.equal(options?.skippedState, TaskStates.CANCELLED);
+});
+
 test('leaves live, recent, non-PR, and future-dated work untouched', async () => {
     const active = makeTask('pr-comments-active');
     const recent = makeTask('pr-comments-recent', {
         updatedAt: new Date(NOW - 1_000).toISOString(),
     });
-    const issue = makeTask('issue-task', {
-        issueRef: { type: 'issue', number: 1, repoOwner: 'integry', repoName: 'propr' },
+    const nonAgentTask = makeTask('task-import', {
+        issueRef: { type: 'task_import', number: 1, repoOwner: 'integry', repoName: 'propr' },
     });
     const future = makeTask('pr-comments-future', {
         updatedAt: new Date(NOW + 60_000).toISOString(),
@@ -143,7 +176,7 @@ test('leaves live, recent, non-PR, and future-dated work untouched', async () =>
                 ? { getState: async () => 'active' }
                 : null,
         },
-        stateManager: createStateManager([active, recent, issue, future]),
+        stateManager: createStateManager([active, recent, nonAgentTask, future]),
         now: NOW,
     });
 
@@ -303,34 +336,6 @@ test('bounds the initial Redis scan by the reconciliation budget', async () => {
         }),
         /time budget was exhausted/,
     );
-});
-
-test('legacy container inspection is non-destructive and distinguishes Docker outages', async () => {
-    const calls: string[][] = [];
-    const running = await inspectLegacyTaskContainerLiveness(
-        'pr-comments-special.[id]',
-        async (_command, args) => {
-            calls.push(args);
-            return {
-                stdout: 'container-id\n',
-                stderr: '',
-                exitCode: 0,
-                messageTimestamps: new Map(),
-            };
-        },
-    );
-    const unavailable = await inspectLegacyTaskContainerLiveness(
-        'pr-comments-special.[id]',
-        async () => {
-            throw new Error('Docker unavailable');
-        },
-    );
-
-    assert.equal(running, 'running');
-    assert.equal(unavailable, 'unavailable');
-    assert.deepEqual(calls[0].slice(0, 3), ['ps', '--filter', 'name=ial\\.\\[id\\]$']);
-    assert.equal(calls[0].includes('stop'), false);
-    assert.equal(calls[0].includes('rm'), false);
 });
 
 test('invalid and future timestamps are not treated as stale', () => {

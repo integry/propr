@@ -45,6 +45,7 @@ export interface ExecutionResult {
 }
 export interface RunningTaskContainer { id: string; name: string; }
 export type LegacyTaskContainerLiveness = 'running' | 'not_found' | 'unavailable';
+export type ExactTaskContainerLiveness = LegacyTaskContainerLiveness;
 
 export interface DockerCommandOptions {
     timeout?: number; cwd?: string; worktreePath?: string; stdinData?: string; taskId?: string; streamToRedis?: boolean; streamStderrToRedis?: boolean; stripAnsi?: boolean;
@@ -116,6 +117,32 @@ export async function findTaskContainer(taskId: string, attemptGenerationOrExecu
 
 /** Backward-compatible name; lookup now uses exact task labels, not name suffixes. */
 export const findRunningDockerContainerForTask = findTaskContainer;
+
+/**
+ * Checks running containers using the exact immutable task label. Unlike
+ * findTaskContainer, this distinguishes an empty result from a Docker outage so
+ * callers can fail closed before declaring work dead.
+ */
+export async function inspectExactTaskContainerLivenessForTask(
+    taskId: string,
+    executor: typeof executeDockerCommand = executeDockerCommand,
+): Promise<ExactTaskContainerLiveness> {
+    try {
+        const result = await executor('docker', [
+            'ps',
+            '--filter', `label=propr.task.id=${taskId}`,
+            '--format', '{{.ID}}',
+        ], { timeout: 10_000 });
+        if (result.exitCode !== 0) {
+            logger.warn({ taskId, stderr: result.stderr }, 'Failed to inspect exact task container liveness');
+            return 'unavailable';
+        }
+        return result.stdout.split('\n').some(line => line.trim()) ? 'running' : 'not_found';
+    } catch (error) {
+        logger.warn({ taskId, error: (error as Error).message }, 'Exact task container liveness is unavailable');
+        return 'unavailable';
+    }
+}
 
 /**
  * Checks for a possibly-live pre-label container by the legacy task suffix.

@@ -65,6 +65,8 @@ export interface TaskStateData {
     worktreeInfo?: WorktreeInfo;
     claudeResult?: ClaudeResultSummary;
     prResult?: PRResult;
+    /** Present on DB-backed recovery snapshots after the Redis state expired. */
+    historyId?: number;
 }
 
 export interface TaskStateExpectation {
@@ -73,6 +75,8 @@ export interface TaskStateExpectation {
     updatedAt: string;
     correlationId: string;
     version?: number;
+    /** Latest persisted history row used for DB compare-and-set recovery. */
+    historyId?: number;
 }
 
 export interface TaskStatePublicationResult {

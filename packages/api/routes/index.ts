@@ -5,6 +5,7 @@ export { createLiveDetailsRoutes } from './liveDetailsRoutes.js';
 export { createFileChangesRoutes } from './fileChangesRoutes.js';
 export { createConfigRoutes } from './configRoutes.js';
 export { createQueueRoutes } from './queueRoutes.js';
+export { createLiveActivityRoutes } from './liveActivityRoutes.js';
 export { createExecutionRoutes } from './executionRoutes.js';
 export { createDockerRoutes } from './dockerRoutes.js';
 export { createGitHubRoutes } from './githubRoutes.js';

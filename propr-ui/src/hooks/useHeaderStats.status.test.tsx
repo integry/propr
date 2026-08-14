@@ -1,6 +1,6 @@
 import { renderHook, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getQueueStats, getSystemStatus, getTasks } from '../api/proprApi';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getLiveActivity, getQueueStats, getSystemStatus, getTasks } from '../api/proprApi';
 import { getDrafts } from '../api/plannerApi';
 import { useHeaderStats } from './useHeaderStats';
 
@@ -8,6 +8,7 @@ vi.mock('../api/proprApi', () => ({
   getQueueStats: vi.fn(),
   getSystemStatus: vi.fn(),
   getTasks: vi.fn(),
+  getLiveActivity: vi.fn(),
 }));
 
 vi.mock('../api/plannerApi', () => ({
@@ -23,6 +24,9 @@ vi.mock('../contexts/useSocket', () => ({
 }));
 
 describe('useHeaderStats system health', () => {
+  beforeEach(() => {
+    vi.mocked(getLiveActivity).mockResolvedValue({ items: [], total: 0, remaining: 0 });
+  });
   afterEach(() => {
     vi.clearAllMocks();
     localStorage.clear();

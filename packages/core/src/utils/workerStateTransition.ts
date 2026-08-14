@@ -31,6 +31,7 @@ export function taskStateExpectation(task: TaskStateData): TaskStateExpectation 
         updatedAt: task.updatedAt,
         correlationId: task.correlationId,
         version: task.version,
+        historyId: task.historyId,
     };
 }
 

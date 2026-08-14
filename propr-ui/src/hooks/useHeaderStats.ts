@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getQueueStats, getTasks, getSystemStatus } from '../api/proprApi';
+import { getLiveActivity, getTasks, getSystemStatus } from '../api/proprApi';
 import type { SystemAgentStatus } from '../api/proprTypes';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
 import { useSocket } from '../contexts/useSocket';
@@ -243,58 +243,24 @@ export function useHeaderStats(): HeaderStats {
       }
 
       // Fetch all data in parallel with smart DB-level pre-filtering
-      const [_queueStats, draftsResponse, tasksResponse, processingTasksResponse, statusResponse] = await Promise.all([
-        getQueueStats(),
+      const [draftsResponse, tasksResponse, liveActivityResponse, statusResponse] = await Promise.all([
         // Fetch active plans only (exclude merged at DB level - include executed and pr_created for Plans in Focus)
         getDrafts({ limit: 20, excludeStatuses: 'merged' }),
         // Fetch review-worthy tasks only (completed/failed, exclude merged at DB level)
         getTasks({ limit: 30, forReview: true, excludeMerged: true }),
-        // Fetch processing tasks for the AI Activity Monitor
-        getTasks({ status: 'processing', limit: 20 }),
+        // Backend resolves exact BullMQ/container liveness and includes plans.
+        getLiveActivity(50),
         getSystemStatus(),
       ]);
 
       if (!isMountedRef.current) return;
 
       // 1. Build running items list for AI Activity Monitor
-      const runningItemsList: RunningItem[] = [];
-
-      // Add generating/refining plans
-      const generatingPlans = draftsResponse.drafts.filter(
-        (draft) => draft.status === 'generating' || draft.status === 'refining'
-      );
-      generatingPlans.forEach((plan) => {
-        runningItemsList.push({
-          id: plan.draft_id,
-          type: 'plan',
-          label: plan.name || plan.initial_prompt || 'Generating Plan',
-          repository: plan.repository,
-          status: plan.status === 'generating' ? 'Generating Spec' : 'Refining',
-          createdAt: plan.created_at,
-        });
-      });
-
-      // Add processing tasks
-      const processingTasks = (processingTasksResponse as { tasks: Task[] }).tasks || [];
-      processingTasks.forEach((task) => {
-        runningItemsList.push({
-          id: task.id,
-          type: 'task',
-          label: task.title || `Task ${task.id.slice(0, 8)}`,
-          repository: task.repository || `${task.repositoryOwner || 'unknown'}/${task.repositoryName || 'unknown'}`,
-          status: 'Implementing',
-          createdAt: task.createdAt,
-        });
-      });
-
-      // Sort by createdAt descending (newest first)
-      runningItemsList.sort((a, b) => {
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      });
+      const runningItemsList: RunningItem[] = liveActivityResponse.items;
 
       setRunningItems(runningItemsList);
-      // Running count should match the actual running items to ensure consistency
-      setRunningCount(runningItemsList.length);
+      // Total and visible rows come from the same authoritative backend set.
+      setRunningCount(liveActivityResponse.total);
 
       // 2. Process active plans
       // Plans are already pre-filtered at DB level (excludes merged, executed)
@@ -478,6 +444,10 @@ export function useHeaderStats(): HeaderStats {
     } catch (err) {
       if (!isMountedRef.current) return;
       console.error('Failed to fetch header stats:', err);
+      // Live activity must fail closed; never retain a previously fetched count
+      // after authoritative queue/container liveness becomes unavailable.
+      setRunningItems([]);
+      setRunningCount(0);
       setError((err as Error).message);
     } finally {
       if (isMountedRef.current) {
