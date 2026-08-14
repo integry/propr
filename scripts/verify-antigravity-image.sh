@@ -61,7 +61,7 @@ models=(
 for model in "${models[@]}"; do
   model_id="${model%%|*}"
   display_name="${model#*|}"
-  if ! grep -Fq "$model_id" <<< "$models_output" || ! grep -Fq "$display_name" <<< "$models_output"; then
+  if ! grep -F "$model_id" <<< "$models_output" | grep -F "$display_name" >/dev/null; then
     echo "Antigravity CLI did not advertise $model_id as $display_name" >&2
     printf '%s\n' "$models_output" >&2
     exit 1
@@ -71,7 +71,6 @@ echo "✓ Antigravity CLI advertises all Gemini 3.7 Flash tiers"
 
 for model in "${models[@]}"; do
   model_id="${model%%|*}"
-  display_name="${model#*|}"
   invocation_output="$(
     printf '%s' 'Reply with exactly STREAM_OK. Do not use tools.' |
       run_agy \
@@ -81,7 +80,7 @@ for model in "${models[@]}"; do
         --model "$model_id"
   )"
 
-  reported_model="$(EXPECTED_MODEL="$display_name" EXPECTED_RESPONSE=$'STREAM_OK\n' node --input-type=module -e '
+  reported_model="$(EXPECTED_MODEL_ID="$model_id" EXPECTED_RESPONSE=$'STREAM_OK\n' node --input-type=module -e '
     let input = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", chunk => { input += chunk; });
@@ -115,8 +114,8 @@ for model in "${models[@]}"; do
         } catch { /* non-protocol diagnostic */ }
       }
       const response = completeResponse ?? streamedResponse;
-      if (reportedModel !== process.env.EXPECTED_MODEL) {
-        process.stderr.write(`expected init model ${JSON.stringify(process.env.EXPECTED_MODEL)}, got ${JSON.stringify(reportedModel)}\n`);
+      if (reportedModel !== process.env.EXPECTED_MODEL_ID) {
+        process.stderr.write(`expected init model ${JSON.stringify(process.env.EXPECTED_MODEL_ID)}, got ${JSON.stringify(reportedModel)}\n`);
         process.exitCode = 1;
       } else if (typeof terminalStatus !== "string" || terminalStatus.toUpperCase() !== "SUCCESS") {
         process.stderr.write(`expected final SUCCESS, got ${JSON.stringify(terminalStatus)}\n`);
@@ -134,8 +133,8 @@ for model in "${models[@]}"; do
     exit 1
   }
 
-  if [ "$reported_model" != "$display_name" ]; then
-    echo "Antigravity $model_id silently selected '$reported_model' instead of '$display_name'" >&2
+  if [ "$reported_model" != "$model_id" ]; then
+    echo "Antigravity $model_id silently selected '$reported_model' instead of '$model_id'" >&2
     exit 1
   fi
   echo "✓ $model_id returned exact sentinel with SUCCESS and reported $reported_model"
