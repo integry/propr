@@ -28,7 +28,10 @@ test("forced install fails and preserves both trees when the published bundle is
       renameSync(oldPath: fs.PathLike, newPath: fs.PathLike): void {
         renames.push([oldPath, newPath]);
         fs.renameSync(oldPath, newPath);
-        if (newPath === target) fs.writeFileSync(join(target, "SKILL.md"), "modified concurrently\n");
+      },
+      chmodSync(path: fs.PathLike, mode: fs.Mode): void {
+        fs.chmodSync(path, mode);
+        if (path === target) fs.writeFileSync(join(target, "SKILL.md"), "modified concurrently\n");
       },
     },
   });
@@ -42,7 +45,7 @@ test("forced install fails and preserves both trees when the published bundle is
     now: new Date("2026-08-14T10:24:00Z"),
   });
 
-  assert.deepEqual(renames.map(([, newPath]) => newPath), [result.backupPath, target]);
+  assert.deepEqual(renames.map(([, newPath]) => newPath), [result.backupPath]);
   assert.equal(result.action, "failed");
   assert.equal(result.state, "modified-managed");
   assert.match(result.detail ?? "", /changed after the new bundle was published and was preserved/);
@@ -51,7 +54,7 @@ test("forced install fails and preserves both trees when the published bundle is
   assert.equal(fs.readFileSync(join(result.backupPath!, "SKILL.md"), "utf8"), "foreign\n");
 });
 
-test("forced install reports the displaced original when a concurrent non-empty target blocks publication", async (t) => {
+test("forced install leaves a concurrent empty directory untouched and reports the displaced original", async (t) => {
   const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-force-publish-race-test-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const env = {
@@ -75,7 +78,6 @@ test("forced install reports the displaced original when a concurrent non-empty 
         fs.renameSync(oldPath, newPath);
         if (oldPath === target) {
           fs.mkdirSync(target);
-          fs.writeFileSync(join(target, "concurrent.txt"), "created concurrently\n");
         }
       },
     },
@@ -92,10 +94,11 @@ test("forced install reports the displaced original when a concurrent non-empty 
 
   assert.equal(result.action, "failed");
   assert.ok(result.backupPath);
-  assert.match(result.detail ?? "", /original target remains preserved at/);
+  assert.match(result.detail ?? "", /target was created during installation and was not overwritten/);
+  assert.match(result.detail ?? "", /content preserved at/);
   assert.match(result.detail ?? "", new RegExp(result.backupPath!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.equal(fs.readFileSync(join(result.backupPath!, "SKILL.md"), "utf8"), "foreign\n");
-  assert.equal(fs.readFileSync(join(target, "concurrent.txt"), "utf8"), "created concurrently\n");
+  assert.deepEqual(fs.readdirSync(target), []);
 });
 
 test("non-forced update preserves a detached tree changed after validation", async (t) => {

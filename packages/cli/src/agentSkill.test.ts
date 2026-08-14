@@ -68,6 +68,20 @@ test("resolves every confirmed target with isolated HOME, CODEX_HOME, and XDG_CO
   assert.equal(byTarget.vibe, join(env.HOME!, ".vibe", "skills", "propr"));
 });
 
+test("blank optional home overrides use their required fallbacks", () => {
+  const root = temporaryRoot();
+  const home = join(root, "home");
+  const byTarget = Object.fromEntries(resolveAgentSkillLocations(["codex", "opencode"], {
+    HOME: home,
+    CODEX_HOME: "  ",
+    XDG_CONFIG_HOME: "",
+  }).map((value) => [value.target, value.path]));
+
+  assert.equal(byTarget.codex, join(home, ".codex", "skills", "propr"));
+  assert.equal(byTarget.opencode, join(home, ".config", "opencode", "skills", "propr"));
+  assert.throws(() => resolveAgentSkillLocations(["codex"], { HOME: "" }), /HOME is empty/);
+});
+
 test("parses comma-separated, repeated, and all target selections", () => {
   assert.deepEqual(parseAgentSkillTargets(["codex,claude", "codex"]), ["codex", "claude"]);
   assert.deepEqual(parseAgentSkillTargets(["all"]), AGENT_SKILL_TARGETS);
@@ -311,6 +325,30 @@ test("rejects traversal, root-owned homes, non-directory parents, and skill-pare
   mkdirSync(otherEnv.HOME, { recursive: true });
   writeFileSync(join(root, "parent-file"), "not a directory");
   assert.equal(installAgentSkill("codex", { env: otherEnv, bundleDir: source }).action, "refused");
+});
+
+test("classifies dangling target and parent symlinks as unsafe", () => {
+  const root = temporaryRoot();
+  const source = bundle(root, "current skill");
+
+  const targetEnv = { HOME: join(root, "target-home") };
+  const target = resolveAgentSkillLocations(["vibe"], targetEnv)[0].path;
+  mkdirSync(join(target, ".."), { recursive: true });
+  symlinkSync(join(root, "missing-target"), target);
+
+  const targetStatus = inspectAgentSkills(["vibe"], { env: targetEnv, bundleDir: source })[0];
+  assert.equal(targetStatus.state, "unsafe");
+  assert.match(targetStatus.detail ?? "", /symbolic link target is not allowed/);
+  assert.equal(installAgentSkill("vibe", { env: targetEnv, bundleDir: source }).action, "refused");
+
+  const danglingParent = join(root, "dangling-parent");
+  symlinkSync(join(root, "missing-parent"), danglingParent);
+  const parentStatus = inspectAgentSkills(["codex"], {
+    env: { HOME: join(root, "parent-home"), CODEX_HOME: join(danglingParent, "codex") },
+    bundleDir: source,
+  })[0];
+  assert.equal(parentStatus.state, "unsafe");
+  assert.match(parentStatus.detail ?? "", /symbolic link parent is not allowed/);
 });
 
 test("detects only tool-specific configured homes", () => {

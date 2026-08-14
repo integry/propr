@@ -14,6 +14,7 @@ import {
   statSync,
   unlinkSync,
   writeFileSync,
+  type Stats,
 } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,11 +102,21 @@ function environmentValue(
 ): string {
   if (Object.prototype.hasOwnProperty.call(env, key)) {
     const value = env[key];
-    if (!value?.trim()) throw new Error(`${key} is empty`);
-    return value;
+    if (value?.trim()) return value;
+    if (fallback !== undefined) return fallback;
+    throw new Error(`${key} is empty`);
   }
-  if (fallback) return fallback;
+  if (fallback !== undefined) return fallback;
   throw new Error(`${key} is not set`);
+}
+
+function lstatIfExists(path: string): Stats | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
 }
 
 function assertSafeBase(
@@ -277,25 +288,28 @@ function assertSafeFilesystemTarget(location: AgentSkillLocation): void {
   let walked: string = sep;
   for (const component of resolve(toolHome).split(sep).filter(Boolean)) {
     walked = join(walked, component);
-    if (!existsSync(walked)) continue;
-    const stat = lstatSync(walked);
+    const stat = lstatIfExists(walked);
+    if (!stat) continue;
     if (stat.isSymbolicLink()) throw new Error(`symbolic link parent is not allowed: ${walked}`);
     if (!stat.isDirectory()) throw new Error(`parent is not a directory: ${walked}`);
   }
   let ancestor = toolHome;
-  while (!existsSync(ancestor)) {
+  let ancestorStat = lstatIfExists(ancestor);
+  while (!ancestorStat) {
     const parent = dirname(ancestor);
     if (parent === ancestor) throw new Error(`no directory parent exists for ${toolHome}`);
     ancestor = parent;
+    ancestorStat = lstatIfExists(ancestor);
   }
-  if (!statSync(ancestor).isDirectory()) throw new Error(`parent is not a directory: ${ancestor}`);
+  if (ancestorStat.isSymbolicLink()) throw new Error(`symbolic link parent is not allowed: ${ancestor}`);
+  if (!ancestorStat.isDirectory()) throw new Error(`parent is not a directory: ${ancestor}`);
 
   let current = toolHome;
   const suffix = relative(toolHome, path).split(sep).filter(Boolean);
   for (const part of ["", ...suffix]) {
     if (part) current = join(current, part);
-    if (!existsSync(current)) continue;
-    const stat = lstatSync(current);
+    const stat = lstatIfExists(current);
+    if (!stat) continue;
     if (stat.isSymbolicLink()) throw new Error(`symbolic link target is not allowed: ${current}`);
     if (current !== path && !stat.isDirectory()) throw new Error(`parent is not a directory: ${current}`);
   }
@@ -324,8 +338,8 @@ function readMarker(path: string): ManagedMarker | undefined {
 function inspectLocation(location: AgentSkillLocation, bundle: Bundle): AgentSkillStatus {
   try {
     assertSafeFilesystemTarget(location);
-    if (!existsSync(location.path)) return { ...location, state: "absent", bundledIdentity: bundle.identity };
-    const targetStat = lstatSync(location.path);
+    const targetStat = lstatIfExists(location.path);
+    if (!targetStat) return { ...location, state: "absent", bundledIdentity: bundle.identity };
     if (targetStat.isSymbolicLink()) throw new Error(`symbolic link target is not allowed: ${location.path}`);
     if (!targetStat.isDirectory()) {
       return { ...location, state: "foreign", bundledIdentity: bundle.identity, detail: "target is not a directory" };
@@ -590,20 +604,28 @@ function installAgentSkillAtLocation(
     }
     temporary = join(parent, `.propr.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
     writeBundle(temporary, bundle);
-    if (existsSync(location.path)) {
+    if (refreshed.state !== "absent") {
       displaced = uniqueSibling(location.path, "backup", options.now);
       renameSync(location.path, displaced);
       backupPath = displaced;
     }
     try {
-      renameSync(temporary, location.path);
-      temporary = undefined;
+      mkdirSync(location.path, { recursive: false, mode: 0o700 });
     } catch (error) {
-      if (displaced && !existsSync(location.path)) {
-        renameSync(displaced, location.path);
-        displaced = undefined;
-      }
-      throw error;
+      const current = inspectLocation(location, bundle);
+      const detail = current.state === "absent"
+        ? (error as Error).message
+        : "target was created during installation and was not overwritten";
+      return preservedFailure(current, detail, backupPath);
+    }
+    try {
+      publishBundleExclusively(location.path, temporary, bundle);
+    } catch (error) {
+      return preservedFailure(
+        inspectLocation(location, bundle),
+        `installation stopped rather than overwrite content created concurrently: ${(error as Error).message}`,
+        backupPath
+      );
     }
     chmodSync(location.path, 0o700);
     const next = inspectLocation(location, bundle);
