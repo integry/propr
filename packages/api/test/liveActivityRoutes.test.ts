@@ -54,7 +54,7 @@ async function invoke(handler: (req: Request, res: Response) => Promise<void>, l
     json(value: unknown) { body = value; return this; },
   } as unknown as Response;
   await handler(req, res);
-  return { status, body: body as { items: Array<{ id: string; type: string }>; total: number; remaining: number } };
+  return { status, body: body as { items: Array<{ id: string; type: string; label: string; repository: string; status: string; createdAt: string }>; total: number; remaining: number } };
 }
 
 test('header count and list share the exact live set beyond the historical 20-row window', async () => {
@@ -134,7 +134,7 @@ test('includes first-attempt child jobs in every accepted live queue state', asy
   });
   const routes = createLiveActivityRoutes({
     db,
-    taskQueue: { getJob: async () => null, getJobs: async () => jobs } as never,
+    taskQueue: { getJob: async jobId => jobs.find(job => job.id === jobId) ?? null, getJobs: async () => jobs } as never,
   });
   const result = await invoke(routes.getLiveActivity);
 
@@ -195,7 +195,7 @@ test('includes every task-producing worker job kind but omits issue dispatch par
   ];
   const routes = createLiveActivityRoutes({
     db,
-    taskQueue: { getJob: async () => null, getJobs: async () => jobs } as never,
+    taskQueue: { getJob: async jobId => jobs.find(job => job.id === jobId) ?? null, getJobs: async () => jobs } as never,
   });
   const result = await invoke(routes.getLiveActivity);
 
@@ -339,4 +339,36 @@ test('deduplicates a task initialized after queue enumeration', async () => {
   assert.equal(result.status, 200);
   assert.equal(result.body.total, 1);
   assert.deepEqual(result.body.items.map(item => item.id), [taskId]);
+});
+
+test('omits an active queued candidate that completes during the database scan', async () => {
+  const db = await database();
+  let scanStarted = false;
+  const enumeratedJob = {
+    id: 'late-success-job',
+    name: 'processPullRequestComment',
+    timestamp: Date.parse('2026-08-14T12:00:00.000Z'),
+    data: { repoOwner: 'integry', repoName: 'propr', pullRequestNumber: 1899 },
+    getState: async () => {
+      scanStarted = true;
+      return 'active';
+    },
+  };
+  const completedJob = {
+    ...enumeratedJob,
+    getState: async () => 'completed',
+  };
+  const routes = createLiveActivityRoutes({
+    db,
+    taskQueue: {
+      getJobs: async () => [enumeratedJob],
+      getJob: async () => scanStarted ? completedJob : enumeratedJob,
+    } as never,
+    inspectContainer: async () => 'not_found',
+  });
+  const result = await invoke(routes.getLiveActivity);
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.total, 0);
+  assert.deepEqual(result.body.items, []);
 });

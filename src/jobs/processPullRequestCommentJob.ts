@@ -2,7 +2,7 @@ import { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import { findRunningDockerContainerForTask, getAuthenticatedOctokit, hashTaskAttemptToken, inspectLegacyDockerContainerLivenessForTask, logger, retryConfigs, runWithExecutionAbortSignal, withRetry } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
-import type { WorkerStateManager } from '@propr/core';
+import type { TaskStateData, WorkerStateManager } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '@propr/core';
 import type { WorktreeInfo } from '@propr/core';
 import { ensureGitRepository } from '@propr/core';
@@ -423,19 +423,19 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
         onError: error => correlatedLogger.warn({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock'),
     });
 
-    try {
-        await stateManager.createTaskState(taskId, {
-            number: pullRequestNumber, repoOwner, repoName,
-            comments: job.data.comments, modelName,
-            type: 'pr_comment', jobId: job.id,
-        } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
-    } catch (stateError) {
-        correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state, continuing anyway');
-    }
-
     const state: ProcessingState = { octokit: null, localRepoPath: undefined, worktreeInfo: undefined, claudeResult: null, authorsText: '', unprocessedComments: [], startingWorkComment: null };
 
     try {
+        let createdState: TaskStateData | undefined;
+        try { createdState = await stateManager.createTaskState(taskId, {
+                number: pullRequestNumber, repoOwner, repoName, comments: job.data.comments, modelName, type: 'pr_comment', jobId: job.id,
+            } as unknown as Parameters<typeof stateManager.createTaskState>[1], correlationId);
+        } catch (stateError) { correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create initial task state, continuing anyway'); }
+        if (createdState) {
+            const terminalResult = await stateManager.getTerminalJobResultForAutomaticRetry(taskId, createdState, { jobId: job.id, attemptsMade: job.attemptsMade, totalAttempts: job.opts.attempts });
+            if (terminalResult) return { ...terminalResult, pullRequestNumber };
+        }
+
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
             return await runWithExecutionAbortSignal(executionController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments }), hashTaskAttemptToken(lockToken));

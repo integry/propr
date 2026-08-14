@@ -30,6 +30,7 @@ function stateStore(initialState: TaskState) {
             number: 1898,
             repoOwner: 'integry',
             repoName: 'propr',
+            jobId: 'issue-job-1898',
         },
         correlationId: 'correlation-1898',
         state: initialState,
@@ -81,9 +82,37 @@ function stateStore(initialState: TaskState) {
             publication: { historyPersisted: true, eventPublished: true, errors: [] },
         };
     });
+    const resumeFailedTaskForAutomaticRetry = mock.fn(async (
+        _taskId: string,
+        state: TaskStateData,
+        attempt: { jobId: string | undefined; attemptsMade: number; totalAttempts: number | undefined },
+    ) => {
+        const isRemainingExactJobAttempt = state.state === TaskStates.FAILED
+            && attempt.attemptsMade > 0
+            && attempt.attemptsMade < (attempt.totalAttempts ?? 1)
+            && attempt.jobId !== undefined
+            && state.issueRef.jobId !== undefined
+            && String(state.issueRef.jobId) === String(attempt.jobId);
+        return isRemainingExactJobAttempt
+            ? updateTaskState(taskId, TaskStates.PROCESSING, { isRetry: true })
+            : structuredClone(state);
+    });
+    const getTerminalJobResultForAutomaticRetry = mock.fn(async (
+        id: string,
+        state: TaskStateData,
+        attempt: { jobId: string | undefined; attemptsMade: number; totalAttempts: number | undefined },
+    ) => {
+        const initialState = await resumeFailedTaskForAutomaticRetry(id, state, attempt);
+        if (initialState.state === TaskStates.COMPLETED) return { status: 'complete', reason: 'task_already_completed' };
+        if (initialState.state === TaskStates.CANCELLED) return { status: 'cancelled', reason: 'task_already_cancelled' };
+        if (initialState.state === TaskStates.FAILED) return { status: 'failed', reason: 'task_already_failed' };
+        return undefined;
+    });
     return {
         createTaskState: mock.fn(async () => structuredClone(current)),
         associateTaskWithJob: mock.fn(async () => structuredClone(current)),
+        resumeFailedTaskForAutomaticRetry,
+        getTerminalJobResultForAutomaticRetry,
         updateTaskState,
         updateTaskStateIfCurrentDetailed,
         getTaskState: mock.fn(async () => structuredClone(current)),
@@ -179,6 +208,7 @@ function issueJob(labels: string[], overrides: Record<string, unknown> = {}) {
     return {
         id: 'issue-job-1898',
         attemptsMade: 0,
+        opts: { attempts: 2 },
         name: 'processGitHubIssue',
         data: {
             isChildJob: true,
@@ -231,18 +261,22 @@ test('processGitHubIssueJob returns a terminal task before authentication can fa
     assert.equal(activeStore.updateTaskStateIfCurrentDetailed.mock.calls.length, 0);
 });
 
-test('processGitHubIssueJob preserves an exhausted failed task', async () => {
+test('processGitHubIssueJob preserves an exhausted failed task for the exact BullMQ job ID', async () => {
     activeStore = stateStore(TaskStates.FAILED);
     authenticationError = new Error('GitHub authentication failed');
     getAuthenticatedClient.mock.resetCalls();
+    updatePlanIssueTaskId.mock.resetCalls();
 
-    const result = await processGitHubIssueJob(issueJob(['AI']) as never);
+    const result = await processGitHubIssueJob({ ...issueJob(['AI']), attemptsMade: 2 } as never);
     authenticationError = undefined;
 
     assert.equal(result.status, 'failed');
     assert.equal(result.reason, 'task_already_failed');
     assert.equal(activeStore.current().state, TaskStates.FAILED);
     assert.equal(getAuthenticatedClient.mock.calls.length, 0);
+    assert.equal(updatePlanIssueTaskId.mock.calls.length, 0);
+    assert.equal(activeStore.associateTaskWithJob.mock.calls.length, 0);
+    assert.equal(activeStore.updateTaskState.mock.calls.length, 0);
 });
 
 test('processGitHubIssueJob does not swap labels for a terminal rate-limit retry', async () => {

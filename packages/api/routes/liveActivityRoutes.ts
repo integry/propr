@@ -53,7 +53,6 @@ function taskLabel(row: Record<string, unknown>): string {
 
 interface QueueActivityCandidate {
   job: Job;
-  item: LiveActivityItem;
 }
 
 function persistedTaskType(row: Record<string, unknown>): string | undefined {
@@ -129,18 +128,8 @@ async function findLiveQueuedTaskJobs(deps: LiveActivityRoutesDeps): Promise<Que
       if (!isTaskExecutionJob(job as Job)
         || job.id === undefined
         || !LIVE_JOB_STATES.has(state)) return;
-      const jobId = String(job.id);
-      const taskId = queuedTaskId(job as Job);
       candidates.push({
         job: job as Job,
-        item: {
-          id: taskId ?? jobId,
-          type: 'task',
-          label: queuedTaskLabel(job as Job),
-          repository: queuedRepository(job as Job),
-          status: queueStatus(state),
-          createdAt: asIso(job.timestamp),
-        },
       });
     });
   }
@@ -258,14 +247,23 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
         afterTaskId = String(rows[rows.length - 1].task_id);
       }
       for (const candidate of queuedCandidates) {
-        const refreshedJob = candidate.job.id === undefined
-          ? undefined
-          : await deps.taskQueue.getJob(String(candidate.job.id));
-        const authoritativeJob = (refreshedJob as Job | undefined) ?? candidate.job;
-        const authoritativeTaskId = queuedTaskId(authoritativeJob) ?? candidate.item.id;
+        if (candidate.job.id === undefined) continue;
+        const refreshedJob = await deps.taskQueue.getJob(String(candidate.job.id)) as Job | undefined;
+        if (!refreshedJob || refreshedJob.id === undefined || !isTaskExecutionJob(refreshedJob)) continue;
+        const refreshedState = await refreshedJob.getState();
+        if (!LIVE_JOB_STATES.has(refreshedState)) continue;
+        const refreshedJobId = String(refreshedJob.id);
+        const authoritativeTaskId = queuedTaskId(refreshedJob) ?? refreshedJobId;
         const persisted = persistedExecutions.get(authoritativeTaskId);
-        if (persisted && jobMatchesPersistedExecution(authoritativeJob, persisted)) continue;
-        items.push({ ...candidate.item, id: authoritativeTaskId });
+        if (persisted && jobMatchesPersistedExecution(refreshedJob, persisted)) continue;
+        items.push({
+          id: authoritativeTaskId,
+          type: 'task',
+          label: queuedTaskLabel(refreshedJob),
+          repository: queuedRepository(refreshedJob),
+          status: queueStatus(refreshedState),
+          createdAt: asIso(refreshedJob.timestamp),
+        });
       }
 
       items.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));

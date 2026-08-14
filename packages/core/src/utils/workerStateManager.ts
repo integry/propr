@@ -38,6 +38,13 @@ async function waitForAtomicUpdateRetry(attempt: number): Promise<void> {
 
 export { TaskStates, type TaskState, type IssueRef };
 
+function getTerminalTaskJobResult(state: string): { status: string; reason: string } | undefined {
+    if (state === TaskStates.COMPLETED) return { status: 'complete', reason: 'task_already_completed' };
+    if (state === TaskStates.CANCELLED) return { status: 'cancelled', reason: 'task_already_cancelled' };
+    if (state === TaskStates.FAILED) return { status: 'failed', reason: 'task_already_failed' };
+    return undefined;
+}
+
 /**
  * Worker state manager for persistent task state tracking
  */
@@ -128,6 +135,38 @@ export class WorkerStateManager {
             correlatedLogger.error({ error: (error as Error).message, taskId }, 'Failed to persist task state to database');
         }
         return state;
+    }
+
+    /**
+     * Reopens a failed task only when the same BullMQ job has another configured attempt.
+     * All other terminal states and exhausted or mismatched jobs remain unchanged.
+     */
+    async resumeFailedTaskForAutomaticRetry(
+        taskId: string,
+        state: TaskStateData,
+        attempt: { jobId: string | undefined; attemptsMade: number; totalAttempts: number | undefined },
+    ): Promise<TaskStateData> {
+        const totalAttempts = attempt.totalAttempts ?? 1;
+        const isRemainingExactJobAttempt = state.state === TaskStates.FAILED
+            && attempt.attemptsMade > 0
+            && attempt.attemptsMade < totalAttempts
+            && attempt.jobId !== undefined
+            && state.issueRef.jobId !== undefined
+            && String(state.issueRef.jobId) === String(attempt.jobId);
+        if (!isRemainingExactJobAttempt) return state;
+        return await this.updateTaskState(taskId, TaskStates.PROCESSING, {
+            reason: 'Retrying task after a failed BullMQ attempt',
+            isRetry: true,
+        });
+    }
+
+    async getTerminalJobResultForAutomaticRetry(
+        taskId: string,
+        state: TaskStateData,
+        attempt: { jobId: string | undefined; attemptsMade: number; totalAttempts: number | undefined },
+    ): Promise<{ status: string; reason: string } | undefined> {
+        const initialState = await this.resumeFailedTaskForAutomaticRetry(taskId, state, attempt);
+        return getTerminalTaskJobResult(initialState.state);
     }
 
     /**

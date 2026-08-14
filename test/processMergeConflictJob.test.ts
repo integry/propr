@@ -10,6 +10,8 @@ const mockOctokit = {
 
 const mockStateManager = {
     createTaskState: mock.fn(async () => {}),
+    resumeFailedTaskForAutomaticRetry: mock.fn(async (_taskId: string, state: unknown) => state),
+    getTerminalJobResultForAutomaticRetry: mock.fn(async () => undefined),
     updateTaskState: mock.fn(async () => {}),
     getTaskState: mock.fn(async () => null),
     updateHistoryMetadata: mock.fn(async () => {}),
@@ -230,6 +232,8 @@ function createMockJob(overrides: Partial<{
 }> = {}) {
     const job = {
         id: 'test-job-123',
+        attemptsMade: 0,
+        opts: { attempts: 3 },
         name: 'processMergeConflict',
         data: {
             pullRequestNumber: overrides.pullRequestNumber ?? 42,
@@ -254,6 +258,8 @@ function resetAllMocks() {
     mockOctokit.request.mock.resetCalls();
     mockOctokit.auth.mock.resetCalls();
     mockStateManager.createTaskState.mock.resetCalls();
+    mockStateManager.resumeFailedTaskForAutomaticRetry.mock.resetCalls();
+    mockStateManager.getTerminalJobResultForAutomaticRetry.mock.resetCalls();
     mockStateManager.updateTaskState.mock.resetCalls();
     mockMergeBaseIntoBranch.mock.resetCalls();
     mockCommitChanges.mock.resetCalls();
