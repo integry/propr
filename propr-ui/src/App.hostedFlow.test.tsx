@@ -118,4 +118,71 @@ describe('HostedFlowRouteSync', () => {
     });
     expect(screen.getByTestId('state-from')).toHaveTextContent('/plans?status=open&sort=updated#details');
   });
+
+  it('does not carry a raw attacker flow from the catch-all dashboard link when no active flow exists', async () => {
+    const runtimeConfig = await import('./config/runtimeConfig');
+    const { HostedFlowRouteSync, NotFoundRouteContent } = await import('./App');
+
+    runtimeConfig.activateStoredHostedTunnelFlow('app.propr.dev', '', memoryStorage(), 'empty-context');
+
+    render(
+      <MemoryRouter initialEntries={['/missing?flow=attacker']}>
+        <HostedFlowRouteSync hostname="app.propr.dev" />
+        <LocationProbe />
+        <Routes>
+          <Route path="/" element={<div>dashboard</div>} />
+          <Route path="*" element={<NotFoundRouteContent />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/missing');
+    });
+
+    fireEvent.click(screen.getByRole('link', { name: 'Back to dashboard' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent(/^\/$/);
+    });
+  });
+
+  it('retains the validated active flow when the catch-all dashboard link uses router navigation', async () => {
+    const runtimeConfig = await import('./config/runtimeConfig');
+    const { HostedFlowRouteSync, NotFoundRouteContent } = await import('./App');
+    const storage = memoryStorage();
+
+    runtimeConfig.resolveApiBaseUrl(
+      'app.propr.dev',
+      '?tunnel=t-catchall.propr.dev',
+      undefined,
+      undefined,
+      storage,
+      'catchall-context'
+    );
+    const flowId = storage.setItem.mock.calls.find(
+      ([key]) => key === runtimeConfig.HOSTED_TUNNEL_FLOW_ID_KEY
+    )?.[1];
+
+    render(
+      <MemoryRouter initialEntries={['/missing']}>
+        <HostedFlowRouteSync hostname="app.propr.dev" />
+        <LocationProbe />
+        <Routes>
+          <Route path="/" element={<div>dashboard</div>} />
+          <Route path="*" element={<NotFoundRouteContent />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent(`/missing?flow=${flowId}`);
+    });
+
+    fireEvent.click(screen.getByRole('link', { name: 'Back to dashboard' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent(`/?flow=${flowId}`);
+    });
+  });
 });

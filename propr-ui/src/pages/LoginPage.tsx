@@ -33,6 +33,15 @@ interface HostedOAuthFlow {
   closeCheckStarted: boolean;
 }
 
+interface DemoEntryWindow {
+  location: Pick<Location, 'hostname' | 'href'>;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export const navigateToDemoEntry = (targetWindow: DemoEntryWindow = window): void => {
+  targetWindow.location.href = pathWithActiveHostedTunnelFlow('/', targetWindow.location.hostname);
+};
+
 // Only same-origin, absolute in-app paths are safe redirect targets. This
 // rejects external URLs ("https://evil.example/path"), protocol-relative URLs
 // ("//evil.example/path"), backslash tricks and control characters that can make
@@ -373,7 +382,7 @@ const LoginPage: React.FC = () => {
           {!isOAuthCompletion && (
             <>
               <button
-                onClick={isDemoMode ? () => { window.location.href = '/'; } : handleLogin}
+                onClick={isDemoMode ? () => { navigateToDemoEntry(); } : handleLogin}
                 disabled={isHostedOAuthPolling}
                 className="w-full bg-gray-900 hover:bg-gray-800 disabled:bg-gray-500 text-white font-medium py-3 px-4 rounded-md transition-colors flex items-center justify-center gap-2"
               >

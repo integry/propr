@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import { ToastProvider } from './components/ui/Toast'
 import { SocketProvider } from './contexts/SocketProvider'
@@ -123,6 +123,16 @@ export const HostedFlowRouteSync: React.FC<{ hostname?: string }> = ({ hostname 
 
   return null;
 };
+
+export const NotFoundRouteContent: React.FC = () => (
+  <div className="text-center py-20">
+    <h2 className="text-xl font-semibold text-gray-700 mb-2">Page not found</h2>
+    <p className="text-gray-500 mb-4">This page does not exist or has moved.</p>
+    <Link to="/" className="text-primary-600 hover:text-primary-700 underline">
+      Back to dashboard
+    </Link>
+  </div>
+);
 
 const AppContent: React.FC = () => {
   const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
@@ -325,13 +335,7 @@ const AppContent: React.FC = () => {
                       path="*"
                       element={
                         <Layout>
-                          <div className="text-center py-20">
-                            <h2 className="text-xl font-semibold text-gray-700 mb-2">Page not found</h2>
-                            <p className="text-gray-500 mb-4">This page does not exist or has moved.</p>
-                            <a href="/" className="text-primary-600 hover:text-primary-700 underline">
-                              Back to dashboard
-                            </a>
-                          </div>
+                          <NotFoundRouteContent />
                         </Layout>
                       }
                     />

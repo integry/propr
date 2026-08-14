@@ -2,7 +2,7 @@ import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation, type InitialEntry } from 'react-router-dom';
 import { HostedFlowRouteSync } from '../App';
-import LoginPage from './LoginPage';
+import LoginPage, { navigateToDemoEntry } from './LoginPage';
 import { getCurrentUser } from '../api/proprApi';
 import type { CurrentUser } from '../api/proprTypes';
 import {
@@ -405,5 +405,66 @@ describe('LoginPage session recovery', () => {
       expect(screen.getByText('dashboard')).toBeInTheDocument();
     });
     expect(resolveApiBaseUrl('app.propr.dev', `?flow=${flowId}`, undefined, undefined, copiedStorage, null)).toBe('');
+  });
+
+  it('does not carry a raw attacker flow into the demo-entry navigation when no active flow exists', () => {
+    runtimeConfigMockState.forceHostedUiOrigin = true;
+    activateStoredHostedTunnelFlow('app.propr.dev', '', memoryStorage(), 'empty-context');
+    const targetWindow = {
+      location: {
+        hostname: 'app.propr.dev',
+        href: 'https://app.propr.dev/login?flow=attacker',
+      },
+    };
+
+    navigateToDemoEntry(targetWindow);
+
+    expect(targetWindow.location.href).toBe('/');
+  });
+
+  it('retains the validated active flow in the hosted demo-entry full-page navigation', () => {
+    runtimeConfigMockState.forceHostedUiOrigin = true;
+    const storage = memoryStorage();
+    resolveApiBaseUrl(
+      'app.propr.dev',
+      '?tunnel=t-demoentry.propr.dev',
+      undefined,
+      undefined,
+      storage,
+      'demo-entry-context'
+    );
+    const flowId = storage.setItem.mock.calls.find(([key]) => key === HOSTED_TUNNEL_FLOW_ID_KEY)?.[1];
+    const targetWindow = {
+      location: {
+        hostname: 'app.propr.dev',
+        href: 'https://app.propr.dev/login',
+      },
+    };
+
+    navigateToDemoEntry(targetWindow);
+
+    expect(targetWindow.location.href).toBe(`/?flow=${flowId}`);
+  });
+
+  it('keeps local demo-entry navigation unchanged even when a hosted flow is active', () => {
+    const storage = memoryStorage();
+    resolveApiBaseUrl(
+      'app.propr.dev',
+      '?tunnel=t-local-demoentry.propr.dev',
+      undefined,
+      undefined,
+      storage,
+      'local-demo-entry-context'
+    );
+    const targetWindow = {
+      location: {
+        hostname: 'localhost',
+        href: 'http://localhost/login',
+      },
+    };
+
+    navigateToDemoEntry(targetWindow);
+
+    expect(targetWindow.location.href).toBe('/');
   });
 });
