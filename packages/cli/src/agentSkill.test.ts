@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -59,6 +59,36 @@ test("parses comma-separated, repeated, and all target selections", () => {
   assert.deepEqual(parseAgentSkillTargets(["codex,claude", "codex"]), ["codex", "claude"]);
   assert.deepEqual(parseAgentSkillTargets(["all"]), AGENT_SKILL_TARGETS);
   assert.throws(() => parseAgentSkillTargets(["unknown"]), /unknown agent skill target/);
+  assert.throws(() => parseAgentSkillTargets(["all,unknown"]), /unknown agent skill target/);
+});
+
+test("allows provider-specific paths for a direct root session", (t) => {
+  t.mock.method(process as unknown as { geteuid: () => number }, "geteuid", () => 0);
+  const locations = resolveAgentSkillLocations(AGENT_SKILL_TARGETS, { HOME: "/root" });
+  assert.deepEqual(
+    locations.map(({ path }) => path),
+    [
+      "/root/.codex/skills/propr",
+      "/root/.claude/skills/propr",
+      "/root/.gemini/antigravity-cli/skills/propr",
+      "/root/.config/opencode/skills/propr",
+      "/root/.vibe/skills/propr",
+    ]
+  );
+});
+
+test("refuses sudo-inherited, non-root, traversal, and broad root-like targets", (t) => {
+  t.mock.method(process as unknown as { geteuid: () => number }, "geteuid", () => 0);
+  assert.throws(() => resolveAgentSkillLocations(["codex"], { HOME: "/root", SUDO_USER: "operator" }), /not through sudo/);
+  assert.throws(() => resolveAgentSkillLocations(["codex"], { HOME: "/root", SUDO_UID: "1000" }), /not through sudo/);
+  assert.throws(() => resolveAgentSkillLocations(["codex"], { HOME: "/" }), /broad root path/);
+  assert.throws(() => resolveAgentSkillLocations(["codex"], { HOME: "/root", CODEX_HOME: "/root" }), /root-owned/);
+  assert.throws(() => resolveAgentSkillLocations(["opencode"], { HOME: "/root", XDG_CONFIG_HOME: "/root" }), /root-owned/);
+  assert.throws(() => resolveAgentSkillLocations(["codex"], { HOME: "/root/../escape" }), /traversal/);
+
+  t.mock.restoreAll();
+  t.mock.method(process as unknown as { geteuid: () => number }, "geteuid", () => 1000);
+  assert.throws(() => resolveAgentSkillLocations(["codex"], { HOME: "/root" }), /root-owned/);
 });
 
 test("fresh install is private and exact reinstall is a no-op", () => {
@@ -93,6 +123,41 @@ test("an unmodified managed older bundle upgrades but a modified copy is refused
   const refused = installAgentSkill("claude", { env, bundleDir: current });
   assert.equal(refused.action, "refused");
   assert.equal(refused.state, "modified-managed");
+});
+
+test("an exact unmanaged copy is adopted and then participates in managed upgrades", () => {
+  const root = temporaryRoot();
+  const env = environment(root);
+  mkdirSync(env.HOME!, { recursive: true });
+  const older = bundle(root, "older unmanaged skill");
+  const current = bundle(root, "current managed skill");
+  const target = resolveAgentSkillLocations(["claude"], env)[0].path;
+  cpSync(older, target, { recursive: true });
+
+  assert.equal(inspectAgentSkills(["claude"], { env, bundleDir: older })[0].state, "current-unmanaged");
+  const adopted = installAgentSkill("claude", { env, bundleDir: older });
+  assert.equal(adopted.action, "adopted");
+  assert.equal(adopted.state, "current-managed");
+  assert.ok(existsSync(join(target, ".propr-managed.json")));
+  assert.equal(statSync(join(target, ".propr-managed.json")).mode & 0o777, 0o600);
+
+  assert.equal(inspectAgentSkills(["claude"], { env, bundleDir: current })[0].state, "outdated-managed");
+  assert.equal(installAgentSkill("claude", { env, bundleDir: current }).action, "updated");
+});
+
+test("never adopts non-exact unmanaged content", () => {
+  const root = temporaryRoot();
+  const env = environment(root);
+  mkdirSync(env.HOME!, { recursive: true });
+  const source = bundle(root, "current skill");
+  const target = resolveAgentSkillLocations(["vibe"], env)[0].path;
+  cpSync(source, target, { recursive: true });
+  writeFileSync(join(target, "SKILL.md"), "modified unmanaged content\n");
+
+  const result = installAgentSkill("vibe", { env, bundleDir: source });
+  assert.equal(result.action, "refused");
+  assert.equal(result.state, "foreign");
+  assert.equal(existsSync(join(target, ".propr-managed.json")), false);
 });
 
 test("foreign content is refused by default and force replacement keeps a timestamped backup", () => {
@@ -156,6 +221,13 @@ test("rejects traversal, root-owned homes, non-directory parents, and skill-pare
   assert.equal(intermediate.action, "refused");
   assert.equal(intermediate.state, "unsafe");
 
+  const directTargetEnv = { HOME: join(root, "direct-target-home") };
+  mkdirSync(join(directTargetEnv.HOME, ".vibe", "skills"), { recursive: true });
+  symlinkSync(outside, join(directTargetEnv.HOME, ".vibe", "skills", "propr"));
+  const directTarget = installAgentSkill("vibe", { env: directTargetEnv, bundleDir: source });
+  assert.equal(directTarget.action, "refused");
+  assert.equal(directTarget.state, "unsafe");
+
   const otherEnv = { HOME: join(root, "other-home"), CODEX_HOME: join(root, "parent-file", "codex") };
   mkdirSync(otherEnv.HOME, { recursive: true });
   writeFileSync(join(root, "parent-file"), "not a directory");
@@ -179,4 +251,18 @@ test("detects an installed tool from PATH without invoking it", () => {
   const env = { ...environment(root), PATH: bin };
   mkdirSync(env.HOME!, { recursive: true });
   assert.deepEqual(detectConfiguredAgentSkillTargets(env).map(({ target }) => target), ["vibe"]);
+});
+
+test("detects Antigravity from PATH as agy without invoking the CLI", () => {
+  const root = temporaryRoot();
+  const bin = join(root, "bin");
+  const invoked = join(root, "invoked");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "agy"), `#!/bin/sh\ntouch "${invoked}"\nexit 99\n`);
+  chmodSync(join(bin, "agy"), 0o700);
+  const env = { ...environment(root), PATH: bin };
+  mkdirSync(env.HOME!, { recursive: true });
+
+  assert.deepEqual(detectConfiguredAgentSkillTargets(env).map(({ target }) => target), ["antigravity"]);
+  assert.equal(existsSync(invoked), false);
 });

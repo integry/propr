@@ -4,6 +4,7 @@ import {
   chmodSync,
   constants,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -11,6 +12,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
@@ -18,6 +20,14 @@ import { fileURLToPath } from "node:url";
 
 export const AGENT_SKILL_TARGETS = ["codex", "claude", "antigravity", "opencode", "vibe"] as const;
 export type AgentSkillTarget = (typeof AGENT_SKILL_TARGETS)[number];
+
+const AGENT_SKILL_EXECUTABLES: Record<AgentSkillTarget, string> = {
+  codex: "codex",
+  claude: "claude",
+  antigravity: "agy",
+  opencode: "opencode",
+  vibe: "vibe",
+};
 
 const MANAGED_FILE = ".propr-managed.json";
 const MANAGER = "propr-cli";
@@ -46,7 +56,7 @@ export interface AgentSkillStatus extends AgentSkillLocation {
 }
 
 export interface AgentSkillOperationResult extends AgentSkillStatus {
-  action: "installed" | "unchanged" | "updated" | "backed-up" | "removed" | "refused" | "failed";
+  action: "installed" | "adopted" | "unchanged" | "updated" | "backed-up" | "removed" | "refused" | "failed";
   backupPath?: string;
 }
 
@@ -98,13 +108,20 @@ function environmentValue(
   throw new Error(`${key} is not set`);
 }
 
-function assertSafeBase(raw: string, label: string): string {
+function assertSafeBase(
+  raw: string,
+  label: string,
+  options: { directRoot: boolean; allowRootBase?: boolean }
+): string {
   if (raw.includes("\0") || raw.split(/[\\/]+/).includes("..")) {
     throw new Error(`${label} contains traversal or invalid characters`);
   }
   if (!isAbsolute(raw)) throw new Error(`${label} must be an absolute path`);
   const base = normalize(raw);
-  if (base === sep || base === "/root" || base.startsWith(`/root${sep}`)) {
+  if (base === sep) throw new Error(`${label} resolves to a broad root path`);
+  const rootOwned = base === "/root" || base.startsWith(`/root${sep}`);
+  const allowedDirectRoot = options.directRoot && (base !== "/root" || options.allowRootBase === true);
+  if (rootOwned && !allowedDirectRoot) {
     throw new Error(`${label} resolves to a root-owned or root-like path`);
   }
   return base;
@@ -119,12 +136,12 @@ function assertNotSudo(env: AgentSkillEnvironment): void {
 export function parseAgentSkillTargets(values: readonly string[]): AgentSkillTarget[] {
   const requested = values.flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
   if (requested.length === 0) throw new Error(`choose at least one target: ${AGENT_SKILL_TARGETS.join(", ")}`);
-  if (requested.includes("all")) return [...AGENT_SKILL_TARGETS];
   const valid = new Set<string>(AGENT_SKILL_TARGETS);
-  const unknown = requested.filter((value) => !valid.has(value));
+  const unknown = requested.filter((value) => value !== "all" && !valid.has(value));
   if (unknown.length > 0) {
     throw new Error(`unknown agent skill target(s): ${unknown.join(", ")} (choose ${AGENT_SKILL_TARGETS.join(", ")})`);
   }
+  if (requested.includes("all")) return [...AGENT_SKILL_TARGETS];
   return [...new Set(requested)] as AgentSkillTarget[];
 }
 
@@ -133,11 +150,12 @@ export function resolveAgentSkillLocation(
   env: AgentSkillEnvironment = process.env
 ): AgentSkillLocation {
   assertNotSudo(env);
-  const home = assertSafeBase(environmentValue(env, "HOME"), "HOME");
+  const directRoot = process.geteuid?.() === 0;
+  const home = assertSafeBase(environmentValue(env, "HOME"), "HOME", { directRoot, allowRootBase: true });
   let toolHome: string;
   switch (target) {
     case "codex":
-      toolHome = assertSafeBase(environmentValue(env, "CODEX_HOME", join(home, ".codex")), "CODEX_HOME");
+      toolHome = assertSafeBase(environmentValue(env, "CODEX_HOME", join(home, ".codex")), "CODEX_HOME", { directRoot });
       break;
     case "claude":
       toolHome = join(home, ".claude");
@@ -146,7 +164,7 @@ export function resolveAgentSkillLocation(
       toolHome = join(home, ".gemini", "antigravity-cli");
       break;
     case "opencode": {
-      const xdg = assertSafeBase(environmentValue(env, "XDG_CONFIG_HOME", join(home, ".config")), "XDG_CONFIG_HOME");
+      const xdg = assertSafeBase(environmentValue(env, "XDG_CONFIG_HOME", join(home, ".config")), "XDG_CONFIG_HOME", { directRoot });
       toolHome = join(xdg, "opencode");
       break;
     }
@@ -189,7 +207,7 @@ export function detectConfiguredAgentSkillTargets(
     } catch {
       // An installed executable still counts even when it has no config yet.
     }
-    return executableOnPath(target, env);
+    return executableOnPath(AGENT_SKILL_EXECUTABLES[target], env);
   });
 }
 
@@ -278,7 +296,10 @@ function assertSafeFilesystemTarget(location: AgentSkillLocation): void {
 
 function readMarker(path: string): ManagedMarker | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(join(path, MANAGED_FILE), "utf8")) as Partial<ManagedMarker>;
+    const markerPath = join(path, MANAGED_FILE);
+    const markerStat = lstatSync(markerPath);
+    if (markerStat.isSymbolicLink() || !markerStat.isFile()) return undefined;
+    const parsed = JSON.parse(readFileSync(markerPath, "utf8")) as Partial<ManagedMarker>;
     if (
       parsed.manager === MANAGER &&
       parsed.schema === MANAGED_SCHEMA &&
@@ -346,8 +367,28 @@ function writeBundle(directory: string, bundle: Bundle): void {
       writeFileSync(output, entry.content!, { mode: 0o600, flag: "wx" });
     }
   }
-  const marker: ManagedMarker = { manager: MANAGER, schema: MANAGED_SCHEMA, contentSha256: bundle.identity };
-  writeFileSync(join(directory, MANAGED_FILE), `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  writeFileSync(join(directory, MANAGED_FILE), managedMarkerContent(bundle.identity), { mode: 0o600, flag: "wx" });
+}
+
+function managedMarkerContent(identity: string): string {
+  const marker: ManagedMarker = { manager: MANAGER, schema: MANAGED_SCHEMA, contentSha256: identity };
+  return `${JSON.stringify(marker, null, 2)}\n`;
+}
+
+/** Add a fully-written marker without ever replacing a concurrently-created file. */
+function writeManagedMarkerAtomically(directory: string, identity: string): void {
+  const markerPath = join(directory, MANAGED_FILE);
+  const temporary = join(directory, `.propr.marker-${process.pid}-${randomBytes(6).toString("hex")}`);
+  try {
+    writeFileSync(temporary, managedMarkerContent(identity), { mode: 0o600, flag: "wx" });
+    linkSync(temporary, markerPath);
+  } finally {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The temporary path may not have been created.
+    }
+  }
 }
 
 function uniqueSibling(path: string, label: string, now = new Date()): string {
@@ -368,8 +409,23 @@ export function installAgentSkill(target: AgentSkillTarget, options: AgentSkillO
   const bundle = loadBundle(options.bundleDir);
   const location = resolveAgentSkillLocation(target, options.env ?? process.env);
   const status = inspectLocation(location, bundle);
-  if (status.state === "current-managed" || status.state === "current-unmanaged") {
-    return { ...status, action: "unchanged", detail: status.state === "current-unmanaged" ? "exact content exists but is not ProPR-managed" : undefined };
+  if (status.state === "current-managed") return { ...status, action: "unchanged" };
+  if (status.state === "current-unmanaged") {
+    try {
+      assertSafeFilesystemTarget(location);
+      const refreshed = inspectLocation(location, bundle);
+      if (refreshed.state !== status.state || refreshed.installedIdentity !== status.installedIdentity) {
+        return operationFailure(refreshed, "failed", "target changed during adoption; inspect it and retry");
+      }
+      writeManagedMarkerAtomically(location.path, bundle.identity);
+      const next = inspectLocation(location, bundle);
+      if (next.state !== "current-managed") {
+        return operationFailure(next, "failed", "target changed during adoption; inspect it and retry");
+      }
+      return { ...next, action: "adopted", detail: "exact existing content is now ProPR-managed" };
+    } catch (error) {
+      return operationFailure(status, "failed", (error as Error).message);
+    }
   }
   if (status.state === "unsafe") return operationFailure(status, "refused", status.detail ?? "unsafe target");
   const replaceable = status.state === "absent" || status.state === "outdated-managed";

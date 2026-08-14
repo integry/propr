@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canRenderInkSetup, offerSetupAgentSkill } from "./setupCommand.js";
+import { canRenderInkSetup, createSetupCommand, offerSetupAgentSkill } from "./setupCommand.js";
 import type { AgentSkillOperationResult, AgentSkillTarget } from "../agentSkill.js";
 
 const rawTty = { isTTY: true, setRawMode() {} };
@@ -84,4 +84,36 @@ test("non-interactive setup never writes agent homes without explicit targets", 
     install: (target) => { explicitInstalls.push(target); return installed(target); },
   });
   assert.deepEqual(explicitInstalls, ["codex", "vibe"]);
+});
+
+test("invalid explicit skill targets fail with the valid target list", async () => {
+  const lines: string[] = [];
+  await assert.rejects(
+    offerSetupAgentSkill({
+      interactive: false,
+      explicitTargets: "nope",
+      env: { HOME: "/tmp/propr-invalid-explicit" },
+      log: (line) => lines.push(line),
+    }),
+    /unknown agent skill target\(s\): nope \(choose codex, claude, antigravity, opencode, vibe\)/
+  );
+  assert.equal(lines.some((line) => line.includes("skipped")), false);
+
+  const errors: string[] = [];
+  const command = createSetupCommand().exitOverride().configureOutput({ writeErr: (text) => errors.push(text) });
+  await assert.rejects(
+    command.parseAsync(["node", "propr", "--install-skill", "nope"]),
+    (error: { code?: string; exitCode?: number }) => error.code === "commander.invalidArgument" && error.exitCode === 1
+  );
+  assert.match(errors.join(""), /choose codex, claude, antigravity, opencode, vibe/);
+});
+
+test("--no-skill conflicts with --install-skill", async () => {
+  const errors: string[] = [];
+  const command = createSetupCommand().exitOverride().configureOutput({ writeErr: (text) => errors.push(text) });
+  await assert.rejects(
+    command.parseAsync(["node", "propr", "--no-skill", "--install-skill", "codex"]),
+    (error: { code?: string; exitCode?: number }) => error.code === "commander.conflictingOption" && error.exitCode === 1
+  );
+  assert.match(errors.join(""), /cannot be used with/);
 });

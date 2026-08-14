@@ -16,7 +16,7 @@
  * {@link runSequentialSetup}.
  */
 
-import { Command } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import { createInterface } from "node:readline/promises";
 import { createConfigManager } from "../config/index.js";
 import type { ConfigManager } from "../config/index.js";
@@ -67,10 +67,12 @@ export async function offerSetupAgentSkill(options: SetupSkillOfferOptions = {})
   if (!explicit && (options.enabled === false || !options.interactive)) return [];
 
   let targets: AgentSkillTarget[];
-  try {
-    if (explicit) {
-      targets = parseAgentSkillTargets([explicit]);
-    } else {
+  if (explicit) {
+    // An explicit operator request is authoritative. Invalid targets must fail
+    // setup instead of being downgraded to a non-fatal interactive skip.
+    targets = parseAgentSkillTargets([explicit]);
+  } else {
+    try {
       const detected = detectConfiguredAgentSkillTargets(env);
       if (detected.length === 0) return [];
       log("");
@@ -79,10 +81,10 @@ export async function offerSetupAgentSkill(options: SetupSkillOfferOptions = {})
       const answer = (await options.ask?.("Install these skills? [Y/n] ")) ?? "";
       if (/^n(?:o)?$/i.test(answer.trim())) return [];
       targets = detected.map(({ target }) => target);
+    } catch (error) {
+      log(`Agent Skill setup skipped: ${(error as Error).message}`);
+      return [];
     }
-  } catch (error) {
-    log(`Agent Skill setup skipped: ${(error as Error).message}`);
-    return [];
   }
 
   const results: AgentSkillOperationResult[] = [];
@@ -154,8 +156,19 @@ export function createSetupCommand(): Command {
     .description("Guided one-time setup for the local ProPR stack")
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
     .option("--no-tui", "Skip the full-screen wizard; prompt line-by-line instead")
-    .option("--install-skill <targets>", "Install the ProPR Operator skill for comma-separated targets")
-    .option("--no-skill", "Do not offer Agent Skill installation")
+    .addOption(
+      new Option("--install-skill <targets>", "Install the ProPR Operator skill for comma-separated targets")
+        .argParser((value) => {
+          try {
+            parseAgentSkillTargets([value]);
+            return value;
+          } catch (error) {
+            throw new InvalidArgumentError((error as Error).message);
+          }
+        })
+        .conflicts("skill")
+    )
+    .addOption(new Option("--no-skill", "Do not offer Agent Skill installation").conflicts("installSkill"))
     .option(
       "--skip-remote-image-check",
       "Skip the slow registry round-trip when checking that stack images exist"
