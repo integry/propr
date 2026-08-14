@@ -6,6 +6,8 @@
 
 export {
   resolveProject,
+  resolveOptionalProject,
+  configureProjectOptionInheritance,
   ProjectResolutionError,
   isValidProjectSlug,
   normalizeProjectSlug,
