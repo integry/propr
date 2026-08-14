@@ -107,6 +107,7 @@ test("forced install fails and preserves both trees when the published bundle is
   fs.writeFileSync(join(target, "SKILL.md"), "foreign\n");
 
   const renames: Array<[fs.PathLike, fs.PathLike]> = [];
+  let injected = false;
   t.mock.module("node:fs", {
     namedExports: {
       ...fs,
@@ -114,9 +115,12 @@ test("forced install fails and preserves both trees when the published bundle is
         renames.push([oldPath, newPath]);
         fs.renameSync(oldPath, newPath);
       },
-      chmodSync(path: fs.PathLike, mode: fs.Mode): void {
-        fs.chmodSync(path, mode);
-        if (path === target) fs.writeFileSync(join(target, "SKILL.md"), "modified concurrently\n");
+      linkSync(existingPath: fs.PathLike, newPath: fs.PathLike): void {
+        fs.linkSync(existingPath, newPath);
+        if (String(newPath) === join(target, ".propr-managed.json")) {
+          injected = true;
+          fs.writeFileSync(join(target, "SKILL.md"), "modified concurrently\n");
+        }
       },
     },
   });
@@ -130,6 +134,7 @@ test("forced install fails and preserves both trees when the published bundle is
     now: new Date("2026-08-14T10:24:00Z"),
   });
 
+  assert.equal(injected, true);
   assert.deepEqual(renames.map(([, newPath]) => newPath), [result.backupPath]);
   assert.equal(result.action, "failed");
   assert.equal(result.state, "modified-managed");

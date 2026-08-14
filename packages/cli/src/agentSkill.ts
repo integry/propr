@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
   accessSync,
-  chmodSync,
   constants,
   existsSync,
   linkSync,
@@ -98,15 +97,15 @@ export interface AgentSkillOptions {
 function environmentValue(
   env: AgentSkillEnvironment,
   key: "HOME" | "CODEX_HOME" | "XDG_CONFIG_HOME",
-  fallback?: string
+  fallback?: () => string
 ): string {
   if (Object.prototype.hasOwnProperty.call(env, key)) {
     const value = env[key];
     if (value?.trim()) return value;
-    if (fallback !== undefined) return fallback;
+    if (fallback !== undefined) return fallback();
     throw new Error(`${key} is empty`);
   }
-  if (fallback !== undefined) return fallback;
+  if (fallback !== undefined) return fallback();
   throw new Error(`${key} is not set`);
 }
 
@@ -162,25 +161,25 @@ export function resolveAgentSkillLocation(
 ): AgentSkillLocation {
   assertNotSudo(env);
   const directRoot = process.geteuid?.() === 0;
-  const home = assertSafeBase(environmentValue(env, "HOME"), "HOME", { directRoot, allowRootBase: true });
+  const home = (): string => assertSafeBase(environmentValue(env, "HOME"), "HOME", { directRoot, allowRootBase: true });
   let toolHome: string;
   switch (target) {
     case "codex":
-      toolHome = assertSafeBase(environmentValue(env, "CODEX_HOME", join(home, ".codex")), "CODEX_HOME", { directRoot });
+      toolHome = assertSafeBase(environmentValue(env, "CODEX_HOME", () => join(home(), ".codex")), "CODEX_HOME", { directRoot });
       break;
     case "claude":
-      toolHome = join(home, ".claude");
+      toolHome = join(home(), ".claude");
       break;
     case "antigravity":
-      toolHome = join(home, ".gemini", "antigravity-cli");
+      toolHome = join(home(), ".gemini", "antigravity-cli");
       break;
     case "opencode": {
-      const xdg = assertSafeBase(environmentValue(env, "XDG_CONFIG_HOME", join(home, ".config")), "XDG_CONFIG_HOME", { directRoot });
+      const xdg = assertSafeBase(environmentValue(env, "XDG_CONFIG_HOME", () => join(home(), ".config")), "XDG_CONFIG_HOME", { directRoot });
       toolHome = join(xdg, "opencode");
       break;
     }
     case "vibe":
-      toolHome = join(home, ".vibe");
+      toolHome = join(home(), ".vibe");
       break;
   }
   const path = resolve(toolHome, "skills", "propr");
@@ -456,11 +455,9 @@ function publishBundleExclusively(directory: string, staged: string, bundle: Bun
       mkdirSync(output, { mode: 0o700 });
     } else {
       linkSync(join(staged, ...entry.path.split("/")), output);
-      chmodSync(output, 0o600);
     }
   }
   linkSync(join(staged, MANAGED_FILE), join(directory, MANAGED_FILE));
-  chmodSync(join(directory, MANAGED_FILE), 0o600);
 }
 
 function managedMarkerContent(identity: string): string {
@@ -666,7 +663,6 @@ function installAgentSkillAtLocation(
         backupPath
       );
     }
-    chmodSync(location.path, 0o700);
     const next = inspectLocation(location, bundle);
     if (next.state !== "current-managed") {
       return preservedFailure(next, "target changed after the new bundle was published and was preserved", backupPath);

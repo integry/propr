@@ -82,6 +82,20 @@ test("blank optional home overrides use their required fallbacks", () => {
   assert.throws(() => resolveAgentSkillLocations(["codex"], { HOME: "" }), /HOME is empty/);
 });
 
+test("explicit Codex and OpenCode roots do not require HOME", () => {
+  const root = temporaryRoot();
+  const overrides = {
+    CODEX_HOME: join(root, "codex-home"),
+    XDG_CONFIG_HOME: join(root, "xdg"),
+  };
+
+  for (const env of [overrides, { ...overrides, HOME: "/" }]) {
+    const byTarget = Object.fromEntries(resolveAgentSkillLocations(["codex", "opencode"], env).map((value) => [value.target, value.path]));
+    assert.equal(byTarget.codex, join(overrides.CODEX_HOME, "skills", "propr"));
+    assert.equal(byTarget.opencode, join(overrides.XDG_CONFIG_HOME, "opencode", "skills", "propr"));
+  }
+});
+
 test("parses comma-separated, repeated, and all target selections", () => {
   assert.deepEqual(parseAgentSkillTargets(["codex,claude", "codex"]), ["codex", "claude"]);
   assert.deepEqual(parseAgentSkillTargets(["all"]), AGENT_SKILL_TARGETS);
