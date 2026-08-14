@@ -97,6 +97,7 @@ test('completed PR comment results close nonterminal task states', async (t) => 
         { status: 'requeued', expected: TaskStates.CANCELLED },
         { status: 'rescheduled', expected: TaskStates.CANCELLED },
         { status: 'failed', expected: TaskStates.FAILED },
+        { status: 'error', expected: TaskStates.FAILED },
     ] as const;
 
     for (const testCase of cases) {
@@ -108,6 +109,34 @@ test('completed PR comment results close nonterminal task states', async (t) => 
                 store,
             );
             assert.equal(result.outcome, 'finalized');
+            assert.equal(store.current().state, testCase.expected);
+        });
+    }
+});
+
+test('issue result mapping only cancels genuinely skipped outcomes', async (t) => {
+    const cases = [
+        { status: 'complete', expected: TaskStates.COMPLETED },
+        { status: 'completed', expected: TaskStates.COMPLETED },
+        { status: 'partial', expected: TaskStates.COMPLETED },
+        { status: 'skipped', expected: TaskStates.CANCELLED },
+        { status: 'cancelled', expected: TaskStates.CANCELLED },
+        { status: 'failed', expected: TaskStates.FAILED },
+        { status: 'error', expected: TaskStates.FAILED },
+        { status: 'requeued', expected: TaskStates.FAILED },
+        { status: 'rescheduled', expected: TaskStates.FAILED },
+        { status: 'unknown', expected: TaskStates.FAILED },
+    ] as const;
+
+    for (const testCase of cases) {
+        await t.test(testCase.status, async () => {
+            const store = createStore(makeTask());
+            await finalizeCompletedPRCommentTask(
+                'task-123',
+                { status: testCase.status, reason: 'issue result' },
+                store,
+                { jobKind: 'issue' },
+            );
             assert.equal(store.current().state, testCase.expected);
         });
     }

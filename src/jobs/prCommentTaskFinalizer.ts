@@ -16,6 +16,9 @@ const TERMINAL_STATES = new Set<TaskState>([
     TaskStates.FAILED,
     TaskStates.CANCELLED,
 ]);
+const SUCCESS_RESULT_STATUSES = new Set(['complete', 'completed', 'partial']);
+const FAILURE_RESULT_STATUSES = new Set(['failed', 'error']);
+const NON_TERMINAL_RESULT_STATUSES = new Set(['requeued', 'rescheduled']);
 
 type TaskStateStore = Pick<
     WorkerStateManager,
@@ -41,8 +44,8 @@ export interface PRCommentTaskFinalizationOptions {
     signal?: AbortSignal;
     /** DB-backed snapshot used when the Redis state key has expired. */
     currentTask?: import('@propr/core').TaskStateData;
-    /** Issue jobs treat label-based skipped outcomes as cancellation. */
-    skippedState?: TaskState;
+    /** Selects the exhaustive processor-result contract used during recovery. */
+    jobKind?: 'issue' | 'pr_comment';
 }
 
 interface FinalTransition {
@@ -65,11 +68,44 @@ async function waitForFinalizationRetry(attempt: number): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, delayMs));
 }
 
+function classifiedResultTransition(
+    status: string | undefined,
+    jobKind: 'issue' | 'pr_comment',
+    reason: string | undefined,
+    historyMetadata: Record<string, unknown>,
+): FinalTransition | undefined {
+    const jobLabel = jobKind === 'issue' ? 'Issue' : 'PR comment';
+    if (SUCCESS_RESULT_STATUSES.has(status ?? '')) {
+        return {
+            state: TaskStates.COMPLETED,
+            metadata: { reason: `${jobLabel} job completed`, historyMetadata },
+        };
+    }
+    if (FAILURE_RESULT_STATUSES.has(status ?? '')) {
+        return failedTransition(reason ?? `${jobLabel} job returned a failed result`, 'bullmq_completed');
+    }
+    if (!NON_TERMINAL_RESULT_STATUSES.has(status ?? '')) return undefined;
+    if (jobKind === 'issue') {
+        return failedTransition(
+            `Issue job returned a non-terminal result: ${status}`,
+            'bullmq_completed',
+        );
+    }
+    return {
+        state: TaskStates.CANCELLED,
+        metadata: {
+            reason: sanitizeErrorMessage(`PR comment job ${status}${reason ? `: ${reason}` : ''}`),
+            historyMetadata,
+        },
+    };
+}
+
 function completedTransition(
     result: JobResult | undefined,
-    skippedState: TaskState = TaskStates.COMPLETED,
+    jobKind: 'issue' | 'pr_comment' = 'pr_comment',
 ): FinalTransition {
     const status = result?.status;
+    const jobLabel = jobKind === 'issue' ? 'Issue' : 'PR comment';
     const safeStatus = sanitizedProcessorText(status);
     const reason = result ? sanitizedProcessorText(result.reason) : undefined;
     const historyMetadata = {
@@ -77,37 +113,30 @@ function completedTransition(
         jobResultStatus: safeStatus ?? null,
         jobResultReason: reason ?? null,
     };
+    const classified = classifiedResultTransition(status, jobKind, reason, historyMetadata);
+    if (classified) return classified;
 
     switch (status) {
-        case 'complete':
-        case 'completed':
-        case 'partial':
         case 'skipped':
             return {
-                state: skippedState,
+                state: jobKind === 'issue' ? TaskStates.CANCELLED : TaskStates.COMPLETED,
                 metadata: {
-                    reason: status === 'skipped'
-                        ? sanitizeErrorMessage(`Task skipped${reason ? `: ${reason}` : ''}`)
-                        : 'PR comment job completed',
+                    reason: sanitizeErrorMessage(`Task skipped${reason ? `: ${reason}` : ''}`),
                     historyMetadata,
                 },
             };
         case 'cancelled':
-        case 'requeued':
-        case 'rescheduled':
             return {
                 state: TaskStates.CANCELLED,
                 metadata: {
-                    reason: sanitizeErrorMessage(`PR comment job ${status}${reason ? `: ${reason}` : ''}`),
+                    reason: sanitizeErrorMessage(`${jobLabel} job ${status}${reason ? `: ${reason}` : ''}`),
                     historyMetadata,
                 },
             };
-        case 'failed':
-            return failedTransition(reason ?? 'PR comment job returned a failed result', 'bullmq_completed');
         default: {
             const diagnostic = status
-                ? `Unexpected PR comment job result status: ${safeStatus ?? '[invalid]'}`
-                : 'PR comment job completed without a result status';
+                ? `Unexpected ${jobLabel} job result status: ${safeStatus ?? '[invalid]'}`
+                : `${jobLabel} job completed without a result status`;
             return failedTransition(diagnostic, 'bullmq_completed');
         }
     }
@@ -171,7 +200,7 @@ export async function finalizeCompletedPRCommentTask(
 ): Promise<PRCommentTaskFinalizationResult> {
     return applyFinalTransition(
         taskId,
-        completedTransition(result, options?.skippedState),
+        completedTransition(result, options?.jobKind),
         stateManager,
         options,
     );

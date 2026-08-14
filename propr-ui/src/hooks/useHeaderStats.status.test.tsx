@@ -102,4 +102,42 @@ describe('useHeaderStats system health', () => {
     expect(result.current.systemHealth.githubEventIntakeStatus).toBe('Unknown');
     expect(result.current.systemHealth.isHealthy).toBe(true);
   });
+
+  it('uses the authoritative live-activity count and exact visible list as one header contract', async () => {
+    const liveItems = ['active', 'waiting', 'delayed', 'prioritized'].map((status) => ({
+      id: `live-${status}`,
+      type: 'task' as const,
+      label: status,
+      repository: 'integry/propr',
+      status: 'Implementing',
+      createdAt: '2026-08-14T12:00:00.000Z',
+    }));
+    vi.mocked(getLiveActivity).mockResolvedValue({
+      items: liveItems,
+      total: liveItems.length,
+      remaining: 0,
+    });
+    vi.mocked(getDrafts).mockResolvedValue({ drafts: [] } as never);
+    vi.mocked(getTasks).mockResolvedValue({
+      tasks: [{ id: 'historical-processing-row', status: 'processing' }],
+    } as never);
+    vi.mocked(getSystemStatus).mockResolvedValue({
+      daemon: 'Running',
+      workers: [{ id: 1, status: 'active' }],
+      redis: 'Connected',
+      githubAuth: 'Authenticated',
+      claudeAuth: 'Failed',
+      indexing: 'Idle',
+      githubEventIntake: 'ProPR Connect',
+      githubEventIntakeStatus: 'Connected',
+      agents: [],
+    });
+
+    const { result } = renderHook(() => useHeaderStats());
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.runningCount).toBe(liveItems.length);
+    expect(result.current.runningItems).toEqual(liveItems);
+    expect(getQueueStats).not.toHaveBeenCalled();
+  });
 });

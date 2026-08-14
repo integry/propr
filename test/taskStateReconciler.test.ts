@@ -156,11 +156,14 @@ test('recovers an expired-Redis issue snapshot and maps a skipped job to cancell
     const options = finalizeCompletedPRCommentTask.mock.calls[0].arguments[3];
     assert.equal(options?.currentTask, issue);
     assert.equal(options?.expectation?.historyId, 41);
-    assert.equal(options?.skippedState, TaskStates.CANCELLED);
+    assert.equal(options?.jobKind, 'issue');
 });
 
-test('leaves live, recent, non-PR, and future-dated work untouched', async () => {
-    const active = makeTask('pr-comments-active');
+test('leaves every live queue state, recent, non-PR, and future-dated work untouched', async () => {
+    const liveTasks = ['active', 'waiting', 'delayed', 'prioritized'].map(state => ({
+        state,
+        task: makeTask(`pr-comments-${state}`),
+    }));
     const recent = makeTask('pr-comments-recent', {
         updatedAt: new Date(NOW - 1_000).toISOString(),
     });
@@ -170,19 +173,28 @@ test('leaves live, recent, non-PR, and future-dated work untouched', async () =>
     const future = makeTask('pr-comments-future', {
         updatedAt: new Date(NOW + 60_000).toISOString(),
     });
+    const inspectContainer = mock.fn(async () => 'not_found' as const);
     const result = await reconcileStalePRCommentTasks({
         queue: {
-            getJob: async taskId => taskId === active.taskId
-                ? { getState: async () => 'active' }
-                : null,
+            getJob: async taskId => {
+                const live = liveTasks.find(candidate => candidate.task.taskId === taskId);
+                return live ? { getState: async () => live.state } : null;
+            },
         },
-        stateManager: createStateManager([active, recent, nonAgentTask, future]),
+        stateManager: createStateManager([
+            ...liveTasks.map(candidate => candidate.task),
+            recent,
+            nonAgentTask,
+            future,
+        ]),
+        inspectContainer,
         now: NOW,
     });
 
-    assert.equal(result.summary.live, 1);
+    assert.equal(result.summary.live, 4);
     assert.equal(result.summary.recovered, 0);
     assert.equal(result.summary.skipped, 3);
+    assert.equal(inspectContainer.mock.calls.length, 0);
     assert.equal(finalizeCompletedPRCommentTask.mock.calls.length, 0);
     assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
 });

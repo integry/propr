@@ -1,7 +1,6 @@
 import {
     inspectExactTaskContainerLivenessForTask,
     logger,
-    TaskStates,
     taskStateExpectation,
     type JobResult,
     type TaskStateData,
@@ -164,7 +163,7 @@ async function finalizeFromJob(
         expectation: taskStateExpectation(task),
         signal,
         currentTask: task,
-        skippedState: taskKind(task) === 'issue' ? TaskStates.CANCELLED : TaskStates.COMPLETED,
+        jobKind: taskKind(task) ?? 'pr_comment',
     };
     if (LIVE_JOB_STATES.has(jobState)) {
         summary.live++;
