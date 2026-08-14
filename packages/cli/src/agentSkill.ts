@@ -602,6 +602,9 @@ function installAgentSkillAtLocation(
     }
     chmodSync(location.path, 0o700);
     const next = inspectLocation(location, bundle);
+    if (next.state !== "current-managed") {
+      return preservedFailure(next, "target changed after the new bundle was published and was preserved", backupPath);
+    }
     return {
       ...next,
       action: status.state === "absent" ? "installed" : "backed-up",
