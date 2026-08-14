@@ -532,10 +532,13 @@ function installAgentSkillWithoutOverwrite(
       if (!sameInspectedTree(refreshed, moved)) {
         return preservedFailure(next, "detached content changed during installation and was not deleted", displaced);
       }
-      rmSync(displaced, { recursive: true, force: true });
-      displaced = undefined;
     }
-    return { ...next, action: status.state === "absent" ? "installed" : "updated" };
+    return {
+      ...next,
+      action: status.state === "absent" ? "installed" : "updated",
+      backupPath: displaced,
+      detail: displaced ? "previous managed content preserved as a backup" : undefined,
+    };
   } catch (error) {
     return preservedFailure(status, (error as Error).message, displaced);
   } finally {
@@ -596,8 +599,10 @@ function installAgentSkillAtLocation(
       renameSync(temporary, location.path);
       temporary = undefined;
     } catch (error) {
-      if (displaced && !existsSync(location.path)) renameSync(displaced, location.path);
-      displaced = undefined;
+      if (displaced && !existsSync(location.path)) {
+        renameSync(displaced, location.path);
+        displaced = undefined;
+      }
       throw error;
     }
     chmodSync(location.path, 0o700);
@@ -611,6 +616,14 @@ function installAgentSkillAtLocation(
       backupPath,
     };
   } catch (error) {
+    if (displaced) {
+      return {
+        ...status,
+        action: "failed",
+        backupPath: displaced,
+        detail: `${(error as Error).message}; original target remains preserved at ${displaced}`,
+      };
+    }
     return operationFailure(status, "failed", (error as Error).message);
   } finally {
     if (temporary) rmSync(temporary, { recursive: true, force: true });
@@ -667,8 +680,13 @@ function removeAgentSkillAtLocation(
     if (!sameInspectedTree(refreshed, moved)) {
       return preservedFailure(status, "target changed before removal and was not deleted", tombstone);
     }
-    rmSync(tombstone, { recursive: true, force: true });
-    return { ...status, state: "absent", action: "removed" };
+    return {
+      ...status,
+      state: "absent",
+      action: "removed",
+      backupPath: tombstone,
+      detail: "target removed; content preserved as a backup",
+    };
   } catch (error) {
     return operationFailure(status, "failed", (error as Error).message);
   }

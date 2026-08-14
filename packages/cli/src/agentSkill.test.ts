@@ -129,7 +129,10 @@ test("an unmodified managed older bundle upgrades but a modified copy is refused
 
   assert.equal(installAgentSkill("claude", { env, bundleDir: older }).action, "installed");
   assert.equal(inspectAgentSkills(["claude"], { env, bundleDir: current })[0].state, "outdated-managed");
-  assert.equal(installAgentSkill("claude", { env, bundleDir: current }).action, "updated");
+  const upgraded = installAgentSkill("claude", { env, bundleDir: current });
+  assert.equal(upgraded.action, "updated");
+  assert.ok(upgraded.backupPath);
+  assert.match(readFileSync(join(upgraded.backupPath!, "SKILL.md"), "utf8"), /older skill/);
 
   const target = resolveAgentSkillLocations(["claude"], env)[0].path;
   writeFileSync(join(target, "SKILL.md"), "user changed this\n");
@@ -236,7 +239,10 @@ test("safe removal accepts only unmodified managed content unless force preserve
   const source = bundle(root, "current skill");
 
   installAgentSkill("opencode", { env, bundleDir: source });
-  assert.equal(removeAgentSkill("opencode", { env, bundleDir: source }).action, "removed");
+  const removed = removeAgentSkill("opencode", { env, bundleDir: source });
+  assert.equal(removed.action, "removed");
+  assert.ok(removed.backupPath);
+  assert.ok(existsSync(join(removed.backupPath!, "SKILL.md")));
   assert.equal(inspectAgentSkills(["opencode"], { env, bundleDir: source })[0].state, "absent");
 
   const target = resolveAgentSkillLocations(["opencode"], env)[0].path;
