@@ -47,6 +47,8 @@ Setup is **safe to re-run at any time**: it re-discovers your environment and sk
 |--------|-------------|
 | `--root <dir>` | Stack root directory where `.env`, `data/`, `logs/`, and `repos/` live (default: current directory) |
 | `--no-tui` | Skip the full-screen wizard and prompt line-by-line instead (use over SSH or in shells without raw-mode support) |
+| `--install-skill <targets>` | Install the ProPR Operator Agent Skill for comma-separated explicit targets |
+| `--no-skill` | Do not offer Agent Skill installation |
 | `--skip-remote-image-check` | Skip the slow registry round-trip that checks whether stack images already exist |
 
 The full-screen wizard requires an interactive terminal. Over SSH or in shells without raw-mode support, setup falls back to line-by-line prompts automatically (or pass `--no-tui`). When stdin is not a terminal at all (piped, redirected, CI), setup cannot prompt and exits with guidance — scaffold non-interactively with `propr init stack`, edit `<root>/.env`, then run `propr start`.
@@ -65,6 +67,8 @@ propr skill install codex claude  # install, adopt an exact copy, or update a ma
 propr skill status                # inspect all target paths and content identities
 propr skill remove codex          # remove an unmodified ProPR-managed copy
 ```
+
+Interactive `propr setup` detects configured tools, shows their exact target paths, and offers installation once; declining the prompt or passing `--no-skill` leaves them unchanged. Setup never installs the skill without this opt-in. When stdin is non-interactive, it does not infer targets or write to agent homes unless `--install-skill <comma-separated-targets>` explicitly names them.
 
 Skill operations refuse unsafe paths and, by default, refuse to overwrite or remove foreign or user-modified content. `propr skill install <targets> --force` first moves replaced content to a timestamped sibling backup. Removal without `--force` accepts only unmodified ProPR-managed copies and preserves the removed tree as a timestamped backup; forced removal also preserves foreign or modified content as a backup rather than deleting it.
 
