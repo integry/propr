@@ -116,7 +116,7 @@ GH_OAUTH_CALLBACK_URL=http://127.0.0.1:${api_port}/api/auth/github/callback
 SESSION_SECRET=sqlite-smoke-only-session-secret-0000000000000000
 GH_OAUTH_CLIENT_ID=smoke-test
 GH_OAUTH_CLIENT_SECRET=smoke-test
-GITHUB_WEBHOOK_SECRET=smoke-test
+GH_WEBHOOK_SECRET=smoke-test
 DOCS_ENABLED=false
 EOF
 }
