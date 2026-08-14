@@ -8,7 +8,6 @@ import { executeDockerCommand, ExecutionResult } from './docker/dockerExecutor.j
 import { wrapDockerRunArgsWithRepoSetup } from './docker/repoSetupWrapper.js';
 import { parseResetTimeFromMessage, calculateNextRoundHourPlus2Minutes } from '../utils/scheduling.js';
 import { createContainerExecutionId } from '../agents/impl/utils/containerExecutionId.js';
-import { getWorktreeOwnershipTargets } from '../git/worktreePermissions.js';
 
 export class UsageLimitError extends Error {
     resetTimestamp: number;
@@ -159,10 +158,9 @@ export function buildClaudePrompt(options: BuildClaudePromptOptions): string {
 
 export async function setWorktreeOwnership(worktreePath: string, issueNumber: number): Promise<void> {
     try {
-        const ownershipTargets = await getWorktreeOwnershipTargets(worktreePath);
-        const result = await executeDockerCommand('sudo', ['chown', '-R', '1000:1000', '--', ...ownershipTargets], { timeout: 10000 });
+        const result = await executeDockerCommand('sudo', ['chown', '-R', '1000:1000', '--', worktreePath], { timeout: 10000 });
         if (result.exitCode !== 0) throw new Error(result.stderr || `chown exited with code ${result.exitCode}`);
-        logger.debug({ issueNumber, worktreePath, ownershipTargets }, 'Set worktree ownership to UID 1000 for container compatibility');
+        logger.debug({ issueNumber, worktreePath }, 'Set worktree ownership to UID 1000 for container compatibility');
     } catch (chownError) {
         logger.warn({ issueNumber, worktreePath, error: (chownError as Error).message }, 'Failed to set worktree ownership - container may have permission issues');
     }
