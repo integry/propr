@@ -18,6 +18,7 @@ import {
 import { scanNonTerminalTaskStates } from './workerStateScan.js';
 import {
     associatePersistedTaskWithJob,
+    readTaskStateWithRecoveryLease,
     restorePersistedTaskState,
     scanRecoverableTaskStates,
     updateDatabaseTaskStateIfCurrent as updateDatabaseState,
@@ -212,10 +213,9 @@ export class WorkerStateManager {
             return { state: transition.state, publication };
         }
 
-        // Serialize the DB fallback with restoration and recheck Redis inside
-        // that boundary before committing.
+        // Serialize the DB fallback with restoration and recheck Redis before committing.
         if (expectation.historyId === undefined) return null;
-        return updateDatabaseState(this.redis, this.getTaskKey(taskId), { taskId, expectation, newState, metadata });
+        return updateDatabaseState(this.redis, this.getTaskKey(taskId), this.stateExpiry, { taskId, expectation, newState, metadata });
     }
 
     /**
@@ -224,10 +224,7 @@ export class WorkerStateManager {
      * @returns Task state or null if not found
      */
     async getTaskState(taskId: string): Promise<TaskStateData | null> {
-        const key = this.getTaskKey(taskId);
-        const stateJson = await this.redis.get(key);
-        if (!stateJson) return null;
-        return JSON.parse(stateJson) as TaskStateData;
+        return readTaskStateWithRecoveryLease(this.redis, this.getTaskKey(taskId));
     }
 
     /**

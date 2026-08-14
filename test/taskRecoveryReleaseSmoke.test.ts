@@ -41,7 +41,8 @@ await database.schema.createTable('task_drafts', table => {
 
 const missingRedis = {
     get: mock.fn(async () => null),
-    eval: mock.fn(async () => 0),
+    set: mock.fn(async () => 'OK'),
+    eval: mock.fn(async (script: string) => script.includes('worker-state-recovery') ? 1 : 0),
     scan: mock.fn(async () => ['0', []]),
     on: mock.fn(),
     disconnect: mock.fn(),
@@ -134,6 +135,7 @@ afterEach(async () => {
     await database('tasks').delete();
     await database('task_drafts').delete();
     missingRedis.get.mock.resetCalls();
+    missingRedis.set.mock.resetCalls();
     missingRedis.eval.mock.resetCalls();
 });
 

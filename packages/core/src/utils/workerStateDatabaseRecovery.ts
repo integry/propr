@@ -13,25 +13,14 @@ import {
     type UpdateMetadata,
 } from './workerStateManager.types.js';
 import { compareAndSetTaskStateData } from './workerStateTransition.js';
+import {
+    withTaskRecoveryReadLease,
+    withTaskRecoveryWriteLease,
+} from './workerStateRecoveryLease.js';
 
 type TaskStateRedis = Pick<InstanceType<typeof Redis>, 'eval' | 'get' | 'set'>;
 
-const taskRecoveryTails = new Map<string, Promise<void>>();
 const MAX_RESTORATION_VALIDATIONS = 8;
-
-async function withTaskRecoveryProtocol<T>(taskId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = taskRecoveryTails.get(taskId) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>(resolve => { release = resolve; });
-    taskRecoveryTails.set(taskId, current);
-    await previous;
-    try {
-        return await operation();
-    } finally {
-        release();
-        if (taskRecoveryTails.get(taskId) === current) taskRecoveryTails.delete(taskId);
-    }
-}
 
 function normalizeTimestamp(value: unknown): string {
     const parsed = new Date(String(value ?? ''));
@@ -92,39 +81,14 @@ function isSamePersistedHistory(left: TaskStateData, right: TaskStateData): bool
     return left.historyId === right.historyId && left.state === right.state;
 }
 
-async function validateRestoredTaskState(
-    redis: TaskStateRedis,
-    key: string,
-    stateExpiry: number,
+async function validatePersistedTaskState(
     restoredState: TaskStateData,
 ): Promise<TaskStateData> {
     let candidate = restoredState;
     for (let attempt = 0; attempt < MAX_RESTORATION_VALIDATIONS; attempt++) {
-        const candidateJson = JSON.stringify(candidate);
-        const ownerJson = await redis.get(key);
-        if (ownerJson !== candidateJson) {
-            if (ownerJson) return JSON.parse(ownerJson) as TaskStateData;
-            throw new Error(`Task state restoration lost Redis ownership for taskId: ${candidate.taskId}`);
-        }
         const latest = await loadPersistedTaskState(candidate.taskId);
         if (!latest) throw new Error(`Persisted task disappeared during restoration: ${candidate.taskId}`);
-        if (isSamePersistedHistory(candidate, latest)) {
-            const verifiedOwnerJson = await redis.get(key);
-            if (verifiedOwnerJson === candidateJson) return candidate;
-            if (verifiedOwnerJson) return JSON.parse(verifiedOwnerJson) as TaskStateData;
-            throw new Error(`Task state restoration lost Redis ownership for taskId: ${candidate.taskId}`);
-        }
-        const replaced = await compareAndSetTaskStateData(redis, {
-            key,
-            stateExpiry,
-            currentJson: candidateJson,
-            state: latest,
-        });
-        if (!replaced) {
-            const winnerJson = await redis.get(key);
-            if (winnerJson) return JSON.parse(winnerJson) as TaskStateData;
-            throw new Error(`Task state restoration raced with removal for taskId: ${candidate.taskId}`);
-        }
+        if (isSamePersistedHistory(candidate, latest)) return candidate;
         candidate = latest;
     }
     throw new Error(`Task state history kept changing during restoration for taskId: ${restoredState.taskId}`);
@@ -136,7 +100,7 @@ export async function restorePersistedTaskState(
     stateExpiry: number,
     taskId: string,
 ): Promise<TaskStateData | null> {
-    return withTaskRecoveryProtocol(taskId, async () => {
+    return withTaskRecoveryReadLease(redis, key, async lease => {
         const existingJson = await redis.get(key);
         if (existingJson) {
             logger.info({ taskId }, 'Task state already exists; preserving the current attempt');
@@ -144,17 +108,33 @@ export async function restorePersistedTaskState(
         }
         const persistedState = await loadPersistedTaskState(taskId);
         if (!persistedState) return null;
+        const validated = await validatePersistedTaskState(persistedState);
+        await lease.assertOwned();
         const restored = await redis.set(
-            key, JSON.stringify(persistedState), 'EX', stateExpiry, 'NX',
+            key, JSON.stringify(validated), 'EX', stateExpiry, 'NX',
         );
         if (restored === 'OK') {
-            const validated = await validateRestoredTaskState(redis, key, stateExpiry, persistedState);
+            await lease.assertOwned();
+            const ownerJson = await redis.get(key);
+            if (ownerJson !== JSON.stringify(validated)) {
+                throw new Error(`Task state restoration lost Redis ownership for taskId: ${taskId}`);
+            }
             logger.info({ taskId, state: validated.state }, 'Restored task state from persisted history');
             return validated;
         }
         const winnerJson = await redis.get(key);
         if (winnerJson) return JSON.parse(winnerJson) as TaskStateData;
         throw new Error(`Task state restoration raced with removal for taskId: ${taskId}`);
+    });
+}
+
+export async function readTaskStateWithRecoveryLease(
+    redis: TaskStateRedis,
+    key: string,
+): Promise<TaskStateData | null> {
+    return withTaskRecoveryReadLease(redis, key, async () => {
+        const stateJson = await redis.get(key);
+        return stateJson ? JSON.parse(stateJson) as TaskStateData : null;
     });
 }
 
@@ -173,15 +153,55 @@ interface DatabaseTaskStateUpdateOptions {
 }
 
 export async function updateDatabaseTaskStateIfCurrent(
-    redis: Pick<TaskStateRedis, 'get'>,
+    redis: TaskStateRedis,
     key: string,
+    stateExpiry: number,
     options: DatabaseTaskStateUpdateOptions,
 ): Promise<TaskStateUpdateResult | null> {
     const { taskId, expectation, newState, metadata } = options;
-    return withTaskRecoveryProtocol(taskId, async () => {
-        if (await redis.get(key)) return null;
-        return updatePersistedTaskStateIfCurrent(taskId, expectation, newState, metadata);
+    return withTaskRecoveryWriteLease(redis, key, async lease => {
+        const redisJson = await redis.get(key);
+        if (redisJson && !matchesPersistedExpectation(redisJson, expectation)) return null;
+        const result = await updatePersistedTaskStateIfCurrent(taskId, expectation, newState, metadata);
+        if (!result) return null;
+        await lease.assertOwned();
+        await installDatabaseFallbackState(redis, {
+            key, stateExpiry, redisJson, state: result.state,
+        });
+        return result;
     });
+}
+
+function matchesPersistedExpectation(redisJson: string, expectation: TaskStateExpectation): boolean {
+    const state = JSON.parse(redisJson) as TaskStateData;
+    return state.state === expectation.state
+        && state.historyId === expectation.historyId
+        && state.correlationId === expectation.correlationId;
+}
+
+async function installDatabaseFallbackState(
+    redis: TaskStateRedis,
+    options: {
+        key: string;
+        stateExpiry: number;
+        redisJson: string | null;
+        state: TaskStateData;
+    },
+): Promise<void> {
+    const { key, stateExpiry, state } = options;
+    let { redisJson } = options;
+    if (!redisJson) {
+        const installed = await redis.set(key, JSON.stringify(state), 'EX', stateExpiry, 'NX');
+        if (installed === 'OK') return;
+        redisJson = await redis.get(key);
+    }
+    if (redisJson && await compareAndSetTaskStateData(redis, {
+        key,
+        stateExpiry,
+        currentJson: redisJson,
+        state,
+    })) return;
+    throw new Error(`Database fallback lost Redis ownership for taskId: ${state.taskId}`);
 }
 
 async function updatePersistedTaskStateIfCurrent(
