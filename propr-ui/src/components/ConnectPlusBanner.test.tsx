@@ -1,10 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { getSystemStatus } from '../api/proprApi';
 import type { ConnectAccountStatus, CurrentUser, SystemStatus } from '../api/proprTypes';
 import { AuthProvider } from '../contexts/AuthContext';
-import { ConnectAccountProvider } from '../contexts/ConnectAccountContext';
+import { ConnectAccountProvider, useConnectAccount } from '../contexts/ConnectAccountContext';
 import {
   ConnectCapacityBanner,
   ConnectSoftPromoBanner,
@@ -73,6 +73,27 @@ function renderBanners(user: CurrentUser = admin, disabled = false) {
   return render(banners(user, disabled));
 }
 
+const TunnelSwitchProbe = ({
+  observations,
+}: {
+  observations: Array<{ search: string; installationId?: number }>;
+}) => {
+  const account = useConnectAccount();
+  const location = useLocation();
+  const navigate = useNavigate();
+  observations.push({ search: location.search, installationId: account?.installationId });
+
+  return (
+    <>
+      <button type="button" onClick={() => navigate('/?flow=connect&tunnel=new-stack')}>
+        Switch tunnel
+      </button>
+      <ConnectCapacityBanner />
+      <ConnectSoftPromoBanner />
+    </>
+  );
+};
+
 beforeEach(() => {
   window.localStorage.clear();
   mockGetSystemStatus.mockReset();
@@ -121,6 +142,33 @@ describe('Connect Plus banners', () => {
     renderBanners(admin, true);
     await waitFor(() => expect(mockGetSystemStatus).not.toHaveBeenCalled());
     expect(screen.queryByText(/Community seats|Open ProPR/)).not.toBeInTheDocument();
+  });
+
+  it('does not expose the previous installation account during a tunnel switch', async () => {
+    const observations: Array<{ search: string; installationId?: number }> = [];
+    mockGetSystemStatus
+      .mockResolvedValueOnce(status(community({ installationId: 42 })))
+      .mockResolvedValueOnce(status());
+    render(
+      <MemoryRouter initialEntries={['/?flow=connect&tunnel=old-stack']}>
+        <AuthProvider user={admin}>
+          <ConnectAccountProvider>
+            <TunnelSwitchProbe observations={observations} />
+          </ConnectAccountProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    await screen.findByRole('link', { name: 'Explore Plus' });
+
+    observations.length = 0;
+    fireEvent.click(screen.getByRole('button', { name: 'Switch tunnel' }));
+
+    expect(observations.filter(({ search }) => search.includes('new-stack'))).not.toContainEqual({
+      search: '?flow=connect&tunnel=new-stack',
+      installationId: 42,
+    });
+    await waitFor(() => expect(mockGetSystemStatus).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('link', { name: 'Explore Plus' })).not.toBeInTheDocument();
   });
 
   it('shows authoritative full capacity globally with an admin upgrade action', async () => {
