@@ -100,4 +100,5 @@ ENTRYPOINT ["/sbin/tini", "--"]
 #   docker run propr/app node dist/src/analysis_worker.js
 #   docker run propr/app node dist/src/indexing_worker.js
 #   docker run propr/app node dist/packages/api/server.js
+#   docker run --rm propr/app node dist/src/migrate.js
 CMD ["node", "dist/src/daemon.js"]

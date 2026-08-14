@@ -75,7 +75,8 @@ jobs:
               --exclude=SC2016 \
               scripts/build-images.sh \
               scripts/ci-redis.sh \
-              scripts/smoke-test-images.sh
+              scripts/smoke-test-images.sh \
+              scripts/smoke-test-sqlite-startup.sh
           } > >(tee -a build_log.txt) 2>&1
 
       - name: Enforce pre-setup validation
