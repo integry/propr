@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getQueueStats, getTasks, getSystemStatus } from '../api/proprApi';
-import type { SystemAgentStatus } from '../api/proprTypes';
+import type { LiveQueueJob, SystemAgentStatus } from '../api/proprTypes';
 import { getDrafts, DraftListItem } from '../api/plannerApi';
 import { useSocket } from '../contexts/useSocket';
 
@@ -30,6 +30,7 @@ interface Task {
 // Running item interface for AI Activity Monitor
 export interface RunningItem {
   id: string;
+  navigationId?: string;
   type: 'plan' | 'task';
   label: string;
   repository: string;
@@ -158,6 +159,33 @@ const getTaskGroupKey = (repoOwner: string, repoName: string, prNumber?: number,
   return '';
 };
 
+function buildRunningItems(drafts: DraftListItem[], activeJobs: LiveQueueJob[]): RunningItem[] {
+  const runningItems: RunningItem[] = drafts
+    .filter(draft => draft.status === 'generating' || draft.status === 'refining')
+    .map(plan => ({
+      id: plan.draft_id,
+      type: 'plan' as const,
+      label: plan.name || plan.initial_prompt || 'Generating Plan',
+      repository: plan.repository,
+      status: plan.status === 'generating' ? 'Generating Spec' : 'Refining',
+      createdAt: plan.created_at,
+    }));
+
+  runningItems.push(...activeJobs.map(job => ({
+    id: job.id,
+    ...(job.taskId ? { navigationId: job.taskId } : {}),
+    type: 'task' as const,
+    label: job.title || `Task ${job.id.slice(0, 8)}`,
+    repository: job.repository,
+    status: 'Implementing',
+    createdAt: job.createdAt,
+  })));
+
+  return runningItems.sort((a, b) =>
+    new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+}
+
 export function useHeaderStats(): HeaderStats {
   const [runningCount, setRunningCount] = useState<number>(0);
   const [runningItems, setRunningItems] = useState<RunningItem[]>([]);
@@ -242,55 +270,30 @@ export function useHeaderStats(): HeaderStats {
         setIsLoading(true);
       }
 
-      // Fetch all data in parallel with smart DB-level pre-filtering
-      const [_queueStats, draftsResponse, tasksResponse, processingTasksResponse, statusResponse] = await Promise.all([
-        getQueueStats(),
-        // Fetch active plans only (exclude merged at DB level - include executed and pr_created for Plans in Focus)
-        getDrafts({ limit: 20, excludeStatuses: 'merged' }),
-        // Fetch review-worthy tasks only (completed/failed, exclude merged at DB level)
-        getTasks({ limit: 30, forReview: true, excludeMerged: true }),
-        // Fetch processing tasks for the AI Activity Monitor
-        getTasks({ status: 'processing', limit: 20 }),
-        getSystemStatus(),
+      // Fetch all data in parallel. Queue failure is isolated so unrelated
+      // generating/refining plan activity can still be represented.
+      const [queueResult, [draftsResponse, tasksResponse, statusResponse]] = await Promise.all([
+        getQueueStats().then(
+          value => ({ activeJobs: value.activeJobs || [], errorMessage: null }),
+          error => ({ activeJobs: [], errorMessage: (error as Error).message })
+        ),
+        Promise.all([
+          // Fetch active plans only (exclude merged at DB level - include executed and pr_created for Plans in Focus)
+          getDrafts({ limit: 20, excludeStatuses: 'merged' }),
+          // Fetch review-worthy tasks only (completed/failed, exclude merged at DB level)
+          getTasks({ limit: 30, forReview: true, excludeMerged: true }),
+          getSystemStatus(),
+        ]),
       ]);
 
       if (!isMountedRef.current) return;
 
-      // 1. Build running items list for AI Activity Monitor
-      const runningItemsList: RunningItem[] = [];
-
-      // Add generating/refining plans
-      const generatingPlans = draftsResponse.drafts.filter(
-        (draft) => draft.status === 'generating' || draft.status === 'refining'
+      // Build running activity from generating/refining plans and authoritative
+      // active queue jobs. Waiting and delayed jobs are intentionally excluded.
+      const runningItemsList = buildRunningItems(
+        draftsResponse.drafts,
+        queueResult.activeJobs
       );
-      generatingPlans.forEach((plan) => {
-        runningItemsList.push({
-          id: plan.draft_id,
-          type: 'plan',
-          label: plan.name || plan.initial_prompt || 'Generating Plan',
-          repository: plan.repository,
-          status: plan.status === 'generating' ? 'Generating Spec' : 'Refining',
-          createdAt: plan.created_at,
-        });
-      });
-
-      // Add processing tasks
-      const processingTasks = (processingTasksResponse as { tasks: Task[] }).tasks || [];
-      processingTasks.forEach((task) => {
-        runningItemsList.push({
-          id: task.id,
-          type: 'task',
-          label: task.title || `Task ${task.id.slice(0, 8)}`,
-          repository: task.repository || `${task.repositoryOwner || 'unknown'}/${task.repositoryName || 'unknown'}`,
-          status: 'Implementing',
-          createdAt: task.createdAt,
-        });
-      });
-
-      // Sort by createdAt descending (newest first)
-      runningItemsList.sort((a, b) => {
-        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-      });
 
       setRunningItems(runningItemsList);
       // Running count should match the actual running items to ensure consistency
@@ -474,7 +477,7 @@ export function useHeaderStats(): HeaderStats {
       };
       setSystemHealth(health);
 
-      setError(null);
+      setError(queueResult.errorMessage);
     } catch (err) {
       if (!isMountedRef.current) return;
       console.error('Failed to fetch header stats:', err);
