@@ -186,7 +186,7 @@ test('createTaskState preserves an existing terminal attempt under retry', async
         attempts: 0,
         history: [],
     };
-    mockRedisInstance.set.mock.mockImplementationOnce(async () => null);
+    mockRedisInstance.set.mock.resetCalls();
     mockRedisInstance.get.mock.mockImplementationOnce(async () => JSON.stringify(existing));
     mockDbTasksInsert.mock.resetCalls();
     mockDbHistoryInsert.mock.resetCalls();
@@ -199,6 +199,7 @@ test('createTaskState preserves an existing terminal attempt under retry', async
     assert.strictEqual(mockDbTasksInsert.mock.calls.length, 0);
     assert.strictEqual(mockDbHistoryInsert.mock.calls.length, 0);
     assert.strictEqual(mockPublishTaskUpdate.mock.calls.length, 0);
+    assert.strictEqual(mockRedisInstance.set.mock.calls.length, 0);
     await stateManager.close();
 });
 
@@ -241,6 +242,120 @@ test('createTaskState restores a terminal database snapshot after Redis expiry',
     assert.equal(result.issueRef.jobId, 'bull-job-1899');
     assert.equal(result.historyId, 7);
     assert.equal(result.correlationId, 'persisted-correlation');
+    assert.equal(mockDbTasksInsert.mock.calls.length, 0);
+    assert.equal(mockDbHistoryInsert.mock.calls.length, 0);
+    assert.equal(mockPublishTaskUpdate.mock.calls.length, 0);
+    await stateManager.close();
+});
+
+test('concurrent createTaskState calls never expose pending while a terminal database lookup is delayed', async () => {
+    const taskId = 'task-concurrent-persisted-terminal';
+    const persistedTask = {
+        task_id: taskId,
+        job_id: 'bull-job-concurrent',
+        correlation_id: 'persisted-concurrent-correlation',
+        repository: 'integry/propr',
+        issue_number: 1899,
+        task_type: 'issue',
+        created_at: '2026-08-14T12:00:00.000Z',
+        initial_job_data: JSON.stringify({
+            number: 1899,
+            repoOwner: 'integry',
+            repoName: 'propr',
+            type: 'issue',
+        }),
+    };
+    const persistedHistory = {
+        history_id: 8,
+        state: TaskStates.COMPLETED,
+        timestamp: '2026-08-14T12:10:00.000Z',
+        reason: 'Task completed successfully',
+        metadata: JSON.stringify({ attempts: 1 }),
+    };
+    let resolveFirstLookupStarted!: () => void;
+    let releaseFirstLookup!: () => void;
+    const firstLookupStarted = new Promise<void>(resolve => { resolveFirstLookupStarted = resolve; });
+    const firstLookupRelease = new Promise<void>(resolve => { releaseFirstLookup = resolve; });
+    let taskLookupCount = 0;
+    let redisValue: string | null = null;
+    const redisCandidates: TaskStateData[] = [];
+    mockRedisInstance.get.mock.mockImplementation(async () => redisValue);
+    mockRedisInstance.set.mock.mockImplementation(async (_key, value) => {
+        redisCandidates.push(JSON.parse(value) as TaskStateData);
+        if (redisValue !== null) return null;
+        redisValue = value;
+        return 'OK';
+    });
+    mockDbTaskFirst.mock.mockImplementation(async () => {
+        taskLookupCount += 1;
+        if (taskLookupCount === 1) {
+            resolveFirstLookupStarted();
+            await firstLookupRelease;
+        }
+        return persistedTask;
+    });
+    mockDbHistoryFirst.mock.mockImplementation(async () => persistedHistory);
+    mockDbTasksInsert.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+
+    const firstManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+    const secondManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+    const issueRef = { number: 1899, repoOwner: 'integry', repoName: 'propr' };
+    const firstResultPromise = firstManager.createTaskState(taskId, issueRef, 'first-correlation');
+
+    try {
+        await firstLookupStarted;
+        const secondResult = await secondManager.createTaskState(taskId, issueRef, 'second-correlation');
+        releaseFirstLookup();
+        const firstResult = await firstResultPromise;
+
+        assert.equal(firstResult.state, TaskStates.COMPLETED);
+        assert.equal(secondResult.state, TaskStates.COMPLETED);
+        assert.equal((JSON.parse(redisValue ?? '') as TaskStateData).state, TaskStates.COMPLETED);
+        assert.deepEqual(redisCandidates.map(candidate => candidate.state), [
+            TaskStates.COMPLETED,
+            TaskStates.COMPLETED,
+        ]);
+        assert.equal(mockDbTasksInsert.mock.calls.length, 0);
+        assert.equal(mockDbHistoryInsert.mock.calls.length, 0);
+        assert.equal(mockPublishTaskUpdate.mock.calls.length, 0);
+    } finally {
+        releaseFirstLookup();
+        await firstResultPromise.catch(() => undefined);
+        mockRedisInstance.get.mock.mockImplementation(async () => null);
+        mockRedisInstance.set.mock.mockImplementation(async (key, value, _mode, ttl) =>
+            mockRedisInstance.setex(key, ttl, value));
+        mockDbTaskFirst.mock.mockImplementation(async () => null);
+        mockDbHistoryFirst.mock.mockImplementation(async () => null);
+        await firstManager.close();
+        await secondManager.close();
+    }
+});
+
+test('createTaskState fails closed before publishing pending when the database lookup fails', async () => {
+    mockRedisInstance.get.mock.mockImplementationOnce(async () => null);
+    mockDbTaskFirst.mock.mockImplementationOnce(async () => {
+        throw new Error('Database lookup failed');
+    });
+    mockRedisInstance.set.mock.resetCalls();
+    mockRedisInstance.setex.mock.resetCalls();
+    mockDbTasksInsert.mock.resetCalls();
+    mockDbHistoryInsert.mock.resetCalls();
+    mockPublishTaskUpdate.mock.resetCalls();
+    const stateManager = new WorkerStateManager({ keyPrefix: TEST_KEY_PREFIX });
+
+    await assert.rejects(
+        stateManager.createTaskState('task-lookup-error', {
+            number: 1899,
+            repoOwner: 'integry',
+            repoName: 'propr',
+        }),
+        { message: 'Database lookup failed' },
+    );
+
+    assert.equal(mockRedisInstance.set.mock.calls.length, 0);
+    assert.equal(mockRedisInstance.setex.mock.calls.length, 0);
     assert.equal(mockDbTasksInsert.mock.calls.length, 0);
     assert.equal(mockDbHistoryInsert.mock.calls.length, 0);
     assert.equal(mockPublishTaskUpdate.mock.calls.length, 0);

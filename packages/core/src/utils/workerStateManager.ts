@@ -57,6 +57,10 @@ export class WorkerStateManager {
      * @returns Task state data
      */
     async createTaskState(taskId: string, issueRef: IssueRef, correlationId: string | null = null): Promise<TaskStateData> {
+        const key = this.getTaskKey(taskId);
+        const persistedState = await restorePersistedTaskState(this.redis, key, this.stateExpiry, taskId);
+        if (persistedState) return persistedState;
+
         const timestamp = new Date().toISOString();
         const state: TaskStateData = {
             taskId, issueRef, correlationId: correlationId ?? generateCorrelationId(),
@@ -64,7 +68,6 @@ export class WorkerStateManager {
             updatedAt: timestamp, version: 1, attempts: 0,
             history: [{ state: TaskStates.PENDING, timestamp, reason: 'Task created' }]
         };
-        const key = this.getTaskKey(taskId);
         const created = await this.redis.set(key, JSON.stringify(state), 'EX', this.stateExpiry, 'NX');
         if (created !== 'OK') {
             const existingJson = await this.redis.get(key);
@@ -74,9 +77,6 @@ export class WorkerStateManager {
             }
             throw new Error(`Task state creation raced with removal for taskId: ${taskId}`);
         }
-
-        const persistedState = await restorePersistedTaskState(this.redis, key, this.stateExpiry, state);
-        if (persistedState) return persistedState;
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId, issueNumber: issueRef.number,

@@ -12,9 +12,8 @@ import {
     type TaskStateUpdateResult,
     type UpdateMetadata,
 } from './workerStateManager.types.js';
-import { compareAndSetTaskStateData } from './workerStateTransition.js';
 
-type TaskStateRedis = Pick<InstanceType<typeof Redis>, 'eval' | 'get'>;
+type TaskStateRedis = Pick<InstanceType<typeof Redis>, 'get' | 'set'>;
 
 function normalizeTimestamp(value: unknown): string {
     const parsed = new Date(String(value ?? ''));
@@ -62,7 +61,7 @@ async function loadPersistedTaskState(taskId: string): Promise<TaskStateData | n
         .where({ task_id: taskId })
         .orderBy('history_id', 'desc')
         .first();
-    if (!latestHistory) return null;
+    if (!latestHistory) throw new Error(`Persisted task has no history for taskId: ${taskId}`);
     return persistedRowToTaskState({
         ...task,
         history_id: latestHistory.history_id,
@@ -75,26 +74,25 @@ export async function restorePersistedTaskState(
     redis: TaskStateRedis,
     key: string,
     stateExpiry: number,
-    initialState: TaskStateData,
+    taskId: string,
 ): Promise<TaskStateData | null> {
-    const persistedState = await loadPersistedTaskState(initialState.taskId);
+    const existingJson = await redis.get(key);
+    if (existingJson) {
+        logger.info({ taskId }, 'Task state already exists; preserving the current attempt');
+        return JSON.parse(existingJson) as TaskStateData;
+    }
+    const persistedState = await loadPersistedTaskState(taskId);
     if (!persistedState) return null;
-    const restored = await compareAndSetTaskStateData(redis, {
-        key,
-        stateExpiry,
-        currentJson: JSON.stringify(initialState),
-        state: persistedState,
-    });
-    if (restored) {
-        logger.info(
-            { taskId: initialState.taskId, state: persistedState.state },
-            'Restored task state from persisted history',
-        );
+    const restored = await redis.set(
+        key, JSON.stringify(persistedState), 'EX', stateExpiry, 'NX',
+    );
+    if (restored === 'OK') {
+        logger.info({ taskId, state: persistedState.state }, 'Restored task state from persisted history');
         return persistedState;
     }
-    const currentJson = await redis.get(key);
-    if (currentJson) return JSON.parse(currentJson) as TaskStateData;
-    throw new Error(`Task state restoration raced with removal for taskId: ${initialState.taskId}`);
+    const winnerJson = await redis.get(key);
+    if (winnerJson) return JSON.parse(winnerJson) as TaskStateData;
+    throw new Error(`Task state restoration raced with removal for taskId: ${taskId}`);
 }
 
 export async function associatePersistedTaskWithJob(taskId: string, jobId: string): Promise<void> {
