@@ -158,6 +158,11 @@ const getTaskGroupKey = (repoOwner: string, repoName: string, prNumber?: number,
   return '';
 };
 
+const settledValue = <T>(result: PromiseSettledResult<T>): T => {
+  if (result.status === 'rejected') throw result.reason;
+  return result.value;
+};
+
 export function useHeaderStats(): HeaderStats {
   const [runningCount, setRunningCount] = useState<number>(0);
   const [runningItems, setRunningItems] = useState<RunningItem[]>([]);
@@ -243,7 +248,7 @@ export function useHeaderStats(): HeaderStats {
       }
 
       // Fetch all data in parallel with smart DB-level pre-filtering
-      const [draftsResponse, tasksResponse, liveActivityResponse, statusResponse] = await Promise.all([
+      const [draftsResult, tasksResult, liveActivityResult, statusResult] = await Promise.allSettled([
         // Fetch active plans only (exclude merged at DB level - include executed and pr_created for Plans in Focus)
         getDrafts({ limit: 20, excludeStatuses: 'merged' }),
         // Fetch review-worthy tasks only (completed/failed, exclude merged at DB level)
@@ -255,12 +260,20 @@ export function useHeaderStats(): HeaderStats {
 
       if (!isMountedRef.current) return;
 
-      // 1. Build running items list for AI Activity Monitor
-      const runningItemsList: RunningItem[] = liveActivityResponse.items;
+      // Live activity is authoritative for the Running indicator. Apply its
+      // result independently so unrelated header request failures cannot erase it.
+      if (liveActivityResult.status === 'fulfilled') {
+        setRunningItems(liveActivityResult.value.items);
+        setRunningCount(liveActivityResult.value.total);
+      } else {
+        setRunningItems([]);
+        setRunningCount(0);
+      }
 
-      setRunningItems(runningItemsList);
-      // Total and visible rows come from the same authoritative backend set.
-      setRunningCount(liveActivityResponse.total);
+      const draftsResponse = settledValue(draftsResult);
+      const tasksResponse = settledValue(tasksResult);
+      settledValue(liveActivityResult);
+      const statusResponse = settledValue(statusResult);
 
       // 2. Process active plans
       // Plans are already pre-filtered at DB level (excludes merged, executed)
@@ -444,10 +457,6 @@ export function useHeaderStats(): HeaderStats {
     } catch (err) {
       if (!isMountedRef.current) return;
       console.error('Failed to fetch header stats:', err);
-      // Live activity must fail closed; never retain a previously fetched count
-      // after authoritative queue/container liveness becomes unavailable.
-      setRunningItems([]);
-      setRunningCount(0);
       setError((err as Error).message);
     } finally {
       if (isMountedRef.current) {

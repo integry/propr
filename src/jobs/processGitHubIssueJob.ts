@@ -71,12 +71,14 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   }
 
   try {
-    await stateManager.createTaskState(taskId, {
+    const createdState = await stateManager.createTaskState(taskId, {
       ...issueRef,
       modelName,
       type: 'issue',
       jobId: typeof jobId === 'string' ? jobId : undefined,
     } as import('@propr/core').IssueRef, correlationId);
+    const terminalResult = getTerminalIssueJobResult(createdState.state, issueRef.number);
+    if (terminalResult) return terminalResult;
     if (typeof jobId === 'string') await stateManager.associateTaskWithJob(taskId, jobId);
   } catch (stateError) {
     correlatedLogger.warn({ taskId, error: (stateError as Error).message }, 'Failed to create task state, continuing anyway');

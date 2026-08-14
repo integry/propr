@@ -80,6 +80,7 @@ await mock.module('@propr/core', {
         taskStateExpectation,
         logger,
         inspectExactTaskContainerLivenessForTask: mock.fn(async () => 'not_found'),
+        inspectLegacyDockerContainerLivenessForTask: mock.fn(async () => 'not_found'),
     },
 });
 

@@ -1,5 +1,6 @@
 import {
     inspectExactTaskContainerLivenessForTask,
+    inspectLegacyDockerContainerLivenessForTask,
     logger,
     taskStateExpectation,
     type JobResult,
@@ -49,6 +50,7 @@ export interface TaskStateReconciliationOptions {
     timeBudgetMs?: number;
     now?: number;
     inspectContainer?: (taskId: string) => Promise<TaskContainerLiveness>;
+    inspectLegacyContainer?: (taskId: string) => Promise<TaskContainerLiveness>;
     backlog?: TaskStateData[];
     signal?: AbortSignal;
 }
@@ -255,6 +257,24 @@ async function reconcileTask(
     if (liveness === 'unavailable' || !jobLookupAvailable) {
         logger.warn({ taskId: task.taskId, jobId, jobLookupAvailable, containerLiveness: liveness },
             'Leaving stale task unchanged; verify BullMQ and Docker connectivity before retrying recovery');
+        summary.errors++;
+        return;
+    }
+
+    // Pre-label containers are not exact enough for counts or destructive
+    // operations, but they conservatively block terminal recovery.
+    const legacyLiveness = await runWithinRemainingBudget(
+        () => (options.inspectLegacyContainer ?? inspectLegacyDockerContainerLivenessForTask)(task.taskId),
+        deadline,
+        signal,
+    );
+    if (legacyLiveness === 'running') {
+        summary.live++;
+        return;
+    }
+    if (legacyLiveness === 'unavailable') {
+        logger.warn({ taskId: task.taskId, jobId, legacyContainerLiveness: legacyLiveness },
+            'Leaving stale task unchanged because legacy container liveness is unavailable');
         summary.errors++;
         return;
     }

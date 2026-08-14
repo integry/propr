@@ -35,6 +35,7 @@ await mock.module('../src/jobs/prCommentTaskFinalizer.js', {
 await mock.module('@propr/core', {
     namedExports: {
         inspectExactTaskContainerLivenessForTask: mock.fn(async () => 'not_found'),
+        inspectLegacyDockerContainerLivenessForTask: mock.fn(async () => 'not_found'),
         TaskStates,
         logger: {
             error: mock.fn(),
@@ -259,24 +260,29 @@ test('leaves future-dated work untouched when the stale threshold is zero', asyn
     assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 0);
 });
 
-test('fails an orphan only when Docker is available and no container is live', async () => {
+test('fails an orphan only when exact and legacy container checks find no live container', async () => {
     const orphan = makeTask('pr-comments-orphan');
     const unavailable = makeTask('pr-comments-unavailable');
     const running = makeTask('pr-comments-running');
+    const inspectContainer = mock.fn(async () => 'not_found' as const);
+    const inspectLegacyContainer = mock.fn(async taskId => {
+        if (taskId === unavailable.taskId) return 'unavailable' as const;
+        if (taskId === running.taskId) return 'running' as const;
+        return 'not_found' as const;
+    });
     const result = await reconcileStalePRCommentTasks({
         queue: { getJob: async () => null },
         stateManager: createStateManager([orphan, unavailable, running]),
-        inspectContainer: async taskId => {
-            if (taskId === unavailable.taskId) return 'unavailable';
-            if (taskId === running.taskId) return 'running';
-            return 'not_found';
-        },
+        inspectContainer,
+        inspectLegacyContainer,
         now: NOW,
     });
 
     assert.equal(result.summary.recovered, 1);
     assert.equal(result.summary.live, 1);
     assert.equal(result.summary.errors, 1);
+    assert.equal(inspectContainer.mock.calls.length, 3);
+    assert.equal(inspectLegacyContainer.mock.calls.length, 3);
     assert.equal(finalizeFailedPRCommentTask.mock.calls.length, 1);
     assert.match(
         finalizeFailedPRCommentTask.mock.calls[0].arguments[1].message,

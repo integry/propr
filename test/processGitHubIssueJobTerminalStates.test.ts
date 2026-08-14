@@ -91,8 +91,16 @@ function stateStore(initialState: TaskState) {
 }
 
 let activeStore = stateStore(TaskStates.PENDING);
+let authenticationError: Error | undefined;
 
 const noOp = mock.fn(async () => undefined);
+const safeAddLabel = mock.fn(async () => undefined);
+const safeRemoveLabel = mock.fn(async () => undefined);
+const updatePlanIssueTaskId = mock.fn(async () => undefined);
+const getAuthenticatedClient = mock.fn(async () => {
+    if (authenticationError) throw authenticationError;
+    return {};
+});
 const logger = {
     debug: mock.fn(),
     info: mock.fn(),
@@ -107,15 +115,15 @@ await mock.module('@propr/core', {
         logger,
         ensureRepoCloned: noOp,
         getRepoUrl: mock.fn(() => 'https://github.com/integry/propr.git'),
-        safeAddLabel: noOp,
-        safeRemoveLabel: noOp,
+        safeAddLabel,
+        safeRemoveLabel,
         ensureGitRepository: noOp,
         UsageLimitError: class UsageLimitError extends Error {},
         validateRepositoryInfo: mock.fn(),
         addModelSpecificDelay: noOp,
         withRetry: mock.fn(async (operation: () => Promise<unknown>) => operation()),
         retryConfigs: { githubApi: {} },
-        updatePlanIssueTaskId: noOp,
+        updatePlanIssueTaskId,
     },
 });
 
@@ -150,7 +158,7 @@ await mock.module('../src/jobs/issueJob/index.js', {
             AI_PRIMARY_TAG: 'AI',
             PR_LABEL: 'propr',
         })),
-        getAuthenticatedClient: mock.fn(async () => ({})),
+        getAuthenticatedClient,
         checkLabelConditions: (labels: string[]) => {
             if (!labels.includes('AI')) return { skip: true, reason: 'Primary tag missing' };
             if (labels.includes('AI-done')) return { skip: true, reason: 'Already done' };
@@ -164,7 +172,7 @@ await mock.module('../src/jobs/issueJob/index.js', {
 
 const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJob.js');
 
-function issueJob(labels: string[]) {
+function issueJob(labels: string[], overrides: Record<string, unknown> = {}) {
     return {
         id: 'issue-job-1898',
         name: 'processGitHubIssue',
@@ -175,6 +183,7 @@ function issueJob(labels: string[]) {
             repoName: 'propr',
             number: 1898,
             issuePayload: { title: 'Header task reconciliation', labels: labels.map(name => ({ name })) },
+            ...overrides,
         },
         updateData: noOp,
         updateProgress: noOp,
@@ -201,13 +210,35 @@ test('processGitHubIssueJob cancels an already-handled label exit', async () => 
     assert.equal(activeStore.current().state, TaskStates.CANCELLED);
 });
 
-test('processGitHubIssueJob preserves an already-completed durable task', async () => {
+test('processGitHubIssueJob returns a terminal task before authentication can fail', async () => {
     activeStore = stateStore(TaskStates.COMPLETED);
+    authenticationError = new Error('GitHub authentication failed');
+    getAuthenticatedClient.mock.resetCalls();
+    updatePlanIssueTaskId.mock.resetCalls();
 
     const result = await processGitHubIssueJob(issueJob(['AI']) as never);
+    authenticationError = undefined;
 
     assert.equal(result.status, 'complete');
     assert.equal(result.reason, 'task_already_completed');
     assert.equal(activeStore.current().state, TaskStates.COMPLETED);
+    assert.equal(getAuthenticatedClient.mock.calls.length, 0);
+    assert.equal(updatePlanIssueTaskId.mock.calls.length, 0);
     assert.equal(activeStore.updateTaskStateIfCurrentDetailed.mock.calls.length, 0);
+});
+
+test('processGitHubIssueJob does not swap labels for a terminal rate-limit retry', async () => {
+    activeStore = stateStore(TaskStates.CANCELLED);
+    safeAddLabel.mock.resetCalls();
+    safeRemoveLabel.mock.resetCalls();
+    getAuthenticatedClient.mock.resetCalls();
+
+    const result = await processGitHubIssueJob(issueJob(['AI'], { isRetryFromRateLimit: true }) as never);
+
+    assert.equal(result.status, 'cancelled');
+    assert.equal(result.reason, 'task_already_cancelled');
+    assert.equal(activeStore.current().state, TaskStates.CANCELLED);
+    assert.equal(getAuthenticatedClient.mock.calls.length, 0);
+    assert.equal(safeRemoveLabel.mock.calls.length, 0);
+    assert.equal(safeAddLabel.mock.calls.length, 0);
 });

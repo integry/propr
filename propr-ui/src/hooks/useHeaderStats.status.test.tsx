@@ -140,4 +140,42 @@ describe('useHeaderStats system health', () => {
     expect(result.current.runningItems).toEqual(liveItems);
     expect(getQueueStats).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['draft request', () => vi.mocked(getDrafts).mockRejectedValue(new Error('drafts unavailable'))],
+    ['review-task request', () => vi.mocked(getTasks).mockRejectedValue(new Error('tasks unavailable'))],
+    ['system-status request', () => vi.mocked(getSystemStatus).mockRejectedValue(new Error('status unavailable'))],
+  ])('preserves successful live activity when the %s fails', async (_name, failRequest) => {
+    const liveItems = [{
+      id: 'live-active',
+      type: 'task' as const,
+      label: 'Active task',
+      repository: 'integry/propr',
+      status: 'Implementing',
+      createdAt: '2026-08-14T12:00:00.000Z',
+    }];
+    vi.mocked(getLiveActivity).mockResolvedValue({ items: liveItems, total: 1, remaining: 0 });
+    vi.mocked(getDrafts).mockResolvedValue({ drafts: [] } as never);
+    vi.mocked(getTasks).mockResolvedValue({ tasks: [] });
+    vi.mocked(getSystemStatus).mockResolvedValue({
+      daemon: 'Running',
+      workers: [{ id: 1, status: 'active' }],
+      redis: 'Connected',
+      githubAuth: 'Authenticated',
+      claudeAuth: 'Failed',
+      indexing: 'Idle',
+      githubEventIntake: 'ProPR Connect',
+      githubEventIntakeStatus: 'Connected',
+      agents: [],
+    });
+    failRequest();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const { result } = renderHook(() => useHeaderStats());
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.runningCount).toBe(1);
+    expect(result.current.runningItems).toEqual(liveItems);
+    consoleError.mockRestore();
+  });
 });
