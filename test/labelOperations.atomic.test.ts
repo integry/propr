@@ -87,6 +87,46 @@ test('exclusive convergence restores the prior model label when a later target a
     assert.deepStrictEqual(result.finalLabels?.sort(), ['AI', 'llm-claude-opus48']);
 });
 
+test('exclusive convergence does not restore when the initial model-label snapshot fails', async () => {
+    const labels = new Set(['AI', 'llm-claude-opus48']);
+    let issueReads = 0;
+    const mutations: string[] = [];
+    const request = mock.fn(async (endpoint: string, options: Record<string, unknown>) => {
+        if (endpoint.startsWith('GET ')) {
+            issueReads += 1;
+            if (issueReads === 1) throw new Error('initial labels unavailable');
+            return { data: { labels: [...labels] } };
+        }
+        if (endpoint.startsWith('DELETE ')) {
+            mutations.push(endpoint);
+            labels.delete(options.name as string);
+            return {};
+        }
+        if (endpoint.startsWith('POST ')) {
+            mutations.push(endpoint);
+            labels.add((options.labels as string[])[0]);
+            return {};
+        }
+        throw new Error(`Unexpected endpoint: ${endpoint}`);
+    });
+
+    const result = await safeUpdateLabels(
+        { octokit: { request }, owner: 'integry', repo: 'propr', issueNumber: 42, logger },
+        ['llm-claude-opus48'],
+        ['llm-codex-gpt56-sol'],
+        {
+            targetLabel: 'llm-codex-gpt56-sol',
+            isManagedLabel: label => label.startsWith('llm-'),
+            maxAttempts: 1,
+        },
+    );
+
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(issueReads, 1);
+    assert.deepStrictEqual(mutations, []);
+    assert.deepStrictEqual([...labels].sort(), ['AI', 'llm-claude-opus48']);
+});
+
 test('exclusive convergence removes an introduced target when verification fails with no prior model label', async () => {
     const labels = new Set(['AI']);
     let issueReads = 0;

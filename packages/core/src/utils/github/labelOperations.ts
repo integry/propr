@@ -164,7 +164,9 @@ async function convergeExclusiveLabel(
     }
 
     results.success = false;
-    await restoreManagedLabels(context, convergence, priorManagedLabels ?? [], results);
+    if (priorManagedLabels !== undefined) {
+        await restoreManagedLabels(context, convergence, priorManagedLabels, results);
+    }
 }
 
 export async function safeRemoveLabel(context: LabelContext, labelName: string): Promise<boolean> {
