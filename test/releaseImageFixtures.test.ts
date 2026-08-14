@@ -9,6 +9,7 @@ import { validateSessionSecret } from '../packages/shared/src/sessionSecret.js';
 const smokeScript = readFileSync('scripts/smoke-test-images.sh', 'utf8');
 const integrationScript = readFileSync('scripts/integration-test-images.sh', 'utf8');
 const antigravityVerificationScript = readFileSync('scripts/verify-antigravity-image.sh', 'utf8');
+const antigravity113VerifierFixturePath = new URL('./fixtures/antigravity-verifier-pinned-1.1.13.json', import.meta.url);
 
 function literalAssignment(source: string, name: string): string {
   const match = source.match(new RegExp(`^${name}=([^\\r\\n]+)$`, 'm'));
@@ -17,7 +18,7 @@ function literalAssignment(source: string, name: string): string {
 }
 
 function runAntigravityVerification(
-  initModelEvidence = 'display-name',
+  initModelEvidence = 'pinned-1.1.13-canonical',
   modelsEvidence = 'mapped',
 ) {
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'propr-antigravity-script-test.'));
@@ -33,17 +34,14 @@ function runAntigravityVerification(
 const { readFileSync } = require('node:fs');
 
 const args = process.argv.slice(2);
+const fixture = JSON.parse(readFileSync(process.env.ANTIGRAVITY_VERIFIER_FIXTURE, 'utf8'));
 if (args[0] === 'image' && args[1] === 'inspect') process.exit(0);
 if (args.at(-1) === '--version') {
-  process.stdout.write('1.1.13\\n');
+  process.stdout.write(\`\${fixture.cliVersion}\\n\`);
   process.exit(0);
 }
 if (args.at(-1) === 'models') {
-  const mappings = [
-    ['gemini-3.7-flash-high', 'Gemini 3.7 Flash (High)'],
-    ['gemini-3.7-flash-medium', 'Gemini 3.7 Flash (Medium)'],
-    ['gemini-3.7-flash-low', 'Gemini 3.7 Flash (Low)'],
-  ];
+  const mappings = fixture.models.map(({ id, displayName }) => [id, displayName]);
   const lines = process.env.FAKE_MODELS_EVIDENCE === 'unmapped'
     ? [...mappings.map(([id]) => id), ...mappings.map(([, name]) => name)]
     : mappings.map(([id, name]) => \`\${id} — \${name}\`);
@@ -59,46 +57,17 @@ if (prompt !== 'Reply with exactly STREAM_OK. Do not use tools.') {
   throw new Error(\`unexpected stdin prompt: \${JSON.stringify(prompt)}\`);
 }
 
-const displayNames = {
-  'gemini-3.7-flash-high': 'Gemini 3.7 Flash (High)',
-  'gemini-3.7-flash-medium': 'Gemini 3.7 Flash (Medium)',
-  'gemini-3.7-flash-low': 'Gemini 3.7 Flash (Low)',
-};
+const modelFixture = fixture.models.find(candidate => candidate.id === modelId);
+if (!modelFixture) throw new Error(\`missing fixture for model: \${modelId}\`);
+const events = JSON.parse(JSON.stringify(modelFixture.stream));
+const init = events.find(event => event.event === 'init');
+if (!init) throw new Error(\`missing init fixture for model: \${modelId}\`);
 const evidence = process.env.FAKE_INIT_MODEL_EVIDENCE;
-const reportedModel = evidence === 'display-name'
-  ? displayNames[modelId]
-  : evidence === 'different-tier'
-    ? (modelId === 'gemini-3.7-flash-high' ? displayNames['gemini-3.7-flash-medium'] : displayNames['gemini-3.7-flash-high'])
-    : evidence === 'alias'
-      ? 'flash37-high'
-      : modelId;
-const init = {
-  event: 'init',
-  conversation_id: 'fixture-conversation',
-  init: { cwd: '/tmp', tools: [] },
-};
-if (evidence !== 'missing') init.init.model = reportedModel;
-const events = [
-  init,
-  {
-    event: 'step_update',
-    step_update: {
-      conversation_id: 'fixture-conversation',
-      step_index: 2,
-      state: 'DONE',
-      step_type: 'agent_response',
-      text_delta: 'STREAM_OK\\n',
-    },
-  },
-  {
-    event: 'result',
-    result: {
-      conversation_id: 'fixture-conversation',
-      status: 'SUCCESS',
-      response: 'STREAM_OK\\n',
-    },
-  },
-];
+if (evidence === 'missing') delete init.init.model;
+else if (evidence === 'different-tier') {
+  init.init.model = fixture.models.find(candidate => candidate.id !== modelId).id;
+} else if (evidence === 'alias') init.init.model = 'flash37-high';
+else if (evidence === 'display-name') init.init.model = modelFixture.displayName;
 process.stdout.write(\`\${events.map(JSON.stringify).join('\\n')}\\n\`);
 `,
   );
@@ -112,6 +81,7 @@ process.stdout.write(\`\${events.map(JSON.stringify).join('\\n')}\\n\`);
         ...process.env,
         AGENT_TAG: 'fake-antigravity-agent',
         ANTIGRAVITY_CONFIG_PATH: configDirectory,
+        ANTIGRAVITY_VERIFIER_FIXTURE: antigravity113VerifierFixturePath.pathname,
         FAKE_INIT_MODEL_EVIDENCE: initModelEvidence,
         FAKE_MODELS_EVIDENCE: modelsEvidence,
         PATH: `${binDirectory}:${process.env.PATH}`,
@@ -156,8 +126,8 @@ test('authenticated image integration verifies every Gemini 3.7 Flash tier witho
   assert.match(antigravityVerificationScript, /event\?\.event === "init"/);
   assert.match(antigravityVerificationScript, /event\.init\?\.model/);
   assert.match(antigravityVerificationScript, /event\?\.type === "init"/);
-  assert.match(antigravityVerificationScript, /EXPECTED_MODEL_DISPLAY="\$display_name"/);
-  assert.match(antigravityVerificationScript, /reportedModel !== process\.env\.EXPECTED_MODEL_DISPLAY/);
+  assert.match(antigravityVerificationScript, /EXPECTED_MODEL_ID="\$model_id"/);
+  assert.match(antigravityVerificationScript, /reportedModel !== process\.env\.EXPECTED_MODEL_ID/);
   assert.match(antigravityVerificationScript, /terminalStatus\.toUpperCase\(\) !== "SUCCESS"/);
   assert.match(antigravityVerificationScript, /EXPECTED_RESPONSE=\$'STREAM_OK\\n'/);
   assert.match(antigravityVerificationScript, /response !== process\.env\.EXPECTED_RESPONSE/);
@@ -168,25 +138,25 @@ test('authenticated image integration verifies every Gemini 3.7 Flash tier witho
   assert.match(integrationScript, /\.\/scripts\/verify-antigravity-image\.sh/);
 });
 
-test('authenticated image verifier accepts captured display-name init.model envelopes', () => {
+test('authenticated image verifier accepts pinned 1.1.13 canonical init.model envelopes', () => {
   const result = runAntigravityVerification();
 
   assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
   for (const id of ['gemini-3.7-flash-high', 'gemini-3.7-flash-medium', 'gemini-3.7-flash-low']) {
-    assert.match(result.stdout, new RegExp(`${id} returned exact sentinel with SUCCESS and reported Gemini 3\\.7 Flash`));
+    assert.match(result.stdout, new RegExp(`${id} returned exact sentinel with SUCCESS and reported ${id}`));
   }
 });
 
-test('authenticated image verifier rejects missing, alias, canonical-ID, and other-tier init.model evidence', () => {
-  for (const evidence of ['missing', 'different-tier', 'alias', 'canonical']) {
+test('authenticated image verifier rejects missing, alias, display-name, and other-tier init.model evidence', () => {
+  for (const evidence of ['missing', 'different-tier', 'alias', 'display-name']) {
     const result = runAntigravityVerification(evidence);
     assert.notEqual(result.status, 0, `${evidence} evidence must not pass`);
-    assert.match(result.stderr, /expected init model "Gemini 3\.7 Flash \(High\)", got/);
+    assert.match(result.stderr, /expected init model "gemini-3\.7-flash-high", got/);
   }
 });
 
 test('authenticated image verifier requires each discovered ID and display name on the same mapping', () => {
-  const result = runAntigravityVerification('display-name', 'unmapped');
+  const result = runAntigravityVerification('pinned-1.1.13-canonical', 'unmapped');
 
   assert.notEqual(result.status, 0);
   assert.match(
