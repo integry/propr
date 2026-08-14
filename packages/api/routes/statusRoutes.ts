@@ -18,6 +18,7 @@ import {
 import type { Agent, AgentConfig, AgentRegistryOperationalStatus } from '@propr/core';
 import path from 'node:path';
 import os from 'node:os';
+import { applyRoutingStatus, parseConnectAccountStatus, type RoutingState } from './connectAccountStatus.js';
 
 interface StatusRoutesDeps {
   redisClient: RedisClientType;
@@ -142,13 +143,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       // default routing_websocket intake path is active. Included only when present
       // so non-routing deployments don't carry an empty field.
       const routing = await getRoutingState(redisClient);
-      if (routing) {
-        const { connectAccount, ...routingDiagnostics } = routing;
-        status.routing = intakeMode === 'routing_websocket' ? routing : routingDiagnostics;
-        if (intakeMode === 'routing_websocket' && routing.connected && routing.connectAccount) {
-          status.connectAccount = connectAccount;
-        }
-      }
+      applyRoutingStatus(status, intakeMode, routing);
 
       // The intake status is a stable, mode-aware health signal for the active
       // GitHub event delivery path so operators can tell a healthy intake from a
@@ -256,27 +251,6 @@ function resolveIntakeStatus(
   }
 }
 
-interface RoutingState {
-  connected: boolean;
-  routingUrl: string;
-  lastDeliveryId: string | null;
-  lastAckAt: string | null;
-  connectAccount?: ConnectAccountStatus;
-}
-
-interface ConnectAccountStatus {
-  installationId: number;
-  accountLogin: string | null;
-  plan: 'community' | 'plus';
-  hasPlusAccess: boolean;
-  activeSeats: number;
-  allowedSeats: number;
-  seatsRemaining: number;
-  billingCycleResetAt: string;
-  seatLimitBlockedAt?: string | null;
-  sentAt: string;
-}
-
 async function getRoutingState(redisClient: RedisClientType): Promise<RoutingState | undefined> {
   try {
     const raw = await redisClient.get(ROUTING_STATUS_REDIS_KEY);
@@ -310,43 +284,6 @@ function parseRoutingState(value: unknown): RoutingState | undefined {
     lastAckAt: state.lastAckAt as string | null,
     ...(connectAccount ? { connectAccount } : {})
   };
-}
-
-function parseConnectAccountStatus(value: unknown): ConnectAccountStatus | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  const account = value as Record<string, unknown>;
-  if (!Number.isSafeInteger(account.installationId) || (account.installationId as number) <= 0
-    || !(account.accountLogin === null
-      || (typeof account.accountLogin === 'string' && account.accountLogin.length > 0 && account.accountLogin.length <= 128))
-    || (account.plan !== 'community' && account.plan !== 'plus')
-    || typeof account.hasPlusAccess !== 'boolean'
-    || !isNonNegativeInteger(account.activeSeats)
-    || !isNonNegativeInteger(account.allowedSeats)
-    || !isNonNegativeInteger(account.seatsRemaining)
-    || !isNullableTimestamp(account.billingCycleResetAt) || account.billingCycleResetAt === null
-    || !(account.seatLimitBlockedAt === undefined || isNullableTimestamp(account.seatLimitBlockedAt))
-    || !isNullableTimestamp(account.sentAt) || account.sentAt === null) return undefined;
-  if ((account.plan === 'plus') !== account.hasPlusAccess) return undefined;
-  if (account.seatsRemaining !== Math.max(0, (account.allowedSeats as number) - (account.activeSeats as number))) return undefined;
-
-  return {
-    installationId: account.installationId as number,
-    accountLogin: account.accountLogin as string | null,
-    plan: account.plan,
-    hasPlusAccess: account.hasPlusAccess,
-    activeSeats: account.activeSeats as number,
-    allowedSeats: account.allowedSeats as number,
-    seatsRemaining: account.seatsRemaining as number,
-    billingCycleResetAt: account.billingCycleResetAt as string,
-    ...(account.seatLimitBlockedAt !== undefined
-      ? { seatLimitBlockedAt: account.seatLimitBlockedAt as string | null }
-      : {}),
-    sentAt: account.sentAt as string
-  };
-}
-
-function isNonNegativeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 // lastAckAt is an ISO-8601 string when present (the routing service produces it
