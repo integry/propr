@@ -211,7 +211,7 @@ const CapacityBannerContent: React.FC<{ account: ConnectAccountStatus }> = ({ ac
             href={connectUpgradeUrl(account.installationId)}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex w-fit shrink-0 items-center justify-center rounded-md border border-amber-700 bg-white px-3 py-1.5 text-sm font-medium text-amber-950 hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-700 focus:ring-offset-2"
+            className="inline-flex w-fit shrink-0 items-center justify-center rounded-md border border-transparent bg-primary-700 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-teal-800 focus:outline-none focus:ring-2 focus:ring-primary-700 focus:ring-offset-2 focus:ring-offset-amber-50"
           >
             Add seats with Plus
           </a>
@@ -244,15 +244,15 @@ const SoftBannerContent: React.FC<{ account: ConnectAccountStatus }> = ({ accoun
       aria-label="ProPR Connect Plus"
       className="relative mx-4 mt-4 min-w-0 rounded-lg border border-slate-300 bg-blue-50 px-3 py-2.5 pr-12 sm:mx-6 sm:px-4 sm:pr-14"
     >
-      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-        <div className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-700 sm:flex">
+      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
+        <div className="mt-0.5 hidden h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-700 sm:flex">
           <Cloud className="h-4 w-4" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-sm font-semibold text-slate-950">Open ProPR securely from anywhere</h2>
-            <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-700 ring-1 ring-inset ring-blue-200">
-              Community
+            <span className="rounded-full bg-primary-700 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white ring-1 ring-inset ring-primary-700">
+              PLUS
             </span>
           </div>
           <p className="mt-0.5 break-words text-sm text-slate-700">
@@ -263,7 +263,7 @@ const SoftBannerContent: React.FC<{ account: ConnectAccountStatus }> = ({ accoun
           href={connectUpgradeUrl(account.installationId)}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex w-fit shrink-0 items-center justify-center rounded-md border border-blue-700 bg-white px-3 py-1.5 text-sm font-medium text-blue-800 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2"
+          className="inline-flex w-fit shrink-0 items-center justify-center rounded-md border border-transparent bg-primary-700 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-teal-800 focus:outline-none focus:ring-2 focus:ring-primary-700 focus:ring-offset-2 focus:ring-offset-blue-50"
         >
           Explore Plus
         </a>

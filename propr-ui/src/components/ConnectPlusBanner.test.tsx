@@ -1,5 +1,5 @@
 import { useLayoutEffect } from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { getSystemStatus } from '../api/proprApi';
@@ -132,7 +132,18 @@ describe('Connect Plus banners', () => {
       'href',
       'https://connect.propr.dev/dashboard?installation_id=42&focus=billing',
     );
-    expect(screen.getByLabelText('ProPR Connect Plus')).toHaveClass('min-w-0');
+    expect(cta).toHaveClass('bg-primary-700', 'text-white', 'focus:ring-2');
+    const promotion = screen.getByLabelText('ProPR Connect Plus');
+    expect(promotion).toHaveClass('min-w-0');
+    expect(within(promotion).getByText('PLUS', { selector: 'span' })).toHaveClass(
+      'bg-primary-700',
+      'text-white',
+      'uppercase',
+    );
+    expect(within(promotion).queryByText('Community', { exact: true })).not.toBeInTheDocument();
+    const cloudContainer = promotion.querySelector('svg')?.parentElement;
+    expect(cloudContainer).toHaveClass('mt-0.5');
+    expect(cloudContainer?.parentElement).toHaveClass('sm:items-start');
   });
 
   it('hides soft promotion for members, Plus, and unknown status', async () => {
@@ -196,10 +207,12 @@ describe('Connect Plus banners', () => {
 
     expect(await screen.findByText('Community seats are full — 5 of 5 active')).toBeInTheDocument();
     expect(screen.getByText(/blocked before receiving a seat/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Add seats with Plus' })).toHaveAttribute(
+    const capacityCta = screen.getByRole('link', { name: 'Add seats with Plus' });
+    expect(capacityCta).toHaveAttribute(
       'href',
       'https://connect.propr.dev/dashboard?installation_id=42&focus=billing',
     );
+    expect(capacityCta).toHaveClass('bg-primary-700', 'text-white', 'focus:ring-2');
     expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
   });
 
@@ -211,6 +224,7 @@ describe('Connect Plus banners', () => {
 
     expect(await screen.findByText('Ask an instance administrator')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Add seats with Plus' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Ask an instance administrator' })).not.toBeInTheDocument();
   });
 
   it('surfaces a recent block without inaccurately calling changed capacity full', async () => {
