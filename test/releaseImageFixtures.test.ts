@@ -35,11 +35,15 @@ test('authenticated image integration verifies every Gemini 3.7 Flash tier witho
   for (const tier of ['High', 'Medium', 'Low']) {
     assert.match(antigravityVerificationScript, new RegExp(`Gemini 3\\.7 Flash \\(${tier}\\)`));
   }
+  assert.match(antigravityVerificationScript, /^set -euo pipefail$/m);
   assert.match(antigravityVerificationScript, /run_agy models/);
+  assert.match(antigravityVerificationScript, /docker run --rm -i \\/);
   assert.match(
     antigravityVerificationScript,
-    /run_agy \\\n\s+--dangerously-skip-permissions \\\n\s+--print \\\n[\s\S]*?--output-format stream-json/,
+    /printf '%s' 'Reply with exactly STREAM_OK\. Do not use tools\.' \|\n\s+run_agy \\\n\s+--dangerously-skip-permissions \\\n\s+--print-timeout 5m \\\n\s+--output-format stream-json \\\n\s+--model "\$model_id"/,
   );
+  assert.doesNotMatch(antigravityVerificationScript, /(?:^|\s)--print(?:\s|\\)/);
+  assert.doesNotMatch(antigravityVerificationScript, /--model "\$model_id" \\/);
   assert.match(antigravityVerificationScript, /event\?\.event === "init"/);
   assert.match(antigravityVerificationScript, /event\.init\?\.model/);
   assert.match(antigravityVerificationScript, /event\?\.type === "init"/);

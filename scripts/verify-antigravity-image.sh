@@ -36,7 +36,7 @@ for relative_path in \
 done
 
 run_agy() {
-  docker run --rm \
+  docker run --rm -i \
     --user "$(id -u):$(id -g)" \
     --env HOME=/tmp/propr-antigravity-home \
     --env AGY_CLI_DISABLE_AUTO_UPDATE=true \
@@ -72,13 +72,14 @@ echo "✓ Antigravity CLI advertises all Gemini 3.7 Flash tiers"
 for model in "${models[@]}"; do
   model_id="${model%%|*}"
   display_name="${model#*|}"
-  invocation_output="$(run_agy \
-    --dangerously-skip-permissions \
-    --print \
-    --print-timeout 5m \
-    --output-format stream-json \
-    --model "$model_id" \
-    'Reply with exactly STREAM_OK. Do not use tools.')"
+  invocation_output="$(
+    printf '%s' 'Reply with exactly STREAM_OK. Do not use tools.' |
+      run_agy \
+        --dangerously-skip-permissions \
+        --print-timeout 5m \
+        --output-format stream-json \
+        --model "$model_id"
+  )"
 
   reported_model="$(EXPECTED_MODEL="$display_name" EXPECTED_RESPONSE=$'STREAM_OK\n' node --input-type=module -e '
     let input = "";
