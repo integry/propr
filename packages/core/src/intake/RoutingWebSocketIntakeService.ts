@@ -50,8 +50,7 @@
  */
 
 import { DEFAULT_PROPR_ROUTING_URL } from '@propr/shared';
-import logger from '../utils/logger.js';
-import { generateCorrelationId } from '../utils/logger.js';
+import logger, { generateCorrelationId } from '../utils/logger.js';
 import { processWebhookEvent } from '../webhook/webhookHandler.js';
 import {
     resolveRoutingPingIntervalMs,
@@ -66,6 +65,7 @@ import {
     DEFAULT_PULL_TIMEOUT_MS,
     DeliveryTracker,
     IGNORED_UNSUPPORTED_DISPOSITION,
+    ROUTING_HUB_PROTOCOL_VERSION,
     WS_OPEN,
     buildAckFrame,
     buildConnectUrl,
@@ -87,6 +87,7 @@ import {
     type RoutingWebSocketStatus,
     type WebSocketCtor,
 } from './routingWebSocketProtocol.js';
+import { ConnectAccountStatusTracker, parseRoutingFrame } from './routingConnectAccountStatus.js';
 
 export type {
     DeliveryAckBilling,
@@ -101,10 +102,12 @@ export type {
     RoutingWebSocketStatus,
     WebSocketCtor,
 } from './routingWebSocketProtocol.js';
+export type { ConnectAccountStatus } from './routingConnectAccountStatus.js';
 
 export class RoutingWebSocketIntakeService {
     private readonly routingUrl: string;
     private readonly relayToken: string;
+    private readonly accountStatus: ConnectAccountStatusTracker;
     private readonly dispatch: RoutingEventDispatch;
     private readonly initialReconnectDelayMs: number;
     private readonly maxReconnectDelayMs: number;
@@ -159,6 +162,8 @@ export class RoutingWebSocketIntakeService {
         this.routingUrl =
             (options.routingUrl ?? process.env.PROPR_ROUTING_URL ?? DEFAULT_PROPR_ROUTING_URL).trim();
         this.relayToken = (options.relayToken ?? process.env.PROPR_GH_RELAY_TOKEN ?? '').trim();
+        this.accountStatus = new ConnectAccountStatusTracker(options.installationId ?? process.env.GH_INSTALLATION_ID,
+            () => this.notifyStatusChange());
         this.dispatch = options.dispatch ?? processWebhookEvent;
         this.initialReconnectDelayMs = options.reconnectDelayMs ?? 1_000;
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
@@ -256,6 +261,7 @@ export class RoutingWebSocketIntakeService {
             this.connected = true;
             logger.info('Routing WebSocket connected. Receiving GitHub events over routing relay.');
             this.keepalive.start(socket);
+            this.accountStatus.open(socket, ROUTING_HUB_PROTOCOL_VERSION, frame => this.send(frame, socket));
             this.notifyStatusChange();
         });
 
@@ -280,6 +286,7 @@ export class RoutingWebSocketIntakeService {
             this.keepalive.stop();
             this.socket = null;
             this.connected = false;
+            this.accountStatus.clear();
             this.notifyStatusChange();
             if (this.stopped) {
                 logger.info('Routing WebSocket closed during shutdown');
@@ -291,18 +298,14 @@ export class RoutingWebSocketIntakeService {
     }
 
     private async handleMessage(data: RawData, socket: MinimalWebSocket): Promise<void> {
-        let frame: RoutingFrame;
-        try {
-            frame = JSON.parse(rawDataToString(data)) as RoutingFrame;
-        } catch (error) {
-            logger.warn(
-                { error: (error as Error).message },
-                'Discarding malformed routing frame (not valid JSON)',
-            );
-            return;
-        }
+        const rawFrame = rawDataToString(data);
+        const frame = parseRoutingFrame(rawFrame);
+        if (!frame) return;
 
         switch (frame.type) {
+            case 'account_status':
+                this.accountStatus.handle(frame, socket, Buffer.byteLength(rawFrame, 'utf8'));
+                return;
             case 'event':
                 // Event frames are processed concurrently (a slow payload pull for
                 // one delivery must not block others). Ordering is safe because the
@@ -567,6 +570,7 @@ export class RoutingWebSocketIntakeService {
             routingUrl: this.routingUrl,
             lastDeliveryId: this.lastDeliveryId,
             lastAckAt: this.lastAckAt === null ? null : new Date(this.lastAckAt).toISOString(),
+            ...(this.accountStatus.current ? { connectAccount: this.accountStatus.current } : {}),
         };
     }
 
@@ -592,6 +596,7 @@ export class RoutingWebSocketIntakeService {
     async stop(): Promise<void> {
         this.stopped = true;
         this.connected = false;
+        this.accountStatus.clear();
         // Clear the start guard so a deliberate stop()/start() cycle can reconnect.
         this.started = false;
 
@@ -636,6 +641,7 @@ export class RoutingWebSocketIntakeService {
     }
 
     private markDisconnected(): void {
+        this.accountStatus.clear();
         if (this.connected) {
             this.connected = false;
             this.notifyStatusChange();
