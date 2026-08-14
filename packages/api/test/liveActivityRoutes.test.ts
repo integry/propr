@@ -250,3 +250,40 @@ test('a reused issue job ID neither revives nor hides a historical execution', a
   assert.equal(result.body.total, 1);
   assert.deepEqual(result.body.items.map(item => item.id), ['new-execution']);
 });
+
+test('legacy PR-comment task without a persisted job ID is not counted again from the queue', async () => {
+  const db = await database();
+  const taskId = 'pr-comment-integry-propr-1899-codex';
+  await db('tasks').insert({
+    task_id: taskId,
+    job_id: null,
+    repository: 'integry/propr',
+    created_at: '2026-08-14T11:00:00.000Z',
+    initial_job_data: JSON.stringify({ type: 'pr_comment', title: 'Address review comment' }),
+  });
+  await db('task_history').insert({ task_id: taskId, state: 'processing' });
+  const job = {
+    id: taskId,
+    name: 'processPullRequestComment',
+    timestamp: Date.parse('2026-08-14T12:00:00.000Z'),
+    data: {
+      repoOwner: 'integry',
+      repoName: 'propr',
+      pullRequestNumber: 1899,
+    },
+    getState: async () => 'waiting',
+  };
+  const routes = createLiveActivityRoutes({
+    db,
+    taskQueue: {
+      getJob: async () => job,
+      getJobs: async () => [job],
+    } as never,
+    inspectContainer: async () => 'not_found',
+  });
+  const result = await invoke(routes.getLiveActivity);
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.total, 1);
+  assert.deepEqual(result.body.items.map(item => item.id), [taskId]);
+});

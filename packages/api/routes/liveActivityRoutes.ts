@@ -52,8 +52,7 @@ function taskLabel(row: Record<string, unknown>): string {
 }
 
 interface QueueActivityCandidate {
-  jobId: string;
-  taskId?: string;
+  job: Job;
   item: LiveActivityItem;
 }
 
@@ -133,8 +132,7 @@ async function findLiveQueuedTaskJobs(deps: LiveActivityRoutesDeps): Promise<Que
       const jobId = String(job.id);
       const taskId = queuedTaskId(job as Job);
       candidates.push({
-        jobId,
-        taskId,
+        job: job as Job,
         item: {
           id: taskId ?? jobId,
           type: 'task',
@@ -235,7 +233,7 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
       // task/history row. Enumerate them directly, then prefer a persisted task
       // only when both records identify the same execution.
       const queuedCandidates = await findLiveQueuedTaskJobs(deps);
-      const persistedExecutions = new Set<string>();
+      const persistedExecutions = new Map<string, Record<string, unknown>>();
 
       const latestHistory = deps.db('task_history')
         .select('task_id')
@@ -253,15 +251,21 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
           .orderBy('t.task_id', 'asc')
           .limit(CANDIDATE_PAGE_SIZE) as Array<Record<string, unknown>>;
         rows.forEach(row => {
-          if (row.job_id) persistedExecutions.add(`${String(row.job_id)}\0${String(row.task_id)}`);
+          persistedExecutions.set(String(row.task_id), row);
         });
         items.push(...await filterLivePage(rows, deps));
         if (rows.length < CANDIDATE_PAGE_SIZE) break;
         afterTaskId = String(rows[rows.length - 1].task_id);
       }
       queuedCandidates.forEach(candidate => {
-        if (candidate.taskId
-          && persistedExecutions.has(`${candidate.jobId}\0${candidate.taskId}`)) return;
+        const data = candidate.job.data as Record<string, unknown>;
+        const authoritativeTaskId = typeof data.taskId === 'string' && data.taskId
+          ? data.taskId
+          : candidate.job.id;
+        const persisted = authoritativeTaskId === undefined
+          ? undefined
+          : persistedExecutions.get(String(authoritativeTaskId));
+        if (persisted && jobMatchesPersistedExecution(candidate.job, persisted)) return;
         items.push(candidate.item);
       });
 
