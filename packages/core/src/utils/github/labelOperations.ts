@@ -44,6 +44,12 @@ interface IssueLabelsResponse {
     data: { labels?: Array<string | { name?: string }> };
 }
 
+interface ManagedLabelRestoration {
+    priorManagedLabels: string[];
+    results: UpdateResults;
+    lease: LabelTransitionLease;
+}
+
 function labelNames(response: IssueLabelsResponse): string[] {
     return (response.data.labels ?? []).flatMap(label =>
         typeof label === 'string' ? [label] : label.name ? [label.name] : []);
@@ -60,10 +66,9 @@ async function readLiveLabels(context: LabelContext): Promise<string[]> {
 async function restoreManagedLabels(
     context: LabelContext,
     convergence: ExclusiveLabelConvergence,
-    priorManagedLabels: string[],
-    results: UpdateResults,
-    lease: LabelTransitionLease,
+    restoration: ManagedLabelRestoration,
 ): Promise<void> {
+    const { priorManagedLabels, results, lease } = restoration;
     await lease.assertOwned();
     const priorLabelNames = new Set(priorManagedLabels.map(label => label.toLowerCase()));
     let liveLabels: string[];
@@ -221,7 +226,7 @@ async function convergeExclusiveLabel(
 
     results.success = false;
     if (priorManagedLabels !== undefined) {
-        await restoreManagedLabels(context, convergence, priorManagedLabels, results, lease);
+        await restoreManagedLabels(context, convergence, { priorManagedLabels, results, lease });
     }
 }
 

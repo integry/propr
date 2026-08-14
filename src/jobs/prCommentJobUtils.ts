@@ -454,11 +454,7 @@ export { buildCompletionComment } from './prCompletionComment.js';
 export type { CommentContext, UndoLinkContext } from './prCompletionComment.js';
 export type { PRFile } from './prFileUtils.js';
 export {
-    fetchPRFiles,
-    fetchPRFileContents,
-    formatPRDiff,
-    formatPRDiffWithMetadata,
-    formatFileContents,
-    agentResultToClaudeResponse,
+    fetchPRFiles, fetchPRFileContents, formatPRDiff, formatPRDiffWithMetadata,
+    formatFileContents, agentResultToClaudeResponse,
 } from './prFileUtils.js';
 export { applyPendingCommentCommandContext } from './prCommentCommandContext.js';
