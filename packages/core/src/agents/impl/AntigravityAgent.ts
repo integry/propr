@@ -57,6 +57,8 @@ function resolveAntigravityModelIdentity(reportedModel: string | undefined, requ
 
 function resolveAntigravityExecutionError(terminalStatus: 'success' | 'error' | undefined, protocolError: string | undefined, hasStreamEnvelopes: boolean, modelIdentityError: string | undefined): string | undefined { return resolveAntigravityProtocolError(terminalStatus, protocolError, hasStreamEnvelopes) ?? modelIdentityError; }
 
+function resolveAntigravityEvidenceConflict(stdoutModel: string | undefined, transcriptModel: string | undefined): string | undefined { const stdout = stdoutModel && normalizeAntigravityModelId(stdoutModel); const transcript = transcriptModel && normalizeAntigravityModelId(transcriptModel); return stdout && transcript && stdout !== transcript ? `Conflicting Antigravity model identities: stdout reported "${stdout}" but transcript reported "${transcript}"` : undefined; }
+
 function buildAgentEnvironmentArgs(
     repositoryInspection: boolean,
     ...sources: Array<Record<string, string> | undefined>
@@ -206,10 +208,9 @@ export class AntigravityAgent implements Agent {
         const conversationLog = filterAntigravityAnalysisEvents(aggregateDeltaMessages(rawConversationLog))
             .map(convertEventToClaudeFormat);
         const tokenUsage = this.mergeTokenUsage(parsedOutput.tokenUsage, sessionOutput.tokenUsage);
-        const modelUsed = parsedOutput.modelUsed || sessionOutput.modelUsed;
-        const terminalStatus = parsedOutput.terminalStatus || sessionOutput.terminalStatus;
-        const protocolError = parsedOutput.protocolError || sessionOutput.protocolError;
-        const hasStreamEnvelopes = parsedOutput.hasStreamEnvelopes || sessionOutput.hasStreamEnvelopes;
+        const modelConflict = resolveAntigravityEvidenceConflict(parsedOutput.modelUsed, sessionOutput.modelUsed); const modelUsed = modelConflict ? undefined : parsedOutput.modelUsed || sessionOutput.modelUsed;
+        const terminalStatus: 'success' | 'error' | undefined = parsedOutput.terminalStatus === 'error' || sessionOutput.terminalStatus === 'error' ? 'error' : parsedOutput.terminalStatus || sessionOutput.terminalStatus;
+        const protocolError = resolveAntigravityProtocolError(parsedOutput.terminalStatus, parsedOutput.protocolError, parsedOutput.hasStreamEnvelopes) ?? resolveAntigravityProtocolError(sessionOutput.terminalStatus, sessionOutput.protocolError, sessionOutput.hasStreamEnvelopes) ?? modelConflict; const hasStreamEnvelopes = parsedOutput.hasStreamEnvelopes || sessionOutput.hasStreamEnvelopes;
         if (sessionId && onSessionId) onSessionId(sessionId, conversationId);
         // rawConversationLog (full agentic trace: file views, searches, command
         // output, code edits) is kept for token estimation; conversationLog is

@@ -9,6 +9,7 @@ import { validateSessionSecret } from '../packages/shared/src/sessionSecret.js';
 const smokeScript = readFileSync('scripts/smoke-test-images.sh', 'utf8');
 const integrationScript = readFileSync('scripts/integration-test-images.sh', 'utf8');
 const antigravityVerificationScript = readFileSync('scripts/verify-antigravity-image.sh', 'utf8');
+const releaseImageWorkflow = readFileSync('.github/workflows/docker-images.yml', 'utf8');
 const antigravity113VerifierFixturePath = new URL('./fixtures/antigravity-verifier-pinned-1.1.13.json', import.meta.url);
 const sqliteStartupScript = readFileSync('scripts/smoke-test-sqlite-startup.sh', 'utf8');
 
@@ -158,6 +159,13 @@ test('authenticated image integration verifies every Gemini 3.7 Flash tier witho
     assert.match(antigravityVerificationScript, new RegExp(id));
   }
   assert.match(integrationScript, /\.\/scripts\/verify-antigravity-image\.sh/);
+});
+
+test('release publication requires authenticated Antigravity verification of the freshly built agent image', () => {
+  assert.match(
+    releaseImageWorkflow,
+    /Build Docker Hub-tagged images[\s\S]+Smoke test Docker Hub images[\s\S]+Verify authenticated Antigravity models from packaged agent image[\s\S]+AGENT_TAG: \$\{\{ env\.DOCKERHUB_NS \}\}\/agent:\$\{\{ steps\.version\.outputs\.version \}\}[\s\S]+\.\/scripts\/verify-antigravity-image\.sh[\s\S]+Stage, preflight, and publish smoke-tested images/,
+  );
 });
 
 test('authenticated image verifier accepts pinned 1.1.13 canonical init.model envelopes', () => {

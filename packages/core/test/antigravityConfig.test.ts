@@ -426,6 +426,54 @@ test('Antigravity agent propagates conversation identity and rejects a terminal 
     assert.deepEqual(callbackIdentity, ['conversation-sanitized', 'conversation-sanitized']);
 });
 
+test('Antigravity agent rejects conflicting stdout success and transcript error evidence', async () => {
+    const stdout = [
+        JSON.stringify({ event: 'init', conversation_id: 'stdout-conversation', init: { model: 'gemini-3.7-flash-high', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'stdout-conversation', status: 'SUCCESS', response: 'must not succeed' } }),
+    ].join('\n');
+    const transcript = [
+        JSON.stringify({ event: 'init', conversation_id: 'transcript-conversation', init: { model: 'gemini-3.7-flash-low', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'transcript-conversation', status: 'ERROR', response: 'provider failed' } }),
+    ].join('\n');
+    const transcriptDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-conflict-'));
+    const transcriptPath = path.join(transcriptDirectory, 'transcript.jsonl');
+    fs.writeFileSync(transcriptPath, transcript);
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as {
+        persistImplementationLog(options: unknown): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+            transcriptPath: string;
+        }): Promise<{ success: boolean; error?: string; modelUsed?: string }>;
+    };
+    internals.persistImplementationLog = async () => undefined;
+
+    try {
+        const result = await internals.processExecutionResult({
+            result: { stdout, stderr: '', exitCode: 0 },
+            executionTime: 10,
+            issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+            effectiveModel: 'antigravity-gemini-3.7-flash-high',
+            prompt: 'test',
+            worktreePath: '/tmp',
+            worktreeGitContent: null,
+            transcriptPath,
+        });
+
+        assert.equal(result.success, false);
+        assert.equal(result.error, 'Antigravity reported an ERROR result');
+        assert.equal(result.modelUsed, 'unknown');
+    } finally {
+        fs.rmSync(transcriptDirectory, { recursive: true, force: true });
+    }
+});
+
 test('Antigravity agent rejects and persists a reported model that differs from the request', async () => {
     const stdout = [
         JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-low', cwd: '/tmp', tools: [] } }),
