@@ -137,6 +137,17 @@ function taskKind(task: TaskStateData): 'issue' | 'pr_comment' | null {
     return null;
 }
 
+function staleTaskKind(
+    task: TaskStateData,
+    options: TaskStateReconciliationOptions,
+): 'issue' | 'pr_comment' | null {
+    const kind = taskKind(task);
+    const age = taskAgeMs(task.updatedAt, options.now);
+    return kind && age !== null && age >= (options.staleMs ?? DEFAULT_RECONCILIATION_STALE_MS)
+        ? kind
+        : null;
+}
+
 export function taskAgeMs(updatedAt: string, now = Date.now()): number | null {
     const timestamp = Date.parse(updatedAt);
     if (!Number.isFinite(timestamp) || timestamp > now) return null;
@@ -228,9 +239,8 @@ async function reconcileTask(
     context: ReconciliationRunContext,
 ): Promise<void> {
     const { options, summary, deadline, signal } = context;
-    const age = taskAgeMs(task.updatedAt, options.now);
-    const kind = taskKind(task);
-    if (!kind || age === null || age < (options.staleMs ?? DEFAULT_RECONCILIATION_STALE_MS)) {
+    const kind = staleTaskKind(task, options);
+    if (!kind) {
         summary.skipped++;
         return;
     }

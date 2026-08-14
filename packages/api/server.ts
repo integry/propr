@@ -196,8 +196,7 @@ function createDemoTaskQueue(): Queue {
     getCompletedCount: async () => 0,
     getFailedCount: async () => 0,
     getDelayedCount: async () => 0,
-    getJob: async () => null,
-    getJobs: async () => [],
+    getJob: async () => null, getJobs: async () => [],
   } as unknown as Queue;
 }
 
