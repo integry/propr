@@ -152,6 +152,11 @@ export function createKnexConfigForMigrations(): Record<KnexEnvironment, Knex.Co
 }
 
 export async function runMigrations(): Promise<void> {
+    if (process.env.PROPR_MIGRATIONS_PREAPPLIED === '1') {
+        logger.info('Database migrations were completed by the launcher migration phase');
+        return;
+    }
+
     try {
         logger.info('Running database migrations...');
 

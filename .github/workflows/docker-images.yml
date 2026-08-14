@@ -273,6 +273,12 @@ jobs:
           EXPECTED_VERSION: ${{ steps.version.outputs.version }}
         run: npm run images:smoke
 
+      - name: Validate serialized SQLite startup with packaged images
+        env:
+          APP_TAG: ${{ env.DOCKERHUB_NS }}/app:${{ steps.version.outputs.version }}
+          LAUNCHER_TAG: ${{ env.DOCKERHUB_NS }}/launcher:${{ steps.version.outputs.version }}
+        run: npm run images:smoke:sqlite-startup
+
       - name: Login to Docker Hub
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
