@@ -62,7 +62,8 @@ export async function withLabelTransitionLease<T>(
         try {
             acquired = await redis.set(key, token, 'PX', timing.ttlMs, 'NX') === 'OK';
         } catch (error) {
-            throw new LabelTransitionLeaseError('Failed to acquire PR label transition lease', { cause: error });
+            const detail = error instanceof Error ? error.message : String(error);
+            throw new LabelTransitionLeaseError(`Failed to acquire PR label transition lease: ${detail}`, { cause: error });
         }
         if (acquired) break;
         if (Date.now() >= deadline) throw new LabelTransitionLeaseError('Timed out waiting for PR label transition lease');
