@@ -14,6 +14,8 @@ await mock.module('@propr/core', {
         getPendingPrCommentsKey: (owner: string, repo: string, pr: number) => `pending-pr-comments:${owner}:${repo}:${pr}`,
         getUnprocessedCommentIdentity: (comment: { type: string; id: number; updatedAt?: string; createdAt?: string }) =>
             `${comment.type}:${comment.id}:${comment.updatedAt ?? comment.createdAt ?? ''}`,
+        getUnprocessedCommentRevisionIdentity: (comment: { updatedAt?: string; createdAt?: string }) =>
+            comment.updatedAt ?? comment.createdAt ?? '',
         dedupeUnprocessedComments: (comments: Array<{ type: string; id: number; updatedAt?: string; createdAt?: string }>) =>
             comments.filter((comment, index) => comments.findIndex(candidate =>
                 `${candidate.type}:${candidate.id}:${candidate.updatedAt ?? candidate.createdAt ?? ''}`
