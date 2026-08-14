@@ -8,7 +8,7 @@ import {
   logger, TaskStates, ensureRepoCloned, getRepoUrl, safeAddLabel, safeRemoveLabel, ensureGitRepository,
   UsageLimitError, validateRepositoryInfo, addModelSpecificDelay, withRetry, retryConfigs, updatePlanIssueTaskId
 } from '@propr/core';
-import type { IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult } from '@propr/core';
+import type { IssueJobData, JobResult, WorktreeInfo, ClaudeCodeResponse, CommitResult, RepoValidationResult, TaskStateData } from '@propr/core';
 import { handleDispatch } from './issueJobDispatcher.js';
 import { handleUsageLimitError, handleGenericError, updateTaskTitleInStorage, buildFinalResult } from './issueJobHelpers.js';
 import type { GenericErrorOptions, PostProcessingResult } from './issueJobHelpers.js';
@@ -31,6 +31,21 @@ function getTerminalIssueJobResult(state: string, issueNumber: number): JobResul
     return { status: 'failed', reason: 'task_already_failed', issueNumber };
   }
   return undefined;
+}
+
+function isBullMQRetryOfFailedTask(state: TaskStateData, job: Job<IssueJobData>): boolean {
+  if (state.state !== TaskStates.FAILED || job.attemptsMade < 1 || job.id === undefined) return false;
+  const stateJobId = state.issueRef.jobId;
+  return stateJobId === undefined || String(stateJobId) === String(job.id);
+}
+
+function getInitialIssueJobResult(
+  state: TaskStateData,
+  job: Job<IssueJobData>,
+  issueNumber: number,
+): JobResult | undefined {
+  if (isBullMQRetryOfFailedTask(state, job)) return undefined;
+  return getTerminalIssueJobResult(state.state, issueNumber);
 }
 
 async function handleIssueJobError(
@@ -77,7 +92,7 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
       type: 'issue',
       jobId: typeof jobId === 'string' ? jobId : undefined,
     } as import('@propr/core').IssueRef, correlationId);
-    const terminalResult = getTerminalIssueJobResult(createdState.state, issueRef.number);
+    const terminalResult = getInitialIssueJobResult(createdState, job, issueRef.number);
     if (terminalResult) return terminalResult;
     if (typeof jobId === 'string') await stateManager.associateTaskWithJob(taskId, jobId);
   } catch (stateError) {
@@ -131,7 +146,10 @@ export async function processGitHubIssueJob(job: Job<IssueJobData>): Promise<Job
   let commitResult: CommitResult | null = null;
 
   try {
-    const processingState = await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, { reason: 'Starting issue processing' });
+    const processingState = await stateManager.updateTaskState(taskId, TaskStates.PROCESSING, {
+      reason: 'Starting issue processing',
+      isRetry: job.attemptsMade > 0,
+    });
     const terminalResult = getTerminalIssueJobResult(processingState.state, issueRef.number);
     if (terminalResult) return terminalResult;
 

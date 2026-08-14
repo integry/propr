@@ -287,3 +287,56 @@ test('legacy PR-comment task without a persisted job ID is not counted again fro
   assert.equal(result.body.total, 1);
   assert.deepEqual(result.body.items.map(item => item.id), [taskId]);
 });
+
+test('deduplicates a task initialized after queue enumeration', async () => {
+  const db = await database();
+  const taskId = 'integry-propr-1898-codex-gpt-5-racing-correlation';
+  const jobData = {
+    isChildJob: true,
+    repoOwner: 'integry',
+    repoName: 'propr',
+    number: 1898,
+    agentAlias: 'codex',
+    modelName: 'gpt-5',
+    correlationId: 'racing-correlation',
+  };
+  let initialized = false;
+  const refreshedJob = {
+    id: 'issue-job-1898',
+    name: 'processGitHubIssue',
+    timestamp: Date.parse('2026-08-14T12:00:00.000Z'),
+    data: { ...jobData, taskId },
+    getState: async () => 'active',
+  };
+  const enumeratedJob = {
+    ...refreshedJob,
+    data: jobData,
+    getState: async () => {
+      if (!initialized) {
+        await db('tasks').insert({
+          task_id: taskId,
+          job_id: 'issue-job-1898',
+          repository: 'integry/propr',
+          created_at: '2026-08-14T12:00:00.000Z',
+          initial_job_data: JSON.stringify({ type: 'issue', title: 'Racing initialization' }),
+        });
+        await db('task_history').insert({ task_id: taskId, state: 'processing' });
+        initialized = true;
+      }
+      return 'active';
+    },
+  };
+  const routes = createLiveActivityRoutes({
+    db,
+    taskQueue: {
+      getJobs: async () => [enumeratedJob],
+      getJob: async () => initialized ? refreshedJob : enumeratedJob,
+    } as never,
+    inspectContainer: async () => 'not_found',
+  });
+  const result = await invoke(routes.getLiveActivity);
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.total, 1);
+  assert.deepEqual(result.body.items.map(item => item.id), [taskId]);
+});

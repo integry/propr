@@ -49,7 +49,10 @@ function stateStore(initialState: TaskState) {
         newState: TaskState,
         metadata: UpdateMetadata = {},
     ) => {
-        if (terminal.has(current.state)) return structuredClone(current);
+        const isExplicitFailedRetry = current.state === TaskStates.FAILED
+            && newState === TaskStates.PROCESSING
+            && metadata.isRetry === true;
+        if (terminal.has(current.state) && !isExplicitFailedRetry) return structuredClone(current);
         const nextTimestamp = new Date(Date.parse(current.updatedAt) + 1).toISOString();
         current = {
             ...current,
@@ -175,6 +178,7 @@ const { processGitHubIssueJob } = await import('../src/jobs/processGitHubIssueJo
 function issueJob(labels: string[], overrides: Record<string, unknown> = {}) {
     return {
         id: 'issue-job-1898',
+        attemptsMade: 0,
         name: 'processGitHubIssue',
         data: {
             isChildJob: true,
@@ -227,6 +231,20 @@ test('processGitHubIssueJob returns a terminal task before authentication can fa
     assert.equal(activeStore.updateTaskStateIfCurrentDetailed.mock.calls.length, 0);
 });
 
+test('processGitHubIssueJob preserves an exhausted failed task', async () => {
+    activeStore = stateStore(TaskStates.FAILED);
+    authenticationError = new Error('GitHub authentication failed');
+    getAuthenticatedClient.mock.resetCalls();
+
+    const result = await processGitHubIssueJob(issueJob(['AI']) as never);
+    authenticationError = undefined;
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.reason, 'task_already_failed');
+    assert.equal(activeStore.current().state, TaskStates.FAILED);
+    assert.equal(getAuthenticatedClient.mock.calls.length, 0);
+});
+
 test('processGitHubIssueJob does not swap labels for a terminal rate-limit retry', async () => {
     activeStore = stateStore(TaskStates.CANCELLED);
     safeAddLabel.mock.resetCalls();
@@ -241,4 +259,25 @@ test('processGitHubIssueJob does not swap labels for a terminal rate-limit retry
     assert.equal(getAuthenticatedClient.mock.calls.length, 0);
     assert.equal(safeRemoveLabel.mock.calls.length, 0);
     assert.equal(safeAddLabel.mock.calls.length, 0);
+});
+
+test('processGitHubIssueJob resumes processing after a transient BullMQ attempt failure', async () => {
+    activeStore = stateStore(TaskStates.PENDING);
+    authenticationError = new Error('Transient GitHub authentication failure');
+    getAuthenticatedClient.mock.resetCalls();
+
+    await assert.rejects(
+        processGitHubIssueJob(issueJob([]) as never),
+        authenticationError,
+    );
+    assert.equal(activeStore.current().state, TaskStates.FAILED);
+
+    authenticationError = undefined;
+    const result = await processGitHubIssueJob({ ...issueJob([]), attemptsMade: 1 } as never);
+
+    assert.equal(result.status, 'skipped');
+    assert.equal(getAuthenticatedClient.mock.calls.length, 2);
+    assert.equal(activeStore.current().state, TaskStates.CANCELLED);
+    assert.equal(activeStore.updateTaskState.mock.calls.some(call =>
+        call.arguments[1] === TaskStates.PROCESSING && call.arguments[2]?.isRetry === true), true);
 });

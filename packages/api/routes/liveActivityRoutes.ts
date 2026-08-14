@@ -257,17 +257,16 @@ export function createLiveActivityRoutes(deps: LiveActivityRoutesDeps) {
         if (rows.length < CANDIDATE_PAGE_SIZE) break;
         afterTaskId = String(rows[rows.length - 1].task_id);
       }
-      queuedCandidates.forEach(candidate => {
-        const data = candidate.job.data as Record<string, unknown>;
-        const authoritativeTaskId = typeof data.taskId === 'string' && data.taskId
-          ? data.taskId
-          : candidate.job.id;
-        const persisted = authoritativeTaskId === undefined
+      for (const candidate of queuedCandidates) {
+        const refreshedJob = candidate.job.id === undefined
           ? undefined
-          : persistedExecutions.get(String(authoritativeTaskId));
-        if (persisted && jobMatchesPersistedExecution(candidate.job, persisted)) return;
-        items.push(candidate.item);
-      });
+          : await deps.taskQueue.getJob(String(candidate.job.id));
+        const authoritativeJob = (refreshedJob as Job | undefined) ?? candidate.job;
+        const authoritativeTaskId = queuedTaskId(authoritativeJob) ?? candidate.item.id;
+        const persisted = persistedExecutions.get(authoritativeTaskId);
+        if (persisted && jobMatchesPersistedExecution(authoritativeJob, persisted)) continue;
+        items.push({ ...candidate.item, id: authoritativeTaskId });
+      }
 
       items.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
       const visibleItems = items.slice(0, limit);
