@@ -28,7 +28,7 @@ const readDismissal = (key: string): DismissalRecord => {
       capacity: Array.isArray(record.capacity)
         ? record.capacity.filter((value): value is string => (
           typeof value === 'string' && CAPACITY_FINGERPRINT_PATTERN.test(value)
-        )).slice(-10)
+        )).slice(-1)
         : [],
     };
   } catch {
@@ -80,7 +80,7 @@ interface CapacityDismissalState {
   dismissed: boolean;
 }
 
-function useCapacityDismissal(account: ConnectAccountStatus) {
+function useCapacityDismissal(account: ConnectAccountStatus, capacityState: boolean) {
   const user = useCurrentUser();
   const key = useMemo(
     () => connectPlusDismissalKey(account.installationId, user?.login ?? ''),
@@ -113,15 +113,31 @@ function useCapacityDismissal(account: ConnectAccountStatus) {
   useEffect(() => {
     let cancelled = false;
 
+    if (!capacityState) {
+      const record = readDismissal(request.key);
+      if (record.capacity.length > 0) {
+        record.capacity = [];
+        storeDismissal(request.key, record);
+      }
+      setState({ request, fingerprint: null, ready: true, dismissed: false });
+      return () => { cancelled = true; };
+    }
+
     const resolveDismissal = async () => {
       try {
         const fingerprint = await capacityFingerprint(request.account);
         if (cancelled) return;
+        const record = readDismissal(request.key);
+        const dismissed = record.capacity[0] === fingerprint;
+        if (record.capacity.length > 0 && !dismissed) {
+          record.capacity = [];
+          storeDismissal(request.key, record);
+        }
         setState({
           request,
           fingerprint,
           ready: true,
-          dismissed: readDismissal(request.key).capacity.includes(fingerprint),
+          dismissed,
         });
       } catch {
         if (cancelled) return;
@@ -133,17 +149,14 @@ function useCapacityDismissal(account: ConnectAccountStatus) {
 
     void resolveDismissal();
     return () => { cancelled = true; };
-  }, [request]);
+  }, [capacityState, request]);
 
   const isCurrentRequest = state.request === request;
   const dismiss = useCallback(() => {
     if (!isCurrentRequest || !state.ready) return;
     if (state.fingerprint) {
       const record = readDismissal(request.key);
-      record.capacity = [
-        ...record.capacity.filter(value => value !== state.fingerprint),
-        state.fingerprint,
-      ].slice(-10);
+      record.capacity = [state.fingerprint];
       storeDismissal(request.key, record);
     }
     setState(current => current.request === request
@@ -176,15 +189,16 @@ const CloseButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
 
 export const ConnectCapacityBanner: React.FC = () => {
   const account = useConnectAccount();
-  if (!account || account.plan !== 'community' || account.hasPlusAccess || !isCapacityState(account)) return null;
+  if (!account || account.plan !== 'community' || account.hasPlusAccess) return null;
   return <CapacityBannerContent account={account} />;
 };
 
 const CapacityBannerContent: React.FC<{ account: ConnectAccountStatus }> = ({ account }) => {
   const user = useCurrentUser();
   const canManageMembers = userHasPermission(user, 'instance.manage_members');
-  const { ready, dismissed, dismiss } = useCapacityDismissal(account);
-  if (!ready || dismissed) return null;
+  const capacityState = isCapacityState(account);
+  const { ready, dismissed, dismiss } = useCapacityDismissal(account, capacityState);
+  if (!capacityState || !ready || dismissed) return null;
 
   const isFull = account.activeSeats >= account.allowedSeats || account.seatsRemaining === 0;
   const title = isFull

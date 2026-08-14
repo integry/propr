@@ -356,6 +356,28 @@ describe('Connect Plus banners', () => {
     expect(await screen.findByText(/Community seats are full/)).toBeInTheDocument();
   });
 
+  it.each([
+    [
+      'an A to B to A capacity transition', community({ activeSeats: 4, allowedSeats: 4, seatsRemaining: 0 }),
+      'Community seats are full — 4 of 4 active',
+    ],
+    ['a non-capacity state', community(), 'Open your local ProPR workspace from anywhere'],
+  ] as const)('invalidates a dismissal after %s', async (_label, intermediate, intermediateTitle) => {
+    let current = community({ activeSeats: 3, seatsRemaining: 0 });
+    mockGetSystemStatus.mockImplementation(async () => status(current));
+    renderBanners();
+    await screen.findByText('Community seats are full — 3 of 3 active');
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss ProPR Connect notice' }));
+
+    current = intermediate;
+    fireEvent.focus(window);
+    await screen.findByText(intermediateTitle);
+
+    current = community({ activeSeats: 3, seatsRemaining: 0 });
+    fireEvent.focus(window);
+    expect(await screen.findByText('Community seats are full — 3 of 3 active')).toBeInTheDocument();
+  });
+
   it('does not apply a stale capacity digest to a different authenticated login', async () => {
     const current = community({ activeSeats: 3, seatsRemaining: 0 });
     const adminFingerprint = await capacityFingerprint(current);
