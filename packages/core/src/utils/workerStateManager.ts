@@ -5,9 +5,7 @@ import type { Logger } from 'pino';
 import {
     TaskStates, type TaskState, type IssueRef, type TaskStateData, type UpdateMetadata,
     type TaskResult, type ResumableTaskInfo, type TaskStateExpectation,
-    type NonTerminalTaskScanResult,
-    type TaskStateUpdateResult,
-    type WorkerStateManagerOptions
+    type NonTerminalTaskScanResult, type TaskStateUpdateResult, type WorkerStateManagerOptions
 } from './workerStateManager.types.js';
 import { getEventPublisher } from './eventPublisher.js';
 import {
@@ -20,7 +18,7 @@ import {
 import { scanNonTerminalTaskStates } from './workerStateScan.js';
 import {
     associatePersistedTaskWithJob,
-    loadPersistedTaskState,
+    restorePersistedTaskState,
     scanRecoverableTaskStates,
     updateDatabaseTaskStateIfCurrent,
 } from './workerStateDatabaseRecovery.js';
@@ -77,22 +75,8 @@ export class WorkerStateManager {
             throw new Error(`Task state creation raced with removal for taskId: ${taskId}`);
         }
 
-        const persistedState = await loadPersistedTaskState(taskId);
-        if (persistedState) {
-            const restored = await compareAndSetTaskStateData(this.redis, {
-                key,
-                stateExpiry: this.stateExpiry,
-                currentJson: JSON.stringify(state),
-                state: persistedState,
-            });
-            if (restored) {
-                logger.info({ taskId, state: persistedState.state }, 'Restored task state from persisted history');
-                return persistedState;
-            }
-            const currentJson = await this.redis.get(key);
-            if (currentJson) return JSON.parse(currentJson) as TaskStateData;
-            throw new Error(`Task state restoration raced with removal for taskId: ${taskId}`);
-        }
+        const persistedState = await restorePersistedTaskState(this.redis, key, this.stateExpiry, state);
+        if (persistedState) return persistedState;
         const correlatedLogger: Logger = logger.withCorrelation(state.correlationId);
         correlatedLogger.info({
             taskId, issueNumber: issueRef.number,

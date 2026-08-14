@@ -1,5 +1,7 @@
+import type { Redis } from 'ioredis';
 import { db } from '../db/connection.js';
 import { getEventPublisher } from './eventPublisher.js';
+import logger from './logger.js';
 import {
     TaskStates,
     type IssueRef,
@@ -10,6 +12,9 @@ import {
     type TaskStateUpdateResult,
     type UpdateMetadata,
 } from './workerStateManager.types.js';
+import { compareAndSetTaskStateData } from './workerStateTransition.js';
+
+type TaskStateRedis = Pick<InstanceType<typeof Redis>, 'eval' | 'get'>;
 
 function normalizeTimestamp(value: unknown): string {
     const parsed = new Date(String(value ?? ''));
@@ -50,7 +55,7 @@ function persistedRowToTaskState(row: Record<string, unknown>): TaskStateData {
     };
 }
 
-export async function loadPersistedTaskState(taskId: string): Promise<TaskStateData | null> {
+async function loadPersistedTaskState(taskId: string): Promise<TaskStateData | null> {
     const task = await db('tasks').where({ task_id: taskId }).first();
     if (!task) return null;
     const latestHistory = await db('task_history')
@@ -64,6 +69,32 @@ export async function loadPersistedTaskState(taskId: string): Promise<TaskStateD
         state: latestHistory.state,
         state_timestamp: latestHistory.timestamp,
     });
+}
+
+export async function restorePersistedTaskState(
+    redis: TaskStateRedis,
+    key: string,
+    stateExpiry: number,
+    initialState: TaskStateData,
+): Promise<TaskStateData | null> {
+    const persistedState = await loadPersistedTaskState(initialState.taskId);
+    if (!persistedState) return null;
+    const restored = await compareAndSetTaskStateData(redis, {
+        key,
+        stateExpiry,
+        currentJson: JSON.stringify(initialState),
+        state: persistedState,
+    });
+    if (restored) {
+        logger.info(
+            { taskId: initialState.taskId, state: persistedState.state },
+            'Restored task state from persisted history',
+        );
+        return persistedState;
+    }
+    const currentJson = await redis.get(key);
+    if (currentJson) return JSON.parse(currentJson) as TaskStateData;
+    throw new Error(`Task state restoration raced with removal for taskId: ${initialState.taskId}`);
 }
 
 export async function associatePersistedTaskWithJob(taskId: string, jobId: string): Promise<void> {

@@ -31,6 +31,45 @@ interface TaskImportResult extends JobResult {
     };
 }
 
+async function initializeTaskImportAttempt(
+    job: Job<TaskImportJobData>,
+    taskId: string,
+    taskContext: { repoOwner: string; repoName: string; correlationId: string },
+    stateManager: ReturnType<typeof getStateManager>,
+): Promise<TaskImportResult | undefined> {
+    const { repoOwner, repoName, correlationId } = taskContext;
+    if (job.data.taskId === undefined) await job.updateData({ ...job.data, taskId });
+    const createdState = await stateManager.createTaskState(taskId, {
+        number: 0,
+        repoOwner,
+        repoName,
+        type: 'task_import',
+        jobId: job.id,
+    }, correlationId);
+    const terminalResult = await stateManager.getTerminalJobResultForAutomaticRetry(taskId, createdState, {
+        jobId: job.id,
+        attemptsMade: job.attemptsMade,
+        totalAttempts: job.opts.attempts,
+    });
+    return terminalResult ? { ...terminalResult, repository: job.data.repository } : undefined;
+}
+
+async function cleanupTaskImportWorktree(
+    localRepoPath: string | undefined,
+    worktreeInfo: WorktreeInfo | undefined,
+    correlatedLogger: Logger,
+): Promise<void> {
+    if (!localRepoPath || !worktreeInfo) return;
+    try {
+        await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
+            deleteBranch: true,
+            success: true
+        });
+    } catch (cleanupError) {
+        correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
+    }
+}
+
 export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise<TaskImportResult> {
     const { id: jobId, name: jobName, data } = job;
     const {
@@ -58,22 +97,10 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
     const taskId = job.data.taskId ?? `task-import-${repoOwner}-${repoName}-${Date.now()}`;
 
     try {
-        if (job.data.taskId === undefined) {
-            await job.updateData({ ...job.data, taskId });
-        }
-        const createdState = await stateManager.createTaskState(taskId, {
-            number: 0,
-            repoOwner,
-            repoName,
-            type: 'task_import',
-            jobId: job.id,
-        }, correlationId);
-        const terminalResult = await stateManager.getTerminalJobResultForAutomaticRetry(taskId, createdState, {
-            jobId: job.id,
-            attemptsMade: job.attemptsMade,
-            totalAttempts: job.opts.attempts,
-        });
-        if (terminalResult) return { ...terminalResult, repository };
+        const terminalResult = await initializeTaskImportAttempt(
+            job, taskId, { repoOwner, repoName, correlationId }, stateManager,
+        );
+        if (terminalResult) return terminalResult;
 
         octokit = await withRetry(
             () => getAuthenticatedOctokit(),
@@ -178,15 +205,6 @@ export async function processTaskImportJob(job: Job<TaskImportJobData>): Promise
         handleError(error, 'Failed to process task import job', { correlationId });
         throw error;
     } finally {
-        if (localRepoPath && worktreeInfo) {
-            try {
-                await cleanupWorktree(localRepoPath, worktreeInfo.worktreePath, worktreeInfo.branchName, {
-                    deleteBranch: true,
-                    success: true
-                });
-            } catch (cleanupError) {
-                correlatedLogger.warn({ error: (cleanupError as Error).message }, 'Failed to cleanup worktree');
-            }
-        }
+        await cleanupTaskImportWorktree(localRepoPath, worktreeInfo, correlatedLogger);
     }
 }
