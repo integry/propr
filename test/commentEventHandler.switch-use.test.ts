@@ -659,6 +659,22 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
+    test('/use accepts an active full model label with a configured prefix as an idempotent no-op', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [createMockLabel({ name: 'ai-model-codex-gpt56-sol' })],
+            },
+        }));
+        const event = createPRCommentEvent('/use ai-model-codex-gpt56-sol');
+        const config = createTestConfig({ MODEL_LABEL_PATTERN: '^ai-model-(.+)$' });
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-custom-prefix-full-label', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
     test('/use resolves a configured agent alias to its default model label', async () => {
         mockAgents = defaultMockAgents.map(agent => agent.config.type === 'codex'
             ? { config: { ...agent.config, alias: 'custom-codex' } }
@@ -759,6 +775,45 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
+    test('/use rejects a generated label with an ambiguous truncated agent alias', async () => {
+        const dynamicModel = 'opencode-openai/gpt-5.5';
+        const sharedAliasPrefix = 'custom-opencode-agent-with-a-shared-prefix-';
+        const selectedAlias = `${sharedAliasPrefix}alpha`;
+        const collidingAlias = `${sharedAliasPrefix}beta`;
+        assert.strictEqual(
+            buildDynamicLlmLabel(selectedAlias, dynamicModel),
+            buildDynamicLlmLabel(collidingAlias, dynamicModel),
+        );
+        mockAgents = [
+            {
+                config: {
+                    alias: selectedAlias,
+                    type: 'opencode',
+                    enabled: true,
+                    supportedModels: [dynamicModel],
+                    defaultModel: dynamicModel,
+                },
+            },
+            {
+                config: {
+                    alias: collidingAlias,
+                    type: 'opencode',
+                    enabled: true,
+                    supportedModels: [dynamicModel],
+                    defaultModel: dynamicModel,
+                },
+            },
+        ];
+        const event = createPRCommentEvent(`/use ${selectedAlias}`);
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-ambiguous-truncated-alias', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockOctokit.request.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
     test('/use without model argument warns and returns early', async () => {
         const event = createPRCommentEvent('/use');
         const config = createTestConfig();
@@ -798,6 +853,22 @@ describe('commentEventHandler — /use command', () => {
         const config = createTestConfig();
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-idempotent', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('/use selecting a differently-cased active label is an idempotent no-op', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [createMockLabel({ name: 'llm-Claude-Opus5' })],
+            },
+        }));
+        const event = createPRCommentEvent('/use opus');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-idempotent-case-insensitive', config);
 
         assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);

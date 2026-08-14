@@ -364,7 +364,10 @@ async function resolveCanonicalModelLabel(
     prNumber: number,
 ): Promise<string | null> {
     try {
-        const [resolution] = await resolveReviewModels([target]);
+        const modelLabelRegex = new RegExp(modelLabelPattern);
+        const targetMatch = modelLabelRegex.exec(target);
+        const routingTarget = targetMatch?.[1] || target;
+        const [resolution] = await resolveReviewModels([routingTarget]);
         const registry = AgentRegistry.getInstance();
         const agent = registry.getAgentByAlias(resolution.agentAlias);
         if (!agent) {
@@ -396,10 +399,37 @@ async function resolveCanonicalModelLabel(
             );
             return null;
         }
-        if (!new RegExp(modelLabelPattern).test(canonicalLabel)) {
+        const canonicalMatch = modelLabelRegex.exec(canonicalLabel);
+        const canonicalRoutingToken = canonicalMatch?.[1];
+        if (!canonicalRoutingToken) {
             correlatedLogger.error(
                 { pullRequestNumber: prNumber, canonicalLabel, modelLabelPattern },
                 '/use resolved a canonical label that does not match MODEL_LABEL_PATTERN',
+            );
+            return null;
+        }
+
+        let routedResolution: Awaited<ReturnType<typeof resolveReviewModels>>[number];
+        try {
+            [routedResolution] = await resolveReviewModels([canonicalRoutingToken]);
+        } catch (error) {
+            correlatedLogger.error(
+                { pullRequestNumber: prNumber, canonicalLabel, canonicalRoutingToken, error: (error as Error).message },
+                '/use resolved a canonical label that cannot route back to the selected model',
+            );
+            return null;
+        }
+        if (routedResolution.agentAlias !== resolution.agentAlias || routedResolution.model !== resolution.model) {
+            correlatedLogger.error(
+                {
+                    pullRequestNumber: prNumber,
+                    canonicalLabel,
+                    selectedAgentAlias: resolution.agentAlias,
+                    selectedModel: resolution.model,
+                    routedAgentAlias: routedResolution.agentAlias,
+                    routedModel: routedResolution.model,
+                },
+                '/use resolved a canonical label that routes to a different model',
             );
             return null;
         }
@@ -429,8 +459,9 @@ async function handleUseCommand(opts: UseCommandOptions): Promise<void> {
     const { prLabels } = await getLivePRBranchAndLabels({ owner, repo, prNumber });
     const modelLabelRegex = new RegExp(modelLabelPattern);
     const existingModelLabels = prLabels.filter(label => modelLabelRegex.test(label.name)).map(label => label.name);
-    const labelsToRemove = existingModelLabels.filter(label => label !== canonicalLabel);
-    const targetPresent = existingModelLabels.includes(canonicalLabel);
+    const canonicalLabelIdentity = canonicalLabel.toLowerCase();
+    const labelsToRemove = existingModelLabels.filter(label => label.toLowerCase() !== canonicalLabelIdentity);
+    const targetPresent = existingModelLabels.some(label => label.toLowerCase() === canonicalLabelIdentity);
 
     if (labelsToRemove.length === 0 && targetPresent) {
         correlatedLogger.debug({ pullRequestNumber: prNumber, modelLabel: canonicalLabel }, '/use model label is already active');
