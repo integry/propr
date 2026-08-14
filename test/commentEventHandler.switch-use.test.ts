@@ -123,9 +123,32 @@ await mock.module('../packages/core/src/config/configManager.js', {
 });
 
 // Keep the model-validation fallback isolated from the full agent runtime.
+const defaultMockAgents = [
+    {
+        config: {
+            alias: 'claude',
+            type: 'claude' as const,
+            enabled: true,
+            supportedModels: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+            defaultModel: 'claude-sonnet-5',
+        },
+    },
+    {
+        config: {
+            alias: 'codex',
+            type: 'codex' as const,
+            enabled: true,
+            supportedModels: ['gpt-5.6-sol'],
+            defaultModel: 'gpt-5.6-sol',
+        },
+    },
+];
+let mockAgents = defaultMockAgents;
 const mockAgentRegistry = {
     ensureInitialized: mock.fn(async () => {}),
-    getAllAgents: mock.fn(() => []),
+    getAllAgents: mock.fn(() => mockAgents),
+    getAgentByAlias: mock.fn((alias: string) => mockAgents.find(agent => agent.config.alias === alias)),
+    getDefaultAgent: mock.fn(() => mockAgents.find(agent => agent.config.enabled)),
 };
 await mock.module('../packages/core/src/agents/AgentRegistry.js', {
     namedExports: {
@@ -148,7 +171,12 @@ await mock.module('../packages/core/src/utils/commentFilters.js', {
 });
 
 // Mock safeUpdateLabels — capture calls for assertions
-const mockSafeUpdateLabels = mock.fn(async () => {});
+const mockSafeUpdateLabels = mock.fn(async (_context: unknown, labelsToRemove: string[] = [], labelsToAdd: string[] = []) => ({
+    success: true,
+    removed: labelsToRemove,
+    added: labelsToAdd,
+    errors: [],
+}));
 await mock.module('../packages/core/src/utils/github/labelOperations.js', {
     namedExports: {
         safeRemoveLabel: mock.fn(async () => true),
@@ -204,6 +232,13 @@ setUltrafixDeps({
 });
 
 beforeEach(() => {
+    mockAgents = defaultMockAgents;
+    mockSafeUpdateLabels.mock.mockImplementation(async (_context: unknown, labelsToRemove: string[] = [], labelsToAdd: string[] = []) => ({
+        success: true,
+        removed: labelsToRemove,
+        added: labelsToAdd,
+        errors: [],
+    }));
     mockInvalidateAutomaticWork.mock.resetCalls();
     mockInvalidateAutomaticWork.mock.mockImplementation(async () => ({ workEpoch: 1, hadAutomaticWork: false }));
     mockHasAutomaticWork.mock.resetCalls();
@@ -542,38 +577,39 @@ describe('commentEventHandler — /use command', () => {
         }));
     });
 
-    test('/use enqueues a job without updating labels', async () => {
+    test('/use resolves a short alias to its canonical label and preserves unrelated labels', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [
+                    createMockLabel({ name: 'AI' }),
+                    createMockLabel({ name: 'bug' }),
+                    createMockLabel({ name: 'release:next' }),
+                    createMockLabel({ name: 'llm-claude-sonnet5' }),
+                ],
+            },
+        }));
         const event = createPRCommentEvent('/use opus');
         const config = createTestConfig();
 
-        await processCommentEvent(event, 'issue_comment', 'corr-10', config);
+        await processCommentEvent(event, 'issue_comment', 'corr-use-alias', config);
 
-        // /use should NOT update labels
-        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
-        // /use SHOULD enqueue a job
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], ['llm-claude-sonnet5']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-opus5']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
-    test('/use sets commandMode to "use" in job data', async () => {
-        const event = createPRCommentEvent('/use sonnet');
+    test('/use accepts a full model label and selects the same canonical label', async () => {
+        const event = createPRCommentEvent('/use llm-codex-gpt56-sol');
         const config = createTestConfig();
 
-        await processCommentEvent(event, 'issue_comment', 'corr-11', config);
+        await processCommentEvent(event, 'issue_comment', 'corr-use-full-label', config);
 
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.commandMode, 'use');
-    });
-
-    test('/use resolves model alias for LLM override in job data', async () => {
-        const event = createPRCommentEvent('/use opus');
-        const config = createTestConfig();
-
-        await processCommentEvent(event, 'issue_comment', 'corr-12', config);
-
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.llm, 'claude-opus-5');
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], []);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-codex-gpt56-sol']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
     test('/use without model argument warns and returns early', async () => {
@@ -592,58 +628,54 @@ describe('commentEventHandler — /use command', () => {
         assert.ok(useWarn, 'Expected a warning about missing model argument');
     });
 
-    test('/use with instructions includes them in job data', async () => {
-        const event = createPRCommentEvent('/use haiku\nFix the login bug');
+    test('/use with trailing text only changes the label', async () => {
+        const event = createPRCommentEvent('/use sonnet extra inline text\nRefactor the utils');
         const config = createTestConfig();
 
-        await processCommentEvent(event, 'issue_comment', 'corr-13', config);
+        await processCommentEvent(event, 'issue_comment', 'corr-use-trailing-text', config);
 
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.commandInstructions, 'Fix the login bug');
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], ['llm-claude-sonnet5']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 
-    test('/use with instructions passes stripped comment body without command text', async () => {
-        const event = createPRCommentEvent('/use sonnet\nRefactor the utils');
-        const config = createTestConfig();
-
-        await processCommentEvent(event, 'issue_comment', 'corr-use-body', config);
-
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        const comments = jobData.comments as Array<{ body: string }>;
-        // /use body is stripped like /switch — only user instructions remain
-        assert.ok(comments.length > 0);
-        assert.strictEqual(comments[0].body, 'Refactor the utils');
-    });
-
-    test('/use with llm- prefixed argument strips prefix before resolving', async () => {
-        const event = createPRCommentEvent('/use llm-opus');
-        const config = createTestConfig();
-
-        await processCommentEvent(event, 'issue_comment', 'corr-use-llm-prefix', config);
-
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        // "llm-opus" is normalized before resolving the current alias.
-        assert.strictEqual(jobData.llm, 'claude-opus-5');
-    });
-
-    test('/use without instructions still enqueues a job with empty body', async () => {
+    test('/use selecting the active label is an idempotent no-op', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [createMockLabel({ name: 'AI' }), createMockLabel({ name: 'llm-claude-opus5' })],
+            },
+        }));
         const event = createPRCommentEvent('/use opus');
         const config = createTestConfig();
 
-        await processCommentEvent(event, 'issue_comment', 'corr-use-noinstructions', config);
+        await processCommentEvent(event, 'issue_comment', 'corr-use-idempotent', config);
 
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.commandMode, 'use');
-        // commandInstructions should be empty
-        assert.strictEqual(jobData.commandInstructions, '');
-        // The queued comment body must NOT contain the slash command text
-        const comments = jobData.comments as Array<{ body: string }>;
-        assert.ok(comments.length > 0, 'Expected at least one comment in job data');
-        assert.strictEqual(comments[0].body, '', 'Bare /use should queue an empty body, not the command text');
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('/use removes stale managed labels when the target label is already present', async () => {
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                head: { ref: 'feature-branch' },
+                labels: [
+                    createMockLabel({ name: 'llm-claude-opus5' }),
+                    createMockLabel({ name: 'llm-claude-sonnet5' }),
+                    createMockLabel({ name: 'reviewed' }),
+                ],
+            },
+        }));
+        const event = createPRCommentEvent('/use opus');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-converge', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[1], ['llm-claude-sonnet5']);
+        assert.deepStrictEqual(mockSafeUpdateLabels.mock.calls[0].arguments[2], []);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
     test('/use with unrecognized model warns and returns early', async () => {
@@ -656,26 +688,42 @@ describe('commentEventHandler — /use command', () => {
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         const warnCalls = mockLoggerInstance.warn.mock.calls;
         const invalidWarn = warnCalls.find(
-            (c: { arguments: unknown[] }) => typeof c.arguments[1] === 'string' && c.arguments[1].includes('unrecognized model')
+            (c: { arguments: unknown[] }) => typeof c.arguments[1] === 'string' && c.arguments[1].includes('unknown, disabled, or unsupported')
         );
-        assert.ok(invalidWarn, 'Expected a warning about unrecognized model');
+        assert.ok(invalidWarn, 'Expected a warning about an unknown model');
     });
 
-    test('/use with extra models logs warning but uses first model', async () => {
-        const event = createPRCommentEvent('/use opus sonnet');
+    test('/use rejects a target supported only by a disabled agent', async () => {
+        mockAgents = defaultMockAgents.map(agent => agent.config.type === 'claude'
+            ? { config: { ...agent.config, enabled: false } }
+            : agent);
+        const event = createPRCommentEvent('/use opus');
         const config = createTestConfig();
 
-        await processCommentEvent(event, 'issue_comment', 'corr-use-extra', config);
+        await processCommentEvent(event, 'issue_comment', 'corr-use-disabled', config);
 
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.llm, 'claude-opus-5');
-        // Warning should be logged
-        const warnCalls = mockLoggerInstance.warn.mock.calls;
-        const extraWarn = warnCalls.find(
-            (c: { arguments: unknown[] }) => typeof c.arguments[1] === 'string' && c.arguments[1].includes('extra arguments were ignored')
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+    });
+
+    test('/use label-update failure does not enqueue work or claim success', async () => {
+        mockSafeUpdateLabels.mock.mockImplementationOnce(async () => ({
+            success: false,
+            removed: [],
+            added: [],
+            errors: ['GitHub unavailable'],
+        }));
+        const event = createPRCommentEvent('/use opus');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-update-failure', config);
+
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        const successLog = mockLoggerInstance.info.mock.calls.find(
+            (call: { arguments: unknown[] }) => call.arguments[1] === '/use updated the PR model label',
         );
-        assert.ok(extraWarn, 'Expected a warning about extra arguments');
+        assert.strictEqual(successLog, undefined);
     });
 });
 
@@ -716,21 +764,15 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.commandInstructions, 'Do a review');
     });
 
-    test('/use job has commandMode "use" and commandMeta with resolved model', async () => {
+    test('/use does not serialize command or model fields into a job', async () => {
         const event = createPRCommentEvent('/use haiku\nSummarize changes');
         const config = createTestConfig();
 
         await processCommentEvent(event, 'issue_comment', 'corr-mode-use', config);
 
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.strictEqual(jobData.commandMode, 'use');
-        const meta = jobData.commandMeta as { mode: string; models: string[]; instructions: string };
-        assert.strictEqual(meta.mode, 'use');
-        assert.deepStrictEqual(meta.models, ['haiku']);
-        assert.strictEqual(jobData.commandInstructions, 'Summarize changes');
-        // LLM should be resolved from /use command
-        assert.strictEqual(jobData.llm, 'claude-haiku-4-5-20251001');
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 
     test('/switch follow-up job does not include requestedModels (only /review uses that)', async () => {
@@ -744,17 +786,15 @@ describe('commentEventHandler — commandMode serialization in job data', () => 
         assert.strictEqual(jobData.requestedModels, undefined);
     });
 
-    test('/use job preserves its explicit model as requestedModels', async () => {
+    test('/use does not persist requestedModels or command context', async () => {
         const event = createPRCommentEvent('/use sonnet\nDo something');
         const config = createTestConfig();
 
         await processCommentEvent(event, 'issue_comment', 'corr-use-no-req', config);
 
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
-        const jobData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
-        assert.deepStrictEqual(jobData.requestedModels, ['claude-sonnet-5']);
-        assert.strictEqual(jobData.commandCommentCreatedAt, event.comment.created_at);
-        assert.strictEqual(jobData.commandCommentType, 'issue');
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 
     test('/review job includes requestedModels from command args', async () => {
@@ -833,14 +873,15 @@ describe('commentEventHandler — slash command dedup protection', () => {
         const event = createPRCommentEvent('/use opus');
         const config = createTestConfig();
 
-        // First delivery — should enqueue
+        // First delivery changes the label without enqueuing.
         await processCommentEvent(event, 'issue_comment', 'corr-dedup-1', config);
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
 
         // Simulate redelivery — same event, same comment id
         await processCommentEvent(event, 'issue_comment', 'corr-dedup-2', config);
-        // Should NOT enqueue a second job
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
     });
 
     test('redelivered /switch webhook is skipped and labels are not mutated again', async () => {
@@ -888,7 +929,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         }));
     });
 
-    test('/use is batched when an existing job is active for the same PR', async () => {
+    test('/use only changes the label when an existing job is active for the same PR', async () => {
         // Simulate an active job for PR 42
         mockActiveJobs = [{
             name: 'processPullRequestComment',
@@ -900,15 +941,9 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
 
         await processCommentEvent(event, 'issue_comment', 'corr-batch-1', config);
 
-        // Should NOT enqueue a new job
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-        // Should store comment for batch via rpush
-        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
-        const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
-        assert.strictEqual(pendingComment.body, 'Fix the bug');
-        assert.strictEqual(pendingComment.commandMode, 'use');
-        assert.strictEqual(pendingComment.commandInstructions, 'Fix the bug');
-        assert.strictEqual(pendingComment.llmOverride, 'claude-opus-5');
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 
     test('/switch with instructions is batched when an existing job is active', async () => {
@@ -934,14 +969,15 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(pendingComment.llmOverride, 'claude-opus-5');
     });
 
-    test('/use enqueues normally when no existing job is active', async () => {
+    test('/use changes only the label when no existing job is active', async () => {
         // No active jobs (default)
         const event = createPRCommentEvent('/use opus');
         const config = createTestConfig();
 
         await processCommentEvent(event, 'issue_comment', 'corr-batch-3', config);
 
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 
@@ -1156,7 +1192,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(pendingComment.commandMode, 'review');
     });
 
-    test('batched slash commands on review comments preserve code-review context', async () => {
+    test('/use on a review comment changes only the label and ignores review context', async () => {
         mockActiveJobs = [{
             name: 'processPullRequestComment',
             data: { pullRequestNumber: 42, repoOwner: 'testowner', repoName: 'testrepo' },
@@ -1167,17 +1203,9 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
 
         await processCommentEvent(event, 'pull_request_review_comment', 'corr-batch-review', config);
 
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
         assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
-        const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
-        assert.strictEqual(pendingComment.type, 'review');
-        assert.strictEqual(pendingComment.createdAt, event.comment.created_at);
-        assert.strictEqual(pendingComment.hasCodeContext, true);
-        assert.match(pendingComment.body as string, /Please fix this line/);
-        assert.match(pendingComment.body as string, /--- Review Comment Context ---/);
-        assert.match(pendingComment.body as string, /File: src\/auth\.ts/);
-        assert.match(pendingComment.body as string, /Line: 27/);
-        assert.match(pendingComment.body as string, /@@ -1,5 \+1,10 @@/);
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
     });
 });
 
