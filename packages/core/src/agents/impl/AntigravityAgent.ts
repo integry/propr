@@ -23,6 +23,7 @@ import {
 } from './utils/antigravityOutputParser.js';
 import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { toAntigravityCliModelId } from './antigravityModelIds.js';
+import { resolveAntigravityProtocolError } from './utils/antigravityProtocol.js';
 import fs from 'fs';
 import path from 'path';
 import { randomBytes } from 'node:crypto';
@@ -49,19 +50,6 @@ function isSuccessfulAnalysisResult(
     protocolError?: string,
 ): boolean {
     return !protocolError && !result.timedOut && (result.exitCode === 0 || !!summary);
-}
-
-function resolveAntigravityProtocolError(
-    terminalStatus: 'success' | 'error' | undefined,
-    protocolError: string | undefined,
-    hasStreamEnvelopes: boolean,
-): string | undefined {
-    if (protocolError) return protocolError;
-    if (terminalStatus === 'error') return 'Antigravity reported an ERROR result';
-    if (hasStreamEnvelopes && terminalStatus !== 'success') {
-        return 'Antigravity stream ended without a terminal SUCCESS result';
-    }
-    return undefined;
 }
 
 function buildAgentEnvironmentArgs(

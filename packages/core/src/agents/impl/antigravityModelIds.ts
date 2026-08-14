@@ -1,4 +1,19 @@
-import { ANTIGRAVITY_MODEL_LABELS } from './utils/antigravityOutputParser.js';
+export const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = {
+    'antigravity-gemini-3.7-flash-medium': 'Gemini 3.7 Flash (Medium)',
+    'antigravity-gemini-3.7-flash-high': 'Gemini 3.7 Flash (High)',
+    'antigravity-gemini-3.7-flash-low': 'Gemini 3.7 Flash (Low)',
+    'antigravity-gemini-3.6-flash-medium': 'Gemini 3.6 Flash (Medium)',
+    'antigravity-gemini-3.6-flash-high': 'Gemini 3.6 Flash (High)',
+    'antigravity-gemini-3.6-flash-low': 'Gemini 3.6 Flash (Low)',
+    'antigravity-gemini-3.5-flash-medium': 'Gemini 3.5 Flash (Medium)',
+    'antigravity-gemini-3.5-flash-high': 'Gemini 3.5 Flash (High)',
+    'antigravity-gemini-3.5-flash-low': 'Gemini 3.5 Flash (Low)',
+    'antigravity-gemini-3.1-pro-low': 'Gemini 3.1 Pro (Low)',
+    'antigravity-gemini-3.1-pro-high': 'Gemini 3.1 Pro (High)',
+    'antigravity-claude-sonnet-4.6-thinking': 'Claude Sonnet 4.6 (Thinking)',
+    'antigravity-claude-opus-4.6-thinking': 'Claude Opus 4.6 (Thinking)',
+    'antigravity-gpt-oss-120b-medium': 'GPT-OSS 120B (Medium)'
+};
 
 // ProPR namespaces Antigravity model IDs with an `antigravity-` prefix so they
 // don't collide with other agents' models in config/labels (see
