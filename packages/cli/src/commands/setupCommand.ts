@@ -57,8 +57,8 @@ export interface SetupSkillOfferOptions {
 /**
  * Offer the bundled operator skill once during guided setup. A non-interactive
  * invocation performs no home-directory writes unless explicit targets were
- * supplied. Every target is independent: failures are reported with an exact
- * recovery command and never become a stack-setup failure.
+ * supplied. Every target is independent: failures are reported with an
+ * actionable recovery path and never become a stack-setup failure.
  */
 export async function offerSetupAgentSkill(options: SetupSkillOfferOptions = {}): Promise<AgentSkillOperationResult[]> {
   const env = options.env ?? process.env;
@@ -94,7 +94,14 @@ export async function offerSetupAgentSkill(options: SetupSkillOfferOptions = {})
       results.push(result);
       log(formatAgentSkillOperation(result));
       if (result.action === "failed" || result.action === "refused") {
-        log(`  Recovery: propr skill install ${target}${result.action === "refused" ? " --force" : ""}`);
+        if (result.state === "unsafe") {
+          log(`  Unsafe target: ${result.detail ?? "unsafe target"}`);
+          log(`  Recovery: correct the unsafe target condition, then run: propr skill install ${target}`);
+        } else {
+          const force = result.action === "refused" &&
+            (result.state === "foreign" || result.state === "modified-managed");
+          log(`  Recovery: propr skill install ${target}${force ? " --force" : ""}`);
+        }
       }
     } catch (error) {
       const path = (() => {

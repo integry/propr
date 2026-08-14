@@ -201,13 +201,20 @@ function executableOnPath(name: string, env: AgentSkillEnvironment): boolean {
 export function detectConfiguredAgentSkillTargets(
   env: AgentSkillEnvironment = process.env
 ): AgentSkillLocation[] {
-  return resolveAgentSkillLocations(AGENT_SKILL_TARGETS, env).filter(({ target, toolHome }) => {
+  return AGENT_SKILL_TARGETS.flatMap((target) => {
+    let location: AgentSkillLocation;
     try {
-      if (statSync(toolHome).isDirectory()) return true;
+      location = resolveAgentSkillLocation(target, env);
+    } catch {
+      // Provider-specific configuration errors must not suppress valid tools.
+      return [];
+    }
+    try {
+      if (statSync(location.toolHome).isDirectory()) return [location];
     } catch {
       // An installed executable still counts even when it has no config yet.
     }
-    return executableOnPath(AGENT_SKILL_EXECUTABLES[target], env);
+    return executableOnPath(AGENT_SKILL_EXECUTABLES[target], env) ? [location] : [];
   });
 }
 
@@ -349,12 +356,30 @@ function inspectLocation(location: AgentSkillLocation, bundle: Bundle): AgentSki
   }
 }
 
+function unresolvedTargetStatus(target: AgentSkillTarget, bundle: Bundle, error: unknown): AgentSkillStatus {
+  return {
+    target,
+    toolHome: "<unresolved>",
+    path: "<unresolved>",
+    state: "unsafe",
+    bundledIdentity: bundle.identity,
+    detail: (error as Error).message,
+  };
+}
+
 export function inspectAgentSkills(
   targets: readonly AgentSkillTarget[] = AGENT_SKILL_TARGETS,
   options: AgentSkillOptions = {}
 ): AgentSkillStatus[] {
   const bundle = loadBundle(options.bundleDir);
-  return resolveAgentSkillLocations(targets, options.env ?? process.env).map((location) => inspectLocation(location, bundle));
+  const env = options.env ?? process.env;
+  return targets.map((target) => {
+    try {
+      return inspectLocation(resolveAgentSkillLocation(target, env), bundle);
+    } catch (error) {
+      return unresolvedTargetStatus(target, bundle, error);
+    }
+  });
 }
 
 function writeBundleContents(directory: string, bundle: Bundle): void {
@@ -518,9 +543,11 @@ function installAgentSkillWithoutOverwrite(
   }
 }
 
-export function installAgentSkill(target: AgentSkillTarget, options: AgentSkillOptions = {}): AgentSkillOperationResult {
-  const bundle = loadBundle(options.bundleDir);
-  const location = resolveAgentSkillLocation(target, options.env ?? process.env);
+function installAgentSkillAtLocation(
+  location: AgentSkillLocation,
+  bundle: Bundle,
+  options: AgentSkillOptions
+): AgentSkillOperationResult {
   const status = inspectLocation(location, bundle);
   if (status.state === "current-managed") return { ...status, action: "unchanged" };
   if (status.state === "current-unmanaged") {
@@ -587,9 +614,32 @@ export function installAgentSkill(target: AgentSkillTarget, options: AgentSkillO
   }
 }
 
-export function removeAgentSkill(target: AgentSkillTarget, options: AgentSkillOptions = {}): AgentSkillOperationResult {
+export function installAgentSkills(
+  targets: readonly AgentSkillTarget[],
+  options: AgentSkillOptions = {}
+): AgentSkillOperationResult[] {
   const bundle = loadBundle(options.bundleDir);
-  const location = resolveAgentSkillLocation(target, options.env ?? process.env);
+  const env = options.env ?? process.env;
+  return targets.map((target) => {
+    let location: AgentSkillLocation;
+    try {
+      location = resolveAgentSkillLocation(target, env);
+    } catch (error) {
+      return operationFailure(unresolvedTargetStatus(target, bundle, error), "refused", (error as Error).message);
+    }
+    return installAgentSkillAtLocation(location, bundle, options);
+  });
+}
+
+export function installAgentSkill(target: AgentSkillTarget, options: AgentSkillOptions = {}): AgentSkillOperationResult {
+  return installAgentSkills([target], options)[0];
+}
+
+function removeAgentSkillAtLocation(
+  location: AgentSkillLocation,
+  bundle: Bundle,
+  options: AgentSkillOptions
+): AgentSkillOperationResult {
   const status = inspectLocation(location, bundle);
   if (status.state === "absent") return { ...status, action: "unchanged" };
   if (status.state === "unsafe") return operationFailure(status, "refused", status.detail ?? "unsafe target");
@@ -619,4 +669,25 @@ export function removeAgentSkill(target: AgentSkillTarget, options: AgentSkillOp
   } catch (error) {
     return operationFailure(status, "failed", (error as Error).message);
   }
+}
+
+export function removeAgentSkills(
+  targets: readonly AgentSkillTarget[],
+  options: AgentSkillOptions = {}
+): AgentSkillOperationResult[] {
+  const bundle = loadBundle(options.bundleDir);
+  const env = options.env ?? process.env;
+  return targets.map((target) => {
+    let location: AgentSkillLocation;
+    try {
+      location = resolveAgentSkillLocation(target, env);
+    } catch (error) {
+      return operationFailure(unresolvedTargetStatus(target, bundle, error), "refused", (error as Error).message);
+    }
+    return removeAgentSkillAtLocation(location, bundle, options);
+  });
+}
+
+export function removeAgentSkill(target: AgentSkillTarget, options: AgentSkillOptions = {}): AgentSkillOperationResult {
+  return removeAgentSkills([target], options)[0];
 }

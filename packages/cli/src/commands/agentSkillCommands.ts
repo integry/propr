@@ -2,9 +2,9 @@ import { Command } from "commander";
 import {
   AGENT_SKILL_TARGETS,
   inspectAgentSkills,
-  installAgentSkill,
+  installAgentSkills,
   parseAgentSkillTargets,
-  removeAgentSkill,
+  removeAgentSkills,
   type AgentSkillOperationResult,
   type AgentSkillStatus,
 } from "../agentSkill.js";
@@ -67,7 +67,7 @@ Examples:
     .option("-j, --json", "Print machine-readable JSON")
     .action((values: string[], options: OutputOptions) => {
       try {
-        const results = selectedTargets(values).map((target) => installAgentSkill(target, { force: options.force }));
+        const results = installAgentSkills(selectedTargets(values), { force: options.force });
         if (options.json) console.log(JSON.stringify(results, null, 2));
         else results.forEach((result) => console.log(formatAgentSkillOperation(result)));
         if (hasFailure(results)) process.exitCode = 1;
@@ -99,7 +99,7 @@ Examples:
     .option("-j, --json", "Print machine-readable JSON")
     .action((values: string[], options: OutputOptions) => {
       try {
-        const results = selectedTargets(values).map((target) => removeAgentSkill(target, { force: options.force }));
+        const results = removeAgentSkills(selectedTargets(values), { force: options.force });
         if (options.json) console.log(JSON.stringify(results, null, 2));
         else results.forEach((result) => console.log(formatAgentSkillOperation(result)));
         if (hasFailure(results)) process.exitCode = 1;
