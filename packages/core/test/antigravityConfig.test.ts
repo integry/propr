@@ -571,7 +571,12 @@ test('Antigravity agent accepts a custom namespaced model reported with its exac
 test('Antigravity agent rejects a stream result before its initiating conversation', async () => {
     const stdout = JSON.stringify({
         event: 'result',
-        result: { conversation_id: 'conversation-result-only', status: 'SUCCESS', response: 'RESULT_ONLY\n' },
+        result: {
+            conversation_id: 'conversation-result-only',
+            status: 'SUCCESS',
+            response: 'RESULT_ONLY\n',
+            usage: { cache_read_tokens: 321 },
+        },
     });
     const agent = new AntigravityAgent(createAntigravityConfig());
     const internals = agent as unknown as {
@@ -584,7 +589,13 @@ test('Antigravity agent rejects a stream result before its initiating conversati
             prompt: string;
             worktreePath: string;
             worktreeGitContent: null;
-        }): Promise<{ success: boolean; error?: string; modelUsed?: string; summary?: string }>;
+        }): Promise<{
+            success: boolean;
+            error?: string;
+            modelUsed?: string;
+            summary?: string;
+            tokenUsage?: { cache_read_input_tokens?: number };
+        }>;
     };
     let persistedModel: string | undefined;
     internals.persistImplementationLog = async options => { persistedModel = options.resolvedModel; };
@@ -603,6 +614,7 @@ test('Antigravity agent rejects a stream result before its initiating conversati
     assert.equal(result.error, 'Antigravity result envelope arrived before an initiating conversation_id');
     assert.equal(result.modelUsed, 'unknown');
     assert.equal(result.summary, undefined);
+    assert.equal(result.tokenUsage?.cache_read_input_tokens, undefined);
     assert.equal(persistedModel, 'unknown');
 });
 
