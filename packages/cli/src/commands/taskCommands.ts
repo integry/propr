@@ -7,7 +7,7 @@
 
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
-import { resolveProject, resolveOptionalProject, ProjectResolutionError, printOutput } from "../utils/index.js";
+import { parsePositiveInteger, resolveProject, resolveOptionalProject, ProjectResolutionError, printOutput } from "../utils/index.js";
 import {
   listTasks,
   stopTask,
@@ -20,6 +20,17 @@ import {
   getTaskStatus,
   TaskStatus,
 } from "../api/index.js";
+
+const TASK_LIST_STATUSES = [
+  "pending",
+  "queued",
+  "processing",
+  "completed",
+  "failed",
+  "cancelled",
+  "all",
+] as const;
+const TASK_LIST_STATUS_SET = new Set<string>(TASK_LIST_STATUSES);
 
 /**
  * Formats a task status for display.
@@ -371,8 +382,14 @@ Examples:
             search?: string;
           } = {};
 
-          if (options.status && options.status !== "all") {
-            listOptions.status = options.status.toLowerCase();
+          const status = options.status.toLowerCase();
+          if (!TASK_LIST_STATUS_SET.has(status)) {
+            throw new Error(
+              `Invalid status "${options.status}". Expected one of: ${TASK_LIST_STATUSES.join(", ")}.`
+            );
+          }
+          if (status !== "all") {
+            listOptions.status = status;
           }
 
           const project = resolveOptionalProject(options);
@@ -380,10 +397,7 @@ Examples:
             listOptions.repository = project;
           }
 
-          const limit = parseInt(options.limit, 10);
-          if (!isNaN(limit) && limit > 0) {
-            listOptions.limit = limit;
-          }
+          listOptions.limit = parsePositiveInteger(options.limit, "Limit");
 
           if (options.search) {
             listOptions.search = options.search;
@@ -403,8 +417,8 @@ Examples:
             if (project !== undefined) {
               console.log(`Project filter: ${project}`);
             }
-            if (options.status !== "all") {
-              console.log(`Status filter: ${options.status}`);
+            if (status !== "all") {
+              console.log(`Status filter: ${status}`);
             }
             return;
           }

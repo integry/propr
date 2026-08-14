@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -148,6 +148,78 @@ test("invalid project flags fail before an API request", async () => {
     assert.match(result.stderr, /Invalid project/);
     assert.doesNotMatch(result.stderr, /fetch failed|ECONNREFUSED/);
   } finally {
+    await rm(temporaryHome, { recursive: true, force: true });
+  }
+});
+
+test("invalid top-level remote and use values do not mutate existing configuration", async () => {
+  const temporaryHome = await mkdtemp(join(tmpdir(), "propr-cli-invalid-config-"));
+  try {
+    const manager = new ConfigManager(join(temporaryHome, ".propr"));
+    await manager.init();
+    await manager.setRemoteUrl("https://api.example.com");
+    await manager.setDefaultProject("existing/repo");
+    const configPath = manager.getConfigFilePath();
+    const originalConfig = await readFile(configPath, "utf8");
+
+    for (const invalidUrl of ["ftp://example.com", "not-a-url"]) {
+      const result = await runCli(["remote", invalidUrl], temporaryHome);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /Invalid remote URL/);
+      assert.equal(await readFile(configPath, "utf8"), originalConfig);
+    }
+
+    const invalidProject = await runCli(["use", "not-a-project"], temporaryHome);
+    assert.equal(invalidProject.status, 1, invalidProject.stderr);
+    assert.match(invalidProject.stderr, /Invalid project/);
+    assert.equal(await readFile(configPath, "utf8"), originalConfig);
+  } finally {
+    await rm(temporaryHome, { recursive: true, force: true });
+  }
+});
+
+test("invalid task and log list filters fail before an API request", async () => {
+  const temporaryHome = await mkdtemp(join(tmpdir(), "propr-cli-invalid-list-options-"));
+  let requestCount = 0;
+  const server = createServer((_request, response) => {
+    requestCount += 1;
+    response.setHeader("content-type", "application/json");
+    response.end("{}");
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const manager = new ConfigManager(join(temporaryHome, ".propr"));
+    await manager.init();
+    await manager.setRemoteUrl(`http://127.0.0.1:${address.port}`);
+
+    const invalidCommands: Array<{ args: string[]; error: RegExp }> = [
+      { args: ["task", "list", "--status", "unknown"], error: /Invalid status/ },
+    ];
+    for (const value of ["nope", "0", "-1"]) {
+      invalidCommands.push(
+        { args: ["task", "list", "--limit", value], error: /Limit must be a positive integer/ },
+        { args: ["log", "list", "--limit", value], error: /Limit must be a positive integer/ },
+        { args: ["log", "list", "--page", value], error: /Page must be a positive integer/ }
+      );
+    }
+
+    for (const { args, error } of invalidCommands) {
+      const result = await runCli(args, temporaryHome);
+      assert.equal(result.status, 1, `${args.join(" ")}\n${result.stderr}`);
+      assert.match(result.stderr, error);
+      assert.equal(requestCount, 0, `${args.join(" ")} sent an API request`);
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
     await rm(temporaryHome, { recursive: true, force: true });
   }
 });

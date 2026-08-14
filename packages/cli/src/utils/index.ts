@@ -25,3 +25,5 @@ export {
 export type { FormatOutputOptions } from "./io.js";
 
 export { parseOnOffState, ParseStateError } from "./parseState.js";
+
+export { parsePositiveInteger } from "./positiveInteger.js";

@@ -7,6 +7,7 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { createConfigManager } from "./config/index.js";
 import { completionScript } from "./completion.js";
+import { isValidRemoteUrl } from "./commands/configCommands.js";
 import {
   configureProjectOptionInheritance,
   normalizeProjectSlug,
@@ -181,6 +182,9 @@ Example:
 `)
   .action(async (url: string) => {
     try {
+      if (!isValidRemoteUrl(url)) {
+        throw new Error("Invalid remote URL. Expected an http:// or https:// URL.");
+      }
       const configManager = await createConfigManager();
       await configManager.setRemoteUrl(url);
       console.log(`Remote URL set to: ${url}`);
