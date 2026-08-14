@@ -22,4 +22,4 @@ Coordinate ProPR without expanding the user's authority or taking over ProPR's d
 5. Run `/review opus` for an independent alternate-model review and `/ultrafix goal=8 max=10`. Treat their scores as evidence, not substitutes for independent tests and diff review.
 6. Merge only when authorized, using the reviewed and exactly tested head with green required checks. Deploy or publish only with explicit authority and a rollback plan.
 
-If already inside a ProPR implementation task or container, perform only the assigned edit and validation. Do not recursively create another ProPR implementation task unless the user explicitly asks for orchestration.
+If already inside a ProPR implementation task or container, perform only the assigned edit and validation. Never create or launch another ProPR task from inside it.

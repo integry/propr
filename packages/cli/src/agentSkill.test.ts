@@ -42,6 +42,19 @@ function bundle(root: string, body: string): string {
   return path;
 }
 
+function dateWithOneShotSideEffect(sideEffect: () => void): Date {
+  let fired = false;
+  return {
+    toISOString() {
+      if (!fired) {
+        fired = true;
+        sideEffect();
+      }
+      return "2026-08-14T10:24:00.000Z";
+    },
+  } as Date;
+}
+
 test("resolves every confirmed target with isolated HOME, CODEX_HOME, and XDG_CONFIG_HOME", () => {
   const root = temporaryRoot();
   const env = environment(root);
@@ -125,6 +138,46 @@ test("an unmodified managed older bundle upgrades but a modified copy is refused
   assert.equal(refused.state, "modified-managed");
 });
 
+test("non-forced install does not overwrite a target created after the absence check", () => {
+  const root = temporaryRoot();
+  const env = environment(root);
+  mkdirSync(env.HOME!, { recursive: true });
+  const source = bundle(root, "current skill");
+  const target = resolveAgentSkillLocations(["codex"], env)[0].path;
+  const now = dateWithOneShotSideEffect(() => {
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, "concurrent.txt"), "created concurrently\n");
+  });
+
+  const result = installAgentSkill("codex", { env, bundleDir: source, now });
+
+  assert.equal(result.action, "failed");
+  assert.match(result.detail ?? "", /created during installation and was not overwritten/);
+  assert.equal(readFileSync(join(target, "concurrent.txt"), "utf8"), "created concurrently\n");
+  assert.equal(existsSync(join(target, ".propr-managed.json")), false);
+});
+
+test("non-forced upgrade revalidates and preserves a target changed just before detachment", () => {
+  const root = temporaryRoot();
+  const env = environment(root);
+  mkdirSync(env.HOME!, { recursive: true });
+  const older = bundle(root, "older skill");
+  const current = bundle(root, "current skill");
+  assert.equal(installAgentSkill("claude", { env, bundleDir: older }).action, "installed");
+  const target = resolveAgentSkillLocations(["claude"], env)[0].path;
+  const now = dateWithOneShotSideEffect(() => {
+    writeFileSync(join(target, "concurrent.txt"), "changed concurrently\n");
+  });
+
+  const result = installAgentSkill("claude", { env, bundleDir: current, now });
+
+  assert.equal(result.action, "failed");
+  assert.match(result.detail ?? "", /changed before replacement and was not overwritten/);
+  assert.ok(result.backupPath);
+  assert.equal(existsSync(target), false);
+  assert.equal(readFileSync(join(result.backupPath!, "concurrent.txt"), "utf8"), "changed concurrently\n");
+});
+
 test("an exact unmanaged copy is adopted and then participates in managed upgrades", () => {
   const root = temporaryRoot();
   const env = environment(root);
@@ -193,6 +246,26 @@ test("safe removal accepts only unmodified managed content unless force preserve
   const forced = removeAgentSkill("opencode", { env, bundleDir: source, force: true });
   assert.equal(forced.action, "backed-up");
   assert.ok(forced.backupPath);
+});
+
+test("non-forced removal revalidates and preserves a target changed just before detachment", () => {
+  const root = temporaryRoot();
+  const env = environment(root);
+  mkdirSync(env.HOME!, { recursive: true });
+  const source = bundle(root, "current skill");
+  assert.equal(installAgentSkill("opencode", { env, bundleDir: source }).action, "installed");
+  const target = resolveAgentSkillLocations(["opencode"], env)[0].path;
+  const now = dateWithOneShotSideEffect(() => {
+    writeFileSync(join(target, "concurrent.txt"), "changed concurrently\n");
+  });
+
+  const result = removeAgentSkill("opencode", { env, bundleDir: source, now });
+
+  assert.equal(result.action, "failed");
+  assert.match(result.detail ?? "", /changed before removal and was not deleted/);
+  assert.ok(result.backupPath);
+  assert.equal(existsSync(target), false);
+  assert.equal(readFileSync(join(result.backupPath!, "concurrent.txt"), "utf8"), "changed concurrently\n");
 });
 
 test("rejects traversal, root-owned homes, non-directory parents, and skill-parent symlinks", () => {

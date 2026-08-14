@@ -357,8 +357,7 @@ export function inspectAgentSkills(
   return resolveAgentSkillLocations(targets, options.env ?? process.env).map((location) => inspectLocation(location, bundle));
 }
 
-function writeBundle(directory: string, bundle: Bundle): void {
-  mkdirSync(directory, { recursive: false, mode: 0o700 });
+function writeBundleContents(directory: string, bundle: Bundle): void {
   for (const entry of bundle.entries) {
     const output = join(directory, ...entry.path.split("/"));
     if (entry.kind === "directory") {
@@ -368,6 +367,26 @@ function writeBundle(directory: string, bundle: Bundle): void {
     }
   }
   writeFileSync(join(directory, MANAGED_FILE), managedMarkerContent(bundle.identity), { mode: 0o600, flag: "wx" });
+}
+
+function writeBundle(directory: string, bundle: Bundle): void {
+  mkdirSync(directory, { recursive: false, mode: 0o700 });
+  writeBundleContents(directory, bundle);
+}
+
+/** Publish a staged bundle into a directory claimed by this process without replacing any entry. */
+function publishBundleExclusively(directory: string, staged: string, bundle: Bundle): void {
+  for (const entry of bundle.entries) {
+    const output = join(directory, ...entry.path.split("/"));
+    if (entry.kind === "directory") {
+      mkdirSync(output, { mode: 0o700 });
+    } else {
+      linkSync(join(staged, ...entry.path.split("/")), output);
+      chmodSync(output, 0o600);
+    }
+  }
+  linkSync(join(staged, MANAGED_FILE), join(directory, MANAGED_FILE));
+  chmodSync(join(directory, MANAGED_FILE), 0o600);
 }
 
 function managedMarkerContent(identity: string): string {
@@ -405,6 +424,100 @@ function operationFailure(status: AgentSkillStatus, action: "refused" | "failed"
   return { ...status, action, detail };
 }
 
+function sameInspectedTree(expected: AgentSkillStatus, actual: AgentSkillStatus): boolean {
+  return expected.state === actual.state && expected.installedIdentity === actual.installedIdentity;
+}
+
+function inspectMovedTree(location: AgentSkillLocation, path: string, bundle: Bundle): AgentSkillStatus {
+  return inspectLocation({ ...location, path }, bundle);
+}
+
+function preservedFailure(
+  status: AgentSkillStatus,
+  detail: string,
+  preservedPath?: string
+): AgentSkillOperationResult {
+  return {
+    ...status,
+    action: "failed",
+    backupPath: preservedPath,
+    detail: preservedPath ? `${detail}; content preserved at ${preservedPath}` : detail,
+  };
+}
+
+function installAgentSkillWithoutOverwrite(
+  status: AgentSkillStatus,
+  location: AgentSkillLocation,
+  bundle: Bundle,
+  options: AgentSkillOptions
+): AgentSkillOperationResult {
+  const parent = dirname(location.path);
+  let staged: string | undefined;
+  let stagedOwned = false;
+  let displaced: string | undefined;
+  try {
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    assertSafeFilesystemTarget(location);
+    const refreshed = inspectLocation(location, bundle);
+    if (!sameInspectedTree(status, refreshed)) {
+      return operationFailure(refreshed, "failed", "target changed during installation; inspect it and retry");
+    }
+
+    staged = uniqueSibling(location.path, "installing", options.now);
+    mkdirSync(staged, { recursive: false, mode: 0o700 });
+    stagedOwned = true;
+    writeBundleContents(staged, bundle);
+
+    if (refreshed.state === "outdated-managed") {
+      displaced = uniqueSibling(location.path, "replaced", options.now);
+      renameSync(location.path, displaced);
+      const moved = inspectMovedTree(location, displaced, bundle);
+      if (!sameInspectedTree(refreshed, moved)) {
+        return preservedFailure(status, "target changed before replacement and was not overwritten", displaced);
+      }
+    }
+
+    try {
+      // Claim an absent target with mkdir rather than rename: rename would replace
+      // content another process created after our last inspection.
+      mkdirSync(location.path, { recursive: false, mode: 0o700 });
+    } catch (error) {
+      const current = inspectLocation(location, bundle);
+      const reason = current.state === "absent" ? (error as Error).message : "target was created during installation and was not overwritten";
+      return preservedFailure(current, reason, displaced);
+    }
+
+    try {
+      publishBundleExclusively(location.path, staged, bundle);
+    } catch (error) {
+      return preservedFailure(
+        inspectLocation(location, bundle),
+        `installation stopped rather than overwrite content created concurrently: ${(error as Error).message}`,
+        displaced
+      );
+    }
+
+    const next = inspectLocation(location, bundle);
+    if (next.state !== "current-managed") {
+      return preservedFailure(next, "target changed while the new bundle was being installed and was preserved", displaced);
+    }
+
+    if (displaced) {
+      const moved = inspectMovedTree(location, displaced, bundle);
+      if (!sameInspectedTree(refreshed, moved)) {
+        return preservedFailure(next, "detached content changed during installation and was not deleted", displaced);
+      }
+      rmSync(displaced, { recursive: true, force: true });
+      displaced = undefined;
+    }
+    return { ...next, action: status.state === "absent" ? "installed" : "updated" };
+  } catch (error) {
+    return preservedFailure(status, (error as Error).message, displaced);
+  } finally {
+    if (stagedOwned && staged) rmSync(staged, { recursive: true, force: true });
+  }
+}
+
 export function installAgentSkill(target: AgentSkillTarget, options: AgentSkillOptions = {}): AgentSkillOperationResult {
   const bundle = loadBundle(options.bundleDir);
   const location = resolveAgentSkillLocation(target, options.env ?? process.env);
@@ -432,6 +545,7 @@ export function installAgentSkill(target: AgentSkillTarget, options: AgentSkillO
   if (!replaceable && !options.force) {
     return operationFailure(status, "refused", "refusing to overwrite foreign or modified content; use --force to create a backup");
   }
+  if (!options.force) return installAgentSkillWithoutOverwrite(status, location, bundle, options);
 
   const parent = dirname(location.path);
   let temporary: string | undefined;
@@ -447,11 +561,9 @@ export function installAgentSkill(target: AgentSkillTarget, options: AgentSkillO
     temporary = join(parent, `.propr.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
     writeBundle(temporary, bundle);
     if (existsSync(location.path)) {
-      displaced = options.force
-        ? uniqueSibling(location.path, "backup", options.now)
-        : uniqueSibling(location.path, "replaced", options.now);
+      displaced = uniqueSibling(location.path, "backup", options.now);
       renameSync(location.path, displaced);
-      if (options.force) backupPath = displaced;
+      backupPath = displaced;
     }
     try {
       renameSync(temporary, location.path);
@@ -462,11 +574,10 @@ export function installAgentSkill(target: AgentSkillTarget, options: AgentSkillO
       throw error;
     }
     chmodSync(location.path, 0o700);
-    if (displaced && !options.force) rmSync(displaced, { recursive: true, force: true });
     const next = inspectLocation(location, bundle);
     return {
       ...next,
-      action: status.state === "absent" ? "installed" : options.force ? "backed-up" : "updated",
+      action: status.state === "absent" ? "installed" : "backed-up",
       backupPath,
     };
   } catch (error) {
@@ -499,6 +610,10 @@ export function removeAgentSkill(target: AgentSkillTarget, options: AgentSkillOp
     }
     const tombstone = uniqueSibling(location.path, "removing", options.now);
     renameSync(location.path, tombstone);
+    const moved = inspectMovedTree(location, tombstone, bundle);
+    if (!sameInspectedTree(refreshed, moved)) {
+      return preservedFailure(status, "target changed before removal and was not deleted", tombstone);
+    }
     rmSync(tombstone, { recursive: true, force: true });
     return { ...status, state: "absent", action: "removed" };
   } catch (error) {
