@@ -21,7 +21,7 @@ import {
 } from "../api/index.js";
 import { createConfigManager } from "../config/index.js";
 import { resolveProject, ProjectResolutionError, printOutput } from "../utils/index.js";
-import { getErrorMessage, presentApiError } from "../utils/apiErrorPresentation.js";
+import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Formats a plan status for display with color hints.
@@ -357,8 +357,21 @@ Examples:
 
         displayPlanDetails(fetchedPlan);
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view this plan.",
+            fallbackMessage: `Error fetching plan: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Plan not found: ${draftId}`);
         } else {
           presentApiError(error, {
@@ -410,8 +423,21 @@ Examples:
         await deletePlan(draftId);
         console.log("Plan deleted successfully.");
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to delete this plan.",
+            fallbackMessage: `Error deleting plan: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Plan not found: ${draftId}`);
         } else {
           presentApiError(error, {
@@ -462,10 +488,26 @@ Example:
           process.exit(1);
         }
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to abort this plan.",
+            fallbackMessage: `Error aborting plan: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Plan not found: ${draftId}`);
-        } else if (errorMessage.includes("400")) {
+        } else if (
+          classification.status === 400 ||
+          (classification.status === undefined && errorMessage.includes("400"))
+        ) {
           console.error("Error: Plan is not in a state that can be aborted (must be 'generating' or 'refining').");
         } else {
           presentApiError(error, {

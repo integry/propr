@@ -17,7 +17,7 @@ import {
   RepositoryIndexingStatus,
 } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
-import { getErrorMessage, presentApiError } from "../utils/apiErrorPresentation.js";
+import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Formats the enabled status for display.
@@ -299,8 +299,20 @@ Examples:
             process.exit(1);
           }
         } catch (error) {
-          const errorMessage = getErrorMessage(error);
-          if (errorMessage.includes("already being monitored")) {
+          const classification = classifyApiError(error);
+          const errorMessage = classification.message;
+          if (
+            classification.kind === "unauthorized" ||
+            classification.kind === "forbidden"
+          ) {
+            presentApiError(error, {
+              forbiddenMessage: "Error: Access denied. You do not have permission to add repositories.",
+              fallbackMessage: `Error adding repository: ${errorMessage}`,
+            });
+          } else if (
+            (classification.status === undefined || classification.status === 409) &&
+            errorMessage.includes("already being monitored")
+          ) {
             console.error(`Error: Repository "${fullName}" is already being monitored.`);
             console.log("");
             console.log("To update the repository settings, you can:");
@@ -355,8 +367,20 @@ Example:
           process.exit(1);
         }
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("not being monitored")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to remove repositories.",
+            fallbackMessage: `Error removing repository: ${errorMessage}`,
+          });
+        } else if (
+          (classification.status === undefined || classification.status === 404) &&
+          errorMessage.includes("not being monitored")
+        ) {
           console.error(`Error: Repository "${fullName}" is not being monitored.`);
           console.log("");
           console.log("Use 'propr repo list' to see currently monitored repositories.");
@@ -438,8 +462,20 @@ Examples:
             process.exit(1);
           }
         } catch (error) {
-          const errorMessage = getErrorMessage(error);
-          if (errorMessage.includes("not being monitored")) {
+          const classification = classifyApiError(error);
+          const errorMessage = classification.message;
+          if (
+            classification.kind === "unauthorized" ||
+            classification.kind === "forbidden"
+          ) {
+            presentApiError(error, {
+              forbiddenMessage: "Error: Access denied. You do not have permission to update repositories.",
+              fallbackMessage: `Error updating repository: ${errorMessage}`,
+            });
+          } else if (
+            (classification.status === undefined || classification.status === 404) &&
+            errorMessage.includes("not being monitored")
+          ) {
             console.error(`Error: Repository "${fullName}" is not being monitored.`);
             console.log("");
             console.log("Use 'propr repo list' to see currently monitored repositories.");
@@ -527,8 +563,20 @@ Examples:
             process.exit(1);
           }
         } catch (error) {
-          const errorMessage = getErrorMessage(error);
-          if (errorMessage.includes("already queued")) {
+          const classification = classifyApiError(error);
+          const errorMessage = classification.message;
+          if (
+            classification.kind === "unauthorized" ||
+            classification.kind === "forbidden"
+          ) {
+            presentApiError(error, {
+              forbiddenMessage: "Error: Access denied. You do not have permission to trigger indexing.",
+              fallbackMessage: `Error triggering indexing: ${errorMessage}`,
+            });
+          } else if (
+            (classification.status === undefined || classification.status === 409) &&
+            errorMessage.includes("already queued")
+          ) {
             console.error(`Error: Indexing for "${fullName}" is already in progress or queued.`);
             console.log("");
             console.log("Use 'propr repo status' to check the current indexing status.");

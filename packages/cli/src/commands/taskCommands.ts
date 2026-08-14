@@ -8,7 +8,7 @@
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
 import { resolveProject, ProjectResolutionError, normalizeProjectSlug, printOutput } from "../utils/index.js";
-import { getErrorMessage, presentApiError } from "../utils/apiErrorPresentation.js";
+import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 import {
   listTasks,
   stopTask,
@@ -453,8 +453,21 @@ Examples:
 
         displayTaskDetails(status);
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view this task.",
+            fallbackMessage: `Error fetching task: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Task not found: ${taskId}`);
         } else {
           presentApiError(error, {
@@ -511,10 +524,26 @@ Example:
           process.exit(1);
         }
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to stop this task.",
+            fallbackMessage: `Error stopping task: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Task not found: ${taskId}`);
-        } else if (errorMessage.includes("400")) {
+        } else if (
+          classification.status === 400 ||
+          (classification.status === undefined && errorMessage.includes("400"))
+        ) {
           console.error(
             "Error: Task cannot be stopped in its current state."
           );
@@ -602,10 +631,26 @@ Examples:
         await deleteTask(taskId, options.force || false);
         console.log("Task deleted successfully.");
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to delete this task.",
+            fallbackMessage: `Error deleting task: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Task not found: ${taskId}`);
-        } else if (errorMessage.includes("400")) {
+        } else if (
+          classification.status === 400 ||
+          (classification.status === undefined && errorMessage.includes("400"))
+        ) {
           console.error(
             "Error: Cannot delete task in active state. Stop the task first or use --force."
           );
@@ -805,13 +850,26 @@ Examples:
             process.exit(1);
           }
         } catch (error) {
-          const errorMessage = getErrorMessage(error);
+          const classification = classifyApiError(error);
+          const errorMessage = classification.message;
           if (
-            errorMessage.includes("404") ||
-            errorMessage.includes("not found")
+            classification.kind === "unauthorized" ||
+            classification.kind === "forbidden"
+          ) {
+            presentApiError(error, {
+              forbiddenMessage: "Error: Access denied. You do not have permission to revert this PR.",
+              fallbackMessage: `Error reverting task: ${errorMessage}`,
+            });
+          } else if (
+            classification.status === 404 ||
+            (classification.status === undefined &&
+              (errorMessage.includes("404") || errorMessage.includes("not found")))
           ) {
             console.error("Error: Repository, PR, or commit not found.");
-          } else if (errorMessage.includes("400")) {
+          } else if (
+            classification.status === 400 ||
+            (classification.status === undefined && errorMessage.includes("400"))
+          ) {
             console.error("Error: Invalid parameters provided.");
           } else {
             presentApiError(error, {

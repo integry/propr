@@ -13,7 +13,7 @@ import {
   QueueStats,
 } from "../api/index.js";
 import { printOutput } from "../utils/index.js";
-import { getErrorMessage, presentApiError } from "../utils/apiErrorPresentation.js";
+import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Formats a status value with color-like indicators for terminal display.
@@ -282,10 +282,20 @@ Examples:
 
         displaySystemStatus(status);
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
         if (
-          errorMessage.includes("ECONNREFUSED") ||
-          errorMessage.toLowerCase().includes("network")
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view system status.",
+            fallbackMessage: `Error checking system status: ${errorMessage}`,
+          });
+        } else if (
+          (classification.status === undefined || classification.status === 0) &&
+          (errorMessage.includes("ECONNREFUSED") ||
+            errorMessage.toLowerCase().includes("network"))
         ) {
           console.error(
             "Error: Cannot connect to ProPR backend. Is the server running?"
@@ -334,10 +344,20 @@ Examples:
 
         displayQueueStats(stats);
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
         if (
-          errorMessage.includes("ECONNREFUSED") ||
-          errorMessage.toLowerCase().includes("network")
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view queue statistics.",
+            fallbackMessage: `Error fetching queue statistics: ${errorMessage}`,
+          });
+        } else if (
+          (classification.status === undefined || classification.status === 0) &&
+          (errorMessage.includes("ECONNREFUSED") ||
+            errorMessage.toLowerCase().includes("network"))
         ) {
           console.error(
             "Error: Cannot connect to ProPR backend. Is the server running?"

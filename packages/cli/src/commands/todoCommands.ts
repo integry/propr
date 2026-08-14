@@ -8,7 +8,7 @@
 import { Command } from "commander";
 import { createConfigManager } from "../config/index.js";
 import { resolveProject, ProjectResolutionError, printOutput } from "../utils/index.js";
-import { getErrorMessage, presentApiError } from "../utils/apiErrorPresentation.js";
+import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 import {
   listTodos,
   getTodo,
@@ -239,8 +239,21 @@ Examples:
 
         displayTodoDetails(result);
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view this to-do.",
+            fallbackMessage: `Error fetching to-do: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: To-do not found: ${todoId}`);
         } else {
           presentApiError(error, {
@@ -325,8 +338,21 @@ Examples:
         const action = isCompleted ? "completed" : "reopened";
         console.log(`To-do ${action}: ${result.content}`);
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to update this to-do.",
+            fallbackMessage: `Error updating to-do: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: To-do not found: ${todoId}`);
         } else {
           presentApiError(error, {
@@ -377,8 +403,21 @@ Examples:
         await deleteTodo(todoId);
         console.log("To-do deleted successfully.");
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to delete this to-do.",
+            fallbackMessage: `Error deleting to-do: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: To-do not found: ${todoId}`);
         } else {
           presentApiError(error, {
@@ -455,8 +494,21 @@ Examples:
           console.error(`Error: ${error.message}`);
           process.exit(1);
         }
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to move this to-do.",
+            fallbackMessage: `Error moving to-do: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: To-do not found: ${todoId}`);
         } else {
           presentApiError(error, {
@@ -603,8 +655,21 @@ Example:
 
         console.log(`Category renamed to: ${result.name}`);
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to rename this category.",
+            fallbackMessage: `Error renaming category: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Category not found: ${categoryId}`);
         } else {
           presentApiError(error, {
@@ -645,8 +710,21 @@ Examples:
         await deleteCategory(categoryId);
         console.log("Category deleted successfully. Todos moved to uncategorized.");
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("404") || errorMessage.includes("not found")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to delete this category.",
+            fallbackMessage: `Error deleting category: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 404 ||
+          (classification.status === undefined &&
+            (errorMessage.includes("404") || errorMessage.includes("not found")))
+        ) {
           console.error(`Error: Category not found: ${categoryId}`);
         } else {
           presentApiError(error, {

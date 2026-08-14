@@ -66,16 +66,18 @@ export function classifyApiError(error: unknown): CliApiErrorClassification {
   if (status !== undefined) return { kind: "api", message, status };
 
   // Legacy callers sometimes discard the response status and retain only
-  // strings such as "401 Unauthorized" or "HTTP 403: Forbidden".
+  // strings such as "401 Unauthorized", "HTTP 403: Forbidden", or
+  // "Request failed (401)". Keep request-failure matching narrow so domain
+  // identifiers such as "Task 401 not found" are not treated as statuses.
   if (
-    /(?:\bhttp(?:\s+status)?|\bstatus(?:\s+code)?)\s*[:=-]?\s*401\b|\b401\s*[:=-]?\s*unauthori[sz]ed\b/i.test(
+    /^\s*(?:error\s*[:=-]?\s*)?401[.!]?\s*$|(?:\bhttp(?:\s+status)?|\bstatus(?:\s+code)?)\s*[:=-]?\s*401\b|\b401\s*[:=-]?\s*unauthori[sz]ed\b|\brequest\s+(?:failed|failure|error|returned|rejected)(?:\s+with)?(?:\s+(?:response\s+)?code)?\s*[:=-]?\s*\(?\s*401\b/i.test(
       message
     )
   ) {
     return { kind: "unauthorized", message, status: 401 };
   }
   if (
-    /(?:\bhttp(?:\s+status)?|\bstatus(?:\s+code)?)\s*[:=-]?\s*403\b|\b403\s*[:=-]?\s*forbidden\b/i.test(
+    /^\s*(?:error\s*[:=-]?\s*)?403[.!]?\s*$|(?:\bhttp(?:\s+status)?|\bstatus(?:\s+code)?)\s*[:=-]?\s*403\b|\b403\s*[:=-]?\s*forbidden\b|\brequest\s+(?:failed|failure|error|returned|rejected)(?:\s+with)?(?:\s+(?:response\s+)?code)?\s*[:=-]?\s*\(?\s*403\b/i.test(
       message
     )
   ) {

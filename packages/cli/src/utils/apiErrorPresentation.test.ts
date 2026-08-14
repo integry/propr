@@ -23,6 +23,10 @@ test("classifies typed and legacy 401 failures as login-required", () => {
     new Error("unauthorized"),
     new UnauthorizedError(),
     new Error("Request failed with status 401"),
+    new Error("401"),
+    new Error("ERROR: 401"),
+    new Error("Request failed (401)"),
+    new Error("REQUEST ERROR: 401"),
     new Error("401 Unauthorized"),
     Object.assign(new Error("Authentication failed"), { status: 401 }),
   ];
@@ -38,6 +42,10 @@ test("keeps typed and plain 403 failures distinct from login-required failures",
     new Error("Forbidden"),
     new Error("HTTP 403"),
     new Error("status 403"),
+    new Error("403"),
+    new Error("ERROR: 403"),
+    new Error("Request rejected (403)"),
+    new Error("REQUEST FAILURE: 403"),
     new Error("403 Forbidden"),
     Object.assign(new Error("Unauthorized access"), { status: 403 }),
   ];
@@ -61,6 +69,8 @@ test("prefers typed ApiError status over conflicting legacy message text", () =>
 test("does not infer auth failures from standalone domain numbers", () => {
   assert.equal(classifyApiError(new Error("Task 401 not found")).kind, "other");
   assert.equal(classifyApiError(new Error("issue 403 is closed")).kind, "other");
+  assert.equal(classifyApiError(new Error("Request 401 not found")).kind, "other");
+  assert.equal(classifyApiError(new Error("Request 403 is closed")).kind, "other");
 });
 
 test("treats every explicit non-auth status as authoritative", () => {

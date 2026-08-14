@@ -24,7 +24,7 @@ import {
 import {
   printOutput,
 } from "../utils/index.js";
-import { getErrorMessage, presentApiError } from "../utils/apiErrorPresentation.js";
+import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Formats a setting value for display.
@@ -384,14 +384,29 @@ Examples:
           process.exit(1);
         }
       } catch (error) {
-        const errorMessage = getErrorMessage(error);
-        if (errorMessage.includes("400")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to update settings.",
+            fallbackMessage: `Error updating setting: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 400 ||
+          (classification.status === undefined && errorMessage.includes("400"))
+        ) {
           console.error(`Error: Invalid value for setting "${key}".`);
           if (isValidSettingKey(key)) {
             console.log("");
             console.log(`Description: ${getSettingDescription(key)}`);
           }
-        } else if (errorMessage.includes("409")) {
+        } else if (
+          classification.status === 409 ||
+          (classification.status === undefined && errorMessage.includes("409"))
+        ) {
           console.error(
             "Error: Configuration is being updated. Please try again."
           );
