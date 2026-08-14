@@ -83,7 +83,7 @@ async function resolveCanonicalModelSelection(requested: string): Promise<Canoni
     }
 
     const normalizedToken = token.replace(/^llm-/i, '');
-    const resolution = customResolution ?? await resolveLlmLabel(normalizedToken);
+    const resolution = customResolution ?? await resolveLlmLabel(normalizedToken, true);
     const agent = agents.find(candidate =>
         candidate.config.enabled
         && candidate.config.alias.toLowerCase() === resolution.agentAlias.toLowerCase()
@@ -346,11 +346,14 @@ function resolveKnownModelAliasLabel(label: string, agents: { config: AgentConfi
  * @param label - The LLM label without the "llm-" prefix (e.g., "gemini-pro", "claude-opus", "opus")
  * @returns Object with agentAlias and model
  */
-async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
+async function resolveLlmLabel(label: string, enabledOnly = false): Promise<LlmLabelResolution> {
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
-    const agents = registry.getAllAgents();
+    const agents = registry.getAllAgents().filter(agent => !enabledOnly || agent.config.enabled);
+    const defaultAgentAlias = enabledOnly
+        ? agents[0]?.config.alias ?? 'default'
+        : registry.getDefaultAgent()?.config.alias ?? 'default';
 
     const supportedModelMatch = resolveBySupportedModelId(label, agents);
     if (supportedModelMatch) {
@@ -363,8 +366,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         return explicitLabelMatch;
     }
     if (label.includes('~')) {
-        const defaultAgent = registry.getDefaultAgent();
-        return { agentAlias: defaultAgent?.config.alias || 'default', model: label };
+        return { agentAlias: defaultAgentAlias, model: label };
     }
 
     const lowerLabel = label.toLowerCase();
@@ -404,8 +406,7 @@ async function resolveLlmLabel(label: string): Promise<LlmLabelResolution> {
         return knownAliasMatch;
     }
 
-    const defaultAgent = registry.getDefaultAgent();
-    return { agentAlias: defaultAgent?.config.alias || 'default', model: label };
+    return { agentAlias: defaultAgentAlias, model: label };
 }
 
 /**

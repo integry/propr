@@ -192,6 +192,27 @@ test('resolveLlmLabel - 7-step model resolution', async (t) => {
         }
     });
 
+    await t.test('canonicalizes a raw model ID against enabled agents when a disabled match is ordered first', async () => {
+        const disabledCodexAgent = {
+            config: {
+                ...mockAgentConfigs[2].config,
+                id: 'disabled-codex-agent',
+                alias: 'disabled-codex',
+                enabled: false,
+            },
+        };
+        mockAgentConfigs.unshift(disabledCodexAgent);
+        try {
+            assert.deepStrictEqual(await resolveCanonicalModelSelection('gpt-5.6-sol'), {
+                agentAlias: 'codex',
+                model: 'gpt-5.6-sol',
+                githubLabel: 'llm-codex-gpt56-sol',
+            });
+        } finally {
+            mockAgentConfigs.shift();
+        }
+    });
+
     await t.test('canonicalizes a configured agent alias and its full model label to that agent label', async () => {
         const codexProdAgent = {
             config: {

@@ -69,7 +69,7 @@ interface PRJobData extends CommentJobData {
 
 interface CommentContext { eventType: CommentEventType; prNumber: number; owner: string; repo: string }
 interface StoreCommentConfig { redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[] }
-interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; commentRevisionIdentity?: string; modelSelection?: CanonicalModelSelection }
+interface EnqueueCommentOptions { payload: IssueCommentEvent | PullRequestReviewCommentEvent; redisClient: Redis; PR_FOLLOWUP_TRIGGER_KEYWORDS: string[]; MODEL_LABEL_PATTERN?: string; correlationId: string; commandMeta?: CommandMeta; prefetchedPRData?: PRBranchAndLabels; ultrafixMeta?: UltrafixCommandMeta; commentRevisionIdentity?: string; modelSelection?: CanonicalModelSelection; pendingOnly?: boolean }
 interface RepoContext { owner: string; repo: string; prNumber: number }
 interface PRBranchAndLabels { branchName: string; prLabels: Label[] }
 type BatchComment = Pick<UnprocessedComment, 'id' | 'body' | 'commandMeta' | 'commandMode' | 'requestedModels' | 'commandInstructions' | 'llmOverride' | 'agentAlias' | 'modelName' | 'modelLabel' | 'ultrafixMeta'> & { created_at: string; updated_at: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number };
@@ -217,7 +217,7 @@ type ManualCommandFenceOptions = Pick<SlashCommandHandlerOptions, 'comment' | 'e
 
 async function fenceManualCommand(opts: ManualCommandFenceOptions): Promise<ManualCommandTakeover | null> {
     const { commandMeta, comment, eventContext, config, correlatedLogger } = opts;
-    if (commandMeta.mode !== 'fix' && commandMeta.mode !== 'review') return null;
+    if (commandMeta.mode !== 'fix' && commandMeta.mode !== 'review' && commandMeta.mode !== 'use') return null;
 
     const { owner, repo, prNumber } = eventContext;
     const commentRevisionIdentity = getCommentRevisionIdentity(comment, eventContext.eventType);
@@ -422,13 +422,34 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
         return;
     }
 
+    // /use is a manual takeover just like /fix and /review. Fence automatic
+    // work only after the durable label transition succeeds, but before this
+    // revision can be batched or queued.
+    const manualTakeover = await fenceManualCommand({ commandMeta, comment, eventContext, config, correlatedLogger });
+
     const strippedComment = { ...comment, body: commandMeta.instructions || '' };
     const snapshot = await getPRCommentJobSnapshot(prNumber, owner, repo);
 
     if (snapshot.active.length > 0) {
         await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
-        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: active writer found, stored selected follow-up for the next run`);
-        await postModelSelectionAcknowledgement(opts, selection, 'pending');
+        if (commandMeta.mode !== 'use') {
+            correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: active writer found, stored selected follow-up for the next run`);
+            await postModelSelectionAcknowledgement(opts, selection, 'pending');
+            return;
+        }
+        // The active worker may already have crossed its final pending-comment
+        // check while BullMQ still reports it as active. Always enqueue a
+        // deterministic pending-only successor after the write so one of the
+        // two jobs is guaranteed to claim this revision.
+        const updatedPRData = { branchName: prData.branchName, prLabels: transition.updatedLabels };
+        await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, {
+            payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
+            MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId,
+            commandMeta: selectedCommandMeta, prefetchedPRData: updatedPRData, modelSelection: selection,
+            commentRevisionIdentity: manualTakeover?.commentRevisionIdentity, pendingOnly: true,
+        });
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: active writer found, stored selected follow-up and queued its successor`);
+        await postModelSelectionAcknowledgement(opts, selection, 'queued');
         return;
     }
 
@@ -445,11 +466,15 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
     }
     const supersededRetries = await supersedeProviderLimitRetries(snapshot, eventContext, redisClient);
     const remainingQueuedJobs = [...snapshot.waiting, ...snapshot.delayed].filter(job => !isProviderLimitRetry(job));
-    if (remainingQueuedJobs.length > 0) {
+    const requiresIndependentTakeover = shouldEnqueueIndependentManualTakeover(remainingQueuedJobs, manualTakeover);
+    if (remainingQueuedJobs.length > 0 && !requiresIndependentTakeover) {
         await storeCommentForBatch({ ...strippedComment, ...buildPendingCommandFields(selectedCommandMeta, selection) }, commentAuthor, eventContext, { redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS });
         correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: queued writer found, stored selected follow-up for batching`);
         await postModelSelectionAcknowledgement(opts, selection, 'pending');
         return;
+    }
+    if (remainingQueuedJobs.length > 0) {
+        correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command: fenced automatic work will be replaced by an independent durable job`);
     }
 
     const updatedPRData = { branchName: prData.branchName, prLabels: transition.updatedLabels };
@@ -457,6 +482,7 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
         payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS,
         MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId,
         commandMeta: selectedCommandMeta, prefetchedPRData: updatedPRData, modelSelection: selection,
+        commentRevisionIdentity: manualTakeover?.commentRevisionIdentity,
     });
     correlatedLogger.info({ pullRequestNumber: prNumber, supersededRetries, selection }, `/${commandName} follow-up queued with durable model selection`);
     await postModelSelectionAcknowledgement(opts, selection, 'queued');
@@ -902,7 +928,7 @@ function buildPendingCommandFields(commandMeta: CommandMeta, modelSelection?: Ca
 
 async function enqueueNewCommentJob(comment: { id: number; created_at: string; updated_at: string; body: string; path?: string; line?: number | null; diff_hunk?: string; pull_request_review_id?: number }, commentAuthor: string, eventContext: CommentContext, options: EnqueueCommentOptions): Promise<void> {
     const { eventType, prNumber, owner, repo } = eventContext;
-    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta, commentRevisionIdentity, modelSelection } = options;
+    const { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS, correlationId, MODEL_LABEL_PATTERN = '^llm-(.+)$', commandMeta, prefetchedPRData, ultrafixMeta, commentRevisionIdentity, modelSelection, pendingOnly = false } = options;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     const { unprocessedComment, llmFromKeywords } = prepareComment(comment, commentAuthor, eventType, PR_FOLLOWUP_TRIGGER_KEYWORDS);
@@ -910,7 +936,7 @@ async function enqueueNewCommentJob(comment: { id: number; created_at: string; u
     const llm = modelSelection?.model ?? resolveLlm(llmFromKeywords, prLabels, { modelLabelPattern: MODEL_LABEL_PATTERN, prNumber, correlatedLogger, commandMeta });
 
     const jobData: CommentJobData = {
-        pullRequestNumber: prNumber, comments: [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),
+        pullRequestNumber: prNumber, comments: pendingOnly ? [] : [unprocessedComment], repoOwner: owner, repoName: repo, branchName, llm, correlationId: generateCorrelationId(),
         ...(modelSelection ? { agentAlias: modelSelection.agentAlias, modelName: modelSelection.model, modelLabel: modelSelection.githubLabel } : {}),
         ...(commandMeta ? {
             ...buildCommandJobFields(commandMeta),

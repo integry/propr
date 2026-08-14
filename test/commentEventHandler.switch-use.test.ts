@@ -1176,7 +1176,7 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         }));
     });
 
-    test('/use is batched when an existing job is active for the same PR', async () => {
+    test('/use stores its revision and queues a deterministic successor when the active writer finishes at the handoff', async () => {
         // Simulate an active job for PR 42
         mockActiveJobs = [{
             name: 'processPullRequestComment',
@@ -1185,12 +1185,24 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
 
         const event = createPRCommentEvent('/use opus\nFix the bug');
         const config = createTestConfig();
+        const handoffSteps: string[] = [];
+        mockInvalidateAutomaticWork.mock.mockImplementationOnce(async () => {
+            handoffSteps.push('invalidate');
+            return { workEpoch: 2, hadAutomaticWork: true };
+        });
+        config.redisClient.rpush.mock.mockImplementationOnce(async (key: string, ...values: string[]) => {
+            handoffSteps.push('store');
+            config.redisClient._lists.set(key, [...(config.redisClient._lists.get(key) ?? []), ...values]);
+            // The worker crosses its cleanup boundary after the queue snapshot
+            // but before the pending write completes.
+            mockActiveJobs = [];
+        });
+        mockQueueAdd.mock.mockImplementationOnce(async () => { handoffSteps.push('enqueue'); });
 
         await processCommentEvent(event, 'issue_comment', 'corr-batch-1', config);
 
-        // Should NOT enqueue a new job
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
-        // Should store comment for batch via rpush
+        assert.deepStrictEqual(handoffSteps, ['invalidate', 'store', 'enqueue']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
         const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
         assert.strictEqual(pendingComment.body, 'Fix the bug');
@@ -1200,6 +1212,16 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
         assert.strictEqual(pendingComment.agentAlias, 'default');
         assert.strictEqual(pendingComment.modelName, 'claude-opus-5');
         assert.strictEqual(pendingComment.modelLabel, 'llm-claude-opus5');
+        const successorData = mockQueueAdd.mock.calls[0].arguments[1] as Record<string, unknown>;
+        assert.deepStrictEqual(successorData.comments, [], 'successor must claim the durable pending revision');
+        assert.strictEqual(
+            mockQueueAdd.mock.calls[0].arguments[2].jobId,
+            `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${manualRevisionSlug(event.comment.updated_at, event.comment.body)}`,
+        );
+        assert.deepStrictEqual(
+            mockInvalidateAutomaticWork.mock.calls[0].arguments[1],
+            { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: event.comment.id, sourceCommentRevision: manualRevisionIdentity(event.comment.updated_at, event.comment.body) },
+        );
     });
 
     test('/switch with instructions is batched when an existing job is active', async () => {
@@ -1234,6 +1256,35 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
 
         assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
+        assert.strictEqual(mockInvalidateAutomaticWork.mock.callCount(), 1);
+        assert.deepStrictEqual(
+            mockInvalidateAutomaticWork.mock.calls[0].arguments[1],
+            { owner: 'testowner', repo: 'testrepo', pr: 42, sourceCommentId: event.comment.id, sourceCommentRevision: manualRevisionIdentity(event.comment.updated_at, event.comment.body) },
+        );
+    });
+
+    test('/use enqueues an independent revision job after fencing queued automatic work', async () => {
+        mockWaitingJobs = [{
+            name: 'processPullRequestComment',
+            data: {
+                pullRequestNumber: 42,
+                repoOwner: 'testowner',
+                repoName: 'testrepo',
+                ultrafixMeta: { mode: 'ultrafix', instructions: '', workEpoch: 0 },
+            },
+        }];
+        mockInvalidateAutomaticWork.mock.mockImplementationOnce(async () => ({ workEpoch: 1, hadAutomaticWork: true }));
+        const event = createPRCommentEvent('/use opus');
+        const config = createTestConfig();
+
+        await processCommentEvent(event, 'issue_comment', 'corr-use-automatic-takeover', config);
+
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(
+            mockQueueAdd.mock.calls[0].arguments[2].jobId,
+            `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${manualRevisionSlug(event.comment.updated_at, event.comment.body)}`,
+        );
     });
 
     test('/review is batched when a waiting job exists for the same PR', async () => {
@@ -1458,7 +1509,8 @@ describe('commentEventHandler — slash command batching/concurrency guard', () 
 
         await processCommentEvent(event, 'pull_request_review_comment', 'corr-batch-review', config);
 
-        assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.deepStrictEqual(mockQueueAdd.mock.calls[0].arguments[1].comments, []);
         assert.strictEqual(config.redisClient.rpush.mock.callCount(), 1);
         const pendingComment = JSON.parse(config.redisClient.rpush.mock.calls[0].arguments[1] as string) as Record<string, unknown>;
         assert.strictEqual(pendingComment.type, 'review');

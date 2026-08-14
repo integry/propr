@@ -53,8 +53,6 @@ async function restoreManagedLabels(
     priorManagedLabels: string[],
     results: UpdateResults,
 ): Promise<void> {
-    if (priorManagedLabels.length === 0) return;
-
     const priorLabelNames = new Set(priorManagedLabels.map(label => label.toLowerCase()));
     let liveLabels: string[];
     try {
