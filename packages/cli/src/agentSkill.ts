@@ -324,39 +324,12 @@ function assertSafeFilesystemTarget(location: AgentSkillLocation): void {
   }
 }
 
-function assertRealDirectory(path: string, stat: Stats): void {
-  if (stat.isSymbolicLink()) throw new Error(`symbolic link parent is not allowed: ${path}`);
-  if (!stat.isDirectory()) throw new Error(`parent is not a directory: ${path}`);
-}
-
-/** Create only the exact provider skills parent, refusing every unsafe raced entry. */
-function ensureProviderSkillsParent(location: AgentSkillLocation): void {
+function assertProviderSkillTarget(location: AgentSkillLocation): void {
   const parent = dirname(location.path);
   const expectedParent = join(location.toolHome, "skills");
   if (parent !== expectedParent || location.path !== join(expectedParent, "propr")) {
     throw new Error(`unsafe ${location.target} skill target`);
   }
-
-  assertSafeFilesystemTarget(location);
-
-  let current: string = sep;
-  for (const component of resolve(parent).split(sep).filter(Boolean)) {
-    current = join(current, component);
-    let stat = lstatIfExists(current);
-    if (!stat) {
-      try {
-        mkdirSync(current, { recursive: false, mode: 0o700 });
-      } catch (error) {
-        stat = lstatIfExists(current);
-        if (!stat) throw error;
-      }
-      stat = lstatIfExists(current);
-      if (!stat) throw new Error(`directory creation did not create a directory: ${current}`);
-    }
-    assertRealDirectory(current, stat);
-  }
-
-  assertSafeFilesystemTarget(location);
 }
 
 function readMarker(path: string): ManagedMarker | undefined {
@@ -440,23 +413,6 @@ export function inspectAgentSkills(
   });
 }
 
-function writeBundleContents(directory: string, bundle: Bundle): void {
-  for (const entry of bundle.entries) {
-    const output = join(directory, ...entry.path.split("/"));
-    if (entry.kind === "directory") {
-      mkdirSync(output, { mode: 0o700 });
-    } else {
-      writeFileSync(output, entry.content!, { mode: 0o600, flag: "wx" });
-    }
-  }
-  writeFileSync(join(directory, MANAGED_FILE), managedMarkerContent(bundle.identity), { mode: 0o600, flag: "wx" });
-}
-
-function writeBundle(directory: string, bundle: Bundle): void {
-  mkdirSync(directory, { recursive: false, mode: 0o700 });
-  writeBundleContents(directory, bundle);
-}
-
 interface PinnedDirectory {
   fd: number;
   path: string;
@@ -472,11 +428,14 @@ function descriptorPath(fd: number): string {
 function openDirectoryNoFollow(path: string): PinnedDirectory {
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   let fd = openSync(sep, flags);
+  let visiblePath: string = sep;
   try {
     for (const component of resolve(path).split(sep).filter(Boolean)) {
       const next = openSync(join(descriptorPath(fd), component), flags);
       closeSync(fd);
       fd = next;
+      visiblePath = join(visiblePath, component);
+      assertVisibleDirectoryIdentity(visiblePath, { fd, path: descriptorPath(fd) });
     }
     return { fd, path: descriptorPath(fd) };
   } catch (error) {
@@ -495,30 +454,188 @@ function closePinnedDirectory(directory: PinnedDirectory): void {
   closeSync(directory.fd);
 }
 
-/** Claim the target through a pinned provider directory, without following raced symlinks. */
-function claimTargetDirectory(location: AgentSkillLocation): PinnedDirectory {
-  const parent = dirname(location.path);
-  const expectedParent = join(location.toolHome, "skills");
-  if (parent !== expectedParent || location.path !== join(expectedParent, "propr")) {
-    throw new Error(`unsafe ${location.target} skill target`);
-  }
+function sameFilesystemObject(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
 
-  const pinnedParent = openDirectoryNoFollow(parent);
+function assertVisibleDirectoryIdentity(visiblePath: string, pinned: PinnedDirectory): void {
+  const visible = lstatIfExists(visiblePath);
+  if (!visible) throw new Error(`directory changed while it was being used: ${visiblePath}`);
+  if (visible.isSymbolicLink()) throw new Error(`symbolic link parent is not allowed: ${visiblePath}`);
+  if (!visible.isDirectory()) throw new Error(`parent is not a directory: ${visiblePath}`);
+  if (!sameFilesystemObject(visible, fstatSync(pinned.fd))) {
+    throw new Error(`directory changed while it was being used: ${visiblePath}`);
+  }
+}
+
+function assertVisibleEntryIdentity(parent: PinnedDirectory, visibleParent: string, name: string): void {
+  assertVisibleDirectoryIdentity(visibleParent, parent);
+  const visiblePath = join(visibleParent, name);
+  const visible = lstatIfExists(visiblePath);
+  const pinned = lstatIfExists(join(parent.path, name));
+  if (!visible || !pinned || visible.isSymbolicLink() || pinned.isSymbolicLink() || !sameFilesystemObject(visible, pinned)) {
+    throw new Error(`target changed while it was being used: ${visiblePath}`);
+  }
+}
+
+/** Create and hold the exact provider skills directory through a no-follow chain. */
+function ensureProviderSkillsParent(location: AgentSkillLocation): PinnedDirectory {
+  assertProviderSkillTarget(location);
+  assertSafeFilesystemTarget(location);
+
+  const parent = dirname(location.path);
+  let current = openDirectoryNoFollow(sep);
+  let visibleCurrent: string = sep;
+  try {
+    for (const component of resolve(parent).split(sep).filter(Boolean)) {
+      assertVisibleDirectoryIdentity(visibleCurrent, current);
+      let child: PinnedDirectory | undefined;
+      let created = false;
+      try {
+        child = openPinnedChild(current, component);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        // Keep the mutation relative to the held ancestor. Even if its visible
+        // pathname races after the check, a replacement symlink is never used.
+        assertVisibleDirectoryIdentity(visibleCurrent, current);
+        try {
+          mkdirSync(join(current.path, component), { recursive: false, mode: 0o700 });
+          created = true;
+        } catch (mkdirError) {
+          if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
+          const racedPath = join(visibleCurrent, component);
+          if (lstatIfExists(racedPath)?.isSymbolicLink()) {
+            throw new Error(`symbolic link parent is not allowed: ${racedPath}`);
+          }
+        }
+        child = openPinnedChild(current, component);
+      }
+
+      const visibleChild = join(visibleCurrent, component);
+      try {
+        assertVisibleDirectoryIdentity(visibleChild, child);
+      } catch (error) {
+        closePinnedDirectory(child);
+        if (created) removePinnedTree(current, component);
+        throw error;
+      }
+      closePinnedDirectory(current);
+      current = child;
+      visibleCurrent = visibleChild;
+    }
+    return current;
+  } catch (error) {
+    closePinnedDirectory(current);
+    throw error;
+  }
+}
+
+function openProviderSkillsParent(location: AgentSkillLocation): PinnedDirectory {
+  assertProviderSkillTarget(location);
+  return openDirectoryNoFollow(dirname(location.path));
+}
+
+function uniqueSibling(
+  parent: PinnedDirectory,
+  visibleParent: string,
+  label: string,
+  now = new Date()
+): { name: string; path: string } {
+  const stamp = now.toISOString().replace(/[-:.TZ]/g, "");
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    assertVisibleDirectoryIdentity(visibleParent, parent);
+    const suffix = attempt === 0 ? "" : `-${attempt}`;
+    const name = `.propr.${label}-${stamp}${suffix}`;
+    if (!lstatIfExists(join(parent.path, name))) return { name, path: join(visibleParent, name) };
+  }
+  throw new Error(`could not allocate ${label} path beside ${join(visibleParent, "propr")}`);
+}
+
+function createPinnedSiblingDirectory(
+  parent: PinnedDirectory,
+  visibleParent: string,
+  label: string,
+  now?: Date
+): { directory: PinnedDirectory; name: string; path: string } {
+  for (;;) {
+    const candidate = uniqueSibling(parent, visibleParent, label, now);
+    assertVisibleDirectoryIdentity(visibleParent, parent);
+    let directory: PinnedDirectory | undefined;
+    let created = false;
+    try {
+      mkdirSync(join(parent.path, candidate.name), { recursive: false, mode: 0o700 });
+      created = true;
+      directory = openPinnedChild(parent, candidate.name);
+      assertVisibleDirectoryIdentity(candidate.path, directory);
+      return { ...candidate, directory };
+    } catch (error) {
+      if (directory) closePinnedDirectory(directory);
+      if (created) removePinnedTree(parent, candidate.name);
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+}
+
+function renamePinnedEntry(
+  parent: PinnedDirectory,
+  visibleParent: string,
+  oldName: string,
+  newName: string
+): void {
+  assertVisibleEntryIdentity(parent, visibleParent, oldName);
+  renameSync(join(parent.path, oldName), join(parent.path, newName));
+  assertVisibleDirectoryIdentity(visibleParent, parent);
+}
+
+function removePinnedTree(parent: PinnedDirectory, name: string): void {
+  rmSync(join(parent.path, name), { recursive: true, force: true });
+}
+
+function writeBundleContents(directory: PinnedDirectory, bundle: Bundle): void {
+  const directories = new Map<string, PinnedDirectory>([["", directory]]);
+  const opened: PinnedDirectory[] = [];
+  try {
+    for (const entry of bundle.entries) {
+      const separator = entry.path.lastIndexOf("/");
+      const parentPath = separator === -1 ? "" : entry.path.slice(0, separator);
+      const name = separator === -1 ? entry.path : entry.path.slice(separator + 1);
+      const entryParent = directories.get(parentPath);
+      if (!entryParent) throw new Error(`bundle parent was not written before its child: ${entry.path}`);
+      const output = join(entryParent.path, name);
+      if (entry.kind === "directory") {
+        mkdirSync(output, { recursive: false, mode: 0o700 });
+        const child = openPinnedChild(entryParent, name);
+        directories.set(entry.path, child);
+        opened.push(child);
+      } else {
+        writeFileSync(output, entry.content!, { mode: 0o600, flag: "wx" });
+      }
+    }
+    writeFileSync(join(directory.path, MANAGED_FILE), managedMarkerContent(bundle.identity), { mode: 0o600, flag: "wx" });
+  } finally {
+    for (const openedDirectory of opened.reverse()) closePinnedDirectory(openedDirectory);
+  }
+}
+
+/** Claim the target through a pinned provider directory, without following raced symlinks. */
+function claimTargetDirectory(location: AgentSkillLocation, pinnedParent: PinnedDirectory): PinnedDirectory {
+  const parent = dirname(location.path);
+  assertProviderSkillTarget(location);
+
   let pinnedTarget: PinnedDirectory | undefined;
   try {
+    assertVisibleDirectoryIdentity(parent, pinnedParent);
     const targetThroughParent = join(pinnedParent.path, "propr");
     mkdirSync(targetThroughParent, { recursive: false, mode: 0o700 });
     pinnedTarget = openPinnedChild(pinnedParent, "propr");
 
-    assertSafeFilesystemTarget(location);
     const visible = lstatIfExists(location.path);
     const pinned = fstatSync(pinnedTarget.fd);
     if (
       !visible ||
       visible.isSymbolicLink() ||
       !visible.isDirectory() ||
-      visible.dev !== pinned.dev ||
-      visible.ino !== pinned.ino
+      !sameFilesystemObject(visible, pinned)
     ) {
       throw new Error("target changed while it was being claimed; no bundle content was published");
     }
@@ -526,13 +643,11 @@ function claimTargetDirectory(location: AgentSkillLocation): PinnedDirectory {
   } catch (error) {
     if (pinnedTarget) closePinnedDirectory(pinnedTarget);
     throw error;
-  } finally {
-    closePinnedDirectory(pinnedParent);
   }
 }
 
 /** Publish through pinned, no-follow handles without replacing any entry. */
-function publishBundleExclusively(directory: PinnedDirectory, staged: string, bundle: Bundle): void {
+function publishBundleExclusively(directory: PinnedDirectory, staged: PinnedDirectory, bundle: Bundle): void {
   const directories = new Map<string, PinnedDirectory>([["", directory]]);
   const opened: PinnedDirectory[] = [];
   try {
@@ -549,10 +664,10 @@ function publishBundleExclusively(directory: PinnedDirectory, staged: string, bu
         directories.set(entry.path, child);
         opened.push(child);
       } else {
-        linkSync(join(staged, ...entry.path.split("/")), output);
+        linkSync(join(staged.path, ...entry.path.split("/")), output);
       }
     }
-    linkSync(join(staged, MANAGED_FILE), join(directory.path, MANAGED_FILE));
+    linkSync(join(staged.path, MANAGED_FILE), join(directory.path, MANAGED_FILE));
   } finally {
     for (const openedDirectory of opened.reverse()) closePinnedDirectory(openedDirectory);
   }
@@ -563,12 +678,14 @@ function managedMarkerContent(identity: string): string {
   return `${JSON.stringify(marker, null, 2)}\n`;
 }
 
-/** Add a fully-written marker without ever replacing a concurrently-created file. */
-function writeManagedMarkerAtomically(directory: string, identity: string): void {
-  const markerPath = join(directory, MANAGED_FILE);
-  const temporary = join(directory, `.propr.marker-${process.pid}-${randomBytes(6).toString("hex")}`);
+/** Add a fully-written marker through a held target without following a raced replacement. */
+function writeManagedMarkerAtomically(directory: PinnedDirectory, visiblePath: string, identity: string): void {
+  const markerPath = join(directory.path, MANAGED_FILE);
+  const temporary = join(directory.path, `.propr.marker-${process.pid}-${randomBytes(6).toString("hex")}`);
   try {
+    assertVisibleDirectoryIdentity(visiblePath, directory);
     writeFileSync(temporary, managedMarkerContent(identity), { mode: 0o600, flag: "wx" });
+    assertVisibleDirectoryIdentity(visiblePath, directory);
     linkSync(temporary, markerPath);
   } finally {
     try {
@@ -577,16 +694,6 @@ function writeManagedMarkerAtomically(directory: string, identity: string): void
       // The temporary path may not have been created.
     }
   }
-}
-
-function uniqueSibling(path: string, label: string, now = new Date()): string {
-  const stamp = now.toISOString().replace(/[-:.TZ]/g, "");
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const suffix = attempt === 0 ? "" : `-${attempt}`;
-    const candidate = join(dirname(path), `.propr.${label}-${stamp}${suffix}`);
-    if (!existsSync(candidate)) return candidate;
-  }
-  throw new Error(`could not allocate ${label} path beside ${path}`);
 }
 
 function operationFailure(status: AgentSkillStatus, action: "refused" | "failed", detail: string): AgentSkillOperationResult {
@@ -621,25 +728,23 @@ function installAgentSkillWithoutOverwrite(
   options: AgentSkillOptions
 ): AgentSkillOperationResult {
   const parent = dirname(location.path);
-  let staged: string | undefined;
-  let stagedOwned = false;
+  let pinnedParent: PinnedDirectory | undefined;
+  let staged: { directory: PinnedDirectory; name: string; path: string } | undefined;
   let displaced: string | undefined;
   try {
-    ensureProviderSkillsParent(location);
+    pinnedParent = ensureProviderSkillsParent(location);
     const refreshed = inspectLocation(location, bundle);
     if (!sameInspectedTree(status, refreshed)) {
       return operationFailure(refreshed, "failed", "target changed during installation; inspect it and retry");
     }
 
-    assertSafeFilesystemTarget(location);
-    staged = uniqueSibling(location.path, "installing", options.now);
-    mkdirSync(staged, { recursive: false, mode: 0o700 });
-    stagedOwned = true;
-    writeBundleContents(staged, bundle);
+    staged = createPinnedSiblingDirectory(pinnedParent, parent, "installing", options.now);
+    writeBundleContents(staged.directory, bundle);
 
     if (refreshed.state === "outdated-managed") {
-      displaced = uniqueSibling(location.path, "replaced", options.now);
-      renameSync(location.path, displaced);
+      const replacement = uniqueSibling(pinnedParent, parent, "replaced", options.now);
+      displaced = replacement.path;
+      renamePinnedEntry(pinnedParent, parent, "propr", replacement.name);
       const moved = inspectMovedTree(location, displaced, bundle);
       if (!sameInspectedTree(refreshed, moved)) {
         return preservedFailure(status, "target changed before replacement and was not overwritten", displaced);
@@ -648,8 +753,7 @@ function installAgentSkillWithoutOverwrite(
 
     let claimed: PinnedDirectory;
     try {
-      assertSafeFilesystemTarget(location);
-      claimed = claimTargetDirectory(location);
+      claimed = claimTargetDirectory(location, pinnedParent);
     } catch (error) {
       const current = inspectLocation(location, bundle);
       const reason = current.state === "absent" ? (error as Error).message : "target was created during installation and was not overwritten";
@@ -657,7 +761,9 @@ function installAgentSkillWithoutOverwrite(
     }
 
     try {
-      publishBundleExclusively(claimed, staged, bundle);
+      assertVisibleDirectoryIdentity(parent, pinnedParent);
+      assertVisibleDirectoryIdentity(location.path, claimed);
+      publishBundleExclusively(claimed, staged.directory, bundle);
     } catch (error) {
       return preservedFailure(
         inspectLocation(location, bundle),
@@ -688,7 +794,11 @@ function installAgentSkillWithoutOverwrite(
   } catch (error) {
     return preservedFailure(status, (error as Error).message, displaced);
   } finally {
-    if (stagedOwned && staged) rmSync(staged, { recursive: true, force: true });
+    if (staged) {
+      closePinnedDirectory(staged.directory);
+      if (pinnedParent) removePinnedTree(pinnedParent, staged.name);
+    }
+    if (pinnedParent) closePinnedDirectory(pinnedParent);
   }
 }
 
@@ -700,13 +810,17 @@ function installAgentSkillAtLocation(
   const status = inspectLocation(location, bundle);
   if (status.state === "current-managed") return { ...status, action: "unchanged" };
   if (status.state === "current-unmanaged") {
+    let pinnedParent: PinnedDirectory | undefined;
+    let pinnedTarget: PinnedDirectory | undefined;
     try {
-      assertSafeFilesystemTarget(location);
+      pinnedParent = openProviderSkillsParent(location);
+      pinnedTarget = openPinnedChild(pinnedParent, "propr");
+      assertVisibleDirectoryIdentity(location.path, pinnedTarget);
       const refreshed = inspectLocation(location, bundle);
       if (refreshed.state !== status.state || refreshed.installedIdentity !== status.installedIdentity) {
         return operationFailure(refreshed, "failed", "target changed during adoption; inspect it and retry");
       }
-      writeManagedMarkerAtomically(location.path, bundle.identity);
+      writeManagedMarkerAtomically(pinnedTarget, location.path, bundle.identity);
       const next = inspectLocation(location, bundle);
       if (next.state !== "current-managed") {
         return operationFailure(next, "failed", "target changed during adoption; inspect it and retry");
@@ -714,6 +828,9 @@ function installAgentSkillAtLocation(
       return { ...next, action: "adopted", detail: "exact existing content is now ProPR-managed" };
     } catch (error) {
       return operationFailure(status, "failed", (error as Error).message);
+    } finally {
+      if (pinnedTarget) closePinnedDirectory(pinnedTarget);
+      if (pinnedParent) closePinnedDirectory(pinnedParent);
     }
   }
   if (status.state === "unsafe") return operationFailure(status, "refused", status.detail ?? "unsafe target");
@@ -724,27 +841,32 @@ function installAgentSkillAtLocation(
   if (!options.force) return installAgentSkillWithoutOverwrite(status, location, bundle, options);
 
   const parent = dirname(location.path);
-  let temporary: string | undefined;
+  let pinnedParent: PinnedDirectory | undefined;
+  let temporary: { directory: PinnedDirectory; name: string; path: string } | undefined;
   let displaced: string | undefined;
   let backupPath: string | undefined;
   try {
-    ensureProviderSkillsParent(location);
+    pinnedParent = ensureProviderSkillsParent(location);
     const refreshed = inspectLocation(location, bundle);
     if (refreshed.state !== status.state || refreshed.installedIdentity !== status.installedIdentity) {
       return operationFailure(refreshed, "failed", "target changed during installation; inspect it and retry");
     }
-    assertSafeFilesystemTarget(location);
-    temporary = join(parent, `.propr.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
-    writeBundle(temporary, bundle);
+    temporary = createPinnedSiblingDirectory(
+      pinnedParent,
+      parent,
+      `tmp-${process.pid}-${randomBytes(6).toString("hex")}`,
+      options.now
+    );
+    writeBundleContents(temporary.directory, bundle);
     if (refreshed.state !== "absent") {
-      displaced = uniqueSibling(location.path, "backup", options.now);
-      renameSync(location.path, displaced);
-      backupPath = displaced;
+      const backup = uniqueSibling(pinnedParent, parent, "backup", options.now);
+      displaced = backup.path;
+      renamePinnedEntry(pinnedParent, parent, "propr", backup.name);
+      backupPath = backup.path;
     }
     let claimed: PinnedDirectory;
     try {
-      assertSafeFilesystemTarget(location);
-      claimed = claimTargetDirectory(location);
+      claimed = claimTargetDirectory(location, pinnedParent);
     } catch (error) {
       const current = inspectLocation(location, bundle);
       const detail = current.state === "absent"
@@ -753,7 +875,9 @@ function installAgentSkillAtLocation(
       return preservedFailure(current, detail, backupPath);
     }
     try {
-      publishBundleExclusively(claimed, temporary, bundle);
+      assertVisibleDirectoryIdentity(parent, pinnedParent);
+      assertVisibleDirectoryIdentity(location.path, claimed);
+      publishBundleExclusively(claimed, temporary.directory, bundle);
     } catch (error) {
       return preservedFailure(
         inspectLocation(location, bundle),
@@ -783,7 +907,11 @@ function installAgentSkillAtLocation(
     }
     return operationFailure(status, "failed", (error as Error).message);
   } finally {
-    if (temporary) rmSync(temporary, { recursive: true, force: true });
+    if (temporary) {
+      closePinnedDirectory(temporary.directory);
+      if (pinnedParent) removePinnedTree(pinnedParent, temporary.name);
+    }
+    if (pinnedParent) closePinnedDirectory(pinnedParent);
   }
 }
 
@@ -820,32 +948,42 @@ function removeAgentSkillAtLocation(
   if (!managedAndUnmodified && !options.force) {
     return operationFailure(status, "refused", "refusing to remove foreign or modified content");
   }
+  const parent = dirname(location.path);
+  let pinnedParent: PinnedDirectory | undefined;
   try {
-    assertSafeFilesystemTarget(location);
+    pinnedParent = openProviderSkillsParent(location);
     const refreshed = inspectLocation(location, bundle);
     if (refreshed.state !== status.state || refreshed.installedIdentity !== status.installedIdentity) {
       return operationFailure(refreshed, "failed", "target changed during removal; inspect it and retry");
     }
     if (options.force) {
-      const backupPath = uniqueSibling(location.path, "backup", options.now);
-      renameSync(location.path, backupPath);
-      return { ...status, state: "absent", action: "backed-up", backupPath, detail: "target removed; content preserved as a backup" };
+      const backup = uniqueSibling(pinnedParent, parent, "backup", options.now);
+      renamePinnedEntry(pinnedParent, parent, "propr", backup.name);
+      return {
+        ...status,
+        state: "absent",
+        action: "backed-up",
+        backupPath: backup.path,
+        detail: "target removed; content preserved as a backup",
+      };
     }
-    const tombstone = uniqueSibling(location.path, "removing", options.now);
-    renameSync(location.path, tombstone);
-    const moved = inspectMovedTree(location, tombstone, bundle);
+    const tombstone = uniqueSibling(pinnedParent, parent, "removing", options.now);
+    renamePinnedEntry(pinnedParent, parent, "propr", tombstone.name);
+    const moved = inspectMovedTree(location, tombstone.path, bundle);
     if (!sameInspectedTree(refreshed, moved)) {
-      return preservedFailure(status, "target changed before removal and was not deleted", tombstone);
+      return preservedFailure(status, "target changed before removal and was not deleted", tombstone.path);
     }
     return {
       ...status,
       state: "absent",
       action: "removed",
-      backupPath: tombstone,
+      backupPath: tombstone.path,
       detail: "target removed; content preserved as a backup",
     };
   } catch (error) {
     return operationFailure(status, "failed", (error as Error).message);
+  } finally {
+    if (pinnedParent) closePinnedDirectory(pinnedParent);
   }
 }
 

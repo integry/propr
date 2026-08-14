@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
 
 function snapshotTree(path: string): Array<[string, string | Buffer]> {
@@ -26,11 +26,14 @@ function snapshotTree(path: string): Array<[string, string | Buffer]> {
 async function assertParentCreationSymlinkRace(t: TestContext, force: boolean): Promise<void> {
   const root = fs.mkdtempSync(join(tmpdir(), `propr-agent-skill-parent-race-${force ? "force" : "normal"}-`));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const checkedAncestor = join(root, "provider-parent");
+  const detachedAncestor = join(root, "detached-provider-parent");
   const env = {
     HOME: join(root, "home"),
-    CODEX_HOME: join(root, "missing-provider-parent", "codex-home"),
+    CODEX_HOME: join(checkedAncestor, "codex-home"),
   };
   fs.mkdirSync(env.HOME);
+  fs.mkdirSync(checkedAncestor);
   const source = join(root, "bundle");
   fs.mkdirSync(join(source, "agents"), { recursive: true });
   fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
@@ -47,16 +50,17 @@ async function assertParentCreationSymlinkRace(t: TestContext, force: boolean): 
   fs.writeFileSync(join(existingBackup, "SKILL.md"), "existing backup\n");
   const outsideBefore = snapshotTree(outside);
   const sentinelBefore = fs.readFileSync(outsideSentinel);
-  const racedComponent = join(root, "missing-provider-parent");
+  const missingDescendant = join(checkedAncestor, "codex-home");
   let injected = false;
 
   t.mock.module("node:fs", {
     namedExports: {
       ...fs,
       mkdirSync(path: fs.PathLike, options?: fs.MakeDirectoryOptions & { recursive?: boolean }): string | undefined {
-        if (!injected && String(path) === racedComponent) {
+        if (!injected && basename(String(path)) === basename(missingDescendant)) {
           injected = true;
-          fs.symlinkSync(outside, racedComponent, "dir");
+          fs.renameSync(checkedAncestor, detachedAncestor);
+          fs.symlinkSync(outside, checkedAncestor, "dir");
         }
         return fs.mkdirSync(path, options as fs.MakeDirectoryOptions & { recursive: true });
       },
@@ -74,19 +78,160 @@ async function assertParentCreationSymlinkRace(t: TestContext, force: boolean): 
 
   assert.equal(injected, true);
   assert.equal(result.action, "failed");
-  assert.match(result.detail ?? "", /symbolic link parent is not allowed/);
+  assert.match(result.detail ?? "", /symbolic link parent is not allowed|directory changed/);
   assert.deepEqual(snapshotTree(outside), outsideBefore);
   assert.deepEqual(fs.readFileSync(outsideSentinel), sentinelBefore);
   assert.equal(fs.readFileSync(join(existingTarget, "SKILL.md"), "utf8"), "existing target\n");
   assert.equal(fs.readFileSync(join(existingBackup, "SKILL.md"), "utf8"), "existing backup\n");
 }
 
-test("non-forced install refuses a missing parent replaced by an outside symlink", async (t) => {
+test("non-forced install refuses an already-checked ancestor replaced before descendant creation", async (t) => {
   await assertParentCreationSymlinkRace(t, false);
 });
 
-test("forced install refuses a missing parent replaced by an outside symlink", async (t) => {
+test("forced install refuses an already-checked ancestor replaced before descendant creation", async (t) => {
   await assertParentCreationSymlinkRace(t, true);
+});
+
+test("adoption does not publish a marker through a target replaced by an outside symlink", async (t) => {
+  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-adoption-target-race-test-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
+  fs.mkdirSync(env.HOME, { recursive: true });
+  const source = join(root, "bundle");
+  fs.mkdirSync(join(source, "agents"), { recursive: true });
+  fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
+  fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+
+  const target = join(env.CODEX_HOME, "skills", "propr");
+  fs.mkdirSync(dirname(target), { recursive: true });
+  fs.cpSync(source, target, { recursive: true });
+  const targetBefore = snapshotTree(target);
+  const detachedTarget = join(root, "detached-target");
+  const outside = join(root, "outside");
+  fs.mkdirSync(outside);
+  fs.writeFileSync(join(outside, "sentinel.bin"), Buffer.from([0x00, 0xff, 0x51, 0x9a]));
+  const outsideBefore = snapshotTree(outside);
+  let injected = false;
+
+  t.mock.module("node:fs", {
+    namedExports: {
+      ...fs,
+      writeFileSync(path: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions): void {
+        if (!injected && basename(String(path)).startsWith(".propr.marker-")) {
+          injected = true;
+          fs.renameSync(target, detachedTarget);
+          fs.symlinkSync(outside, target, "dir");
+        }
+        fs.writeFileSync(path, data, options);
+      },
+    },
+  });
+  const agentSkillModule = new URL("./agentSkill.ts?adoption-target-symlink-race", import.meta.url);
+  const { installAgentSkill } = await import(agentSkillModule.href);
+
+  const result = installAgentSkill("codex", { env, bundleDir: source });
+
+  assert.equal(injected, true);
+  assert.equal(result.action, "failed");
+  assert.match(result.detail ?? "", /symbolic link parent is not allowed|directory changed/);
+  assert.equal(fs.lstatSync(target).isSymbolicLink(), true);
+  assert.deepEqual(snapshotTree(outside), outsideBefore);
+  assert.deepEqual(snapshotTree(detachedTarget), targetBefore);
+});
+
+test("forced backup rename cannot follow a replaced skills parent", async (t) => {
+  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-backup-parent-race-test-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
+  fs.mkdirSync(env.HOME, { recursive: true });
+  const source = join(root, "bundle");
+  fs.mkdirSync(join(source, "agents"), { recursive: true });
+  fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
+  fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+
+  const skillsParent = join(env.CODEX_HOME, "skills");
+  const target = join(skillsParent, "propr");
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(join(target, "SKILL.md"), "foreign\n");
+  const detachedParent = join(env.CODEX_HOME, "detached-skills");
+  const outside = join(root, "outside");
+  fs.mkdirSync(join(outside, "propr"), { recursive: true });
+  fs.writeFileSync(join(outside, "propr", "sentinel.bin"), Buffer.from([0x00, 0xff, 0x51, 0x9a]));
+  const outsideBefore = snapshotTree(outside);
+  let injected = false;
+
+  t.mock.module("node:fs", {
+    namedExports: {
+      ...fs,
+      renameSync(oldPath: fs.PathLike, newPath: fs.PathLike): void {
+        if (!injected && basename(String(oldPath)) === "propr" && basename(String(newPath)).startsWith(".propr.backup-")) {
+          injected = true;
+          fs.renameSync(skillsParent, detachedParent);
+          fs.symlinkSync(outside, skillsParent, "dir");
+        }
+        fs.renameSync(oldPath, newPath);
+      },
+    },
+  });
+  const agentSkillModule = new URL("./agentSkill.ts?backup-parent-symlink-race", import.meta.url);
+  const { installAgentSkill } = await import(agentSkillModule.href);
+  const now = new Date("2026-08-14T10:24:00Z");
+
+  const result = installAgentSkill("codex", { env, bundleDir: source, force: true, now });
+
+  assert.equal(injected, true);
+  assert.equal(result.action, "failed");
+  assert.match(result.detail ?? "", /symbolic link parent is not allowed|directory changed/);
+  assert.deepEqual(snapshotTree(outside), outsideBefore);
+  assert.equal(fs.readFileSync(join(detachedParent, ".propr.backup-20260814102400000", "SKILL.md"), "utf8"), "foreign\n");
+});
+
+test("removal rename cannot follow a replaced skills parent", async (t) => {
+  const root = fs.mkdtempSync(join(tmpdir(), "propr-agent-skill-removal-parent-race-test-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex-home") };
+  fs.mkdirSync(env.HOME, { recursive: true });
+  const source = join(root, "bundle");
+  fs.mkdirSync(join(source, "agents"), { recursive: true });
+  fs.writeFileSync(join(source, "SKILL.md"), "---\nname: propr\ndescription: current skill\n---\n\n# ProPR\n");
+  fs.writeFileSync(join(source, "agents", "openai.yaml"), "interface:\n  display_name: ProPR Operator\n");
+  const setupModule = new URL("./agentSkill.ts?removal-parent-race-setup", import.meta.url);
+  const { installAgentSkill: setupSkill } = await import(setupModule.href);
+  assert.equal(setupSkill("codex", { env, bundleDir: source }).action, "installed");
+
+  const skillsParent = join(env.CODEX_HOME, "skills");
+  const detachedParent = join(env.CODEX_HOME, "detached-skills");
+  const outside = join(root, "outside");
+  fs.mkdirSync(join(outside, "propr"), { recursive: true });
+  fs.writeFileSync(join(outside, "propr", "sentinel.bin"), Buffer.from([0x00, 0xff, 0x51, 0x9a]));
+  const outsideBefore = snapshotTree(outside);
+  let injected = false;
+
+  t.mock.module("node:fs", {
+    namedExports: {
+      ...fs,
+      renameSync(oldPath: fs.PathLike, newPath: fs.PathLike): void {
+        if (!injected && basename(String(oldPath)) === "propr" && basename(String(newPath)).startsWith(".propr.removing-")) {
+          injected = true;
+          fs.renameSync(skillsParent, detachedParent);
+          fs.symlinkSync(outside, skillsParent, "dir");
+        }
+        fs.renameSync(oldPath, newPath);
+      },
+    },
+  });
+  const agentSkillModule = new URL("./agentSkill.ts?removal-parent-symlink-race", import.meta.url);
+  const { removeAgentSkill } = await import(agentSkillModule.href);
+  const now = new Date("2026-08-14T10:24:00Z");
+
+  const result = removeAgentSkill("codex", { env, bundleDir: source, now });
+
+  assert.equal(injected, true);
+  assert.equal(result.action, "failed");
+  assert.match(result.detail ?? "", /symbolic link parent is not allowed|directory changed/);
+  assert.deepEqual(snapshotTree(outside), outsideBefore);
+  assert.ok(fs.existsSync(join(detachedParent, ".propr.removing-20260814102400000", "SKILL.md")));
 });
 
 test("forced install fails and preserves both trees when the published bundle is modified before final inspection", async (t) => {
@@ -135,7 +280,7 @@ test("forced install fails and preserves both trees when the published bundle is
   });
 
   assert.equal(injected, true);
-  assert.deepEqual(renames.map(([, newPath]) => newPath), [result.backupPath]);
+  assert.deepEqual(renames.map(([, newPath]) => basename(String(newPath))), [basename(result.backupPath!)]);
   assert.equal(result.action, "failed");
   assert.equal(result.state, "modified-managed");
   assert.match(result.detail ?? "", /changed after the new bundle was published and was preserved/);
@@ -218,7 +363,7 @@ test("forced install leaves a concurrent empty directory untouched and reports t
       ...fs,
       renameSync(oldPath: fs.PathLike, newPath: fs.PathLike): void {
         fs.renameSync(oldPath, newPath);
-        if (oldPath === target) {
+        if (basename(String(oldPath)) === "propr") {
           fs.mkdirSync(target);
         }
       },
