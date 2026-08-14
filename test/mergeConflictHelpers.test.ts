@@ -51,7 +51,10 @@ describe('buildConflictResolutionPrompt', () => {
         assert.ok(prompt.includes('`src/utils.ts`'));
         assert.ok(prompt.includes('/tmp/worktree/test'));
         assert.ok(prompt.includes('test-owner/test-repo'));
-        assert.ok(prompt.includes('DO NOT commit'));
+        assert.ok(prompt.includes('Edit only working-tree files'));
+        assert.ok(prompt.includes('DO NOT run git add, commit'));
+        assert.ok(prompt.includes('DO NOT change ownership or permissions of .git'));
+        assert.ok(prompt.includes('host finalizer exclusively stages'));
         assert.ok(prompt.includes('conflict markers'));
     });
 

@@ -69,7 +69,10 @@ ${hasKnownConflicts ? `**Known Conflicted Files:**\n${fileList}\n` : ''}
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
-- DO NOT commit your changes - the system will handle the commit for you.
+- Edit only working-tree files. You may inspect Git state, but DO NOT stage files or run any Git command that changes the index, refs, branches, commits, worktrees, or remotes.
+- In particular, DO NOT run git add, commit, merge, rebase, cherry-pick, reset, checkout, switch, stash, clean, rm, mv, tag, branch, or push.
+- DO NOT change ownership or permissions of .git, linked-worktree metadata, or any path named by the .git file. If a Git mutation fails, do not retry it with sudo, chown, or chmod; report the failure and continue resolving files.
+- The host finalizer exclusively stages the resolved files, creates the merge commit with controlled authorship, and pushes it.
 - DO NOT create a new pull request.
 - The repository is ${repoOwner}/${repoName}.
 - Focus ONLY on finding and resolving merge conflicts. Do not make unrelated changes.

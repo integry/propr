@@ -150,7 +150,10 @@ ${reviewCommentsSection
         ? '- Implement ONLY the records in **Selected Review Finding Records**. The **New Request(s)** text may constrain how selected records are corrected, but it does not authorize independent work.\n- For /fix, actionable F# records are the complete implementation scope. Suggestions cannot be selected by /fix and require a separate ordinary follow-up request.\n- If no actionable finding is selected, do not modify files.\n- Do not infer work from prior review prose, scores, or suggestion IDs.'
         : '- Implement ONLY the changes requested in the **New Request(s)** section.'}
 - Treat the original PR objective as immutable context, not as permission to expand the requested work.
-- DO NOT commit your changes - the system will handle the commit for you
+- Edit only working-tree files. You may inspect Git state, but DO NOT stage files or run any Git command that changes the index, refs, branches, commits, worktrees, or remotes.
+- In particular, DO NOT run git add, commit, merge, rebase, cherry-pick, reset, checkout, switch, stash, clean, rm, mv, tag, branch, or push.
+- DO NOT change ownership or permissions of .git, linked-worktree metadata, or any path named by the .git file. If a Git mutation fails, do not retry it with sudo, chown, or chmod; report the failure and continue editing files.
+- The host finalizer exclusively stages changes, creates commits with controlled authorship, and pushes them.
 - DO NOT create a new pull request
 - The repository is ${repoOwner}/${repoName}
 ${environmentRepairInstructions}

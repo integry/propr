@@ -265,7 +265,7 @@ export async function createWorktreeFromExistingBranch(localRepoPath: string, br
         await createWorktreeFromRemote(git, worktreePath, branchName, localRepoPath);
 
         await verifyWorktreeCreation(worktreePath);
-        await setupWorktreePermissions(worktreePath, localRepoPath, branchName, null);
+        await setupWorktreePermissions(worktreePath, branchName, null);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId: null });
 
         const worktreeGit: SimpleGit = createHooklessGit(worktreePath);

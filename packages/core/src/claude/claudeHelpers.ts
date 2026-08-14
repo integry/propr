@@ -135,12 +135,13 @@ export function buildClaudePrompt(options: BuildClaudePromptOptions): string {
 **CRITICAL GIT SAFETY RULES:**
 - NEVER run 'rm .git' or delete the .git file/directory
 - NEVER run 'git init' in the workspace - this is already a git repository
+- Agents may inspect Git state, but MUST NOT run commands that change the index, refs, branches, commits, worktrees, or remotes. This includes git add, commit, merge, rebase, cherry-pick, reset, checkout, switch, stash, clean, rm, mv, tag, branch, and push.
+- NEVER change the ownership or permissions of .git, its linked-worktree metadata, or any path named by the .git file. Do not use sudo, chown, or chmod to bypass a Git permission error.
 - If you encounter git errors, report them but DO NOT attempt to reinitialize the repository
 - The workspace is a git worktree linked to the main repository
 - Only make changes to the specific files mentioned in the issue/request
-- If git commands fail, describe the error but do not try destructive recovery methods
-- NOTE: You may encounter permission errors when trying to commit - this is expected
-- The system will automatically commit your changes after you complete the modifications`;
+- If a forbidden Git mutation is attempted and fails, do not retry or repair permissions. Continue by editing working-tree files only and report the error.
+- The host system exclusively stages, commits, authors, and pushes changes after you finish`;
 
     logger.debug({
         issueNumber: issueRef.number,
@@ -158,11 +159,11 @@ export function buildClaudePrompt(options: BuildClaudePromptOptions): string {
 
 export async function setWorktreeOwnership(worktreePath: string, issueNumber: number): Promise<void> {
     try {
-        const result = await executeDockerCommand('sudo', ['chown', '-R', '1000:1000', '--', worktreePath], { timeout: 10000 });
-        if (result.exitCode !== 0) throw new Error(result.stderr || `chown exited with code ${result.exitCode}`);
+        await executeDockerCommand('sudo', ['chown', '-R', '1000:1000', worktreePath], { timeout: 10000 });
         logger.debug({ issueNumber, worktreePath }, 'Set worktree ownership to UID 1000 for container compatibility');
     } catch (chownError) {
-        logger.warn({ issueNumber, worktreePath, error: (chownError as Error).message }, 'Failed to set worktree ownership - container may have permission issues');
+        const error = chownError as Error;
+        logger.warn({ issueNumber, worktreePath, error: error.message }, 'Failed to set worktree ownership - container may have permission issues');
     }
 }
 
@@ -202,7 +203,9 @@ export function verifyWorktreeStructure(worktreePath: string, issueNumber: numbe
 }
 
 export function verifyWorktreePostExecution(
-    worktreePath: string, issueNumber: number, worktreeGitContent: string | null
+    worktreePath: string,
+    issueNumber: number,
+    worktreeGitContent: string | null
 ): void {
     try {
         const postExecGitPath = path.join(worktreePath, '.git');

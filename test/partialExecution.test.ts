@@ -19,7 +19,7 @@ import { generateCompletionComment } from '../packages/core/src/utils/github/log
 import { buildCompletionComment } from '../src/jobs/prCompletionComment.js';
 import { getPostExecutionDisposition } from '../src/jobs/prCommentPostExecution.js';
 import { getTaskCompletionStatus } from '../src/jobs/issueJob/completion.js';
-import { buildCommitMessage } from '../src/jobs/prCommentJobUtils.js';
+import { buildCommitMessage, buildPrompt } from '../src/jobs/prCommentJobUtils.js';
 import { buildIssueReference } from '../src/jobs/issueJobHelpers.js';
 import type { ClaudeCodeResponse } from '../packages/core/src/claude/claudeService.js';
 
@@ -54,6 +54,24 @@ function partialClaudeResult(reason: 'timeout' | 'max_turns'): ClaudeCodeRespons
         terminationReason: reason,
     };
 }
+
+test('PR follow-up prompt reserves Git mutations for the host finalizer', () => {
+    const prompt = buildPrompt({
+        pullRequestNumber: 1882,
+        combinedCommentBody: 'Apply the requested correction.',
+        commentHistory: '',
+        originalTaskSpec: '',
+        worktreeInfo: { worktreePath: '/tmp/worktree/pr-1882', branchName: 'follow-up' },
+        repoOwner: 'integry',
+        repoName: 'propr',
+        commentCount: 1,
+    });
+
+    assert.match(prompt, /Edit only working-tree files/);
+    assert.match(prompt, /DO NOT run git add, commit/);
+    assert.match(prompt, /DO NOT change ownership or permissions of \.git/);
+    assert.match(prompt, /host finalizer exclusively stages changes, creates commits with controlled authorship, and pushes them/);
+});
 
 describe('partial agent execution', () => {
     test('preserves buffered output when the execution deadline is reached', async () => {

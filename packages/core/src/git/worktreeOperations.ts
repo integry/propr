@@ -6,7 +6,6 @@ import { handleError } from '../utils/errorHandler.js';
 import { createHooklessGit } from './hooklessGit.js';
 import { resolveRepositoryWorktreePath } from './repositoryPaths.js';
 import { redactAuthenticatedGitUrl } from './repoBranching.js';
-import { applyWorktreeOwnership } from './worktreePermissions.js';
 
 const WORKTREES_BASE_PATH = process.env.GIT_WORKTREES_BASE_PATH || "/tmp/git-processor/worktrees";
 
@@ -265,22 +264,22 @@ export async function safePruneWorktrees(localRepoPath: string, minAgeHours: num
     return { pruned, skipped };
 }
 
-async function executeWorktreeOwnershipChange(targets: readonly string[]): Promise<void> {
-    const { execFileSync } = await import('child_process');
-    execFileSync('sudo', ['chown', '-R', '1000:1000', '--', ...targets], {
-        stdio: 'inherit',
-        timeout: 10000
-    });
+/**
+ * Agent ownership is intentionally limited to the checkout. Linked-worktree
+ * Git metadata stays host-owned so only the finalizer can stage and commit.
+ */
+export function getWorktreeOwnershipTargets(worktreePath: string): readonly string[] {
+    return [worktreePath];
 }
 
-export async function setupWorktreePermissions(
-    worktreePath: string,
-    localRepoPath: string,
-    branchName: string,
-    issueId: number | string | null,
-): Promise<void> {
+export async function setupWorktreePermissions(worktreePath: string, branchName: string, issueId: number | string | null): Promise<void> {
     try {
-        const ownershipTargets = await applyWorktreeOwnership(worktreePath, localRepoPath, executeWorktreeOwnershipChange);
+        const { execFileSync } = await import('child_process');
+        const ownershipTargets = getWorktreeOwnershipTargets(worktreePath);
+        execFileSync('sudo', ['chown', '-R', '1000:1000', '--', ...ownershipTargets], {
+            stdio: 'inherit',
+            timeout: 10000
+        });
         logger.debug({ worktreePath, branchName, issueId, ownershipTargets }, 'Set worktree ownership to UID 1000 for container compatibility');
     } catch (chownError) {
         logger.warn({ worktreePath, branchName, issueId, error: (chownError as Error).message }, 'Failed to set worktree ownership - container may have permission issues');

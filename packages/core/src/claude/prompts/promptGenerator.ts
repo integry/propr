@@ -121,12 +121,12 @@ Follow these steps systematically:
 8. Ensure code follows existing patterns and conventions
 
 **IMPORTANT NOTES:**
-- **DO NOT** worry about git operations (add, commit, push, PR creation)
-- **DO NOT** use git commands or GitHub CLI for workflow operations
+- You may inspect Git state, but **DO NOT** run Git commands that mutate the index, refs, branches, commits, worktrees, or remotes (including add, commit, merge, rebase, reset, checkout, stash, clean, or push)
+- **DO NOT** change permissions or ownership of \`.git\` or linked-worktree metadata to make a Git mutation succeed
 - **FOCUS ONLY** on implementing the solution to the problem
 - You are working in a git worktree environment with the codebase ready
 - Make your changes directly to the files that need modification
-- The system will automatically handle committing, pushing, and creating a PR
+- The host system exclusively handles staging, commit creation, authorship, pushing, and PR creation
 - Include a brief summary of what you implemented when you're done
 
 **SUCCESS CRITERIA:**

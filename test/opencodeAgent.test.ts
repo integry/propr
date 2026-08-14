@@ -303,6 +303,9 @@ describe('OpenCodeAgent prompt building', () => {
 
         assert.match(prompt, /SYSTEM INSTRUCTIONS:\nUse the local conventions\./);
         assert.match(prompt, /CRITICAL GIT SAFETY RULES/);
+        assert.match(prompt, /MUST NOT run commands that change the index, refs, branches, commits, worktrees, or remotes/);
+        assert.match(prompt, /NEVER change the ownership or permissions of \.git/);
+        assert.match(prompt, /host system exclusively stages, commits, authors, and pushes changes/);
         assert.match(prompt, /RETRY CONTEXT/);
     });
 });

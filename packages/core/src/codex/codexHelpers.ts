@@ -101,11 +101,13 @@ export function buildCodexPrompt(options: BuildCodexPromptOptions): string {
 **CRITICAL GIT SAFETY RULES:**
 - NEVER run 'rm .git' or delete the .git file/directory
 - NEVER run 'git init' in the workspace - this is already a git repository
+- Agents may inspect Git state, but MUST NOT run commands that change the index, refs, branches, commits, worktrees, or remotes. This includes git add, commit, merge, rebase, cherry-pick, reset, checkout, switch, stash, clean, rm, mv, tag, branch, and push.
+- NEVER change the ownership or permissions of .git, its linked-worktree metadata, or any path named by the .git file. Do not use sudo, chown, or chmod to bypass a Git permission error.
 - If you encounter git errors, report them but DO NOT attempt to reinitialize the repository
 - The workspace is a git worktree linked to the main repository
 - Only make changes to the specific files mentioned in the issue/request
-- If git commands fail, describe the error but do not try destructive recovery methods
-- The system will automatically commit your changes after you complete the modifications`;
+- If a forbidden Git mutation is attempted and fails, do not retry or repair permissions. Continue by editing working-tree files only and report the error.
+- The host system exclusively stages, commits, authors, and pushes changes after you finish`;
 
     logger.debug({
         issueNumber: issueRef.number,
