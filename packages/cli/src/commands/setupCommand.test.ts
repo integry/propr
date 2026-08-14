@@ -36,6 +36,8 @@ for (const proprDemoMode of [undefined, "false"] as const) {
   });
 }
 
-test("Ink login is bypassed when deployment-wide demo mode is enabled", () => {
-  assert.equal(shouldPrepareInkGithubLogin("true", false), false);
-});
+for (const proprDemoMode of ["true", "1", "yes", "on"] as const) {
+  test(`Ink login is bypassed when PROPR_DEMO_MODE is ${proprDemoMode}`, () => {
+    assert.equal(shouldPrepareInkGithubLogin(proprDemoMode, false), false);
+  });
+}

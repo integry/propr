@@ -49,7 +49,7 @@ export function shouldPrepareInkGithubLogin(
   hasGithubToken: boolean
 ): boolean {
   const normalizedDemoMode = proprDemoMode?.trim().toLowerCase();
-  const deploymentDemoEnabled = normalizedDemoMode === "true" || normalizedDemoMode === "1";
+  const deploymentDemoEnabled = ["true", "1", "yes", "on"].includes(normalizedDemoMode ?? "");
   return !deploymentDemoEnabled && !hasGithubToken;
 }
 
