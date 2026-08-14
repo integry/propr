@@ -381,6 +381,14 @@ function getJobCommandChronologies(job: Job<PRJobData>): CommandChronology[] {
     }];
 }
 
+function snapshotContainsCommandRevision(snapshot: PRCommentJobSnapshot, incoming: CommandChronology): boolean {
+    return [...snapshot.active, ...snapshot.waiting, ...snapshot.delayed]
+        .flatMap(getJobCommandChronologies)
+        .some(existing => existing.id === incoming.id
+            && existing.type === incoming.type
+            && existing.revisionIdentity === incoming.revisionIdentity);
+}
+
 function latestPendingCommandChronologies(comments: UnprocessedComment[]): CommandChronology[] {
     const latestByComment = new Map<string, CommandChronology>();
     comments.forEach((comment, ingestionOrder) => {
@@ -628,6 +636,12 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
                 return;
             }
 
+            if (snapshotContainsCommandRevision(chronologySnapshot, commandChronology)) {
+                correlatedLogger.info({ pullRequestNumber: prNumber, commentId: comment.id, selection }, `/${commandName} command revision was already durably queued before retry`);
+                acknowledgementOutcome = 'queued';
+                return;
+            }
+
             // /use is a manual takeover just like /fix and /review. Keep the
             // fence and every queue-or-pending handoff under the same PR lease
             // as the freshness claim and verified label convergence.
@@ -702,7 +716,7 @@ async function handleModelSelectionCommand(opts: ModelSelectionCommandOptions): 
     } catch (error) {
         if (!(error instanceof LabelTransitionLeaseError)) throw error;
         correlatedLogger.warn({ error: error.message, pullRequestNumber: prNumber }, 'Model command failed to hold its complete PR transition lease');
-        return;
+        throw error;
     }
 
     if (acknowledgementOutcome) await postModelSelectionAcknowledgement(opts, selection, acknowledgementOutcome);

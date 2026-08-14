@@ -941,7 +941,7 @@ describe('commentEventHandler — /use command', () => {
     });
 
     for (const leaseFailure of ['acquisition', 'ownership'] as const) {
-        test(`/use does not enqueue or acknowledge when label-transition lease ${leaseFailure} fails`, async () => {
+        test(`/use surfaces retryable failure without enqueue or acknowledgement when label-transition lease ${leaseFailure} fails`, async () => {
             mockSafeUpdateLabels.mock.mockImplementationOnce(actualLabelOperations.safeUpdateLabels);
             const liveLabels = ['AI', 'llm-claude-opus48'];
             let acknowledgements = 0;
@@ -976,12 +976,131 @@ describe('commentEventHandler — /use command', () => {
                 config.redisClient.eval.mock.mockImplementation(async () => 0);
             }
 
-            await processCommentEvent(createPRCommentEvent('/use opus'), 'issue_comment', `corr-lease-${leaseFailure}`, config);
+            const event = createPRCommentEvent('/use opus');
+            await assert.rejects(
+                processCommentEvent(event, 'issue_comment', `corr-lease-${leaseFailure}`, config),
+                { name: 'LabelTransitionLeaseError' },
+            );
 
             assert.strictEqual(mockQueueAdd.mock.callCount(), 0);
             assert.strictEqual(acknowledgements, 0);
+            assert.strictEqual(
+                config.redisClient._store.has(`pr-comment-processed:testowner:testrepo:42:${event.comment.id}`),
+                false,
+                'failed delivery must release its exact slash-command claim',
+            );
         });
     }
+
+    test('identical /use redelivery retries after transient lease acquisition failure and enqueues exactly once', async () => {
+        const event = createPRCommentEvent('/use opus\nRetry this command');
+        const config = createTestConfig();
+        let leaseAcquisitions = 0;
+        let acknowledgements = 0;
+        config.redisClient.set.mock.mockImplementation(async (key: string, value: string, ...args: string[]) => {
+            if (key.startsWith('ultrafix:label-transition:')) {
+                leaseAcquisitions += 1;
+                if (leaseAcquisitions === 1) throw new Error('transient redis failure');
+            }
+            if (args.includes('NX') && config.redisClient._store.has(key)) return null;
+            config.redisClient._store.set(key, value);
+            return 'OK';
+        });
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string) => {
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                return { data: { head: { ref: 'feature-branch' }, labels: [] } };
+            }
+            if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') acknowledgements += 1;
+            return { data: {} };
+        });
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-transient-lease-first', config),
+            { name: 'LabelTransitionLeaseError' },
+        );
+        const redelivery = await processCommentEvent(event, 'issue_comment', 'corr-transient-lease-redelivery', config);
+
+        assert.deepStrictEqual(redelivery, {
+            status: 'accepted',
+            billing: { seatConsumed: true },
+            evidence: { triggerCommentIds: [event.comment.id] },
+        });
+        assert.strictEqual(mockSafeUpdateLabels.mock.callCount(), 1);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(acknowledgements, 1);
+        assert.strictEqual(
+            mockQueueAdd.mock.calls[0].arguments[2].jobId,
+            `pr-comments-batch-testowner-testrepo-42-${event.comment.id}-${manualRevisionSlug(event.comment.updated_at, event.comment.body)}`,
+        );
+    });
+
+    test('ownership loss after durable /use publication retries without duplicating its revision, job, or acknowledgement', async () => {
+        mockSafeUpdateLabels.mock.mockImplementation(actualLabelOperations.safeUpdateLabels);
+        const event = createPRCommentEvent('/use opus\nRetry published work');
+        const config = createTestConfig();
+        const liveLabels = ['AI', 'llm-claude-opus48'];
+        let acknowledgements = 0;
+        let jobPublished = false;
+        let ownershipFailureInjected = false;
+
+        mockOctokit.request.mock.mockImplementation(async (endpoint: string, options: Record<string, unknown>) => {
+            if (endpoint === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
+                return { data: { head: { ref: 'feature-branch' }, labels: liveLabels.map(name => ({ name })) } };
+            }
+            if (endpoint === 'GET /repos/{owner}/{repo}/issues/{issue_number}') {
+                return { data: { labels: liveLabels.map(name => ({ name })) } };
+            }
+            if (endpoint === 'DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}') {
+                const index = liveLabels.findIndex(name => name.toLowerCase() === String(options.name).toLowerCase());
+                if (index >= 0) liveLabels.splice(index, 1);
+                return { data: {} };
+            }
+            if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/labels') {
+                for (const name of options.labels as string[]) if (!liveLabels.includes(name)) liveLabels.push(name);
+                return { data: {} };
+            }
+            if (endpoint === 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments') acknowledgements += 1;
+            return { data: {} };
+        });
+        mockQueueAdd.mock.mockImplementationOnce(async (name: string, data: Record<string, unknown>, options: { jobId: string }) => {
+            jobPublished = true;
+            mockWaitingJobs = [{ id: options.jobId, name, data, remove: mock.fn(async () => {}) }];
+        });
+        config.redisClient.eval.mock.mockImplementation(async (script: string, _keyCount: number, key: string, ...args: string[]) => {
+            if (script.includes("redis.call('PEXPIRE'") && jobPublished && !ownershipFailureInjected) {
+                ownershipFailureInjected = true;
+                config.redisClient._store.delete(key);
+                return 0;
+            }
+            const token = args[0];
+            if (config.redisClient._store.get(key) !== token) return 0;
+            if (script.includes("redis.call('PEXPIRE'")) return 1;
+            config.redisClient._store.delete(key);
+            return 1;
+        });
+
+        await assert.rejects(
+            processCommentEvent(event, 'issue_comment', 'corr-published-lease-first', config),
+            { name: 'LabelTransitionLeaseError' },
+        );
+        assert.deepStrictEqual(liveLabels, ['AI', 'llm-claude-opus5']);
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1);
+        assert.strictEqual(acknowledgements, 0);
+
+        const redelivery = await processCommentEvent(event, 'issue_comment', 'corr-published-lease-redelivery', config);
+        const duplicate = await processCommentEvent(event, 'issue_comment', 'corr-published-lease-duplicate', config);
+
+        assert.strictEqual(redelivery.status, 'accepted');
+        assert.deepStrictEqual(duplicate, { status: 'ignored', reason: 'duplicate_delivery' });
+        assert.strictEqual(mockQueueAdd.mock.callCount(), 1, 'the deterministic published job must be reused');
+        assert.strictEqual(config.redisClient.rpush.mock.callCount(), 0, 'the published revision must not also be copied to pending storage');
+        assert.strictEqual(acknowledgements, 1);
+        const publishedData = mockWaitingJobs[0] as { data: { comments: Array<{ id: number; revisionIdentity: string }> } };
+        assert.deepStrictEqual(
+            publishedData.data.comments.map(comment => ({ id: comment.id, revisionIdentity: comment.revisionIdentity })),
+            [{ id: event.comment.id, revisionIdentity: manualRevisionIdentity(event.comment.updated_at, event.comment.body) }],
+        );
+    });
 
     test('/use persists canonical label, configured agent, and model on the queued job', async () => {
         const event = createPRCommentEvent('/use llm-claude-opus5\nContinue with the selected model');
