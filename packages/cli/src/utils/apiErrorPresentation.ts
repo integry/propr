@@ -63,13 +63,22 @@ export function classifyApiError(error: unknown): CliApiErrorClassification {
   const status = error instanceof ApiError ? error.status : getStatus(error);
   if (status === 401) return { kind: "unauthorized", message, status };
   if (status === 403) return { kind: "forbidden", message, status };
+  if (status !== undefined) return { kind: "api", message, status };
 
   // Legacy callers sometimes discard the response status and retain only
   // strings such as "401 Unauthorized" or "HTTP 403: Forbidden".
-  if (/\b401\b/.test(message)) {
+  if (
+    /(?:\bhttp(?:\s+status)?|\bstatus(?:\s+code)?)\s*[:=-]?\s*401\b|\b401\s*[:=-]?\s*unauthori[sz]ed\b/i.test(
+      message
+    )
+  ) {
     return { kind: "unauthorized", message, status: 401 };
   }
-  if (/\b403\b/.test(message)) {
+  if (
+    /(?:\bhttp(?:\s+status)?|\bstatus(?:\s+code)?)\s*[:=-]?\s*403\b|\b403\s*[:=-]?\s*forbidden\b/i.test(
+      message
+    )
+  ) {
     return { kind: "forbidden", message, status: 403 };
   }
   if (/\bunauthori[sz]ed\b|\bauthentication required\b/i.test(message)) {

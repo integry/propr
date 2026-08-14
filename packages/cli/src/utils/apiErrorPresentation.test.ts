@@ -23,6 +23,7 @@ test("classifies typed and legacy 401 failures as login-required", () => {
     new Error("unauthorized"),
     new UnauthorizedError(),
     new Error("Request failed with status 401"),
+    new Error("401 Unauthorized"),
     Object.assign(new Error("Authentication failed"), { status: 401 }),
   ];
 
@@ -36,6 +37,8 @@ test("keeps typed and plain 403 failures distinct from login-required failures",
     new ForbiddenError(),
     new Error("Forbidden"),
     new Error("HTTP 403"),
+    new Error("status 403"),
+    new Error("403 Forbidden"),
     Object.assign(new Error("Unauthorized access"), { status: 403 }),
   ];
 
@@ -53,6 +56,28 @@ test("prefers typed ApiError status over conflicting legacy message text", () =>
     classifyApiError(new ApiError("Unauthorized", "UNKNOWN", 403)).kind,
     "forbidden"
   );
+});
+
+test("does not infer auth failures from standalone domain numbers", () => {
+  assert.equal(classifyApiError(new Error("Task 401 not found")).kind, "other");
+  assert.equal(classifyApiError(new Error("issue 403 is closed")).kind, "other");
+});
+
+test("treats every explicit non-auth status as authoritative", () => {
+  const errors = [
+    new ApiError("Unauthorized", "UNKNOWN", 400),
+    new ApiError("Forbidden", "UNKNOWN", 404),
+    { message: "Unauthorized", status: 400 },
+    { message: "Forbidden", statusCode: 404 },
+  ];
+
+  for (const error of errors) {
+    const classification = classifyApiError(error);
+    assert.equal(classification.kind, "api", classification.message);
+    assert.ok(
+      classification.status === 400 || classification.status === 404
+    );
+  }
 });
 
 test("presents centralized login, forbidden, and fallback messages", () => {
