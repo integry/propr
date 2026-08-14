@@ -1,5 +1,5 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import { getApiBaseUrl } from '../config/runtimeConfig';
+import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 
 export const API_BASE_URL = getApiBaseUrl();
 export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
@@ -99,7 +99,9 @@ const throwUnauthorizedResponse = (data: ApiErrorBody | null): never => {
     throw new TokenRefreshRetryRequiredError(getApiErrorMessage(data));
   }
   if (window.location.pathname === '/login') throw new Error('Authentication required');
-  window.location.href = '/login';
+  // Preserve only the validated active flow so login/OAuth cannot be driven by
+  // arbitrary raw URL input or copied sessionStorage.
+  window.location.href = pathWithActiveHostedTunnelFlow('/login');
   throw new Error('Authentication required');
 };
 

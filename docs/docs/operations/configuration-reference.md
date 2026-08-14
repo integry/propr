@@ -25,6 +25,8 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `SESSION_SECRET` | Placeholder | Signs browser session cookies. | Always. |
 | `ENABLE_BEARER_AUTH` | `true` (any value except `false` enables it) | Bearer token auth for the CLI. Set `false` to allow session login only. | Optional. |
 | `PROPR_DEMO_MODE` | `false` | `true`/`1` allows read-only access without GitHub OAuth and blocks all mutating API requests. Use a curated config/database for public demos. | Demo deployments. |
+| `API_PORT` | `127.0.0.1:4000` | Docker host publish binding for the packaged API. A bare `4000` explicitly publishes on all host interfaces; protect any non-loopback bind with a firewall and TLS reverse proxy. Existing `.env` values are preserved. | Optional advanced override. |
+| `UI_PORT` | `127.0.0.1:5173` | Docker host publish binding for the packaged UI. A bare `5173` explicitly publishes on all host interfaces; protect any non-loopback bind with a firewall and TLS reverse proxy. Existing `.env` values are preserved. | Optional advanced override. |
 | `DASHBOARD_API_PORT` | `4000` | Host port the dashboard API is published on. | Optional. |
 | `DASHBOARD_API_HOST` | Direct host: `127.0.0.1`; container: `0.0.0.0` | Interface the API listens on. Keep the loopback default for direct runs; set explicitly only when a trusted reverse proxy or network must reach a non-container process. | Optional advanced override. |
 | `FRONTEND_URL` | `http://localhost:5173` when unset | Browser origin for CORS and auth redirects. In hosted UI tunnel mode it is derived as `https://app.propr.dev` — leave it commented so derivation wins. | Custom origin only. |
@@ -36,7 +38,7 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `PROPR_WEBHOOK_RATE_LIMIT_MAX` / `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS` | `300` / `60000` | Per-client quota for direct webhook requests, applied before body parsing and signature verification. | Optional tuning in direct-webhook mode. |
 | `PROPR_TRUSTED_PROXY_PEERS` | Unset; launcher-managed tunnel: reserved `self` mode | Comma-separated immediate proxy IPs, CIDRs, or `proxy-addr` names whose forwarded client IP and protocol are trusted. Unset ignores forwarding headers. The launcher injects `self` only for its managed sidecar sharing the API network namespace. Its broad `uniquelocal` name is accepted only when `API_PORT` is explicitly loopback-bound. | Reverse-proxy deployments; injected automatically for the managed tunnel. |
 | `LOG_LEVEL` | `info` | Log verbosity across services. | Optional. |
-| `NODE_ENV` | `development` | Node environment; use `production` on servers. | Optional. |
+| `NODE_ENV` | `development` in the source template; `production` in stacks scaffolded by the packaged CLI | Packaged API, daemon, and worker containers require `production`. Source-development commands may use `development`. Existing files are preserved during upgrades; if an older generated stack still says `development`, review it and change it to `production` before running `propr start`. | Optional. |
 | `DB_FILENAME` | `./data/propr.sqlite` | Path to the SQLite database file (created if it doesn't exist). | Optional. |
 
 ## Event Intake

@@ -13,6 +13,7 @@ import {
 } from './modelSelectionHelpers';
 import { buildReasoningLevelSelectOptions, formatReasoningLevelOption } from './reasoningLevelOptions';
 import ReviewContextSettings from './ReviewContextSettings';
+import { pathWithActiveHostedTunnelFlow } from '../../config/runtimeConfig';
 
 interface AIModelSelectionSettings {
   analysis_model_fast: string;
@@ -43,10 +44,14 @@ interface AIModelSelectionSectionProps {
   className?: string;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
+export const buildAiAgentsSettingsHref = (hostname = typeof window !== 'undefined' ? window.location.hostname : ''): string =>
+  pathWithActiveHostedTunnelFlow('/ai-agents', hostname);
+
 const NoAgentsMessage = ({ label }: { label: string }) => (
   <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
     No {label} available. Please enable an agent in the{' '}
-    <a href="/ai-agents" className="text-primary-600 hover:text-primary-700 underline">
+    <a href={buildAiAgentsSettingsHref()} className="text-primary-600 hover:text-primary-700 underline">
       AI Agents
     </a>{' '}
     page first.

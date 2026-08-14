@@ -6,8 +6,30 @@
 // cross-subdomain cookies can talk to the API. localhost/127.0.0.1 are allowed
 // for local development.
 
+import type { ErrorRequestHandler } from 'express';
+
 export type CorsOriginCallback = (err: Error | null, allow?: boolean) => void;
 export type CorsOriginValidator = (origin: string | undefined, callback: CorsOriginCallback) => void;
+
+export class CorsOriginError extends Error {
+  constructor() {
+    super('CORS origin rejected');
+    this.name = 'CorsOriginError';
+  }
+}
+
+/**
+ * Handle validator failures before Express's environment-dependent default
+ * error renderer can expose an HTML stack trace. Keep one public response for
+ * malformed and merely-disallowed origins so rejection details are not leaked.
+ */
+export const corsRejectionHandler: ErrorRequestHandler = (error, _req, res, next) => {
+  if (!(error instanceof CorsOriginError)) {
+    next(error);
+    return;
+  }
+  res.status(403).json({ error: 'CORS origin rejected' });
+};
 
 // Builds a CORS origin validator bound to a specific frontend URL and optional
 // cookie domain. Throws if frontendUrl is not a valid URL so callers can fail
@@ -45,10 +67,10 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
         // scheme (e.g. file:, chrome-extension:) on localhost is not trusted.
         callback(null, true);
       } else {
-        callback(new Error('Not allowed by CORS'));
+        callback(new CorsOriginError());
       }
     } catch {
-      callback(new Error('Invalid origin'));
+      callback(new CorsOriginError());
     }
   };
 }

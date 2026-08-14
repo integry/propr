@@ -502,6 +502,11 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       } catch {
         /* best-effort: startup validation will surface an actionable error */
       }
+      const validation = orch.validateEnv(cfg);
+      for (const warning of validation.warnings) onLog?.(`warning: ${warning}`);
+      if (!validation.ok) {
+        throw new Error(`stack environment is not ready:\n  - ${validation.errors.join("\n  - ")}`);
+      }
       // Use the async start path: `propr setup` drives this from behind a live
       // Ink TUI, so the blocking synchronous startStack would freeze the spinner
       // and swallow keystrokes for the seconds-to-minutes a cold start takes.

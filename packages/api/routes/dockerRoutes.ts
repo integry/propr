@@ -6,8 +6,11 @@ import type { IssueRef } from '@propr/core';
 import { validateTaskId, validateTailParam } from './validation.js';
 import { getDockerContainerLogs, getDockerContainerStatus } from './dockerCommandSafety.js';
 
+type StopTaskExecutor = typeof stopTaskExecution;
+
 interface DockerRoutesDeps {
   redisClient: RedisClientType;
+  stopTaskExecution?: StopTaskExecutor;
 }
 
 interface TaskStateHistory {
@@ -404,6 +407,7 @@ async function stopRunningTaskContainer(taskId: string, state: TaskState, option
 
 export function createDockerRoutes(deps: DockerRoutesDeps) {
   const { redisClient } = deps;
+  const executeStopTask = deps.stopTaskExecution ?? stopTaskExecution;
 
   async function getDockerInfo(req: FlatRequest, res: Response): Promise<void> {
     try {
@@ -489,10 +493,7 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
       }
 
       console.log(`[stop-execution] Attempting to stop task: ${req.params.taskId}`);
-      const result = await stopTaskExecution(req.params.taskId, {
-        redisClient,
-        requestedBy: req.user?.username || 'user'
-      });
+      const result = await executeStopTask(req.params.taskId, { redisClient, requestedBy: req.user?.username || 'user' });
 
       if (result.notFound) {
         res.status(404).json({ error: 'Task not found', message: result.message });
@@ -503,15 +504,10 @@ export function createDockerRoutes(deps: DockerRoutesDeps) {
         return;
       }
 
-      res.json({
-        success: true,
-        message: result.message,
-        taskId: result.taskId,
-        containerStopped: result.containerStopped
-      });
-    } catch (error) {
-      console.error('Error in /api/task/:taskId/stop:', error);
-      res.status(500).json({ error: 'Internal server error', message: (error as Error).message });
+      res.json({ success: true, message: result.message, taskId: result.taskId, containerStopped: result.containerStopped });
+    } catch {
+      console.error('Error in /api/task/:taskId/stop');
+      res.status(500).json({ error: 'Internal server error' });
     }
   }
 

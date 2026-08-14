@@ -9,10 +9,26 @@
 //
 // Resolution order for the API base URL:
 //   1. Hosted-UI `?tunnel=` query param — Connect's per-installation deep link.
-//   2. Previously selected hosted tunnel in localStorage — survives login redirects.
+//   2. Previously selected hosted tunnel in sessionStorage — tab-scoped, survives
+//      same-tab navigation and OAuth redirects. The stored value is only trusted
+//      when the URL carries a matching flow token (?flow=<id>) and the current
+//      browsing context carries the matching tab id. Copied sessionStorage or
+//      copied URLs in a fresh context are rejected.
 //   3. Runtime config (window.__PROPR_CONFIG__.apiBaseUrl) — hosted deployments.
 //   4. Build-time env (VITE_API_BASE_URL) — static single-target builds.
 //   5. Empty string — same-origin (local dev via the Vite proxy).
+//
+// Flow-token lifecycle:
+//   - On a ?tunnel= load, random flow and tab ids are generated, stored in
+//     sessionStorage alongside the tunnel URL, and the flow is embedded in the
+//     page URL via history.replaceState (replacing ?tunnel= with ?flow=<id>).
+//   - The flowId is threaded through same-tab full-page navigations:
+//     * A Router-level sync keeps ?flow= on SPA route changes.
+//     * Auth redirects to /login preserve ?flow= in the URL.
+//     * Hosted OAuth keeps the initiating tab on app.propr.dev and completes in
+//       a popup, so no cross-origin navigation needs to restore tab authority.
+//   - A new tab opened to app.propr.dev (no tunnel/flow in URL) never has URL
+//     authority, even if sessionStorage was copied from an existing tab.
 
 import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl, proprInstanceProxyUrl } from '@propr/shared';
 
@@ -36,6 +52,15 @@ const runtimeConfig: ProprRuntimeConfig =
   (typeof window !== 'undefined' && window.__PROPR_CONFIG__) || {};
 
 export const HOSTED_TUNNEL_API_BASE_STORAGE_KEY = 'propr.hostedTunnelApiBaseUrl';
+/** Paired with HOSTED_TUNNEL_API_BASE_STORAGE_KEY; must match the URL ?flow= param to be trusted. */
+export const HOSTED_TUNNEL_FLOW_ID_KEY = 'propr.hostedTunnelFlowId';
+/** Paired with HOSTED_TUNNEL_FLOW_ID_KEY; must match this browsing context's window.name token. */
+export const HOSTED_TUNNEL_CONTEXT_ID_KEY = 'propr.hostedTunnelContextId';
+
+const WINDOW_NAME_CONTEXT_PREFIX = 'propr-hosted-flow-context:';
+const WINDOW_NAME_CONTEXT_SEPARATOR = '|';
+
+let activeHostedTunnelFlowId: string | null = null;
 
 /**
  * Hostname of the managed hosted UI (e.g. `app.propr.dev`), derived from the
@@ -54,6 +79,15 @@ const HOSTED_UI_HOSTNAME = new URL(DEFAULT_PROPR_UI_ORIGIN).hostname;
  */
 export const isHostedUiOrigin = (hostname: string): boolean =>
   hostname === HOSTED_UI_HOSTNAME;
+
+export const isHostedOAuthCompletionRoute = (
+  hostname: string,
+  pathname: string,
+  search: string
+): boolean =>
+  isHostedUiOrigin(hostname) &&
+  pathname === '/login' &&
+  new URLSearchParams(search).get('oauth_complete') === 'true';
 
 /**
  * Whether a string is an absolute http(s) URL — used to sanity-check a
@@ -106,18 +140,124 @@ type HostedTunnelStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 const storageForWindow = (): HostedTunnelStorage | undefined => {
   if (typeof window === 'undefined') return undefined;
   try {
-    return window.localStorage;
+    return window.sessionStorage;
   } catch {
     return undefined;
   }
 };
 
+/** Generate a random per-tab flow token. */
+const generateFlowId = (): string => {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+};
+
+const generateHostedTunnelContextId = (): string => generateFlowId();
+
+const contextIdFromWindowName = (name: string): string | null => {
+  if (!name.startsWith(WINDOW_NAME_CONTEXT_PREFIX)) return null;
+  const rest = name.slice(WINDOW_NAME_CONTEXT_PREFIX.length);
+  const separatorIndex = rest.indexOf(WINDOW_NAME_CONTEXT_SEPARATOR);
+  const contextId = (separatorIndex === -1 ? rest : rest.slice(0, separatorIndex)).trim();
+  return contextId || null;
+};
+
+const currentHostedTunnelContextId = (): string | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    return contextIdFromWindowName(window.name);
+  } catch {
+    return null;
+  }
+};
+
+const setHostedTunnelContextId = (contextId: string): string | null => {
+  if (typeof window === 'undefined') return contextId;
+  try {
+    const existing = window.name || '';
+    const separatorIndex = existing.indexOf(WINDOW_NAME_CONTEXT_SEPARATOR);
+    const preservedName = existing.startsWith(WINDOW_NAME_CONTEXT_PREFIX)
+      ? (separatorIndex === -1 ? '' : existing.slice(separatorIndex + 1))
+      : existing;
+    window.name = `${WINDOW_NAME_CONTEXT_PREFIX}${contextId}${WINDOW_NAME_CONTEXT_SEPARATOR}${preservedName}`;
+    return contextId;
+  } catch {
+    return null;
+  }
+};
+
+const ensureHostedTunnelContextId = (): string | null => {
+  const existing = currentHostedTunnelContextId();
+  if (existing) return existing;
+  return setHostedTunnelContextId(generateHostedTunnelContextId());
+};
+
+/** Extract the `?flow=` token from a URL search string. */
+const flowIdFromSearch = (search: string): string | null =>
+  new URLSearchParams(search).get('flow') || null;
+
+const effectiveHostedTunnelContextId = (
+  _flowId: string,
+  _storedContextId: string,
+  contextId: string | null | undefined
+): string | null => {
+  const currentContextId = contextId === undefined ? currentHostedTunnelContextId() : contextId;
+  if (currentContextId) return currentContextId;
+  return null;
+};
+
+/**
+ * Store the selected hosted tunnel URL in sessionStorage together with a
+ * per-tab flow token. Returns the generated flow token (to be embedded in the
+ * page URL by the caller), or null if nothing was stored.
+ */
+export const rememberHostedTunnelApiBaseUrl = (
+  hostname: string,
+  apiBaseUrl: string,
+  storage: HostedTunnelStorage | undefined = storageForWindow(),
+  contextId: string | null = ensureHostedTunnelContextId()
+): string | null => {
+  if (!isHostedUiOrigin(hostname) || !storage || !contextId || !isProprProxyUrl(apiBaseUrl)) return null;
+  try {
+    const flowId = generateFlowId();
+    storage.setItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY, apiBaseUrl.replace(/\/+$/, ''));
+    storage.setItem(HOSTED_TUNNEL_FLOW_ID_KEY, flowId);
+    storage.setItem(HOSTED_TUNNEL_CONTEXT_ID_KEY, contextId);
+    return flowId;
+  } catch {
+    // sessionStorage can be disabled or full.
+    return null;
+  }
+};
+
+/**
+ * Read the previously stored hosted tunnel URL from sessionStorage, but only
+ * when the supplied `flowId` matches the stored per-tab token. A new browsing
+ * context whose sessionStorage was copied from another tab (window.open(),
+ * duplicate-tab) but whose URL carries no valid flow token is rejected here,
+ * preventing silent cross-tab tunnel inheritance.
+ */
 export const readStoredHostedTunnelApiBaseUrl = (
   hostname: string,
-  storage: HostedTunnelStorage | undefined = storageForWindow()
+  flowId: string | null,
+  storage: HostedTunnelStorage | undefined = storageForWindow(),
+  contextId?: string | null
 ): string | null => {
   if (!isHostedUiOrigin(hostname) || !storage) return null;
   try {
+    const storedFlowId = storage.getItem(HOSTED_TUNNEL_FLOW_ID_KEY)?.trim() || null;
+    const storedContextId = storage.getItem(HOSTED_TUNNEL_CONTEXT_ID_KEY)?.trim() || null;
+    // Reject if storage has no flow token (never legitimately set by this tab)
+    // or context token, or if the URL/current tab tokens do not match storage.
+    if (!storedFlowId || storedFlowId !== flowId || !storedContextId) {
+      return null;
+    }
+    if (effectiveHostedTunnelContextId(storedFlowId, storedContextId, contextId) !== storedContextId) {
+      return null;
+    }
     const stored = storage.getItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY)?.trim();
     if (stored && isProprProxyUrl(stored)) return stored.replace(/\/+$/, '');
     if (stored) storage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
@@ -125,20 +265,6 @@ export const readStoredHostedTunnelApiBaseUrl = (
     return null;
   }
   return null;
-};
-
-export const rememberHostedTunnelApiBaseUrl = (
-  hostname: string,
-  apiBaseUrl: string,
-  storage: HostedTunnelStorage | undefined = storageForWindow()
-): void => {
-  if (!isHostedUiOrigin(hostname) || !storage || !isProprProxyUrl(apiBaseUrl)) return;
-  try {
-    storage.setItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY, apiBaseUrl.replace(/\/+$/, ''));
-  } catch {
-    // localStorage can be disabled or full. The query-param path still works for
-    // the current page load; persistence is only needed across full redirects.
-  }
 };
 
 /**
@@ -155,11 +281,12 @@ export const runtimeConfigWarning = (
   hostname: string,
   config: ProprRuntimeConfig | undefined,
   search = '',
-  storage?: HostedTunnelStorage
+  storage?: HostedTunnelStorage,
+  contextId?: string | null
 ): string | null => {
   if (!isHostedUiOrigin(hostname)) return null;
   if (hostedTunnelQueryApiBaseUrl(hostname, search)) return null;
-  if (readStoredHostedTunnelApiBaseUrl(hostname, storage)) return null;
+  if (readStoredHostedTunnelApiBaseUrl(hostname, flowIdFromSearch(search), storage, contextId)) return null;
   if (!config) {
     return (
       '[propr] window.__PROPR_CONFIG__ is not set — config.js did not load. ' +
@@ -207,11 +334,12 @@ export const hostedUiConnectionIssue = (
   hostname: string,
   config: ProprRuntimeConfig | undefined,
   search = '',
-  storage?: HostedTunnelStorage
+  storage?: HostedTunnelStorage,
+  contextId?: string | null
 ): HostedUiConnectionIssue | null => {
   if (!isHostedUiOrigin(hostname)) return null;
   if (hostedTunnelQueryApiBaseUrl(hostname, search)) return null;
-  if (readStoredHostedTunnelApiBaseUrl(hostname, storage)) return null;
+  if (readStoredHostedTunnelApiBaseUrl(hostname, flowIdFromSearch(search), storage, contextId)) return null;
 
   const apiBaseUrl = config?.apiBaseUrl?.trim();
   if (!apiBaseUrl) {
@@ -240,35 +368,114 @@ export const hostedUiConnectionIssue = (
   return null;
 };
 
+export const getActiveHostedTunnelFlowId = (): string | null => activeHostedTunnelFlowId;
+
+export const pathWithActiveHostedTunnelFlow = (
+  path: string,
+  hostname = typeof window !== 'undefined' ? window.location.hostname : '',
+  flowId = activeHostedTunnelFlowId
+): string => {
+  if (!isHostedUiOrigin(hostname)) return path;
+  try {
+    const url = new URL(path, DEFAULT_PROPR_UI_ORIGIN);
+    const params = new URLSearchParams(url.search);
+    params.delete('flow');
+    if (flowId) params.set('flow', flowId);
+    const search = params.toString();
+    return `${url.pathname}${search ? `?${search}` : ''}${url.hash}`;
+  } catch {
+    return path;
+  }
+};
+
+export const activateStoredHostedTunnelFlow = (
+  hostname: string,
+  search: string,
+  storage?: HostedTunnelStorage,
+  contextId?: string | null
+): string | null => {
+  const flowId = flowIdFromSearch(search);
+  if (readStoredHostedTunnelApiBaseUrl(hostname, flowId, storage, contextId)) {
+    activeHostedTunnelFlowId = flowId;
+    return flowId;
+  }
+  activeHostedTunnelFlowId = null;
+  return null;
+};
+
+/* eslint-disable max-params */
 export const resolveApiBaseUrl = (
   hostname: string,
   search: string,
   config: ProprRuntimeConfig | undefined,
   buildTimeApiBaseUrl: string | undefined,
-  storage?: HostedTunnelStorage
+  storage?: HostedTunnelStorage,
+  contextId?: string | null
 ): string => {
   const queryApiBaseUrl = hostedTunnelQueryApiBaseUrl(hostname, search);
   if (queryApiBaseUrl) {
-    rememberHostedTunnelApiBaseUrl(hostname, queryApiBaseUrl, storage);
+    activeHostedTunnelFlowId = rememberHostedTunnelApiBaseUrl(hostname, queryApiBaseUrl, storage, contextId);
   }
+
+  const flowId = flowIdFromSearch(search);
+  const storedApiBaseUrl = readStoredHostedTunnelApiBaseUrl(hostname, flowId, storage, contextId);
+  if (!queryApiBaseUrl && storedApiBaseUrl) activeHostedTunnelFlowId = flowId;
 
   return (
     queryApiBaseUrl ||
-    readStoredHostedTunnelApiBaseUrl(hostname, storage) ||
+    storedApiBaseUrl ||
     config?.apiBaseUrl?.trim() ||
     buildTimeApiBaseUrl?.trim() ||
     ''
   ).replace(/\/+$/, '');
 };
+/* eslint-enable max-params */
+
+const replaceHostedTunnelQueryWithFlow = (originalSearch: string, flowId: string): void => {
+  try {
+    const params = new URLSearchParams(originalSearch);
+    params.delete('tunnel');
+    params.set('flow', flowId);
+    window.history.replaceState(
+      null,
+      '',
+      window.location.pathname + '?' + params.toString() + window.location.hash
+    );
+  } catch { /* history API unavailable */ }
+};
 
 if (typeof window !== 'undefined') {
-  const warning = runtimeConfigWarning(
-    window.location.hostname,
-    window.__PROPR_CONFIG__,
-    window.location.search,
-    storageForWindow()
-  );
-  if (warning) console.warn(warning);
+  // Retire the old origin-global localStorage selection. Its value is NOT
+  // migrated into sessionStorage: pulling an ambiguous global selection into
+  // an unrelated new tab would violate the per-tab isolation guarantee.
+  try { window.localStorage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY); } catch { /* ignore */ }
+
+  const originalSearch = window.location.search;
+  if (!isHostedOAuthCompletionRoute(window.location.hostname, window.location.pathname, originalSearch)) {
+    // When a ?tunnel= deep link is present, store the validated tunnel URL in
+    // sessionStorage with fresh flow/context tokens, then replace ?tunnel= in the
+    // URL with ?flow=<id>. On reload/OAuth callback, re-activate the flow only if
+    // the URL flow and this browsing context's window.name token both match the
+    // stored selection.
+    const queryApiBaseUrl = hostedTunnelQueryApiBaseUrl(window.location.hostname, originalSearch);
+    if (queryApiBaseUrl) {
+      const flowId = rememberHostedTunnelApiBaseUrl(window.location.hostname, queryApiBaseUrl, storageForWindow());
+      if (flowId) {
+        activeHostedTunnelFlowId = flowId;
+        replaceHostedTunnelQueryWithFlow(originalSearch, flowId);
+      }
+    } else {
+      activateStoredHostedTunnelFlow(window.location.hostname, originalSearch, storageForWindow());
+    }
+
+    const warning = runtimeConfigWarning(
+      window.location.hostname,
+      window.__PROPR_CONFIG__,
+      originalSearch,
+      storageForWindow()
+    );
+    if (warning) console.warn(warning);
+  }
 }
 
 /**
@@ -282,11 +489,23 @@ if (typeof window !== 'undefined') {
  * normalizes the values it injects, but a hand-served `public/config.js`,
  * `VITE_API_BASE_URL`, or manually set apiBaseUrl can still carry one.
  */
-export const getApiBaseUrl = (): string =>
-  resolveApiBaseUrl(
+export const getApiBaseUrl = (): string => {
+  if (
+    typeof window !== 'undefined' &&
+    isHostedOAuthCompletionRoute(
+      window.location.hostname,
+      window.location.pathname,
+      window.location.search
+    )
+  ) {
+    return '';
+  }
+
+  return resolveApiBaseUrl(
     typeof window !== 'undefined' ? window.location.hostname : '',
     typeof window !== 'undefined' ? window.location.search : '',
     runtimeConfig,
     import.meta.env.VITE_API_BASE_URL,
     storageForWindow()
   );
+};
