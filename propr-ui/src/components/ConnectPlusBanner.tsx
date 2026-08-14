@@ -250,13 +250,13 @@ const SoftBannerContent: React.FC<{ account: ConnectAccountStatus }> = ({ accoun
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-semibold text-slate-950">Open ProPR securely from anywhere</h2>
+            <h2 className="text-sm font-semibold text-slate-950">Open your local ProPR workspace from anywhere</h2>
             <span className="rounded-full bg-primary-700 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white ring-1 ring-inset ring-primary-700">
               PLUS
             </span>
           </div>
-          <p className="mt-0.5 break-words text-sm text-slate-700">
-            ProPR Connect Plus adds managed remote UI access—no inbound ports or VPN configuration.
+          <p className="mt-0.5 break-words text-pretty text-sm text-slate-700">
+            Check agent progress from your phone or laptop. Connect Plus securely routes your local UI to the web—no VPN or open ports required.
           </p>
         </div>
         <a

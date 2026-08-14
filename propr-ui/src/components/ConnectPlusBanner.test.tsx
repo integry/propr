@@ -126,7 +126,10 @@ describe('Connect Plus banners', () => {
     mockGetSystemStatus.mockResolvedValue(status(community()));
     renderBanners();
 
-    expect(await screen.findByText('Open ProPR securely from anywhere')).toBeInTheDocument();
+    expect(await screen.findByText('Open your local ProPR workspace from anywhere')).toBeInTheDocument();
+    expect(screen.getByText(
+      'Check agent progress from your phone or laptop. Connect Plus securely routes your local UI to the web—no VPN or open ports required.',
+    )).toHaveClass('break-words', 'text-pretty');
     const cta = screen.getByRole('link', { name: 'Explore Plus' });
     expect(cta).toHaveAttribute(
       'href',
@@ -150,26 +153,26 @@ describe('Connect Plus banners', () => {
     mockGetSystemStatus.mockResolvedValue(status(community()));
     renderBanners(member);
     await waitFor(() => expect(mockGetSystemStatus).toHaveBeenCalled());
-    expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
+    expect(screen.queryByText('Open your local ProPR workspace from anywhere')).not.toBeInTheDocument();
     cleanup();
 
     mockGetSystemStatus.mockResolvedValue(status(community({ plan: 'plus', hasPlusAccess: true })));
     renderBanners();
     await waitFor(() => expect(mockGetSystemStatus).toHaveBeenCalled());
-    expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
+    expect(screen.queryByText('Open your local ProPR workspace from anywhere')).not.toBeInTheDocument();
     cleanup();
 
     mockGetSystemStatus.mockResolvedValue(status());
     renderBanners();
     await waitFor(() => expect(mockGetSystemStatus).toHaveBeenCalled());
-    expect(screen.queryByText(/Community seats|Open ProPR/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Community seats|Open your local ProPR/)).not.toBeInTheDocument();
   });
 
   it('never loads or renders account banners when the provider is disabled for demo mode', async () => {
     mockGetSystemStatus.mockResolvedValue(status(community({ activeSeats: 3, seatsRemaining: 0 })));
     renderBanners(admin, true);
     await waitFor(() => expect(mockGetSystemStatus).not.toHaveBeenCalled());
-    expect(screen.queryByText(/Community seats|Open ProPR/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Community seats|Open your local ProPR/)).not.toBeInTheDocument();
   });
 
   it('does not expose the previous installation account during a tunnel switch', async () => {
@@ -213,7 +216,7 @@ describe('Connect Plus banners', () => {
       'https://connect.propr.dev/dashboard?installation_id=42&focus=billing',
     );
     expect(capacityCta).toHaveClass('bg-primary-700', 'text-white', 'focus:ring-2');
-    expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
+    expect(screen.queryByText('Open your local ProPR workspace from anywhere')).not.toBeInTheDocument();
   });
 
   it('shows regular developers administrator guidance without a purchase action', async () => {
@@ -252,10 +255,10 @@ describe('Connect Plus banners', () => {
     let current = community();
     mockGetSystemStatus.mockImplementation(async () => status(current));
     renderBanners();
-    await screen.findByText('Open ProPR securely from anywhere');
+    await screen.findByText('Open your local ProPR workspace from anywhere');
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss ProPR Connect notice' }));
-    expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
+    expect(screen.queryByText('Open your local ProPR workspace from anywhere')).not.toBeInTheDocument();
     const stored = JSON.parse(window.localStorage.getItem(connectPlusDismissalKey(42, 'AdminUser')) ?? '{}');
     expect(stored.soft).toBe(true);
 
@@ -370,9 +373,9 @@ describe('Connect Plus banners', () => {
     mockGetSystemStatus.mockResolvedValue(status(community()));
     renderBanners();
 
-    await screen.findByText('Open ProPR securely from anywhere');
+    await screen.findByText('Open your local ProPR workspace from anywhere');
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss ProPR Connect notice' }));
-    expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
+    expect(screen.queryByText('Open your local ProPR workspace from anywhere')).not.toBeInTheDocument();
 
     cleanup();
     mockGetSystemStatus.mockResolvedValue(status(community({ activeSeats: 3, seatsRemaining: 0 })));
@@ -401,7 +404,7 @@ describe('Connect Plus banners', () => {
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     await act(async () => { await Promise.resolve(); });
-    expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
+    expect(screen.queryByText('Open your local ProPR workspace from anywhere')).not.toBeInTheDocument();
 
     current = community({
       installationId: 43,
@@ -410,6 +413,6 @@ describe('Connect Plus banners', () => {
     fireEvent.focus(window);
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(2));
     await act(async () => { await Promise.resolve(); });
-    expect(screen.queryByText('Open ProPR securely from anywhere')).not.toBeInTheDocument();
+    expect(screen.queryByText('Open your local ProPR workspace from anywhere')).not.toBeInTheDocument();
   });
 });
