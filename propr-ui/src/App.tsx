@@ -124,11 +124,11 @@ export const HostedFlowRouteSync: React.FC<{ hostname?: string }> = ({ hostname 
   return null;
 };
 
-export const NotFoundRouteContent: React.FC = () => (
+export const NotFoundRouteContent: React.FC<{ hostname?: string }> = ({ hostname }) => (
   <div className="text-center py-20">
     <h2 className="text-xl font-semibold text-gray-700 mb-2">Page not found</h2>
     <p className="text-gray-500 mb-4">This page does not exist or has moved.</p>
-    <Link to="/" className="text-primary-600 hover:text-primary-700 underline">
+    <Link to={pathWithActiveHostedTunnelFlow('/', hostname)} className="text-primary-600 hover:text-primary-700 underline">
       Back to dashboard
     </Link>
   </div>

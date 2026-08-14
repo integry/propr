@@ -185,4 +185,45 @@ describe('HostedFlowRouteSync', () => {
       expect(screen.getByTestId('location')).toHaveTextContent(`/?flow=${flowId}`);
     });
   });
+
+  it('retains the validated active flow when the catch-all dashboard link performs full-document navigation and reload', async () => {
+    const runtimeConfig = await import('./config/runtimeConfig');
+    const { NotFoundRouteContent } = await import('./App');
+    const storage = memoryStorage();
+
+    runtimeConfig.resolveApiBaseUrl(
+      'app.propr.dev',
+      '?tunnel=t-fulldoc.propr.dev',
+      undefined,
+      undefined,
+      storage,
+      'full-doc-context'
+    );
+    const flowId = storage.setItem.mock.calls.find(
+      ([key]) => key === runtimeConfig.HOSTED_TUNNEL_FLOW_ID_KEY
+    )?.[1];
+
+    render(
+      <MemoryRouter initialEntries={['/missing']}>
+        <Routes>
+          <Route path="*" element={<NotFoundRouteContent hostname="app.propr.dev" />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    const dashboardHref = screen.getByRole('link', { name: 'Back to dashboard' }).getAttribute('href');
+    expect(dashboardHref).toBe(`/?flow=${flowId}`);
+
+    const reloadSearch = new URL(dashboardHref!, 'https://app.propr.dev').search;
+    expect(
+      runtimeConfig.resolveApiBaseUrl(
+        'app.propr.dev',
+        reloadSearch,
+        undefined,
+        undefined,
+        storage,
+        'full-doc-context'
+      )
+    ).toBe('https://t-fulldoc.propr.dev');
+  });
 });
