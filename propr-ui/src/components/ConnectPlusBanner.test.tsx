@@ -135,7 +135,7 @@ describe('Connect Plus banners', () => {
       'href',
       'https://connect.propr.dev/dashboard?installation_id=42&focus=billing',
     );
-    expect(cta).toHaveClass('border-blue-700', 'bg-white', 'text-blue-800', 'focus:ring-2');
+    expect(cta).toHaveClass('bg-primary-700', 'text-white', 'focus:ring-2');
     const promotion = screen.getByLabelText('ProPR Connect Plus');
     expect(promotion).toHaveClass('min-w-0');
     expect(within(promotion).getByText('PLUS', { selector: 'span' })).toHaveClass(
