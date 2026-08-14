@@ -60,7 +60,7 @@ The full-screen wizard requires an interactive terminal. Over SSH or in shells w
 
 ### Agent Skill
 
-The CLI bundles the portable ProPR Operator Agent Skill for Codex, Claude Code, Antigravity, OpenCode, and Vibe. Installation and removal accept `codex`, `claude`, `antigravity`, `opencode`, `vibe`, or `all`; status defaults to all targets:
+The CLI bundles the portable ProPR Operator Agent Skill for Codex, Claude Code, Antigravity CLI, OpenCode, and Vibe. Installation and removal accept `codex`, `claude`, `antigravity`, `opencode`, `vibe`, or `all`; status defaults to all targets:
 
 ```bash
 propr skill install codex claude  # install, adopt an exact copy, or update a managed copy

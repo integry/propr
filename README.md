@@ -71,6 +71,7 @@ propr setup   # guided one-pass: verify host, authorize agents, connect GitHub, 
 ```
 
 `propr setup` is re-runnable and wraps the individual steps (`propr init stack`, `propr check`, `propr start`), which remain available for scripting.
+During interactive setup, ProPR can also install its bundled operator Agent Skill into detected tools after showing the exact destinations. Manage it separately with `propr skill install|status|remove`; non-interactive setup does not write agent homes unless `--install-skill <targets>` is explicit.
 
 Delegating setup to an AI coding agent? Use the copyable [safe agent installation prompt](https://docs.propr.dev/docs/tutorials/setup#give-this-to-your-coding-agent) so GitHub authorization, App scope, Connect/tunnel choices, provider logins, and existing stack data stay under human control.
 
