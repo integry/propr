@@ -141,6 +141,38 @@ test('Codex command lifecycle pairs starts and completions and recovers an unmat
   ]);
 });
 
+test('Codex database fallback retains row content for minimal error metadata', () => {
+  const row: ExecutionDetailRow = {
+    event_type: 'error',
+    event_timestamp: timestamp(0),
+    content: 'persisted error diagnostic',
+    is_error: true,
+    tool_name: null,
+    tool_input: null,
+    metadata: '{"type":"error"}'
+  };
+
+  assert.deepEqual(parseExecutionDetailsRows([row]).events, [
+    { type: 'tool_result', result: 'persisted error diagnostic', isError: true, timestamp: timestamp(0) }
+  ]);
+});
+
+test('Codex database fallback retains row content and error flag for minimal tool-result metadata', () => {
+  const row: ExecutionDetailRow = {
+    event_type: 'tool_result',
+    event_timestamp: timestamp(0),
+    content: 'persisted tool-result diagnostic',
+    is_error: true,
+    tool_name: null,
+    tool_input: null,
+    metadata: '{"type":"tool_result"}'
+  };
+
+  assert.deepEqual(parseExecutionDetailsRows([row]).events, [
+    { type: 'tool_result', result: 'persisted tool-result diagnostic', isError: true, timestamp: timestamp(0) }
+  ]);
+});
+
 test('Codex database fallback ignores envelopes while retaining text, errors, and todos', () => {
   const events: CodexFixtureEvent[] = [
     { type: 'thread.started', thread_id: 'thread-focused', timestamp: timestamp(0) },

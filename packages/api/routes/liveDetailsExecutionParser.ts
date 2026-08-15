@@ -77,7 +77,7 @@ function appendCompletedCodexItem(rawEvent: RawExecutionEvent, context: ClaudeMe
   }
 }
 
-function appendRawEventByType(rawEvent: RawExecutionEvent, context: ClaudeMessageContext): boolean {
+function appendRawEventByType(rawEvent: RawExecutionEvent, row: ExecutionDetailRow, context: ClaudeMessageContext): boolean {
   if (rawEvent.type === 'tool_use') {
     if (rawEvent.tool) {
       context.events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp: context.timestamp });
@@ -85,14 +85,14 @@ function appendRawEventByType(rawEvent: RawExecutionEvent, context: ClaudeMessag
     return true;
   }
   if (rawEvent.type === 'error') {
-    context.events.push({ type: 'tool_result', result: rawEvent.message || rawEvent.result || rawEvent.content || 'Execution error', isError: true, timestamp: context.timestamp });
+    context.events.push({ type: 'tool_result', result: rawEvent.message || rawEvent.result || rawEvent.content || row.content || 'Execution error', isError: true, timestamp: context.timestamp });
     return true;
   }
   if (rawEvent.type === 'tool_result') {
     context.events.push({
       type: 'tool_result',
-      result: rawEvent.message || rawEvent.result || rawEvent.content || 'Execution error',
-      isError: Boolean(rawEvent.is_error) || rawEvent.status === 'error',
+      result: rawEvent.message || rawEvent.result || rawEvent.content || row.content || 'Execution error',
+      isError: Boolean(rawEvent.is_error) || rawEvent.status === 'error' || Boolean(row.is_error),
       timestamp: context.timestamp
     });
     return true;
@@ -107,7 +107,7 @@ function appendEventFromMetadata(row: ExecutionDetailRow, context: ClaudeMessage
     if (appendModelSourceEvent(rawEvent, context)) return true;
     if (rawEvent.source === 'USER_EXPLICIT' || rawEvent.source === 'SYSTEM') return true;
     if (appendMetadataMessageEvent(rawEvent, context)) return true;
-    if (appendRawEventByType(rawEvent, context)) return true;
+    if (appendRawEventByType(rawEvent, row, context)) return true;
     if (appendCodexLifecycleEvent(rawEvent, context, pendingCommandStarts)) return true;
   } catch (error) {
     console.error('[live-details] Failed to parse execution detail metadata:', error);
