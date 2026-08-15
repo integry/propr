@@ -107,9 +107,10 @@ export class TunnelCoreStackDownError extends Error {
 
 export interface TunnelToggleDeps {
   enable: boolean;
+  rootDir: string;
   cfg: OrchestratorConfig;
   orch: Pick<OrchestratorModule, "isStackRunning" | "ensureNetwork" | "startService" | "stopService">;
-  configManager: Pick<ConfigManager, "getTunnelEnabled" | "setTunnelEnabled" | "set">;
+  configManager: Pick<ConfigManager, "getTunnelEnabled" | "setTunnelEnabled">;
   /**
    * Start the tunnel even when the core stack is down. Without this, enabling the
    * tunnel while the stack is down throws {@link TunnelCoreStackDownError}.
@@ -139,6 +140,7 @@ export class TunnelSetupEnvInvalidError extends Error {
 export async function startOrRestartTunnelStack(
   orch: TunnelSetupStartOrchestrator,
   cfg: OrchestratorConfig,
+  rootDir: string,
   configManager: Pick<ConfigManager, "setTunnelEnabled">,
   log: (message: string) => void = console.log,
   warn: (message: string) => void = console.warn
@@ -162,7 +164,7 @@ export async function startOrRestartTunnelStack(
   // and deliberately do NOT roll it back if the stop/start below fails: a later
   // `propr start` should still honor the configured tunnel rather than silently
   // revert to non-tunnel mode after a transient Docker error.
-  await configManager.setTunnelEnabled(true);
+  await configManager.setTunnelEnabled(rootDir, true);
 
   // The override is now persisted. If the Docker stop/start below fails we keep
   // it (see the comment above), but surface that explicitly to the operator so
@@ -209,6 +211,7 @@ export async function startOrRestartTunnelStack(
  */
 export async function applyTunnelToggle({
   enable,
+  rootDir,
   cfg,
   orch,
   configManager,
@@ -255,8 +258,8 @@ export async function applyTunnelToggle({
   // recorded override and the actual container can't diverge if the start/stop
   // throws partway through. Roll back to the previous value if the Docker op
   // fails, so a failed toggle leaves the persisted state unchanged.
-  const previousEnabled = configManager.getTunnelEnabled();
-  await configManager.setTunnelEnabled(enable);
+  const previousEnabled = configManager.getTunnelEnabled(rootDir);
+  await configManager.setTunnelEnabled(rootDir, enable);
   // The `cfg` passed in was resolved before this toggle persisted, so when we are
   // turning the tunnel ON after a prior `propr tunnel off` it still carries
   // uiTunnelEnabled=false. Reflect the just-persisted desired state in the config
@@ -341,7 +344,7 @@ export async function applyTunnelToggle({
   } catch (error) {
     // Revert to the exact prior value (including an unset "defer to env" state)
     // so a failed toggle doesn't leave a stale persisted override behind.
-    await configManager.set("tunnelEnabled", previousEnabled);
+    await configManager.setTunnelEnabled(rootDir, previousEnabled);
     throw error;
   }
 }
@@ -597,7 +600,7 @@ async function runTunnelVerify(root?: string): Promise<void> {
 async function toggleTunnel(stateArg: string, root?: string, force?: boolean): Promise<void> {
   const enable = parseOnOffState(stateArg);
   const configManager = await createConfigManager();
-  const { orch, cfg } = await getHostConfig({ configManager, root });
+  const { orch, cfg, rootDir } = await getHostConfig({ configManager, root });
 
   if (!orch.dockerAvailable()) {
     console.error("Error: cannot reach the Docker daemon. Run 'propr check'.");
@@ -605,7 +608,7 @@ async function toggleTunnel(stateArg: string, root?: string, force?: boolean): P
   }
 
   try {
-    await applyTunnelToggle({ enable, cfg, orch, configManager, force });
+    await applyTunnelToggle({ enable, rootDir, cfg, orch, configManager, force });
   } catch (error) {
     if (
       error instanceof TunnelTokenMissingError ||
@@ -638,14 +641,15 @@ async function runTunnelSetup(options: {
   });
 
   upsertEnvVars(envPath, { ...vars });
-  // Persist the CLI tunnelEnabled override only when we are NOT going on to start
-  // the stack. With --start, defer the persist to startOrRestartTunnelStack, which
-  // runs env validation first and persists tunnelEnabled=true only AFTER it passes.
+  // Persist this root's CLI tunnel override only when we are NOT going on to
+  // start the stack. With --start, defer the persist to
+  // startOrRestartTunnelStack, which runs env validation first and persists the
+  // enabled state only AFTER it passes.
   // Persisting here unconditionally would leave the override enabled even if the
   // start path then rejected the just-written env, contradicting its
   // validate-before-persist contract.
   if (!options.start) {
-    await configManager.set("tunnelEnabled", true);
+    await configManager.setTunnelEnabled(rootDir, true);
   }
 
   console.log("Tunnel configuration saved.");
@@ -663,7 +667,7 @@ async function runTunnelSetup(options: {
       console.error("Error: cannot reach the Docker daemon. Run 'propr check'.");
       process.exit(1);
     }
-    await startOrRestartTunnelStack(orch, cfg, configManager);
+    await startOrRestartTunnelStack(orch, cfg, rootDir, configManager);
     return;
   }
 

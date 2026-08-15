@@ -199,8 +199,33 @@ export class ConfigManager {
       sanitized.docsEnabled = data.docsEnabled;
     }
 
-    if (typeof data.tunnelEnabled === "boolean") {
-      sanitized.tunnelEnabled = data.tunnelEnabled;
+    const tunnelEnabledByRoot: Record<string, boolean> = {};
+    if (
+      data.tunnelEnabledByRoot &&
+      typeof data.tunnelEnabledByRoot === "object" &&
+      !Array.isArray(data.tunnelEnabledByRoot)
+    ) {
+      for (const [root, enabled] of Object.entries(data.tunnelEnabledByRoot as Record<string, unknown>)) {
+        if (path.isAbsolute(root) && typeof enabled === "boolean") {
+          tunnelEnabledByRoot[path.resolve(root)] = enabled;
+        }
+      }
+    }
+
+    // Migrate the 0.8.15 global flag to the stack root that was stored beside
+    // it. The legacy value is deliberately not retained globally: doing so
+    // would let a later explicit --root inherit another stack's tunnel intent.
+    // If no stackRoot was recorded, there is no safe root to associate with the
+    // flag, so leave it unset and fall back to that stack's own .env default.
+    if (typeof data.tunnelEnabled === "boolean" && typeof data.stackRoot === "string") {
+      const legacyRoot = path.resolve(data.stackRoot);
+      if (!(legacyRoot in tunnelEnabledByRoot)) {
+        tunnelEnabledByRoot[legacyRoot] = data.tunnelEnabled;
+      }
+    }
+
+    if (Object.keys(tunnelEnabledByRoot).length > 0) {
+      sanitized.tunnelEnabledByRoot = tunnelEnabledByRoot;
     }
 
     return sanitized;
@@ -489,15 +514,25 @@ export class ConfigManager {
    * it, so it must preserve the unset (undefined) state rather than collapsing
    * it to false.
    */
-  getTunnelEnabled(): boolean | undefined {
-    return this.get("tunnelEnabled");
+  getTunnelEnabled(root: string): boolean | undefined {
+    return this.config.tunnelEnabledByRoot?.[path.resolve(root)];
   }
 
   /**
-   * Sets the desired Cloudflare Tunnel service state.
+   * Sets the desired Cloudflare Tunnel service state for one stack root. An
+   * undefined value clears the override so the launcher's env-derived default
+   * applies again (used to roll back a failed toggle).
    */
-  async setTunnelEnabled(enabled: boolean): Promise<void> {
-    await this.set("tunnelEnabled", enabled);
+  async setTunnelEnabled(root: string, enabled: boolean | undefined): Promise<void> {
+    const normalizedRoot = path.resolve(root);
+    const states = { ...(this.config.tunnelEnabledByRoot ?? {}) };
+    if (enabled === undefined) {
+      delete states[normalizedRoot];
+    } else {
+      states[normalizedRoot] = enabled;
+    }
+    this.config.tunnelEnabledByRoot = Object.keys(states).length > 0 ? states : undefined;
+    await this.save();
   }
 
   /**

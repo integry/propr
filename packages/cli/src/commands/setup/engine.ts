@@ -782,7 +782,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       const bootstrapWhitelist = seedBootstrapAdmin && !whitelistHasIdentity
         ? [...existingWhitelist, username].join(",")
         : undefined;
-      const tunnelOverride = configManager?.getTunnelEnabled();
+      const tunnelOverride = configManager?.getTunnelEnabled(rootDir);
       const managedTunnelEnabled = tunnelOverride ?? Boolean(
         existingEnv.PROPR_UI_TUNNEL_TOKEN?.trim() || isTruthyEnvFlag(existingEnv.PROPR_UI_TUNNEL_ENABLED)
       );

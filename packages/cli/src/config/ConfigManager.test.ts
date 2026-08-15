@@ -327,6 +327,59 @@ test("loaded remote profile names are validated before use", async () => {
   }
 });
 
+test("legacy tunnel state migrates to its recorded stack root without leaking to another root", async () => {
+  const tempDir = createTempDir();
+  try {
+    const rootA = join(tempDir, "root-a");
+    const rootB = join(tempDir, "root-b");
+    writeFileSync(join(tempDir, "config.json"), JSON.stringify({
+      stackRoot: rootA,
+      tunnelEnabled: true,
+    }));
+
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    assert.equal(manager.getTunnelEnabled(rootA), true);
+    assert.equal(manager.getTunnelEnabled(rootB), undefined);
+
+    // Setup records its newly selected root before start. That save must retain
+    // root A's migrated state without re-associating it with root B.
+    await manager.setStackRoot(rootB);
+    assert.equal(manager.getTunnelEnabled(rootA), true);
+    assert.equal(manager.getTunnelEnabled(rootB), undefined);
+
+    const persisted = JSON.parse(readFileSync(join(tempDir, "config.json"), "utf8"));
+    assert.equal(persisted.tunnelEnabled, undefined);
+    assert.deepEqual(persisted.tunnelEnabledByRoot, { [rootA]: true });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("root-specific tunnel toggles do not alter another stack", async () => {
+  const tempDir = createTempDir();
+  try {
+    const rootA = join(tempDir, "root-a");
+    const rootB = join(tempDir, "root-b");
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    await manager.setTunnelEnabled(rootA, true);
+    await manager.setTunnelEnabled(rootB, false);
+    await manager.setTunnelEnabled(rootB, true);
+
+    assert.equal(manager.getTunnelEnabled(rootA), true);
+    assert.equal(manager.getTunnelEnabled(rootB), true);
+
+    await manager.setTunnelEnabled(rootB, undefined);
+    assert.equal(manager.getTunnelEnabled(rootA), true);
+    assert.equal(manager.getTunnelEnabled(rootB), undefined);
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
 test("configuration tokens are persisted atomically under private modes", async () => {
   if (process.platform === "win32") return;
   const tempDir = createTempDir();
