@@ -14,17 +14,38 @@ export interface ExecutionDetailRow { event_type: string; event_timestamp: strin
 interface RawExecutionEvent {
   type?: string; role?: string; content?: unknown; tool?: string; params?: { file_path?: string; command?: string }; message?: string; result?: string;
   source?: string;
-  item?: { type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> };
+  item?: { id?: string; type?: string; text?: string; command?: string; aggregated_output?: string; exit_code?: number | null; items?: Array<{ text?: string; completed?: boolean; status?: string }> };
+  is_error?: boolean;
+  status?: string;
 }
+
+type PendingCommandStarts = Map<string, string[]>;
+const CODEX_LIFECYCLE_EVENT_TYPES = new Set([
+  'thread.started',
+  'turn.started',
+  'turn.completed',
+  'item.started',
+  'item.updated',
+  'item.completed'
+]);
 
 export function parseExecutionDetailsRows(details: ExecutionDetailRow[]): Omit<ConversationResult, 'tokenUsage'> {
   const events: Array<Record<string, unknown>> = [];
   let todos: TodoItem[] = [];
   const pendingSubagents = new Map<string, PendingSubagent>();
+  const pendingCommandStarts: PendingCommandStarts = new Map();
   for (const row of details) {
     const timestamp = row.event_timestamp;
-    const metadataHandled = appendEventFromMetadata(row, { timestamp, events, pendingSubagents, setTodos: nextTodos => { todos = nextTodos; } });
+    const metadataHandled = appendEventFromMetadata(
+      row,
+      { timestamp, events, pendingSubagents, setTodos: nextTodos => { todos = nextTodos; } },
+      pendingCommandStarts
+    );
     if (metadataHandled) continue;
+    // A Codex protocol row is not user-visible content. In the normal case its
+    // metadata above contains the full event; this guard also prevents a
+    // malformed or partially copied envelope from leaking as a JSON thought.
+    if (CODEX_LIFECYCLE_EVENT_TYPES.has(row.event_type)) continue;
     if (appendStoredMessageEvent(row, { timestamp, events, pendingSubagents, setTodos: nextTodos => { todos = nextTodos; } })) continue;
     if (appendToolUseEvent(row, timestamp, events)) continue;
     if (appendErrorEvent(row, timestamp, events)) continue;
@@ -42,40 +63,52 @@ function appendModelSourceEvent(rawEvent: RawExecutionEvent, context: ClaudeMess
   return true;
 }
 
-function appendRawItemEvent(rawEvent: RawExecutionEvent, context: ClaudeMessageContext): boolean {
+function appendCompletedCodexItem(rawEvent: RawExecutionEvent, context: ClaudeMessageContext, pendingCommandStarts: PendingCommandStarts): void {
   if ((rawEvent.item?.type === 'reasoning' || rawEvent.item?.type === 'agent_message') && rawEvent.item.text) {
     context.events.push({ type: 'thought', content: rawEvent.item.text, timestamp: context.timestamp });
-    return true;
+    return;
   }
   if (rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
     context.setTodos(mapTodoItems(rawEvent.item.items));
-    return true;
+    return;
   }
-  return false;
+  if (rawEvent.item?.type === 'command_execution') {
+    appendCompletedCommand(rawEvent, context, pendingCommandStarts);
+  }
 }
 
-function appendRawEventByType(rawEvent: RawExecutionEvent, row: ExecutionDetailRow, context: ClaudeMessageContext): boolean {
+function appendRawEventByType(rawEvent: RawExecutionEvent, context: ClaudeMessageContext): boolean {
   if (rawEvent.type === 'tool_use') {
-    context.events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp: context.timestamp });
+    if (rawEvent.tool) {
+      context.events.push({ type: 'tool_use', toolName: rawEvent.tool, input: rawEvent.params, timestamp: context.timestamp });
+    }
     return true;
   }
   if (rawEvent.type === 'error') {
-    context.events.push({ type: 'tool_result', result: rawEvent.message || rawEvent.result || row.content || 'Execution error', isError: true, timestamp: context.timestamp });
+    context.events.push({ type: 'tool_result', result: rawEvent.message || rawEvent.result || rawEvent.content || 'Execution error', isError: true, timestamp: context.timestamp });
+    return true;
+  }
+  if (rawEvent.type === 'tool_result') {
+    context.events.push({
+      type: 'tool_result',
+      result: rawEvent.message || rawEvent.result || rawEvent.content || 'Execution error',
+      isError: Boolean(rawEvent.is_error) || rawEvent.status === 'error',
+      timestamp: context.timestamp
+    });
     return true;
   }
   return false;
 }
 
-function appendEventFromMetadata(row: ExecutionDetailRow, context: ClaudeMessageContext): boolean {
+function appendEventFromMetadata(row: ExecutionDetailRow, context: ClaudeMessageContext, pendingCommandStarts: PendingCommandStarts): boolean {
   if (!row.metadata) return false;
   try {
     const rawEvent = JSON.parse(row.metadata) as RawExecutionEvent;
     if (appendModelSourceEvent(rawEvent, context)) return true;
     if (rawEvent.source === 'USER_EXPLICIT' || rawEvent.source === 'SYSTEM') return true;
     if (appendMetadataMessageEvent(rawEvent, context)) return true;
-    if (appendRawEventByType(rawEvent, row, context)) return true;
-    if (appendCommandExecutionEvents(rawEvent, context.timestamp, context.events)) return true;
-    return appendRawItemEvent(rawEvent, context);
+    if (appendRawEventByType(rawEvent, context)) return true;
+    if (appendCodexLifecycleEvent(rawEvent, context, pendingCommandStarts)) return true;
   } catch (error) {
     console.error('[live-details] Failed to parse execution detail metadata:', error);
   }
@@ -83,20 +116,22 @@ function appendEventFromMetadata(row: ExecutionDetailRow, context: ClaudeMessage
 }
 
 function appendMetadataMessageEvent(rawEvent: RawExecutionEvent, context: ClaudeMessageContext): boolean {
-  if (rawEvent.type !== 'message' || !rawEvent.content) return false;
+  if (rawEvent.type !== 'message') return false;
+  if (!rawEvent.content) return true;
   if (rawEvent.role === 'assistant') {
     if (typeof rawEvent.content === 'string') {
       context.events.push({ type: 'thought', content: rawEvent.content, timestamp: context.timestamp });
       return true;
     }
     const assistantContent = extractMessageContentBlocks(rawEvent.content);
-    return assistantContent ? appendClaudeAssistantMessageEvents(assistantContent, context) : false;
+    if (assistantContent) appendClaudeAssistantMessageEvents(assistantContent, context);
+    return true;
   }
   if (rawEvent.role === 'user') {
     const userContent = extractMessageContentBlocks(rawEvent.content);
-    return userContent ? appendClaudeUserMessageEvents(userContent, context) : false;
+    if (userContent) appendClaudeUserMessageEvents(userContent, context);
   }
-  return false;
+  return true;
 }
 
 function extractMessageContentBlocks(content: unknown): ClaudeMessageContent[] | null {
@@ -119,12 +154,54 @@ function appendStoredMessageEvent(row: ExecutionDetailRow, context: ClaudeMessag
   }
 }
 
-function appendCommandExecutionEvents(rawEvent: RawExecutionEvent, timestamp: string, events: Array<Record<string, unknown>>): boolean {
-  if (rawEvent.item?.type !== 'command_execution') return false;
-  if (rawEvent.item.command) events.push({ type: 'tool_use', toolName: 'command_execution', input: { command: rawEvent.item.command }, timestamp });
-  if (rawEvent.item.aggregated_output) events.push({
-    type: 'tool_result', result: rawEvent.item.aggregated_output, isError: rawEvent.item.exit_code != null && rawEvent.item.exit_code !== 0, timestamp
+function appendCodexLifecycleEvent(rawEvent: RawExecutionEvent, context: ClaudeMessageContext, pendingCommandStarts: PendingCommandStarts): boolean {
+  if (!rawEvent.type || !CODEX_LIFECYCLE_EVENT_TYPES.has(rawEvent.type)) return false;
+  if (rawEvent.type === 'item.started') appendStartedCommand(rawEvent, context, pendingCommandStarts);
+  if (rawEvent.type === 'item.updated' && rawEvent.item?.type === 'todo_list' && rawEvent.item.items) {
+    context.setTodos(mapTodoItems(rawEvent.item.items));
+  }
+  if (rawEvent.type === 'item.completed') appendCompletedCodexItem(rawEvent, context, pendingCommandStarts);
+  return true;
+}
+
+function appendStartedCommand(rawEvent: RawExecutionEvent, context: ClaudeMessageContext, pendingCommandStarts: PendingCommandStarts): void {
+  const command = rawEvent.item?.type === 'command_execution' ? rawEvent.item.command : undefined;
+  if (!command) return;
+  context.events.push({ type: 'tool_use', toolName: 'command_execution', input: { command }, timestamp: context.timestamp });
+  const key = commandExecutionKey(rawEvent);
+  if (!key) return;
+  const pending = pendingCommandStarts.get(key) ?? [];
+  pending.push(command);
+  pendingCommandStarts.set(key, pending);
+}
+
+function appendCompletedCommand(rawEvent: RawExecutionEvent, context: ClaudeMessageContext, pendingCommandStarts: PendingCommandStarts): void {
+  const command = rawEvent.item?.command;
+  if (command && !consumePendingCommandStart(rawEvent, command, pendingCommandStarts)) {
+    context.events.push({ type: 'tool_use', toolName: 'command_execution', input: { command }, timestamp: context.timestamp });
+  }
+  context.events.push({
+    type: 'tool_result',
+    result: rawEvent.item?.aggregated_output ?? '',
+    isError: rawEvent.item?.exit_code != null && rawEvent.item.exit_code !== 0,
+    timestamp: context.timestamp
   });
+}
+
+function commandExecutionKey(rawEvent: RawExecutionEvent): string | null {
+  if (rawEvent.item?.type !== 'command_execution' || !rawEvent.item.command) return null;
+  return rawEvent.item.id ? `id:${rawEvent.item.id}` : `command:${rawEvent.item.command}`;
+}
+
+function consumePendingCommandStart(rawEvent: RawExecutionEvent, command: string, pendingCommandStarts: PendingCommandStarts): boolean {
+  const key = commandExecutionKey(rawEvent);
+  if (!key) return false;
+  const pending = pendingCommandStarts.get(key);
+  if (!pending) return false;
+  const index = pending.indexOf(command);
+  if (index === -1) return false;
+  pending.splice(index, 1);
+  if (pending.length === 0) pendingCommandStarts.delete(key);
   return true;
 }
 
