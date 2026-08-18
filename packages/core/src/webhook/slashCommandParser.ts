@@ -46,7 +46,7 @@ export interface SwitchCommandMeta {
 
 export interface UseCommandMeta {
     mode: 'use';
-    /** Target model labels for single-run override */
+    /** Target model label to make active on the PR */
     models: string[];
     /** Extra instructions from lines below the command */
     instructions: string;
@@ -120,7 +120,8 @@ function normalizeModelLabel(label: string): string {
  * For `/fix`: captures everything after `/fix` as instructions.
  * For `/merge`: returns a simple merge marker.
  * For `/switch`: extracts single model target and optional instructions.
- * For `/use`: extracts single model for one-time override and optional instructions.
+ * For `/use`: extracts the single model label target. Trailing text is parsed for
+ * compatibility but ignored by the webhook handler.
  * For `/ultrafix`: parses positional goal or named key=value arguments.
  */
 export function buildCommandMeta(parsed: ParsedSlashCommand): CommandMeta {

@@ -23,15 +23,15 @@ To **take over an existing PR** for ongoing work (so that natural follow-up comm
 | `/fix` | You want to apply a `/review`'s pending suggestions | Yes | [`/fix`](#fix) |
 | `/merge` | You want the base branch merged into the PR branch | Maybe, if conflicts need resolution | [`/merge`](#merge) |
 | `/switch <model-id>` | You want future PR work to use a different model | No, unless you include follow-up instructions | [`/switch`](#switch) |
-| `/use <model-id>` | You want one immediate follow-up run with a temporary model | Yes | [`/use`](#use) |
+| `/use <model-id>` | You want to change the PR's model label | No | [`/use`](#use) |
 | `/ultrafix` | You want an automated review-fix loop | Yes | [`/ultrafix`](#ultrafix) |
 
 ## Syntax Rules
 
 - The slash command must be on the first line of the PR comment. A comment with leading blank lines or text before the command is treated as a normal follow-up comment.
 - Arguments go on the same line as the command (for example `/review llm-claude-opus5` or `/ultrafix goal=8 max=10`).
-- Lines below the command become extra instructions for the run.
-- Both top-level PR comments and line-level review comments are processed; line-level comments carry their file, line, and diff context to the agent.
+- Lines below the command become extra instructions when the command queues work. `/use` ignores trailing text because it only changes a label.
+- Both top-level PR comments and line-level review comments are processed; when a command queues work, line-level comments carry their file, line, and diff context to the agent.
 
 ## Model IDs
 
@@ -170,14 +170,13 @@ Without instructions, `/switch` only updates the label and makes no code changes
 
 ### `/use`
 
-`/use` runs one immediate follow-up task with a temporary model:
+`/use` changes the PR's managed model label:
 
 ```text
 /use <model-id>
-Please investigate the flaky test failure and update the PR.
 ```
 
-The PR's model label keeps its current value. Later work returns to the PR's configured model unless you use `/switch` or another `/use`. Like `/switch`, `/use` takes one model argument, and the agent sees only your instructions, without the command syntax.
+ProPR resolves a supported short alias or full `llm-*` label, removes the PR's other managed model labels, and adds the selected canonical label. All unrelated labels are preserved. `/use` does not queue work; any trailing text is ignored. Post a separate follow-up comment when you want the selected model to do work.
 
 ### Choosing A Model
 
@@ -187,7 +186,7 @@ Use routing when:
 
 - A model is better suited to the task
 - The current model is stuck
-- You want a one-off second opinion
+- You want future work on the PR to use a different model
 - You need to work around provider capacity or rate limits
 
 ## Ultrafix And Branch Updates

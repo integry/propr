@@ -17,11 +17,12 @@ import { handleMergeCommand } from './mergeConflictDetector.js';
 import { parseSlashCommand, buildCommandMeta } from './slashCommandParser.js';
 import type { CommandMeta, UltrafixCommandMeta } from './slashCommandParser.js';
 import { safeUpdateLabels } from '../utils/github/labelOperations.js';
-import { resolveModelAlias } from '../config/modelAliases.js';
+import { resolveModelAlias, resolveReviewModels } from '../config/modelAliases.js';
 import { MODEL_INFO_MAP } from '../config/modelDefinitions.js';
 import { getBotUsername } from '../daemon/configLoader.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { DeliveryDisposition } from '../intake/routingWebSocketProtocol.js';
+import { buildAgentModelLlmLabel, buildDynamicLlmLabel, MAX_GITHUB_LABEL_LENGTH, shortHash } from '@propr/shared';
 
 export interface UltrafixDeps {
     loadUltrafixRatingGoal: () => Promise<number>;
@@ -283,17 +284,9 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
         return;
     }
 
-    if (commandMeta.mode === 'use' && commandMeta.models.length === 0) {
-        correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/use command requires a model argument, ignoring');
+    if (commandMeta.mode === 'use') {
+        await handleUseCommand({ commandMeta, comment, commentAuthor, eventContext, payload, config, correlationId, correlatedLogger });
         return;
-    }
-
-    if (commandMeta.mode === 'use' && commandMeta.models.length > 0) {
-        const resolvedModel = resolveModelAlias(commandMeta.models[0]);
-        if (!await isKnownOrConfiguredModel(resolvedModel)) {
-            correlatedLogger.warn({ pullRequestNumber: prNumber, invalidModels: [resolvedModel] }, '/use command contains unrecognized model(s), ignoring');
-            return;
-        }
     }
 
     const manualTakeover = await fenceManualCommand({ commandMeta, comment, eventContext, config, correlatedLogger });
@@ -323,6 +316,184 @@ async function handleSlashCommand(opts: SlashCommandHandlerOptions): Promise<voi
     }
 
     await enqueueNewCommentJob(strippedComment, commentAuthor, eventContext, { payload, redisClient, PR_FOLLOWUP_TRIGGER_KEYWORDS: config.PR_FOLLOWUP_TRIGGER_KEYWORDS, MODEL_LABEL_PATTERN: config.MODEL_LABEL_PATTERN, correlationId, commandMeta, commentRevisionIdentity: manualTakeover?.commentRevisionIdentity });
+}
+
+type UseCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'use' } };
+
+function buildPrefixedDynamicModelLabel(prefix: string, agentAlias: string, modelId: string): string | null {
+    const canonicalLabel = `${prefix}${agentAlias}~${modelId}`;
+    if (canonicalLabel.length <= MAX_GITHUB_LABEL_LENGTH) return canonicalLabel;
+
+    const hash = shortHash(modelId);
+    const maxAliasLength = Math.max(1, MAX_GITHUB_LABEL_LENGTH - `${prefix}~-x-${hash}`.length);
+    const sanitizedAlias = agentAlias
+        .replace(/[^a-zA-Z0-9_.-]/g, '-')
+        .slice(0, maxAliasLength)
+        .replace(/[^a-zA-Z0-9]+$/, '');
+    const labelAlias = sanitizedAlias || 'agent'.slice(0, maxAliasLength);
+    const modelPrefixBudget = MAX_GITHUB_LABEL_LENGTH - `${prefix}${labelAlias}~-${hash}`.length;
+    const fallbackPrefix = 'model'.slice(0, Math.max(1, modelPrefixBudget));
+    const modelPrefix = modelId
+        .replace(/[^a-zA-Z0-9_.-]/g, '-')
+        .slice(0, Math.max(1, modelPrefixBudget))
+        .replace(/[^a-zA-Z0-9]+$/, '');
+    const hashedLabel = `${prefix}${labelAlias}~${modelPrefix || fallbackPrefix}-${hash}`;
+    return hashedLabel.length <= MAX_GITHUB_LABEL_LENGTH ? hashedLabel : null;
+}
+
+function applyModelLabelPrefix(defaultLabel: string, prefix: string, agentAlias: string, modelId: string): string | null {
+    if (!defaultLabel.startsWith('llm-')) {
+        return defaultLabel.length <= MAX_GITHUB_LABEL_LENGTH ? defaultLabel : null;
+    }
+
+    const suffix = defaultLabel.slice('llm-'.length);
+    if (suffix.includes('~')) {
+        return buildPrefixedDynamicModelLabel(prefix, agentAlias, modelId);
+    }
+
+    const staticLabel = `${prefix}${suffix}`;
+    return staticLabel.length <= MAX_GITHUB_LABEL_LENGTH
+        ? staticLabel
+        : buildPrefixedDynamicModelLabel(prefix, agentAlias, modelId);
+}
+
+async function resolveCanonicalModelLabel(
+    target: string,
+    modelLabelPattern: string,
+    correlatedLogger: ReturnType<typeof logger.withCorrelation>,
+    prNumber: number,
+): Promise<string | null> {
+    try {
+        const modelLabelRegex = new RegExp(modelLabelPattern);
+        const targetMatch = modelLabelRegex.exec(target);
+        const routingTarget = targetMatch?.[1] || target;
+        const [resolution] = await resolveReviewModels([routingTarget]);
+        const registry = AgentRegistry.getInstance();
+        const agent = registry.getAgentByAlias(resolution.agentAlias);
+        if (!agent) {
+            correlatedLogger.warn(
+                { pullRequestNumber: prNumber, target },
+                '/use target is unknown, disabled, or unsupported; model label was not changed',
+            );
+            return null;
+        }
+
+        const modelInfo = MODEL_INFO_MAP[resolution.model];
+        const defaultLabel = modelInfo
+            ? buildAgentModelLlmLabel(agent.config.type, agent.config.alias, modelInfo)
+            : buildDynamicLlmLabel(agent.config.alias, resolution.model);
+        const { prefix, derived } = modelLabelPrefix(modelLabelPattern);
+        if (!derived) {
+            correlatedLogger.warn(
+                { pullRequestNumber: prNumber, modelLabelPattern },
+                'Could not derive label prefix from MODEL_LABEL_PATTERN; /use cannot safely select a model label',
+            );
+            return null;
+        }
+
+        const canonicalLabel = applyModelLabelPrefix(defaultLabel, prefix, agent.config.alias, resolution.model);
+        if (!canonicalLabel) {
+            correlatedLogger.error(
+                { pullRequestNumber: prNumber, modelLabelPattern },
+                '/use could not build a canonical model label within GitHub\'s label length limit',
+            );
+            return null;
+        }
+        const canonicalMatch = modelLabelRegex.exec(canonicalLabel);
+        const canonicalRoutingToken = canonicalMatch?.[1];
+        if (!canonicalRoutingToken) {
+            correlatedLogger.error(
+                { pullRequestNumber: prNumber, canonicalLabel, modelLabelPattern },
+                '/use resolved a canonical label that does not match MODEL_LABEL_PATTERN',
+            );
+            return null;
+        }
+
+        let routedResolution: Awaited<ReturnType<typeof resolveReviewModels>>[number];
+        try {
+            [routedResolution] = await resolveReviewModels([canonicalRoutingToken]);
+        } catch (error) {
+            correlatedLogger.error(
+                { pullRequestNumber: prNumber, canonicalLabel, canonicalRoutingToken, error: (error as Error).message },
+                '/use resolved a canonical label that cannot route back to the selected model',
+            );
+            return null;
+        }
+        if (routedResolution.agentAlias !== resolution.agentAlias || routedResolution.model !== resolution.model) {
+            correlatedLogger.error(
+                {
+                    pullRequestNumber: prNumber,
+                    canonicalLabel,
+                    selectedAgentAlias: resolution.agentAlias,
+                    selectedModel: resolution.model,
+                    routedAgentAlias: routedResolution.agentAlias,
+                    routedModel: routedResolution.model,
+                },
+                '/use resolved a canonical label that routes to a different model',
+            );
+            return null;
+        }
+        return canonicalLabel;
+    } catch (error) {
+        correlatedLogger.warn(
+            { pullRequestNumber: prNumber, target, error: (error as Error).message },
+            '/use target is unknown, disabled, or unsupported; model label was not changed',
+        );
+        return null;
+    }
+}
+
+async function handleUseCommand(opts: UseCommandOptions): Promise<void> {
+    const { commandMeta, comment, commentAuthor, eventContext, config, correlatedLogger } = opts;
+    const { prNumber, owner, repo } = eventContext;
+
+    if (commandMeta.models.length === 0) {
+        correlatedLogger.warn({ pullRequestNumber: prNumber, commentId: comment.id, commentAuthor }, '/use command requires a model argument, ignoring');
+        return;
+    }
+
+    const modelLabelPattern = config.MODEL_LABEL_PATTERN || '^llm-(.+)$';
+    const canonicalLabel = await resolveCanonicalModelLabel(commandMeta.models[0], modelLabelPattern, correlatedLogger, prNumber);
+    if (!canonicalLabel) return;
+
+    const { prLabels } = await getLivePRBranchAndLabels({ owner, repo, prNumber });
+    const canonicalLabelIdentity = canonicalLabel.toLowerCase();
+    const existingModelLabels = prLabels.filter(label => label.name.startsWith('llm-')).map(label => label.name);
+    const labelsToRemove = existingModelLabels.filter(label => label.toLowerCase() !== canonicalLabelIdentity);
+    const targetPresent = prLabels.some(label => label.name.toLowerCase() === canonicalLabelIdentity);
+
+    if (labelsToRemove.length === 0 && targetPresent) {
+        correlatedLogger.debug({ pullRequestNumber: prNumber, modelLabel: canonicalLabel }, '/use model label is already active');
+        return;
+    }
+
+    const labels = [
+        ...prLabels
+            .filter(label => !label.name.startsWith('llm-') && label.name.toLowerCase() !== canonicalLabelIdentity)
+            .map(label => label.name),
+        canonicalLabel,
+    ];
+
+    try {
+        const octokit = await getAuthenticatedOctokit();
+        await octokit.request('PUT /repos/{owner}/{repo}/issues/{issue_number}/labels', {
+            owner,
+            repo,
+            issue_number: prNumber,
+            labels,
+        });
+    } catch (error) {
+        correlatedLogger.error(
+            { pullRequestNumber: prNumber, modelLabel: canonicalLabel, error: (error as Error).message },
+            '/use failed to update the PR model label',
+        );
+        return;
+    }
+
+    correlatedLogger.info(
+        { pullRequestNumber: prNumber, modelLabel: canonicalLabel },
+        '/use updated the PR model label',
+    );
 }
 
 type SwitchCommandOptions = Omit<SlashCommandHandlerOptions, 'parsedCommand'> & { commandMeta: CommandMeta & { mode: 'switch' } };
