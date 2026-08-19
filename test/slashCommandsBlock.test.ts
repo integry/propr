@@ -49,10 +49,12 @@ describe('buildSlashCommandsBlock', () => {
         assert.ok(switchLine.toLowerCase().includes('change') || switchLine.toLowerCase().includes('model'));
     });
 
-    test('/use description mentions single or override', () => {
+    test('/use description mentions switching the PR model and running a follow-up', () => {
         const result = buildSlashCommandsBlock();
         const useLine = result.split('\n').find(l => l.includes('`/use`'));
         assert.ok(useLine);
-        assert.ok(useLine.toLowerCase().includes('single') || useLine.toLowerCase().includes('override'));
+        assert.ok(useLine.toLowerCase().includes('switch'));
+        assert.ok(useLine.toLowerCase().includes('pr model'));
+        assert.ok(useLine.toLowerCase().includes('follow-up'));
     });
 });

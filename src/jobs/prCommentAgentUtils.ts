@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import { AgentRegistry, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
+import { AgentRegistry, resolveCanonicalModelSelectionFromLabels, resolveConfiguredModel, resolveLlmLabel, runLightweightLLMAnalysis } from '@propr/core';
 import { loadSettings, loadSummarizationSettings, NoDefaultModelConfiguredError } from '@propr/core';
 import type { AnalysisResult, ClaudeCodeResponse } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
@@ -262,8 +262,57 @@ export async function resolvePRCommentModelName(llm: string | null | undefined, 
     return modelName;
 }
 
+interface ProviderLimitRetryContext {
+    isRetryFromRateLimit?: boolean;
+    agentAlias?: string;
+    modelName?: string;
+    pullRequestNumber: number;
+    correlatedLogger: Logger;
+}
+
+export async function isProviderLimitRetrySuperseded(
+    labels: Array<string | { name: string }>,
+    context: ProviderLimitRetryContext,
+): Promise<boolean> {
+    if (!context.isRetryFromRateLimit || !context.agentAlias || !context.modelName) return false;
+    const modelLabelPattern = process.env.MODEL_LABEL_PATTERN || '^llm-(.+)$';
+    const managedLabels = (await Promise.all(labels.map(async label => {
+        const name = typeof label === 'string' ? label : label.name;
+        const selection = await resolveCanonicalModelSelectionFromLabels([label], modelLabelPattern);
+        return new RegExp(modelLabelPattern).test(name) || selection ? name : null;
+    }))).filter((label): label is string => label !== null);
+    if (managedLabels.length > 1) {
+        context.correlatedLogger.info({
+            pullRequestNumber: context.pullRequestNumber,
+            retryAgent: context.agentAlias,
+            retryModel: context.modelName,
+            managedLabels,
+        }, 'Skipping provider-limit retry while durable PR model labels are transitioning');
+        return true;
+    }
+    const liveSelection = await resolveCanonicalModelSelectionFromLabels(
+        labels,
+        modelLabelPattern,
+    );
+    if (!liveSelection || (
+        liveSelection.agentAlias.toLowerCase() === context.agentAlias.toLowerCase()
+        && liveSelection.model.toLowerCase() === context.modelName.toLowerCase()
+    )) return false;
+
+    context.correlatedLogger.info({
+        pullRequestNumber: context.pullRequestNumber,
+        retryAgent: context.agentAlias,
+        retryModel: context.modelName,
+        liveAgent: liveSelection.agentAlias,
+        liveModel: liveSelection.model,
+    }, 'Skipping provider-limit retry superseded by a newer durable PR model selection');
+    return true;
+}
+
 export interface AgentExecutionParams {
     llm: string | null | undefined;
+    agentAlias?: string;
+    modelName?: string;
     worktreePath: string;
     branchName: string;
     prompt: string;
@@ -279,7 +328,7 @@ export interface AgentExecutionParams {
 }
 
 export async function resolveAndExecuteAgent(params: AgentExecutionParams): Promise<{ claudeResult: ClaudeCodeResponse; agentType: string }> {
-    const { llm, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken, redisClient, reasoningLevel } = params;
+    const { llm, agentAlias: explicitAgentAlias, modelName: explicitModelName, worktreePath, branchName, prompt, pullRequestNumber, repoOwner, repoName, taskId, stateManager, correlatedLogger, githubToken, redisClient, reasoningLevel } = params;
 
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
@@ -287,7 +336,10 @@ export async function resolveAndExecuteAgent(params: AgentExecutionParams): Prom
     let agentAlias: string;
     let modelToUse: string;
 
-    if (llm) {
+    if (explicitAgentAlias && explicitModelName) {
+        agentAlias = explicitAgentAlias;
+        modelToUse = explicitModelName;
+    } else if (llm) {
         const resolution = await resolveLlmLabel(llm);
         agentAlias = resolution.agentAlias;
         modelToUse = resolution.model;

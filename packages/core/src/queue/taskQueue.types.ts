@@ -48,6 +48,12 @@ export interface CommentJobData {
     repoOwner: string;
     repoName: string;
     llm?: string | null;
+    /** Durable explicit routing selected by /use or /switch. */
+    agentAlias?: string;
+    modelName?: string;
+    modelLabel?: string;
+    /** Marks the reconstructable delayed job created after a provider limit. */
+    isRetryFromRateLimit?: boolean;
     correlationId: string;
     title?: string;
     subtitle?: string;
@@ -65,6 +71,10 @@ export interface CommentJobData {
     commandCommentId?: number;
     /** Creation time of the GitHub comment that established the queued command context. */
     commandCommentCreatedAt?: string;
+    /** Revision time of the GitHub comment that established the queued command context. */
+    commandCommentUpdatedAt?: string;
+    /** Timestamp-and-body identity of the revision that established the queued command context. */
+    commandCommentRevisionIdentity?: string;
     /** GitHub resource type of the comment that established the queued command context. */
     commandCommentType?: 'review' | 'issue';
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
@@ -79,6 +89,10 @@ export interface UnprocessedComment {
     id: number;
     /** GitHub creation time used to order issue and review comments together. */
     createdAt?: string;
+    /** GitHub revision time used to distinguish edited comment deliveries. */
+    updatedAt?: string;
+    /** Stable timestamp-and-body identity used across webhook, queue, and retry storage. */
+    revisionIdentity?: string;
     body: string;
     body_html?: string;  // HTML with signed image URLs (from accept: application/vnd.github.full+json)
     author: string;
@@ -90,6 +104,10 @@ export interface UnprocessedComment {
     requestedModels?: string[];
     commandInstructions?: string;
     llmOverride?: string | null;
+    /** Explicit routing carried through pending-comment batching. */
+    agentAlias?: string;
+    modelName?: string;
+    modelLabel?: string;
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
 }
