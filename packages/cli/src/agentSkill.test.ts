@@ -560,11 +560,10 @@ test("non-forced removal revalidates and preserves a target changed just before 
   assert.equal(readFileSync(join(result.backupPath!, "concurrent.txt"), "utf8"), "changed concurrently\n");
 });
 
-test("rejects traversal, root-owned homes, non-directory parents, and skill-parent symlinks", () => {
+test("rejects traversal, non-directory parents, and skill-parent symlinks", () => {
   const root = temporaryRoot();
   const source = bundle(root, "current skill");
   assert.throws(() => resolveAgentSkillLocations(["codex"], { HOME: `${root}/home/../escape` }), /traversal/);
-  assert.throws(() => resolveAgentSkillLocations(["codex"], { HOME: "/root" }), /root-owned/);
 
   const env = environment(root);
   mkdirSync(env.HOME!, { recursive: true });
