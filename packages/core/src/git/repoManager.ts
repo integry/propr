@@ -1,4 +1,4 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import { Octokit } from '@octokit/core';
@@ -12,18 +12,29 @@ import {
     addToSafeDirectories,
     getWorktreePath
 } from './worktreeOperations.js';
-import { cleanupExistingBranch, createWorktreeFromExistingBranch } from './worktreeCreation.js';
+import {
+    addWorktreeWithoutTracking,
+    cleanupExistingBranch,
+    createWorktreeFromExistingBranch,
+} from './worktreeCreation.js';
 import { setupAuthenticatedRemote, ensureBranchAndPush, pushBranch, redactAuthenticatedGitUrl } from './repoBranching.js';
 import { commitChanges } from './commitOperations.js';
 import { detectDefaultBranch, getRepoConfigKey, listRepositoryBranchConfigurations } from './branchConfig.js';
 import { ensureSeedCommitIfEmpty } from './seedCommit.js';
 import { fetchLatestChanges, FetchLatestChangesOptions, FetchLatestChangesResult } from './fetchOperations.js';
+import { createHooklessGit } from './hooklessGit.js';
+import {
+    assertGitHubRepositoryUrl,
+    assertRepositoryClonePath,
+    resolveRepositoryClonePath,
+    sanitizeGeneratedNameComponent,
+} from './repositoryPaths.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 const GIT_SHALLOW_CLONE_DEPTH = process.env.GIT_SHALLOW_CLONE_DEPTH ? parseInt(process.env.GIT_SHALLOW_CLONE_DEPTH) : undefined;
 
-async function getRepoPath(owner: string, repoName: string): Promise<string> {
-    return path.join(CLONES_BASE_PATH, owner, repoName);
+function getRepoPath(owner: string, repoName: string): string {
+    return resolveRepositoryClonePath(CLONES_BASE_PATH, owner, repoName);
 }
 
 /**
@@ -84,13 +95,13 @@ async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoPar
 
     // Add to safe.directory BEFORE any git operations on this path
     try {
-        await simpleGit().raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);
+        await createHooklessGit().raw(['config', '--global', '--add', 'safe.directory', localRepoPath]);
     } catch {
         // Non-fatal - continue anyway, the directory might already be safe
     }
 
     try {
-        const git: SimpleGit = simpleGit(localRepoPath);
+        const git: SimpleGit = createHooklessGit(localRepoPath);
         if (!await git.checkIsRepo()) throw new Error('Directory exists but is not a valid git repository');
         await configureGcWorktreePrune(git);
         await setupAuthenticatedRemote(git, repoUrl, authToken);
@@ -107,7 +118,7 @@ async function updateExistingRepo({ localRepoPath, opts }: UpdateExistingRepoPar
         return;
     }
 
-    const git: SimpleGit = simpleGit(localRepoPath);
+    const git: SimpleGit = createHooklessGit(localRepoPath);
     // Treat 'HEAD' as unspecified - use default branch detection
     const effectiveBranch = baseBranch && baseBranch !== 'HEAD' ? baseBranch : undefined;
     let targetBranch = effectiveBranch || 'main';
@@ -143,12 +154,12 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
 
     const authenticatedUrl = repoUrl.replace('https://', `https://x-access-token:${authToken}@`);
     try {
-        await simpleGit().clone(authenticatedUrl, localRepoPath, cloneOptions);
+        await createHooklessGit().clone(authenticatedUrl, localRepoPath, cloneOptions);
     } catch (error) {
         throw new Error(redactAuthenticatedGitUrl((error as Error).message));
     }
 
-    const repoGit: SimpleGit = simpleGit(localRepoPath);
+    const repoGit: SimpleGit = createHooklessGit(localRepoPath);
     await configureGcWorktreePrune(repoGit);
 
     // Treat 'HEAD' as unspecified - use default branch detection
@@ -174,8 +185,9 @@ async function cloneNewRepo({ localRepoPath, opts }: UpdateExistingRepoParams): 
 }
 
 async function ensureRepoClonedInternal(opts: EnsureRepoClonedOptions): Promise<string> {
-    const { owner, repoName } = opts;
-    const localRepoPath = await getRepoPath(owner, repoName);
+    const { owner, repoName, repoUrl } = opts;
+    assertGitHubRepositoryUrl(repoUrl, owner, repoName);
+    const localRepoPath = getRepoPath(owner, repoName);
 
     try {
         if (await fs.pathExists(path.join(localRepoPath, ".git"))) {
@@ -213,20 +225,22 @@ export type WorktreeInfo = WorktreeResult;
 export async function createWorktreeForIssue(localRepoPath: string, issueInfo: IssueInfo, options: CreateWorktreeOptions = {}): Promise<WorktreeResult> {
     const { issueId, issueTitle, owner, repoName } = issueInfo;
     const { baseBranch = null, octokit = null, modelName = null } = options;
+    assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, owner, repoName);
 
     const sanitizedTitle = issueTitle.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').substring(0, 25);
     const randomString = Math.random().toString(36).substring(2, 5);
     const now = new Date();
     const shortTimestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
 
-    const branchModelPrefix = modelName ? `${modelName}-` : '';
+    const safeModelName = modelName ? sanitizeGeneratedNameComponent(modelName, 'model') : null;
+    const branchModelPrefix = safeModelName ? `${safeModelName}-` : '';
     const branchName = `${issueId}/${branchModelPrefix}${sanitizedTitle}-${shortTimestamp}-${randomString}`;
-    const modelSuffix = modelName ? `-${modelName}` : '';
+    const modelSuffix = safeModelName ? `-${safeModelName}` : '';
     const worktreeDirName = `issue-${issueId}-${shortTimestamp}${modelSuffix}-${randomString}`;
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
 
     try {
-        const git: SimpleGit = simpleGit(localRepoPath);
+        const git: SimpleGit = createHooklessGit(localRepoPath);
 
         if (await fs.pathExists(worktreePath)) {
             logger.warn({ worktreePath, issueId }, 'Worktree path already exists. Removing existing worktree...');
@@ -274,7 +288,12 @@ export async function createWorktreeForIssue(localRepoPath: string, issueInfo: I
             throw fetchError;
         }
 
-        await git.raw(['worktree', 'add', worktreePath, '-b', branchName, `origin/${resolvedBaseBranch}`]);
+        await addWorktreeWithoutTracking(
+            git,
+            worktreePath,
+            branchName,
+            { startPoint: `origin/${resolvedBaseBranch}` },
+        );
         await setupWorktreePermissions(worktreePath, branchName, issueId);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId });
 

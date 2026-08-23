@@ -18,6 +18,7 @@
 #   PROPR_E2E_VIBE_MODELS comma-separated Vibe models
 #   PROPR_E2E_ANTIGRAVITY_MODELS comma-separated Antigravity models
 #   PROPR_E2E_OPENCODE_MODELS comma-separated OpenCode models
+#   AGENT_TAG          unified agent image to verify (default: propr/agent:latest)
 #   PROPR_E2E_KEEP_STACK=1  leave containers/logs running after the script exits
 #   PROPR_E2E_REUSE_DATA=1  reuse /tmp/$STACK data from a previous run
 
@@ -30,6 +31,7 @@ STACK="${STACK:-propr-itest}"
 API_PORT="${API_PORT:-14001}"
 TEST_REPO="${PROPR_E2E_REPO:-integry/propr-test}"
 LAUNCHER_TAG="${LAUNCHER_TAG:-propr/launcher:latest}"
+AGENT_TAG="${AGENT_TAG:-propr/agent:latest}"
 
 TOKEN="${PROPR_E2E_TOKEN:-}"
 if [ -z "$TOKEN" ] && command -v gh >/dev/null 2>&1; then
@@ -72,7 +74,7 @@ chmod 644 "$DATA_DIR/data/gh-app.pem"
 # Compose the test .env: base = dev .env with test-overrides appended. Bash
 # processes the file top-to-bottom, so later duplicates of a key win.
 {
-  grep -v -E '^(CONFIG_REPO|DB_FILENAME|REDIS_HOST|REDIS_PORT|GITHUB_REPOS_TO_MONITOR|GH_PRIVATE_KEY_PATH|API_PUBLIC_URL|FRONTEND_URL|GH_OAUTH_CALLBACK_URL|ENABLE_GITHUB_WEBHOOKS|ENABLE_PR_COMMENT_POLLING|POLLING_INTERVAL_MS|AGENT_DOCKER_IMAGE|NODE_ENV|LOG_LEVEL)=' "$REPO_ROOT/.env"
+  grep -v -E '^(CONFIG_REPO|DB_FILENAME|REDIS_HOST|REDIS_PORT|GITHUB_REPOS_TO_MONITOR|GH_PRIVATE_KEY_PATH|API_PUBLIC_URL|FRONTEND_URL|GH_OAUTH_CALLBACK_URL|ENABLE_GITHUB_WEBHOOKS|ENABLE_PR_COMMENT_POLLING|POLLING_INTERVAL_MS|AGENT_DOCKER_IMAGE|NODE_ENV|LOG_LEVEL|PROPR_ADMIN_USERS|PROPR_CONTAINERIZED|SESSION_SECRET)=' "$REPO_ROOT/.env"
   cat <<EOF
 NODE_ENV=production
 LOG_LEVEL=warn
@@ -84,13 +86,15 @@ GITHUB_REPOS_TO_MONITOR=${TEST_REPO}
 ENABLE_GITHUB_WEBHOOKS=false
 ENABLE_PR_COMMENT_POLLING=false
 POLLING_INTERVAL_MS=30000
+PROPR_CONTAINERIZED=1
+PROPR_ADMIN_USERS=${PROPR_E2E_ADMIN_USER:-integry}
 API_PUBLIC_URL=http://localhost:${API_PORT}
 FRONTEND_URL=http://localhost:5173
 GH_OAUTH_CALLBACK_URL=http://localhost:${API_PORT}/api/auth/github/callback
 ENABLE_BEARER_TOKEN_AUTH=true
 AGENT_DOCKER_IMAGE=propr/agent:latest
 VIBE_ANALYSIS_TIMEOUT_MS=420000
-SESSION_SECRET=itest-not-secret
+SESSION_SECRET=integration-test-only-session-secret-000000000000
 GH_OAUTH_CLIENT_ID=itest
 GH_OAUTH_CLIENT_SECRET=itest
 GITHUB_WEBHOOK_SECRET=itest
@@ -178,6 +182,14 @@ elif [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
   exit 1
 fi
 
+if [ "${PROPR_E2E_SKIP_SLOW:-}" != "1" ]; then
+  echo ""
+  echo "▸ verifying Antigravity Gemini 3.7 image support"
+  AGENT_TAG="$AGENT_TAG" \
+    ANTIGRAVITY_CONFIG_PATH="$HOME/.gemini" \
+    ./scripts/verify-antigravity-image.sh
+fi
+
 LAUNCHER_ARGS+=("$LAUNCHER_TAG")
 
 echo "▸ starting stack via launcher"
@@ -230,7 +242,7 @@ echo "▸ configuring agents"
 ANTIGRAVITY_CFG="${HOME}/.gemini"
 VIBE_CFG="${HOME}/.vibe"
 VIBE_MODELS="${PROPR_E2E_VIBE_MODELS:-mistral-medium-3.5,devstral-small}"
-ANTIGRAVITY_MODELS="${PROPR_E2E_ANTIGRAVITY_MODELS:-antigravity-gemini-3.6-flash-medium,antigravity-gemini-3.6-flash-high,antigravity-gemini-3.6-flash-low,antigravity-gemini-3.5-flash-medium,antigravity-gemini-3.5-flash-high,antigravity-gemini-3.5-flash-low,antigravity-gemini-3.1-pro-low,antigravity-gemini-3.1-pro-high,antigravity-claude-sonnet-4.6-thinking,antigravity-claude-opus-4.6-thinking,antigravity-gpt-oss-120b-medium}"
+ANTIGRAVITY_MODELS="${PROPR_E2E_ANTIGRAVITY_MODELS:-antigravity-gemini-3.7-flash-medium,antigravity-gemini-3.7-flash-high,antigravity-gemini-3.7-flash-low,antigravity-gemini-3.6-flash-medium,antigravity-gemini-3.6-flash-high,antigravity-gemini-3.6-flash-low,antigravity-gemini-3.5-flash-medium,antigravity-gemini-3.5-flash-high,antigravity-gemini-3.5-flash-low,antigravity-gemini-3.1-pro-low,antigravity-gemini-3.1-pro-high,antigravity-claude-sonnet-4.6-thinking,antigravity-claude-opus-4.6-thinking,antigravity-gpt-oss-120b-medium}"
 OPENCODE_MODELS="${PROPR_E2E_OPENCODE_MODELS:-opencode-deepseek-v4-flash-free,opencode-go/qwen3.7-max,opencode-openai/gpt-5.5}"
 json_array_from_csv() {
   local csv="$1"

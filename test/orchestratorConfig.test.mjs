@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -101,6 +101,35 @@ test('process env values override stack .env values', () => {
   assert.equal(cfg.docsEnabled, false);
 });
 
+test('packaged app services always receive production mode after the env file', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  writeFileSync(join(rootDir, '.env'), 'NODE_ENV=production\n');
+  const cfg = resolveHostConfig({ rootDir, env: { NODE_ENV: 'development' }, manifestPath });
+
+  assert.equal(cfg.nodeEnv, 'production', 'runtime mode must come from the stack env file');
+  for (const service of ['daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']) {
+    const { args } = buildServiceSpec(cfg, service);
+    assert.deepEqual(envValues(args, 'NODE_ENV'), ['production'], service);
+    assert.ok(args.indexOf('NODE_ENV=production') > args.indexOf('--env-file'), service);
+  }
+});
+
+test('legacy development-mode stacks are preserved and blocked with upgrade guidance', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envPath = join(rootDir, '.env');
+  writeFileSync(envPath, 'NODE_ENV=development\nSESSION_SECRET=user-managed\n');
+  const cfg = resolveHostConfig({ rootDir, env: {}, manifestPath });
+
+  assert.equal(cfg.nodeEnv, 'development');
+  assert.match(validateEnv(cfg).errors.join('\n'), /will not overwrite it silently/);
+  assert.match(validateEnv(cfg).errors.join('\n'), /change NODE_ENV to production/);
+  assert.throws(() => buildServiceSpec(cfg, 'api'), /packaged ProPR services must run with NODE_ENV=production/);
+  assert.equal(
+    readFileSync(envPath, 'utf8'),
+    'NODE_ENV=development\nSESSION_SECRET=user-managed\n',
+  );
+});
+
 test('empty process env values override stack .env values before defaults apply', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
   writeFileSync(join(rootDir, '.env'), [
@@ -139,6 +168,54 @@ test('empty explicit overrides win over env and defaults', () => {
   assert.equal(cfg.docsPort, '');
 });
 
+test('default API and UI publishes are IPv4-loopback-only with numeric localhost URLs', () => {
+  const cfg = resolveConfig({ PROPR_STACK: 'custom-stack' }, { manifestPath });
+
+  assert.equal(cfg.apiPort, '127.0.0.1:4000');
+  assert.equal(cfg.uiPort, '127.0.0.1:5173');
+  assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
+  assert.equal(cfg.frontendUrl, 'http://localhost:5173');
+  assert.equal(cfg.ghOauthCallbackUrl, 'http://localhost:4000/api/auth/github/callback');
+
+  const apiArgs = buildServiceSpec(cfg, 'api').args;
+  const apiPublishIndex = apiArgs.indexOf('-p');
+  assert.notEqual(apiPublishIndex, -1);
+  assert.equal(apiArgs[apiPublishIndex + 1], '127.0.0.1:4000:4000');
+
+  const uiArgs = buildServiceSpec(cfg, 'ui').args;
+  const uiPublishIndex = uiArgs.indexOf('-p');
+  assert.notEqual(uiPublishIndex, -1);
+  assert.equal(uiArgs[uiPublishIndex + 1], '127.0.0.1:5173:5173');
+});
+
+test('explicit API and UI publish bindings are preserved without rewriting the stack env', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envPath = join(rootDir, '.env');
+  const existing = 'API_PORT=4000\nUI_PORT=5173\n';
+  writeFileSync(envPath, existing);
+
+  const cfg = resolveHostConfig({ rootDir, env: {}, manifestPath });
+
+  assert.equal(cfg.apiPort, '4000');
+  assert.equal(cfg.uiPort, '5173');
+  assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
+  assert.equal(cfg.frontendUrl, 'http://localhost:5173');
+  assert.equal(readFileSync(envPath, 'utf8'), existing);
+  assert.ok(buildServiceSpec(cfg, 'api').args.includes('4000:4000'));
+  assert.ok(buildServiceSpec(cfg, 'ui').args.includes('5173:5173'));
+
+  const custom = resolveConfig({
+    API_PORT: '127.0.0.1:4400',
+    UI_PORT: '127.0.0.1:55173',
+  }, { manifestPath });
+  assert.equal(custom.apiPort, '127.0.0.1:4400');
+  assert.equal(custom.uiPort, '127.0.0.1:55173');
+  assert.equal(custom.apiPublicUrl, 'http://localhost:4400');
+  assert.equal(custom.frontendUrl, 'http://localhost:55173');
+  assert.ok(buildServiceSpec(custom, 'api').args.includes('127.0.0.1:4400:4000'));
+  assert.ok(buildServiceSpec(custom, 'ui').args.includes('127.0.0.1:55173:5173'));
+});
+
 test('UI tunnel is disabled by default with local-development URL defaults intact', () => {
   const cfg = resolveConfig({ API_PORT: '4000', UI_PORT: '5173' }, { manifestPath });
 
@@ -147,10 +224,24 @@ test('UI tunnel is disabled by default with local-development URL defaults intac
   assert.equal(cfg.proprInstanceId, undefined);
   assert.equal(cfg.uiPublicApiUrl, undefined);
   assert.equal(cfg.cloudflaredImage, 'cloudflare/cloudflared:2024.12.2');
+  assert.equal(cfg.trustedProxyPeers, undefined);
   // Local-development defaults must stay untouched and COOKIE_DOMAIN unset.
   assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
   assert.equal(cfg.frontendUrl, 'http://localhost:5173');
   assert.equal(cfg.cookieDomain, undefined);
+});
+
+test('loopback-bound Docker ports produce valid localhost URLs', () => {
+  const cfg = resolveConfig({
+    API_PORT: '127.0.0.1:4000',
+    UI_PORT: '127.0.0.1:5173',
+  }, { manifestPath });
+
+  assert.equal(cfg.apiPort, '127.0.0.1:4000');
+  assert.equal(cfg.uiPort, '127.0.0.1:5173');
+  assert.equal(cfg.apiPublicUrl, 'http://localhost:4000');
+  assert.equal(cfg.frontendUrl, 'http://localhost:5173');
+  assert.equal(cfg.ghOauthCallbackUrl, 'http://localhost:4000/api/auth/github/callback');
 });
 
 test('enabling the tunnel derives public API, frontend, and OAuth callback URLs', () => {
@@ -163,6 +254,7 @@ test('enabling the tunnel derives public API, frontend, and OAuth callback URLs'
   assert.equal(cfg.apiPublicUrl, 'https://t-abc123.propr.dev');
   assert.equal(cfg.frontendUrl, 'https://app.propr.dev');
   assert.equal(cfg.ghOauthCallbackUrl, 'https://t-abc123.propr.dev/api/auth/github/callback');
+  assert.equal(cfg.trustedProxyPeers, 'self');
 });
 
 test('explicit public URLs still win over tunnel-derived values', () => {
@@ -203,6 +295,7 @@ test('api container propagates the tunnel PROPR_UI_* env without the tunnel toke
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_ENABLED'), ['true']);
   assert.deepEqual(envValues(args, 'PROPR_INSTANCE_ID'), ['abc123']);
   assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
+  assert.deepEqual(envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'), ['self']);
   // The tunnel token must never reach the API container.
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_TOKEN'), []);
 });
@@ -216,6 +309,41 @@ test('api container gets a stable `api` network alias for the tunnel ingress tar
   const aliasIdx = args.indexOf('--network-alias');
   assert.notEqual(aliasIdx, -1, 'expected --network-alias in the api spec');
   assert.equal(args[aliasIdx + 1], 'api');
+});
+
+test('api container propagates an explicit reverse-proxy peer list without enabling the tunnel', () => {
+  const cfg = resolveConfig({
+    PROPR_TRUSTED_PROXY_PEERS: 'loopback,10.0.0.8/32',
+  }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'api');
+
+  assert.equal(cfg.uiTunnelEnabled, false);
+  assert.equal(cfg.trustedProxyPeers, 'loopback,10.0.0.8/32');
+  assert.deepEqual(
+    envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'),
+    ['loopback,10.0.0.8/32'],
+  );
+});
+
+test('api container receives explicit request rate-limit overrides', () => {
+  const overrideCases = [
+    ['PROPR_API_RATE_LIMIT_MAX', 'apiRateLimitMax', '601'],
+    ['PROPR_API_RATE_LIMIT_WINDOW_MS', 'apiRateLimitWindowMs', '60001'],
+    ['PROPR_AUTH_RATE_LIMIT_MAX', 'authRateLimitMax', '31'],
+    ['PROPR_AUTH_RATE_LIMIT_WINDOW_MS', 'authRateLimitWindowMs', '900001'],
+    ['PROPR_WEBHOOK_RATE_LIMIT_MAX', 'webhookRateLimitMax', '301'],
+    ['PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS', 'webhookRateLimitWindowMs', '60002'],
+  ];
+  const environment = Object.fromEntries(
+    overrideCases.map(([environmentName, , value]) => [environmentName, value]),
+  );
+  const cfg = resolveConfig(environment, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'api');
+
+  for (const [environmentName, configName, value] of overrideCases) {
+    assert.equal(cfg[configName], value);
+    assert.deepEqual(envValues(args, environmentName), [value]);
+  }
 });
 
 test('an explicit PROPR_UI_PUBLIC_API_URL is normalized (trailing slash stripped) once at resolve time', () => {
@@ -241,11 +369,23 @@ test('ui container receives the tunnel public API URL (no /api appended) when se
   assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://t-abc123.propr.dev']);
 });
 
-test('ui container omits PROPR_UI_PUBLIC_API_URL in local development', () => {
+test('ui container receives the browser-visible local API URL in local development', () => {
   const cfg = resolveConfig({ API_PORT: '4000', UI_PORT: '5173' }, { manifestPath });
   const { args } = buildServiceSpec(cfg, 'ui');
 
-  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), []);
+  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['http://localhost:4000']);
+  assert.deepEqual(envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'), []);
+});
+
+test('ui container honors an explicit browser-visible API URL without a tunnel', () => {
+  const cfg = resolveConfig({
+    API_PUBLIC_URL: 'https://api.example.test',
+    API_PORT: '4000',
+    UI_PORT: '5173',
+  }, { manifestPath });
+  const { args } = buildServiceSpec(cfg, 'ui');
+
+  assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), ['https://api.example.test']);
 });
 
 test('api container reports the tunnel disabled and omits optional PROPR_* vars in local development', () => {
@@ -255,6 +395,7 @@ test('api container reports the tunnel disabled and omits optional PROPR_* vars 
   assert.deepEqual(envValues(args, 'PROPR_UI_TUNNEL_ENABLED'), ['false']);
   assert.deepEqual(envValues(args, 'PROPR_INSTANCE_ID'), []);
   assert.deepEqual(envValues(args, 'PROPR_UI_PUBLIC_API_URL'), []);
+  assert.deepEqual(envValues(args, 'PROPR_TRUSTED_PROXY_PEERS'), []);
   assert.deepEqual(envValues(args, 'API_PUBLIC_URL'), ['http://localhost:4000']);
 });
 
@@ -283,6 +424,7 @@ test('only the tunnel sidecar receives the token, via cloudflared TUNNEL_TOKEN',
   // The token must not appear in the container argv (visible via docker inspect).
   assert.ok(!spec.command.includes('--token'));
   assert.ok(!spec.command.includes('secret-token'));
+  assert.equal(spec.networkMode, 'container:propr-api');
 });
 
 test('buildServiceSpec throws for a tunnel without a token', () => {
@@ -703,4 +845,33 @@ test('validateEnv rejects stack names that are not valid Docker names', () => {
   const errors = validateEnv(cfg).errors.join('\n');
   assert.match(errors, /PROPR_STACK/);
   assert.match(errors, /PROPR_NETWORK/);
+});
+
+test('validateEnv permits broad private proxy trust only behind a loopback API bind', () => {
+  const base = {
+    PROPR_TRUSTED_PROXY_PEERS: 'uniquelocal',
+  };
+
+  const exposed = resolveConfig({ ...base, API_PORT: '4000' }, { manifestPath });
+  assert.match(
+    validateEnv(exposed).errors.join('\n'),
+    /PROPR_TRUSTED_PROXY_PEERS=uniquelocal requires API_PORT to be bound to host loopback/,
+  );
+
+  for (const apiPort of ['127.0.0.1:4000', '[::1]:4000']) {
+    const loopbackOnly = resolveConfig({ ...base, API_PORT: apiPort }, { manifestPath });
+    assert.doesNotMatch(
+      validateEnv(loopbackOnly).errors.join('\n'),
+      /PROPR_TRUSTED_PROXY_PEERS=uniquelocal/,
+    );
+  }
+
+  const exactPeer = resolveConfig({
+    PROPR_TRUSTED_PROXY_PEERS: '172.20.0.1/32',
+    API_PORT: '4000',
+  }, { manifestPath });
+  assert.doesNotMatch(
+    validateEnv(exactPeer).errors.join('\n'),
+    /PROPR_TRUSTED_PROXY_PEERS=uniquelocal/,
+  );
 });

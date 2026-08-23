@@ -114,6 +114,20 @@ describe('generateSummaryTitle fallback behavior', () => {
         assert.strictEqual(useConfiguredReasoningLevel, undefined);
     });
 
+    test('allows enough time for a cold agent launch by default', async () => {
+        let timeoutMs: unknown;
+        const title = await generateSummaryTitle(baseOptions({
+            titleContext: 'Review feedback to address:\nKeep iterating on lint failures.',
+            analysisRunner: async options => {
+                timeoutMs = options.timeoutMs;
+                return 'Resolve lint failures';
+            },
+        }));
+
+        assert.strictEqual(title, 'Resolve lint failures');
+        assert.strictEqual(timeoutMs, 30_000);
+    });
+
     test('removes surrounding quotes from generated subtitles', async () => {
         const title = await generateSummaryTitle(baseOptions({
             titleContext: 'Review feedback to address:\nHandle refresh token expiry.',

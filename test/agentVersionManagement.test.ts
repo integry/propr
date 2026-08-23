@@ -139,6 +139,7 @@ describe('agent version management', () => {
         assert.match(agentDockerfile, /link_npm_bin @anthropic-ai\/claude-code claude/);
         assert.match(agentDockerfile, /link_npm_bin @openai\/codex codex/);
         assert.match(agentDockerfile, /link_npm_bin opencode-ai opencode/);
+        assert.match(agentDockerfile, /ln -sf \/home\/node\/\.local\/bin\/agy \/usr\/local\/bin\/agy/);
         assert.match(agentDockerfile, /FROM agent-base AS claude-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS codex-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS antigravity-cli/);
@@ -149,10 +150,10 @@ describe('agent version management', () => {
 
     test('launches ownership-repairing agent entrypoints as root before dropping privileges', () => {
         const claudeDockerArgs = fs.readFileSync('packages/core/src/agents/impl/utils/dockerArgsBuilder.ts', 'utf8');
-        const codexAgent = fs.readFileSync('packages/core/src/agents/impl/CodexAgent.ts', 'utf8');
+        const codexDockerArgs = fs.readFileSync('packages/core/src/agents/impl/utils/codexDockerArgsBuilder.ts', 'utf8');
         const antigravityAgent = fs.readFileSync('packages/core/src/agents/impl/AntigravityAgent.ts', 'utf8');
 
-        for (const [name, source] of Object.entries({ claudeDockerArgs, codexAgent, antigravityAgent })) {
+        for (const [name, source] of Object.entries({ claudeDockerArgs, codexDockerArgs, antigravityAgent })) {
             assert.match(source, /'--cap-add', 'CHOWN'/, `${name} should grant CHOWN for mounted config repair`);
             assert.match(source, /'--user', '0:0'/, `${name} should start as root so the entrypoint can repair config ownership`);
         }
@@ -169,10 +170,11 @@ describe('agent version management', () => {
         assert.match(vibeAgent, /PROPR_AGENT_TYPE=vibe/);
     });
 
-    test('records proprietary installer provenance in the unified agent image', () => {
+    test('records proprietary release artifact provenance in the unified agent image', () => {
         const agentDockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
 
-        assert.match(agentDockerfile, /antigravity-installer\.sha256/);
+        assert.match(agentDockerfile, /antigravity-cli\.source/);
+        assert.match(agentDockerfile, /antigravity-cli\.sha512/);
         assert.match(agentDockerfile, /antigravity-cli\.version/);
     });
 

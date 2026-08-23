@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import { Knex } from 'knex';
@@ -155,7 +156,7 @@ export function createGitHubRoutes(deps: GitHubRoutesDeps) {
     }
   }
 
-  async function getBranches(req: Request, res: Response): Promise<void> {
+  async function getBranches(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { owner, repo } = req.params;
 

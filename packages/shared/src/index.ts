@@ -56,6 +56,8 @@ export {
 
 export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
 
+export { MIN_SESSION_SECRET_LENGTH, validateSessionSecret } from './sessionSecret.js';
+
 export {
   INSTANCE_PERMISSIONS,
   type AuthenticatedInstanceUser,
@@ -133,6 +135,9 @@ export {
 // Export shared Redis status keys (one source of truth for cross-process status
 // keys so the daemon publisher, API status route, and CLI cannot drift)
 export { ROUTING_STATUS_REDIS_KEY } from './statusKeys.js';
+
+// Export the timestamp contract used at every account-status trust boundary.
+export { isAccountStatusTimestamp } from './accountStatusTimestamp.js';
 
 export {
   PROPR_VERSION,

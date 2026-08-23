@@ -34,6 +34,7 @@ function mockAgentActions(overrides: Partial<AgentSetupActions> = {}): AgentSetu
     addAgent: async () => undefined,
     loginableAgents: async () => [],
     loginAgent: async () => ({ available: false, success: false }),
+    validateAgents: async (_root, types) => types.map((type) => ({ type, status: "ok", detail: "connected" })),
     ...overrides,
   };
 }
@@ -227,4 +228,25 @@ test("a thrown confirm prompt skips login without aborting", async () => {
   assert.equal(loginCalled, false);
   assert.equal(outcome.errors.length, 1);
   assert.match(outcome.errors[0], /agent login prompt failed.*cancelled/);
+});
+
+test("validates selected agents through the image and suggests exact recovery commands", async () => {
+  const outcome = await runAgentSetup({
+    rootDir: "/stack",
+    selectedAgents: ["codex", "vibe"],
+    actions: mockAgentActions({
+      loginableAgents: async () => ["codex"],
+      validateAgents: async () => [
+        { type: "codex", status: "failed", detail: "authentication required" },
+        { type: "vibe", status: "skipped", detail: "credentials not found" },
+      ],
+    }),
+  });
+
+  assert.deepEqual(outcome.validationFailed, ["codex", "vibe"]);
+  assert.deepEqual(outcome.nextCommands, [
+    "propr agent login codex",
+    "propr check agents --agents codex",
+    "propr check agents --agents vibe",
+  ]);
 });

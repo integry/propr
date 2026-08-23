@@ -8,6 +8,7 @@ const mockOctokit = {
 };
 
 const mockRedisGet = mock.fn(async () => null);
+const mockRedisDel = mock.fn(async () => 0);
 const redisConstructorCalls: unknown[][] = [];
 
 // Mock simple-git (transitive dependency)
@@ -26,6 +27,8 @@ await mock.module('ioredis', {
             return {
                 on: mock.fn(),
                 get: mockRedisGet,
+                mget: mock.fn(async (...keys: string[]) => Promise.all(keys.map(key => mockRedisGet(key)))),
+                del: mockRedisDel,
                 quit: mock.fn(async () => {}),
                 disconnect: mock.fn(),
             };
@@ -144,6 +147,7 @@ function resetMocks(): void {
     mockOctokit.request.mock.resetCalls();
     mockRedisGet.mock.resetCalls();
     mockRedisGet.mock.mockImplementation(async () => null);
+    mockRedisDel.mock.resetCalls();
     redisConstructorCalls.length = 0;
     mockFindPlanIssueByRepoAndPR.mock.resetCalls();
     mockFindPlanIssueByRepoAndNumber.mock.resetCalls();
@@ -555,7 +559,9 @@ describe('getPRAutoMergeInfo', () => {
 
     test('returns hasActiveUltrafixLoop true when Redis state is active', async () => {
         resetMocks();
-        mockRedisGet.mock.mockImplementation(async () => JSON.stringify({ active: true }));
+        mockRedisGet.mock.mockImplementation(async (key: string) => key.startsWith('ultrafix:state:')
+            ? JSON.stringify({ active: true, workEpoch: 0 })
+            : null);
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
                 labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
@@ -569,9 +575,60 @@ describe('getPRAutoMergeInfo', () => {
         assert.strictEqual(result.hasActiveUltrafixLoop, true);
     });
 
+    test('preserves a new loop published after the initial label snapshot', async () => {
+        resetMocks();
+        let newLoopPublished = false;
+        mockOctokit.request.mock.mockImplementation(async () => {
+            const response = {
+                data: {
+                    labels: [{ name: 'auto-merge' }],
+                    draft: false,
+                    base: { ref: 'main' },
+                    head: { ref: 'feature-branch' }
+                }
+            };
+            newLoopPublished = true;
+            return response;
+        });
+        mockRedisGet.mock.mockImplementation(async (key: string) => {
+            assert.strictEqual(newLoopPublished, true);
+            if (key.startsWith('ultrafix:state:')) {
+                return JSON.stringify({ active: true, workEpoch: 2 });
+            }
+            if (key.startsWith('ultrafix:automatic-work-epoch:')) return '2';
+            return null;
+        });
+
+        const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+
+        assert.strictEqual(result.hasUltrafixLabel, false);
+        assert.strictEqual(result.hasActiveUltrafixLoop, true);
+        assert.strictEqual(mockRedisDel.mock.callCount(), 0);
+    });
+
+    test('returns hasActiveUltrafixLoop false for state from a superseded work epoch', async () => {
+        resetMocks();
+        mockRedisGet.mock.mockImplementation(async (key: string) => key.startsWith('ultrafix:state:')
+            ? JSON.stringify({ active: true, workEpoch: 0 })
+            : '1');
+        mockOctokit.request.mock.mockImplementation(async () => ({
+            data: {
+                labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                draft: false,
+                base: { ref: 'main' },
+                head: { ref: 'feature-branch' }
+            }
+        }));
+
+        const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+        assert.strictEqual(result.hasActiveUltrafixLoop, false);
+    });
+
     test('returns ultrafix completion status when loop finished', async () => {
         resetMocks();
-        mockRedisGet.mock.mockImplementation(async () => JSON.stringify({ active: false, completionStatus: 'failed' }));
+        mockRedisGet.mock.mockImplementation(async (key: string) => key.startsWith('ultrafix:state:')
+            ? JSON.stringify({ active: false, completionStatus: 'failed' })
+            : null);
         mockOctokit.request.mock.mockImplementation(async () => ({
             data: {
                 labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
@@ -585,6 +642,27 @@ describe('getPRAutoMergeInfo', () => {
         assert.strictEqual(result.hasActiveUltrafixLoop, false);
         assert.strictEqual(result.ultrafixCompletionStatus, 'failed');
     });
+
+    for (const completionStatus of ['failed', 'succeeded'] as const) {
+        test(`ignores stale ${completionStatus} completion status from a superseded work epoch`, async () => {
+            resetMocks();
+            mockRedisGet.mock.mockImplementation(async (key: string) => key.startsWith('ultrafix:state:')
+                ? JSON.stringify({ active: false, completionStatus, workEpoch: 0 })
+                : '1');
+            mockOctokit.request.mock.mockImplementation(async () => ({
+                data: {
+                    labels: [{ name: 'auto-merge' }, { name: 'ultrafix' }],
+                    draft: false,
+                    base: { ref: 'main' },
+                    head: { ref: 'feature-branch' }
+                }
+            }));
+
+            const result = await getPRAutoMergeInfo('owner', 'repo', 42);
+            assert.strictEqual(result.hasActiveUltrafixLoop, false);
+            assert.strictEqual(result.ultrafixCompletionStatus, null);
+        });
+    }
 
     test('uses REDIS_URL for ultrafix state lookup when configured', async () => {
         resetMocks();

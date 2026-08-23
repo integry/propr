@@ -7,7 +7,171 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.6] - 2026-08-03
+## [0.8.15] - 2026-08-15
+
+ProPR 0.8.15 is the first public release.
+
+### Added
+
+- **Expanded coding-agent support**: added Antigravity Gemini 3.7 Flash High,
+  Medium, and Low models with a pinned packaged CLI and strict no-fallback
+  verification, plus an opt-in bundled ProPR orchestration skill for supported
+  coding agents.
+- **Connect Plus experience**: eligible Community Connect accounts can see and
+  dismiss a privacy-safe capacity banner, and start the Connect Plus purchase
+  path while preserving their authorized GitHub installation and billing choice.
+
+### Changed
+
+- **Validated public setup path**: documented Apple Silicon Docker Desktop,
+  ProPR data-folder handoff, and safe CLI installation and management of the
+  bundled Agent Skill.
+
+### Fixed
+
+- **Task stopping**: `propr task stop` sends one URL-encoded request to the
+  supported task `/stop` endpoint and never uses the obsolete `/cancel` route.
+- **Release hardening**: incorporated setup, migration, authentication, CLI
+  validation, and Agent Tank reliability fixes validated for the public package.
+
+## [0.8.14] - 2026-08-14
+
+### Changed
+
+- **Configurable live-E2E timeout**: model tasks can override the live-E2E
+  timeout while retaining a bounded default when no override is configured.
+- **Safe coding-agent installation guidance**: added a copyable,
+  non-destructive setup prompt with human authorization gates and documented
+  Node.js 22 and 24 as the validated CLI runtimes.
+- **Packaged production defaults**: generated stacks set an explicit
+  production runtime, publish API and UI ports on loopback by default, and
+  wire browser-visible frontend and CORS origins.
+
+### Fixed
+
+- **Interrupted setup recovery**: fresh and migrated stacks without a durable
+  administrator can safely resume `propr setup` after pre-authentication
+  interruption.
+- **CLI task stop compatibility**: `propr task stop` uses the canonical
+  singular endpoint while the API continues accepting `cancel` as a
+  compatibility alias.
+- **CLI task deletion compatibility**: `propr task delete` uses the canonical
+  endpoint while the API continues accepting the singular compatibility alias.
+- **Hosted UI tunnel isolation**: tunnel authority is scoped per browser tab,
+  popup OAuth uses the active managed tunnel, logout and navigation preserve
+  the active flow, and copied, raw, or foreign authority is rejected.
+
+### Security
+
+- **UI dependency refresh**: updated the transitive `nanoid` resolution to
+  3.3.18, addressing GHSA-2v37-7h3g-55p8 without upgrading `postcss`.
+
+## [0.8.13] - 2026-08-13
+
+### Fixed
+
+- **Setup root persistence**: fresh `propr setup` runs retain the normalized
+  stack root across later configuration saves, so rootless CLI commands target
+  the configured stack from any working directory.
+
+## [0.8.12] - 2026-08-12
+
+### Changed
+
+- **Guided setup defaults**: clean installs now use ProPR Connect and the
+  default ProPR GitHub App, including guided GitHub login and App installation.
+
+### Fixed
+
+- **Local UI API routing**: production UI containers receive the browser-visible
+  API origin, so local `/api/*` requests reach the backend instead of the static
+  UI server.
+- **Setup failure handling**: missing authentication, invalid intake settings,
+  and unhealthy backend startup stop setup before dependent configuration or UI
+  launch.
+- **Connect authentication boundaries**: local login is limited to exact
+  loopback callbacks while managed tunnels, custom OAuth Apps, and explicit
+  operator modes retain their supported behavior.
+
+## [0.8.11] - 2026-08-12
+
+### Changed
+
+- **Supported install contract**: release documentation now states the tested
+  Linux `amd64` baseline, practical host sizing, Docker requirements, and
+  Docker Hub as the canonical distribution registry.
+
+### Fixed
+
+- **Planner issue dispatch**: routing selectors are applied before the `AI`
+  trigger label, preventing one planned issue from starting both on `main` and
+  on its generated epic branch.
+- **CLI read reliability**: transient transport failures on idempotent API
+  reads retry briefly without retrying mutations or HTTP error responses.
+
+## [0.8.10] - 2026-08-12
+
+### Fixed
+
+- **Resumable image publication**: partial Docker Hub releases preserve the
+  first commit-scoped artifact and complete missing immutable tags safely even
+  when a later rebuild produces a different digest.
+- **Ultrafix deferred actions**: API continuation sweeps initialize the issue
+  queue before checking conflicts or enqueueing the next review/fix action.
+- **Source Compose compatibility**: backend development and legacy production
+  images use Node 22, matching ProPR's declared runtime requirement.
+
+## [0.8.9] - 2026-08-12
+
+### Changed
+
+- **Adaptive agent resources**: default container CPU limits now scale to the
+  detected host capacity while preserving explicit operator overrides.
+
+### Fixed
+
+- **First-run repository activation**: repositories selected in setup or
+  Settings load without a legacy config repository, reload live, and filter
+  routed events before processing begins.
+- **Retryable issue failures**: failed or zero-change interrupted agent runs no
+  longer create empty pull requests or receive a misleading done label.
+- **Review container reliability**: retries and concurrent review commands use
+  unique Docker container names while preserving task ownership labels.
+- **Release retries**: Docker Hub publication and npm artifact reconciliation
+  are deterministic and safely resumable after partial workflow failures.
+
+## [0.8.8] - 2026-08-11
+
+### Added
+
+- **Managed Connect login**: hosted tunnel instances can authenticate through
+  the shared ProPR GitHub App without requiring users to create a separate
+  OAuth App, while preserving verified GitHub identity and redirect state.
+- **Guided agent validation**: setup prepares safe credential mounts, checks
+  selected agents from the worker image, and prints exact login/recovery
+  commands when an agent is not ready.
+
+### Changed
+
+- **Issue-driven Ultrafix**: an exact `ultrafix` label on a source issue now
+  starts Ultrafix automatically on its generated implementation PR.
+
+### Fixed
+
+- **Agent and E2E reliability**: bundled runtimes remain executable,
+  Antigravity initializes disposable state correctly, model-task failures are
+  surfaced, and configured task coverage is tracked deterministically.
+- **Review correctness**: emphasized scores are accepted and incomplete diff
+  coverage fails closed instead of producing an overconfident review.
+- **Safe runtime paths and logs**: model IDs cannot escape generated worktree
+  paths, credentials are redacted from worktree diagnostics, and setup rejects
+  unsafe agent credential mount paths before creating directories.
+- **Deployment defaults**: Compose Redis ports remain bound to loopback rather
+  than being exposed on public interfaces.
+- **Release validation**: workspace dependencies are built before package
+  typechecks, and agent runner code satisfies the release's zero-warning gate.
+
+## [0.8.7] - 2026-08-09
 
 ### Added
 
@@ -19,6 +183,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host path. Managed credentials live below ProPR's credential root and allow
   multiple accounts from the same provider; existing host config remains an
   explicit alternative.
+- **Review and PR decomposition workflows**: `/split` can create an authorized,
+  idempotent PR-splitting operation, while model-aware context scouting enriches
+  reviews within a configurable context budget and can be disabled per instance.
+- **Instance administration**: explicit administrator roles separate privileged
+  instance management from ordinary authenticated access.
 - **Documentation**: security overview (trust boundaries, isolation, network
   surface, user-whitelist gating), evaluator FAQ, glossary, consolidated
   configuration reference (shipped vs code defaults), and a symptom-organized
@@ -34,12 +203,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Downstream `@propr/shared` consumers should handle the nullable timestamp when
   adopting the new notification API. No notification UI or production event
   producer existed in this repository to migrate.
+- **Focused AI reviews**: reviews now evaluate the stated PR scope, keep
+  suggestions separate from `/fix`, assign durable incremental finding IDs,
+  explain blockers and suggestions in human-readable sections, and acknowledge
+  implementation strengths without inflating the score.
+- **Scope-safe Ultrafix cycles**: follow-up reviews and fixes retain the original
+  PR objective, consume only current actionable findings, and preserve command
+  ownership when comments are batched or superseded.
 
 ### Fixed
 
 - **Fail-closed runtime safety**: webhook and merge checks require verified
   signals, configuration writes reconcile post-commit failures, and planner
   cancellation/live progress are isolated by generation run ID.
+- **Task lifecycle ownership**: revision-ordered socket updates, fenced Docker
+  execution and teardown, stale-task reconciliation, and reliable PR-comment
+  finalization prevent older work from overwriting or terminating newer work.
+- **Ultrafix orchestration**: CI readiness is action-aware (failed checks may be
+  fixed, while reviews wait for a settled exact head); manual commands cancel
+  superseded automatic jobs; fresh-loop startup, label teardown, terminal side
+  effects, and deferred work are protected by renewable ownership and epochs.
+- **Release and agent reliability**: nightly model coverage is deterministically
+  bounded, immutable artifacts are preflighted, production image smoke coverage
+  is restored, failed unified-agent image builds recover cleanly, and remote
+  downloads plus Antigravity release artifacts are verified and pinned.
+- **Event delivery and CI reporting**: routing WebSocket health requires an
+  application heartbeat, direct webhook traffic is rate-limited, and CI creates
+  a fresh failure comment only when a check actually fails.
 - **Web UI**: dead `/agents` link in the no-models helper (now `/ai-agents`)
   plus a catch-all 404 route; "Planner Studio" tab title; Agent Tank banner
   reframed to rate-limit capacity; human-readable API error messages;
@@ -58,6 +248,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authenticated agent-login containers. Docker-socket access is root-equivalent
   host access; deployment and security documentation now call out this trust
   boundary explicitly.
+- OAuth state is validated, strong session secrets are mandatory, WebSocket
+  subscriptions are authenticated, public API and webhook routes are
+  rate-limited, and direct API runs bind to loopback by default.
+- Untrusted input parsing and repository filesystem paths are bounded and
+  contained; subprocesses execute without a shell; failed uploads are cleaned
+  up; agent containers receive explicit resource limits; and local CLI state is
+  created with private permissions.
+- CodeQL and dependency-review gates now run in CI, preview checkouts are pinned,
+  vulnerable transitive dependencies were refreshed, and a security policy was
+  added.
 
 ## [0.8.5] - 2026-06-30
 
@@ -167,7 +367,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metrics: stop infinite task-analysis recursion in the analysis processor.
 - Fix default GitHub bot username and use the ProPR app bot for system commits.
 
-[0.8.6]: https://github.com/integry/propr/releases/tag/v0.8.6
+[0.8.15]: https://github.com/integry/propr/compare/v0.8.14...v0.8.15
+[0.8.14]: https://github.com/integry/propr/compare/v0.8.13...v0.8.14
+[0.8.13]: https://github.com/integry/propr/releases/tag/v0.8.13
+[0.8.12]: https://github.com/integry/propr/releases/tag/v0.8.12
+[0.8.11]: https://github.com/integry/propr/releases/tag/v0.8.11
+[0.8.10]: https://github.com/integry/propr/releases/tag/v0.8.10
+[0.8.9]: https://github.com/integry/propr/releases/tag/v0.8.9
+[0.8.8]: https://github.com/integry/propr/releases/tag/v0.8.8
+[0.8.7]: https://github.com/integry/propr/releases/tag/v0.8.7
 [0.8.5]: https://github.com/integry/propr/releases/tag/v0.8.5
 [0.8.3]: https://github.com/integry/propr/releases/tag/v0.8.3
 [0.8.2]: https://github.com/integry/propr/releases/tag/v0.8.2

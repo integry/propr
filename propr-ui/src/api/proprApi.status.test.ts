@@ -100,6 +100,73 @@ describe('getSystemStatus', () => {
     });
   });
 
+  it('maps a valid connected Connect account and drops malformed or non-Connect data', async () => {
+    const account = {
+      installationId: 42,
+      accountLogin: 'octo-org',
+      plan: 'community',
+      hasPlusAccess: false,
+      activeSeats: 2,
+      allowedSeats: 3,
+      seatsRemaining: 1,
+      billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+      sentAt: '2026-08-14T09:31:07.000Z',
+    };
+    for (const [mode, status, connectAccount, expected] of [
+      ['routing_websocket', 'connected', account, account],
+      ['routing_websocket', 'connected', { ...account, allowedSeats: 'three' }, undefined],
+      ['polling', 'active', account, undefined],
+      ['routing_websocket', 'disconnected', account, undefined],
+    ] as const) {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        daemon: 'running', redis: 'connected', workerCount: 1,
+        githubAuth: 'connected', claudeAuth: 'connected', agents: [],
+        githubEventIntake: mode,
+        githubEventIntakeStatus: status,
+        connectAccount,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+      expect((await getSystemStatus()).connectAccount).toEqual(expected);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('drops impossible account dates and preserves valid leap-day instants', async () => {
+    const account = {
+      installationId: 42,
+      accountLogin: 'octo-org',
+      plan: 'community',
+      hasPlusAccess: false,
+      activeSeats: 2,
+      allowedSeats: 3,
+      seatsRemaining: 1,
+      billingCycleResetAt: '2024-02-29T23:59:59.123456789Z',
+      seatLimitBlockedAt: '2024-02-29T12:30:45.5+05:30',
+      sentAt: '2024-02-29T08:15:00-04:00',
+    };
+    const mapAccount = async (connectAccount: typeof account) => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        daemon: 'running', redis: 'connected', workerCount: 1,
+        githubAuth: 'connected', claudeAuth: 'connected', agents: [],
+        githubEventIntake: 'routing_websocket',
+        githubEventIntakeStatus: 'connected',
+        connectAccount,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      const mapped = (await getSystemStatus()).connectAccount;
+      vi.restoreAllMocks();
+      return mapped;
+    };
+
+    await expect(mapAccount(account)).resolves.toEqual(account);
+
+    for (const field of ['billingCycleResetAt', 'seatLimitBlockedAt', 'sentAt'] as const) {
+      await expect(mapAccount({
+        ...account,
+        [field]: '2026-02-30T00:00:00.000Z',
+      })).resolves.toBeUndefined();
+    }
+  });
+
   it('maps disconnected indexing explicitly to unavailable', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({

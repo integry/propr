@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
 import path from 'path';
@@ -27,7 +28,7 @@ const LIVE_EXECUTION_STATES = new Set(['claude_execution', 'codex_execution', 'a
 const EXECUTION_TIMING_STATES = new Set(['claude_execution', 'codex_execution', 'antigravity_execution', 'vibe_execution', 'opencode_execution']);
 export function createLiveDetailsRoutes(deps: LiveDetailsRoutesDeps) {
   const { redisClient, db } = deps;
-  async function getLiveDetails(req: Request, res: Response): Promise<void> {
+  async function getLiveDetails(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { taskId: jobId } = req.params;
       const taskIdValidation = validateTaskId(jobId);

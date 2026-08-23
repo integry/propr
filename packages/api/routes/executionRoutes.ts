@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { RedisClientType } from 'redis';
 import { Knex } from 'knex';
 import path from 'path';
@@ -12,7 +13,7 @@ interface ExecutionRoutesDeps {
 export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
   const { redisClient, db } = deps;
 
-  async function getPrompt(req: Request, res: Response): Promise<void> {
+  async function getPrompt(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { sessionId } = req.params;
 
@@ -44,7 +45,7 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
     }
   }
 
-  async function getLogs(req: Request, res: Response): Promise<void> {
+  async function getLogs(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { sessionId } = req.params;
 
@@ -76,7 +77,7 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
     }
   }
 
-  async function getLogByType(req: Request, res: Response): Promise<void> {
+  async function getLogByType(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { sessionId, type } = req.params;
 
@@ -128,7 +129,7 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps) {
     }
   }
 
-  async function getAnalysis(req: Request, res: Response): Promise<void> {
+  async function getAnalysis(req: FlatRequest, res: Response): Promise<void> {
     try {
       // Validate taskId parameter
       const taskIdValidation = validateTaskId(req.params.taskId);

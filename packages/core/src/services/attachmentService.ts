@@ -4,6 +4,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { db } from '../db/connection.js';
 import type { Logger } from 'pino';
+import { fetchRemoteImage } from './remoteImageFetch.js';
 
 type ImageOptimizationLogger = {
   debug?: (obj: unknown, msg?: string) => void;
@@ -12,12 +13,15 @@ type ImageOptimizationLogger = {
 };
 
 const STORAGE_ROOT = path.join(process.cwd(), 'storage', 'drafts');
+const TEMP_UPLOAD_ROOT = path.join(process.cwd(), 'temp_uploads');
+const UUID_PATH_SEGMENT_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_TEXT_CHARS = 100000;
 const HEAD_CHARS = 5000;
 const TAIL_CHARS = 20000;
 const MAX_IMAGE_DIMENSION = 1024;
 const IMAGE_QUALITY = 80; // WebP quality (0-100)
 const DEFAULT_MAX_OPTIMIZED_IMAGE_BYTES = 512 * 1024;
+const MAX_IMAGE_INPUT_PIXELS = 4096 * 4096;
 const IMAGE_OPTIMIZATION_STEPS = [
   { dimension: MAX_IMAGE_DIMENSION, quality: IMAGE_QUALITY },
   { dimension: 768, quality: 75 },
@@ -61,7 +65,7 @@ async function optimizeImageForContext(
   let lastResult: { size: number; dimension: number; quality: number; withinLimit: boolean } | null = null;
 
   for (const step of IMAGE_OPTIMIZATION_STEPS) {
-    await sharp(input)
+    await sharp(input, { limitInputPixels: MAX_IMAGE_INPUT_PIXELS })
       .resize({
         width: step.dimension,
         height: step.dimension,
@@ -199,6 +203,49 @@ export interface MulterFile {
   buffer?: Buffer;
 }
 
+export interface ProcessUploadOptions {
+  storageRoot?: string;
+  tempRoot?: string;
+  persistAttachment?: (draftId: string, attachment: Attachment) => Promise<void>;
+}
+
+function validateDraftPathSegment(draftId: string): string {
+  const safeDraftId = path.basename(draftId);
+  if (safeDraftId !== draftId || !UUID_PATH_SEGMENT_PATTERN.test(safeDraftId)) {
+    throw new Error('Draft ID must be a valid UUID');
+  }
+  return safeDraftId;
+}
+
+function validateOriginalFilename(originalName: string): string {
+  const safeOriginalName = path.basename(originalName);
+  if (
+    !safeOriginalName
+    || safeOriginalName === '.'
+    || safeOriginalName === '..'
+    || safeOriginalName !== originalName
+  ) {
+    throw new Error('Invalid attachment filename');
+  }
+  return safeOriginalName;
+}
+
+function resolveTemporaryUploadPath(filePath: string, tempRoot: string = TEMP_UPLOAD_ROOT): string {
+  const resolvedRoot = path.resolve(tempRoot);
+  const safeFilename = path.basename(filePath);
+  const safePath = path.join(resolvedRoot, safeFilename);
+  if (
+    !safeFilename
+    || safeFilename === '.'
+    || safeFilename === '..'
+    || path.dirname(safePath) !== resolvedRoot
+    || path.resolve(filePath) !== safePath
+  ) {
+    throw new Error('Temporary upload path is outside the configured upload directory');
+  }
+  return safePath;
+}
+
 function isImageType(mimetype: string, ext: string): boolean {
   return mimetype.startsWith('image/') ||
     ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff'].includes(ext);
@@ -218,94 +265,101 @@ function isBinaryType(mimetype: string, ext: string): boolean {
   return binaryExtensions.includes(ext);
 }
 
+async function persistAttachment(draftId: string, attachment: Attachment): Promise<void> {
+  const draft = await db('task_drafts').where({ draft_id: draftId }).first();
+  if (!draft) throw new Error('Draft not found');
+
+  let currentAttachments: Attachment[] = [];
+  if (typeof draft.attachments === 'string') {
+    try { currentAttachments = JSON.parse(draft.attachments); } catch { currentAttachments = []; }
+  } else if (Array.isArray(draft.attachments)) {
+    currentAttachments = draft.attachments;
+  }
+
+  const updated = await db('task_drafts')
+    .where({ draft_id: draftId })
+    .update({
+      attachments: JSON.stringify([...currentAttachments, attachment]),
+      updated_at: db.fn.now()
+    });
+  if (updated !== 1) throw new Error('Draft was removed while saving the attachment');
+}
+
 export class AttachmentService {
+  static async removeTemporaryUpload(filePath: string, tempRoot?: string): Promise<void> {
+    await fs.remove(resolveTemporaryUploadPath(filePath, tempRoot));
+  }
+
   static async processUpload(
     file: MulterFile,
-    draftId: string
+    draftId: string,
+    options: ProcessUploadOptions = {},
   ): Promise<Attachment> {
-    const draftDir = path.join(STORAGE_ROOT, draftId);
-    await fs.ensureDir(draftDir);
+    const tempPath = resolveTemporaryUploadPath(file.path, options.tempRoot);
+    let finalPath: string | undefined;
 
-    const fileId = uuidv4();
-    const ext = path.extname(file.originalname).toLowerCase();
-
-    if (isBinaryType(file.mimetype, ext)) {
-      await fs.remove(file.path);
-      throw new Error('Binary files are not supported. Please upload images or text files only.');
-    }
-
-    const isImage = isImageType(file.mimetype, ext);
-    const isText = isTextType(file.mimetype, ext);
-
-    if (!isImage && !isText) {
-      await fs.remove(file.path);
-      throw new Error(`Unsupported file type: ${file.mimetype}. Please upload images or text files.`);
-    }
-
-    const finalFilename = `${fileId}${isImage ? '.webp' : ext || '.txt'}`;
-    const finalPath = path.join(draftDir, finalFilename);
-    let tokenEstimate = 0;
-    let fileSize = 0;
-
-    if (isImage) {
-      const optimization = await optimizeImageForContext(file.path, finalPath);
-      fileSize = optimization.size;
-      tokenEstimate = calculateImageTokenEstimate(fileSize);
-    } else {
-      let content = await fs.readFile(file.path, 'utf-8');
-
-      if (content.includes('\0')) {
-        await fs.remove(file.path);
-        throw new Error('Binary files are not supported. The file appears to contain binary data.');
+    try {
+      const safeDraftId = validateDraftPathSegment(draftId);
+      const originalName = validateOriginalFilename(file.originalname);
+      const draftDir = path.join(options.storageRoot ?? STORAGE_ROOT, safeDraftId);
+      const fileId = uuidv4();
+      const ext = path.extname(originalName).toLowerCase();
+      if (isBinaryType(file.mimetype, ext)) {
+        throw new Error('Binary files are not supported. Please upload images or text files only.');
       }
 
-      if (content.length > MAX_TEXT_CHARS) {
-        const head = content.slice(0, HEAD_CHARS);
-        const tail = content.slice(content.length - TAIL_CHARS);
-        const removed = content.length - (HEAD_CHARS + TAIL_CHARS);
-
-        content = `${head}\n\n... [TRUNCATED BY PROPR: REMOVED ${removed} CHARS] ...\n\n${tail}`;
+      const isImage = isImageType(file.mimetype, ext);
+      const isText = isTextType(file.mimetype, ext);
+      if (!isImage && !isText) {
+        throw new Error(`Unsupported file type: ${file.mimetype}. Please upload images or text files.`);
       }
 
-      await fs.writeFile(finalPath, content, 'utf-8');
-      const stats = await fs.stat(finalPath);
-      fileSize = stats.size;
-      tokenEstimate = Math.ceil(content.length / 4);
+      await fs.ensureDir(draftDir);
+      finalPath = path.join(draftDir, `${fileId}${isImage ? '.webp' : ext || '.txt'}`);
+      let tokenEstimate = 0;
+      let fileSize = 0;
+
+      if (isImage) {
+        const optimization = await optimizeImageForContext(tempPath, finalPath);
+        fileSize = optimization.size;
+        tokenEstimate = calculateImageTokenEstimate(fileSize);
+      } else {
+        let content = await fs.readFile(tempPath, 'utf-8');
+        if (content.includes('\0')) {
+          throw new Error('Binary files are not supported. The file appears to contain binary data.');
+        }
+        if (content.length > MAX_TEXT_CHARS) {
+          const head = content.slice(0, HEAD_CHARS);
+          const tail = content.slice(content.length - TAIL_CHARS);
+          const removed = content.length - (HEAD_CHARS + TAIL_CHARS);
+          content = `${head}\n\n... [TRUNCATED BY PROPR: REMOVED ${removed} CHARS] ...\n\n${tail}`;
+        }
+        await fs.writeFile(finalPath, content, 'utf-8');
+        const stats = await fs.stat(finalPath);
+        fileSize = stats.size;
+        tokenEstimate = Math.ceil(content.length / 4);
+      }
+
+      // Do not publish metadata while Multer's plaintext temporary copy remains.
+      await fs.remove(tempPath);
+
+      const attachment: Attachment = {
+        id: fileId,
+        originalName,
+        storedPath: path.relative(process.cwd(), finalPath),
+        mimeType: isImage ? 'image/webp' : 'text/plain',
+        size: fileSize,
+        tokenEstimate,
+        type: isImage ? 'image' : 'text'
+      };
+      await (options.persistAttachment ?? persistAttachment)(safeDraftId, attachment);
+      return attachment;
+    } catch (error) {
+      if (finalPath) await fs.remove(finalPath).catch(() => undefined);
+      throw error;
+    } finally {
+      await fs.remove(tempPath).catch(() => undefined);
     }
-
-    await fs.remove(file.path);
-
-    const attachment: Attachment = {
-      id: fileId,
-      originalName: file.originalname,
-      storedPath: path.relative(process.cwd(), finalPath),
-      mimeType: isImage ? 'image/webp' : 'text/plain',
-      size: fileSize,
-      tokenEstimate,
-      type: isImage ? 'image' : 'text'
-    };
-
-    if (db) {
-      const draft = await db('task_drafts').where({ draft_id: draftId }).first();
-      if (!draft) {
-        throw new Error('Draft not found');
-      }
-      let currentAttachments: Attachment[] = [];
-      if (typeof draft.attachments === 'string') {
-        try { currentAttachments = JSON.parse(draft.attachments); } catch { currentAttachments = []; }
-      } else if (Array.isArray(draft.attachments)) {
-        currentAttachments = draft.attachments;
-      }
-
-      await db('task_drafts')
-        .where({ draft_id: draftId })
-        .update({
-          attachments: JSON.stringify([...currentAttachments, attachment]),
-          updated_at: db.fn.now()
-        });
-    }
-
-    return attachment;
   }
 
   static async deleteAttachment(draftId: string, attachmentId: string): Promise<void> {
@@ -366,52 +420,15 @@ export class AttachmentService {
     const finalPath = path.join(targetDir, finalFilename);
 
     try {
-      // Build headers - add auth for GitHub URLs
-      const headers: Record<string, string> = {
-        'User-Agent': 'ProPR-Bot/1.0 (https://github.com/integry/gitfix)'
-      };
-
-      // GitHub user-attachments require authentication
-      const isGitHubUrl = url.includes('github.com') || url.includes('githubusercontent.com');
-      logger?.debug?.({ url, isGitHubUrl, hasAuthToken: !!authToken }, 'Attempting to download remote image');
-      if (isGitHubUrl && authToken) {
-        headers['Authorization'] = `Bearer ${authToken}`;
-        headers['Accept'] = 'application/octet-stream';
-        logger?.debug?.({ url }, 'Using GitHub auth token for image download');
-      }
-
-      // Fetch the image from the remote URL
-      const response = await fetch(url, { headers });
-
-      if (!response.ok) {
-        logger?.warn?.({
-          url,
-          status: response.status,
-          statusText: response.statusText,
-          hasAuthToken: !!authToken,
-          tokenPrefix: authToken ? authToken.substring(0, 4) : 'none',
-          redirected: response.redirected,
-          finalUrl: response.url
-        }, 'Image fetch failed');
-        throw new Error(`Failed to fetch image: HTTP ${response.status} ${response.statusText}`);
-      }
-
-      const contentType = response.headers.get('content-type') || '';
-      if (!contentType.startsWith('image/')) {
-        throw new Error(`URL does not point to an image: content-type is ${contentType}`);
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-
-      // Process and optimize the image using sharp
+      const buffer = await fetchRemoteImage(url, { authToken, logger });
       const optimization = await optimizeImageForContext(buffer, finalPath, logger);
 
-      logger?.debug?.({ url, savedTo: finalPath, imageSize: optimization.size }, 'Successfully downloaded and optimized remote image');
+      logger?.debug?.({ savedTo: finalPath, imageSize: optimization.size }, 'Successfully downloaded and optimized remote image');
 
       return finalPath;
     } catch (error) {
-      logger?.warn?.({ url, error: (error as Error).message }, 'Failed to download remote image');
+      await fs.remove(finalPath).catch(() => undefined);
+      logger?.warn?.({ error: (error as Error).message }, 'Failed to download remote image');
       throw error;
     }
   }

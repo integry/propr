@@ -29,6 +29,13 @@ test('redactSecrets replaces GitHub App installation tokens (ghs_)', () => {
     assert.ok(result.includes('[REDACTED_GITHUB_TOKEN]'));
 });
 
+test('redactSecrets replaces modern JWT-shaped GitHub App installation tokens', () => {
+    const token = 'ghs_1234567_eyJhbGciOiJFUzI1NiJ9.abc-DEF_123.xyz';
+    const result = redactSecrets(`relay returned ${token}`);
+    assert.ok(!result.includes(token));
+    assert.strictEqual(result, 'relay returned [REDACTED_GITHUB_TOKEN]');
+});
+
 test('redactSecrets scrubs the relay credential (PROPR_GH_RELAY_TOKEN)', () => {
     const input = 'PROPR_GH_RELAY_TOKEN=rly_abcdefghijklmnopqrstuvwxyz0123456789';
     const result = redactSecrets(input);
@@ -463,6 +470,17 @@ test('generateCompletionComment redacts secrets in summary, conversation preview
     assert.ok(comment.includes('[REDACTED_GITHUB_TOKEN]'), 'GitHub redaction placeholder should appear in comment');
     assert.ok(comment.includes('[REDACTED_BEARER_TOKEN]'), 'Bearer redaction placeholder should appear in comment');
     assert.ok(comment.includes('[REDACTED_AWS_ACCESS_KEY]'), 'AWS redaction placeholder should appear in comment');
+});
+
+test('generateCompletionComment does not claim a PR exists when posted to an issue', async () => {
+    const comment = await generateCompletionComment({ success: false, error: 'Agent failed' }, {
+        number: 7788,
+        repoOwner: 'test-owner',
+        repoName: 'test-repo',
+    }, { publishedAs: 'issue_comment' });
+
+    assert.match(comment, /processing report was generated automatically/i);
+    assert.doesNotMatch(comment, /This PR was created automatically/);
 });
 
 // --- Vendor-specific false-positive boundary tests ---

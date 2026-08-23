@@ -155,27 +155,45 @@ RUN case "${VIBE_CLI_VERSION}" in \
 
 
 FROM agent-base AS antigravity-cli
-ARG ANTIGRAVITY_CLI_VERSION=latest
+ARG ANTIGRAVITY_CLI_VERSION=1.1.13
+ARG ANTIGRAVITY_CLI_RELEASE_ID=6057583128215552
+ARG ANTIGRAVITY_CLI_SHA512=89c6881b6c1999cb8236e7181c2192ae8f372b0413396c0f7bcff83d27ac9c0cc1202795cc0d629ec1ecbf4937d1c294cf4f5e4f9f8e05b1e972e27198313442
 ENV PATH="/home/node/.local/bin:${PATH}" \
     AGY_CLI_DISABLE_AUTO_UPDATE=true
-RUN if [ "${ANTIGRAVITY_CLI_VERSION}" != "latest" ]; then \
-        echo "Antigravity only supports version 'latest'; got ${ANTIGRAVITY_CLI_VERSION}" >&2; \
-        exit 1; \
-    fi \
-    && curl -fsSL -o /tmp/antigravity-install.sh https://antigravity.google/cli/install.sh \
-    && test -s /tmp/antigravity-install.sh \
-    && mkdir -p /home/node/.local/share/propr \
-    && sha256sum /tmp/antigravity-install.sh > /home/node/.local/share/propr/antigravity-installer.sha256 \
-    && bash -n /tmp/antigravity-install.sh \
-    && bash /tmp/antigravity-install.sh \
-    && rm -f /tmp/antigravity-install.sh \
-    && agy --version | tee /home/node/.local/share/propr/antigravity-cli.version
+# Both download URLs resolve the same pinned public GCS object. The JSON API
+# media route is an endpoint-level fallback; the SHA-512 pin remains the trust
+# boundary regardless of which route succeeds.
+RUN set -eu; \
+    archive=/tmp/antigravity-cli.tar.gz; \
+    source_url="https://storage.googleapis.com/antigravity-public/antigravity-cli/${ANTIGRAVITY_CLI_VERSION}-${ANTIGRAVITY_CLI_RELEASE_ID}/linux-x64/cli_linux_x64.tar.gz"; \
+    fallback_url="https://storage.googleapis.com/download/storage/v1/b/antigravity-public/o/antigravity-cli%2F${ANTIGRAVITY_CLI_VERSION}-${ANTIGRAVITY_CLI_RELEASE_ID}%2Flinux-x64%2Fcli_linux_x64.tar.gz?alt=media"; \
+    downloaded_from=; \
+    for candidate_url in "$source_url" "$fallback_url"; do \
+        if curl --fail --show-error --silent --location \
+            --connect-timeout 20 --max-time 300 \
+            --retry 5 --retry-delay 2 --retry-max-time 180 --retry-all-errors \
+            -o "$archive" "$candidate_url"; then \
+            downloaded_from="$candidate_url"; \
+            break; \
+        fi; \
+    done; \
+    test -n "$downloaded_from"; \
+    echo "${ANTIGRAVITY_CLI_SHA512}  ${archive}" | sha512sum -c -; \
+    test "$(tar -tzf "$archive")" = antigravity; \
+    tar -xzf "$archive" -C /tmp antigravity; \
+    mkdir -p /home/node/.local/bin /home/node/.local/share/propr; \
+    install -m 0755 /tmp/antigravity /home/node/.local/bin/agy; \
+    printf '%s\n' "$downloaded_from" > /home/node/.local/share/propr/antigravity-cli.source; \
+    printf '%s\n' "$ANTIGRAVITY_CLI_SHA512" > /home/node/.local/share/propr/antigravity-cli.sha512; \
+    rm -f "$archive" /tmp/antigravity; \
+    test "$(agy --version)" = "$ANTIGRAVITY_CLI_VERSION"; \
+    agy --version | tee /home/node/.local/share/propr/antigravity-cli.version
 
 
 FROM agent-base AS final
 ARG CLAUDE_CLI_VERSION=2.1.220
 ARG CODEX_CLI_VERSION=0.146.0
-ARG ANTIGRAVITY_CLI_VERSION=latest
+ARG ANTIGRAVITY_CLI_VERSION=1.1.13
 ARG OPENCODE_CLI_VERSION=1.18.9
 ARG VIBE_CLI_VERSION=2.23.1
 
@@ -223,6 +241,7 @@ RUN set -eu; \
     link_npm_bin @anthropic-ai/claude-code claude \
     && link_npm_bin @openai/codex codex \
     && link_npm_bin opencode-ai opencode \
+    && ln -sf /home/node/.local/bin/agy /usr/local/bin/agy \
     && chmod +x \
         /home/node/agent-entrypoint.sh \
         /home/node/claude-entrypoint.sh \

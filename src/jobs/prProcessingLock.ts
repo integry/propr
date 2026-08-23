@@ -6,6 +6,13 @@ export const PR_PROCESSING_LOCK_RENEW_INTERVAL_MS = 30 * 1000;
 
 export type PRProcessingLockRedisClient = Pick<Redis, 'set' | 'eval'>;
 
+export class PRProcessingLeaseLostError extends Error {
+    constructor(message = 'PR processing attempt lost its lock') {
+        super(message);
+        this.name = 'PRProcessingLeaseLostError';
+    }
+}
+
 interface LockHeartbeatOptions {
     redisClient: PRProcessingLockRedisClient;
     lockKey: string;
@@ -34,6 +41,17 @@ export function createPRProcessingLockToken(correlationId: string): string {
     return `${correlationId}:${randomUUID()}`;
 }
 
+export async function ensurePRProcessingLockToken(
+    data: { prProcessingLockToken?: string },
+    correlationId: string,
+    persist: () => Promise<void>,
+): Promise<string> {
+    if (data.prProcessingLockToken) return data.prProcessingLockToken;
+    data.prProcessingLockToken = createPRProcessingLockToken(correlationId);
+    await persist();
+    return data.prProcessingLockToken;
+}
+
 export async function acquirePRProcessingLock(
     redisClient: PRProcessingLockRedisClient,
     lockKey: string,
@@ -41,7 +59,13 @@ export async function acquirePRProcessingLock(
     ttlSeconds = PR_PROCESSING_LOCK_TTL_SECONDS,
 ): Promise<boolean> {
     const result = await redisClient.set(lockKey, lockToken, 'EX', ttlSeconds, 'NX');
-    return result === 'OK';
+    if (result === 'OK') return true;
+
+    // A worker can exit after acquiring the lease but before releasing it.
+    // BullMQ redelivery of that same logical execution must be able to resume
+    // immediately with its persisted token, while a different token remains
+    // excluded even when it shares the same correlation ID.
+    return renewPRProcessingLock(redisClient, lockKey, lockToken, ttlSeconds);
 }
 
 export async function renewPRProcessingLock(

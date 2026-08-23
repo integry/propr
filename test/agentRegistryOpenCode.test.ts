@@ -133,6 +133,48 @@ test('AgentRegistry exposes unified image degraded status', async () => {
     });
 });
 
+test('AgentRegistry automatically retries an unavailable unified image', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const registry = AgentRegistry.getInstance();
+    let attempts = 0;
+    const internal = registry as unknown as {
+        ensureUnifiedAgentImage: () => Promise<string | null>;
+        scheduleUnifiedAgentImageRetry: () => void;
+        unavailableUnifiedAgentImage: { imageTag: string; error: string; recordedAt: string } | null;
+    };
+    internal.ensureUnifiedAgentImage = async () => {
+        attempts += 1;
+        if (attempts < 3) {
+            internal.unavailableUnifiedAgentImage = {
+                imageTag: 'propr/agent:bundle-retry',
+                error: 'temporary download failure',
+                recordedAt: '2026-08-08T20:00:00.000Z'
+            };
+            internal.scheduleUnifiedAgentImageRetry();
+            return null;
+        }
+        internal.unavailableUnifiedAgentImage = null;
+        return 'propr/agent:recovered';
+    };
+
+    await registry.refresh();
+    assert.deepStrictEqual(registry.getAllAgents(), []);
+
+    t.mock.timers.tick(60_000);
+    await registry.waitForPendingRefresh();
+    assert.strictEqual(attempts, 2);
+    assert.deepStrictEqual(registry.getAllAgents(), [], 'a repeated failure remains degraded');
+
+    t.mock.timers.tick(60_000);
+    await registry.waitForPendingRefresh();
+
+    assert.strictEqual(attempts, 3);
+    assert.strictEqual(registry.getAgentByAlias('opencode')?.config.dockerImage, 'propr/agent:recovered');
+    assert.deepStrictEqual(registry.getOperationalStatus(), {
+        unifiedAgentImage: { status: 'ready' }
+    });
+});
+
 test('AgentRegistry refreshes when runtime package state changes', async () => {
     const registry = AgentRegistry.getInstance();
     let image = 'propr/agent:first';

@@ -31,9 +31,9 @@
  *   - Core images pull by default; the agent image pulls when an agent is selected.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import {
   resolveGithubEventIntakeMode,
   validateIntakeModePrerequisites,
@@ -64,15 +64,62 @@ import {
   createSetupState,
   detectGithubAuthMode,
   getStep,
+  inspectDatastoreAdministrators,
   inspectStackInit,
   isSetupComplete,
   readEnvVars,
   resolveSetupRoot,
   updateStep,
   type EnvSelectionResult,
+  type DatastoreAdminInspection,
   type StackInitState,
 } from "./state.js";
 import type { SetupState, SetupStep, SetupStepId, SetupStepPatch } from "./types.js";
+import { localhostServiceUrl } from "../../utils/dockerPort.js";
+
+const DEFAULT_PROPR_GITHUB_APP_INSTALL_URL = "https://github.com/apps/propr-dev/installations/new";
+
+/** Match the API's distinction between real OAuth credentials and example placeholders. */
+function isConfiguredOAuthValue(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return Boolean(normalized && !normalized.startsWith("your_") && normalized !== "changeme");
+}
+
+function isTruthyEnvFlag(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "true" || normalized === "1";
+}
+
+function normalizeServiceUrl(value: string | undefined): string | undefined {
+  try {
+    if (!value?.trim()) return undefined;
+    const url = new URL(value.trim());
+    if (url.username || url.password || url.search || url.hash) return undefined;
+    const path = url.pathname.replace(/\/+$/, "");
+    return `${url.origin}${path}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function isSupportedLoopbackCallback(value: string | undefined): boolean {
+  try {
+    if (!value?.trim()) return false;
+    const url = new URL(value.trim());
+    const hostname = url.hostname.toLowerCase();
+    return (
+      url.protocol === "http:" &&
+      (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]") &&
+      url.username === "" &&
+      url.password === "" &&
+      url.pathname === "/api/auth/github/callback" &&
+      url.search === "" &&
+      url.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Catalog of supported agents: the image each one needs and the host
@@ -104,6 +151,18 @@ function agentCatalog(): AgentDescriptor[] {
     },
     { type: "vibe", imageKey: "agent", credentials: [{ envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe") }] },
   ];
+}
+
+/** Reject unsafe Docker bind sources before any recursive filesystem write. */
+function assertSafeAgentCredentialDir(path: string, name = "Agent credential path"): void {
+  if (
+    !isAbsolute(path)
+    || normalize(path) === "/"
+    || path.includes(":")
+    || /[\u0000-\u001f\u007f-\u009f]/.test(path)
+  ) {
+    throw new Error(`${name} must be an absolute, non-root Linux path without ':' or control characters`);
+  }
 }
 
 /** Agent types whose default credential directory exists on this host. */
@@ -175,12 +234,15 @@ export interface SetupPrompts {
    */
   selectInstallation?(ctx: { installations: AuthorizedInstallation[] }): Promise<string>;
   /**
-   * Ask whether to run the interactive `propr login` (gh CLI) now, when relay
-   * enrollment needs a GitHub token and none is stored. `reason` explains why.
-   * Only the sequential wizard implements this; absence means "don't auto-login"
-   * (the Ink wizard instead surfaces guidance to run `propr login`).
+   * Ask whether to run the interactive `propr login` (gh CLI) now when Connect
+   * enrollment or protected local API steps need a user token and none is
+   * stored. `reason` explains which part of setup needs it.
    */
   confirmGithubLogin?(ctx: { reason: string }): Promise<boolean>;
+  /** Offer to open the official hosted ProPR GitHub App installation page. */
+  confirmGithubAppInstall?(ctx: { url: string }): Promise<boolean>;
+  /** Continue enrollment after the user finishes the browser installation. */
+  confirmGithubAppInstalled?(ctx: { url: string }): Promise<boolean>;
   /**
    * Choose how the backend ingests GitHub events (routing WebSocket, polling, or
    * direct webhooks). `defaultMode` is the choice to pre-select: the auth-derived
@@ -264,6 +326,27 @@ export interface BackendHealthParams {
 export interface BackendHealth {
   healthy: boolean;
   detail: string;
+  /**
+   * Set when the backend answered the probe (it is reachable and running) but
+   * rejected the request for authentication or authorization reasons rather
+   * than being genuinely unhealthy. The value lets the caller recommend login
+   * for a 401 without giving the same incorrect advice for a 403.
+   */
+  accessFailure?: "unauthorized" | "forbidden";
+}
+
+/** Classify an HTTP access failure from the protected backend status route. */
+export function classifyBackendAccessError(error: unknown): BackendHealth | undefined {
+  const httpStatus = (error as { status?: unknown } | null)?.status;
+  if (httpStatus !== 401 && httpStatus !== 403) return undefined;
+
+  const accessFailure = httpStatus === 401 ? "unauthorized" : "forbidden";
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    healthy: false,
+    accessFailure,
+    detail: `backend is running but rejected the status request as ${accessFailure} (${message})`,
+  };
 }
 
 /**
@@ -274,6 +357,8 @@ export interface BackendHealth {
 export interface SetupActions extends AgentSetupActions {
   runChecks(options: RunChecksOptions): Promise<ChecksOutcome>;
   inspectStackInit(rootDir: string): StackInitState;
+  /** Inspect the configured datastore's durable administrator state without modifying it. */
+  inspectDatastoreAdministrators(rootDir: string): Promise<DatastoreAdminInspection>;
   scaffoldStack(options: InitStackOptions): Promise<InitStackResult>;
   /**
    * Persist the resolved stack root to the CLI config so later `propr start` /
@@ -288,6 +373,8 @@ export interface SetupActions extends AgentSetupActions {
   /** Remove keys from `.env` entirely (used to clear a value, not blank it). */
   clearEnvKeys(rootDir: string, keys: string[]): void;
   detectGithubAuthMode(rootDir: string): GithubAuthModeResult;
+  /** Ensure a selected agent's host credential path is a directory, creating it securely when absent. */
+  prepareAgentCredentialDir(path: string): void;
   pullImages(params: PullImagesParams): Promise<PullImagesResult>;
   isStackRunning(rootDir: string): Promise<boolean>;
   startStack(params: StartStackParams): Promise<void>;
@@ -302,7 +389,7 @@ export interface SetupActions extends AgentSetupActions {
    * left intact.
    */
   saveWhitelistSetting(rootDir: string, users: string[]): Promise<void>;
-  /** True when a GitHub token is stored (the relay enrollment path needs it). */
+  /** True when a GitHub user token is stored (relay enrollment and protected local API calls need it). */
   hasGithubToken(): boolean;
   /**
    * List the relay installations the stored GitHub identity can access (drives
@@ -320,10 +407,7 @@ export interface SetupActions extends AgentSetupActions {
     installationId: string;
     label?: string;
   }): Promise<{ relayUrl: string; token: string }>;
-  /**
-   * Authenticate with GitHub via the interactive `gh` CLI and store the token.
-   * Returns true on success. (Used by the sequential wizard only.)
-   */
+  /** Authenticate with GitHub via the interactive `gh` CLI and store the token. */
   loginWithGithub(params?: { onLog?: (line: string) => void }): Promise<boolean>;
 }
 
@@ -362,8 +446,15 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
   const localApiClient = async (rootDir: string): Promise<import("../../api/client.js").ApiClient> => {
     const { getHostConfig } = await import("../../orchestrator/index.js");
     const { cfg } = await getHostConfig({ configManager, root: rootDir });
-    const { createApiClient } = await import("../../api/client.js");
-    return createApiClient({ baseUrl: `http://localhost:${cfg.apiPort}` });
+    const { createApiClient, createApiClientWithConfig } = await import("../../api/client.js");
+    const options = { baseUrl: localhostServiceUrl(cfg.apiPort) };
+    // Keep the local client on setup's active profile and, importantly, the
+    // token that an in-progress setup login just stored. Creating an unrelated
+    // manager here can otherwise lose profile context and call protected local
+    // endpoints without the token setup has already obtained.
+    return configManager
+      ? createApiClientWithConfig(configManager, options)
+      : createApiClient(options);
   };
 
   return {
@@ -374,6 +465,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       return runChecks(options);
     },
     inspectStackInit,
+    inspectDatastoreAdministrators,
     async scaffoldStack(options) {
       const { scaffoldStack } = await import("../initStack.js");
       return scaffoldStack(options);
@@ -388,6 +480,10 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     applyEnvSelection,
     clearEnvKeys,
     detectGithubAuthMode,
+    prepareAgentCredentialDir(path) {
+      assertSafeAgentCredentialDir(path);
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+    },
     async pullImages({ rootDir, agentTypes, onLog }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
@@ -435,6 +531,11 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       } catch {
         /* best-effort: startup validation will surface an actionable error */
       }
+      const validation = orch.validateEnv(cfg);
+      for (const warning of validation.warnings) onLog?.(`warning: ${warning}`);
+      if (!validation.ok) {
+        throw new Error(`stack environment is not ready:\n  - ${validation.errors.join("\n  - ")}`);
+      }
       // Use the async start path: `propr setup` drives this from behind a live
       // Ink TUI, so the blocking synchronous startStack would freeze the spinner
       // and swallow keystrokes for the seconds-to-minutes a cold start takes.
@@ -459,6 +560,12 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
           }
           lastError = `API reports "${status.api}"`;
         } catch (error) {
+          // A 401/403 is not an unhealthy backend — the API answered but denied
+          // this protected request. Return immediately so setup does not stall
+          // on a running backend, while preserving whether remediation requires
+          // authentication (401) or an authorization/configuration check (403).
+          const accessFailure = classifyBackendAccessError(error);
+          if (accessFailure) return accessFailure;
           lastError = (error as Error).message;
         }
         if (Date.now() >= deadline) break;
@@ -475,7 +582,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     async resolveUiUrl(rootDir) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { cfg } = await getHostConfig({ configManager, root: rootDir });
-      return `http://localhost:${cfg.uiPort}`;
+      return localhostServiceUrl(cfg.uiPort);
     },
     async openUrl(url) {
       // Open in the host's default browser with the platform launcher. Detached
@@ -555,13 +662,13 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   let checks: ChecksOutcome | undefined;
   /** Agents chosen at the pull step, reused when recording credentials. */
   let selectedAgents: string[] = [];
-  /**
-   * Set when the user declines to start the stack. Starting and validating the
-   * backend is the central goal of setup, so a declined start must not report
-   * overall success (and exit 0) even though every *step* reached a terminal
-   * status — the work the user came to do did not happen.
-   */
-  let startDeclined = false;
+  /** True only when the configured datastore conclusively has no durable administrator. */
+  let bootstrapIdentityEligible = false;
+  /** Set after this run successfully writes an authenticated identity to the administrator environment. */
+  let bootstrapAdministratorSeeded = false;
+  let datastoreAdminInspection: DatastoreAdminInspection | undefined;
+  /** True only after the local API answers the setup health probe. */
+  let backendReady = false;
 
   const emit = (): void => reporter.onState?.(state);
   const stepOf = (id: SetupStepId): SetupStep => getStep(state, id)!;
@@ -580,9 +687,9 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     rootDir,
     state,
     checks,
-    // Declining to start the stack leaves the backend down, so the run is not
-    // complete even when every step is in a terminal, non-failed status.
-    completed: isSetupComplete(state) && !startDeclined,
+    // A terminal-looking step list is not a working installation unless the
+    // API actually became healthy during this run.
+    completed: isSetupComplete(state) && backendReady,
   });
 
   /**
@@ -590,15 +697,15 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
    * interactive login when a `confirmGithubLogin` hook is present), discovers the
    * installation (auto-select one, pick among many, error on none), mints the
    * relay token, and writes the relay env vars. Returns a success `detail` or a
-   * soft `note` (rendered as a warning). It never throws for expected problems,
-   * so a relay hiccup degrades to a warning instead of aborting the whole setup.
+   * actionable `note`. It never throws for expected problems; the caller marks
+   * the auth step failed and stops before launching a backend that cannot boot.
    */
   const enrollRelayForSetup = async (
     relayUrl: string
   ): Promise<{ detail?: string; note?: { detail: string; nextAction?: string } }> => {
     // 1. A stored GitHub token is required. Offer interactive login when the
-    //    renderer supports it (sequential wizard); the Ink wizard has no hook and
-    //    falls through to the "not logged in" guidance below.
+    //    renderer supports it. The Ink entry point performs this handoff before
+    //    enabling raw mode; the sequential renderer prompts through this hook.
     if (!actions.hasGithubToken()) {
       const reason = "Relay enrollment needs a GitHub token.";
       if (prompts.confirmGithubLogin && (await prompts.confirmGithubLogin({ reason }))) {
@@ -608,7 +715,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         return {
           note: {
             detail: "relay not enrolled — not logged in to GitHub",
-            nextAction: "Run `propr login`, then re-run `propr setup` and choose Token relay.",
+            nextAction: "Run `propr login`, then re-run `propr setup` and accept ProPR Connect.",
           },
         };
       }
@@ -617,12 +724,28 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     try {
       // 2. Discover installations: auto-select the only one, pick among many,
       //    error when there are none.
-      const { installations } = await actions.fetchRelayInstallations({ relayUrl });
+      let { username, installations } = await actions.fetchRelayInstallations({ relayUrl });
+      const usingHostedRelay =
+        relayUrl.replace(/\/+$/, "") === DEFAULT_PROPR_GH_RELAY_URL.replace(/\/+$/, "");
+      if (installations.length === 0 && usingHostedRelay && prompts.confirmGithubAppInstall) {
+        const installUrl = DEFAULT_PROPR_GITHUB_APP_INSTALL_URL;
+        if (await prompts.confirmGithubAppInstall({ url: installUrl })) {
+          await actions.openUrl(installUrl);
+          const installed = prompts.confirmGithubAppInstalled
+            ? await prompts.confirmGithubAppInstalled({ url: installUrl })
+            : false;
+          if (installed) {
+            ({ username, installations } = await actions.fetchRelayInstallations({ relayUrl }));
+          }
+        }
+      }
       if (installations.length === 0) {
         return {
           note: {
             detail: "relay not enrolled — no GitHub App installation available",
-            nextAction: "Install the shared ProPR GitHub App for your account, then re-run setup.",
+            nextAction: usingHostedRelay
+              ? `Install the default ProPR GitHub App at ${DEFAULT_PROPR_GITHUB_APP_INSTALL_URL}, then re-run setup.`
+              : `Ask the administrator of ${relayUrl} for that relay's GitHub App installation URL, install it, then re-run setup.`,
           },
         };
       }
@@ -640,6 +763,48 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       //    these keys). PROPR_DEMO_MODE=false ensures the new relay config isn't
       //    shadowed by a leftover demo flag (see detectGithubAuthMode).
       const { relayUrl: resolvedRelayUrl, token } = await actions.enrollRelay({ relayUrl, installationId });
+      const existingEnv = actions.readEnvVars(rootDir);
+      const existingAdminUsers = [...new Set(
+        (existingEnv.PROPR_ADMIN_USERS ?? "")
+          .split(",")
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean)
+      )];
+      const hasExistingAdminUsers = existingAdminUsers.length > 0;
+      const seedBootstrapAdmin = bootstrapIdentityEligible && !hasExistingAdminUsers;
+      const existingWhitelist = (existingEnv.GITHUB_USER_WHITELIST ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const whitelistHasIdentity = existingWhitelist.some(
+        (value) => value.toLowerCase() === username.trim().toLowerCase()
+      );
+      const bootstrapWhitelist = seedBootstrapAdmin && !whitelistHasIdentity
+        ? [...existingWhitelist, username].join(",")
+        : undefined;
+      const tunnelOverride = configManager?.getTunnelEnabled(rootDir);
+      const managedTunnelEnabled = tunnelOverride ?? Boolean(
+        existingEnv.PROPR_UI_TUNNEL_TOKEN?.trim() || isTruthyEnvFlag(existingEnv.PROPR_UI_TUNNEL_ENABLED)
+      );
+      const explicitBrowserAuthMode = existingEnv.PROPR_WEB_AUTH_MODE?.trim().toLowerCase();
+      const hasExplicitBrowserAuthMode =
+        explicitBrowserAuthMode === "connect" ||
+        explicitBrowserAuthMode === "github" ||
+        explicitBrowserAuthMode === "disabled";
+      const customBrowserOAuthApplies =
+        !managedTunnelEnabled &&
+        !hasExplicitBrowserAuthMode &&
+        isConfiguredOAuthValue(existingEnv.GH_OAUTH_CLIENT_ID) &&
+        isConfiguredOAuthValue(existingEnv.GH_OAUTH_CLIENT_SECRET);
+      const usesHostedConnect =
+        normalizeServiceUrl(resolvedRelayUrl) === normalizeServiceUrl(DEFAULT_PROPR_GH_RELAY_URL) &&
+        normalizeServiceUrl(existingEnv.PROPR_CONNECT_URL || "https://connect.propr.dev") ===
+          "https://connect.propr.dev";
+      const callbackUrl = existingEnv.GH_OAUTH_CALLBACK_URL ||
+        "http://localhost:4000/api/auth/github/callback";
+      const automaticConnectApplies =
+        managedTunnelEnabled ||
+        (usesHostedConnect && isSupportedLoopbackCallback(callbackUrl));
       actions.applyEnvSelection(
         rootDir,
         {
@@ -648,10 +813,35 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
           PROPR_GH_RELAY_URL: resolvedRelayUrl,
           PROPR_GH_RELAY_TOKEN: token,
           GH_INSTALLATION_ID: installationId,
+          // Select hosted Connect only for its managed tunnel and exact
+          // loopback callback deployments. Explicit modes, custom OAuth, and
+          // custom/self-hosted relay paths remain operator-owned.
+          ...(automaticConnectApplies && !hasExplicitBrowserAuthMode && !customBrowserOAuthApplies
+            ? { PROPR_WEB_AUTH_MODE: "connect" }
+            : {}),
+          // The relay identity was just authenticated by GitHub and owns this
+          // installation, so it is the safe bootstrap administrator only when
+          // the configured datastore is absent or conclusively contains no
+          // durable administrator. Existing environment administrators and
+          // durable database administrators are always preserved.
+          ...(seedBootstrapAdmin ? { PROPR_ADMIN_USERS: username } : {}),
+          // Preserve every user-managed whitelist entry, adding the enrolled
+          // identity only when bootstrap enrollment needs it.
+          ...(bootstrapWhitelist ? { GITHUB_USER_WHITELIST: bootstrapWhitelist } : {}),
         },
         { overwrite: true }
       );
-      return { detail: `auth mode: relay (installation ${installationId})` };
+      bootstrapAdministratorSeeded = seedBootstrapAdmin;
+      const adminDetail = hasExistingAdminUsers
+        ? "kept existing administrators"
+        : seedBootstrapAdmin
+          ? `bootstrap administrator: ${username}`
+          : datastoreAdminInspection?.status === "uninspectable"
+            ? "left administrators unchanged because the datastore could not be inspected"
+            : "left administrators unchanged on existing stack";
+      return {
+        detail: `auth mode: relay (installation ${installationId}); ${adminDetail}`,
+      };
     } catch (error) {
       return {
         note: {
@@ -696,6 +886,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   //    root. An existing functional install is never re-scaffolded or clobbered.
   begin("init-stack");
   try {
+    let initSettlement: SetupStepPatch;
     let init = actions.inspectStackInit(rootDir);
     let userChoseReinit = false;
     if (prompts.resolveStackRoot) {
@@ -728,20 +919,43 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         rootDir = result.rootDir;
         state = { ...state, rootDir };
       }
+      // Persist through setup's active ConfigManager as well as scaffoldStack's
+      // initializer. Otherwise later setup saves (for example GitHub login or
+      // tunnel preferences) can write a stale in-memory config and silently
+      // discard the root that scaffoldStack recorded through its own manager.
+      await actions.persistStackRoot(rootDir);
       const created = [...result.dirsCreated];
-      settle("init-stack", {
+      initSettlement = {
         status: "done",
         detail: result.envCreated
           ? `scaffolded stack at ${rootDir}${created.length ? ` (created ${created.join(", ")})` : ""}`
           : `stack root ready at ${rootDir} (existing .env kept)`,
-      });
+      };
     } else {
       // Reuse path: scaffolding is skipped, so nothing has recorded this root in
       // config. Persist it now so a later `propr start` / `propr status` without
       // --root targets this stack rather than an old saved root or the cwd.
       await actions.persistStackRoot(rootDir);
-      settle("init-stack", { status: "skipped", detail: `using existing stack at ${rootDir} (.env preserved)` });
+      initSettlement = { status: "skipped", detail: `using existing stack at ${rootDir} (.env preserved)` };
     }
+
+    // Eligibility comes from the configured datastore itself, not scaffold
+    // artifacts. This recovers migrated databases with no durable administrator
+    // and follows the runtime's DB_FILENAME/DATA_DIR resolution. Configured
+    // paths outside the launcher's data bind mount cannot be safely inspected
+    // from the host and remain ineligible (fail closed).
+    datastoreAdminInspection = await actions.inspectDatastoreAdministrators(rootDir);
+    bootstrapIdentityEligible =
+      datastoreAdminInspection.status === "absent" || datastoreAdminInspection.status === "no-admin";
+    if (datastoreAdminInspection.status === "uninspectable") {
+      const inspectionDetail = datastoreAdminInspection.detail ?? "configured datastore is unavailable";
+      log(`administrator inspection: ${inspectionDetail}`);
+    }
+    // Inspect before reporting initialization success so this step has exactly
+    // one terminal settlement even when inspection itself throws. An
+    // uninspectable datastore is evaluated after auth resolves because demo
+    // mode does not require an instance administrator.
+    settle("init-stack", initSettlement);
   } catch (error) {
     settle("init-stack", {
       status: "failed",
@@ -806,11 +1020,20 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       });
     } else {
       const vars: Record<string, string> = {};
+      const existingEnv = actions.readEnvVars(rootDir);
       for (const type of selectedAgents) {
         const desc = catalog.find((a) => a.type === type);
         if (!desc) continue;
         for (const cred of desc.credentials) {
-          if (existsSync(cred.defaultDir)) vars[cred.envKey] = cred.defaultDir;
+          // A selected agent may not have logged in yet. Prepare its host mount
+          // before the stack starts so Docker never creates a root-owned path,
+          // and record it now so the post-login image validation sees exactly
+          // the mount the worker will use.
+          const configuredDir = existingEnv[cred.envKey];
+          const effectiveDir = configuredDir?.trim() ? configuredDir : cred.defaultDir;
+          assertSafeAgentCredentialDir(effectiveDir, cred.envKey);
+          actions.prepareAgentCredentialDir(effectiveDir);
+          vars[cred.envKey] = effectiveDir;
         }
       }
       const applied = actions.applyEnvSelection(rootDir, vars, { overwrite: false });
@@ -823,17 +1046,17 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     settle("configure-agents", {
       status: "failed",
       detail: `could not record agent credentials: ${(error as Error).message}`,
-      nextAction: "Check write permissions on .env, then re-run setup.",
+      nextAction: "Correct invalid HOST_* credential paths and check write permissions on .env, then re-run setup.",
     });
     return finish();
   }
 
   // 5. GitHub authentication — keep what works; only write the keys the user
-  //    explicitly chose. An unresolved mode is a warning, not a hard stop: the
-  //    health probe after startup is the authoritative signal.
+  //    explicitly chose. Missing Connect/App credentials are a hard stop because
+  //    every non-demo backend process exits before the health probe can pass.
   begin("github-auth");
   let resolvedAuth: GithubAuthModeResult;
-  // Set by the relay path: a soft `relayNote` drives a warning settle (and skips
+  // Set by the relay path: `relayNote` drives a failed settle (and skips
   // partial writes); `relayDoneDetail` carries the success line. Both stay unset
   // for the keep / custom-App / no-prompt paths, which fall back to the
   // mode-derived settle below.
@@ -850,7 +1073,9 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     } else if (authDecision?.vars && Object.keys(authDecision.vars).length > 0) {
       actions.applyEnvSelection(rootDir, authDecision.vars, { overwrite: true });
     }
-    resolvedAuth = actions.detectGithubAuthMode(rootDir);
+    resolvedAuth = relayDoneDetail
+      ? { mode: "relay", warnings: [] }
+      : actions.detectGithubAuthMode(rootDir);
   } catch (error) {
     settle("github-auth", {
       status: "failed",
@@ -860,15 +1085,119 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     return finish();
   }
   if (relayNote) {
-    settle("github-auth", { status: "warning", detail: relayNote.detail, nextAction: relayNote.nextAction });
-  } else if (relayDoneDetail) {
-    settle("github-auth", { status: "done", detail: relayDoneDetail });
-  } else if (resolvedAuth.mode === "none") {
+    settle("github-auth", { status: "failed", detail: relayNote.detail, nextAction: relayNote.nextAction });
+    return finish();
+  }
+  if (resolvedAuth.mode === "none") {
     settle("github-auth", {
-      status: "warning",
+      status: "failed",
       detail: "no GitHub auth configured",
-      nextAction: "Set a GitHub App, a token relay, or demo mode in .env (the backend will not boot otherwise).",
+      nextAction: "Choose ProPR Connect (default), configure your own GitHub App, or enable demo mode, then re-run setup.",
     });
+    return finish();
+  }
+
+  // Every non-demo start needs either an environment administrator or a
+  // durable one. Relay enrollment above already seeds its authenticated
+  // identity when the datastore is conclusively empty. On a keep rerun, the
+  // same identity can be recovered safely only when the stored GitHub session
+  // can access the installation already configured for this stack.
+  const demoModeEnabled = isTruthyEnvFlag(actions.readEnvVars(rootDir).PROPR_DEMO_MODE);
+  let keptRelayBootstrapIdentity: string | undefined;
+  const configuredAdministrators = (): string[] =>
+    (actions.readEnvVars(rootDir).PROPR_ADMIN_USERS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+  const durableAdministratorExists = datastoreAdminInspection?.status === "has-admin";
+  if (
+    !demoModeEnabled &&
+    !durableAdministratorExists &&
+    !bootstrapAdministratorSeeded &&
+    configuredAdministrators().length === 0 &&
+    bootstrapIdentityEligible &&
+    resolvedAuth.mode === "relay" &&
+    actions.hasGithubToken()
+  ) {
+    const env = actions.readEnvVars(rootDir);
+    const installationId = env.GH_INSTALLATION_ID?.trim();
+    if (installationId) {
+      try {
+        const identity = await actions.fetchRelayInstallations({
+          relayUrl: env.PROPR_GH_RELAY_URL?.trim() || undefined,
+        });
+        const username = identity.username.trim();
+        const ownsConfiguredInstallation = identity.installations.some(
+          (installation) => String(installation.installation_id) === installationId
+        );
+        if (username && ownsConfiguredInstallation) {
+          const existingWhitelist = (env.GITHUB_USER_WHITELIST ?? "")
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean);
+          const whitelistHasIdentity = existingWhitelist.some(
+            (value) => value.toLowerCase() === username.toLowerCase()
+          );
+          actions.applyEnvSelection(
+            rootDir,
+            {
+              PROPR_ADMIN_USERS: username,
+              ...(!whitelistHasIdentity
+                ? { GITHUB_USER_WHITELIST: [...existingWhitelist, username].join(",") }
+                : {}),
+            },
+            { overwrite: true }
+          );
+          bootstrapAdministratorSeeded = true;
+          keptRelayBootstrapIdentity = username;
+        }
+      } catch (error) {
+        log(`administrator bootstrap: could not verify the configured relay identity: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  if (
+    !demoModeEnabled &&
+    !durableAdministratorExists &&
+    !bootstrapAdministratorSeeded &&
+    configuredAdministrators().length === 0
+  ) {
+    const inspectionDetail = datastoreAdminInspection?.status === "uninspectable"
+      ? ` (${datastoreAdminInspection.detail ?? "the configured datastore could not be inspected"})`
+      : "";
+    settle("github-auth", {
+      status: "failed",
+      detail: `no instance administrator is configured${inspectionDetail}`,
+      nextAction:
+        "Set PROPR_ADMIN_USERS to at least one GitHub username, repair the configured datastore, or re-run setup and enroll ProPR Connect with an authenticated GitHub account.",
+    });
+    return finish();
+  }
+
+  // The GitHub App authenticates the backend to GitHub, but it does not
+  // authenticate this CLI user to the backend. Everything setup does after the
+  // stack starts (/api/status, agent configuration, settings, and repositories)
+  // is protected by bearer auth, so obtain the same user token as `propr login`
+  // before making any of those calls. Connect enrollment already guarantees a
+  // token; this covers custom-App and GitHub-only demo configurations alike.
+  if (!demoModeEnabled && !actions.hasGithubToken()) {
+    const reason = "Finishing setup requires a GitHub user token for protected backend API steps.";
+    if (prompts.confirmGithubLogin && (await prompts.confirmGithubLogin({ reason }))) {
+      await actions.loginWithGithub({ onLog: log });
+    }
+    if (!actions.hasGithubToken()) {
+      settle("github-auth", {
+        status: "failed",
+        detail: `auth mode: ${resolvedAuth.mode}; GitHub user login is required to finish setup`,
+        nextAction: "Run `propr login`, then re-run `propr setup`; the existing stack configuration will be reused.",
+      });
+      return finish();
+    }
+  }
+
+  if (relayDoneDetail) {
+    settle("github-auth", { status: "done", detail: relayDoneDetail });
   } else if (resolvedAuth.warnings.length > 0) {
     // The mode resolves, but the shared detector flagged a partial/ambiguous
     // configuration — surface it so the user can fix it before it bites later.
@@ -877,7 +1206,12 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       detail: `auth mode: ${resolvedAuth.mode} — ${resolvedAuth.warnings.join("; ")}`,
     });
   } else {
-    settle("github-auth", { status: "done", detail: `auth mode: ${resolvedAuth.mode}` });
+    settle("github-auth", {
+      status: "done",
+      detail: keptRelayBootstrapIdentity
+        ? `auth mode: ${resolvedAuth.mode}; bootstrap administrator: ${keptRelayBootstrapIdentity}`
+        : `auth mode: ${resolvedAuth.mode}`,
+    });
   }
 
   // 5b. GitHub event intake — how the backend learns about GitHub events
@@ -945,13 +1279,14 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         settle("intake", { status: "done", detail });
       } else {
         settle("intake", {
-          status: "warning",
+          status: "failed",
           detail: `${detail} — ${prereq.errors.join("; ")}`,
           nextAction:
             effectiveMode === "routing_websocket"
               ? "Enroll with the hosted relay (`propr relay enroll`) so routing_websocket has relay auth + a relay token, or choose polling."
               : "Resolve the missing intake prerequisites in .env, then re-run setup.",
         });
+        return finish();
       }
     }
   } catch (error) {
@@ -972,10 +1307,6 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
     const alreadyRunning = await actions.isStackRunning(rootDir);
     const startConfirmed = prompts.confirmStartStack ? await prompts.confirmStartStack({ rootDir, alreadyRunning }) : true;
     if (!startConfirmed) {
-      // A declined start is recorded as skipped for the step list, but it keeps
-      // setup from reporting success (see `startDeclined`): the backend never
-      // came up, so the wizard's primary goal is unmet.
-      startDeclined = true;
       settle("start-stack", {
         status: "skipped",
         detail: "stack not started — setup is incomplete until the backend is running",
@@ -988,16 +1319,26 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
         await actions.startStack({ rootDir, onLog: log });
       }
       const health = await actions.checkBackendHealth({ rootDir });
-      settle(
-        "start-stack",
-        health.healthy
-          ? { status: "done", detail: alreadyRunning ? `stack already running — ${health.detail}` : health.detail }
-          : {
-              status: "warning",
-              detail: health.detail,
-              nextAction: "Give the services a moment, then run `propr status` / `propr remote-status` to inspect them.",
-            }
-      );
+      if (health.healthy) {
+        backendReady = true;
+        settle("start-stack", {
+          status: "done",
+          detail: alreadyRunning ? `stack already running — ${health.detail}` : health.detail,
+        });
+      } else {
+        settle("start-stack", {
+          status: "failed",
+          detail: health.detail,
+          // The backend answered, so access failures need account-oriented
+          // remediation rather than service-health troubleshooting. A 401 calls
+          // for login; a 403 calls for permission/configuration checks.
+          nextAction: health.accessFailure === "unauthorized"
+            ? "Run `propr login` to obtain a GitHub user token, then re-run `propr setup`; the running stack will be reused."
+            : health.accessFailure === "forbidden"
+              ? "Check the authenticated account, the stack's bootstrap-admin configuration, and its access permissions, then re-run `propr setup`; the running stack will be reused."
+            : "Run `propr status` / `propr remote-status` and inspect the API logs, then re-run setup.",
+        });
+      }
     }
   } catch (error) {
     settle("start-stack", {
@@ -1015,12 +1356,12 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   //    is a non-blocking warning: agents can always be configured later.
   begin("enable-agents");
   // This step talks to the live backend API, so it only makes sense once the
-  // stack is up. When the user declined to start it, skip rather than fire
+  // stack is up. When the backend is unavailable, skip rather than fire
   // doomed API calls that would surface as confusing warnings.
-  if (startDeclined) {
+  if (!backendReady) {
     settle("enable-agents", {
       status: "skipped",
-      detail: "stack not started — agents are enabled through the running backend",
+      detail: "backend is not healthy — agents are enabled through the running backend",
       nextAction: "Start the stack (`propr start`), then re-run `propr setup` to enable and authenticate the selected agents.",
     });
   } else {
@@ -1044,12 +1385,16 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       if (outcome.alreadyConfigured.length > 0) parts.push(`${outcome.alreadyConfigured.length} already configured`);
       if (outcome.authenticated.length > 0) parts.push(`authenticated ${outcome.authenticated.join(", ")}`);
       if (outcome.authFailed.length > 0) parts.push(`${outcome.authFailed.length} login(s) did not complete`);
+      if (outcome.validated.length > 0) parts.push(`connectivity verified: ${outcome.validated.join(", ")}`);
+      if (outcome.validationFailed.length > 0) parts.push(`${outcome.validationFailed.length} connectivity check(s) need attention`);
       const detail = parts.length > 0 ? parts.join("; ") : "no changes needed";
-      if (outcome.errors.length > 0 || outcome.authFailed.length > 0) {
+      if (outcome.errors.length > 0 || outcome.authFailed.length > 0 || outcome.validationFailed.length > 0) {
         settle("enable-agents", {
           status: "warning",
           detail: outcome.errors.length > 0 ? `${detail}; ${outcome.errors.join("; ")}` : detail,
-          nextAction: "Enable or authenticate agents later in the UI or with `propr agent add` / `propr agent login`.",
+          nextAction: outcome.nextCommands.length > 0
+            ? `Run: ${outcome.nextCommands.map((command) => `\`${command}\``).join("; then ")}`
+            : "Enable or authenticate agents later in the UI or with `propr agent add` / `propr agent login`.",
         });
       } else {
         settle("enable-agents", { status: "done", detail });
@@ -1082,7 +1427,7 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
       // Prefer the settings API when the backend is up so the change applies
       // immediately (and never overwrites unrelated settings); always mirror into
       // .env so it survives a restart. Falls back to .env if the API is down.
-      const backendRunning = await actions.isStackRunning(rootDir);
+      const backendRunning = backendReady && await actions.isStackRunning(rootDir);
       const saved = await saveWhitelist({
         users: cleaned,
         backendRunning,
@@ -1134,12 +1479,12 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   // 9. Repository (optional) — adding a repo must never fail the whole run.
   begin("repo");
   // Adding a repo goes through the running backend's API, so skip it (without
-  // even prompting) when the user declined to start the stack — there is nothing
+  // even prompting) when the backend is unavailable — there is nothing
   // to add it to yet.
-  if (startDeclined) {
+  if (!backendReady) {
     settle("repo", {
       status: "skipped",
-      detail: "stack not started — a repository is connected through the running backend",
+      detail: "backend is not healthy — a repository is connected through the running backend",
       nextAction: "Start the stack (`propr start`), then add one with `propr repo add <owner/repo>`.",
     });
   } else {
@@ -1173,6 +1518,14 @@ export async function runSetup(options: RunSetupOptions = {}): Promise<SetupRunR
   // 10. UI (optional) — surface the URL and, when the user confirms, actually
   //     open it in their default browser.
   begin("launch-ui");
+  if (!backendReady) {
+    settle("launch-ui", {
+      status: "skipped",
+      detail: "UI not opened — the backend is not healthy",
+      nextAction: "Resolve the startup failure, then re-run `propr setup`.",
+    });
+    return finish();
+  }
   let uiUrl = "";
   try {
     uiUrl = await actions.resolveUiUrl(rootDir);

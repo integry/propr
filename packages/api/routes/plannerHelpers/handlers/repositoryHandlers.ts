@@ -2,7 +2,8 @@
  * Repository-related HTTP handlers.
  */
 
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../../../requestTypes.js';
 import { isDemoMode } from '../../../demoMode.js';
 import type { OwnershipResult, ValidateContextRepositoryResponse } from '../types.js';
 import { getRepoAuthToken } from '../auth.js';
@@ -13,7 +14,7 @@ interface RepositoryInfoDeps {
 }
 
 export function createGetRepositoryInfoHandler(deps: RepositoryInfoDeps) {
-  return async function getRepositoryInfo(req: Request, res: Response): Promise<void> {
+  return async function getRepositoryInfo(req: FlatRequest, res: Response): Promise<void> {
     // draftId comes from URL path parameter for GET requests
     const draftId = req.params.id;
     const repository = req.query.repository as string | undefined;

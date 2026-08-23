@@ -384,6 +384,7 @@ export interface PRAutoMergeInfo {
 
 const ULTRAFIX_STATE_KEY_PREFIX = 'ultrafix:state';
 const ULTRAFIX_DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
+const ULTRAFIX_AUTOMATIC_WORK_EPOCH_KEY_PREFIX = 'ultrafix:automatic-work-epoch';
 let ultrafixStateRedis: Redis | null = null;
 
 export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions } {
@@ -441,7 +442,7 @@ export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions
     return { options: redisOptions };
 }
 
-function getUltrafixStateRedis(): Redis {
+export function getUltrafixStateRedis(): Redis {
     if (!ultrafixStateRedis) {
         const { url, options } = buildRedisRuntimeConfig();
         ultrafixStateRedis = url ? new Redis(url, options) : new Redis(options);
@@ -474,6 +475,10 @@ function getUltrafixDeferredKey(owner: string, repoName: string, prNumber: numbe
     return `${ULTRAFIX_DEFERRED_KEY_PREFIX}:${owner}:${repoName}:${prNumber}`;
 }
 
+function getUltrafixAutomaticWorkEpochKey(owner: string, repoName: string, prNumber: number): string {
+    return `${ULTRAFIX_AUTOMATIC_WORK_EPOCH_KEY_PREFIX}:${owner}:${repoName}:${prNumber}`;
+}
+
 export async function hasActiveUltrafixLoop(owner: string, repoName: string, prNumber: number): Promise<boolean> {
     const state = await getUltrafixLoopState(owner, repoName, prNumber);
     return state?.unavailable === true ? true : state?.active === true;
@@ -501,13 +506,19 @@ export async function getUltrafixLoopState(
     prNumber: number
 ): Promise<{ active: boolean; completionStatus: 'succeeded' | 'failed' | null; unavailable?: boolean } | null> {
     try {
-        const rawState = await getUltrafixStateRedis().get(getUltrafixStateKey(owner, repoName, prNumber));
+        const [rawState, rawCurrentWorkEpoch] = await getUltrafixStateRedis().mget(
+            getUltrafixStateKey(owner, repoName, prNumber),
+            getUltrafixAutomaticWorkEpochKey(owner, repoName, prNumber),
+        );
         if (!rawState) return null;
 
-        const parsedState = JSON.parse(rawState) as { active?: unknown; completionStatus?: unknown };
+        const parsedState = JSON.parse(rawState) as { active?: unknown; completionStatus?: unknown; workEpoch?: unknown };
+        const stateWorkEpoch = typeof parsedState.workEpoch === 'number' ? parsedState.workEpoch : 0;
+        const currentWorkEpoch = Number(rawCurrentWorkEpoch ?? '0');
+        const isCurrentWorkEpoch = stateWorkEpoch === currentWorkEpoch;
         return {
-            active: parsedState.active === true,
-            completionStatus: parsedState.completionStatus === 'succeeded' || parsedState.completionStatus === 'failed'
+            active: parsedState.active === true && isCurrentWorkEpoch,
+            completionStatus: isCurrentWorkEpoch && (parsedState.completionStatus === 'succeeded' || parsedState.completionStatus === 'failed')
                 ? parsedState.completionStatus
                 : null
         };
@@ -542,11 +553,7 @@ export async function getPRAutoMergeInfo(owner: string, repoName: string, prNumb
         const labels = prResponse.data.labels as Array<{ name: string }>;
         const hasLabel = labels.some(label => label.name === 'auto-merge');
         const hasUltrafixLabel = labels.some(label => label.name === 'ultrafix');
-        let ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
-        if (!hasUltrafixLabel && ultrafixState) {
-            await clearUltrafixLoopState(owner, repoName, prNumber);
-            ultrafixState = null;
-        }
+        const ultrafixState = await getUltrafixLoopState(owner, repoName, prNumber);
         const isDraft = prResponse.data.draft ?? false;
         const baseBranch = prResponse.data.base.ref;
         const headBranch = prResponse.data.head.ref;

@@ -7,6 +7,12 @@ import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { createConfigManager } from "./config/index.js";
 import { completionScript } from "./completion.js";
+import { isValidRemoteUrl } from "./commands/configCommands.js";
+import {
+  configureProjectOptionInheritance,
+  normalizeProjectSlug,
+  ProjectResolutionError,
+} from "./utils/index.js";
 import {
   createIssueCommand,
   createPlanCommand,
@@ -22,6 +28,7 @@ import {
   createBackendCommand,
   createInitCommand,
   createSetupCommand,
+  createAgentSkillCommand,
   createCheckCommand,
   createImagesCommand,
   createStartCommand,
@@ -78,6 +85,8 @@ export type {
 // Re-export utilities module for programmatic use
 export {
   resolveProject,
+  resolveOptionalProject,
+  configureProjectOptionInheritance,
   ProjectResolutionError,
   isValidProjectSlug,
   normalizeProjectSlug,
@@ -117,6 +126,7 @@ drive the backend (plans, issues, tasks, repos, agents).
 Quick Start (local stack):
   $ propr                           Verify the environment (same as 'propr check')
   $ propr init stack                Scaffold .env + data/logs/repos, detect agents
+  $ propr skill install codex       Install the ProPR Operator Agent Skill
   $ propr images pull               Pull stack images without starting
   $ propr start                     Start the stack with a live dashboard
   $ propr status                    Show local stack status
@@ -156,11 +166,14 @@ Command Groups:
   To-Dos:         todo [list|get|add|complete|delete]
   Logs:           log [list]
   Backend:        backend [status|queue], remote-status, queue
+  Agent Skills:   skill [install|status|remove]
   Shell:          completion [bash|zsh|fish]
 
 For more information on a command, run:
   $ propr <command> --help
 `);
+
+configureProjectOptionInheritance(program);
 
 // Remote command - set the API base URL
 program
@@ -172,6 +185,9 @@ Example:
 `)
   .action(async (url: string) => {
     try {
+      if (!isValidRemoteUrl(url)) {
+        throw new Error("Invalid remote URL. Expected an http:// or https:// URL.");
+      }
       const configManager = await createConfigManager();
       await configManager.setRemoteUrl(url);
       console.log(`Remote URL set to: ${url}`);
@@ -196,8 +212,14 @@ Example:
   .action(async (project: string) => {
     try {
       const configManager = await createConfigManager();
-      await configManager.setDefaultProject(project);
-      console.log(`Default project set to: ${project}`);
+      const normalizedProject = normalizeProjectSlug(project);
+      if (normalizedProject === null) {
+        throw new ProjectResolutionError(
+          `Invalid project "${project}". Expected owner/repo format.`
+        );
+      }
+      await configManager.setDefaultProject(normalizedProject);
+      console.log(`Default project set to: ${normalizedProject}`);
       console.log(`Configuration saved to: ${configManager.getConfigFilePath()}`);
     } catch (error) {
       console.error(`Error setting default project: ${(error as Error).message}`);
@@ -318,6 +340,7 @@ program.addCommand(createConfigCommand());
 // Setup + backend client command groups
 program.addCommand(createInitCommand());
 program.addCommand(createSetupCommand());
+program.addCommand(createAgentSkillCommand());
 program.addCommand(createPlanCommand());
 program.addCommand(createIssueCommand());
 program.addCommand(createTaskCommand());

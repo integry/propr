@@ -14,6 +14,7 @@ import { buildFullContext, buildSmartSelection, getModelDisplayInfo } from './co
 import { regenerateContext } from './contextRegeneration.js';
 import { estimateUsagePercent } from '../../utils/llmEstimation.js';
 import { getOpenRouterId } from '../../config/modelAliases.js';
+import { truncateToSentences } from './sentenceTruncation.js';
 import {
   computeContentHash,
   parseDraftAttachments,
@@ -308,33 +309,7 @@ async function getContextData(params: GetContextDataParams): Promise<{ contextDa
   return { contextData, warnings };
 }
 
-/**
- * Truncate a prompt to the first 2 sentences for the plan name/summary.
- */
-export function truncateToSentences(text: string): string {
-  const trimmed = text.trim();
-  const maxSentences = 2;
-  const sentencePattern = /[^.!?]+[.!?]+/g;
-  const sentences: string[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = sentencePattern.exec(trimmed)) !== null && sentences.length < maxSentences) {
-    sentences.push(match[0].trim());
-  }
-
-  if (sentences.length > 0) {
-    return sentences.join(' ');
-  }
-
-  const maxLength = 200;
-  if (trimmed.length <= maxLength) {
-    return trimmed;
-  }
-
-  const truncated = trimmed.substring(0, maxLength);
-  const lastSpace = truncated.lastIndexOf(' ');
-  return (lastSpace > 0 ? truncated.substring(0, lastSpace) : truncated) + '...';
-}
+export { truncateToSentences };
 
 /**
  * Determine if the existing context cache can be reused.

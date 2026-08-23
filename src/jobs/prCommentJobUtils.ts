@@ -141,12 +141,15 @@ export function buildPrompt(options: PromptOptions): string {
 **New Request${commentCount > 1 ? 's' : ''}:**
 ${combinedCommentBody.replace(/^/gm, '> ')}
 ${reviewCommentsSection ? `\n${reviewCommentsSection}\n` : ''}
-${commentHistory}${originalTaskSpec}
+${commentHistory}${originalTaskSpec ? `**Immutable Original PR Objective:**\n${originalTaskSpec}\n` : ''}
 
 **CRITICAL INSTRUCTIONS:**
 - You are in directory: ${worktreeInfo.worktreePath}
 - Analyze the existing code on this branch and the comment history provided above.
-- Implement ONLY the changes requested in the **New Request(s)** section${reviewCommentsSection ? ' and the **AI Review Comments** section' : ''}.
+${reviewCommentsSection
+        ? '- Implement ONLY the records in **Selected Review Finding Records**. The **New Request(s)** text may constrain how selected records are corrected, but it does not authorize independent work.\n- For /fix, actionable F# records are the complete implementation scope. Suggestions cannot be selected by /fix and require a separate ordinary follow-up request.\n- If no actionable finding is selected, do not modify files.\n- Do not infer work from prior review prose, scores, or suggestion IDs.'
+        : '- Implement ONLY the changes requested in the **New Request(s)** section.'}
+- Treat the original PR objective as immutable context, not as permission to expand the requested work.
 - DO NOT commit your changes - the system will handle the commit for you
 - DO NOT create a new pull request
 - The repository is ${repoOwner}/${repoName}

@@ -101,7 +101,7 @@ test("select: Demo mode is no longer offered as an auth choice", async () => {
   assert.doesNotMatch(io.lines.join("\n"), /demo/i, "the demo option is removed from the auth prompt");
 });
 
-test("select: on a fresh install Token relay leads and no keep option is shown", async () => {
+test("select: on a fresh install ProPR Connect leads and no keep option is shown", async () => {
   // current.mode "none" → nothing to keep, so options are Token relay(1), Custom
   // GitHub App(2); option 1 is the relay branch. The relay branch now asks only
   // for the relay URL (default hosted) and signals enrollment — no token entry;
@@ -115,7 +115,7 @@ test("select: on a fresh install Token relay leads and no keep option is shown",
   assert.doesNotMatch(io.lines.join("\n"), /keep current/i, "no keep option without an existing config");
 });
 
-test("select: Token relay accepts the hosted relay default on a blank URL", async () => {
+test("select: ProPR Connect accepts the hosted relay default on a blank URL", async () => {
   // Blank URL → the hosted ProPR relay default is used.
   const io = scriptedIo(["1", ""]);
   const decision = await buildSequentialPrompts(io).configureGithubAuth!({ current: { mode: "none", warnings: [] } });
@@ -307,6 +307,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
   return {
     runChecks: async ({ root }) => okChecks(root ?? "/stack"),
     inspectStackInit: (rootDir) => ({ rootDir, envExists: true, dirs: { data: true, logs: true, repos: true }, initialized: true }),
+    inspectDatastoreAdministrators: async () => ({ status: "has-admin", databasePath: "/stack/data/propr.sqlite" }),
     scaffoldStack: async ({ root }) => {
       throw new Error(`scaffoldStack must not run for an initialized stack (${root})`);
     },
@@ -315,6 +316,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     applyEnvSelection: () => ({ written: [], skipped: [] }),
     clearEnvKeys: () => undefined,
     detectGithubAuthMode: () => ({ mode: "app", warnings: [] }),
+    prepareAgentCredentialDir: () => undefined,
     pullImages: async () => ({ pulledCore: ["propr/api"], pulledAgents: [], failedCore: [], failedAgents: [] }),
     isStackRunning: async () => false,
     startStack: async () => undefined,
@@ -334,6 +336,7 @@ function mockActions(overrides: Partial<SetupActions> = {}): SetupActions {
     addAgent: async () => undefined,
     loginableAgents: async () => [],
     loginAgent: async () => ({ available: false, success: false }),
+    validateAgents: async (_root, types) => types.map((type) => ({ type, status: "ok", detail: "connected" })),
     ...overrides,
   };
 }
@@ -363,6 +366,39 @@ test("runSequentialSetup drives the engine end to end through scripted answers",
   const text = io.lines.join("\n");
   assert.match(text, /ProPR setup/);
   assert.match(text, /Setup complete/);
+});
+
+test("no-TUI custom-App setup logs in before polling protected status", async () => {
+  // Root + re-scaffold + agents; choose custom App and enter its three values;
+  // accept GitHub user login; then accept/skip the remaining defaults.
+  const io = scriptedIo(["", "n", "", "3", "123", "/keys/app.pem", "456", "", "", "", "", "n", "n"]);
+  let tokenPresent = false;
+  let loginCalled = false;
+  let healthCalled = false;
+
+  const result = await runSequentialSetup({
+    io,
+    root: "/stack",
+    actions: mockActions({
+      hasGithubToken: () => tokenPresent,
+      loginWithGithub: async () => {
+        loginCalled = true;
+        tokenPresent = true;
+        return true;
+      },
+      checkBackendHealth: async () => {
+        healthCalled = true;
+        assert.equal(tokenPresent, true, "setup must authenticate before GET /api/status");
+        return { healthy: true, detail: "API healthy" };
+      },
+    }),
+  });
+
+  assert.equal(loginCalled, true);
+  assert.equal(healthCalled, true);
+  assert.equal(result.completed, true);
+  assert.match(io.lines.join("\n"), /Log in to GitHub now\?/);
+  assert.match(io.lines.join("\n"), /protected backend API steps/);
 });
 
 test("runSequentialSetup reports an unfinished run when a required step fails", async () => {

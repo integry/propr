@@ -1,13 +1,15 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { setupAuthenticatedRemote } from './repoBranching.js';
+import { createHooklessGit } from './hooklessGit.js';
+import { resolveRepositoryClonePath } from './repositoryPaths.js';
 
 const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || "/tmp/git-processor/clones";
 
-async function getRepoPath(owner: string, repoName: string): Promise<string> {
-    return path.join(CLONES_BASE_PATH, owner, repoName);
+function getRepoPath(owner: string, repoName: string): string {
+    return resolveRepositoryClonePath(CLONES_BASE_PATH, owner, repoName);
 }
 
 export interface FetchLatestChangesOptions {
@@ -69,7 +71,7 @@ async function fetchAllBranches(git: SimpleGit, owner: string, repoName: string)
  */
 export async function fetchLatestChanges(options: FetchLatestChangesOptions): Promise<FetchLatestChangesResult> {
     const { owner, repoName, authToken, branch } = options;
-    const localRepoPath = await getRepoPath(owner, repoName);
+    const localRepoPath = getRepoPath(owner, repoName);
 
     try {
         if (!await fs.pathExists(path.join(localRepoPath, ".git"))) {
@@ -77,7 +79,7 @@ export async function fetchLatestChanges(options: FetchLatestChangesOptions): Pr
             return { success: false, repoPath: localRepoPath, error: 'Repository not cloned yet' };
         }
 
-        const git: SimpleGit = simpleGit(localRepoPath);
+        const git: SimpleGit = createHooklessGit(localRepoPath);
         if (!await git.checkIsRepo()) {
             logger.warn({ repo: `${owner}/${repoName}`, path: localRepoPath }, 'Directory exists but is not a valid git repository');
             return { success: false, repoPath: localRepoPath, error: 'Not a valid git repository' };

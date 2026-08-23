@@ -120,7 +120,7 @@ export async function prepareAgentsUpdate(
           agent.cliVersion,
         );
       } catch (versionError) {
-        console.error(`Failed to resolve version for agent '${agent.alias}':`, versionError);
+        console.error('Failed to resolve agent version', { agentAlias: agent.alias, error: versionError });
         const { code, publicMessage, status } = classifyVersionResolutionError(versionError);
         return {
           ...(code ? { code } : {}),

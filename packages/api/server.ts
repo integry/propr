@@ -5,11 +5,11 @@ import { createClient, RedisClientType } from 'redis';
 import { Queue } from 'bullmq';
 import 'dotenv/config';
 import { Redis, RedisOptions } from 'ioredis';
-import { setupAuth, ensureAuthenticated } from './auth.js';
+import { authenticateSocketRequest, setupAuth, ensureAuthenticated } from './auth.js';
 import { configureDemoMode, createDemoRedisClient, demoModeReadOnlyMiddleware } from './demoMode.js';
 import { resolveGithubAuthMode, resolveGithubEventIntakeMode, validateIntakeModePrerequisites } from '@propr/shared';
 import { initSocketService, closeSocketService } from './services/socketService.js';
-import { createCorsOriginValidator } from './corsValidation.js';
+import { corsRejectionHandler, createCorsOriginValidator } from './corsValidation.js';
 import {
   createStatusRoutes, createTaskRoutes,
   createTaskHistoryRoutes, createLiveDetailsRoutes,
@@ -22,6 +22,8 @@ import {
   createAgentVersionRoutes,
   createStatsRoutes,
   createSummaryBrowserRoutes,
+  SUMMARY_PATH_ROUTE_PATH,
+  SUMMARY_TREE_ROUTE_PATH,
   createRepoChatRoutes,
   createRepoImprovementsRoutes,
   createRepoTodoRoutes,
@@ -40,14 +42,16 @@ import {
   initializeWebhookHandler,
   buildRedisRuntimeConfig,
   db,
-  loadSettingsFromConfig,
+  reloadConfigs,
+  isMonitoredRepository,
   processDetectedIssue as processDetectedIssueBase,
   handleCommentDeleted,
   handleCommentEdited,
   processCommentEvent,
   closeUltrafixStateRedis,
   getActiveTasksForPR,
-  AGENT_RUNTIME_BUILD_QUEUE_NAME
+  AGENT_RUNTIME_BUILD_QUEUE_NAME,
+  runMigrations
 } from '@propr/core';
 import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -55,6 +59,12 @@ import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
+import { resolveApiListenHost } from './listenAddress.js';
+import { configureApiProxyTrust, createApiRequestRateLimiter, createWebhookRequestRateLimiter } from './requestRateLimits.js';
+import {
+  startConfigReloadSubscription,
+  type ConfigReloadSubscription,
+} from './services/configReloadSubscription.js';
 import {
   assertNoDuplicateRoutes,
   createManagementRouteEntries,
@@ -62,6 +72,7 @@ import {
   registerRouteEntries,
   type RouteEntry
 } from './routeRegistry.js';
+import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
 
 type ShutdownTask = { name: string; close: () => Promise<unknown> };
 
@@ -126,10 +137,10 @@ const handleCommentDeletedWrapper = (payload: CommentPayload, eventType: Comment
 const handleCommentEditedWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void> => handleCommentEdited(payload, eventType, correlationId, getCommentConfig());
 
 const app = express();
-const PORT = process.env.DASHBOARD_API_PORT || 4000;
+const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
+const HOST = resolveApiListenHost();
 
-// Trust proxy for secure cookies behind reverse proxy (Cloudflare, nginx, etc.)
-app.set('trust proxy', 1);
+configureApiProxyTrust(app);
 
 if (!process.env.FRONTEND_URL) {
   console.error('FRONTEND_URL environment variable is required');
@@ -148,10 +159,14 @@ try {
   process.exit(1);
 }
 
-app.use(cors({
-  origin: validateCorsOrigin,
-  credentials: true
-}));
+app.use(cors({ origin: validateCorsOrigin, credentials: true }));
+// The `cors` package forwards rejected origins as middleware errors. Handle
+// those immediately so Express never renders its development HTML error page
+// (which contains stack traces and container paths).
+app.use(corsRejectionHandler);
+
+app.use('/api', createApiRequestRateLimiter());
+setupWebhookRoute();
 
 // Prevent caching of API responses to avoid stale CORS issues
 app.use('/api', (_req, res, next) => {
@@ -161,25 +176,25 @@ app.use('/api', (_req, res, next) => {
   next();
 });
 
-app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '1mb' }));
 
 // Register demo read-only protection before routes so future mutating /api routes,
 // including auth-adjacent endpoints, cannot bypass it by ordering.
 app.use('/api', demoModeReadOnlyMiddleware);
 
-setupAuth(app, demoMode);
+const socketAuthMiddleware = setupAuth(app, demoMode);
 
 let redisClient: RedisClientType;
 let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
+let configReloadSubscription: ConfigReloadSubscription | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
     add: async () => { throw new Error('Task queue is disabled in demo mode'); },
     close: async () => undefined,
     getWaitingCount: async () => 0,
-    getActiveCount: async () => 0,
+    getActiveCount: async () => 0, getJobs: async () => [],
     getCompletedCount: async () => 0,
     getFailedCount: async () => 0,
     getDelayedCount: async () => 0,
@@ -255,11 +270,11 @@ function setupRoutes(): void {
 
   const operationalRoutes: RouteEntry[] = [
     ['get', '/api/status', statusRoutes.getStatus], ['get', '/api/tasks', taskRoutes.getTasks], ['get', '/api/tasks/revert-preview', taskRoutes.getRevertPreview], ['post', '/api/tasks/revert', taskRoutes.revertChanges],
-    ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ['delete', '/api/tasks/:taskId', taskRoutes.deleteTask], ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
+    ['post', '/api/tasks/:taskId/followup', taskRoutes.postFollowup], ...createTaskDeleteRouteEntries({ taskRoutes }), ['get', '/api/task/:taskId/history', taskHistoryRoutes.getTaskHistory], ['get', '/api/task/:taskId/live-details', liveDetailsRoutes.getLiveDetails],
     ['get', '/api/task/:taskId/file-changes', fileChangesRoutes.getFileChanges], ['get', '/api/queue/stats', queueRoutes.getQueueStats], ['get', '/api/activity', queueRoutes.getActivity], ['get', '/api/metrics', queueRoutes.getMetrics],
     ['get', '/api/llm-metrics', llmMetricsRoutes.getSummary], ['get', '/api/llm-metrics/:correlationId', llmMetricsRoutes.getByCorrelationId], ['get', '/api/llm-logs', llmLogsRoutes.getLlmLogs], ['get', '/api/execution/:sessionId/prompt', executionRoutes.getPrompt],
     ['get', '/api/execution/:sessionId/logs', executionRoutes.getLogs], ['get', '/api/execution/:sessionId/logs/:type', executionRoutes.getLogByType], ['get', '/api/task/:taskId/analysis', executionRoutes.getAnalysis], ['get', '/api/task/:taskId/docker-info', dockerRoutes.getDockerInfo],
-    ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs], ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask], ['post', '/api/import-tasks', githubRoutes.importTasks], ['get', '/api/github/repos', githubRoutes.getRepos],
+    ['get', '/api/task/:taskId/docker-logs', dockerRoutes.getDockerLogs], ['post', '/api/task/:taskId/stop', dockerRoutes.stopTask], ['post', '/api/task/:taskId/cancel', dockerRoutes.stopTask], ['post', '/api/import-tasks', githubRoutes.importTasks], ['get', '/api/github/repos', githubRoutes.getRepos],
     ['get', '/api/github/repos/:owner/:repo/branches', githubRoutes.getBranches], ['get', '/api/planner/drafts', plannerRoutes.listDrafts], ['get', '/api/planner/drafts/repositories', plannerRoutes.listRepositories], ['post', '/api/planner/drafts', plannerRoutes.createDraft],
     ['get', '/api/planner/drafts/:id', plannerRoutes.getDraft], ['put', '/api/planner/drafts/:id', plannerRoutes.updateDraft], ['delete', '/api/planner/drafts/:id', plannerRoutes.deleteDraft], ['post', '/api/planner/drafts/:id/attachments', attachmentUpload, plannerRoutes.uploadAttachment],
     ['get', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.getAttachmentContent], ['delete', '/api/planner/drafts/:id/attachments/:attachmentId', plannerRoutes.deleteAttachment], ['get', '/api/planner/drafts/:id/repository-info', plannerRoutes.getRepositoryInfo], ['get', '/api/planner/drafts/:id/issues', plannerRoutes.getIssues],
@@ -269,7 +284,7 @@ function setupRoutes(): void {
     ['post', '/api/planner/drafts/:id/revise', plannerRoutes.reviseDraft], ['post', '/api/planner/validate-context-repository', plannerRoutes.validateContextRepository], ['post', '/api/planner/drafts/:id/pause', plannerRoutes.pauseDraftExecution], ['post', '/api/planner/drafts/:id/resume', plannerRoutes.resumeDraftExecution],
     ['patch', '/api/planner/drafts/:id/execution-settings', plannerRoutes.updateExecutionSettings], ['post', '/api/planner/relevance', relevanceRoutes.analyzeRelevance], ['get', '/api/stats/tasks', statsRoutes.getTaskStats], ['get', '/api/stats/repositories', statsRoutes.getRepositoryStats],
     ['get', '/api/stats/overview', statsRoutes.getOverview], ['get', '/api/stats/generating-plans', statsRoutes.getGeneratingPlansCount], ['get', '/api/summaries/:owner/:repo/status', summaryBrowserRoutes.getIndexingStatus], ['get', '/api/summaries/:owner/:repo/tree', summaryBrowserRoutes.getDirectoryTree],
-    ['get', '/api/summaries/:owner/:repo/tree/*', summaryBrowserRoutes.getDirectoryTree], ['get', '/api/summaries/:owner/:repo/summary/*', summaryBrowserRoutes.getPathSummary], ['post', '/api/repos/chat', repoChatRoutes.postChat], ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages],
+    ['get', SUMMARY_TREE_ROUTE_PATH, summaryBrowserRoutes.getDirectoryTree], ['get', SUMMARY_PATH_ROUTE_PATH, summaryBrowserRoutes.getPathSummary], ['post', '/api/repos/chat', repoChatRoutes.postChat], ['get', '/api/repos/chat/messages', repoChatRoutes.getMessages],
     ['post', '/api/repos/chat/messages', repoChatRoutes.saveMessages], ['delete', '/api/repos/chat/messages/:messageId', repoChatRoutes.deleteMessage], ['delete', '/api/repos/chat/messages', repoChatRoutes.clearMessages], ['post', '/api/repos/improvements', repoImprovementsRoutes.postImprovements],
     ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories], ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory], ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory], ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
     ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
@@ -291,13 +306,11 @@ function setupRoutes(): void {
   assertNoDuplicateRoutes(routes);
   registerRouteEntries(app, routes);
   app.use('/api/agents', agentRoutes.router);
-
-  setupWebhookRoute();
 }
 
 function setupWebhookRoute(): void {
   if (demoMode) {
-    app.post('/webhook', (_req: Request, res: Response) => {
+    app.post('/webhook', createWebhookRequestRateLimiter(), express.raw({ type: 'application/json' }), (_req: Request, res: Response) => {
       res.status(403).send('Webhook processing is disabled in demo mode.');
     });
     console.log('[webhook] Webhook endpoint disabled in demo mode');
@@ -346,7 +359,7 @@ function setupWebhookRoute(): void {
   // via initializeWebhookHandler in start(), in this same API process — so a
   // direct_webhook delivery accepted here is processed in-process, not forwarded
   // to the daemon. The daemon's own handler registration is for the routing path.
-  app.post('/webhook', async (req: Request, res: Response) => {
+  app.post('/webhook', createWebhookRequestRateLimiter(), express.raw({ type: 'application/json' }), async (req: Request, res: Response) => {
     const correlationId = generateCorrelationId();
     try {
       await handleWebhookRequest(req, res, {
@@ -381,14 +394,16 @@ const httpServer: HttpServer = createServer(app);
 async function start(): Promise<void> {
   try {
     console.log('SQLite persistence is enabled');
-    await db.migrate.latest();
-    console.log('Database migrations completed successfully');
+    await runMigrations();
     if (demoMode) console.log('Demo mode enabled: API uses a synthetic user, rejects mutating requests, and skips execution processors');
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
+      configReloadSubscription = await startConfigReloadSubscription(redisClient, reloadConfigs);
+      // Subscribe first, then enqueue the initial load through the same serial
+      // chain so no settings update can race with the startup snapshot.
+      await configReloadSubscription.reload();
       await initializePushSubscriptionMaintenance();
-      try { await loadSettingsFromConfig(); } catch (error) { console.warn('Failed to load settings from config repo:', (error as Error).message); }
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
         if (removed > 0) console.log(`Removed ${removed} orphaned agent login container(s)`);
@@ -402,7 +417,10 @@ async function start(): Promise<void> {
     }
     setupRoutes();
     if (!demoMode) {
-      const socketService = initSocketService(httpServer, validateCorsOrigin);
+      const socketService = initSocketService(httpServer, validateCorsOrigin, {
+        engineMiddleware: socketAuthMiddleware.engineMiddleware,
+        authenticate: authenticateSocketRequest,
+      });
       console.log('[WebSocket] Socket.IO server initialized');
       socketService.initQueueFeatures({ taskQueue, redisClient, db });
       console.log('[WebSocket] Queue features initialized for real-time updates');
@@ -425,7 +443,7 @@ async function start(): Promise<void> {
         enableGithubWebhooks: process.env.ENABLE_GITHUB_WEBHOOKS,
       });
       if (apiIntakeMode === 'direct_webhook') {
-        await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper });
+        await initializeWebhookHandler({ issueProcessor: processDetectedIssue, commentProcessor: processCommentEventWrapper, commentDeletedHandler: handleCommentDeletedWrapper, commentEditedHandler: handleCommentEditedWrapper, repositoryFilter: isMonitoredRepository });
         console.log('[webhook] Webhook handler initialized');
       }
       setInterval(async () => {
@@ -436,7 +454,7 @@ async function start(): Promise<void> {
         }
       }, 30 * 1000);
     }
-    httpServer.listen(PORT, () => { console.log(`Dashboard API server running on port ${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
+    httpServer.listen(PORT, HOST, () => { console.log(`Dashboard API server running at ${HOST}:${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
 
     process.on('SIGTERM', async () => {
       console.log('SIGTERM received, shutting down gracefully...');
@@ -448,6 +466,7 @@ async function start(): Promise<void> {
       ];
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }

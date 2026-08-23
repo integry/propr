@@ -14,7 +14,7 @@ import { getModelHardLimit } from '../src/config/modelLimits.js';
 import { resolveLlmLabel, resolveModelAlias } from '../src/config/modelAliases.js';
 import { AgentRegistry } from '../src/agents/AgentRegistry.js';
 import { AntigravityAgent } from '../src/agents/impl/AntigravityAgent.js';
-import { filterAntigravityAnalysisEvents, parseAntigravityJsonl } from '../src/agents/impl/utils/antigravityOutputParser.js';
+import { aggregateDeltaMessages, convertEventToClaudeFormat, filterAntigravityAnalysisEvents, parseAntigravityJsonl } from '../src/agents/impl/utils/antigravityOutputParser.js';
 import type { AntigravityOutputEvent } from '../src/agents/impl/utils/antigravityOutputParser.js';
 import type { Agent, AgentConfig } from '../src/agents/types.js';
 import { db } from '../src/db/connection.js';
@@ -31,7 +31,7 @@ function createAntigravityConfig(overrides: Partial<AgentConfig> = {}): AgentCon
         enabled: true,
         dockerImage: 'propr/agent:latest',
         configPath: '~/.gemini',
-        supportedModels: ['antigravity-gemini-3.5-flash-medium', 'antigravity-claude-opus-4.6-thinking'],
+        supportedModels: ['antigravity-gemini-3.7-flash-medium', 'antigravity-gemini-3.5-flash-medium', 'antigravity-claude-opus-4.6-thinking'],
         defaultModel: 'antigravity-gemini-3.5-flash-medium',
         ...overrides
     };
@@ -100,13 +100,17 @@ test('Antigravity metadata includes non-Google model families', () => {
     assert.equal(getModelHardLimit('antigravity-claude-opus-4.6-thinking'), 980000);
 });
 
+test('Gemini 3.7 Flash uses the Antigravity 1M model limit', () => {
+    assert.equal(getModelHardLimit('antigravity-gemini-3.7-flash-high'), 980000);
+});
+
 test('AgentRegistry creates AntigravityAgent for antigravity configs', () => {
     const registry = AgentRegistry.getInstance();
     const agent = registry.createAgentFromConfig(createAntigravityConfig());
     assert.ok(agent instanceof AntigravityAgent);
 });
 
-test('Antigravity execution invokes agy with print-mode CLI flags', () => {
+test('Antigravity execution lets agy read the prompt from non-TTY stdin', () => {
     withAntigravityEnv({}, () => {
         const agent = new AntigravityAgent(createAntigravityConfig());
         const args = buildDockerArgs(agent, { modelName: 'antigravity:antigravity-gemini-3.1-pro-high' });
@@ -118,7 +122,8 @@ test('Antigravity execution invokes agy with print-mode CLI flags', () => {
         assert.equal(args[entrypointIndex + 1], '/bin/bash');
         assert.equal(args[entrypointIndex + 2], '-lc');
         assert.match(args[entrypointIndex + 3], /--dangerously-skip-permissions/);
-        assert.match(args[entrypointIndex + 3], /--print - "\$@"/);
+        assert.doesNotMatch(args[entrypointIndex + 3], /--print|\s-p(?:\s|$)/);
+        assert.match(args[entrypointIndex + 3], /--dangerously-skip-permissions "\$@"/);
         assert.doesNotMatch(args[entrypointIndex + 3], /prompt="\$\(cat\)"/);
         assert.equal(args[entrypointIndex + 4], 'propr-antigravity');
         assert.ok(!args.includes('--output-format'));
@@ -134,6 +139,60 @@ test('Antigravity output parser falls back to plain print output', () => {
 
     assert.equal(parsed.summary, 'antigravity-ok');
     assert.deepEqual(parsed.conversationLog, []);
+    assert.equal(parsed.hasStreamEnvelopes, false);
+});
+
+test('Antigravity output parser preserves plain responses that are valid JSON values', () => {
+    const numeric = parseAntigravityJsonl('2\n');
+    const object = parseAntigravityJsonl('{"answer":2}\n');
+    const commonType = parseAntigravityJsonl('{"type":"result","value":2}\n');
+    const sourceAndType = parseAntigravityJsonl('{"source":"data","type":"answer","content":"42"}\n');
+    const commonError = parseAntigravityJsonl('{"type":"error","message":"No issues"}\n');
+    const commonMessage = parseAntigravityJsonl('{"type":"message","role":"assistant","content":"plain JSON"}\n');
+
+    assert.equal(numeric.summary, '2');
+    assert.equal(object.summary, '{"answer":2}');
+    assert.equal(commonType.summary, '{"type":"result","value":2}');
+    assert.equal(sourceAndType.summary, '{"source":"data","type":"answer","content":"42"}');
+    assert.equal(commonError.summary, '{"type":"error","message":"No issues"}');
+    assert.equal(commonMessage.summary, '{"type":"message","role":"assistant","content":"plain JSON"}');
+    assert.deepEqual(numeric.conversationLog, []);
+    assert.deepEqual(object.conversationLog, []);
+    assert.deepEqual(commonType.conversationLog, []);
+    assert.deepEqual(sourceAndType.conversationLog, []);
+    assert.deepEqual(commonError.conversationLog, []);
+    assert.deepEqual(commonMessage.conversationLog, []);
+});
+
+test('Antigravity output parser does not filter TUI substrings from fallback JSON', () => {
+    const line = '{"answer":"Press Enter"}';
+    const parsed = parseAntigravityJsonl(line);
+
+    assert.equal(parsed.summary, line);
+    assert.deepEqual(parsed.conversationLog, []);
+});
+
+test('Antigravity output parser treats prototype keys as plain fallback JSON', () => {
+    for (const type of ['__proto__', 'constructor', 'toString']) {
+        const line = JSON.stringify({ type });
+        const parsed = parseAntigravityJsonl(line);
+
+        assert.equal(parsed.summary, line);
+        assert.deepEqual(parsed.conversationLog, []);
+    }
+});
+
+test('Antigravity output parser requires framing for ambiguous standalone protocol shapes', () => {
+    for (const value of [
+        { type: 'result', status: 'success' },
+        { type: 'tool_use', tool_name: 'shell', tool_id: 'tool-1', parameters: {} },
+        { type: 'tool_result', tool_id: 'tool-1', status: 'success', output: 'done' },
+    ]) {
+        const line = JSON.stringify(value);
+        const parsed = parseAntigravityJsonl(line);
+        assert.equal(parsed.summary, line);
+        assert.deepEqual(parsed.conversationLog, []);
+    }
 });
 
 test('Antigravity output parser reads real transcript JSONL events', () => {
@@ -162,6 +221,503 @@ test('Antigravity output parser reads real transcript JSONL events', () => {
     assert.equal(parsed.conversationLog.length, 2);
 });
 
+test('Antigravity output parser reads the sanitized 1.1.12 stream envelope exactly', () => {
+    const fixture = fs.readFileSync(new URL('./fixtures/antigravity-stream-1.1.12.jsonl', import.meta.url), 'utf8');
+    const parsed = parseAntigravityJsonl(fixture);
+
+    assert.equal(parsed.sessionId, 'conversation-sanitized');
+    assert.equal(parsed.conversationId, 'conversation-sanitized');
+    assert.equal(parsed.modelUsed, 'antigravity-gemini-3.7-flash-high');
+    assert.equal(parsed.summary, 'STREAM_OK\n');
+    assert.equal(parsed.terminalStatus, 'success');
+    assert.equal(parsed.hasStreamEnvelopes, true);
+    assert.deepEqual(parsed.tokenUsage, {
+        input_tokens: 15050,
+        output_tokens: 33,
+        cache_read_input_tokens: 0,
+        reasoning_output_tokens: 27,
+    });
+    assert.equal(parsed.conversationLog.length, 3);
+});
+
+test('Antigravity stream response is useful in analysis and conversation logs without duplicating the result', () => {
+    const fixture = fs.readFileSync(new URL('./fixtures/antigravity-stream-1.1.12.jsonl', import.meta.url), 'utf8');
+    const parsed = parseAntigravityJsonl(fixture);
+    const analysisEvents = filterAntigravityAnalysisEvents(parsed.conversationLog);
+
+    assert.equal(analysisEvents.length, 1);
+    const converted = convertEventToClaudeFormat(analysisEvents[0]) as {
+        type: string;
+        message: { content: Array<{ type: string; text: string }>; usage: Record<string, number> };
+    };
+    assert.equal(converted.type, 'assistant');
+    assert.deepEqual(converted.message.content, [{ type: 'text', text: 'STREAM_OK\n' }]);
+    assert.deepEqual(converted.message.usage, {
+        input_tokens: 14952,
+        output_tokens: 30,
+        cache_read_input_tokens: 0,
+        reasoning_output_tokens: 27,
+    });
+    assert.doesNotMatch(JSON.stringify(converted.message.content), /\\{\"event\"/);
+});
+
+test('Antigravity stream response deltas remain one assistant turn without duplicating the result', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)' } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'RUNNING', step_type: 'agent_response', text_delta: 'STREAM' } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'RUNNING', step_type: 'agent_response', text_delta: ' ' } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'OK\n' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'STREAM OK\n' } }),
+    ].join('\n'));
+    const analysisEvents = filterAntigravityAnalysisEvents(aggregateDeltaMessages(parsed.conversationLog));
+
+    assert.equal(analysisEvents.length, 1);
+    const converted = convertEventToClaudeFormat(analysisEvents[0]) as {
+        type: string;
+        message: { content: Array<{ type: string; text: string }> };
+    };
+    assert.equal(converted.type, 'assistant');
+    assert.deepEqual(converted.message.content, [{ type: 'text', text: 'STREAM OK\n' }]);
+});
+
+test('Antigravity stream prefers a mismatched terminal response over partial deltas', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'RUNNING', step_type: 'agent_response', text_delta: 'PARTIAL' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'AUTHORITATIVE FINAL' } }),
+    ].join('\n'));
+    const analysisEvents = filterAntigravityAnalysisEvents(aggregateDeltaMessages(parsed.conversationLog));
+
+    assert.equal(analysisEvents.length, 1);
+    assert.deepEqual(analysisEvents[0], parsed.conversationLog[1]);
+    assert.equal((convertEventToClaudeFormat(analysisEvents[0]) as { message: { content: Array<{ text: string }> } })
+        .message.content[0].text, 'AUTHORITATIVE FINAL');
+});
+
+test('Antigravity stream retains an ERROR result instead of stale deltas', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'RUNNING', step_type: 'agent_response', text_delta: 'STALE' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'ERROR', response: 'provider failed' } }),
+    ].join('\n'));
+    const analysisEvents = filterAntigravityAnalysisEvents(parsed.conversationLog);
+
+    assert.equal(analysisEvents.length, 1);
+    assert.deepEqual(analysisEvents[0], parsed.conversationLog[1]);
+});
+
+test('Antigravity stream only deduplicates responses from the same conversation', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-a', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'SAME' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-b', status: 'SUCCESS', response: 'SAME' } }),
+    ].join('\n'));
+
+    assert.equal(filterAntigravityAnalysisEvents(parsed.conversationLog).length, 2);
+});
+
+test('Antigravity output parser reverse-maps a canonical 3.7 ID to its ProPR identity', () => {
+    const parsed = parseAntigravityJsonl(JSON.stringify({
+        event: 'init',
+        conversation_id: 'conversation-sanitized',
+        init: { model: 'gemini-3.7-flash-low' },
+    }));
+
+    assert.equal(parsed.modelUsed, 'antigravity-gemini-3.7-flash-low');
+});
+
+test('Antigravity final response remains usable when no agent-response step is present', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (Low)', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'RESULT_ONLY\n', duration_seconds: 1.1, num_turns: 1 } }),
+    ].join('\n'));
+    const analysisEvents = filterAntigravityAnalysisEvents(parsed.conversationLog);
+
+    assert.equal(parsed.summary, 'RESULT_ONLY\n');
+    assert.equal(analysisEvents.length, 1);
+    const converted = convertEventToClaudeFormat(analysisEvents[0]) as { type: string; message: { content: unknown[] } };
+    assert.equal(converted.type, 'result');
+    assert.deepEqual(converted.message.content, [{ type: 'text', text: 'RESULT_ONLY\n' }]);
+});
+
+test('Antigravity output parser tracks malformed stream envelopes as protocol failures', () => {
+    const malformed = [
+        { event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 42 } },
+        { event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: '2', state: 'DONE', step_type: 'agent_response', text_delta: 'bad' } },
+        { event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'bad usage', usage: { input_tokens: '15050' } } },
+        { event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'DONE', response: 'bad status' } },
+    ].map(JSON.stringify);
+    const parsed = parseAntigravityJsonl(malformed.join('\n'));
+
+    assert.equal(parsed.summary, undefined);
+    assert.deepEqual(parsed.conversationLog, []);
+    assert.equal(parsed.terminalStatus, undefined);
+    assert.equal(parsed.protocolError, 'Malformed Antigravity stream envelope: step_update');
+});
+
+test('Antigravity output parser ignores mixed diagnostics when a structured final response exists', () => {
+    const parsed = parseAntigravityJsonl([
+        'Antigravity diagnostic: authenticated',
+        JSON.stringify({ level: 'debug', message: 'starting stream' }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (Medium)', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'MIXED_OK\n' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'MIXED_OK\n', duration_seconds: 1.2, num_turns: 1 } }),
+    ].join('\n'));
+
+    assert.equal(parsed.summary, 'MIXED_OK\n');
+    assert.equal(parsed.conversationLog.length, 3);
+    assert.equal(parsed.terminalStatus, 'success');
+});
+
+test('Antigravity output parser handles uppercase ERROR terminal results', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'ERROR', response: 'provider failed' } }),
+    ].join('\n'));
+
+    assert.equal(parsed.sessionId, 'conversation-sanitized');
+    assert.equal(parsed.conversationId, 'conversation-sanitized');
+    assert.equal(parsed.summary, 'provider failed');
+    assert.equal(parsed.terminalStatus, 'error');
+});
+
+test('Antigravity output parser rejects a changed-model second initialization', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-low' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first' } }),
+    ].join('\n'));
+
+    assert.equal(parsed.modelUsed, 'antigravity-gemini-3.7-flash-high');
+    assert.equal(parsed.terminalStatus, 'success');
+    assert.equal(parsed.protocolError, 'Conflicting Antigravity stream init model: antigravity-gemini-3.7-flash-high then antigravity-gemini-3.7-flash-low');
+    assert.equal(parsed.summary, 'first');
+    assert.equal(parsed.conversationLog.length, 2);
+});
+
+test('Antigravity output parser rejects stream updates after a terminal result', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first', usage: { output_tokens: 5 } } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'late', usage: { output_tokens: 99 } } }),
+    ].join('\n'));
+
+    assert.equal(parsed.terminalStatus, 'success');
+    assert.equal(parsed.protocolError, 'Antigravity step_update envelope arrived after terminal result');
+    assert.equal(parsed.summary, 'first');
+    assert.equal(parsed.tokenUsage.output_tokens, 5);
+    assert.equal(parsed.conversationLog.length, 2);
+});
+
+test('Antigravity output parser rejects duplicate terminal results', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-high' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'first' } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'second' } }),
+    ].join('\n'));
+
+    assert.equal(parsed.terminalStatus, 'success');
+    assert.equal(parsed.protocolError, 'Antigravity result envelope arrived after terminal result');
+    assert.equal(parsed.summary, 'first');
+    assert.equal(parsed.conversationLog.length, 2);
+});
+
+test('Antigravity output parser requires a non-empty init before stream updates', () => {
+    const beforeInit = parseAntigravityJsonl(JSON.stringify({
+        event: 'step_update',
+        step_update: { conversation_id: 'conversation-sanitized', step_index: 1, state: 'RUNNING', step_type: 'agent_response' },
+    }));
+    const emptyInit = parseAntigravityJsonl(JSON.stringify({
+        event: 'init', conversation_id: ' ', init: { model: 'gemini-3.7-flash-high' },
+    }));
+
+    assert.equal(beforeInit.protocolError, 'Antigravity step_update envelope arrived before an initiating conversation_id');
+    assert.equal(emptyInit.protocolError, 'Antigravity init envelope has no conversation_id');
+    assert.equal(beforeInit.terminalStatus, undefined);
+    assert.equal(emptyInit.conversationId, undefined);
+});
+
+test('Antigravity agent rejects stream results from a different conversation', async () => {
+    const stdout = [
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-unrelated', status: 'SUCCESS', response: 'must not succeed' } }),
+    ].join('\n');
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as {
+        persistImplementationLog(options: unknown): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+            onSessionId: (sessionId: string, conversationId?: string) => void;
+        }): Promise<{ success: boolean; error?: string; sessionId?: string; conversationId?: string; conversationLog?: unknown[]; modelUsed?: string }>;
+    };
+    internals.persistImplementationLog = async () => undefined;
+    let callbackIdentity: [string, string | undefined] | undefined;
+
+    const result = await internals.processExecutionResult({
+        result: { stdout, stderr: '', exitCode: 0 },
+        executionTime: 10,
+        issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+        effectiveModel: 'antigravity-gemini-3.7-flash-high',
+        prompt: 'test',
+        worktreePath: '/tmp',
+        worktreeGitContent: null,
+        onSessionId: (sessionId, conversationId) => { callbackIdentity = [sessionId, conversationId]; },
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Antigravity result envelope expected conversation_id "conversation-sanitized", got "conversation-unrelated"');
+    assert.equal(result.sessionId, 'conversation-sanitized');
+    assert.equal(result.conversationId, 'conversation-sanitized');
+    assert.equal(result.modelUsed, 'antigravity-gemini-3.7-flash-high');
+    assert.deepEqual(callbackIdentity, ['conversation-sanitized', 'conversation-sanitized']);
+});
+
+test('Antigravity agent rejects differing stdout and transcript conversation identities', async () => {
+    const stdout = [
+        JSON.stringify({ event: 'init', conversation_id: 'stdout-conversation', init: { model: 'gemini-3.7-flash-high', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'stdout-conversation', status: 'SUCCESS', response: 'must not succeed' } }),
+    ].join('\n');
+    const transcript = [
+        JSON.stringify({ event: 'init', conversation_id: 'transcript-conversation', init: { model: 'gemini-3.7-flash-high', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'transcript-conversation', status: 'SUCCESS', response: 'unrelated success' } }),
+    ].join('\n');
+    const transcriptDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-antigravity-conflict-'));
+    const transcriptPath = path.join(transcriptDirectory, 'transcript.jsonl');
+    fs.writeFileSync(transcriptPath, transcript);
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as {
+        persistImplementationLog(options: unknown): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+            transcriptPath: string;
+        }): Promise<{ success: boolean; error?: string; modelUsed?: string }>;
+    };
+    internals.persistImplementationLog = async () => undefined;
+
+    try {
+        const result = await internals.processExecutionResult({
+            result: { stdout, stderr: '', exitCode: 0 },
+            executionTime: 10,
+            issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+            effectiveModel: 'antigravity-gemini-3.7-flash-high',
+            prompt: 'test',
+            worktreePath: '/tmp',
+            worktreeGitContent: null,
+            transcriptPath,
+        });
+
+        assert.equal(result.success, false);
+        assert.equal(result.error, 'Conflicting Antigravity conversation identities: stdout reported "stdout-conversation" but transcript reported "transcript-conversation"');
+        assert.equal(result.modelUsed, 'unknown');
+    } finally {
+        fs.rmSync(transcriptDirectory, { recursive: true, force: true });
+    }
+});
+
+test('Antigravity agent rejects and persists a reported model that differs from the request', async () => {
+    const stdout = [
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'gemini-3.7-flash-low', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'SUCCESS', response: 'unexpected fallback' } }),
+    ].join('\n');
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as {
+        persistImplementationLog(options: { resolvedModel: string }): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+        }): Promise<{ success: boolean; error?: string; modelUsed?: string }>;
+    };
+    let persistedModel: string | undefined;
+    internals.persistImplementationLog = async options => { persistedModel = options.resolvedModel; };
+
+    const result = await internals.processExecutionResult({
+        result: { stdout, stderr: '', exitCode: 0 },
+        executionTime: 10,
+        issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+        effectiveModel: 'antigravity-gemini-3.7-flash-high',
+        prompt: 'test',
+        worktreePath: '/tmp',
+        worktreeGitContent: null,
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Antigravity reported model "antigravity-gemini-3.7-flash-low" but "antigravity-gemini-3.7-flash-high" was requested');
+    assert.equal(result.modelUsed, 'antigravity-gemini-3.7-flash-low');
+    assert.equal(persistedModel, 'antigravity-gemini-3.7-flash-low');
+});
+
+test('Antigravity agent accepts a custom namespaced model reported with its exact CLI ID', async () => {
+    const stdout = [
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-custom', init: { model: 'custom-preview-model', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-custom', status: 'SUCCESS', response: 'custom model response' } }),
+    ].join('\n');
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as {
+        persistImplementationLog(options: { resolvedModel: string }): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+        }): Promise<{ success: boolean; error?: string; modelUsed?: string }>;
+    };
+    let persistedModel: string | undefined;
+    internals.persistImplementationLog = async options => { persistedModel = options.resolvedModel; };
+
+    const result = await internals.processExecutionResult({
+        result: { stdout, stderr: '', exitCode: 0 },
+        executionTime: 10,
+        issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+        effectiveModel: 'antigravity-custom-preview-model',
+        prompt: 'test',
+        worktreePath: '/tmp',
+        worktreeGitContent: null,
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.error, undefined);
+    assert.equal(result.modelUsed, 'antigravity-custom-preview-model');
+    assert.equal(persistedModel, 'antigravity-custom-preview-model');
+});
+
+test('Antigravity agent rejects a stream result before its initiating conversation', async () => {
+    const stdout = JSON.stringify({
+        event: 'result',
+        result: {
+            conversation_id: 'conversation-result-only',
+            status: 'SUCCESS',
+            response: 'RESULT_ONLY\n',
+            usage: { cache_read_tokens: 321 },
+        },
+    });
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as {
+        persistImplementationLog(options: { resolvedModel: string }): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+        }): Promise<{
+            success: boolean;
+            error?: string;
+            modelUsed?: string;
+            summary?: string;
+            tokenUsage?: { cache_read_input_tokens?: number };
+        }>;
+    };
+    let persistedModel: string | undefined;
+    internals.persistImplementationLog = async options => { persistedModel = options.resolvedModel; };
+
+    const result = await internals.processExecutionResult({
+        result: { stdout, stderr: '', exitCode: 0 },
+        executionTime: 10,
+        issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+        effectiveModel: 'antigravity-gemini-3.7-flash-high',
+        prompt: 'test',
+        worktreePath: '/tmp',
+        worktreeGitContent: null,
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Antigravity result envelope arrived before an initiating conversation_id');
+    assert.equal(result.modelUsed, 'unknown');
+    assert.equal(result.summary, undefined);
+    assert.equal(result.tokenUsage?.cache_read_input_tokens, undefined);
+    assert.equal(persistedModel, 'unknown');
+});
+
+test('Antigravity agent rejects a malformed terminal result with exit code 0', async () => {
+    const stdout = [
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'conversation-sanitized', status: 'DONE', response: 'must not succeed' } }),
+    ].join('\n');
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as {
+        persistImplementationLog(options: unknown): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+        }): Promise<{ success: boolean; error?: string; summary?: string }>;
+    };
+    internals.persistImplementationLog = async () => undefined;
+
+    const result = await internals.processExecutionResult({
+        result: { stdout, stderr: '', exitCode: 0 },
+        executionTime: 10,
+        issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+        effectiveModel: 'antigravity-gemini-3.7-flash-high',
+        prompt: 'test',
+        worktreePath: '/tmp',
+        worktreeGitContent: null,
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Malformed Antigravity stream envelope: result');
+    assert.equal(result.summary, undefined);
+});
+
+test('Antigravity agent rejects a truncated stream even when a legacy result reports success', async () => {
+    const stdout = [
+        JSON.stringify({ event: 'init', conversation_id: 'conversation-sanitized', init: { model: 'Gemini 3.7 Flash (High)', cwd: '/tmp', tools: [] } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'conversation-sanitized', step_index: 2, state: 'DONE', step_type: 'agent_response', text_delta: 'must not succeed' } }),
+        JSON.stringify({ type: 'result', status: 'success' }),
+    ].join('\n');
+    const agent = new AntigravityAgent(createAntigravityConfig());
+    const internals = agent as unknown as {
+        persistImplementationLog(options: unknown): Promise<void>;
+        processExecutionResult(options: {
+            result: { stdout: string; stderr: string; exitCode: number };
+            executionTime: number;
+            issueRef: { number: number; repoOwner: string; repoName: string };
+            effectiveModel: string;
+            prompt: string;
+            worktreePath: string;
+            worktreeGitContent: null;
+        }): Promise<{ success: boolean; error?: string; summary?: string }>;
+    };
+    internals.persistImplementationLog = async () => undefined;
+
+    const result = await internals.processExecutionResult({
+        result: { stdout, stderr: '', exitCode: 0 },
+        executionTime: 10,
+        issueRef: { number: 1884, repoOwner: 'integry', repoName: 'propr' },
+        effectiveModel: 'antigravity-gemini-3.7-flash-high',
+        prompt: 'test',
+        worktreePath: '/tmp',
+        worktreeGitContent: null,
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.error, 'Antigravity stream ended without a terminal SUCCESS result');
+    assert.equal(result.summary, 'must not succeed');
+});
+
 test('Antigravity output parser accepts camelCase result token stats', () => {
     const parsed = parseAntigravityJsonl(JSON.stringify({
         type: 'result',
@@ -171,6 +727,61 @@ test('Antigravity output parser accepts camelCase result token stats', () => {
     }));
 
     assert.deepEqual(parsed.tokenUsage, { input_tokens: 12, output_tokens: 4 });
+});
+
+test('Antigravity output parser accepts optional protocol fields and mixed plain output', () => {
+    const parsed = parseAntigravityJsonl([
+        JSON.stringify({ type: 'init', session_id: 'session-1', model: 'provider-model' }),
+        'provider progress text',
+        JSON.stringify({ type: 'error', message: 'provider failed' }),
+        JSON.stringify({ type: 'result', status: 'error' }),
+    ].join('\n'));
+
+    assert.equal(parsed.sessionId, 'session-1');
+    assert.equal(parsed.modelUsed, 'provider-model');
+    assert.equal(parsed.summary, 'provider progress text');
+    assert.equal(parsed.conversationLog.length, 3);
+});
+
+test('Antigravity output parser rejects protocol and transcript events with malformed optional fields', () => {
+    const malformedLines = [
+        { type: 'message', role: 'assistant', content: 'bad delta', delta: 'yes', timestamp: '2026-06-06T09:40:25Z' },
+        { type: 'result', status: 'success', stats: { inputTokens: 'twelve' }, timestamp: '2026-06-06T09:40:25Z' },
+        { type: 'error', message: 'bad timestamp', timestamp: 123 },
+        { source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 42 },
+    ].map(value => JSON.stringify(value));
+    const parsed = parseAntigravityJsonl(malformedLines.join('\n'));
+
+    assert.equal(parsed.summary, malformedLines.join('\n'));
+    assert.deepEqual(parsed.conversationLog, []);
+    assert.deepEqual(parsed.tokenUsage, {});
+});
+
+test('Antigravity output parser preserves internal blank lines in plain and mixed output', () => {
+    const plain = parseAntigravityJsonl('first paragraph\n\nsecond paragraph');
+    const mixed = parseAntigravityJsonl([
+        JSON.stringify({ type: 'init', session_id: 'session-1', model: 'provider-model' }),
+        'first paragraph',
+        '',
+        'second paragraph',
+        JSON.stringify({ type: 'result', status: 'success' }),
+    ].join('\n'));
+
+    assert.equal(plain.summary, 'first paragraph\n\nsecond paragraph');
+    assert.equal(mixed.summary, 'first paragraph\n\nsecond paragraph');
+    assert.equal(mixed.conversationLog.length, 2);
+});
+
+test('Antigravity output parser accepts lower-case transcript identifiers without optional metadata', () => {
+    const parsed = parseAntigravityJsonl(JSON.stringify({
+        source: ' model ',
+        type: ' planner_response ',
+        content: 'schema-compatible response',
+    }));
+
+    assert.equal(parsed.summary, 'schema-compatible response');
+    assert.equal(parsed.conversationLog.length, 1);
+    assert.equal(filterAntigravityAnalysisEvents(parsed.conversationLog).length, 1);
 });
 
 test('Antigravity display log keeps planner analysis and drops tool output', () => {
@@ -286,6 +897,13 @@ test('Antigravity labels resolve to Antigravity models', async (t) => {
     });
 
     assert.equal(resolveModelAlias('antigravity-flash-medium'), 'antigravity-gemini-3.5-flash-medium');
+
+    const flash37Resolution = await resolveLlmLabel('antigravity-flash37-medium');
+    assert.deepEqual(flash37Resolution, {
+        agentAlias: 'antigravity',
+        model: 'antigravity-gemini-3.7-flash-medium'
+    });
+    assert.equal(resolveModelAlias('antigravity-flash37-medium'), 'antigravity-gemini-3.7-flash-medium');
 
     const prefixedResolution = await resolveLlmLabel('llm-antigravity-flash-medium'.replace(/^llm-/, ''));
     assert.deepEqual(prefixedResolution, {

@@ -2,7 +2,7 @@
  * Context generation with retry logic for plan generation.
  */
 
-import { generateContext } from '../context/index.js';
+import { ContextTokenLimitError, generateContext } from '../context/index.js';
 import { buildSummaryContext } from '../relevance/contextBuilder.js';
 import {
   validatePromptTokens, CLAUDE_CODE_OVERHEAD, CHARS_PER_TOKEN, PlanningFailedError, buildFullContext, getModelHardLimit, getRawInputCharLimit
@@ -29,7 +29,16 @@ export async function generateContextWithRetry(params: ContextGenerationParams):
     // Include all repo files, using relevance-detected files as priority.
     // Token budget constraints dictate how many files fit into the prompt.
     const priorityFiles = currentFilePaths.length > 0 ? currentFilePaths : undefined;
-    contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: undefined, priorityFiles, tokenLimit: currentRepomixLimit, compress: config.compress, correlationId });
+    try {
+      contextResult = await generateContext({ repoPath: worktreePath, filesToInclude: undefined, priorityFiles, tokenLimit: currentRepomixLimit, compress: config.compress, correlationId, modelId: generationModel });
+    } catch (error) {
+      if (error instanceof ContextTokenLimitError) {
+        throw new PlanningFailedError(
+          `${error.message}. Exclude unusually large generated or minified files, or choose a model with a larger context window.`,
+        );
+      }
+      throw error;
+    }
 
     // Update currentFilePaths with whatever files were actually included after optimization
     if (contextResult.includedFiles.length < currentFilePaths.length) {

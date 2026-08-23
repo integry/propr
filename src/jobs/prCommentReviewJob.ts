@@ -1,23 +1,22 @@
 import type { Logger } from 'pino';
 import type { Job } from 'bullmq';
-import { getAuthenticatedOctokit } from '@propr/core';
-import { withRetry, retryConfigs } from '@propr/core';
-import { TaskStates } from '@propr/core';
+import { getAuthenticatedOctokit, retryConfigs, TaskStates, withRetry } from '@propr/core';
 import type { WorkerStateManager, WorktreeInfo } from '@propr/core';
 import { AgentRegistry, resolveLlmLabel } from '@propr/core';
-import type { AnalysisResult } from '@propr/core';
-import { recordLLMMetrics } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
-import { loadPrReviewModel, loadSettings } from '@propr/core';
+import { loadPrReviewModel } from '@propr/core';
 import { resolvePrReasoningLevelOverride, updateTaskTitleForPR } from './prCommentJobHelpers.js';
 import { buildCombinedComment } from './prCommentJobUtils.js';
-import { calculateReviewCost, fetchReviewContext, type PRData } from './reviewContextHelpers.js';
-import { buildReviewPrompt } from './reviewPromptBuilder.js';
-import { buildReviewComment, buildReviewErrorComment } from './reviewCommentFormatter.js';
+import { fetchReviewContext, resolveReviewContextTokenBudget, type PRData } from './reviewContextHelpers.js';
+import { prepareRelatedReviewContext } from './reviewContextScout.js';
+import { loadReviewRuntimeSettings } from './reviewRuntimeSettings.js';
+import { getNextAuthenticatedActionableFindingNumber } from './reviewCommentFormatter.js';
+import { runSingleReview, type ReviewAssignment, type ReviewResult, type RunReviewsContext } from './prReviewRunner.js';
+import { recordReviewMetrics } from './reviewResultMetrics.js';
 import { generateSummaryTitle, resolveDefaultAgentAndModel } from './prCommentAgentUtils.js';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
-import { loadState as loadUltrafixState, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import { loadState as loadUltrafixState, retainOriginalScope, type UltrafixAction } from './ultrafixOrchestrationService.js';
 import {
     buildDeterministicPrTaskSubtitle,
     buildPrTaskTitle,
@@ -28,21 +27,8 @@ import {
 } from './prTaskTitleHelpers.js';
 import type { Redis } from 'ioredis';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
-import type { ReasoningLevel } from '@propr/shared';
 
-export interface ReviewAssignment {
-    agentAlias: string;
-    model: string;
-    label: string;
-}
-
-export interface ReviewResult {
-    assignment: ReviewAssignment;
-    analysisResult: AnalysisResult;
-    commentUrl?: string;
-    error?: string;
-    prompt?: string;
-}
+export type { ReviewAssignment, ReviewResult } from './prReviewRunner.js';
 
 export interface PRJobContext {
     pullRequestNumber: number;
@@ -64,7 +50,7 @@ interface ProcessingState {
     claudeResult: unknown;
     authorsText: string;
     unprocessedComments: UnprocessedComment[];
-    startingWorkComment: { data: { id: number; html_url: string } } | null;
+    startingWorkComment: { data: { id: number; html_url: string; user?: { login: string } | null } } | null;
 }
 
 export interface ExecuteReviewParams {
@@ -102,6 +88,15 @@ export async function resolveReviewAssignments(
     await registry.ensureInitialized();
 
     const assignments: ReviewAssignment[] = [];
+    const resolvedAssignments = new Set<string>();
+    const hasExplicitRequestedModels = Boolean(requestedModels?.length);
+
+    const addAssignment = (assignment: ReviewAssignment): void => {
+        const key = `${assignment.agentAlias}\u0000${assignment.model}`;
+        if (resolvedAssignments.has(key)) return;
+        resolvedAssignments.add(key);
+        assignments.push(assignment);
+    };
 
     let modelsToReview: string[];
     if (requestedModels && requestedModels.length > 0) {
@@ -132,10 +127,10 @@ export async function resolveReviewAssignments(
         try {
             if (modelLabel === 'default') {
                 const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-                assignments.push({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
+                addAssignment({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
             } else {
                 const resolution = await resolveLlmLabel(modelLabel);
-                assignments.push({ agentAlias: resolution.agentAlias, model: resolution.model, label: modelLabel });
+                addAssignment({ agentAlias: resolution.agentAlias, model: resolution.model, label: modelLabel });
             }
         } catch (resolveError) {
             correlatedLogger.warn({ modelLabel, error: (resolveError as Error).message }, 'Failed to resolve review model, skipping');
@@ -143,111 +138,14 @@ export async function resolveReviewAssignments(
     }
 
     if (assignments.length === 0) {
+        if (hasExplicitRequestedModels) {
+            throw new Error(`None of the explicitly requested review models could be resolved: ${requestedModels!.join(', ')}`);
+        }
         const { resolvedAlias, resolvedModel } = await resolveDefaultAgentAndModel(registry, correlatedLogger);
-        assignments.push({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
+        addAssignment({ agentAlias: resolvedAlias, model: resolvedModel, label: resolvedModel });
     }
 
     return assignments;
-}
-
-interface RunReviewsContext {
-    registry: AgentRegistry;
-    octokit: Awaited<ReturnType<typeof getAuthenticatedOctokit>>;
-    pullRequestNumber: number;
-    repoOwner: string;
-    repoName: string;
-    taskId: string;
-    taskUrl: string;
-    combinedCommentBody: string;
-    commentHistory: string;
-    originalTaskSpec: string;
-    commandInstructions?: string;
-    prDiff: string;
-    omittedDiffFiles: string[];
-    fileContents: string;
-    reviewPromptOverride: string;
-    reasoningLevel?: ReasoningLevel;
-    correlatedLogger: Logger;
-}
-
-async function runSingleReview(
-    assignment: ReviewAssignment,
-    ctx: RunReviewsContext
-): Promise<ReviewResult> {
-    const { registry, octokit, pullRequestNumber, repoOwner, repoName, taskId, taskUrl, correlatedLogger } = ctx;
-    const { agentAlias, model, label } = assignment;
-    correlatedLogger.info({ pullRequestNumber, agentAlias, model, label }, 'Starting review analysis');
-
-    const agent = registry.getAgentByAlias(agentAlias);
-    if (!agent) {
-        const errorMsg = `Agent not found for alias: ${agentAlias}`;
-        correlatedLogger.error({ agentAlias }, errorMsg);
-        return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg };
-    }
-
-    const reviewPrompt = buildReviewPrompt({
-        pullRequestNumber, combinedCommentBody: ctx.combinedCommentBody, commentHistory: ctx.commentHistory,
-        originalTaskSpec: ctx.originalTaskSpec, repoOwner, repoName, instructions: ctx.commandInstructions,
-        prDiff: ctx.prDiff, fileContents: ctx.fileContents, reviewPromptOverride: ctx.reviewPromptOverride,
-    });
-
-    try {
-        const analysisResult = await agent.analyze(reviewPrompt, { model, taskId, prNumber: pullRequestNumber, repository: `${repoOwner}/${repoName}`, executionType: 'pr-review', reasoningLevel: ctx.reasoningLevel });
-        correlatedLogger.info({
-            pullRequestNumber, model: analysisResult.modelUsed, success: analysisResult.success,
-            executionTimeMs: analysisResult.executionTimeMs, responseLength: analysisResult.response.length,
-        }, 'Review analysis completed');
-
-        const costUsd = await calculateReviewCost(analysisResult, analysisResult.modelUsed || model, correlatedLogger);
-        const reviewCommentBody = analysisResult.success
-            ? buildReviewComment(assignment, analysisResult, taskUrl, { omittedDiffFiles: ctx.omittedDiffFiles, costUsd })
-            : buildReviewErrorComment(label, model, analysisResult.error || 'Unknown error');
-
-        const reviewComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: repoOwner, repo: repoName, issue_number: pullRequestNumber, body: reviewCommentBody,
-        });
-
-        return { assignment, analysisResult, commentUrl: reviewComment.data.html_url, prompt: reviewPrompt };
-    } catch (reviewError) {
-        const errorMsg = (reviewError as Error).message;
-        correlatedLogger.error({ pullRequestNumber, model, error: errorMsg }, 'Review analysis failed');
-
-        try {
-            await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-                owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
-                body: buildReviewErrorComment(label, model, errorMsg),
-            });
-        } catch (commentError) {
-            correlatedLogger.error({ error: (commentError as Error).message }, 'Failed to post review error comment');
-        }
-
-        return { assignment, analysisResult: { response: '', modelUsed: model, executionTimeMs: 0, success: false, error: errorMsg }, error: errorMsg, prompt: reviewPrompt };
-    }
-}
-
-async function recordReviewMetrics(
-    reviewResults: ReviewResult[],
-    issueRef: { pullRequestNumber: number; repoOwner: string; repoName: string; correlationId: string; taskId: string }
-): Promise<void> {
-    const { pullRequestNumber, repoOwner, repoName, correlationId, taskId } = issueRef;
-    for (const result of reviewResults) {
-        const timestamp = new Date().toISOString();
-        const conversationLog = [
-            { type: 'user', timestamp, message: { content: [{ type: 'text', text: result.prompt || 'Review prompt not captured' }] } },
-            { type: 'assistant', timestamp, message: { content: [{ type: 'text', text: result.analysisResult.response || result.error || 'No response' }] } },
-        ];
-
-        const metricsResult: Parameters<typeof recordLLMMetrics>[0] = {
-            success: result.analysisResult.success,
-            model: result.analysisResult.modelUsed || result.assignment.model,
-            executionTime: result.analysisResult.executionTimeMs,
-            sessionId: result.analysisResult.sessionId || null,
-            tokenUsage: result.analysisResult.tokenUsage,
-            conversationLog,
-            ...(result.analysisResult.success ? {} : { error: result.analysisResult.error || result.error }),
-        };
-        await recordLLMMetrics(metricsResult, { number: pullRequestNumber, repoOwner, repoName }, { jobType: 'pr_review', correlationId, taskId, executionType: 'pr-review' });
-    }
 }
 
 async function updateReviewCompletionComment(
@@ -287,7 +185,7 @@ function getWebUiTaskUrl(taskId: string): string {
 
 async function handleUltrafixContinuation(
     action: UltrafixAction,
-    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string }
+    params: { job: Job<CommentJobData>; stateManager: WorkerStateManager; taskId: string; redisClient: Redis; repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; correlationId: string; currentReviewCommentIds: number[]; currentReviewResultCount: number }
 ): Promise<void> {
     if (!params.job.data.ultrafixMeta) return;
     const { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId } = params;
@@ -296,6 +194,7 @@ async function handleUltrafixContinuation(
             owner: repoOwner, repo: repoName, pullRequestNumber, completedAction: action,
             ultrafixMeta: job.data.ultrafixMeta!, redisClient, correlatedLogger, correlationId,
             currentJobId: job.id,
+            currentReviewCommentIds: params.currentReviewCommentIds, currentReviewResultCount: params.currentReviewResultCount,
         });
         correlatedLogger.info({ pullRequestNumber, ...continuationResult }, `Ultrafix loop continuation after ${action}`);
         await patchUltrafixContinuationMeta(stateManager, taskId, buildContinuationMeta(continuationResult), correlatedLogger);
@@ -338,8 +237,24 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const assignments = await resolveReviewAssignments(job.data.requestedModels, llm, correlatedLogger);
     correlatedLogger.info({ pullRequestNumber, assignmentCount: assignments.length, models: assignments.map(a => a.model) }, 'Resolved review assignments');
 
-    const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, fileContents } = await fetchReviewContext(
-        state.octokit, prData!, { repoOwner, repoName, pullRequestNumber, models: assignments.map(a => a.model), correlationId, correlatedLogger }
+    const {
+        reviewPromptOverride,
+        reviewContextEnabled,
+        reviewContextModel,
+        fastAnalysisModel,
+        configuredReviewMaxContextTokens,
+    } = await loadReviewRuntimeSettings(correlatedLogger);
+    const reviewBudgetModels = assignments.map(assignment => `${assignment.agentAlias}:${assignment.model}`);
+    const reviewMaxContextTokens = resolveReviewContextTokenBudget(
+        reviewBudgetModels,
+        configuredReviewMaxContextTokens,
+    );
+
+    const { allComments, commentHistory, linkedIssueResult, prDiff, omittedDiffFiles, changedFilePaths, fileContents, checkSummary, hasCurrentCheckFailure } = await fetchReviewContext(
+        state.octokit, prData!, {
+            repoOwner, repoName, pullRequestNumber, models: reviewBudgetModels,
+            maxContextTokens: reviewMaxContextTokens, correlationId, correlatedLogger,
+        }
     );
     job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
         repoOwner,
@@ -383,35 +298,79 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
     const registry = AgentRegistry.getInstance();
     await registry.ensureInitialized();
 
-    // Load the operator-configured review prompt override once per job. A
-    // settings load failure must NOT block the review - fall back to default.
-    let reviewPromptOverride = '';
-    try {
-        const loadedSettings = await loadSettings();
-        const configured = (loadedSettings as Record<string, unknown>).pr_review_prompt;
-        if (typeof configured === 'string') {
-            reviewPromptOverride = configured;
+    let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
+    if (job.data.ultrafixMeta) {
+        originalTaskSpec = await retainOriginalScope(redisClient, {
+            owner: repoOwner,
+            repo: repoName,
+            pr: pullRequestNumber,
+            scope: originalTaskSpec,
+            workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
+        });
+    }
+
+    let relatedContext = '';
+    if (reviewContextEnabled) {
+        try {
+            relatedContext = await prepareRelatedReviewContext({
+                registry,
+                fallbackAssignment: assignments[0],
+                configuredModel: reviewContextModel,
+                fastAnalysisModel,
+                state,
+                githubToken: githubToken.token,
+                branchName: context.jobBranchName || prData!.data.head.ref,
+                prDiff,
+                changedFiles: changedFilePaths,
+                originalTaskSpec,
+                pullRequestNumber,
+                repoOwner,
+                repoName,
+                taskId,
+                correlationId,
+                correlatedLogger,
+            });
+        } catch (scoutError) {
+            correlatedLogger.warn({
+                pullRequestNumber,
+                error: (scoutError as Error).message,
+            }, 'PR review context scout failed; continuing with deterministic review context');
         }
-    } catch (err) {
-        correlatedLogger.warn({ error: (err as Error).message }, 'Failed to load pr_review_prompt setting, using default review prompt');
+    } else {
+        correlatedLogger.info({ pullRequestNumber }, 'PR review context scout disabled by settings');
     }
 
     const reviewCtx: RunReviewsContext = {
         registry, octokit: state.octokit, pullRequestNumber, repoOwner, repoName,
-        taskId, taskUrl, combinedCommentBody, commentHistory,
-        originalTaskSpec: linkedIssueResult.context || '',
+        taskId, taskUrl, combinedCommentBody,
+        // Prior review prose must never become an expanded Ultrafix objective.
+        commentHistory: job.data.ultrafixMeta ? '' : commentHistory,
+        originalTaskSpec,
         commandInstructions: job.data.commandInstructions,
         prDiff,
         omittedDiffFiles,
-        fileContents,
+        changedFilePaths,
+        findingStartNumber: 1,
+        redisClient,
+        fileContents, relatedContext, checkSummary, hasCurrentCheckFailure,
         reviewPromptOverride,
+        reviewMaxContextTokens,
         reasoningLevel: job.data.reasoningLevel,
         correlatedLogger,
     };
 
     const reviewResults: ReviewResult[] = [];
+    let nextFindingNumber = getNextAuthenticatedActionableFindingNumber(
+        allComments,
+        state.startingWorkComment.data.user?.login,
+    );
     for (const assignment of assignments) {
-        reviewResults.push(await runSingleReview(assignment, reviewCtx));
+        const result = await runSingleReview(assignment, {
+            ...reviewCtx,
+            findingStartNumber: nextFindingNumber,
+        });
+        reviewResults.push(result);
+        nextFindingNumber += result.findingCount ?? 0;
     }
 
     await recordReviewMetrics(reviewResults, { pullRequestNumber, repoOwner, repoName, correlationId, taskId });
@@ -428,14 +387,15 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
             commandMode: 'review',
             reviewResults: reviewResults.map(r => ({
                 model: r.assignment.model, label: r.assignment.label,
-                success: r.analysisResult.success, commentUrl: r.commentUrl, error: r.error,
+                success: r.analysisResult.success, commentId: r.commentId, commentUrl: r.commentUrl, error: r.error,
             })),
             ...ultrafixHistoryMeta,
         },
     });
 
     correlatedLogger.info({ pullRequestNumber, successCount, failCount, totalReviews: assignments.length }, 'Review processing completed');
-    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId });
+    const currentReviewCommentIds = reviewResults.flatMap(result => result.commentId === undefined ? [] : [result.commentId]);
+    await handleUltrafixContinuation('review', { job, stateManager, taskId, redisClient, repoOwner, repoName, pullRequestNumber, correlatedLogger, correlationId, currentReviewCommentIds, currentReviewResultCount: reviewResults.length });
 
     return { status: 'complete', pullRequestNumber, reviewsPosted: successCount, reviewsFailed: failCount };
 }

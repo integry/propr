@@ -56,7 +56,7 @@ ProPR Connect provisions the Cloudflare Tunnel and instance id for Plus installa
 propr tunnel setup --token <connector-token> --url https://t-abc123.propr.dev --start
 ```
 
-This writes the tunnel `.env` values for you (`PROPR_UI_TUNNEL_TOKEN`, `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, `API_PUBLIC_URL`, `FRONTEND_URL`, `GH_OAUTH_CALLBACK_URL`), records the tunnel as enabled, and — with `--start` — starts a stopped stack or recreates a running one so the hosted URLs apply immediately. Prefer this command over hand-editing `.env`: it also overwrites stale localhost values left over from a previous local setup.
+This writes the tunnel `.env` values for you (`PROPR_UI_TUNNEL_TOKEN`, `PROPR_INSTANCE_ID`, `PROPR_UI_PUBLIC_API_URL`, `API_PUBLIC_URL`, `FRONTEND_URL`, `GH_OAUTH_CALLBACK_URL`, `PROPR_WEB_AUTH_MODE=connect`), records the tunnel as enabled, and — with `--start` — starts a stopped stack or recreates a running one so the hosted URLs apply immediately. Prefer this command over hand-editing `.env`: it also overwrites stale localhost values left over from a previous local setup.
 
 ### Manual `.env` fallback
 
@@ -77,6 +77,7 @@ PROPR_UI_PUBLIC_API_URL=https://t-abc123.propr.dev   # explicit public API URL t
 FRONTEND_URL=https://app.propr.dev
 API_PUBLIC_URL=https://t-abc123.propr.dev
 GH_OAUTH_CALLBACK_URL=https://t-abc123.propr.dev/api/auth/github/callback
+PROPR_WEB_AUTH_MODE=connect
 
 # COOKIE_DOMAIN: leave UNSET for v1 — keep the line commented out (an empty
 # `COOKIE_DOMAIN=` may still count as set).
@@ -91,15 +92,17 @@ The three URL variables map directly onto the architecture above. Get these righ
 
 - **`FRONTEND_URL`** is the **browser origin** — the hosted UI at `https://app.propr.dev`. The API allows this origin through CORS and redirects to it after login. In tunnel mode it is derived to `https://app.propr.dev` when left unset; `propr tunnel setup` writes it explicitly so older localhost values never win.
 - **`API_PUBLIC_URL`** is the **proxy host** (`https://t-<id>.propr.dev`) — where the browser actually reaches the API and Socket.IO, and what governs the secure session cookie. Derived from the instance id when left unset; `propr tunnel setup` writes it explicitly.
-- **`GH_OAUTH_CALLBACK_URL`** must point at the API on the **proxy host**: `https://t-<id>.propr.dev/api/auth/github/callback`. The callback lives on the API host — a callback pointing at `app.propr.dev` will fail, because the OAuth flow completes on the API. Derived when left unset; `propr tunnel setup` writes it explicitly. **Register this exact URL in your GitHub OAuth App.**
+- **`GH_OAUTH_CALLBACK_URL`** points at the API on the **proxy host**: `https://t-<id>.propr.dev/api/auth/github/callback`. Connect validates that this is an active managed tunnel before issuing a one-use login code. You do not register it in a GitHub OAuth App.
+- **`PROPR_WEB_AUTH_MODE=connect`** delegates browser login to Connect's shared GitHub App. A custom deployment can explicitly use `github` with its own OAuth client instead.
 - **`COOKIE_DOMAIN`** stays unset: the session cookie is host-only on the single `t-<id>.propr.dev` host, which is correct because that host and `app.propr.dev` are same-site under `propr.dev`. Scoping the cookie across shared ProPR-managed tunnel hostnames is unsupported in v1.
+- **`PROPR_TRUSTED_PROXY_PEERS`** is injected in the reserved `self` mode by the launcher while tunnel mode is enabled. The cloudflared sidecar shares the API container's network namespace, so this trusts only the API's own non-loopback interface addresses rather than every peer on a private network. This lets the API use Cloudflare's forwarded client IP for quotas and forwarded HTTPS for secure session cookies. An explicit value in `.env` overrides the tunnel default; leave it unset outside proxy deployments.
 
 ### Enablement semantics
 
 Setting `PROPR_UI_TUNNEL_TOKEN` enables the tunnel by default, so the next `propr start` (or a restart) brings up the sidecar — you do not strictly need `propr tunnel on` first. `propr tunnel on|off` records an explicit choice that **overrides** the token-derived default and is honored by later starts; `propr tunnel on` additionally starts the sidecar immediately on an already-running stack, and `propr tunnel off` stops it while leaving the token in place. `PROPR_UI_TUNNEL_ENABLED=true` is an explicit alternative, but a token is still required — `propr check` fails if the tunnel is enabled without `PROPR_UI_TUNNEL_TOKEN`. See [ProPR CLI → Hosted UI Tunnel](../features/propr-cli.md#hosted-ui-tunnel) for the command reference.
 
 :::caution Restart the stack after enabling on a running stack
-`propr tunnel on` starts only the cloudflared sidecar; the already-running API/worker containers keep the `API_PUBLIC_URL` / `FRONTEND_URL` they were started with, so OAuth redirects, cookie security, and attachment links still point at their pre-tunnel localhost values until you run `propr start --restart`. `propr tunnel setup --start` avoids this by recreating the running stack after writing the tunnel settings.
+`propr tunnel on` starts only the cloudflared sidecar; the already-running API/worker containers keep the public URLs and proxy-trust setting they were started with, so OAuth redirects, secure cookies, per-client proxy quotas, and attachment links are not tunnel-ready until you run `propr start --restart`. `propr tunnel setup --start` avoids this by recreating the running stack after writing the tunnel settings.
 :::
 
 ## Verify
@@ -125,7 +128,7 @@ The most common failures, in the order to check them:
 1. **No token configured.** Starting the tunnel always requires `PROPR_UI_TUNNEL_TOKEN`; `propr tunnel on` fails clearly without one. Run the setup command shown in ProPR Connect.
 2. **Core stack down.** `propr tunnel on` refuses to start the sidecar when the stack is down — cloudflared would point at an unavailable `api:4000` and look superficially healthy. Run `propr start` first, or pass `--force` deliberately.
 3. **Tunnel enabled on an already-running stack.** OAuth and cookies still use localhost URLs until `propr start --restart` (see the caution above).
-4. **OAuth callback mismatch.** The GitHub OAuth App must have `https://t-<id>.propr.dev/api/auth/github/callback` registered — the exact URL in `GH_OAUTH_CALLBACK_URL`.
+4. **Hosted login mode or callback mismatch.** Confirm `PROPR_WEB_AUTH_MODE=connect` and that `GH_OAUTH_CALLBACK_URL` exactly matches the active tunnel URL shown by ProPR Connect.
 5. **Root URL returns 404.** Expected behavior; test `/api/status` instead.
 6. **Host port 4000 busy.** Irrelevant: Cloudflare forwards to the Docker-internal `http://api:4000` and bypasses the published host port entirely.
 

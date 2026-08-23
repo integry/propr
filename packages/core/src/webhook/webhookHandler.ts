@@ -6,7 +6,10 @@ import {
     type CommentEventType
 } from './planIssueTracking.js';
 import { handleCheckRunEvent, handleStatusEvent, reevaluatePRAutoMerge, type StatusEventPayload } from './checkRunHandler.js';
-import { clearUltrafixLoopState } from './checkRunHelpers.js';
+import { clearUltrafixLoopState, getUltrafixStateRedis } from './checkRunHelpers.js';
+import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { retryConfigs, withRetry } from '../utils/retryHandler.js';
+import { clearUltrafixStateForLabelRemoval } from '../utils/ultrafixLabelTransition.js';
 import { handleEpicPRCreationOnMerge, handleEpicPRLabelCleanup } from './epicPRHandler.js';
 import { handlePullRequestConflictDetection, handlePushConflictDetection } from './mergeConflictDetector.js';
 import type {
@@ -65,6 +68,7 @@ export type CommentDeletedHandler = (payload: IssueCommentEvent | PullRequestRev
 export type CommentEditedHandler = (payload: IssueCommentEvent | PullRequestReviewCommentEvent, eventType: CommentEventType, correlationId: string) => Promise<void>;
 export type PullRequestProcessor = (payload: PullRequestEvent, correlationId: string) => Promise<void>;
 export type CheckRunProcessor = (payload: CheckRunEvent, correlationId: string) => Promise<void>;
+export type RepositoryFilter = (repository: string) => boolean | Promise<boolean>;
 
 let processDetectedIssue: IssueProcessor | null = null;
 let processCommentEvent: CommentProcessor | null = null;
@@ -73,6 +77,7 @@ let handleCommentEdited: CommentEditedHandler | null = null;
 let processPullRequest: PullRequestProcessor | null = null;
 let processCheckRun: CheckRunProcessor | null = null;
 let webhookRedisClient: Redis | null = null;
+let repositoryFilter: RepositoryFilter | null = null;
 
 export interface WebhookHandlerOptions {
     issueProcessor: IssueProcessor;
@@ -82,6 +87,7 @@ export interface WebhookHandlerOptions {
     pullRequestProcessor?: PullRequestProcessor;
     checkRunProcessor?: CheckRunProcessor;
     redisClient?: Redis;
+    repositoryFilter?: RepositoryFilter;
 }
 
 export async function initializeWebhookHandler(options: WebhookHandlerOptions): Promise<void> {
@@ -92,7 +98,16 @@ export async function initializeWebhookHandler(options: WebhookHandlerOptions): 
     processPullRequest = options.pullRequestProcessor || null;
     processCheckRun = options.checkRunProcessor || null;
     webhookRedisClient = options.redisClient || null;
+    repositoryFilter = options.repositoryFilter || null;
     logger.info('Webhook handler initialized');
+}
+
+function getRepositoryFullName(payload: unknown): string | null {
+    if (typeof payload !== 'object' || payload === null || !('repository' in payload)) return null;
+    const repository = (payload as { repository?: unknown }).repository;
+    if (typeof repository !== 'object' || repository === null || !('full_name' in repository)) return null;
+    const fullName = (repository as { full_name?: unknown }).full_name;
+    return typeof fullName === 'string' && fullName.trim() ? fullName.trim() : null;
 }
 
 function isIssuesEvent(payload: unknown): payload is IssuesEvent {
@@ -181,9 +196,10 @@ async function handleUltrafixLabelRemoval(
         const owner = payload.repository.owner.login;
         const repo = payload.repository.name;
         const prNumber = payload.pull_request.number;
-        await clearUltrafixLoopState(owner, repo, prNumber);
-        await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
-        log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after PR ultrafix label removal');
+        if (await clearStateForCurrentUltrafixLabelRemoval(owner, repo, prNumber, log)) {
+            await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
+            log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after PR ultrafix label removal');
+        }
         return;
     }
 
@@ -194,10 +210,60 @@ async function handleUltrafixLabelRemoval(
         const owner = payload.repository.owner.login;
         const repo = payload.repository.name;
         const prNumber = payload.issue.number;
-        await clearUltrafixLoopState(owner, repo, prNumber);
-        await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
-        log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after issue ultrafix label removal');
+        if (await clearStateForCurrentUltrafixLabelRemoval(owner, repo, prNumber, log)) {
+            await reevaluatePRAutoMerge(owner, repo, prNumber, correlationId);
+            log.info({ owner, repo, prNumber }, 'Cleared ultrafix loop state after issue ultrafix label removal');
+        }
     }
+}
+
+async function clearStateForCurrentUltrafixLabelRemoval(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    log: ReturnType<typeof logger.withCorrelation>,
+): Promise<boolean> {
+    let verificationError: unknown;
+    const result = await clearUltrafixStateForLabelRemoval(
+        webhookRedisClient ?? getUltrafixStateRedis(),
+        { owner, repo, pr: prNumber },
+        async () => {
+            try {
+                const octokit = await getAuthenticatedOctokit();
+                const response = await withRetry(
+                    () => octokit.request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
+                        owner,
+                        repo,
+                        issue_number: prNumber,
+                    }),
+                    retryConfigs.githubApi,
+                    'verify_ultrafix_label_removal',
+                );
+                const labels = response.data.labels as Array<string | { name?: string }>;
+                const labelPresent = labels.some(label =>
+                    (typeof label === 'string' ? label : label.name) === 'ultrafix',
+                );
+                return labelPresent;
+            } catch (error) {
+                verificationError = error;
+                throw error;
+            }
+        },
+        () => clearUltrafixLoopState(owner, repo, prNumber),
+    );
+    if (result === 'label_present') {
+        log.info(
+            { owner, repo, prNumber },
+            'Ignoring stale Ultrafix label-removal event after label was re-added',
+        );
+    } else if (result === 'unverified') {
+        log.warn(
+            { owner, repo, prNumber, error: (verificationError as Error | undefined)?.message },
+            'Failed to verify current Ultrafix label state; preserving loop state',
+        );
+        throw verificationError ?? new Error('Failed to verify current Ultrafix label state');
+    }
+    return result === 'cleared';
 }
 
 async function handleIssueCommentEvent(
@@ -333,6 +399,18 @@ export async function processWebhookEvent(
     correlationId: string,
 ): Promise<DeliveryDisposition> {
     const correlatedLogger = logger.withCorrelation(correlationId);
+
+    const repository = getRepositoryFullName(payload);
+    if (repositoryFilter) {
+        if (!repository) {
+            correlatedLogger.warn({ event: eventType }, 'Ignoring event without a repository identity');
+            return { status: 'ignored', reason: 'repository_missing' };
+        }
+        if (!await repositoryFilter(repository)) {
+            correlatedLogger.debug({ repository, event: eventType }, 'Ignoring event for an unmonitored repository');
+            return { status: 'ignored', reason: 'repository_not_monitored' };
+        }
+    }
 
     await handleUltrafixLabelRemoval(payload, eventType, correlationId);
 

@@ -1,8 +1,6 @@
 import { Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { findRunningDockerContainerForTask, logger } from '@propr/core';
-import { getAuthenticatedOctokit } from '@propr/core';
-import { withRetry, retryConfigs } from '@propr/core';
+import { findRunningDockerContainerForTask, getAuthenticatedOctokit, hashTaskAttemptToken, inspectLegacyDockerContainerLivenessForTask, logger, retryConfigs, runWithExecutionAbortSignal, withRetry } from '@propr/core';
 import { getStateManager, TaskStates } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl } from '@propr/core';
@@ -24,12 +22,19 @@ import {
     buildCombinedComment, extractModelFromLabels, fetchAllComments, buildPrompt,
     handleJobError, cleanupJob, toClaudeResult
 } from './prCommentJobUtils.js';
-import { pickUpPendingComments, applyPendingCommentCommandContext } from './prPendingComments.js';
+import { pickUpPendingCommentsWithClaim, applyPendingCommentCommandContext } from './prPendingComments.js';
 import { executeReviewProcessing } from './prCommentReviewJob.js';
 import { generateSummaryTitle, resolveAndExecuteAgent, resolvePRCommentModelName } from './prCommentAgentUtils.js';
-import { gatherUnprocessedReviewComments } from './reviewCommentGatherer.js';
-import type { AIReviewComment } from './reviewCommentGatherer.js';
-import { handleUltrafixContinuation } from './ultrafixJobHelpers.js';
+import { isReviewComment } from './reviewCommentFormatter.js';
+import { hasAuthorizedFixFeedback, prepareFixReviewFeedback } from './reviewFindingSelector.js';
+import { retainOriginalScope } from './ultrafixOrchestrationService.js';
+import {
+    handleUltrafixContinuation,
+    markSelectedUltrafixFindings,
+    restorePendingCommentsIfUltrafixJobSuperseded,
+} from './ultrafixJobHelpers.js';
+import { shouldDeferUltrafixReview } from './ultrafixReviewExecutionGate.js';
+import { handleNoAuthorizedFindings } from './prCommentNoAuthorizedFindings.js';
 import { handlePostExecution } from './prCommentPostExecution.js';
 import {
     buildDeterministicPrTaskSubtitle,
@@ -43,7 +48,7 @@ import type { GitHubToken } from './githubTypes.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 import {
     acquirePRProcessingLock,
-    createPRProcessingLockToken,
+    ensurePRProcessingLockToken,
     releasePRProcessingLock,
     startPRProcessingLockHeartbeat,
 } from './prProcessingLock.js';
@@ -51,11 +56,10 @@ import {
 const redisClient = new Redis({
     host: process.env.REDIS_HOST || '127.0.0.1',
     port: parseInt(process.env.REDIS_PORT || '6379', 10),
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
+    maxRetriesPerRequest: null, enableReadyCheck: false,
 });
 
-interface PRData { data: { head: { ref: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
+interface PRData { data: { head: { ref: string; sha?: string }; body: string | null; labels: Array<{ name: string }>; user: { login: string }; title: string } }
 interface PRComment { id: number; body: string; body_html?: string; user: { login: string; type?: string }; created_at: string; pull_request_review_id?: number }
 
 interface PRJobContext {
@@ -113,8 +117,8 @@ async function getPrimaryLabels(): Promise<string[]> {
     return [process.env.PR_LABEL || 'propr'];
 }
 
-async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobContext> {
-    const { pullRequestNumber, commentId, commentBody, commentAuthor, comments, repoOwner, repoName, correlationId } = job.data;
+async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobContext & { pickedUpComments: UnprocessedComment[]; originalUltrafixMeta: CommentJobData['ultrafixMeta'] }> {
+    const { pullRequestNumber, commentId, commentBody, commentAuthor, comments, repoOwner, repoName, correlationId, ultrafixMeta: originalUltrafixMeta } = job.data;
     const correlatedLogger = logger.withCorrelation(correlationId);
 
     // Normalize missing commandMode to 'default' for backward compatibility
@@ -126,11 +130,11 @@ async function initializePRJobContext(job: Job<CommentJobData>): Promise<PRJobCo
 
     const primaryProcessingLabels = await getPrimaryLabels();
     const isBatchJob = !!comments && Array.isArray(comments);
-    let commentsToProcess: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
-    commentsToProcess = await pickUpPendingComments(commentsToProcess, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
+    const initialComments: UnprocessedComment[] = isBatchJob ? [...comments] : [{ id: commentId!, body: commentBody!, author: commentAuthor!, type: 'issue' as const }];
+    const { commentsToProcess, pickedUpComments } = await pickUpPendingCommentsWithClaim(initialComments, { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient });
     applyPendingCommentCommandContext(job.data, commentsToProcess, correlatedLogger);
     const { branchName: jobBranchName, llm: jobLlm } = job.data;
-    return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess };
+    return { pullRequestNumber, jobBranchName, repoOwner, repoName, llm: jobLlm, correlationId, correlatedLogger, primaryProcessingLabels, isBatchJob, commentsToProcess, pickedUpComments, originalUltrafixMeta };
 }
 
 async function acquirePRLock(lockParams: LockParams): Promise<boolean> {
@@ -174,17 +178,8 @@ interface ExecuteProcessingParams {
     taskId: string;
     stateManager: WorkerStateManager;
     state: ProcessingState;
-}
-
-function formatReviewCommentsSection(reviewComments: AIReviewComment[]): string {
-    if (reviewComments.length === 0) return '';
-
-    let section = `**AI Review Comments (unprocessed — please address these findings):**\n\n`;
-    for (const comment of reviewComments) {
-        section += `---\n**Review by:** @${comment.author} (Comment ID: ${comment.id})\n`;
-        section += `${comment.body}\n---\n\n`;
-    }
-    return section;
+    lockKey: string;
+    lockToken: string;
 }
 
 function checkTerminalStateAfterExecution(currentState: { state: string } | null, taskId: string, correlatedLogger: Logger): void {
@@ -213,7 +208,7 @@ function buildStartingWorkCommentBody(authorsText: string, unprocessedComments: 
 }
 
 async function executeProcessing(params: ExecuteProcessingParams): Promise<JobResult> {
-    const { job, context, taskId, stateManager, state } = params;
+    const { job, context, taskId, stateManager, state, lockKey, lockToken } = params;
     let { llm } = params;
     const { pullRequestNumber, jobBranchName, repoOwner, repoName, correlationId, correlatedLogger } = context;
 
@@ -234,7 +229,9 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     const taskUrl = `${getWebUiUrl()}/tasks/${taskId}`;
 
     const allComments = await fetchAllComments(state.octokit, repoOwner, repoName, pullRequestNumber);
-    const commentsByTime = [...allComments].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const commentsByTime = allComments
+        .filter(comment => !comment.body || !isReviewComment(comment.body))
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     const linkedIssueResult = await fetchLinkedIssueContext(state.octokit as unknown as Parameters<typeof fetchLinkedIssueContext>[0], prData!, { repoOwner, repoName, pullRequestNumber }, { correlationId, correlatedLogger });
     job.data.reasoningLevel = resolvePrReasoningLevelOverride(prData!.data.labels, linkedIssueResult.linkedIssueLabels, {
         repoOwner,
@@ -242,16 +239,45 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
         pullRequestNumber,
         correlatedLogger,
     });
-    const commentHistory = buildCommentHistory(commentsByTime, prData!, correlationId);
+    const commentHistory = job.data.ultrafixMeta ? '' : buildCommentHistory(commentsByTime, prData!, correlationId);
 
-    // Gather unprocessed AI review comments only for /fix mode
-    const isFixMode = job.data.commandMode === 'fix';
-    const unprocessedReviewComments = isFixMode
-        ? await gatherUnprocessedReviewComments(allComments, {
-            repoOwner, repoName, pullRequestNumber, redisClient, correlatedLogger,
-        })
-        : [];
-    const reviewCommentsSection = formatReviewCommentsSection(unprocessedReviewComments);
+    const {
+        isFixMode,
+        fixSelection,
+        selectedReviewComments,
+        reviewCommentsSection,
+    } = await prepareFixReviewFeedback({
+        job, allComments, repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient,
+    });
+
+    if (isFixMode && !hasAuthorizedFixFeedback(selectedReviewComments)) {
+        correlatedLogger.info(
+            { pullRequestNumber },
+            'Skipping fix processing because no actionable findings were selected',
+        );
+        await handleNoAuthorizedFindings({
+            job,
+            taskId,
+            taskUrl,
+            stateManager,
+            octokit: state.octokit,
+            unprocessedComments: state.unprocessedComments,
+            redisClient,
+            repoOwner,
+            repoName,
+            pullRequestNumber,
+            correlatedLogger,
+            correlationId,
+        });
+        return { status: 'skipped', reason: 'no_authorized_review_findings', pullRequestNumber };
+    }
+
+    await markSelectedUltrafixFindings(
+        job,
+        redisClient,
+        { owner: repoOwner, repo: repoName, pr: pullRequestNumber },
+        selectedReviewComments,
+    );
 
     state.startingWorkComment = await state.octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
         owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
@@ -272,10 +298,25 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     state.worktreeInfo = await createWorktreeFromExistingBranch(state.localRepoPath, branchName, { worktreeDirName: `pr-${pullRequestNumber}-followup-${timestamp}`, owner: repoOwner, repoName });
     correlatedLogger.info({ worktreePath: state.worktreeInfo.worktreePath, branchName: state.worktreeInfo.branchName }, 'Created worktree from existing PR branch');
 
-    const localizedCombinedCommentBody = await localizeContentImages(combinedCommentBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
-    const localizedOriginalTaskSpec = linkedIssueResult.context
-        ? await localizeContentImages(linkedIssueResult.context, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: linkedIssueResult.bodyHtml, issueOrPrId: pullRequestNumber })
-        : linkedIssueResult.context;
+    const requestBody = isFixMode
+        ? (fixSelection.remainingInstructions || 'Apply only the selected review finding records below.')
+        : combinedCommentBody;
+    const localizedCombinedCommentBody = await localizeContentImages(requestBody, state.worktreeInfo.worktreePath, correlatedLogger, { bodyHtml: combinedBodyHtml, issueOrPrId: pullRequestNumber });
+    let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
+    if (job.data.ultrafixMeta) {
+        originalTaskSpec = await retainOriginalScope(redisClient, {
+            owner: repoOwner,
+            repo: repoName,
+            pr: pullRequestNumber, workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
+            scope: originalTaskSpec,
+        });
+    }
+    const localizedOriginalTaskSpec = originalTaskSpec
+        ? await localizeContentImages(originalTaskSpec, state.worktreeInfo.worktreePath, correlatedLogger, {
+            bodyHtml: originalTaskSpec === linkedIssueResult.context ? linkedIssueResult.bodyHtml : undefined,
+            issueOrPrId: pullRequestNumber,
+        })
+        : originalTaskSpec;
 
     const workflow = resolvePrTaskWorkflow(job.data.commandMode, Boolean(job.data.ultrafixMeta));
     const instructionText = workflow === 'followup'
@@ -339,7 +380,7 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
     });
 
     const postResult = await handlePostExecution(
-        { state, job, taskId, stateManager, context, unprocessedReviewComments, llm, redisClient },
+        { state, job, taskId, stateManager, context, unprocessedReviewComments: selectedReviewComments, llm, redisClient, prProcessingLockKey: lockKey, prProcessingLockToken: lockToken },
         taskUrl,
     );
 
@@ -349,33 +390,36 @@ async function executeProcessing(params: ExecuteProcessingParams): Promise<JobRe
 }
 
 export async function processPullRequestCommentJob(job: Job<CommentJobData>): Promise<JobResult> {
+    if (await shouldDeferUltrafixReview(job, redisClient, logger.withCorrelation(job.data.correlationId))) return { status: 'deferred', reason: 'ultrafix_waiting_for_exact_head_checks' };
     const context = await initializePRJobContext(job);
     const { pullRequestNumber, repoOwner, repoName, correlationId, correlatedLogger, isBatchJob, commentsToProcess, jobBranchName, llm } = context;
     correlatedLogger.info({ pullRequestNumber, branchName: jobBranchName, llm, isBatchJob, commentsCount: commentsToProcess.length }, `Processing PR comment${isBatchJob ? 's batch' : ''} job...`);
+    if (await restorePendingCommentsIfUltrafixJobSuperseded(job, { repoOwner, repoName, pullRequestNumber, redisClient }, context.pickedUpComments, context.originalUltrafixMeta)) return { status: 'cancelled', reason: 'ultrafix_superseded' };
 
     const modelName = await resolvePRCommentModelName(llm, correlatedLogger);
 
     const taskId = job.id || `pr-comment-${pullRequestNumber}-${Date.now()}`;
     const stateManager = getStateManager();
     const lockKey = `lock:pr:${repoOwner}:${repoName}:${pullRequestNumber}`;
-    const lockToken = createPRProcessingLockToken(correlationId);
+    const lockToken = await ensurePRProcessingLockToken(job.data, correlationId, () => job.updateData(job.data));
 
     const lockAcquired = await acquirePRLock({ lockKey, lockToken, correlatedLogger, job });
     if (!lockAcquired) return { status: 'rescheduled', reason: 'pr_locked_by_other_job' };
 
     const runningContainer = await findRunningDockerContainerForTask(taskId);
-    if (runningContainer) {
-        correlatedLogger.warn({ taskId, containerId: runningContainer.id, containerName: runningContainer.name }, 'Agent execution for this task is already running. Rescheduling without starting another attempt.');
+    if (runningContainer || await inspectLegacyDockerContainerLivenessForTask(taskId) !== 'not_found') {
+        correlatedLogger.warn({ taskId, containerId: runningContainer?.id, containerName: runningContainer?.name }, 'Agent execution for this task may already be running. Rescheduling without starting another attempt.');
         await issueQueue.add(job.name, job.data, { delay: 60000 });
         await releasePRProcessingLock(redisClient, lockKey, lockToken);
         return { status: 'rescheduled', reason: 'agent_container_already_running' };
     }
 
+    const executionController = new AbortController();
     const stopLockHeartbeat = startPRProcessingLockHeartbeat({
         redisClient,
         lockKey,
         lockToken,
-        onLockLost: () => correlatedLogger.error({ lockKey }, 'Lost PR processing lock while execution is still running'),
+        onLockLost: () => { correlatedLogger.error({ lockKey }, 'Lost PR processing lock while execution is still running'); executionController.abort(new Error('PR processing lock was lost during agent execution')); },
         onError: error => correlatedLogger.warn({ lockKey, error: (error as Error).message }, 'Failed to renew PR processing lock'),
     });
 
@@ -390,9 +434,9 @@ export async function processPullRequestCommentJob(job: Job<CommentJobData>): Pr
     try {
         // Branch early for review mode — read-only analysis, no commits or pushes
         if (job.data.commandMode === 'review') {
-            return await executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments });
+            return await runWithExecutionAbortSignal(executionController.signal, () => executeReviewProcessing({ job, context, llm, taskId, stateManager, state, redisClient, validatePRAndComments }), hashTaskAttemptToken(lockToken));
         }
-        return await executeProcessing({ job, context, llm, taskId, stateManager, state });
+        return await runWithExecutionAbortSignal(executionController.signal, () => executeProcessing({ job, context, llm, taskId, stateManager, state, lockKey, lockToken }), hashTaskAttemptToken(lockToken));
     } catch (error) {
         await handleJobError(error as Error, job, { pullRequestNumber, repoOwner, repoName, authorsText: state.authorsText, unprocessedComments: state.unprocessedComments, octokit: state.octokit, startingWorkComment: state.startingWorkComment, claudeResult: state.claudeResult, correlationId, correlatedLogger, stateManager, taskId });
         // Don't re-throw for user cancellations (not an error, just cancelled)

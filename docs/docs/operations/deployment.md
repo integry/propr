@@ -8,12 +8,15 @@ Use the prebuilt images, started by the ProPR CLI control plane (`propr init sta
 
 You need:
 
-- Docker
+- A Linux `amd64` host that meets the [system requirements](../tutorials/setup.md#system-requirements)
+- A maintained Docker Engine release. The ProPR user must be able to run `docker info` and read/write `/var/run/docker.sock` without an interactive `sudo` prompt. The engine must support Linux containers, user-defined networks, bind mounts, named volumes, restart policies, `--init`, and CPU, memory, and PID limits.
 - A runtime directory such as `/srv/propr`
 - GitHub backend access — your own GitHub App and private key (`HOST_GH_PRIVATE_KEY` bind-mounts it from any host path), or a shared App via the token relay; see [GitHub Authentication](./github-auth.md) for the three `GH_AUTH_MODE`s
 - A provider account for at least one agent; reuse host credentials or log in directly after adding the agent in the Web UI
 - Public URLs for the Web UI and OAuth callback
 - TLS through your reverse proxy or ingress
+
+Docker Compose is not part of the prebuilt production path. It is used for the source-development stack. ProPR does not enforce an exact Docker version; `propr check` validates the capabilities it needs before startup.
 
 ## Runtime Directory Layout
 
@@ -56,7 +59,7 @@ The launcher starts these images, pinned to the release version in its manifest:
 | `propr/agent` | Unified Claude, Codex, Antigravity, OpenCode, and Vibe execution container |
 | `redis:7-alpine` | Queue and cache state |
 
-Images are published to Docker Hub under the `propr/` namespace and mirrored to GHCR under `ghcr.io/proprdev/*` (the namespace is set by `GHCR_NS` in `scripts/build-images.sh`).
+Images are published to Docker Hub under the `propr/` namespace. Docker Hub is the single public release registry; the namespace can be overridden with `DOCKERHUB_NS` for development or private distributions.
 
 ## Environment
 
@@ -226,11 +229,36 @@ The launcher starts these containers (stack prefix configurable with `PROPR_STAC
 - `propr-worker`
 - `propr-analysis-worker`
 - `propr-indexing-worker`
-- `propr-api` — publishes port 4000 (override with `API_PORT`)
-- `propr-ui` — publishes port 5173 (override with `UI_PORT`)
+- `propr-api` — publishes `127.0.0.1:4000` by default (override with `API_PORT`)
+- `propr-ui` — publishes `127.0.0.1:5173` by default (override with `UI_PORT`)
 - `propr-docs` — only with `DOCS_ENABLED=true`; port 8080 (override with `DOCS_PORT`)
 
 Redis is not published on the host unless `REDIS_EXTERNAL_PORT` is set.
+The API and UI defaults are reachable directly from the Docker host but not
+from its public network interfaces; the managed tunnel continues to reach the
+API through the stack network and does not require an inbound port.
+
+To opt into a different bind, set the Docker publish value explicitly in the
+stack `.env`. Existing values are preserved during setup and upgrades, including
+older bare-port defaults:
+
+```bash
+# Custom loopback ports remain host-only.
+API_PORT=127.0.0.1:4400
+UI_PORT=127.0.0.1:5174
+
+# Bare ports intentionally publish on every host interface.
+# API_PORT=4000
+# UI_PORT=5173
+```
+
+:::warning[Secure non-loopback bindings]
+A bare port or another non-loopback address can expose the service to external
+clients. Only use one as an intentional opt-in; restrict access with a firewall
+and put browser/API traffic behind a properly configured TLS reverse proxy. If
+an existing stack contains bare `4000`/`5173` values that were not deliberate,
+change them manually to the loopback forms above before restarting.
+:::
 
 ## Reverse Proxy And TLS
 
@@ -238,9 +266,12 @@ Terminate TLS at your reverse proxy or ingress, then:
 
 - Route the public site to the UI container (port 5173).
 - Route `/api/*`, `/webhook`, and `/socket.io/` to the API container (port 4000). The Web UI uses WebSockets for live updates, so the proxy must support connection upgrades on `/socket.io/`.
-- Set `FRONTEND_URL` and `GH_OAUTH_CALLBACK_URL` to the public HTTPS origins, and configure the same callback URL in the GitHub OAuth App settings.
+- Forward `X-Forwarded-For` and `X-Forwarded-Proto`, and set `PROPR_TRUSTED_PROXY_PEERS` to the API connection's **immediate socket peer**. Use `loopback` when nginx and the API both run directly on the host, or the ingress's exact IP/CIDR for another topology. The VPS tutorial's host-nginx/launcher path uses `uniquelocal` only together with `API_PORT=127.0.0.1:4000`: the loopback bind makes the Docker host bridge the only reachable private peer, and launcher validation rejects `uniquelocal` without that constraint. Never use `uniquelocal` with an all-interface API binding. Do not list public client or CDN egress ranges: this setting identifies the last proxy hop, not the browser.
+- Set `FRONTEND_URL`, `API_PUBLIC_URL`, and `GH_OAUTH_CALLBACK_URL` to the public HTTPS origins, and configure the same callback URL in the GitHub OAuth App settings.
 
 If the UI and API are served from different origins, the API's CORS configuration uses `FRONTEND_URL` and browser requests send session cookies cross-origin — keep both URLs consistent with the actual public origins.
+
+Leave `PROPR_TRUSTED_PROXY_PEERS` unset when clients connect directly. In that fail-closed mode the API ignores forwarded client/protocol headers, preventing a direct client from choosing another quota bucket or claiming HTTPS. The legacy source-build `docker-compose.prod.yml` passes this variable through but does not choose a peer for an operator-managed proxy.
 
 ## Hosted UI Tunnel
 

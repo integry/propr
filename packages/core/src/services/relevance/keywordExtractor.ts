@@ -46,6 +46,89 @@ const STOP_WORDS = new Set([
 
 /** Minimum length for a keyword */
 const MIN_KEYWORD_LENGTH = 2;
+const LEADING_KEYWORD_DELIMITERS = new Set(['`', "'", '"', '(', '[', '{']);
+const TRAILING_KEYWORD_DELIMITERS = new Set(['.', '`', "'", '"', ']', ')', '}', ',', ';', ':', '!', '?']);
+
+function trimKeywordDelimiters(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && LEADING_KEYWORD_DELIMITERS.has(value[start])) start++;
+  while (end > start && TRAILING_KEYWORD_DELIMITERS.has(value[end - 1])) end--;
+  return value.slice(start, end);
+}
+
+function trimPathBoundarySlashes(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '/') start++;
+  while (end > start && value[end - 1] === '/') end--;
+  return value.slice(start, end);
+}
+
+function isWordTokenCharacter(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return (code >= 48 && code <= 57)
+    || (code >= 65 && code <= 90)
+    || (code >= 97 && code <= 122)
+    || char === '_';
+}
+
+function trimFilenameWordBoundaries(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && !isWordTokenCharacter(value[start])) start++;
+  while (end > start && !isWordTokenCharacter(value[end - 1])) end--;
+  return value.slice(start, end);
+}
+
+function filenameCandidates(rawToken: string): string[] {
+  const candidates: string[] = [];
+  let segments: string[] = [];
+  const flush = (): void => {
+    if (segments.length < 2) {
+      segments = [];
+      return;
+    }
+    const candidate = trimFilenameWordBoundaries(segments.join('.'));
+    if (isFileLikeToken(candidate)) candidates.push(candidate);
+    segments = [];
+  };
+
+  for (const segment of rawToken.split('.')) {
+    if (segment) segments.push(segment);
+    else flush();
+  }
+  flush();
+  return candidates;
+}
+
+function isFileLikeToken(token: string): boolean {
+  if (!token) return false;
+  if (token.includes('/')) {
+    const segments = token.split('/');
+    return segments.every(Boolean) && /[A-Za-z0-9_-]/.test(token[token.length - 1]);
+  }
+  if (!token.includes('.') || !/[A-Za-z0-9_]/.test(token[0])) return false;
+  return token.split('.').every(segment => segment.length > 0 && !/[^A-Za-z0-9_-]/.test(segment));
+}
+
+function fileLikeTokens(prompt: string): string[] {
+  const tokens: string[] = [];
+  for (const match of prompt.matchAll(/[A-Za-z0-9_./-]+/g)) {
+    for (const part of match[0].split(/\/{2,}/)) {
+      const token = trimKeywordDelimiters(
+        trimPathBoundarySlashes(trimKeywordDelimiters(part)),
+      );
+      if (!token) continue;
+      if (token.includes('/')) {
+        if (isFileLikeToken(token)) tokens.push(token);
+      } else {
+        tokens.push(...filenameCandidates(token));
+      }
+    }
+  }
+  return tokens;
+}
 
 /**
  * Basic regex-based keyword extraction from a prompt.
@@ -55,7 +138,7 @@ export function extractKeywords(prompt: string): string[] {
   const keywords: string[] = [];
   const seen = new Set<string>();
   const addKeyword = (value: string, preserveCase = false): void => {
-    const normalized = value.replace(/^[`'"([{]+|[.`'"\])},;:!?]+$/g, '');
+    const normalized = trimKeywordDelimiters(value);
     const comparison = normalized.toLowerCase();
     if (comparison.length < MIN_KEYWORD_LENGTH
         || STOP_WORDS.has(comparison)
@@ -69,8 +152,8 @@ export function extractKeywords(prompt: string): string[] {
 
   // Paths and filenames carry the strongest signal. Preserve separators and
   // extensions so path scoring can perform exact and directory matches.
-  for (const match of prompt.matchAll(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]*[A-Za-z0-9_-]|\b[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+\b/g)) {
-    addKeyword(match[0], true);
+  for (const token of fileLikeTokens(prompt)) {
+    addKeyword(token, true);
   }
 
   // Preserve source identifiers exactly for diagnostics and git searches,

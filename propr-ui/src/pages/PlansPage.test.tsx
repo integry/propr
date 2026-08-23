@@ -85,7 +85,7 @@ describe('PlansPage', () => {
       repository: 'integry/propr',
     })));
 
-    const trigger = screen.getByRole('button', { name: /propr/i });
+    const trigger = await screen.findByRole('button', { name: /propr/i });
     expect(trigger.textContent).toContain('integry');
     expect(trigger.textContent).toContain('propr');
     expect(trigger.textContent).toContain('3');

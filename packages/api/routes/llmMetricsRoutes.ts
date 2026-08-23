@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { getLLMMetricsSummary, getLLMMetricsByCorrelationId } from '../llmMetricsAdapter.js';
 
 export function createLLMMetricsRoutes() {
@@ -11,7 +12,7 @@ export function createLLMMetricsRoutes() {
     }
   }
 
-  async function getByCorrelationId(req: Request, res: Response): Promise<void> {
+  async function getByCorrelationId(req: FlatRequest, res: Response): Promise<void> {
     try {
       const metrics = await getLLMMetricsByCorrelationId(req.params.correlationId);
       if (!metrics) {

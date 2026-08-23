@@ -24,6 +24,7 @@
 import type { ConfigManager } from "../../config/index.js";
 import { AGENT_DEFAULTS, type AgentType } from "@propr/shared";
 import type { AddAgentOptions, AgentConfig } from "../../api/agents.js";
+import { localhostServiceUrl } from "../../utils/dockerPort.js";
 
 /** Outcome of attempting to authenticate a single agent through its image. */
 export interface AgentLoginResult {
@@ -33,6 +34,12 @@ export interface AgentLoginResult {
   success: boolean;
   /** Human-readable detail (error reason or status line). */
   detail?: string;
+}
+
+export interface AgentConnectivityResult {
+  type: string;
+  status: "ok" | "failed" | "skipped";
+  detail: string;
 }
 
 /**
@@ -49,6 +56,8 @@ export interface AgentSetupActions {
   loginableAgents(): Promise<string[]>;
   /** Authenticate one agent through its image; interactive (inherits stdio). */
   loginAgent(rootDir: string, type: string): Promise<AgentLoginResult>;
+  /** Run a live, image-only request that mirrors the worker credential mount. */
+  validateAgents(rootDir: string, types: string[]): Promise<AgentConnectivityResult[]>;
 }
 
 /** Inputs for {@link runAgentSetup}. */
@@ -75,6 +84,12 @@ export interface AgentSetupOutcome {
   authenticated: string[];
   /** Agents the user chose to authenticate but whose login did not succeed. */
   authFailed: string[];
+  /** Agents whose worker-image connectivity check returned a valid response. */
+  validated: string[];
+  /** Agents whose live image check failed or could not run. */
+  validationFailed: string[];
+  /** Exact recovery commands for agents that still need attention. */
+  nextCommands: string[];
   /** Non-fatal problems encountered (surfaced as a warning by the caller). */
   errors: string[];
 }
@@ -92,6 +107,9 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
     alreadyConfigured: [],
     authenticated: [],
     authFailed: [],
+    validated: [],
+    validationFailed: [],
+    nextCommands: [],
     errors: [],
   };
 
@@ -143,34 +161,61 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
     loginable = new Set(await actions.loginableAgents());
   } catch (error) {
     outcome.errors.push(`could not determine which agents support image login: ${(error as Error).message}`);
-    return outcome;
+    loginable = new Set();
   }
   const candidates = selectedAgents.filter((type) => loginable.has(type));
-  if (candidates.length === 0 || !confirmLogin) return outcome;
-
-  let chosen: string[];
-  try {
-    chosen = await confirmLogin({ candidates, rootDir });
-  } catch (error) {
-    // A failed/cancelled prompt must not abort the whole run — just skip login.
-    outcome.errors.push(`agent login prompt failed: ${(error as Error).message}`);
-    return outcome;
-  }
-  const chosenSet = new Set(chosen.filter((type) => loginable.has(type)));
-  // Iterate the candidate order (not the user's), so logins run in a stable order.
-  for (const type of candidates) {
-    if (!chosenSet.has(type)) continue;
+  if (candidates.length > 0 && confirmLogin) {
+    let chosen: string[] = [];
     try {
-      onLog?.(`authenticating ${type} through its image…`);
-      const result = await actions.loginAgent(rootDir, type);
-      if (result.detail) onLog?.(result.detail);
-      if (result.available && result.success) outcome.authenticated.push(type);
-      else outcome.authFailed.push(type);
+      chosen = await confirmLogin({ candidates, rootDir });
     } catch (error) {
-      outcome.authFailed.push(type);
-      outcome.errors.push(`login for ${type} failed: ${(error as Error).message}`);
+      // A failed/cancelled prompt must not abort the whole run — validation and
+      // exact recovery commands are still useful.
+      outcome.errors.push(`agent login prompt failed: ${(error as Error).message}`);
+    }
+    const chosenSet = new Set(chosen.filter((type) => loginable.has(type)));
+    // Iterate the candidate order (not the user's), so logins run in a stable order.
+    for (const type of candidates) {
+      if (!chosenSet.has(type)) continue;
+      try {
+        onLog?.(`authenticating ${type} through its image…`);
+        const result = await actions.loginAgent(rootDir, type);
+        if (result.detail) onLog?.(result.detail);
+        if (result.available && result.success) outcome.authenticated.push(type);
+        else outcome.authFailed.push(type);
+      } catch (error) {
+        outcome.authFailed.push(type);
+        outcome.errors.push(`login for ${type} failed: ${(error as Error).message}`);
+      }
     }
   }
+
+  // 4. Always validate the selected agents from the same image/mount shape the
+  // worker uses. This is one live call per agent (host calls are deliberately
+  // skipped), so setup catches a successful host login that was not mounted into
+  // Docker without doubling subscription usage.
+  try {
+    onLog?.(`checking agent connectivity through worker image${selectedAgents.length === 1 ? "" : "s"}…`);
+    const checks = await actions.validateAgents(rootDir, selectedAgents);
+    for (const check of checks) {
+      onLog?.(`${check.type}: ${check.detail}`);
+      if (check.status === "ok") {
+        outcome.validated.push(check.type);
+        continue;
+      }
+      outcome.validationFailed.push(check.type);
+      if (loginable.has(check.type)) outcome.nextCommands.push(`propr agent login ${check.type}`);
+      outcome.nextCommands.push(`propr check agents --agents ${check.type}`);
+    }
+  } catch (error) {
+    outcome.errors.push(`could not validate agent connectivity: ${(error as Error).message}`);
+    for (const type of selectedAgents) {
+      if (loginable.has(type)) outcome.nextCommands.push(`propr agent login ${type}`);
+      outcome.nextCommands.push(`propr check agents --agents ${type}`);
+    }
+  }
+
+  outcome.nextCommands = Array.from(new Set(outcome.nextCommands));
 
   return outcome;
 }
@@ -186,7 +231,7 @@ export function createDefaultAgentSetupActions(configManager?: ConfigManager): A
     const { getHostConfig } = await import("../../orchestrator/index.js");
     const { cfg } = await getHostConfig({ configManager, root: rootDir });
     const { createApiClient } = await import("../../api/client.js");
-    return createApiClient({ baseUrl: `http://localhost:${cfg.apiPort}` });
+    return createApiClient({ baseUrl: localhostServiceUrl(cfg.apiPort) });
   };
 
   return {
@@ -233,6 +278,17 @@ export function createDefaultAgentSetupActions(configManager?: ConfigManager): A
       } finally {
         rmSync(tmp, { recursive: true, force: true });
       }
+    },
+    async validateAgents(rootDir, types) {
+      const { getHostConfig } = await import("../../orchestrator/index.js");
+      const { validateAgents } = await import("../agentValidation.js");
+      const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
+      const rows = await validateAgents(orch, cfg, { agents: types, skipHost: true });
+      return rows.map((row) => ({
+        type: row.type,
+        status: row.image.status === "ok" ? "ok" : row.image.status === "fail" ? "failed" : "skipped",
+        detail: row.image.detail,
+      }));
     },
   };
 }

@@ -1,10 +1,9 @@
 import 'dotenv/config';
 import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { GITHUB_ISSUE_QUEUE_NAME, createWorker } from '@propr/core';
+import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManager, runMigrations } from '@propr/core';
 import { logger } from '@propr/core';
 import { generateCorrelationId } from '@propr/core';
-import { db } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatus } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings } from '@propr/core';
 import { loadSettingsFromConfig } from '@propr/core';
@@ -24,6 +23,11 @@ import { processSystemTaskJob } from './jobs/processSystemTaskJob.js';
 import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 import { createConfiguredMainWorker } from './workerFactory.js';
 import type { MainWorker } from './workerFactory.js';
+import {
+    attachPRCommentTaskStateFinalizers,
+    type PRCommentTaskStateFinalizers,
+} from './jobs/prCommentTaskStateFinalizers.js';
+import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in worker');
@@ -153,18 +157,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
 
     validateAttachmentBaseUrlConfig();
 
-    // Run migrations first, before loading any configs from the database
-    try {
-        logger.info('Running database migrations...');
-        await db.migrate.latest();
-        logger.info('Database migrations completed successfully');
-    } catch (error) {
-        const err = error as Error;
-        logger.error({
-            error: err.message,
-            stack: err.stack
-        }, 'Database migration failed - worker will continue but database persistence may not work');
-    }
+    // No jobs may be claimed against a partially migrated schema.
+    await runMigrations();
 
     try {
         if (process.env.CONFIG_REPO) {
@@ -304,6 +298,8 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
         }
     });
 
+    let taskStateFinalizers: PRCommentTaskStateFinalizers | undefined;
+    const stateManager = getStateManager();
     const worker = await createConfiguredMainWorker({
         queueName: GITHUB_ISSUE_QUEUE_NAME,
         concurrency: workerConcurrency,
@@ -315,7 +311,13 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
             processSystemTaskJob,
             processMergeConflictJob,
         },
+        beforeRun: configuredWorker => {
+            taskStateFinalizers = attachPRCommentTaskStateFinalizers(configuredWorker, stateManager);
+        },
     });
+    if (!taskStateFinalizers) throw new Error('PR comment task state finalizers were not attached');
+    const attachedTaskStateFinalizers = taskStateFinalizers;
+    const taskStateRecovery = await startWorkerTaskStateRecovery({ stateManager });
 
     const runtimeBuildWorker = new Worker<AgentRuntimeBuildJobData>(
         AGENT_RUNTIME_BUILD_QUEUE_NAME,
@@ -347,12 +349,15 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     });
 
     const close = async (): Promise<void> => {
-        await heartbeatRedis.srem('system:status:workers', workerId);
         clearInterval(heartbeatInterval);
+        await taskStateRecovery.close();
+        await worker.close();
+        await attachedTaskStateFinalizers.close();
+        await closeStateManager();
+        await runtimeBuildWorker.close();
+        await heartbeatRedis.srem('system:status:workers', workerId);
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
-        await worker.close();
-        await runtimeBuildWorker.close();
     };
 
     process.on('SIGINT', async () => {

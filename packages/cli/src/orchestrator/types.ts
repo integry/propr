@@ -16,6 +16,8 @@ export interface OrchestratorConfig {
   readonly network: string;
   readonly envFileLocal: string;
   readonly envFileHost?: string;
+  /** Explicit NODE_ENV read from the stack env file, if present. */
+  readonly nodeEnv?: string;
   readonly validateHostPaths: boolean;
   readonly hostData?: string;
   readonly hostLogs?: string;
@@ -26,6 +28,12 @@ export interface OrchestratorConfig {
   readonly docsPort: string;
   readonly redisExternalPort: string;
   readonly docsEnabled: boolean;
+  readonly apiRateLimitMax: string;
+  readonly apiRateLimitWindowMs: string;
+  readonly authRateLimitMax: string;
+  readonly authRateLimitWindowMs: string;
+  readonly webhookRateLimitMax: string;
+  readonly webhookRateLimitWindowMs: string;
   readonly hostClaudeDir?: string;
   readonly hostCodexDir?: string;
   readonly hostAntigravityDir?: string;
@@ -40,6 +48,8 @@ export interface OrchestratorConfig {
   readonly proprInstanceId?: string;
   readonly uiPublicApiUrl?: string;
   readonly cloudflaredImage: string;
+  /** Immediate socket peers whose forwarded client/protocol headers the API trusts. */
+  readonly trustedProxyPeers?: string;
   /**
    * Hosted UI origin allowed by CORS/redirects. Always resolves to a value:
    * an explicit FRONTEND_URL, the hosted origin in tunnel mode, or the
@@ -159,6 +169,14 @@ export interface OrchestratorModule {
 
   startService(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): ServiceState | undefined;
   startServiceAsync(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): Promise<ServiceState | undefined>;
+  runMigrationPhase(
+    cfg: OrchestratorConfig,
+    opts?: { onLog?: (line: string) => void; freshnessCache?: Map<string, ImageFreshnessResult> }
+  ): void;
+  runMigrationPhaseAsync(
+    cfg: OrchestratorConfig,
+    opts?: { onLog?: (line: string) => void; freshnessCache?: Map<string, ImageFreshnessResult> }
+  ): Promise<void>;
   stopService(cfg: OrchestratorConfig, service: string, opts?: { remove?: boolean; onLog?: (line: string) => void }): void;
   startStack(
     cfg: OrchestratorConfig,

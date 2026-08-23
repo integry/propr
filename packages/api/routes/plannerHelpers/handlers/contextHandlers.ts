@@ -2,12 +2,14 @@
  * Context-related HTTP handlers.
  */
 
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../../../requestTypes.js';
 import { Knex } from 'knex';
 import crypto from 'crypto';
 import {
   generateContextPreview,
   BranchNotFoundError,
+  ContextTokenLimitError,
   ensureRepoCloned,
   generateCorrelationId,
   loadSettings,
@@ -167,14 +169,25 @@ export function createPreviewContextHandler(deps: PreviewContextDeps) {
         })
         .catch(async (error) => {
           console.error('Preview context background error:', error);
-          const errorMessage = error instanceof Error ? error.message : 'Failed to preview context';
+          const isCapacityError = error instanceof ContextTokenLimitError;
+          const errorMessage = isCapacityError
+            ? `${error.message}. Exclude unusually large generated or minified files, or choose a model with a larger context window.`
+            : error instanceof Error ? error.message : 'Failed to preview context';
           await storePreviewFailure(deps.db, draftId, previewRequestId, errorMessage);
           const eventPublisher = getEventPublisher();
           await eventPublisher.publishDraftUpdate({
             draftId,
             step: 'context',
             status: 'failed',
-            data: { error: errorMessage, previewRequestId },
+            data: {
+              error: errorMessage,
+              previewRequestId,
+              ...(isCapacityError ? {
+                errorCode: error.code,
+                requestedTokenLimit: error.requestedTokenLimit,
+                tiktokenLimit: error.tiktokenLimit,
+              } : {}),
+            },
             draftStatus: 'generating'
           });
         });
@@ -232,7 +245,7 @@ interface DownloadContextDeps {
 }
 
 export function createDownloadContextHandler(deps: DownloadContextDeps) {
-  return async function downloadContext(req: Request, res: Response): Promise<void> {
+  return async function downloadContext(req: FlatRequest, res: Response): Promise<void> {
     const { draftId } = req.params;
     if (!draftId) {
       res.status(400).json({ error: 'draftId is required' });

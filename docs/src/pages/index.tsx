@@ -9,7 +9,7 @@ import CodeBlock from '@theme/CodeBlock';
 
 import styles from './index.module.css';
 
-const QUICKSTART_SNIPPET = `npm install -g @propr/cli   # Node.js 22+; prefix with sudo only if your global npm prefix requires it
+const QUICKSTART_SNIPPET = `npm install -g propr-cli   # Node.js 22+; prefix with sudo only if your global npm prefix requires it
 
 mkdir propr && cd propr
 propr setup         # interactive wizard: checks, scaffold, images, GitHub auth, start
@@ -252,7 +252,10 @@ function Quickstart() {
             <p>
               The ProPR CLI is the stack control plane: it scaffolds the runtime
               directory, verifies the host, and starts the prebuilt images on a
-              Docker-capable Linux host. Configure{' '}
+              Docker host. Linux <code>amd64</code> is the native, recommended path.
+              Apple Silicon macOS works through Docker Desktop running the published
+              Linux <code>amd64</code> images under emulation; native <code>arm64</code>{' '}
+              images are not yet available. Configure{' '}
               <Link to="/docs/operations/github-auth">GitHub access</Link> (your own
               GitHub App, or a shared App that <code>propr setup</code> enrolls for
               you) and authenticate at least one agent CLI on the host.
@@ -265,6 +268,14 @@ function Quickstart() {
                 launcher-container path
               </Link>{' '}
               that needs no Node.js.
+            </p>
+            <p>
+              Delegating setup to a coding agent? Start with the copyable{' '}
+              <Link to="/docs/tutorials/setup#give-this-to-your-coding-agent">
+                safe installation prompt
+              </Link>{' '}
+              so authorization steps and existing stack data stay under human
+              control.
             </p>
           </div>
           <div className="col col--7">

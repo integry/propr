@@ -82,7 +82,7 @@ type SetupUiEvent =
   | { type: "log"; line: string }
   | { type: "prompt"; prompt: SetupPrompt }
   | { type: "prompt-done"; id: number }
-  | { type: "done" };
+  | { type: "done"; completed: boolean };
 
 /**
  * Pub/sub bridge between the async setup engine and the React tree, plus the
@@ -122,9 +122,9 @@ export class SetupBridge {
   }
 
   /** Reflect the final state and tell the view the engine is finished. */
-  finish(state: SetupState): void {
+  finish(state: SetupState, completed: boolean): void {
     this.push({ type: "state", state });
-    this.push({ type: "done" });
+    this.push({ type: "done", completed });
   }
 
   // --- engine prompt primitives (return a promise the UI resolves) -------
@@ -251,7 +251,7 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
     },
 
     async configureGithubAuth({ current }): Promise<GithubAuthDecision> {
-      // Token relay (the hosted ProPR GitHub App) leads as the recommended path.
+      // ProPR Connect (the hosted ProPR GitHub App) is the zero-config default.
       // "Keep current configuration" is offered only when there is an existing
       // config to keep — on a fresh install there is nothing to preserve, so the
       // relay option is the first (and default) choice.
@@ -259,7 +259,7 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       if (current.mode !== "none") {
         options.push({ label: "Keep current configuration", value: "keep", hint: current.mode });
       }
-      options.push({ label: "Token relay (use the ProPR GitHub App)", value: "relay" });
+      options.push({ label: "ProPR Connect (default ProPR GitHub App)", value: "relay" });
       options.push({ label: "Custom GitHub App (set up your own GitHub App)", value: "app" });
       const choice = await bridge.select({
         title: "GitHub authentication",
@@ -273,13 +273,13 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       // PROPR_DEMO_MODE=true would keep resolving as demo and ignore the App/relay
       // config the user just entered.
       if (choice === "relay") {
-        // No manual URL/token entry: the engine enrolls with the hosted relay
+        // No manual URL/token entry: the engine enrolls through ProPR Connect
         // using the stored `propr login` token, discovers the installation, and
         // mints the token. Only the relay base URL is asked, prefilled with the
         // hosted default (Enter accepts it; override for a self-hosted relay).
         const relayUrl = await bridge.input({
-          title: "Relay URL",
-          detail: "Press Enter for the hosted ProPR relay; override only for a self-hosted relay.",
+          title: "ProPR Connect URL",
+          detail: "Press Enter for ProPR Connect; override only for a self-hosted relay.",
           defaultValue: DEFAULT_PROPR_GH_RELAY_URL,
         });
         return { mode: "relay", enrollRelay: { relayUrl: relayUrl.trim() || DEFAULT_PROPR_GH_RELAY_URL } };
@@ -296,11 +296,21 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
       };
     },
 
-    // Note: confirmGithubLogin is intentionally not implemented here. The
-    // interactive `gh auth login` would have to take over the terminal mid-render,
-    // which the full-screen Ink wizard can't do cleanly — so relay enrollment
-    // without a stored token surfaces "run `propr login`" guidance instead
-    // (see enrollRelayForSetup in engine.ts).
+    async confirmGithubAppInstall({ url }): Promise<boolean> {
+      return bridge.confirm({
+        title: "Install the default ProPR GitHub App?",
+        detail: `No installation is available yet. Setup will open ${url}`,
+        defaultValue: true,
+      });
+    },
+
+    async confirmGithubAppInstalled(): Promise<boolean> {
+      return bridge.confirm({
+        title: "GitHub App installation complete?",
+        detail: "Return here after choosing the repositories the ProPR App may access.",
+        defaultValue: true,
+      });
+    },
     async selectInstallation({ installations }): Promise<string> {
       return bridge.select({
         title: "Choose a GitHub App installation",
@@ -373,7 +383,7 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
     async confirmAgentLogin({ candidates }): Promise<string[]> {
       return bridge.multiSelect({
         title: "Authenticate agents through their images?",
-        detail: "Log in inside each agent's Docker image; credentials are written to the mounted host directory. Leave empty to skip.",
+        detail: "Log in inside each agent's Docker image; setup then runs one live image connectivity check. Leave empty to skip login and receive exact recovery commands.",
         options: candidates.map((type) => ({ label: type, value: type })),
         defaultSelected: [],
       });
@@ -412,7 +422,7 @@ export function buildSetupPrompts(bridge: SetupBridge): SetupPrompts {
 
     async launchUi({ url }): Promise<boolean> {
       if (!url) return false;
-      return bridge.confirm({ title: "Open the ProPR web UI?", detail: url, defaultValue: false });
+      return bridge.confirm({ title: "Open the ProPR web UI?", detail: url, defaultValue: true });
     },
   };
 }
@@ -611,6 +621,7 @@ interface UiState {
   logs: string[];
   prompt: SetupPrompt | null;
   done: boolean;
+  completed: boolean;
 }
 
 function uiReducer(state: UiState, event: SetupUiEvent): UiState {
@@ -624,7 +635,7 @@ function uiReducer(state: UiState, event: SetupUiEvent): UiState {
     case "prompt-done":
       return state.prompt && state.prompt.id === event.id ? { ...state, prompt: null } : state;
     case "done":
-      return { ...state, done: true, prompt: null };
+      return { ...state, done: true, completed: event.completed, prompt: null };
     default:
       return state;
   }
@@ -638,7 +649,7 @@ export interface SetupAppProps {
 
 export function SetupApp({ bridge, onCancel }: SetupAppProps): React.ReactElement {
   const { exit } = useApp();
-  const [ui, dispatch] = useReducer(uiReducer, { setup: null, logs: [], prompt: null, done: false });
+  const [ui, dispatch] = useReducer(uiReducer, { setup: null, logs: [], prompt: null, done: false, completed: false });
   const [frame, setFrame] = useState(0);
 
   // Per-prompt local input state, reset whenever a new prompt arrives.
@@ -803,7 +814,9 @@ export function SetupApp({ bridge, onCancel }: SetupAppProps): React.ReactElemen
 
       {ui.done ? (
         <Box marginTop={1}>
-          <Text dimColor>Setup finished.</Text>
+          <Text color={ui.completed ? "green" : "red"}>
+            {ui.completed ? "Setup complete." : "Setup did not finish — resolve the failed step above and re-run `propr setup`."}
+          </Text>
         </Box>
       ) : null}
     </Box>

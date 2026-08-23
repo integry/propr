@@ -8,32 +8,111 @@
 import type { Job } from 'bullmq';
 import type { Logger } from 'pino';
 import type { Redis } from 'ioredis';
-import { getCurrentPRHead, areAllChecksPassing } from '@propr/core';
-import type { CommentJobData } from '@propr/core';
+import { issueQueue, type CommentJobData, type UnprocessedComment } from '@propr/core';
 import type { WorkerStateManager } from '@propr/core';
 import { continueUltrafixLoop } from './ultrafixLoopContinuation.js';
 import { buildUltrafixHistoryMeta, buildContinuationMeta, patchUltrafixContinuationMeta } from './ultrafixContinuationMeta.js';
-import { loadState as loadUltrafixState, saveDeferredContinuation, type UltrafixAction } from './ultrafixOrchestrationService.js';
+import {
+    isUltrafixAutomaticWorkCurrent,
+    loadState as loadUltrafixState,
+    markFindingsSelected,
+    type UltrafixAction,
+} from './ultrafixOrchestrationService.js';
+import { restorePendingComments } from './prPendingComments.js';
 
-/** Re-check CI readiness for ultrafix jobs before executing. Returns true if ready. */
-export async function checkUltrafixReadiness(
+interface SelectedReviewComment {
+    id: number;
+    actionableFindings: Array<{ id: string; title: string }>;
+}
+
+/** Persist the exact review findings owned by an automatic fix job. */
+export async function markSelectedUltrafixFindings(
     job: Job<CommentJobData>,
-    params: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }
+    redisClient: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    selectedReviewComments: SelectedReviewComment[],
+): Promise<void> {
+    if (!job.data.ultrafixMeta || selectedReviewComments.length === 0) return;
+    await markFindingsSelected(redisClient, {
+        ...identity,
+        workEpoch: job.data.ultrafixMeta.workEpoch ?? 0,
+        findings: selectedReviewComments.flatMap(comment =>
+            comment.actionableFindings.map(finding => ({
+                id: finding.id,
+                sourceCommentId: comment.id,
+                title: finding.title,
+            })),
+        ),
+    });
+}
+
+/** Reject delayed or retried automatic jobs superseded by a manual command. */
+export async function isUltrafixJobCurrent(
+    job: Job<CommentJobData>,
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis },
 ): Promise<boolean> {
     if (!job.data.ultrafixMeta) return true;
-    const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = params;
-    try {
-        const headSha = await getCurrentPRHead(repoOwner, repoName, pullRequestNumber);
-        if (!headSha) { correlatedLogger.warn({ pullRequestNumber }, 'Ultrafix pre-check: could not get PR head SHA'); return true; }
-        const checksPassing = await areAllChecksPassing(repoOwner, repoName, headSha);
-        if (checksPassing) { correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks passing, proceeding'); return true; }
-        correlatedLogger.info({ pullRequestNumber }, 'Ultrafix pre-check: CI checks not passing, deferring');
-        await saveDeferredContinuation(redisClient, { owner: repoOwner, repo: repoName, pr: pullRequestNumber, nextAction: job.data.commandMode as 'review' | 'fix', savedAt: new Date().toISOString(), reason: 'pre_execution_ci_check_failed' });
-        return false;
-    } catch (err) {
-        correlatedLogger.warn({ pullRequestNumber, error: (err as Error).message }, 'Ultrafix pre-check: error checking CI, proceeding anyway');
-        return true;
+    return isUltrafixAutomaticWorkCurrent(
+        params.redisClient,
+        { owner: params.repoOwner, repo: params.repoName, pr: params.pullRequestNumber },
+        job.data.ultrafixMeta.workEpoch,
+    );
+}
+
+/** Preserve comments destructively claimed by an automatic job that is now stale. */
+export async function restorePendingCommentsIfUltrafixJobSuperseded(
+    job: Job<CommentJobData>,
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis },
+    pickedUpComments: UnprocessedComment[],
+    originalUltrafixMeta: CommentJobData['ultrafixMeta'] = job.data.ultrafixMeta,
+): Promise<boolean> {
+    if (!originalUltrafixMeta) return false;
+    const originCurrent = await isUltrafixAutomaticWorkCurrent(
+        params.redisClient,
+        { owner: params.repoOwner, repo: params.repoName, pr: params.pullRequestNumber },
+        originalUltrafixMeta.workEpoch,
+    );
+    if (originCurrent) return false;
+
+    const resolvedManualTakeover = !job.data.ultrafixMeta
+        && (job.data.commandMode === 'fix' || job.data.commandMode === 'review');
+    if (resolvedManualTakeover && !await hasOtherCurrentManualOwner(job, params)) return false;
+
+    await restorePendingComments(pickedUpComments, params);
+    if (pickedUpComments.length > 0) {
+        await issueQueue.add('processPullRequestComment', {
+            pullRequestNumber: params.pullRequestNumber,
+            comments: [],
+            repoOwner: params.repoOwner,
+            repoName: params.repoName,
+            branchName: job.data.branchName,
+            llm: job.data.llm,
+            correlationId: job.data.correlationId,
+            reasoningLevel: job.data.reasoningLevel,
+        }, { delay: 3000 });
     }
+    return true;
+}
+
+async function hasOtherCurrentManualOwner(
+    staleJob: Job<CommentJobData>,
+    params: { repoOwner: string; repoName: string; pullRequestNumber: number },
+): Promise<boolean> {
+    const jobs = (await Promise.all([
+        issueQueue.getActive(),
+        issueQueue.getWaiting(),
+        issueQueue.getDelayed(),
+    ])).flat();
+    return jobs.some(candidate => {
+        if (candidate.name !== 'processPullRequestComment' || !('pullRequestNumber' in candidate.data)) return false;
+        const data = candidate.data as CommentJobData;
+        return candidate.id !== staleJob.id
+            && data.repoOwner === params.repoOwner
+            && data.repoName === params.repoName
+            && data.pullRequestNumber === params.pullRequestNumber
+            && !data.ultrafixMeta
+            && (data.commandMode === 'fix' || data.commandMode === 'review');
+    });
 }
 
 export async function handleUltrafixContinuation(

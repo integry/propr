@@ -6,7 +6,8 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { after, afterEach, describe, test } from 'node:test';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { Request, Response } from 'express';
+import type { Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import type { AgentConfig } from '@propr/core';
 import { closeConnection, shutdownQueue } from '@propr/core';
 import {
@@ -325,7 +326,7 @@ describe('agent login routes', () => {
     await routes.startLogin({
       params: { agentId: 'codex-1' },
       user: { username: 'owner' },
-    } as unknown as Request, startedResponse.response);
+    } as unknown as FlatRequest, startedResponse.response);
 
     assert.equal(startedResponse.record.status, 202);
     const session = startedResponse.record.body as { id: string; status: string };
@@ -335,7 +336,7 @@ describe('agent login routes', () => {
     await routes.getLogin({
       params: { agentId: 'codex-1', sessionId: session.id },
       user: { username: 'other-user' },
-    } as unknown as Request, otherResponse.response);
+    } as unknown as FlatRequest, otherResponse.response);
 
     assert.equal(otherResponse.record.status, 404);
     assert.deepEqual(otherResponse.record.body, { error: 'Agent login session not found' });
@@ -355,7 +356,7 @@ describe('agent login routes', () => {
     await routes.startLogin({
       params: { agentId: disabledAgent.alias },
       user: { username: 'owner' },
-    } as unknown as Request, startedResponse.response);
+    } as unknown as FlatRequest, startedResponse.response);
     const session = startedResponse.record.body as { id: string; status: string };
     assert.equal(session.status, 'running');
 
@@ -363,7 +364,7 @@ describe('agent login routes', () => {
     await routes.getLogin({
       params: { agentId: disabledAgent.alias, sessionId: session.id },
       user: { username: 'owner' },
-    } as unknown as Request, getResponse.response);
+    } as unknown as FlatRequest, getResponse.response);
     assert.equal(getResponse.record.status, 200);
     assert.equal((getResponse.record.body as { agentId: string }).agentId, disabledAgent.id);
   });
@@ -384,7 +385,7 @@ describe('agent login routes', () => {
     await routes.startLogin({
       params: { agentId: 'vibe-1' },
       user: { username: 'owner' },
-    } as unknown as Request, response);
+    } as unknown as FlatRequest, response);
 
     assert.equal(record.status, 400);
     assert.deepEqual(record.body, { error: 'vibe does not support interactive login' });

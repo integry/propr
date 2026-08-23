@@ -17,7 +17,7 @@ import {
  * Key scenarios tested:
  * 1. Lock acquisition with SET NX (atomic operation)
  * 2. Rescheduling behavior when lock is held by another job
- * 3. Redelivery scenarios (same correlationId cannot execute twice)
+ * 3. Redelivery scenarios (persisted attempt tokens can resume safely)
  * 4. Lock cleanup after job completion
  * 5. Concurrent execution prevention
  */
@@ -353,7 +353,7 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
             assert.notStrictEqual(firstToken, secondToken, 'Each execution should have a unique lock owner token');
         });
 
-        test('reschedules a duplicate execution with the same correlationId', async () => {
+        test('allows redelivery to resume with the same persisted lock token', async () => {
             const lockKey = 'lock:pr:testowner:testrepo:123';
             const correlationId = 'job-correlation-1';
             const job = {
@@ -381,8 +381,8 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
             });
 
             assert.strictEqual(firstAcquire, true, 'First acquisition should succeed');
-            assert.strictEqual(reentry, false, 'Duplicate execution should not acquire the lock');
-            assert.strictEqual(issueQueue.jobs.length, 1, 'Duplicate execution should be rescheduled');
+            assert.strictEqual(reentry, true, 'Redelivery should renew its existing lock');
+            assert.strictEqual(issueQueue.jobs.length, 0, 'Redelivery should not be rescheduled');
         });
 
         test('the current execution can refresh its TTL atomically', async () => {
@@ -416,9 +416,11 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
             const lockKey = 'lock:pr:testowner:testrepo:123';
             const originalCorrelationId = 'job-correlation-1';
             const differentCorrelationId = 'job-correlation-2';
+            const originalToken = createPRProcessingLockToken(originalCorrelationId);
+            const duplicateToken = createPRProcessingLockToken(originalCorrelationId);
 
             // Original job acquires lock
-            await redisClient.set(lockKey, originalCorrelationId, 'EX', 3600, 'NX');
+            await redisClient.set(lockKey, originalToken, 'EX', 3600, 'NX');
 
             // A duplicate delivery keeps the same correlationId but is still a separate execution.
             const reentryJob = {
@@ -433,7 +435,7 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
 
             const reentryResult = await acquirePRLock(redisClient, issueQueue, {
                 lockKey,
-                correlationId: originalCorrelationId,
+                correlationId: duplicateToken,
                 job: reentryJob
             });
 
@@ -640,6 +642,7 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
         test('handles rapid successive lock attempts', async () => {
             const lockKey = 'lock:pr:testowner:testrepo:123';
             const correlationId = 'rapid-job';
+            const tokens = Array.from({ length: 5 }, () => createPRProcessingLockToken(correlationId));
             const job = {
                 name: 'processPullRequestComment',
                 data: {
@@ -651,13 +654,9 @@ describe('PR Comment Job Lock Acquisition - Integration Tests', () => {
             };
 
             // Rapid successive attempts
-            const results = await Promise.all([
-                acquirePRLock(redisClient, issueQueue, { lockKey, correlationId, job }),
-                acquirePRLock(redisClient, issueQueue, { lockKey, correlationId, job }),
-                acquirePRLock(redisClient, issueQueue, { lockKey, correlationId, job }),
-                acquirePRLock(redisClient, issueQueue, { lockKey, correlationId, job }),
-                acquirePRLock(redisClient, issueQueue, { lockKey, correlationId, job })
-            ]);
+            const results = await Promise.all(tokens.map(token =>
+                acquirePRLock(redisClient, issueQueue, { lockKey, correlationId: token, job })
+            ));
 
             assert.strictEqual(results.filter(Boolean).length, 1, 'Only one execution should acquire the lock');
             assert.strictEqual(issueQueue.jobs.length, 4, 'All duplicate executions should be rescheduled');

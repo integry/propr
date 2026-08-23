@@ -8,11 +8,45 @@
  */
 
 import { Command } from "commander";
-import { existsSync, copyFileSync, chmodSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { validateSessionSecret } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
+import {
+  ensurePrivateDirectory,
+  secureExistingPrivateFile,
+  writePrivateFileAtomic,
+} from "../utils/privateFilesystem.js";
+
+export function materializeSessionSecret(
+  template: string,
+  secret: string = randomBytes(32).toString("hex"),
+): string {
+  const validationError = validateSessionSecret(secret);
+  if (validationError) throw new Error(`Cannot scaffold stack: ${validationError}`);
+  const linePattern = /^SESSION_SECRET=.*$/m;
+  if (!linePattern.test(template)) {
+    throw new Error("Cannot scaffold stack: .env.example does not define SESSION_SECRET");
+  }
+  return template.replace(linePattern, `SESSION_SECRET=${secret}`);
+}
+
+/**
+ * The repository template is intentionally development-oriented for source
+ * checkouts. A stack created by the packaged CLI runs published images instead,
+ * so materialize their runtime mode separately rather than changing the source
+ * development template.
+ */
+export function materializePackagedRuntimeMode(template: string): string {
+  const linePattern = /^NODE_ENV=.*$/m;
+  if (!linePattern.test(template)) {
+    throw new Error("Cannot scaffold stack: .env.example does not define NODE_ENV");
+  }
+  return template.replace(linePattern, "NODE_ENV=production");
+}
 
 export interface DetectedCred {
   envKey: string;
@@ -94,12 +128,29 @@ export interface InitStackResult {
   envSkipped: boolean;
   envBackedUp: boolean;
   dirsCreated: string[];
+  dirsSkipped: string[];
   detected: DetectedCred[];
   credentialsAppended: boolean;
   pendingCredentials: DetectedCred[];
+  /** Upgrade guidance for a preserved environment that cannot be migrated safely. */
+  runtimeModeWarning?: string;
 }
 
-export async function scaffoldStack(options: InitStackOptions = {}): Promise<InitStackResult> {
+export interface InitStackDependencies {
+  persistStackRoot: (rootDir: string) => Promise<void>;
+}
+
+const defaultInitStackDependencies: InitStackDependencies = {
+  persistStackRoot: async rootDir => {
+    const configManager = await createConfigManager();
+    await configManager.setStackRoot(rootDir);
+  },
+};
+
+export async function scaffoldStack(
+  options: InitStackOptions = {},
+  dependencies: InitStackDependencies = defaultInitStackDependencies,
+): Promise<InitStackResult> {
   const rootDir = resolve(options.root ?? process.cwd());
   const envPath = join(rootDir, ".env");
   const result: InitStackResult = {
@@ -108,6 +159,7 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
     envSkipped: false,
     envBackedUp: false,
     dirsCreated: [],
+    dirsSkipped: [],
     detected: [],
     credentialsAppended: false,
     pendingCredentials: [],
@@ -118,15 +170,27 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
   // 1. data/logs/repos directories
   for (const sub of ["data", "logs", "repos"]) {
     const dir = join(rootDir, sub);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-      result.dirsCreated.push(sub);
-    }
+    const created = !existsSync(dir);
+    ensurePrivateDirectory(dir);
+    (created ? result.dirsCreated : result.dirsSkipped).push(sub);
   }
 
-  // 2. .env from .env.example
-  if (existsSync(envPath) && !options.force) {
+  // 2. Load the environment content that will be used below.
+  const envExists = existsSync(envPath);
+  let envContent: string;
+  let shouldWriteEnv = false;
+  if (envExists && !options.force) {
+    secureExistingPrivateFile(envPath);
+    envContent = readFileSync(envPath, "utf-8");
     result.envSkipped = true;
+    const nodeEnv = envContent.match(/^\s*(?:export\s+)?NODE_ENV\s*=\s*([^#\r\n]*)/m)?.[1]
+      ?.trim()
+      .replace(/^["']|["']$/g, "");
+    if (nodeEnv && nodeEnv.toLowerCase() !== "production") {
+      result.runtimeModeWarning =
+        `Existing .env sets NODE_ENV=${nodeEnv}. Packaged ProPR stacks require NODE_ENV=production. ` +
+        "Review the setting and change it manually before starting; the existing .env was not modified.";
+    }
   } else {
     const example = resolveEnvExample();
     if (!example) {
@@ -134,27 +198,24 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
         "Could not locate .env.example. Run `npm run build` in packages/cli, or run from a ProPR source checkout."
       );
     }
-    if (options.force && existsSync(envPath)) {
+    envContent = materializePackagedRuntimeMode(
+      materializeSessionSecret(readFileSync(example, "utf-8")),
+    );
+    if (options.force && envExists) {
+      secureExistingPrivateFile(envPath);
       const bakPath = `${envPath}.bak`;
-      copyFileSync(envPath, bakPath);
-      try { chmodSync(bakPath, 0o600); } catch { /* best-effort */ }
+      writePrivateFileAtomic(bakPath, readFileSync(envPath), { secureParent: false });
       result.envBackedUp = true;
     }
-    copyFileSync(example, envPath);
-    try {
-      chmodSync(envPath, 0o600);
-    } catch {
-      // Best-effort — may fail on Windows or non-owned files.
-    }
-    result.envCreated = true;
+    shouldWriteEnv = true;
   }
 
-  // 3. Detect credential dirs and record any not already present in .env.
+  // 3. Detect credential dirs and include missing entries in newly generated
+  //    content before publishing .env atomically.
   //    When the .env was pre-existing (not created this run) and --force was
   //    not given, collect but do NOT write — the caller should surface the
   //    suggestions without silently mutating a user-managed file.
   const detected = detectCredentials();
-  const envContent = readFileSync(envPath, "utf-8");
   const toAppend = detected.filter((c) => {
     const re = new RegExp(`^\\s*(export\\s+)?${c.envKey}\\s*=`, "m");
     return !re.test(envContent);
@@ -164,13 +225,18 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
       "\n# --- Host agent-credential directories (detected by `propr init stack`) ---\n" +
       toAppend.map((c) => `${c.envKey}=${c.path}`).join("\n") +
       "\n";
-    appendFileSync(envPath, block, "utf-8");
+    envContent += block;
     result.credentialsAppended = true;
   } else {
     result.credentialsAppended = false;
   }
   result.detected = detected;
   result.pendingCredentials = toAppend;
+
+  if (shouldWriteEnv) {
+    writePrivateFileAtomic(envPath, envContent, { secureParent: false });
+    result.envCreated = true;
+  }
 
   // 3b. When Vibe is in play, pre-create its prompt-cache dir so spawned Vibe
   //     agent containers can bind-mount a writable host directory. Creating it
@@ -190,8 +256,7 @@ export async function scaffoldStack(options: InitStackOptions = {}): Promise<Ini
   }
 
   // 4. Persist the stack root so other commands can find it.
-  const configManager = await createConfigManager();
-  await configManager.setStackRoot(rootDir);
+  await dependencies.persistStackRoot(rootDir);
 
   return result;
 }
@@ -207,6 +272,9 @@ function displayResult(result: InitStackResult): void {
     console.log("Created .env from .env.example");
   } else if (result.envSkipped) {
     console.log("Kept existing .env (use --force to overwrite)");
+  }
+  if (result.runtimeModeWarning) {
+    console.warn(`Warning: ${result.runtimeModeWarning}`);
   }
   if (result.detected.length > 0) {
     console.log("");
@@ -246,8 +314,20 @@ Examples:
   $ propr init stack --root ~/propr
   $ propr init stack --force
 `)
-    .action(async (options: { root?: string; force?: boolean; json?: boolean }) => {
+    .action(async (
+      _options: { root?: string; force?: boolean; json?: boolean },
+      command: Command,
+    ) => {
       try {
+        // `init` and its subcommands intentionally advertise the same common
+        // options. Commander stores a duplicate option on the parent command,
+        // even when it appears after the subcommand, so the child-only options
+        // object can omit --json/--force. Resolve the complete command chain.
+        const options = command.optsWithGlobals() as {
+          root?: string;
+          force?: boolean;
+          json?: boolean;
+        };
         const result = await scaffoldStack({ root: options.root, force: options.force });
         if (options.json) {
           console.log(JSON.stringify(result, null, 2));

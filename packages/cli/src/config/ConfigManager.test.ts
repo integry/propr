@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -313,6 +322,120 @@ test("loaded remote profile names are validated before use", async () => {
       default: {},
       staging: { remoteUrl: "https://staging.example.com" },
     });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("legacy tunnel state migrates to its recorded stack root without leaking to another root", async () => {
+  const tempDir = createTempDir();
+  try {
+    const rootA = join(tempDir, "root-a");
+    const rootB = join(tempDir, "root-b");
+    writeFileSync(join(tempDir, "config.json"), JSON.stringify({
+      stackRoot: rootA,
+      tunnelEnabled: true,
+    }));
+
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    assert.equal(manager.getTunnelEnabled(rootA), true);
+    assert.equal(manager.getTunnelEnabled(rootB), undefined);
+
+    // Setup records its newly selected root before start. That save must retain
+    // root A's migrated state without re-associating it with root B.
+    await manager.setStackRoot(rootB);
+    assert.equal(manager.getTunnelEnabled(rootA), true);
+    assert.equal(manager.getTunnelEnabled(rootB), undefined);
+
+    const persisted = JSON.parse(readFileSync(join(tempDir, "config.json"), "utf8"));
+    assert.equal(persisted.tunnelEnabled, undefined);
+    assert.deepEqual(persisted.tunnelEnabledByRoot, { [rootA]: true });
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("root-specific tunnel toggles do not alter another stack", async () => {
+  const tempDir = createTempDir();
+  try {
+    const rootA = join(tempDir, "root-a");
+    const rootB = join(tempDir, "root-b");
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    await manager.setTunnelEnabled(rootA, true);
+    await manager.setTunnelEnabled(rootB, false);
+    await manager.setTunnelEnabled(rootB, true);
+
+    assert.equal(manager.getTunnelEnabled(rootA), true);
+    assert.equal(manager.getTunnelEnabled(rootB), true);
+
+    await manager.setTunnelEnabled(rootB, undefined);
+    assert.equal(manager.getTunnelEnabled(rootA), true);
+    assert.equal(manager.getTunnelEnabled(rootB), undefined);
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("configuration tokens are persisted atomically under private modes", async () => {
+  if (process.platform === "win32") return;
+  const tempDir = createTempDir();
+  try {
+    chmodSync(tempDir, 0o755);
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+    await manager.setGithubToken("private-token");
+
+    const configPath = join(tempDir, "config.json");
+    assert.equal(lstatSync(tempDir).mode & 0o777, 0o700);
+    assert.equal(lstatSync(configPath).mode & 0o777, 0o600);
+    assert.match(readFileSync(configPath, "utf8"), /private-token/);
+    assert.deepEqual(readdirSync(tempDir).filter(name => name.includes(".tmp-")), []);
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("loading an existing token file tightens permissive directory and file modes", async () => {
+  if (process.platform === "win32") return;
+  const tempDir = createTempDir();
+  try {
+    writeProfileConfig(tempDir);
+    chmodSync(tempDir, 0o755);
+    chmodSync(join(tempDir, "config.json"), 0o644);
+
+    const manager = new ConfigManager(tempDir);
+    await manager.init();
+
+    assert.equal(manager.getGithubToken(), "stored-token");
+    assert.equal(lstatSync(tempDir).mode & 0o777, 0o700);
+    assert.equal(lstatSync(join(tempDir, "config.json")).mode & 0o777, 0o600);
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
+test("configuration writes refuse symbolic-link destinations", async () => {
+  if (process.platform === "win32") return;
+  const tempDir = createTempDir();
+  try {
+    const targetPath = join(tempDir, "target.json");
+    writeFileSync(targetPath, JSON.stringify({ marker: "unchanged" }));
+    symlinkSync(targetPath, join(tempDir, "config.json"));
+    const manager = new ConfigManager(tempDir);
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+      await manager.init();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    await assert.rejects(() => manager.save(), /symbolic-link file/);
+    assert.deepEqual(JSON.parse(readFileSync(targetPath, "utf8")), { marker: "unchanged" });
   } finally {
     cleanupTempDir(tempDir);
   }

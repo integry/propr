@@ -277,7 +277,7 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
           agentType: "antigravity",
           env: ["-e", "ANTIGRAVITY_CLI=1", "-e", "ANTIGRAVITY_CLI_TRUST_WORKSPACE=true"],
         }),
-        "/bin/bash", "-lc", 'set -e\nexec agy --dangerously-skip-permissions --print - "$@"', "propr-antigravity",
+        "/bin/bash", "-lc", 'set -e\nexec agy --dangerously-skip-permissions "$@"', "propr-antigravity",
       ],
       stdin: VALIDATION_PROMPT,
     }),
@@ -402,6 +402,8 @@ export interface ValidateAgentsOptions {
   onProgress?: (message: string) => void;
   /** Fired as each agent cell (version/host/image) resolves, for live rendering. */
   onUpdate?: (agent: string, update: AgentCellUpdate) => void;
+  /** Skip the billable host invocation; setup uses the worker image as truth. */
+  skipHost?: boolean;
 }
 
 /** The agent types that would be validated for the given filter (for seeding a live view). */
@@ -518,6 +520,7 @@ export async function validateAgents(
   writeFileSync(promptFileHost, `${VALIDATION_PROMPT}\n`);
 
   const runHost = async (d: AgentValidationDescriptor): Promise<AgentCell | undefined> => {
+    if (options.skipHost) return undefined;
     if (!d.hostInvocation || !d.hostBin) return undefined;
     if (!commandExists(d.hostBin)) {
       return { status: "warn", detail: `${d.hostBin} not installed on host — skipped` };
@@ -659,23 +662,11 @@ export function planAgentLogin(
 // Agent Tank — subscription usage (optional, external `agent-tank` CLI)
 // ---------------------------------------------------------------------------
 
-interface AgentTankMetric {
-  label?: string;
-  percent?: number;
-  percentUsed?: number;
-  resetsIn?: string;
-}
-
-interface AgentTankAgent {
-  usage?: Record<string, AgentTankMetric>;
-  metadata?: { email?: string; model?: string };
-  error?: string | null;
-}
-
 export interface AgentTankUsage {
   installed: boolean;
   version?: string;
-  usage?: Record<string, AgentTankAgent>;
+  /** Unvalidated JSON emitted by the external Agent Tank process. */
+  usage?: unknown;
   error?: string;
 }
 
@@ -693,7 +684,7 @@ export async function getAgentTankUsage(): Promise<AgentTankUsage> {
   const res = await execAsync("agent-tank", ["--once", "--json"], { timeoutMs: 90_000 });
   if (res.error?.code === "ETIMEDOUT") return { installed: true, version, error: "timed out reading usage" };
   try {
-    const data = JSON.parse(res.stdout.trim()) as Record<string, AgentTankAgent>;
+    const data: unknown = JSON.parse(res.stdout.trim());
     return { installed: true, version, usage: data };
   } catch {
     const reason = (res.stderr || res.stdout || "could not parse agent-tank output").trim().split("\n").pop();

@@ -17,6 +17,10 @@ interface IssueRef {
     repoName: string;
 }
 
+interface CompletionCommentOptions {
+    publishedAs?: 'pull_request' | 'issue_comment';
+}
+
 interface ConversationMessage {
     type?: string;
     message?: {
@@ -69,7 +73,7 @@ const SECRET_PATTERNS: SecretPattern[] = [
     { pattern: /ghp_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /gho_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /ghu_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
-    { pattern: /ghs_[A-Za-z0-9_]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
+    { pattern: /ghs_[A-Za-z0-9_.-]{36,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
     { pattern: /github_pat_[A-Za-z0-9_]{22,}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
 
     // --- AWS ---
@@ -434,7 +438,11 @@ function buildLogFilesSection(logFiles: LogFiles, claudeResult: ClaudeResult): s
     return lines.join('\n') + '\n';
 }
 
-export async function generateCompletionComment(claudeResultInput: unknown, issueRef: IssueRef): Promise<string> {
+export async function generateCompletionComment(
+    claudeResultInput: unknown,
+    issueRef: IssueRef,
+    options: CompletionCommentOptions = {},
+): Promise<string> {
     const timestamp = new Date().toISOString();
     const result: ClaudeResult = (claudeResultInput as ClaudeResult) || { success: false };
     let comment = await buildExecutionDetails(result, issueRef, timestamp);
@@ -446,6 +454,8 @@ export async function generateCompletionComment(claudeResultInput: unknown, issu
         const err = logError as Error;
         logger.warn({ issueNumber: issueRef.number, error: err.message }, 'Failed to create log files');
     }
-    comment += `---\n*This PR was created automatically by [ProPR](https://propr.dev) after processing issue #${issueRef.number}.*`;
+    comment += options.publishedAs === 'issue_comment'
+        ? `---\n*This processing report was generated automatically by [ProPR](https://propr.dev) for issue #${issueRef.number}.*`
+        : `---\n*This PR was created automatically by [ProPR](https://propr.dev) after processing issue #${issueRef.number}.*`;
     return comment;
 }

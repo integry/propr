@@ -14,8 +14,8 @@
  * and env — it does not start Docker.
  */
 
-import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readFileSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { resolveGithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
 import { resolveStackRoot } from "../../orchestrator/index.js";
 import type { ConfigManager } from "../../config/index.js";
@@ -99,6 +99,136 @@ export function inspectStackInit(rootDir: string): StackInitState {
   }
   const initialized = envExists && STACK_SUBDIRS.every((sub) => dirs[sub]);
   return { rootDir, envExists, dirs, initialized };
+}
+
+export type DatastoreAdminStatus = "absent" | "no-admin" | "has-admin" | "uninspectable";
+
+/** Result of inspecting the configured SQLite datastore for a durable administrator. */
+export interface DatastoreAdminInspection {
+  status: DatastoreAdminStatus;
+  /** Host path inspected, when the configured path could be resolved. */
+  databasePath?: string;
+  /** Actionable diagnostic when inspection could not be completed safely. */
+  detail?: string;
+}
+
+/** Runtime paths used by the app image started by the CLI launcher. */
+const APP_WORKDIR = "/usr/src/app";
+const CONTAINER_DATA_DIR = join(APP_WORKDIR, "data");
+
+/**
+ * Resolve the API's SQLite filename to the corresponding host bind-mount path.
+ * This mirrors @propr/core's DB_FILENAME/DATA_DIR precedence and resolves
+ * relative values from the app image's working directory. Only files below
+ * /usr/src/app/data are inspectable from the host because that is the sole data
+ * bind mount supplied by the CLI launcher.
+ */
+function resolveDatastorePath(
+  rootDir: string,
+  configuredPath: string | undefined,
+  configuredDataDir: string | undefined
+): string {
+  const dbFilename = configuredPath;
+  const runtimePath = dbFilename
+    ? resolve(APP_WORKDIR, dbFilename)
+    : resolve(APP_WORKDIR, join(configuredDataDir ?? CONTAINER_DATA_DIR, "propr.sqlite"));
+  const childPath = relative(CONTAINER_DATA_DIR, runtimePath);
+  const outsideDataDir =
+    childPath === ".." || childPath.startsWith(`..${sep}`) || isAbsolute(childPath);
+  if (outsideDataDir) {
+    throw new Error(
+      `runtime path ${runtimePath} is outside the mounted data directory ${CONTAINER_DATA_DIR}`
+    );
+  }
+  return resolve(rootDir, "data", childPath);
+}
+
+/**
+ * Reject symbolic links between the host bind-mount root and the configured
+ * datastore. A link that is valid in the host namespace may resolve to a
+ * different target inside the container, so following it cannot establish
+ * bootstrap eligibility for the datastore the API will actually use.
+ */
+function assertDatastorePathHasNoSymlinks(rootDir: string, databasePath: string): void {
+  const dataRoot = resolve(rootDir, "data");
+  const childPath = relative(dataRoot, databasePath);
+  let currentPath = dataRoot;
+
+  for (const component of childPath.split(sep).filter(Boolean)) {
+    currentPath = join(currentPath, component);
+    try {
+      if (lstatSync(currentPath).isSymbolicLink()) {
+        throw new Error(`configured datastore path contains a symbolic link: ${currentPath}`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+  }
+}
+
+/**
+ * Inspect the configured SQLite datastore without creating or migrating it.
+ * Missing databases and databases conclusively lacking a durable administrator
+ * are bootstrap-eligible. Every resolution, I/O, schema, and query failure is
+ * reported as uninspectable so callers can fail closed.
+ */
+export async function inspectDatastoreAdministrators(rootDir: string): Promise<DatastoreAdminInspection> {
+  let databasePath: string;
+  try {
+    const env = readEnvVars(rootDir);
+    databasePath = resolveDatastorePath(rootDir, env.DB_FILENAME, env.DATA_DIR);
+  } catch (error) {
+    return {
+      status: "uninspectable",
+      detail: `could not resolve configured datastore: ${(error as Error).message}`,
+    };
+  }
+
+  try {
+    assertDatastorePathHasNoSymlinks(rootDir, databasePath);
+    const stat = statSync(databasePath);
+    if (!stat.isFile()) {
+      return { status: "uninspectable", databasePath, detail: "configured datastore is not a regular file" };
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { status: "absent", databasePath };
+    }
+    return {
+      status: "uninspectable",
+      databasePath,
+      detail: `could not inspect configured datastore: ${(error as Error).message}`,
+    };
+  }
+
+  let database: import("node:sqlite").DatabaseSync | undefined;
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    database = new DatabaseSync(databasePath, { readOnly: true, timeout: 5_000 });
+    const membersTable = database.prepare(
+      "SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = 'instance_members' LIMIT 1"
+    ).get();
+    if (!membersTable) return { status: "no-admin", databasePath };
+
+    const durableAdmin = database.prepare(
+      "SELECT 1 AS found FROM instance_members WHERE role = 'admin' LIMIT 1"
+    ).get();
+    return { status: durableAdmin ? "has-admin" : "no-admin", databasePath };
+  } catch (error) {
+    return {
+      status: "uninspectable",
+      databasePath,
+      detail: `could not query configured datastore: ${(error as Error).message}`,
+    };
+  } finally {
+    try {
+      database?.close();
+    } catch {
+      // The read query already produced a conclusive result; closing the
+      // read-only handle cannot widen authorization and needs no retry here.
+    }
+  }
 }
 
 /** Convenience predicate over {@link inspectStackInit}. */

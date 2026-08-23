@@ -313,7 +313,7 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
     },
 
     async configureGithubAuth({ current }): Promise<GithubAuthDecision> {
-      // Token relay (the hosted ProPR GitHub App) leads as the recommended path.
+      // ProPR Connect (the hosted ProPR GitHub App) is the zero-config default.
       // "Keep current configuration" is offered only when there is an existing
       // config to keep — on a fresh install there is nothing to preserve, so the
       // relay option is the first (and default) choice.
@@ -321,7 +321,7 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       if (current.mode !== "none") {
         options.push({ label: "Keep current configuration", value: "keep", hint: current.mode });
       }
-      options.push({ label: "Token relay (use the ProPR GitHub App)", value: "relay" });
+      options.push({ label: "ProPR Connect (default ProPR GitHub App)", value: "relay" });
       options.push({ label: "Custom GitHub App (set up your own GitHub App)", value: "app" });
       const choice = await promptSelect(io, paint, {
         title: "GitHub authentication",
@@ -335,13 +335,13 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       // PROPR_DEMO_MODE=true would keep resolving as demo and ignore the App/relay
       // config the user just entered.
       if (choice === "relay") {
-        // No manual URL/token entry: the engine enrolls with the hosted relay
+        // No manual URL/token entry: the engine enrolls through ProPR Connect
         // using the stored `propr login` token, discovers the installation, and
         // mints the token. Only the relay base URL is asked, prefilled with the
         // hosted default (Enter accepts it; override for a self-hosted relay).
         const relayUrl = await promptInput(io, paint, {
-          title: "Relay URL",
-          detail: "Press Enter for the hosted ProPR relay; override only for a self-hosted relay.",
+          title: "ProPR Connect URL",
+          detail: "Press Enter for ProPR Connect; override only for a self-hosted relay.",
           defaultValue: DEFAULT_PROPR_GH_RELAY_URL,
         });
         return { mode: "relay", enrollRelay: { relayUrl: relayUrl.trim() || DEFAULT_PROPR_GH_RELAY_URL } };
@@ -362,6 +362,22 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
       return promptConfirm(io, paint, {
         title: "Log in to GitHub now?",
         detail: `${reason} Runs \`gh auth login\` (the GitHub CLI).`,
+        defaultValue: true,
+      });
+    },
+
+    async confirmGithubAppInstall({ url }): Promise<boolean> {
+      return promptConfirm(io, paint, {
+        title: "Install the default ProPR GitHub App?",
+        detail: `No installation is available yet. Setup will open ${url}`,
+        defaultValue: true,
+      });
+    },
+
+    async confirmGithubAppInstalled(): Promise<boolean> {
+      return promptConfirm(io, paint, {
+        title: "GitHub App installation complete?",
+        detail: "Return here after choosing the repositories the ProPR App may access.",
         defaultValue: true,
       });
     },
@@ -440,7 +456,7 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
     async confirmAgentLogin({ candidates }): Promise<string[]> {
       return promptMultiSelect(io, paint, {
         title: "Authenticate agents through their images?",
-        detail: 'Log in inside each agent\'s Docker image; credentials are written to the mounted host directory. Blank or "none" skips.',
+        detail: 'Log in inside each agent\'s Docker image; setup then runs one live image connectivity check. Blank or "none" skips login, but still checks and prints exact recovery commands.',
         options: candidates.map((type) => ({ label: type, value: type })),
         defaultSelected: [],
       });
@@ -479,7 +495,7 @@ export function buildSequentialPrompts(io: SequentialIo, paint: Paint = makePain
 
     async launchUi({ url }): Promise<boolean> {
       if (!url) return false;
-      return promptConfirm(io, paint, { title: "Open the ProPR web UI?", detail: url, defaultValue: false });
+      return promptConfirm(io, paint, { title: "Open the ProPR web UI?", detail: url, defaultValue: true });
     },
   };
 }

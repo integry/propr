@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# Verify that the pinned Antigravity image exposes and actually selects Gemini
+# 3.7 Flash at every supported effort tier. Requires authenticated host state.
+
+set -euo pipefail
+
+AGENT_TAG="${AGENT_TAG:-propr/agent:latest}"
+ANTIGRAVITY_CONFIG_PATH="${ANTIGRAVITY_CONFIG_PATH:-$HOME/.gemini}"
+EXPECTED_ANTIGRAVITY_VERSION="${EXPECTED_ANTIGRAVITY_VERSION:-1.1.13}"
+
+if [ ! -d "$ANTIGRAVITY_CONFIG_PATH" ]; then
+  echo "Antigravity credentials not found at $ANTIGRAVITY_CONFIG_PATH" >&2
+  exit 1
+fi
+docker image inspect "$AGENT_TAG" >/dev/null
+
+runtime_home="$(mktemp -d "${TMPDIR:-/tmp}/propr-antigravity-verify.XXXXXX")"
+cleanup() {
+  if [[ "$runtime_home" == "${TMPDIR:-/tmp}"/propr-antigravity-verify.* ]]; then
+    rm -rf "$runtime_home"
+  fi
+}
+trap cleanup EXIT
+
+# Only copy the authenticated state used by the production ephemeral runtime.
+# This keeps model checks from writing projects, caches, or transcripts to the
+# operator's real Antigravity home.
+for relative_path in \
+  antigravity-cli/antigravity-oauth-token \
+  antigravity-cli/settings.json; do
+  source_path="$ANTIGRAVITY_CONFIG_PATH/$relative_path"
+  if [ -f "$source_path" ]; then
+    mkdir -p "$runtime_home/.gemini/$(dirname "$relative_path")"
+    cp -p "$source_path" "$runtime_home/.gemini/$relative_path"
+  fi
+done
+
+run_agy() {
+  docker run --rm -i \
+    --user "$(id -u):$(id -g)" \
+    --env HOME=/tmp/propr-antigravity-home \
+    --env AGY_CLI_DISABLE_AUTO_UPDATE=true \
+    --volume "$runtime_home:/tmp/propr-antigravity-home" \
+    --workdir /tmp/propr-antigravity-home \
+    --entrypoint agy \
+    "$AGENT_TAG" "$@"
+}
+
+actual_version="$(run_agy --version)"
+if [ "$actual_version" != "$EXPECTED_ANTIGRAVITY_VERSION" ]; then
+  echo "Expected Antigravity CLI $EXPECTED_ANTIGRAVITY_VERSION, got $actual_version" >&2
+  exit 1
+fi
+echo "✓ Antigravity CLI version $actual_version"
+
+models_output="$(run_agy models)"
+models=(
+  "gemini-3.7-flash-high|Gemini 3.7 Flash (High)"
+  "gemini-3.7-flash-medium|Gemini 3.7 Flash (Medium)"
+  "gemini-3.7-flash-low|Gemini 3.7 Flash (Low)"
+)
+for model in "${models[@]}"; do
+  model_id="${model%%|*}"
+  display_name="${model#*|}"
+  if ! grep -F "$model_id" <<< "$models_output" | grep -F "$display_name" >/dev/null; then
+    echo "Antigravity CLI did not advertise $model_id as $display_name" >&2
+    printf '%s\n' "$models_output" >&2
+    exit 1
+  fi
+done
+echo "✓ Antigravity CLI advertises all Gemini 3.7 Flash tiers"
+
+for model in "${models[@]}"; do
+  model_id="${model%%|*}"
+  invocation_output="$(
+    printf '%s' 'Reply with exactly STREAM_OK. Do not use tools.' |
+      run_agy \
+        --dangerously-skip-permissions \
+        --print-timeout 5m \
+        --output-format stream-json \
+        --model "$model_id"
+  )"
+
+  reported_model="$(EXPECTED_MODEL_ID="$model_id" EXPECTED_RESPONSE=$'STREAM_OK\n' node --input-type=module -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", chunk => { input += chunk; });
+    process.stdin.on("end", () => {
+      let reportedModel;
+      let terminalStatus;
+      let streamedResponse = "";
+      let completeResponse;
+      let conversationId;
+      let correlationError;
+      let initializationSeen = false;
+      let terminalResultSeen = false;
+      let streamEnvelopeSeen = false;
+      const rejectProtocol = message => {
+        if (!correlationError) correlationError = message;
+      };
+      const correlateConversation = (envelope, candidateId, initiating = false) => {
+        if (correlationError) return;
+        if (typeof candidateId !== "string" || candidateId.length === 0) {
+          correlationError = `${envelope} envelope has no conversation_id`;
+          return;
+        }
+        if (initiating && conversationId === undefined) {
+          conversationId = candidateId;
+          return;
+        }
+        if (conversationId === undefined) {
+          correlationError = `${envelope} envelope arrived before an initiating conversation_id`;
+        } else if (candidateId !== conversationId) {
+          correlationError = `${envelope} envelope expected conversation_id ${JSON.stringify(conversationId)}, got ${JSON.stringify(candidateId)}`;
+        }
+      };
+      for (const line of input.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+          const streamEnvelope = typeof event?.event === "string" ? event.event : undefined;
+          const legacyEnvelope = event?.type === "init" || event?.type === "message" || event?.type === "result"
+            ? event.type
+            : undefined;
+
+          if (terminalResultSeen && (streamEnvelope || legacyEnvelope)) {
+            rejectProtocol(streamEnvelope === "result"
+              ? "duplicate terminal stream result"
+              : "protocol envelope arrived after terminal stream result");
+            continue;
+          }
+          if (legacyEnvelope) {
+            rejectProtocol(streamEnvelopeSeen
+              ? `legacy ${legacyEnvelope} envelope cannot be combined with stream evidence`
+              : `expected stream-json envelope, got legacy ${legacyEnvelope} envelope`);
+            continue;
+          }
+          if (!streamEnvelope) continue;
+          streamEnvelopeSeen = true;
+
+          if (event?.event === "init") {
+            if (initializationSeen) {
+              rejectProtocol("repeated stream init envelope");
+              continue;
+            }
+            initializationSeen = true;
+            correlateConversation("init", event.conversation_id, true);
+            if (typeof event.init?.model === "string") reportedModel = event.init.model;
+          }
+          if (event?.event === "step_update") {
+            correlateConversation("step_update", event.step_update?.conversation_id);
+            if (event.step_update?.step_type === "agent_response" && typeof event.step_update.text_delta === "string") {
+              streamedResponse += event.step_update.text_delta;
+            }
+          }
+          if (event?.event === "result") {
+            terminalResultSeen = true;
+            if (!event.result || typeof event.result !== "object") {
+              rejectProtocol("stream result envelope has no result payload");
+              continue;
+            }
+            correlateConversation("result", event.result.conversation_id);
+            terminalStatus = event.result.status;
+            if (typeof event.result.response === "string") completeResponse = event.result.response;
+          }
+        } catch { /* non-protocol diagnostic */ }
+      }
+      const response = completeResponse ?? streamedResponse;
+      if (correlationError) {
+        process.stderr.write(`${correlationError}\n`);
+        process.exitCode = 1;
+      } else if (conversationId === undefined) {
+        process.stderr.write("expected an initiating Antigravity conversation_id\n");
+        process.exitCode = 1;
+      } else if (!terminalResultSeen) {
+        process.stderr.write("expected exactly one terminal stream result\n");
+        process.exitCode = 1;
+      } else if (reportedModel !== process.env.EXPECTED_MODEL_ID) {
+        process.stderr.write(`expected init model ${JSON.stringify(process.env.EXPECTED_MODEL_ID)}, got ${JSON.stringify(reportedModel)}\n`);
+        process.exitCode = 1;
+      } else if (typeof terminalStatus !== "string" || terminalStatus.toUpperCase() !== "SUCCESS") {
+        process.stderr.write(`expected final SUCCESS, got ${JSON.stringify(terminalStatus)}\n`);
+        process.exitCode = 1;
+      } else if (response !== process.env.EXPECTED_RESPONSE) {
+        process.stderr.write(`expected exact sentinel ${JSON.stringify(process.env.EXPECTED_RESPONSE)}, got ${JSON.stringify(response)}\n`);
+        process.exitCode = 1;
+      } else {
+        process.stdout.write(reportedModel);
+      }
+    });
+  ' <<< "$invocation_output")" || {
+    echo "Antigravity $model_id invocation failed identity, SUCCESS, or exact-response validation" >&2
+    printf '%s\n' "$invocation_output" >&2
+    exit 1
+  }
+
+  if [ "$reported_model" != "$model_id" ]; then
+    echo "Antigravity $model_id silently selected '$reported_model' instead of '$model_id'" >&2
+    exit 1
+  fi
+  echo "✓ $model_id returned exact sentinel with SUCCESS and reported $reported_model"
+done

@@ -1,7 +1,9 @@
 import type { Logger } from 'pino';
-import type { CommentJobData, UnprocessedComment } from '@propr/core';
+import type { UnprocessedComment } from '@propr/core';
 import { getPendingPrCommentsKey } from '@propr/core';
 import type { Redis } from 'ioredis';
+
+export { applyPendingCommentCommandContext } from './prCommentCommandContext.js';
 
 export function parsePendingComment(commentJson: string, correlatedLogger: Logger): UnprocessedComment | null {
     try {
@@ -21,47 +23,15 @@ export function processPendingComments(commentsToProcess: UnprocessedComment[], 
     }
 }
 
-export function applyPendingCommentCommandContext(jobData: CommentJobData, commentsToProcess: UnprocessedComment[], correlatedLogger: Logger): void {
-    const latestCommandComment = [...commentsToProcess]
-        .reverse()
-        .find(comment => comment.commandMode && comment.commandMode !== 'default');
-    const latestOverrideComment = [...commentsToProcess]
-        .reverse()
-        .find(comment => comment.llmOverride !== undefined);
-
-    if (!latestCommandComment && !latestOverrideComment) return;
-
-    if (latestCommandComment) {
-        jobData.commandMeta = latestCommandComment.commandMeta;
-        jobData.commandMode = latestCommandComment.commandMode;
-        jobData.requestedModels = latestCommandComment.requestedModels;
-        jobData.commandInstructions = latestCommandComment.commandInstructions;
-    }
-
-    if (latestOverrideComment?.llmOverride !== undefined) {
-        jobData.llm = latestOverrideComment.llmOverride;
-    }
-    if (
-        latestCommandComment?.commandMode === 'review'
-        && !latestCommandComment.requestedModels?.length
-        && latestOverrideComment?.commandMode === 'use'
-        && latestOverrideComment.llmOverride
-    ) {
-        jobData.requestedModels = [latestOverrideComment.llmOverride];
-    }
-
-    correlatedLogger.info({
-        commandMode: jobData.commandMode,
-        requestedModels: jobData.requestedModels,
-        llmOverride: latestOverrideComment?.llmOverride,
-        commandCommentId: latestCommandComment?.id,
-        overrideCommentId: latestOverrideComment?.id,
-    }, 'Applied command context from pending batched comment');
+export interface PendingCommentPickup {
+    commentsToProcess: UnprocessedComment[];
+    pickedUpComments: UnprocessedComment[];
 }
 
-export async function pickUpPendingComments(commentsToProcess: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }): Promise<UnprocessedComment[]> {
+export async function pickUpPendingCommentsWithClaim(commentsToProcess: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }): Promise<PendingCommentPickup> {
     const { repoOwner, repoName, pullRequestNumber, correlatedLogger, redisClient } = options;
     const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
+    const originalCommentIds = new Set(commentsToProcess.map(comment => comment.id));
     try {
         const pendingComments = await redisClient.lrange(pendingCommentsKey, 0, -1);
         if (pendingComments.length > 0) {
@@ -72,5 +42,22 @@ export async function pickUpPendingComments(commentsToProcess: UnprocessedCommen
     } catch (redisError) {
         correlatedLogger.warn({ error: (redisError as Error).message }, 'Failed to fetch pending comments from Redis');
     }
-    return commentsToProcess;
+    return {
+        commentsToProcess,
+        pickedUpComments: commentsToProcess.filter(comment => !originalCommentIds.has(comment.id)),
+    };
+}
+
+export async function pickUpPendingComments(commentsToProcess: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; correlatedLogger: Logger; redisClient: Redis }): Promise<UnprocessedComment[]> {
+    return (await pickUpPendingCommentsWithClaim(commentsToProcess, options)).commentsToProcess;
+}
+
+/** Return comments claimed by a cancelled job to the head of the shared pending list. */
+export async function restorePendingComments(comments: UnprocessedComment[], options: { repoOwner: string; repoName: string; pullRequestNumber: number; redisClient: Redis }): Promise<void> {
+    if (comments.length === 0) return;
+    const { repoOwner, repoName, pullRequestNumber, redisClient } = options;
+    const pendingCommentsKey = getPendingPrCommentsKey(repoOwner, repoName, pullRequestNumber);
+    const serializedComments = comments.map(comment => JSON.stringify(comment)).reverse();
+    await redisClient.lpush(pendingCommentsKey, ...serializedComments);
+    await redisClient.expire(pendingCommentsKey, 3600);
 }

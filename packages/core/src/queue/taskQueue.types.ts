@@ -61,14 +61,24 @@ export interface CommentJobData {
     requestedModels?: string[];
     /** Extra instructions from the slash command body */
     commandInstructions?: string;
+    /** GitHub comment that established the queued command context. */
+    commandCommentId?: number;
+    /** Creation time of the GitHub comment that established the queued command context. */
+    commandCommentCreatedAt?: string;
+    /** GitHub resource type of the comment that established the queued command context. */
+    commandCommentType?: 'review' | 'issue';
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
     /** Reasoning level override resolved from PR or linked issue level-* labels. */
     reasoningLevel?: ReasoningLevel;
+    /** Internal lease token persisted across BullMQ redelivery and rescheduling. */
+    prProcessingLockToken?: string;
 }
 
 export interface UnprocessedComment {
     id: number;
+    /** GitHub creation time used to order issue and review comments together. */
+    createdAt?: string;
     body: string;
     body_html?: string;  // HTML with signed image URLs (from accept: application/vnd.github.full+json)
     author: string;
@@ -198,6 +208,7 @@ export interface AiMetrics {
 
 export interface WorkerCreateOptions {
     concurrency?: number;
+    autorun?: boolean;
 }
 
 export interface ActivityLog {

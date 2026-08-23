@@ -105,12 +105,17 @@ describe('worker behavioral contracts', () => {
         await assert.rejects(processJob({ name: 'unknown' } as never), /Unknown job type: unknown/);
     });
 
-    test('worker construction passes the queue, runtime processor, and concurrency to the factory', async () => {
-        const fakeWorker = { close: mock.fn(async () => {}) };
+    test('worker construction attaches hooks before starting the paused worker', async () => {
+        const startupOrder: string[] = [];
+        const fakeWorker = {
+            close: mock.fn(async () => {}),
+            run: mock.fn(async () => { startupOrder.push('run'); }),
+            emit: mock.fn(),
+        };
         let capturedProcessor: ((job: never) => Promise<unknown>) | undefined;
-        const workerFactory = mock.fn(async (queueName: string, processor: typeof capturedProcessor, options: { concurrency: number }) => {
+        const workerFactory = mock.fn(async (queueName: string, processor: typeof capturedProcessor, options: { concurrency: number; autorun: boolean }) => {
             assert.equal(queueName, 'test-queue');
-            assert.deepEqual(options, { concurrency: 7 });
+            assert.deepEqual(options, { concurrency: 7, autorun: false });
             capturedProcessor = processor;
             return fakeWorker;
         });
@@ -121,11 +126,13 @@ describe('worker behavioral contracts', () => {
             concurrency: 7,
             workerFactory: workerFactory as never,
             processors: processors as unknown as MainJobProcessors,
+            beforeRun: () => { startupOrder.push('listeners'); },
         });
 
         assert.equal(worker, fakeWorker);
         assert.equal(workerFactory.mock.calls.length, 1);
         assert.ok(capturedProcessor);
+        assert.deepEqual(startupOrder, ['listeners', 'run']);
         assert.deepEqual(await capturedProcessor({ name: 'processSystemTask' } as never), { status: 'constructed' });
     });
 });

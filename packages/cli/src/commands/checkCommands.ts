@@ -19,6 +19,7 @@ import {
   resolveGithubEventIntakeMode,
   validateIntakeModePrerequisites,
   validateRelayUrl,
+  validateSessionSecret,
 } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { createApiClient, getSystemStatus } from "../api/index.js";
@@ -167,6 +168,32 @@ function readCliVersion(): string {
 
 function runCliChecks(emit: (result: CheckResult) => void): void {
   emit({ name: "CLI version", status: "ok", detail: readCliVersion(), group: "CLI" });
+}
+
+export interface SessionSecretCheckMode {
+  proprDemoMode?: string;
+  githubAuthMode?: string;
+}
+
+export function resolveSessionSecretCheck(
+  secret: string | undefined,
+  mode: SessionSecretCheckMode,
+): CheckResult | undefined {
+  // GH_AUTH_MODE=demo only disables backend GitHub access. The API still
+  // creates browser sessions unless the deployment is in full ProPR demo mode.
+  if (isTruthy(mode.proprDemoMode)) return undefined;
+
+  const error = validateSessionSecret(secret);
+  if (error) {
+    return {
+      name: "Session secret",
+      status: "fail",
+      detail: error,
+      group: "Configuration",
+      fix: "Generate a secret with `openssl rand -hex 32` and set SESSION_SECRET in .env.",
+    };
+  }
+  return { name: "Session secret", status: "ok", detail: "strong secret configured", group: "Configuration" };
 }
 
 /** Run all checks and return the structured outcome (no printing). */
@@ -390,8 +417,9 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   // 8. User whitelist — warn when no whitelist is configured for non-demo stacks
   const whitelistRaw = process.env.GITHUB_USER_WHITELIST ?? fileEnv.GITHUB_USER_WHITELIST;
   const whitelistEntries = (whitelistRaw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const proprDemoMode = process.env.PROPR_DEMO_MODE ?? fileEnv.PROPR_DEMO_MODE;
   const authMode = (process.env.GH_AUTH_MODE ?? fileEnv.GH_AUTH_MODE ?? "").trim().toLowerCase();
-  const isDemo = isTruthy(process.env.PROPR_DEMO_MODE ?? fileEnv.PROPR_DEMO_MODE) || authMode === "demo";
+  const isDemo = isTruthy(proprDemoMode) || authMode === "demo";
   if (whitelistEntries.length === 0 && !isDemo) {
     emit({
       name: "User whitelist",
@@ -403,6 +431,12 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
   } else if (whitelistEntries.length > 0) {
     emit({ name: "User whitelist", status: "ok", detail: `${whitelistEntries.length} user(s) allowed`, group: "GitHub" });
   }
+
+  const sessionSecretCheck = resolveSessionSecretCheck(
+    process.env.SESSION_SECRET ?? fileEnv.SESSION_SECRET,
+    { proprDemoMode, githubAuthMode: authMode },
+  );
+  if (sessionSecretCheck) emit(sessionSecretCheck);
 
   // 9. Config validation from the orchestrator (bind paths, vibe dirs, etc.)
   const validation = orch.validateEnv(cfg);
@@ -1217,7 +1251,7 @@ function printAgentResponses(rows: AgentValidationRow[], colorEnabled: boolean):
 }
 
 /** Render Agent Tank subscription usage (or an install hint when absent). */
-function printAgentTankUsage(usage: AgentTankUsage, colorEnabled: boolean): void {
+export function printAgentTankUsage(usage: AgentTankUsage, colorEnabled: boolean): void {
   console.log("");
   console.log(color("Subscription Usage (Agent Tank)", colorEnabled, ANSI.cyan, ANSI.bold));
   if (!usage.installed) {
@@ -1230,31 +1264,64 @@ function printAgentTankUsage(usage: AgentTankUsage, colorEnabled: boolean): void
     console.log(`  ${color("!", colorEnabled, ANSI.yellow)} could not read usage: ${usage.error}`);
     return;
   }
-  const agents = Object.keys(usage.usage ?? {});
+  const usageData = isNonNullObject(usage.usage) ? usage.usage : {};
+  const agents = Object.keys(usageData).sort();
   if (agents.length === 0) {
     console.log(color("  No agents reported.", colorEnabled, ANSI.dim));
     return;
   }
   const nameWidth = Math.max(5, ...agents.map((a) => a.length));
   for (const name of agents) {
-    const entry = usage.usage![name];
-    if (entry?.error) {
+    const rawEntry = usageData[name];
+    const entry = isNonNullObject(rawEntry) ? rawEntry : undefined;
+    if (typeof entry?.error === "string" && entry.error) {
       console.log(`  ${name.padEnd(nameWidth)}  ${color(entry.error, colorEnabled, ANSI.yellow)}`);
       continue;
     }
-    const metrics = Object.values(entry?.usage ?? {});
+    const rawMetrics = isNonNullObject(entry?.usage) ? entry.usage : {};
+    // Agent Tank output is external JSON. Only non-null objects are metrics;
+    // null placeholders and unexpected primitive/undefined values are ignored.
+    const metrics = Object.entries(rawMetrics)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([, metric]) => metric)
+      .filter(isNonNullObject);
     if (metrics.length === 0) {
       console.log(`  ${name.padEnd(nameWidth)}  (no data)`);
       continue;
     }
     metrics.forEach((m, i) => {
-      const label = m.label ?? "usage";
-      const pct = m.percent ?? m.percentUsed;
-      const resets = m.resetsIn ? ` (resets ${m.resetsIn})` : "";
+      const label = typeof m.label === "string" ? m.label : "usage";
+      const pct = typeof m.percent === "number"
+        ? m.percent
+        : typeof m.percentUsed === "number"
+          ? m.percentUsed
+          : undefined;
+      const resets = typeof m.resetsIn === "string" && m.resetsIn ? ` (resets ${m.resetsIn})` : "";
       console.log(`  ${(i === 0 ? name : "").padEnd(nameWidth)}  ${label}: ${pct ?? "?"}%${resets}`);
     });
   }
 }
+
+function isNonNullObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+export interface AgentValidationFlowDependencies {
+  loadHostConfig: (root?: string) => Promise<{ orch: OrchestratorModule; cfg: OrchestratorConfig }>;
+  validateAgents: typeof validateAgents;
+  getAgentTankUsage: typeof getAgentTankUsage;
+  isInteractiveTerminal: () => boolean;
+}
+
+const defaultAgentValidationFlowDependencies: AgentValidationFlowDependencies = {
+  loadHostConfig: async (root) => {
+    const configManager = await createConfigManager();
+    return getHostConfig({ configManager, root });
+  },
+  validateAgents,
+  getAgentTankUsage,
+  isInteractiveTerminal,
+};
 
 /**
  * Run agent validation and print results. Uses a live, streaming table on an
@@ -1262,10 +1329,12 @@ function printAgentTankUsage(usage: AgentTankUsage, colorEnabled: boolean): void
  * true if any agent failed. Loads its own orchestrator/config so it can run
  * after the main check.
  */
-async function runAndPrintValidation(runOptions: RunChecksOptions): Promise<boolean> {
+async function runAndPrintValidation(
+  runOptions: RunChecksOptions,
+  dependencies: AgentValidationFlowDependencies = defaultAgentValidationFlowDependencies
+): Promise<boolean> {
   const colorEnabled = shouldUseColor();
-  const configManager = await createConfigManager();
-  const { orch, cfg } = await getHostConfig({ configManager, root: runOptions.root });
+  const { orch, cfg } = await dependencies.loadHostConfig(runOptions.root);
 
   console.log("");
   console.log(color("Agent Validation", colorEnabled, ANSI.cyan, ANSI.bold));
@@ -1274,18 +1343,18 @@ async function runAndPrintValidation(runOptions: RunChecksOptions): Promise<bool
 
   // Read Agent Tank subscription usage concurrently with the validation (it is
   // slow and independent), then render it after the responses.
-  const tankUsagePromise = getAgentTankUsage();
+  const tankUsagePromise = dependencies.getAgentTankUsage();
 
   let rows: AgentValidationRow[];
   const runStaticValidation = async (): Promise<AgentValidationRow[]> => {
-    rows = await validateAgents(orch, cfg, {
+    rows = await dependencies.validateAgents(orch, cfg, {
       agents: runOptions.agents,
       onProgress: (message) => console.log(color(`  … ${message}`, colorEnabled, ANSI.dim)),
     });
     if (rows.length > 0) printAgentTable(rows, colorEnabled);
     return rows;
   };
-  if (isInteractiveTerminal() && process.env.NO_COLOR === undefined) {
+  if (dependencies.isInteractiveTerminal() && process.env.NO_COLOR === undefined) {
     try {
       const { renderAgentValidation } = await import("../tui/app.js");
       rows = await renderAgentValidation(orch, cfg, runOptions.agents);
@@ -1304,7 +1373,9 @@ async function runAndPrintValidation(runOptions: RunChecksOptions): Promise<bool
 }
 
 /** Creates the `check` command. */
-export function createCheckCommand(): Command {
+export function createCheckCommand(
+  agentValidationDependencies: AgentValidationFlowDependencies = defaultAgentValidationFlowDependencies
+): Command {
   return new Command("check")
     .description("Verify the host is ready to run a local ProPR stack")
     .argument("[mode]", "what to check: system (default) | agents | all", "system")
@@ -1373,7 +1444,7 @@ Notes:
             if (results.some((r) => r.status === "fail")) process.exit(1);
             return;
           }
-          if (await runAndPrintValidation(runOptions)) process.exit(1);
+          if (await runAndPrintValidation(runOptions, agentValidationDependencies)) process.exit(1);
           return;
         }
 
@@ -1408,13 +1479,13 @@ Notes:
             printChecks(outcome);
             const remediated = await runRemediationPrompts(outcome, runOptions);
             let anyFail = remediated.anyFail;
-            if (runAgents) anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
+            if (runAgents) anyFail = (await runAndPrintValidation(runOptions, agentValidationDependencies)) || anyFail;
             if (anyFail) process.exit(1);
             return;
           }
           printStaticChecks(outcome, !options.fix && collectRemediationActions(outcome).length > 0);
           let anyFail = outcome.anyFail;
-          if (runAgents) anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
+          if (runAgents) anyFail = (await runAndPrintValidation(runOptions, agentValidationDependencies)) || anyFail;
           else printAgentValidationHint();
           if (anyFail) process.exit(1);
           return;
@@ -1425,7 +1496,7 @@ Notes:
         const { outcome } = await runChecksInteractive(runOptions, Boolean(options.fix), !options.fix && !runAgents);
         let anyFail = outcome?.anyFail ?? false;
         if (runAgents) {
-          anyFail = (await runAndPrintValidation(runOptions)) || anyFail;
+          anyFail = (await runAndPrintValidation(runOptions, agentValidationDependencies)) || anyFail;
         }
         if (anyFail) process.exit(1);
       } catch (error) {

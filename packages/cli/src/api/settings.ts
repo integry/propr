@@ -79,6 +79,15 @@ export interface SystemSettings {
    */
   pr_review_prompt: string;
 
+  /** Whether PR reviews gather related unchanged repository context. */
+  pr_review_context_enabled: boolean;
+
+  /** Model used by the read-only PR review context scout. */
+  pr_review_context_model: string;
+
+  /** Maximum PR review input context in tokens; 0 selects the model-aware automatic limit. */
+  pr_review_max_context_tokens: number;
+
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
    */
@@ -190,6 +199,15 @@ export interface UpdateSettingsOptions {
    */
   pr_review_prompt?: string;
 
+  /** Whether PR reviews gather related unchanged repository context. */
+  pr_review_context_enabled?: boolean;
+
+  /** Model used by the read-only PR review context scout. */
+  pr_review_context_model?: string;
+
+  /** Maximum PR review input context in tokens; 0 selects the model-aware automatic limit. */
+  pr_review_max_context_tokens?: number;
+
   /**
    * Target quality rating (1-10) that ultrafix cycles aim to reach.
    */
@@ -246,6 +264,9 @@ export const VALID_SETTING_KEYS: SettingKey[] = [
   "model_reasoning_level",
   "pr_review_model",
   "pr_review_prompt",
+  "pr_review_context_enabled",
+  "pr_review_context_model",
+  "pr_review_max_context_tokens",
   "ultrafix_rating_goal",
   "ultrafix_max_cycles",
   "ultrafix_pause_seconds",
@@ -318,7 +339,18 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
       }
       return parsed;
     }
-    case "auto_resolve_merge_conflicts": {
+    case "pr_review_max_context_tokens": {
+      if (!/^\d+$/.test(value)) {
+        throw new Error(`Invalid value for ${key}: must be 0 or an integer between 10000 and 2000000`);
+      }
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed) || (parsed !== 0 && (parsed < 10000 || parsed > 2000000))) {
+        throw new Error(`Invalid value for ${key}: must be 0 or an integer between 10000 and 2000000`);
+      }
+      return parsed;
+    }
+    case "auto_resolve_merge_conflicts":
+    case "pr_review_context_enabled": {
       const lower = value.toLowerCase();
       if (lower !== "true" && lower !== "false") {
         throw new Error(`Invalid value for ${key}: must be "true" or "false"`);
@@ -343,7 +375,8 @@ export function parseSettingValue(key: SettingKey, value: string): number | stri
     case "planner_context_model":
     case "planner_generation_model":
       return value;
-    case "pr_review_model": {
+    case "pr_review_model":
+    case "pr_review_context_model": {
       const trimmed = value.trim();
       if (trimmed === '' && value.length > 0) {
         throw new Error(`Invalid value for ${key}: must not be whitespace-only; use an empty string to clear`);

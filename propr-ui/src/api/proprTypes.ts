@@ -34,6 +34,20 @@ export interface SystemStatus {
   githubEventIntakeStatus: string;
   agents: SystemAgentStatus[];
   warnings?: SystemWarning[];
+  connectAccount?: ConnectAccountStatus;
+}
+
+export interface ConnectAccountStatus {
+  installationId: number;
+  accountLogin: string | null;
+  plan: 'community' | 'plus';
+  hasPlusAccess: boolean;
+  activeSeats: number;
+  allowedSeats: number;
+  seatsRemaining: number;
+  billingCycleResetAt: string;
+  seatLimitBlockedAt?: string | null;
+  sentAt: string;
 }
 
 export interface SystemWarning {
@@ -57,6 +71,9 @@ export interface StatusResponse {
   githubEventIntakeStatus?: string;
   agents?: SystemAgentStatus[];
   warnings?: SystemWarning[];
+  // Optional additive field from ProPR v0.8.15+. Keep unknown at the HTTP
+  // boundary so malformed responses cannot be trusted through a type assertion.
+  connectAccount?: unknown;
 }
 
 export interface TaskAnalysisResponse {
@@ -66,11 +83,21 @@ export interface TaskAnalysisResponse {
 
 export interface QueueStats {
   active: number;
+  activeJobs?: LiveQueueJob[];
   waiting: number;
   completed: number;
   failed: number;
   delayed: number;
   paused: number;
+}
+
+export interface LiveQueueJob {
+  id: string;
+  taskId?: string;
+  name: string;
+  title: string;
+  repository: string;
+  createdAt: string;
 }
 
 export interface GeneratingPlansResponse {
@@ -150,6 +177,9 @@ export interface SystemSettings {
   model_reasoning_level?: string;
   pr_review_model?: string;
   pr_review_prompt?: string;
+  pr_review_context_enabled?: boolean;
+  pr_review_context_model?: string;
+  pr_review_max_context_tokens?: number;
   ultrafix_rating_goal?: number;
   ultrafix_max_cycles?: number;
   ultrafix_pause_seconds?: number;

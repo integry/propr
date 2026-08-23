@@ -12,6 +12,8 @@ import {
   buildImplementationAgentOptions
 } from './modelSelectionHelpers';
 import { buildReasoningLevelSelectOptions, formatReasoningLevelOption } from './reasoningLevelOptions';
+import ReviewContextSettings from './ReviewContextSettings';
+import { pathWithActiveHostedTunnelFlow } from '../../config/runtimeConfig';
 
 interface AIModelSelectionSettings {
   analysis_model_fast: string;
@@ -21,6 +23,9 @@ interface AIModelSelectionSettings {
   model_reasoning_level: string;
   pr_review_model: string;
   pr_review_prompt: string;
+  pr_review_context_enabled: boolean;
+  pr_review_context_model: string;
+  pr_review_max_context_tokens: number;
 }
 
 interface AIModelSelectionSectionProps {
@@ -30,16 +35,23 @@ interface AIModelSelectionSectionProps {
   onSettingChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   onReviewPromptChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onReviewPromptBlur: () => void;
+  onReviewContextEnabledChange: (enabled: boolean) => void;
+  onReviewMaxContextTokensChange: (value: number) => void;
+  onReviewMaxContextTokensBlur: () => void;
   onSummarizationModelChange: (agentAlias: string) => void;
   onSummarizationFallbackModelChange: (agentAlias: string) => void;
   onDefaultAgentChange: (agentAlias: string) => void;
   className?: string;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
+export const buildAiAgentsSettingsHref = (hostname = typeof window !== 'undefined' ? window.location.hostname : ''): string =>
+  pathWithActiveHostedTunnelFlow('/ai-agents', hostname);
+
 const NoAgentsMessage = ({ label }: { label: string }) => (
   <div className="text-xs text-gray-500 p-2.5 bg-gray-50 rounded border border-gray-200">
     No {label} available. Please enable an agent in the{' '}
-    <a href="/ai-agents" className="text-primary-600 hover:text-primary-700 underline">
+    <a href={buildAiAgentsSettingsHref()} className="text-primary-600 hover:text-primary-700 underline">
       AI Agents
     </a>{' '}
     page first.
@@ -75,6 +87,9 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   onSettingChange,
   onReviewPromptChange,
   onReviewPromptBlur,
+  onReviewContextEnabledChange,
+  onReviewMaxContextTokensChange,
+  onReviewMaxContextTokensBlur,
   onSummarizationModelChange,
   onSummarizationFallbackModelChange,
   onDefaultAgentChange,
@@ -303,6 +318,15 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
                 <NoAgentsMessage label="enabled agents" />
               )}
             </SettingRow>
+
+            <ReviewContextSettings
+              settings={settings}
+              agents={agents}
+              onSettingChange={onSettingChange}
+              onEnabledChange={onReviewContextEnabledChange}
+              onMaxContextTokensChange={onReviewMaxContextTokensChange}
+              onMaxContextTokensBlur={onReviewMaxContextTokensBlur}
+            />
 
             <SettingRow
               label="Review Prompt"

@@ -71,6 +71,9 @@ export function useSettingsState() {
     model_reasoning_level: '',
     pr_review_model: '',
     pr_review_prompt: '',
+    pr_review_context_enabled: true,
+    pr_review_context_model: '',
+    pr_review_max_context_tokens: 0,
     ultrafix_rating_goal: 7,
     ultrafix_max_cycles: 5,
     ultrafix_pause_seconds: 60
@@ -151,6 +154,9 @@ export function useSettingsState() {
         model_reasoning_level: settingsToSave.model_reasoning_level,
         pr_review_model: settingsToSave.pr_review_model,
         pr_review_prompt: settingsToSave.pr_review_prompt,
+        pr_review_context_enabled: settingsToSave.pr_review_context_enabled,
+        pr_review_context_model: settingsToSave.pr_review_context_model,
+        pr_review_max_context_tokens: settingsToSave.pr_review_max_context_tokens,
         ultrafix_rating_goal: settingsToSave.ultrafix_rating_goal,
         ultrafix_max_cycles: settingsToSave.ultrafix_max_cycles,
         ultrafix_pause_seconds: settingsToSave.ultrafix_pause_seconds
@@ -287,6 +293,12 @@ export function useSettingsState() {
     saveSettingsOnly(newSettings);
   }, [settings, saveSettingsOnly]);
 
+  const handleReviewContextEnabledChange = useCallback((enabled: boolean) => {
+    const newSettings = { ...settings, pr_review_context_enabled: enabled };
+    setSettings(newSettings);
+    saveSettingsOnly(newSettings);
+  }, [settings, saveSettingsOnly]);
+
   const handleSummarizationChange = useCallback((newSettings: SummarizationSettings, isPromptChange = false) => {
     setSummarizationSettings(newSettings);
     if (summarizationSaveTimeoutRef.current) clearTimeout(summarizationSaveTimeoutRef.current);
@@ -394,7 +406,7 @@ export function useSettingsState() {
     summarizationSettings, isReindexing, agentTankSettings,
     agentTankAvailable, agentTankCheckingStatus,
     setSettings, setPrLabel,
-    triggerSettingsSave, handleModelSelectionChange,
+    triggerSettingsSave, handleModelSelectionChange, handleReviewContextEnabledChange,
     handleSummarizationChange, handleSummarizationModelChange,
     handleSummarizationFallbackModelChange,
     handleDefaultAgentChange, handleReindexAll, handleAgentTankChange,

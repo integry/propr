@@ -67,6 +67,11 @@ class FakeWebSocket implements MinimalWebSocket {
 }
 
 const flush = () => new Promise((r) => setImmediate(r));
+const capableHello = {
+    type: 'hello',
+    protocolVersion: 1,
+    capabilities: ['account_status'],
+};
 
 function makeService(overrides: Partial<RoutingWebSocketIntakeServiceOptions> = {}) {
     FakeWebSocket.instances = [];
@@ -74,6 +79,7 @@ function makeService(overrides: Partial<RoutingWebSocketIntakeServiceOptions> = 
     const service = new RoutingWebSocketIntakeService({
         routingUrl: 'wss://routing.example',
         relayToken: 'relay-secret',
+        installationId: 42,
         webSocketFactory: FakeWebSocket as unknown as new (address: string) => MinimalWebSocket,
         dispatch: async (payload, eventType, correlationId) => {
             dispatched.push({ payload, eventType, correlationId });
@@ -81,6 +87,23 @@ function makeService(overrides: Partial<RoutingWebSocketIntakeServiceOptions> = 
         ...overrides,
     });
     return { service, dispatched };
+}
+
+function accountStatusFrame(overrides: Record<string, unknown> = {}) {
+    return JSON.stringify({
+        type: 'account_status',
+        installationId: 42,
+        accountLogin: 'octo-org',
+        plan: 'community',
+        hasPlusAccess: false,
+        activeSeats: 3,
+        allowedSeats: 3,
+        seatsRemaining: 0,
+        billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+        seatLimitBlockedAt: null,
+        sentAt: '2026-08-14T09:31:07.000Z',
+        ...overrides,
+    });
 }
 
 /** Build an `event` frame with an inline payload. */
@@ -156,7 +179,103 @@ test('connects to the /v1/connect path with a Bearer relay token', async () => {
     await service.stop();
 });
 
-test('uses a low-frequency default WebSocket transport ping', async () => {
+test('negotiates account status on open and stores only a valid current-installation frame', async () => {
+    const { service } = makeService();
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    assert.deepEqual(socket.sentFrames()[0], capableHello);
+    socket.emit('message', accountStatusFrame({ polarCustomerId: 'secret' }));
+    await flush();
+
+    assert.deepEqual(service.getStatus().connectAccount, {
+        installationId: 42,
+        accountLogin: 'octo-org',
+        plan: 'community',
+        hasPlusAccess: false,
+        activeSeats: 3,
+        allowedSeats: 3,
+        seatsRemaining: 0,
+        billingCycleResetAt: '2026-09-01T00:00:00.000Z',
+        seatLimitBlockedAt: null,
+        sentAt: '2026-08-14T09:31:07.000Z',
+    });
+    await service.stop();
+});
+
+test('rejects unsolicited, malformed, stale, and installation-mismatched account status', async () => {
+    const { service } = makeService();
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+
+    socket.emit('message', accountStatusFrame());
+    assert.equal(service.getStatus().connectAccount, undefined, 'frame before capable hello is unsolicited');
+
+    socket.emit('open');
+    socket.emit('message', accountStatusFrame({ allowedSeats: 'three' }));
+    socket.emit('message', accountStatusFrame({ installationId: 99 }));
+    socket.emit('message', accountStatusFrame({ padding: 'x'.repeat(17 * 1024) }));
+    assert.equal(service.getStatus().connectAccount, undefined);
+
+    socket.emit('message', accountStatusFrame());
+    socket.emit('message', accountStatusFrame({
+        activeSeats: 2,
+        seatsRemaining: 1,
+        sentAt: '2026-08-14T09:31:06.000Z',
+    }));
+    assert.equal(service.getStatus().connectAccount?.activeSeats, 3, 'older sentAt cannot replace current state');
+    await service.stop();
+});
+
+test('orders account status at full fractional precision after normalizing offsets', async () => {
+    const { service } = makeService();
+    await service.start();
+    const socket = FakeWebSocket.instances[0];
+    socket.emit('open');
+
+    socket.emit('message', accountStatusFrame({ sentAt: '2026-08-14T09:31:07.123456789Z' }));
+    socket.emit('message', accountStatusFrame({
+        activeSeats: 2,
+        seatsRemaining: 1,
+        sentAt: '2026-08-14T11:31:07.123456790+02:00',
+    }));
+    socket.emit('message', accountStatusFrame({
+        activeSeats: 1,
+        seatsRemaining: 2,
+        sentAt: '2026-08-14T04:31:07.123456789-05:00',
+    }));
+
+    assert.equal(service.getStatus().connectAccount?.activeSeats, 2);
+    assert.equal(
+        service.getStatus().connectAccount?.sentAt,
+        '2026-08-14T11:31:07.123456790+02:00',
+    );
+    await service.stop();
+});
+
+test('clears account status on disconnect and isolates late frames from the stale socket', async () => {
+    const { service } = makeService({ reconnectDelayMs: 5, maxReconnectDelayMs: 5 });
+    await service.start();
+    const first = FakeWebSocket.instances[0];
+    first.emit('open');
+    first.emit('message', accountStatusFrame());
+    assert.ok(service.getStatus().connectAccount);
+
+    first.emit('close', 1006, Buffer.from('dropped'));
+    assert.equal(service.getStatus().connectAccount, undefined);
+    await new Promise(resolve => setTimeout(resolve, 15));
+    const second = FakeWebSocket.instances[1];
+    second.emit('open');
+
+    first.emit('message', accountStatusFrame({ sentAt: '2026-08-14T09:32:00.000Z' }));
+    assert.equal(service.getStatus().connectAccount, undefined, 'late stale-socket frame is isolated');
+    second.emit('message', accountStatusFrame({ sentAt: '2026-08-14T09:32:01.000Z' }));
+    assert.ok(service.getStatus().connectAccount, 'reconnect rehydrates from its own current frame');
+    await service.stop();
+});
+
+test('uses a low-frequency default transport and application heartbeat probe', async () => {
     mock.timers.enable({ apis: ['setInterval'] });
     const prev = process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
     delete process.env.PROPR_ROUTING_WS_PING_INTERVAL_MS;
@@ -172,6 +291,7 @@ test('uses a low-frequency default WebSocket transport ping', async () => {
 
         mock.timers.tick(1);
         assert.equal(socket.pings, 1, 'default ping fires at 5 minutes');
+        assert.deepEqual(socket.sentFrames(), [capableHello, capableHello]);
     } finally {
         await service?.stop();
         mock.timers.reset();
@@ -252,6 +372,127 @@ test('keeps the routing socket alive when a transport pong arrives before the de
     }
 });
 
+test('does not negotiate application heartbeats from an unsolicited ping before the first probe', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService({ pingIntervalMs: 100, pongTimeoutMs: 50 }));
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'unsolicited' }));
+        assert.deepEqual(socket.sentFrames(), [capableHello, { type: 'pong', nonce: 'unsolicited' }]);
+
+        mock.timers.tick(100);
+        assert.deepEqual(socket.sentFrames(), [
+            capableHello,
+            { type: 'pong', nonce: 'unsolicited' },
+            capableHello,
+        ]);
+        socket.emit('pong');
+        mock.timers.tick(50);
+
+        assert.equal(socket.terminated, false, 'transport pong compatibility remains enabled');
+        assert.equal(service.getStatus().connected, true);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+    }
+});
+
+test('requires an application response after the relay negotiates application heartbeats', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService({ pingIntervalMs: 100, pongTimeoutMs: 50 }));
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+
+        // A RoutingHub ping proves application-heartbeat support and is answered
+        // using the existing protocol pong.
+        mock.timers.tick(100);
+        socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'negotiation' }));
+        assert.deepEqual(socket.sentFrames(), [
+            capableHello,
+            capableHello,
+            { type: 'pong', nonce: 'negotiation' },
+        ]);
+
+        mock.timers.tick(100);
+        assert.equal(socket.pings, 2);
+        socket.emit('pong');
+        mock.timers.tick(50);
+
+        assert.equal(socket.terminated, true, 'an edge transport pong cannot mask a lost RoutingHub path');
+        assert.equal(service.getStatus().connected, false);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+    }
+});
+
+test('keeps a negotiated connection alive when the RoutingHub answers the probe', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService({ pingIntervalMs: 100, pongTimeoutMs: 50 }));
+        await service.start();
+        const socket = FakeWebSocket.instances[0];
+        socket.emit('open');
+        mock.timers.tick(100);
+        socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'negotiation' }));
+
+        mock.timers.tick(100);
+        mock.timers.tick(49);
+        socket.emit('message', JSON.stringify({ type: 'ping', nonce: 'probe-response' }));
+        mock.timers.tick(1);
+
+        assert.equal(socket.terminated, false);
+        assert.equal(service.getStatus().connected, true);
+        assert.deepEqual(socket.sentFrames().slice(-2), [
+            capableHello,
+            { type: 'pong', nonce: 'probe-response' },
+        ]);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+    }
+});
+
+test('ignores an application heartbeat from a superseded socket', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    let service: RoutingWebSocketIntakeService | undefined;
+    try {
+        ({ service } = makeService({
+            pingIntervalMs: 100,
+            pongTimeoutMs: 50,
+            reconnectDelayMs: 25,
+            maxReconnectDelayMs: 25,
+        }));
+        await service.start();
+        const first = FakeWebSocket.instances[0];
+        first.emit('open');
+        first.emit('close', 1006, Buffer.from('dropped'));
+        mock.timers.tick(25);
+
+        const second = FakeWebSocket.instances[1];
+        second.emit('open');
+        first.emit('message', JSON.stringify({ type: 'ping', nonce: 'late-old-socket' }));
+
+        mock.timers.tick(100);
+        second.emit('pong');
+        mock.timers.tick(50);
+
+        assert.equal(second.terminated, false, 'stale application frames cannot change current heartbeat mode');
+        assert.equal(service.getStatus().connected, true);
+    } finally {
+        await service?.stop();
+        mock.timers.reset();
+    }
+});
+
 test('terminates and reconnects a half-open routing socket that misses its pong deadline', async () => {
     mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
     let service: RoutingWebSocketIntakeService | undefined;
@@ -317,7 +558,7 @@ test('processes an event frame with inline payload and ACKs only after processin
     resolveDispatch();
     await flush();
 
-    const frames = socket.sentFrames();
+    const frames = socket.sentFrames().filter(frame => frame.type === 'ack');
     assert.equal(frames.length, 1);
     // A processed delivery is ACKed with an explicit `accepted` status.
     assert.deepEqual(frames[0], { type: 'ack', sequence: 5, deliveryId: 'd1', status: 'accepted' });
@@ -641,10 +882,11 @@ test('ignores routing frames with an unknown type without crashing', async () =>
     // ignored: no dispatch, and nothing is sent back to the relay.
     socket.emit('message', JSON.stringify({ type: 'mystery', whatever: true }));
     socket.emit('message', JSON.stringify({ nope: 1 }));
+    socket.emit('message', 'null');
     await flush();
 
     assert.equal(dispatched.length, 0);
-    assert.equal(socket.sentFrames().length, 0, 'an unknown frame produces no response');
+    assert.equal(socket.sentFrames().filter(frame => frame.type !== 'hello').length, 0, 'an unknown frame produces no response');
 
     await service.stop();
 });
@@ -677,7 +919,7 @@ test('pulls the payload over HTTP when no inline payload is present', async () =
     assert.equal(authHeader, 'Bearer inst-token-123');
     assert.equal(dispatched.length, 1);
     assert.deepEqual(dispatched[0].payload, { action: 'opened', pulled: true });
-    assert.deepEqual(socket.sentFrames()[0], { type: 'ack', sequence: 9, deliveryId: 'pull-1', status: 'accepted' });
+    assert.deepEqual(socket.sentFrames().find(frame => frame.type === 'ack'), { type: 'ack', sequence: 9, deliveryId: 'pull-1', status: 'accepted' });
 
     await service.stop();
 });
@@ -959,7 +1201,7 @@ test('answers a ping frame with a pong frame', async () => {
     await flush();
 
     // The pong must echo the relay's nonce (the relay rejects a nonce-less pong).
-    assert.deepEqual(socket.sentFrames(), [{ type: 'pong', nonce: 'ping-nonce-1' }]);
+    assert.deepEqual(socket.sentFrames(), [capableHello, { type: 'pong', nonce: 'ping-nonce-1' }]);
 
     await service.stop();
 });
@@ -974,7 +1216,7 @@ test('logs error frames without crashing', async () => {
     await flush();
 
     assert.equal(dispatched.length, 0);
-    assert.equal(socket.sentFrames().length, 0);
+    assert.equal(socket.sentFrames().filter(frame => frame.type !== 'hello').length, 0);
 
     await service.stop();
 });

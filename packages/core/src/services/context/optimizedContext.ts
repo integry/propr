@@ -2,8 +2,10 @@
  * Optimized context generation with iterative truncation.
  */
 
-import { pack } from 'repomix';
-import type { GenerateOptimizedContextOptions } from './types.js';
+import path from 'node:path';
+import { pack, type PackResult } from 'repomix';
+import { ContextTokenLimitError } from './types.js';
+import type { GenerateOptimizedContextOptions, RepomixPackConfig, SuspiciousFile } from './types.js';
 
 interface FileRemovalPlan {
   filesToRemove: string[];
@@ -18,8 +20,7 @@ const CONTEXT_FILL_STOP_RATIO = 0.99;
 const MIN_FIXED_OVERHEAD_TOKENS = 2_000;
 const FIXED_OVERHEAD_LIMIT_RATIO = 0.05;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function buildCompactRepomixConfig(baseConfig: any) {
+export function buildCompactRepomixConfig(baseConfig: RepomixPackConfig): RepomixPackConfig {
   return {
     ...baseConfig,
     output: {
@@ -30,6 +31,95 @@ export function buildCompactRepomixConfig(baseConfig: any) {
       topFilesLength: 0,
     },
   };
+}
+
+interface SecurityAwarePackResult {
+  result: PackResult;
+  effectiveConfig: RepomixPackConfig;
+  suspiciousFiles: SuspiciousFile[];
+}
+
+/**
+ * Pack with security checking enabled until Repomix no longer reports new
+ * suspicious files. Repomix filters suspicious bodies from each result; the
+ * explicit safe include list also prevents later attempts from broadening the
+ * scope and reintroducing them.
+ */
+export async function packWithSecurityExclusions(
+  repoPath: string,
+  baseConfig: RepomixPackConfig,
+  onSuspiciousFiles?: (files: SuspiciousFile[]) => void,
+): Promise<SecurityAwarePackResult> {
+  let effectiveConfig: RepomixPackConfig = {
+    ...baseConfig,
+    security: {
+      enableSecurityCheck: true,
+    },
+  };
+  const excludedPaths = new Set<string>();
+  const allSuspiciousFiles: SuspiciousFile[] = [];
+
+  while (true) {
+    const result = await pack([repoPath], effectiveConfig);
+    const newlySuspiciousFiles = result.suspiciousFilesResults
+      .filter(file => !excludedPaths.has(file.filePath))
+      .map(file => ({ filePath: file.filePath, messages: file.messages || [] }));
+
+    if (newlySuspiciousFiles.length === 0) {
+      return { result, effectiveConfig, suspiciousFiles: allSuspiciousFiles };
+    }
+
+    onSuspiciousFiles?.(newlySuspiciousFiles);
+    for (const file of newlySuspiciousFiles) {
+      excludedPaths.add(file.filePath);
+      allSuspiciousFiles.push(file);
+    }
+
+    effectiveConfig = {
+      ...effectiveConfig,
+      include: result.safeFilePaths,
+      security: {
+        enableSecurityCheck: true,
+      },
+    };
+
+    // The current result is already sanitized by Repomix. Avoid interpreting
+    // an empty include list as "include the whole repository" on another pass.
+    if (result.safeFilePaths.length === 0) {
+      return { result, effectiveConfig, suspiciousFiles: allSuspiciousFiles };
+    }
+  }
+}
+
+function normalizeTargetRelativePath(filePath: string): string {
+  return path.posix.normalize(filePath.replaceAll('\\', '/'));
+}
+
+/**
+ * Preserve the caller's priority order while restricting optimization to
+ * files that Repomix actually included in its measured result.
+ */
+export function filterExplicitFilesByPackedPaths(
+  filesToInclude: string[],
+  fileTokenCounts: Record<string, number> | undefined,
+): string[] {
+  const packedPaths = Object.keys(fileTokenCounts || {});
+  const packedPathSet = new Set(packedPaths);
+  const packedPathsByNormalizedPath = new Map(
+    packedPaths.map(packedPath => [normalizeTargetRelativePath(packedPath), packedPath]),
+  );
+  const matchedPackedPaths = new Set<string>();
+
+  return filesToInclude.flatMap(filePath => {
+    const packedPath = packedPathSet.has(filePath)
+      ? filePath
+      : packedPathsByNormalizedPath.get(normalizeTargetRelativePath(filePath));
+    if (!packedPath || matchedPackedPaths.has(packedPath)) {
+      return [];
+    }
+    matchedPackedPaths.add(packedPath);
+    return [packedPath];
+  });
 }
 
 export function planFilesToRemoveForTokenLimit(
@@ -45,6 +135,15 @@ export function planFilesToRemoveForTokenLimit(
   const rawFileTokens = filesWithTokens.reduce((sum, file) => sum + file.tokens, 0);
   const rawNonFileTokens = Math.max(0, totalTokens - rawFileTokens);
   if (rawFileTokens === 0 && totalTokens > tiktokenLimit && filesWithTokens.length > 0) {
+    if (filesWithTokens.length === 1) {
+      return {
+        filesToRemove: [],
+        tokensFreed: 0,
+        nonFileTokens: totalTokens,
+        targetFileTokens: 0,
+        estimatedRemainingTokens: totalTokens,
+      };
+    }
     const leastRelevantFile = filesWithTokens[filesWithTokens.length - 1];
     return {
       filesToRemove: [leastRelevantFile.path],
@@ -84,6 +183,16 @@ export function planFilesToRemoveForTokenLimit(
     }
   }
 
+  // Estimates include a safety margin, so a candidate slightly above the
+  // target can still fit the hard limit when measured by Repomix. Keep the
+  // highest-priority file for that final measured attempt instead of removing
+  // every file and deciding from the previous multi-file result.
+  if (keptFiles.size === 0 && filesWithEffectiveTokens.length > 0) {
+    const highestPriorityFile = filesWithEffectiveTokens[0];
+    keptFiles.add(highestPriorityFile.path);
+    keptTokens = highestPriorityFile.effectiveTokens;
+  }
+
   let filesToRemove = filesWithEffectiveTokens
     .filter(file => !keptFiles.has(file.path))
     .map(file => file.path);
@@ -108,22 +217,33 @@ export function planFilesToRemoveForTokenLimit(
 }
 
 export async function generateOptimizedContext(options: GenerateOptimizedContextOptions) {
-  const { repoPath, initialFiles, baseConfig, tiktokenLimit, contextLogger, writeOutput, noopClipboard } = options;
+  const {
+    repoPath,
+    initialFiles,
+    baseConfig,
+    tiktokenLimit,
+    requestedTokenLimit,
+    modelId,
+    contextLogger,
+    onSuspiciousFiles,
+  } = options;
   let currentFiles = [...initialFiles];
-  const optimizedBaseConfig = buildCompactRepomixConfig(baseConfig);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let result: any;
+  let optimizedBaseConfig = buildCompactRepomixConfig(baseConfig);
+  let result: PackResult | undefined;
   let iterations = 0;
 
   // Keep iterating until context fits or no files remain
   while (currentFiles.length > 0) {
     iterations++;
     const limitedConfig = { ...optimizedBaseConfig, include: currentFiles };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    result = await (pack as any)([repoPath], limitedConfig, () => {}, {
-      writeOutputToDisk: writeOutput,
-      copyToClipboardIfEnabled: noopClipboard,
-    });
+    const packed = await packWithSecurityExclusions(repoPath, limitedConfig, onSuspiciousFiles);
+    result = packed.result;
+
+    if (packed.suspiciousFiles.length > 0) {
+      const suspiciousPaths = new Set(packed.suspiciousFiles.map(file => file.filePath));
+      currentFiles = currentFiles.filter(file => !suspiciousPaths.has(file));
+      optimizedBaseConfig = buildCompactRepomixConfig(packed.effectiveConfig);
+    }
 
     if (result.totalTokens <= tiktokenLimit) {
       contextLogger.info(
@@ -145,8 +265,7 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
     const { filesToRemove, tokensFreed } = removalPlan;
 
     if (filesToRemove.length === 0) {
-      contextLogger.warn({ currentFiles: currentFiles.length }, 'Cannot remove any more files, accepting current result');
-      break;
+      throw new ContextTokenLimitError(result.totalTokens, requestedTokenLimit, tiktokenLimit, modelId);
     }
 
     contextLogger.info(
@@ -165,19 +284,12 @@ export async function generateOptimizedContext(options: GenerateOptimizedContext
     currentFiles = currentFiles.filter(f => !removeSet.has(f));
   }
 
-  if (currentFiles.length === 0) {
-    contextLogger.warn({ initialFiles: initialFiles.length }, 'All files removed after compact context reduction');
-    if (initialFiles.length > 0) {
-      const fallbackFiles = [initialFiles[0]];
-      contextLogger.warn({ fallbackFiles }, 'Retrying with the highest-priority file instead of returning empty context');
-      const fallbackConfig = { ...optimizedBaseConfig, include: fallbackFiles };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      result = await (pack as any)([repoPath], fallbackConfig, () => {}, {
-        writeOutputToDisk: writeOutput,
-        copyToClipboardIfEnabled: noopClipboard,
-      });
-      currentFiles = fallbackFiles;
-    }
+  if (!result) {
+    throw new Error('Context optimization completed without producing a Repomix result');
+  }
+
+  if (result.totalTokens > tiktokenLimit) {
+    throw new ContextTokenLimitError(result.totalTokens, requestedTokenLimit, tiktokenLimit, modelId);
   }
 
   return { result, currentFiles };

@@ -1,8 +1,9 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
+import { createHooklessGit } from './hooklessGit.js';
 
 interface InstallationAuth {
     token: string;
@@ -11,7 +12,7 @@ interface InstallationAuth {
 export function redactAuthenticatedGitUrl(message: string): string {
     return message
         .replace(/https:\/\/x-access-token:[^@\s'"]+@github\.com\//g, 'https://x-access-token:[REDACTED]@github.com/')
-        .replace(/\b(?:ghs|ghp|gho|ghu|ghr|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED_GITHUB_TOKEN]');
+        .replace(/\b(?:ghs|ghp|gho|ghu|ghr|github_pat)_[A-Za-z0-9_.-]+/g, '[REDACTED_GITHUB_TOKEN]');
 }
 
 export async function setupAuthenticatedRemote(git: SimpleGit, repoUrl: string, authToken: string): Promise<void> {
@@ -34,7 +35,7 @@ export async function ensureBranchAndPush(worktreePath: string, branchName: stri
     const { repoUrl, authToken, tokenRefreshFn, correlationId } = options;
 
     const pushOperation = async (currentToken: string | undefined): Promise<void> => {
-        const git: SimpleGit = simpleGit({ baseDir: worktreePath });
+        const git: SimpleGit = createHooklessGit(worktreePath);
 
         if (repoUrl && currentToken) await setupAuthenticatedRemote(git, repoUrl, currentToken);
 
@@ -72,7 +73,10 @@ export async function ensureBranchAndPush(worktreePath: string, branchName: stri
             logger.debug({ error: (diffError as Error).message }, 'Could not check diff, proceeding anyway');
         }
 
-        await git.push(['--set-upstream', 'origin', branchName]);
+        // Every ProPR push names its remote and branch explicitly. Avoid
+        // writing branch tracking state into the shared clone config, where
+        // parallel worktrees would contend on `.git/config.lock`.
+        await git.push(['origin', branchName]);
         logger.info({ branchName, baseBranch, worktreePath }, 'Branch successfully pushed to remote');
     };
 
@@ -145,7 +149,7 @@ async function getHeadCommitHash(git: SimpleGit): Promise<string | undefined> {
 export async function pushBranch(worktreePath: string, branchName: string, options: PushBranchOptions = {}): Promise<PushBranchResult> {
     const { repoUrl, authToken, remote = 'origin', rebaseOnNonFastForward = false } = options;
 
-    const git = simpleGit({ baseDir: worktreePath });
+    const git = createHooklessGit(worktreePath);
 
     const performPush = async (token: string | undefined): Promise<void> => {
         if (repoUrl && token) await setupAuthenticatedRemote(git, repoUrl, token);
@@ -169,7 +173,7 @@ export async function pushBranch(worktreePath: string, branchName: string, optio
             logger.warn({ error: (branchCheckError as Error).message }, 'Failed to verify current branch, proceeding with push anyway');
         }
 
-        await git.push([remote, branchName, '--set-upstream']);
+        await git.push([remote, branchName]);
     };
 
     const rebaseOntoRemoteAndPush = async (token: string | undefined, originalError: unknown): Promise<PushBranchResult> => {

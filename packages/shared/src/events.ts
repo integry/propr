@@ -44,6 +44,8 @@ export interface TaskUpdatePayload {
   repository?: string;
   issueNumber?: number;
   timestamp: string;
+  /** Monotonic task-state revision; consumers ignore older revisions. */
+  version?: number;
   /** Additional metadata about the state change */
   metadata?: Record<string, unknown>;
 }

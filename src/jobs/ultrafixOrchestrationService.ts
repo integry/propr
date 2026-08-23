@@ -7,6 +7,29 @@
  */
 
 import type { Redis } from 'ioredis';
+import type { ReviewOutputStatus } from './reviewCommentGatherer.js';
+import { saveUltrafixStateIfCurrent } from './ultrafixAutomaticWorkEpoch.js';
+export {
+    clearDeferredContinuationIfCurrent,
+    clearUltrafixStateIfCurrent,
+    getUltrafixAutomaticWorkEpoch,
+    getUltrafixAutomaticWorkEpochKey,
+    getUltrafixDeferredKey,
+    hasUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWork,
+    invalidateUltrafixAutomaticWorkForComment,
+    isUltrafixAutomaticWorkCurrent,
+    saveUltrafixStateIfCurrent,
+} from './ultrafixAutomaticWorkEpoch.js';
+export {
+    claimDeferredContinuation,
+    clearDeferredContinuation,
+    listDeferredContinuationKeys,
+    loadDeferredContinuation,
+    parseDeferredKey,
+    saveDeferredContinuation,
+} from './ultrafixDeferredContinuationStore.js';
+export type { UltrafixDeferredContinuation } from './ultrafixDeferredContinuationStore.js';
 
 // --- Interfaces ---
 
@@ -39,6 +62,8 @@ export interface UltrafixLoopState {
     lastActionTimestamp: string | null;
     /** Whether the loop is currently active */
     active: boolean;
+    /** Automatic-work epoch that owns this loop state. */
+    workEpoch: number;
     /** Terminal result once the loop has stopped. */
     completionStatus: 'succeeded' | 'failed' | null;
     /** Why the loop stopped. */
@@ -47,6 +72,21 @@ export interface UltrafixLoopState {
     finalScore: number | null;
     /** ISO timestamp when the loop reached a terminal state. */
     completedAt: string | null;
+    /** Original PR/issue objective captured once and reused unchanged. */
+    originalScope?: string;
+    /** Whether originalScope has been captured, including when it was empty. */
+    originalScopeCaptured?: boolean;
+    /** Per-review actionable finding lifecycle, keyed by comment ID and F# ID. */
+    findingLifecycle?: Record<string, UltrafixFindingLifecycle>;
+}
+
+export interface UltrafixFindingLifecycle {
+    id: string;
+    sourceCommentId: number;
+    title: string;
+    status: 'open' | 'selected' | 'addressed' | 'resolved';
+    firstSeenCycle: number;
+    lastSeenCycle: number;
 }
 
 export interface NextActionDecision {
@@ -64,6 +104,7 @@ export interface StartLoopOptions {
     maxCycles?: number;
     pauseSeconds?: number;
     reviewModel?: string;
+    workEpoch?: number;
 }
 
 export interface UltrafixReadinessResult {
@@ -78,21 +119,9 @@ export interface UltrafixCheckStatus {
     anyFailed: boolean;
 }
 
-export interface UltrafixDeferredContinuation {
-    owner: string;
-    repo: string;
-    pr: number;
-    nextAction: UltrafixAction;
-    savedAt: string;
-    reason: string;
-    /** UltrafixMeta to pass to the next job when resuming */
-    ultrafixMeta?: import('@propr/core').UltrafixCommandMeta;
-}
-
 // --- Constants ---
 
 const KEY_PREFIX = 'ultrafix:state';
-const DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
 const DEFAULT_GOAL = 7;
 const DEFAULT_MAX_CYCLES = 5;
 const DEFAULT_PAUSE_SECONDS = 60;
@@ -101,10 +130,6 @@ const DEFAULT_PAUSE_SECONDS = 60;
 
 export function getUltrafixStateKey(owner: string, repo: string, pr: number): string {
     return `${KEY_PREFIX}:${owner}:${repo}:${pr}`;
-}
-
-export function getUltrafixDeferredKey(owner: string, repo: string, pr: number): string {
-    return `${DEFERRED_KEY_PREFIX}:${owner}:${repo}:${pr}`;
 }
 
 // --- State defaults ---
@@ -124,10 +149,13 @@ export function createDefaultState(options: StartLoopOptions): UltrafixLoopState
         lastAction: null,
         lastActionTimestamp: null,
         active: true,
+        workEpoch: options.workEpoch ?? 0,
         completionStatus: null,
         completionReason: null,
         finalScore: null,
         completedAt: null,
+        originalScopeCaptured: false,
+        findingLifecycle: {},
     };
 }
 
@@ -160,18 +188,32 @@ export function determineInitialAction(hasPendingReviews: boolean): UltrafixActi
 }
 
 /**
+ * A review only reaches the requested Ultrafix goal when it is both clean and
+ * has complete diff coverage and an explicit score at or above the configured
+ * target.
+ */
+export function hasReviewReachedGoal(
+    reviewStatus: ReviewOutputStatus,
+    currentScore: number | null,
+    goal: number,
+    isPartial: boolean = false,
+): boolean {
+    return !isPartial && reviewStatus === 'valid_clean' && currentScore !== null && currentScore >= goal;
+}
+
+/**
  * Determine whether the loop should continue and what action to take next.
  */
-export function determineNextAction(state: UltrafixLoopState, currentScore: number | null): NextActionDecision {
+export function determineNextAction(
+    state: UltrafixLoopState,
+    currentScore: number | null,
+    reviewStatus: ReviewOutputStatus = 'invalid',
+    isPartial: boolean = false,
+): NextActionDecision {
     const { reviewCount, fixCount } = getActionCounts(state);
 
     if (!state.active) {
         return { action: null, reason: 'Loop is inactive' };
-    }
-
-    // Check if goal is met
-    if (currentScore !== null && currentScore >= state.goal) {
-        return { action: null, reason: `Goal met: score ${currentScore} >= ${state.goal}` };
     }
 
     // Determine next action based on last action
@@ -180,10 +222,37 @@ export function determineNextAction(state: UltrafixLoopState, currentScore: numb
     }
 
     if (state.lastAction === 'review') {
+        if (reviewStatus === 'valid_clean') {
+            if (isPartial) {
+                return {
+                    action: null,
+                    reason: 'Review reports no actionable findings but had partial diff coverage; stopping for manual review',
+                };
+            }
+            if (hasReviewReachedGoal(reviewStatus, currentScore, state.goal, isPartial)) {
+                return {
+                    action: null,
+                    reason: `Valid review reports no actionable findings and score ${currentScore}/10 reaches goal ${state.goal}/10`,
+                };
+            }
+            const scoreDetail = currentScore === null
+                ? 'no score was reported'
+                : `score ${currentScore}/10 is below goal ${state.goal}/10`;
+            return {
+                action: null,
+                reason: `Valid review reports no actionable findings, but ${scoreDetail}; stopping for manual review`,
+            };
+        }
+        if (reviewStatus === 'invalid') {
+            if (reviewCount >= state.maxCycles) {
+                return { action: null, reason: `Invalid review output and max review attempts reached (${state.maxCycles})` };
+            }
+            return { action: 'review', reason: 'Review output is invalid, retrying review' };
+        }
         if (fixCount >= state.maxCycles) {
             return { action: null, reason: `Max cycles reached: ${fixCount} ${fixCount === 1 ? 'fix step has' : 'fix steps have'} completed (limit ${state.maxCycles})` };
         }
-        return { action: 'fix', reason: 'Last action was review, next is fix' };
+        return { action: 'fix', reason: 'Actionable review findings remain, next is fix' };
     }
 
     // lastAction === 'fix'
@@ -212,6 +281,33 @@ export async function clearState(redis: Redis, owner: string, repo: string, pr: 
     await redis.del(key);
 }
 
+async function loadOwnedState(
+    redis: Redis,
+    identity: { owner: string; repo: string; pr: number },
+    workEpoch?: number,
+): Promise<UltrafixLoopState | null> {
+    const state = await loadState(redis, identity.owner, identity.repo, identity.pr);
+    if (!state) return null;
+    // State persisted before epoch fencing belongs to the original epoch.
+    state.workEpoch = typeof state.workEpoch === 'number' ? state.workEpoch : 0;
+    if (workEpoch !== undefined && state.workEpoch !== workEpoch) return null;
+    return state;
+}
+
+async function saveOwnedState(redis: Redis, state: UltrafixLoopState, workEpoch?: number): Promise<boolean> {
+    if (workEpoch === undefined) {
+        await saveState(redis, state);
+        return true;
+    }
+    if (state.workEpoch !== workEpoch) return false;
+    return saveUltrafixStateIfCurrent(
+        redis,
+        { owner: state.owner, repo: state.repo, pr: state.pr },
+        workEpoch,
+        JSON.stringify(state),
+    );
+}
+
 // --- High-level helpers ---
 
 /**
@@ -223,16 +319,17 @@ export async function startLoop(redis: Redis, options: StartLoopOptions, hasPend
     const initialAction = determineInitialAction(hasPendingReviews);
     state.lastAction = initialAction;
     state.lastActionTimestamp = new Date().toISOString();
-    await saveState(redis, state);
+    const saved = await saveOwnedState(redis, state, options.workEpoch);
+    if (!saved) throw new Error('Ultrafix startup was superseded before state commit');
     return { state, initialAction };
 }
 
 /**
  * Record that an action was completed and advance the cycle count if appropriate.
  */
-export async function recordAction(redis: Redis, params: { owner: string; repo: string; pr: number; action: UltrafixAction }): Promise<UltrafixLoopState | null> {
-    const { owner, repo, pr, action } = params;
-    const state = await loadState(redis, owner, repo, pr);
+export async function recordAction(redis: Redis, params: { owner: string; repo: string; pr: number; action: UltrafixAction; workEpoch?: number }): Promise<UltrafixLoopState | null> {
+    const { owner, repo, pr, action, workEpoch } = params;
+    const state = await loadOwnedState(redis, { owner, repo, pr }, workEpoch);
     if (!state) return null;
 
     const { reviewCount, fixCount } = getActionCounts(state);
@@ -243,8 +340,89 @@ export async function recordAction(redis: Redis, params: { owner: string; repo: 
     state.fixCount = fixCount + (action === 'fix' ? 1 : 0);
     state.cycleCount = Math.min(state.reviewCount, state.fixCount);
 
-    await saveState(redis, state);
-    return state;
+    if (action === 'fix' && state.findingLifecycle) {
+        for (const finding of Object.values(state.findingLifecycle)) {
+            if (finding.status === 'selected') finding.status = 'addressed';
+        }
+    }
+
+    return await saveOwnedState(redis, state, workEpoch) ? state : null;
+}
+
+/** Capture the original objective once; later cycles always receive this value. */
+export async function retainOriginalScope(
+    redis: Redis,
+    params: { owner: string; repo: string; pr: number; scope: string; workEpoch?: number },
+): Promise<string> {
+    const state = await loadOwnedState(redis, params, params.workEpoch);
+    if (!state) return params.scope;
+
+    if (state.originalScopeCaptured === true) return state.originalScope ?? '';
+    // Preserve populated legacy state; an empty legacy placeholder was not captured.
+    state.originalScope ||= params.scope;
+    const saved = await saveOwnedState(redis, { ...state, originalScopeCaptured: true }, params.workEpoch);
+    if (!saved) return params.scope;
+    return state.originalScope ?? '';
+}
+
+/** Record the blockers emitted by a review and resolve addressed predecessors. */
+export async function recordReviewFindings(
+    redis: Redis,
+    params: {
+        owner: string;
+        repo: string;
+        pr: number;
+        findings: Array<{ id: string; sourceCommentId: number; title: string }>;
+        workEpoch?: number;
+    },
+): Promise<UltrafixLoopState | null> {
+    const state = await loadOwnedState(redis, params, params.workEpoch);
+    if (!state) return null;
+    const lifecycle = state.findingLifecycle ?? {};
+    for (const finding of Object.values(lifecycle)) {
+        if (finding.status === 'addressed') finding.status = 'resolved';
+    }
+    for (const finding of params.findings) {
+        const key = `${finding.sourceCommentId}:${finding.id.toUpperCase()}`;
+        lifecycle[key] = lifecycle[key] ?? {
+            id: finding.id.toUpperCase(),
+            sourceCommentId: finding.sourceCommentId,
+            title: finding.title,
+            status: 'open',
+            firstSeenCycle: state.cycleCount,
+            lastSeenCycle: state.cycleCount,
+        };
+        lifecycle[key].title = finding.title;
+        lifecycle[key].status = 'open';
+        lifecycle[key].lastSeenCycle = state.cycleCount;
+    }
+    state.findingLifecycle = lifecycle;
+    return await saveOwnedState(redis, state, params.workEpoch) ? state : null;
+}
+
+/** Mark exactly the finding records selected for the next automatic fix. */
+export async function markFindingsSelected(
+    redis: Redis,
+    params: { owner: string; repo: string; pr: number; findings: Array<{ id: string; sourceCommentId: number; title: string }>; workEpoch?: number },
+): Promise<UltrafixLoopState | null> {
+    const state = await loadOwnedState(redis, params, params.workEpoch);
+    if (!state) return null;
+    const lifecycle = state.findingLifecycle ?? {};
+    for (const selected of params.findings) {
+        const key = `${selected.sourceCommentId}:${selected.id.toUpperCase()}`;
+        lifecycle[key] = lifecycle[key] ?? {
+            id: selected.id.toUpperCase(),
+            sourceCommentId: selected.sourceCommentId,
+            title: selected.title,
+            status: 'open',
+            firstSeenCycle: state.cycleCount,
+            lastSeenCycle: state.cycleCount,
+        };
+        lifecycle[key].status = 'selected';
+        lifecycle[key].lastSeenCycle = state.cycleCount;
+    }
+    state.findingLifecycle = lifecycle;
+    return await saveOwnedState(redis, state, params.workEpoch) ? state : null;
 }
 
 /**
@@ -268,9 +446,10 @@ export async function completeLoop(
         completionStatus: 'succeeded' | 'failed';
         completionReason: string;
         finalScore: number | null;
+        workEpoch?: number;
     },
 ): Promise<UltrafixLoopState | null> {
-    const state = await loadState(redis, params.owner, params.repo, params.pr);
+    const state = await loadOwnedState(redis, params, params.workEpoch);
     if (!state) return null;
 
     state.active = false;
@@ -279,8 +458,7 @@ export async function completeLoop(
     state.finalScore = params.finalScore;
     state.completedAt = new Date().toISOString();
 
-    await saveState(redis, state);
-    return state;
+    return await saveOwnedState(redis, state, params.workEpoch) ? state : null;
 }
 
 // --- Readiness helpers (side-effect free, testable independently) ---
@@ -368,77 +546,4 @@ export function checkReadiness(opts: {
  */
 export function areChecksReadyForUltrafix(status: UltrafixCheckStatus): boolean {
     return status.allPassing;
-}
-
-// --- Deferred continuation persistence ---
-
-export async function saveDeferredContinuation(
-    redis: Redis,
-    deferred: UltrafixDeferredContinuation,
-): Promise<void> {
-    const key = getUltrafixDeferredKey(deferred.owner, deferred.repo, deferred.pr);
-    await redis.set(key, JSON.stringify(deferred));
-}
-
-export async function loadDeferredContinuation(
-    redis: Redis,
-    owner: string,
-    repo: string,
-    pr: number,
-): Promise<UltrafixDeferredContinuation | null> {
-    const key = getUltrafixDeferredKey(owner, repo, pr);
-    const raw = await redis.get(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as UltrafixDeferredContinuation;
-}
-
-export async function claimDeferredContinuation(
-    redis: Redis,
-    owner: string,
-    repo: string,
-    pr: number,
-): Promise<UltrafixDeferredContinuation | null> {
-    const key = getUltrafixDeferredKey(owner, repo, pr);
-    const raw = await redis.getdel(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as UltrafixDeferredContinuation;
-}
-
-export async function clearDeferredContinuation(
-    redis: Redis,
-    owner: string,
-    repo: string,
-    pr: number,
-): Promise<void> {
-    const key = getUltrafixDeferredKey(owner, repo, pr);
-    await redis.del(key);
-}
-
-/**
- * List all deferred continuation keys currently in Redis.
- * Uses SCAN to avoid blocking on large keyspaces.
- */
-export async function listDeferredContinuationKeys(redis: Redis): Promise<string[]> {
-    const keys: string[] = [];
-    let cursor = '0';
-    do {
-        const [nextCursor, batch] = await redis.scan(cursor, 'MATCH', `${DEFERRED_KEY_PREFIX}:*`, 'COUNT', '100');
-        cursor = nextCursor;
-        keys.push(...batch);
-    } while (cursor !== '0');
-    return keys;
-}
-
-/**
- * Parse owner/repo/pr from a deferred continuation Redis key.
- */
-export function parseDeferredKey(key: string): { owner: string; repo: string; pr: number } | null {
-    const prefix = `${DEFERRED_KEY_PREFIX}:`;
-    if (!key.startsWith(prefix)) return null;
-    const parts = key.slice(prefix.length).split(':');
-    if (parts.length < 3) return null;
-    const pr = parseInt(parts[parts.length - 1], 10);
-    if (isNaN(pr)) return null;
-    // GitHub owner/repo cannot contain colons, so simple split is sufficient
-    return { owner: parts[0], repo: parts[1], pr };
 }

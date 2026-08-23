@@ -1,4 +1,4 @@
-import { simpleGit, SimpleGit } from 'simple-git';
+import { SimpleGit } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
@@ -11,6 +11,38 @@ import {
     setupWorktreeRemote,
     getWorktreePath
 } from './worktreeOperations.js';
+import { createHooklessGit } from './hooklessGit.js';
+import { assertRepositoryClonePath } from './repositoryPaths.js';
+import { redactAuthenticatedGitUrl } from './repoBranching.js';
+
+const CLONES_BASE_PATH = process.env.GIT_CLONES_BASE_PATH || '/tmp/git-processor/clones';
+
+/**
+ * Create a worktree branch without recording an upstream in the shared clone
+ * config. Parallel issue jobs use the same clone, so implicit tracking writes
+ * from `git worktree add` can race on `.git/config.lock` even though their
+ * branches and worktree directories are distinct.
+ */
+export async function addWorktreeWithoutTracking(
+    git: SimpleGit,
+    worktreePath: string,
+    branchName: string,
+    options: {
+        startPoint: string;
+        resetBranch?: boolean;
+    },
+): Promise<string> {
+    const { startPoint, resetBranch = false } = options;
+    return git.raw([
+        'worktree',
+        'add',
+        '--no-track',
+        resetBranch ? '-B' : '-b',
+        branchName,
+        worktreePath,
+        startPoint,
+    ]);
+}
 
 async function removeWorktreeForBranch(git: SimpleGit, worktreeLines: string[], branchName: string): Promise<void> {
     for (let i = 0; i < worktreeLines.length; i++) {
@@ -94,7 +126,12 @@ async function handleWorktreeConflict(git: SimpleGit, error: Error, worktreePath
             await git.raw(['worktree', 'remove', existingWorktreePath, '--force']);
             logger.info({ existingWorktreePath }, 'Successfully removed existing worktree');
 
-            const worktreeAddResult = await git.raw(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`]);
+            const worktreeAddResult = await addWorktreeWithoutTracking(
+                git,
+                worktreePath,
+                branchName,
+                { startPoint: `origin/${branchName}`, resetBranch: true },
+            );
             logger.info({ branchName, worktreePath, gitOutput: worktreeAddResult.trim() }, 'Successfully created worktree after removing existing one');
         } catch (retryError) {
             logger.error({ branchName, existingWorktreePath, error: (retryError as Error).message }, 'Failed to handle existing worktree conflict');
@@ -151,7 +188,12 @@ async function createWorktreeFromRemote(git: SimpleGit, worktreePath: string, br
             logger.warn({ error: (listError as Error).message }, 'Failed to list existing worktrees');
         }
 
-        const worktreeAddResult = await git.raw(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`]);
+        const worktreeAddResult = await addWorktreeWithoutTracking(
+            git,
+            worktreePath,
+            branchName,
+            { startPoint: `origin/${branchName}`, resetBranch: true },
+        );
         logger.info({ branchName, worktreePath, gitOutput: worktreeAddResult.trim() }, 'Git worktree add command completed');
 
     } catch (error) {
@@ -179,10 +221,11 @@ async function verifyFinalWorktreeSetup(worktreeGit: SimpleGit, worktreePath: st
 
         if (!hasOrigin) throw new Error('Worktree was created but origin remote is missing');
 
-        logger.info({ worktreePath, branchName, remotes: finalRemotes.map(r => ({ name: r.name, url: r.refs.fetch })) }, 'Git worktree created successfully from existing branch with remotes configured');
+        logger.info({ worktreePath, branchName, remoteNames: finalRemotes.map(remote => remote.name) }, 'Git worktree created successfully from existing branch with remotes configured');
     } catch (verifyError) {
-        logger.error({ worktreePath, error: (verifyError as Error).message }, 'Final verification failed - worktree may not be properly configured');
-        throw new Error(`Worktree setup incomplete: ${(verifyError as Error).message}`);
+        const safeMessage = redactAuthenticatedGitUrl((verifyError as Error).message);
+        logger.error({ worktreePath, error: safeMessage }, 'Final verification failed - worktree may not be properly configured');
+        throw new Error(`Worktree setup incomplete: ${safeMessage}`);
     }
 }
 
@@ -199,10 +242,11 @@ interface WorktreeResult {
 
 export async function createWorktreeFromExistingBranch(localRepoPath: string, branchName: string, options: CreateWorktreeFromExistingBranchOptions): Promise<WorktreeResult> {
     const { worktreeDirName, owner, repoName } = options;
+    assertRepositoryClonePath(localRepoPath, CLONES_BASE_PATH, owner, repoName);
     const worktreePath = getWorktreePath(owner, repoName, worktreeDirName);
 
     try {
-        const git: SimpleGit = simpleGit(localRepoPath);
+        const git: SimpleGit = createHooklessGit(localRepoPath);
 
         if (await fs.pathExists(worktreePath)) {
             await handleExistingWorktreePath(worktreePath, localRepoPath, branchName);
@@ -224,7 +268,7 @@ export async function createWorktreeFromExistingBranch(localRepoPath: string, br
         await setupWorktreePermissions(worktreePath, branchName, null);
         await addToSafeDirectories(git, worktreePath, localRepoPath, { branchName, issueId: null });
 
-        const worktreeGit: SimpleGit = simpleGit({ baseDir: worktreePath });
+        const worktreeGit: SimpleGit = createHooklessGit(worktreePath);
         await setupWorktreeRemote(worktreeGit, git, worktreePath);
 
         await verifyFinalWorktreeSetup(worktreeGit, worktreePath, branchName);

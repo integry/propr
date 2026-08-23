@@ -24,6 +24,7 @@ import {
 import {
   printOutput,
 } from "../utils/index.js";
+import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
 
 /**
  * Formats a setting value for display.
@@ -57,6 +58,9 @@ function getSettingDescription(key: SettingKey): string {
     model_reasoning_level: "Reasoning level for GPT and Claude agents (empty = agent default)",
     pr_review_model: "Model for full PR reviews",
     pr_review_prompt: "Override for the PR review prompt guidance (empty = built-in default)",
+    pr_review_context_enabled: "Gather related unchanged code before PR reviews",
+    pr_review_context_model: "Model for read-only PR review context scouting",
+    pr_review_max_context_tokens: "Maximum PR review input tokens (0 = model-aware automatic limit)",
     ultrafix_rating_goal: "Target quality rating for ultrafix cycles",
     ultrafix_max_cycles: "Maximum number of ultrafix cycles",
     ultrafix_pause_seconds: "Pause duration between ultrafix cycles",
@@ -307,24 +311,10 @@ Examples:
           console.log("");
           console.log(`Total: ${Object.keys(displaySettings).length} setting(s)`);
         } catch (error) {
-          const errorMessage = (error as Error).message;
-          if (
-            errorMessage.includes("401") ||
-            errorMessage.includes("unauthorized")
-          ) {
-            console.error(
-              "Error: Unauthorized. Please run 'propr login' first."
-            );
-          } else if (
-            errorMessage.includes("403") ||
-            errorMessage.includes("forbidden")
-          ) {
-            console.error(
-              "Error: Access denied. You do not have permission to view settings."
-            );
-          } else {
-            console.error(`Error fetching settings: ${errorMessage}`);
-          }
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view settings.",
+            fallbackMessage: (message) => `Error fetching settings: ${message}`,
+          });
           process.exit(1);
         }
       }
@@ -394,31 +384,37 @@ Examples:
           process.exit(1);
         }
       } catch (error) {
-        const errorMessage = (error as Error).message;
-        if (errorMessage.includes("400")) {
+        const classification = classifyApiError(error);
+        const errorMessage = classification.message;
+        if (
+          classification.kind === "unauthorized" ||
+          classification.kind === "forbidden"
+        ) {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to update settings.",
+            fallbackMessage: `Error updating setting: ${errorMessage}`,
+          });
+        } else if (
+          classification.status === 400 ||
+          (classification.status === undefined && errorMessage.includes("400"))
+        ) {
           console.error(`Error: Invalid value for setting "${key}".`);
           if (isValidSettingKey(key)) {
             console.log("");
             console.log(`Description: ${getSettingDescription(key)}`);
           }
         } else if (
-          errorMessage.includes("401") ||
-          errorMessage.includes("unauthorized")
+          classification.status === 409 ||
+          (classification.status === undefined && errorMessage.includes("409"))
         ) {
-          console.error("Error: Unauthorized. Please run 'propr login' first.");
-        } else if (
-          errorMessage.includes("403") ||
-          errorMessage.includes("forbidden")
-        ) {
-          console.error(
-            "Error: Access denied. You do not have permission to update settings."
-          );
-        } else if (errorMessage.includes("409")) {
           console.error(
             "Error: Configuration is being updated. Please try again."
           );
         } else {
-          console.error(`Error updating setting: ${errorMessage}`);
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to update settings.",
+            fallbackMessage: `Error updating setting: ${errorMessage}`,
+          });
         }
         process.exit(1);
       }
@@ -440,7 +436,10 @@ Examples:
         console.log(`Already queued: ${result.repositoriesSkippedAlreadyQueued}`);
         console.log(`Failed clone: ${result.repositoriesFailedClone}`);
       } catch (error) {
-        console.error(`Error triggering summarization reindex: ${(error as Error).message}`);
+        presentApiError(error, {
+          forbiddenMessage: "Error: Access denied. You do not have permission to trigger summarization reindexing.",
+          fallbackMessage: (message) => `Error triggering summarization reindex: ${message}`,
+        });
         process.exit(1);
       }
     });

@@ -22,7 +22,7 @@ export interface MainJobProcessors {
 export type MainWorkerFactory = (
     queueName: string,
     processor: (job: Job<MainJobData>) => Promise<JobResult>,
-    options: { concurrency: number },
+    options: { concurrency: number; autorun: boolean },
 ) => Promise<MainWorker>;
 
 export function createMainJobProcessor(processors: MainJobProcessors) {
@@ -49,10 +49,14 @@ export async function createConfiguredMainWorker(options: {
     concurrency: number;
     workerFactory: MainWorkerFactory;
     processors: MainJobProcessors;
+    beforeRun?: (worker: MainWorker) => void;
 }): Promise<MainWorker> {
-    return options.workerFactory(
+    const worker = await options.workerFactory(
         options.queueName,
         createMainJobProcessor(options.processors),
-        { concurrency: options.concurrency },
+        { concurrency: options.concurrency, autorun: false },
     );
+    options.beforeRun?.(worker);
+    void worker.run().catch(error => worker.emit('error', error));
+    return worker;
 }

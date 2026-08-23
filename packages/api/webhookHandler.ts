@@ -224,7 +224,12 @@ export async function cancelActiveTasksForMergedPR(
         }
       } catch (error) {
         failed++;
-        console.error(`[webhook] Failed to cancel task ${id} for merged PR ${repository}#${prNumber}:`, error);
+        console.error('[webhook] Failed to cancel task for merged PR', {
+          taskId: id,
+          repository,
+          prNumber,
+          error,
+        });
       }
     }
   };
@@ -327,7 +332,11 @@ export async function handleWebhookRequest(
     if (repository && typeof prNumber === 'number') {
       const cancellation = cancelActiveTasksForMergedPR(repository, prNumber, deps.mergedPRTaskCanceller)
         .catch(error => {
-          console.error(`[webhook] Merge-triggered task cancellation failed for ${repository}#${prNumber}:`, error);
+          console.error('[webhook] Merge-triggered task cancellation failed', {
+            repository,
+            prNumber,
+            error,
+          });
         });
       let waitTimer: NodeJS.Timeout | undefined;
       const timedOut = await Promise.race([

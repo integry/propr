@@ -12,6 +12,14 @@ The host CLI requires Node.js 22 or newer. The Docker launcher image is separate
 and remains dependency-free on Node 20 because it does not load the Ink-based
 interactive CLI.
 
+Using the CLI as the local stack control plane additionally requires a Linux
+`amd64` host, a maintained Docker Engine release, direct read/write access to
+`/var/run/docker.sock`, and the GitHub CLI (`gh`) for the guided setup's default
+Connect login (or authenticate first with `propr login <token>`). Reserve 2 vCPU, 4 GB RAM, and 20 GB of free disk for
+a single-task evaluation; 8 GB RAM or more is recommended for normal or
+concurrent use. `propr check` validates Docker access before startup. See the
+full [system requirements](https://docs.propr.dev/docs/tutorials/setup#system-requirements).
+
 ## Quick Start
 
 ```bash
@@ -107,6 +115,21 @@ cd .propr && npm install <package>
 
 The generated `.propr/setup.sh` runs before each implementation execution. Use it for repository-local setup such as npm helper packages; install Debian system tools at the ProPR installation level with `propr runtime packages add <package> --wait`.
 
+## ProPR Operator Agent Skill
+
+`propr setup` detects configured agent tools and offers once to install the bundled ProPR Operator skill, showing every destination before writing. Skip the offer with `--no-skill`, or choose targets explicitly with `--install-skill codex,claude`. A setup-time skill error is reported with a recovery command and does not invalidate an otherwise healthy stack. Piped/CI setup never writes agent homes unless explicit targets are passed.
+
+The standalone command manages only the ProPR skill:
+
+```bash
+propr skill install codex claude
+propr skill status                 # all targets, with content identities
+propr skill remove codex           # refuses modified or foreign content
+propr skill install codex --force  # preserves a timestamped backup first
+```
+
+Target names map to `~/.codex/skills/propr` (or `$CODEX_HOME/skills/propr` when set), `~/.claude/skills/propr`, `~/.gemini/antigravity-cli/skills/propr`, `$XDG_CONFIG_HOME/opencode/skills/propr` (or `~/.config`), and `~/.vibe/skills/propr`. Run `propr skill --help` for the exact mapping.
+
 ### Authentication
 
 When no token is provided, `propr login` uses the GitHub CLI (`gh`) for interactive authentication:
@@ -128,6 +151,12 @@ To use a Personal Access Token instead:
 | `-p, --project <project>` | Specify the target project (owner/repo) |
 | `-V, --version` | Output the version number |
 | `-h, --help` | Display help information |
+
+Project may be supplied globally (`propr -p owner/repo plan list`) or on a
+command that advertises the option (`propr plan list -p owner/repo`). If both
+forms are present, the nested command option wins; otherwise the global option
+wins, followed by the configured default project. Project values are trimmed
+and must use `owner/repo` format.
 
 Most commands support `--json` (`-j`) for machine-readable output.
 

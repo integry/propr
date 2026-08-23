@@ -57,9 +57,13 @@ describe('release test-suite runner', () => {
             'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);',
         ], {
             stdio: 'ignore',
-            timeout: 100,
+            // Give the child time to initialize its SIGTERM handler even when
+            // the full test suite is running under CPU contention. A 100 ms
+            // deadline could signal Node during startup and falsely observe a
+            // normal SIGTERM exit instead of exercising hard-kill escalation.
+            timeout: 1_000,
         }, () => {}, {
-            terminationGraceMs: 25,
+            terminationGraceMs: 50,
             forcedExitWaitMs: 500,
         });
 

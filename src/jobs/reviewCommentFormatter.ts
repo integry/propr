@@ -3,7 +3,7 @@
  *
  * Formats the LLM review output into a GitHub comment that:
  *   - Identifies the reviewing model.
- *   - Contains findings, evaluation, and a score section.
+ *   - Contains actionable findings, non-automatic suggestions, evaluation, and a score.
  *   - Ends with a short /fix instruction for the user.
  *   - Includes a machine-detectable HTML marker so the /fix pipeline can
  *     distinguish AI review comments from ordinary human comments and
@@ -11,7 +11,8 @@
  */
 
 import { getModelName, type AnalysisResult } from '@propr/core';
-import type { ReviewAssignment } from './prCommentReviewJob.js';
+import type { ReviewAssignment } from './prReviewRunner.js';
+import { parseStructuredReview, renderPublicReview } from './reviewOutputParser.js';
 
 /** HTML comment marker prefix used to identify AI review comments. */
 export const REVIEW_COMMENT_MARKER_PREFIX = '<!-- propr:ai-review';
@@ -32,6 +33,44 @@ export function isReviewComment(body: string): boolean {
     return body.includes(REVIEW_COMMENT_MARKER_PREFIX);
 }
 
+interface AuthoredReviewComment {
+    body: string | null;
+    user: { login: string };
+}
+
+/**
+ * Find the next PR-wide F# using only comments authored by the identity from
+ * ProPR's authenticated GitHub response. Unsafe IDs cannot seed the allocator.
+ */
+export function getNextAuthenticatedActionableFindingNumber(
+    comments: readonly AuthoredReviewComment[],
+    authenticatedProprLogin: string | undefined,
+): number {
+    const normalizedProprLogin = authenticatedProprLogin?.trim().toLowerCase();
+    if (!normalizedProprLogin) return 1;
+
+    let highest = 0;
+    for (const comment of comments) {
+        if (
+            !comment.body
+            || comment.user.login.toLowerCase() !== normalizedProprLogin
+            || !isReviewComment(comment.body)
+        ) continue;
+
+        for (const finding of parseStructuredReview(comment.body).actionableFindings) {
+            const findingNumber = Number(finding.id.slice(1));
+            const nextFindingNumber = findingNumber + 1;
+            if (
+                !Number.isSafeInteger(findingNumber)
+                || findingNumber < 1
+                || !Number.isSafeInteger(nextFindingNumber)
+            ) continue;
+            highest = Math.max(highest, findingNumber);
+        }
+    }
+    return highest + 1;
+}
+
 /**
  * Extract the model name from an AI review comment's marker.
  * Returns `null` when the comment is not an AI review comment.
@@ -48,12 +87,31 @@ function formatDuration(ms: number): string {
     return m === 0 ? `${s}s` : `${m}m ${s}s`;
 }
 
+/** Convert legacy suggestion metadata into the current title-and-reasoning shape. */
+function normalizeSuggestionMetadata(response: string): string {
+    const sectionMatch = /^##[ \t]+Suggestions and Follow-ups(?:[ \t]+.*)?$/im.exec(response);
+    if (!sectionMatch) return response;
+
+    const sectionStart = sectionMatch.index + sectionMatch[0].length;
+    const afterStart = response.slice(sectionStart);
+    const nextSection = /^##\s+/m.exec(afterStart);
+    const sectionEnd = sectionStart + (nextSection?.index ?? afterStart.length);
+    const section = response.slice(sectionStart, sectionEnd)
+        .replace(
+            /^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?summary:?(?:\*\*)?[ \t]*:?\s*(.*?)[ \t]*(?:\r?\n|$)/gim,
+            '$1\n',
+        )
+        .replace(/^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?auto[- ]?fix:?(?:\*\*)?[ \t]*:?.*(?:\r?\n|$)/gim, '');
+
+    return response.slice(0, sectionStart) + section + response.slice(sectionEnd);
+}
+
 /**
  * Build the GitHub comment body for a successful review.
  *
  * Structure:
  *   1. Header with model label.
- *   2. The LLM response (which contains Overall Evaluation, Findings, Score).
+ *   2. The validated response rendered with public review sections and labels.
  *   3. Review Details metadata block (model, time, tokens).
  *   4. A short instruction telling the user about /fix.
  *   5. A hidden HTML marker for machine detection.
@@ -62,16 +120,33 @@ export function buildReviewComment(
     assignment: ReviewAssignment,
     analysisResult: AnalysisResult,
     taskUrl?: string,
-    options: { omittedDiffFiles?: string[]; costUsd?: number | null } = {},
+    options: {
+        omittedDiffFiles?: string[];
+        prDiffTruncated?: boolean;
+        costUsd?: number | null;
+        hasCurrentCheckFailure?: boolean;
+        firstFindingNumber?: number;
+        changedFilePaths?: readonly string[];
+    } = {},
 ): string {
     const { model, label } = assignment;
     const { response, executionTimeMs, tokenUsage, modelUsed } = analysisResult;
+    const omittedDiffFiles = options.omittedDiffFiles ?? [];
+    const isPartialReview = options.prDiffTruncated === true || omittedDiffFiles.length > 0;
 
     const effectiveModel = modelUsed || model;
     const modelDisplayName = getModelName(effectiveModel);
 
+    const sanitizedResponse = normalizeSuggestionMetadata(response);
+    const currentCheckScoreCap = options.hasCurrentCheckFailure
+        ? { maximum: 7, reason: 'Score capped at 7 because a current-head check is failing.' }
+        : undefined;
+    const publicResponse = renderPublicReview(sanitizedResponse, currentCheckScoreCap, {
+        firstFindingNumber: options.firstFindingNumber,
+        changedFilePaths: options.changedFilePaths,
+    });
     let comment = `## 🔍 AI Code Review — ${label}\n\n`;
-    comment += response;
+    comment += publicResponse ?? '⚠️ **Review output was invalid and could not be displayed safely.**';
 
     // --- Review Details ---
     comment += `\n\n---\n### 🤖 Review Details\n\n`;
@@ -90,23 +165,25 @@ export function buildReviewComment(
     if (options.costUsd != null && options.costUsd > 0) {
         comment += `* **Cost:** $${options.costUsd.toFixed(2)}\n`;
     }
+    if (isPartialReview) {
+        comment += '* **Review scope:** Partial — PR diff files or ranges were unavailable from GitHub or omitted by the configured review context limit.\n';
+    }
     if (taskUrl) {
         comment += `\n[View Task](${taskUrl})`;
     }
-    if (options.omittedDiffFiles && options.omittedDiffFiles.length > 0) {
-        comment += formatOmittedDiffFilesForComment(options.omittedDiffFiles);
+    if (omittedDiffFiles.length > 0) {
+        comment += formatOmittedDiffFilesForComment(omittedDiffFiles);
     }
 
     // --- /fix instructions ---
     comment += `\n\n---\n`;
-    comment += `> 💡 **Next step:** Comment \`/fix\` on this PR to have the AI automatically implement the suggestions above.\n`;
-    comment += `> The \`/fix\` command gathers all unprocessed AI review comments and applies fixes in a single pass.\n`;
-    comment += `> You can edit or delete review comments before running \`/fix\` to control which suggestions are applied.\n`;
-    comment += `> Add extra instructions if needed, e.g. \`/fix only address the critical findings\`.\n`;
+    comment += `> 💡 **Next step:** Comment \`/fix\` to address F# merge blockers only.\n`;
+    comment += `> F# IDs increment across review comments and remain permanent, so selectors such as \`/fix F3 F5\` stay unambiguous across cycles. Suggestions require a separate ordinary follow-up request.\n`;
 
     // --- Machine-readable marker ---
     comment += `\n\n<sub>\u{1F916} Review by [ProPR](https://propr.dev)</sub>`;
-    comment += `\n<!-- propr:ai-review model="${effectiveModel}" -->`;
+    const partialReviewMetadata = isPartialReview ? ' partial="true"' : '';
+    comment += `\n<!-- propr:ai-review model="${effectiveModel}"${partialReviewMetadata} -->`;
 
     return comment;
 }
@@ -123,7 +200,7 @@ function formatOmittedDiffFilesForComment(omittedFiles: string[]): string {
         '<details>',
         '<summary>Files omitted from review diff</summary>',
         '',
-        `${omittedFiles.length} file${omittedFiles.length === 1 ? ' was' : 's were'} omitted from the prompt diff due to the review context budget. Large, binary, generated, and lockfile changes are deprioritized.`,
+        `${omittedFiles.length} file${omittedFiles.length === 1 ? ' was' : 's were'} omitted because patch content was unavailable from GitHub or did not fit the review context budget. Large, binary, generated, and lockfile changes are deprioritized.`,
         '',
         listedFiles,
         remainingNote,

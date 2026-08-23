@@ -38,6 +38,12 @@ describe('VALID_SETTING_KEYS includes new ultrafix keys', () => {
     assert.ok(VALID_SETTING_KEYS.includes('ultrafix_pause_seconds'));
   });
 
+  test('should include PR review context settings', () => {
+    assert.ok(VALID_SETTING_KEYS.includes('pr_review_context_enabled'));
+    assert.ok(VALID_SETTING_KEYS.includes('pr_review_context_model'));
+    assert.ok(VALID_SETTING_KEYS.includes('pr_review_max_context_tokens'));
+  });
+
   test('should keep expected setting keys valid', () => {
     const expectedKeys = [
       'pr_review_model',
@@ -86,6 +92,24 @@ describe('parseSettingValue for pr_review_model', () => {
 
   test('should accept empty string', () => {
     assert.strictEqual(parseSettingValue('pr_review_model', ''), '');
+  });
+});
+
+describe('parseSettingValue for PR review context', () => {
+  test('parses the enable switch', () => {
+    assert.strictEqual(parseSettingValue('pr_review_context_enabled', 'false'), false);
+  });
+
+  test('accepts automatic and explicit context token limits', () => {
+    assert.strictEqual(parseSettingValue('pr_review_max_context_tokens', '0'), 0);
+    assert.strictEqual(parseSettingValue('pr_review_max_context_tokens', '200000'), 200000);
+  });
+
+  test('rejects context token limits below the supported explicit minimum', () => {
+    assert.throws(
+      () => parseSettingValue('pr_review_max_context_tokens', '9999'),
+      /must be 0 or an integer between 10000 and 2000000/,
+    );
   });
 });
 

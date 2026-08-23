@@ -134,20 +134,45 @@ function isPlainSettingsObject(value: unknown): value is Record<string, unknown>
   return prototype === Object.prototype || prototype === null;
 }
 
-export async function saveSettingsWithRollback({
+async function normalizePrReviewContextSettings(settings: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if ('pr_review_context_enabled' in settings && typeof settings.pr_review_context_enabled !== 'boolean') {
+    throw new ConfigRouteError(400, { error: 'pr_review_context_enabled must be a boolean' });
+  }
+
+  let normalized = settings;
+  if ('pr_review_context_model' in settings) {
+    if (typeof settings.pr_review_context_model !== 'string') {
+      throw new ConfigRouteError(400, { error: 'pr_review_context_model must be a string' });
+    }
+    const model = settings.pr_review_context_model.trim();
+    if (model === '' && settings.pr_review_context_model.length > 0) {
+      throw new ConfigRouteError(400, { error: 'pr_review_context_model must not be whitespace-only; use an empty string to clear' });
+    }
+    const validation = await configManager.validatePrReviewModelValue(model);
+    if (!validation.valid) {
+      throw new ConfigRouteError(400, {
+        error: validation.error?.replaceAll('pr_review_model', 'pr_review_context_model'),
+      });
+    }
+    normalized = { ...settings, pr_review_context_model: model };
+  }
+
+  if ('pr_review_max_context_tokens' in settings) {
+    const value = settings.pr_review_max_context_tokens;
+    if (!Number.isSafeInteger(value) || (value !== 0 && ((value as number) < 10_000 || (value as number) > 2_000_000))) {
+      throw new ConfigRouteError(400, { error: 'pr_review_max_context_tokens must be 0 (automatic) or an integer between 10000 and 2000000' });
+    }
+  }
+  return normalized;
+}
+
+async function saveNormalizedSettingsWithRollback({
   settings,
   publishConfigUpdate,
   configStore = configManager,
   database = db,
   lock
 }: SaveSettingsRequest): Promise<SaveResponse> {
-  if (!isPlainSettingsObject(settings)) {
-    return { status: 400, body: { error: 'settings object is required' } };
-  }
-  if (Object.keys(settings).length === 0) {
-    return { status: 200, body: { success: true, settings: {}, noop: true } };
-  }
-
   const {
     auto_followup_score_threshold,
     auto_resolve_merge_conflicts,
@@ -236,4 +261,21 @@ export async function saveSettingsWithRollback({
       ...(warnings.length > 0 ? { warnings } : {})
     }
   };
+}
+
+export async function saveSettingsWithRollback(request: SaveSettingsRequest): Promise<SaveResponse> {
+  if (!isPlainSettingsObject(request.settings)) {
+    return { status: 400, body: { error: 'settings object is required' } };
+  }
+  if (Object.keys(request.settings).length === 0) {
+    return { status: 200, body: { success: true, settings: {}, noop: true } };
+  }
+
+  try {
+    const settings = await normalizePrReviewContextSettings(request.settings);
+    return await saveNormalizedSettingsWithRollback({ ...request, settings });
+  } catch (error) {
+    if (error instanceof ConfigRouteError) return { status: error.status, body: error.body };
+    throw error;
+  }
 }

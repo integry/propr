@@ -40,7 +40,7 @@ docker logs -f propr-api
 
 Likely causes, what to check, and fixes:
 
-- **Docker is unavailable or the host is unsupported.** The stack bind-mounts host paths and the Docker socket directly, so it requires a Linux host with Docker — it does not work under Docker Desktop on macOS or Windows. Use the Compose-based [Source Development Setup](../tutorials/setup-source.md) there.
+- **Docker is unavailable or the host is unsupported.** Linux `amd64` is the native, recommended production path. Apple Silicon macOS has also been exercised successfully with Docker Desktop running the published Linux `amd64` images under emulation; native `arm64` images are not yet available. On Linux, confirm Docker is running and the current user can read/write `/var/run/docker.sock` without an interactive `sudo` prompt. On Apple Silicon, start Docker Desktop in Linux-container mode and ensure its default Docker socket is available. In either case, `docker info` must succeed for the current user before retrying `propr check`.
 - **The CLI on PATH is not the one you installed.** Run `which propr && propr --version`. If `npm install -g` failed with `EACCES`, your global npm prefix is root-owned — prefix the command with `sudo`, and use the same convention every time you install or update (`npm prefix -g` shows which prefix is in effect). Mixing `sudo` and non-`sudo` installs can update a different copy of the CLI.
 - **Missing or placeholder `.env` configuration.** `propr check` reports the detected [GitHub auth mode](./github-auth.md) (own App, relay, or demo) and flags missing or placeholder values. Re-running `propr setup` is safe at any time — it skips satisfied steps, never overwrites `.env` wholesale, and never deletes data.
 - **Mixed private-key variables (own-App mode).** `HOST_GH_PRIVATE_KEY` is a host path for the CLI start path; `GH_PRIVATE_KEY_PATH` is the in-container path for the launcher. Set exactly one, matching how you start the stack — mixing them is a common migration mistake.
@@ -54,9 +54,9 @@ Likely causes, what to check, and fixes:
 
 **Symptom:** the Web UI login fails or every request comes back unauthorized.
 
-Check the GitHub OAuth App configuration in `.env`: `GH_OAUTH_CLIENT_ID`, `GH_OAUTH_CLIENT_SECRET`, `GH_OAUTH_CALLBACK_URL` (must match the OAuth App's callback URL exactly), `SESSION_SECRET`, and `FRONTEND_URL`. Sessions are stored in Redis, so a Redis outage also invalidates logins — confirm the Redis container is up with `docker ps` and check Redis connectivity on `/api/status`.
+For the default Connect login, confirm `PROPR_WEB_AUTH_MODE=connect`, the relay credential, `GH_OAUTH_CALLBACK_URL`, `SESSION_SECRET`, and `FRONTEND_URL`; do not add local OAuth client placeholders. A local callback must be the exact loopback API URL (normally `http://localhost:4000/api/auth/github/callback`); a hosted callback must match the active tunnel. Sessions are stored in Redis, so a Redis outage also invalidates logins — confirm the Redis container is up with `docker ps` and check Redis connectivity on `/api/status`. A custom deployment using `PROPR_WEB_AUTH_MODE=github` must instead verify its own OAuth client id, secret, and registered callback.
 
-If you use the hosted UI tunnel, the OAuth callback lives on the **proxy host** (`https://t-<id>.propr.dev/api/auth/github/callback`) and must be registered in the GitHub OAuth App; also note that enabling the tunnel on an already-running stack leaves the API with its pre-tunnel localhost URLs until you run `propr start --restart` (see [tunnel problems](#hosted-ui-tunnel-not-working) below).
+If you use the hosted UI tunnel, the callback lives on the **proxy host** (`https://t-<id>.propr.dev/api/auth/github/callback`) and Connect must list that tunnel as active; also note that enabling the tunnel on an already-running stack leaves the API with its pre-tunnel localhost URLs until you run `propr start --restart` (see [tunnel problems](#hosted-ui-tunnel-not-working) below).
 
 After correcting `.env`, restart the stack (`propr start --restart`) so the API picks up the new values.
 

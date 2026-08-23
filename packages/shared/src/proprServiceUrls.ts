@@ -134,7 +134,9 @@ export function proprTunnelEndpoints(baseUrl: string): {
   socketIo: string;
   root: string;
 } {
-  const base = baseUrl.replace(/\/+$/, '');
+  let end = baseUrl.length;
+  while (end > 0 && baseUrl.charCodeAt(end - 1) === 47) end--;
+  const base = baseUrl.slice(0, end);
   return {
     apiStatus: `${base}/api/status`,
     socketIo: `${base}/socket.io/`,

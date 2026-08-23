@@ -1,8 +1,9 @@
-import { simpleGit, SimpleGit, StatusResult, FileStatusResult } from 'simple-git';
+import { SimpleGit, StatusResult, FileStatusResult } from 'simple-git';
 import fs from 'fs-extra';
 import path from 'path';
 import logger from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
+import { createHooklessGit } from './hooklessGit.js';
 
 interface Author {
     name: string;
@@ -109,7 +110,7 @@ export async function commitChanges(worktreePath: string, commitMessage: string 
         throw validationError;
     }
 
-    const git: SimpleGit = simpleGit({ baseDir: worktreePath });
+    const git: SimpleGit = createHooklessGit(worktreePath);
     logger.debug({ worktreePath, issueNumber }, 'Initializing git operations in worktree');
 
     try {

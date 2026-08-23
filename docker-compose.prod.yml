@@ -49,6 +49,13 @@ services:
       PROPR_MANAGED_CREDENTIALS_DIR: ${HOME:?HOME must be set}/.propr/agent-credentials
       PROPR_CONTAINERIZED: "1"
       PROPR_STACK: ${PROPR_STACK:-propr}
+      PROPR_API_RATE_LIMIT_MAX: ${PROPR_API_RATE_LIMIT_MAX:-600}
+      PROPR_API_RATE_LIMIT_WINDOW_MS: ${PROPR_API_RATE_LIMIT_WINDOW_MS:-60000}
+      PROPR_AUTH_RATE_LIMIT_MAX: ${PROPR_AUTH_RATE_LIMIT_MAX:-30}
+      PROPR_AUTH_RATE_LIMIT_WINDOW_MS: ${PROPR_AUTH_RATE_LIMIT_WINDOW_MS:-900000}
+      PROPR_WEBHOOK_RATE_LIMIT_MAX: ${PROPR_WEBHOOK_RATE_LIMIT_MAX:-300}
+      PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS: ${PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS:-60000}
+      PROPR_TRUSTED_PROXY_PEERS: ${PROPR_TRUSTED_PROXY_PEERS:-}
     volumes:
       - propr-sqlite-data:/app/data
       # The API starts short-lived sibling containers for agent image builds,
@@ -115,6 +122,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      AGENT_CONTAINER_MEMORY_LIMIT: ${AGENT_CONTAINER_MEMORY_LIMIT:-6g}
+      AGENT_CONTAINER_CPU_LIMIT: ${AGENT_CONTAINER_CPU_LIMIT:-}
+      AGENT_CONTAINER_PIDS_LIMIT: ${AGENT_CONTAINER_PIDS_LIMIT:-512}
       # Vibe prompt cache — active with sane defaults so setting MISTRAL_API_KEY
       # is sufficient for API-key auth. PREFLIGHT: create the host directory
       # before starting (mkdir -p /tmp/propr-vibe-prompts && chown to your

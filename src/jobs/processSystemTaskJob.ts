@@ -1,6 +1,5 @@
 import { Job } from 'bullmq';
-import { simpleGit } from 'simple-git';
-import { logger, getUserWhitelist, verifyAuthToken } from '@propr/core';
+import { logger, getUserWhitelist, verifyAuthToken, createHooklessGit } from '@propr/core';
 import { getAuthenticatedOctokit } from '@propr/core';
 import { ensureRepoCloned, createWorktreeFromExistingBranch, getRepoUrl, cleanupWorktree } from '@propr/core';
 import type { SystemTaskJobData, JobResult } from '@propr/core';
@@ -115,7 +114,7 @@ async function performGitResetAndPush(
     });
     const worktreePath = worktreeInfo.worktreePath;
 
-    const git = simpleGit(worktreePath);
+    const git = createHooklessGit(worktreePath);
 
     await git.reset(['--hard', `${commitHash}^`]);
     correlatedLogger.info({ commitHash }, 'Git reset to parent commit complete');

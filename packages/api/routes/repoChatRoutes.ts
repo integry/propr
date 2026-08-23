@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import {
   buildSummaryContext,
   runLightweightLLMAnalysis,
@@ -110,7 +111,7 @@ export function createRepoChatRoutes() {
    * DELETE /api/repos/chat/messages/:messageId
    * Delete a single chat message
    */
-  async function deleteMessage(req: Request, res: Response): Promise<void> {
+  async function deleteMessage(req: FlatRequest, res: Response): Promise<void> {
     try {
       const { messageId } = req.params;
 

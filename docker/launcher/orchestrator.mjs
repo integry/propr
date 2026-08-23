@@ -228,6 +228,13 @@ export function readEnvFile(envFilePath) {
 // Config resolution
 // ---------------------------------------------------------------------------
 
+/** Host-facing port number from a Docker publish value (bare or IP-bound). */
+export function publishedHostPort(binding) {
+    const raw = String(binding ?? '').trim();
+    const match = raw.match(/(?:^|:)(\d{1,5})$/);
+    return match?.[1] ?? raw;
+}
+
 /**
  * Resolve a stack config from an environment + overrides. Works for both the
  * containerized launcher (paths are bind-mounted host paths) and the host CLI
@@ -239,6 +246,11 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const network = overrides.network ?? env.PROPR_NETWORK ?? `${stack}-net`;
     const envFileLocal = overrides.envFileLocal ?? env.PROPR_LAUNCHER_ENV_FILE ?? '/app/.env';
     const envFileHost = overrides.envFileHost ?? env.PROPR_ENV_FILE;
+    // NODE_ENV is special: Docker receives it from the stack's --env-file, not
+    // from the CLI/launcher process environment. Inspect that exact source so a
+    // developer's shell NODE_ENV cannot accidentally describe (or alter) the
+    // packaged container runtime.
+    const nodeEnv = readEnvFile(envFileLocal).NODE_ENV || undefined;
 
     // value precedence: explicit override → process env → .env file
     const get = (name) => env[name] !== undefined ? env[name] : envFileValueFrom(envFileLocal, name) || undefined;
@@ -255,11 +267,22 @@ export function resolveConfig(env = process.env, overrides = {}) {
             ? join(homedir(), '.propr', 'agent-credentials')
             : (hostData ? join(hostData, 'agent-credentials') : undefined));
 
-    const apiPort = overrides.apiPort ?? get('API_PORT') ?? '4000';
-    const uiPort = overrides.uiPort ?? get('UI_PORT') ?? '5173';
+    // Published service ports are host-loopback-only unless an operator chooses
+    // an explicit binding. Preserve every explicit form verbatim: a bare port is
+    // an intentional all-interface opt-in, while host:port supports custom binds.
+    const apiPort = overrides.apiPort ?? get('API_PORT') ?? '127.0.0.1:4000';
+    const uiPort = overrides.uiPort ?? get('UI_PORT') ?? '127.0.0.1:5173';
     const docsPort = overrides.docsPort ?? get('DOCS_PORT') ?? '8080';
     const redisExternalPort = overrides.redisExternalPort ?? get('REDIS_EXTERNAL_PORT') ?? '';
+    const apiHostPort = publishedHostPort(apiPort);
+    const uiHostPort = publishedHostPort(uiPort);
     const docsEnabled = overrides.docsEnabled ?? (get('DOCS_ENABLED') === 'true');
+    const apiRateLimitMax = overrides.apiRateLimitMax ?? get('PROPR_API_RATE_LIMIT_MAX') ?? '600';
+    const apiRateLimitWindowMs = overrides.apiRateLimitWindowMs ?? get('PROPR_API_RATE_LIMIT_WINDOW_MS') ?? '60000';
+    const authRateLimitMax = overrides.authRateLimitMax ?? get('PROPR_AUTH_RATE_LIMIT_MAX') ?? '30';
+    const authRateLimitWindowMs = overrides.authRateLimitWindowMs ?? get('PROPR_AUTH_RATE_LIMIT_WINDOW_MS') ?? '900000';
+    const webhookRateLimitMax = overrides.webhookRateLimitMax ?? get('PROPR_WEBHOOK_RATE_LIMIT_MAX') ?? '300';
+    const webhookRateLimitWindowMs = overrides.webhookRateLimitWindowMs ?? get('PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS') ?? '60000';
 
     // Agent credential host dirs (HOST:HOST mounts so spawned agent containers
     // resolve the same path end-to-end).
@@ -294,6 +317,12 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // A persisted CLI toggle (`propr tunnel on|off`) wins over the env-derived
     // default so `propr start` honors the user's last explicit choice.
     const uiTunnelEnabled = overrides.uiTunnelEnabled ?? (Boolean(uiTunnelToken) || parseTruthyEnvValue(get('PROPR_UI_TUNNEL_ENABLED')));
+    // The managed cloudflared sidecar shares the API container's network
+    // namespace. Trust only that namespace's own non-loopback addresses while
+    // tunnel mode is on; other private-network peers remain untrusted.
+    const trustedProxyPeers = overrides.trustedProxyPeers
+        ?? get('PROPR_TRUSTED_PROXY_PEERS')
+        ?? (uiTunnelEnabled ? 'self' : undefined);
     const proprInstanceId = get('PROPR_INSTANCE_ID') || undefined;
     // Cloudflared image for the optional tunnel sidecar: an explicit env override
     // wins, then the manifest's pinned tag, with DEFAULT_CLOUDFLARED_IMAGE as a
@@ -309,10 +338,13 @@ export function resolveConfig(env = process.env, overrides = {}) {
         (get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId))?.replace(/\/+$/, '') || undefined;
 
     return Object.freeze({
-        stack, network, envFileLocal, envFileHost,
+        stack, network, envFileLocal, envFileHost, nodeEnv,
         validateHostPaths: overrides.validateHostPaths === true,
         hostData, hostLogs, hostRepos, managedCredentialsDir,
         apiPort, uiPort, docsPort, redisExternalPort, docsEnabled,
+        apiRateLimitMax, apiRateLimitWindowMs,
+        authRateLimitMax, authRateLimitWindowMs,
+        webhookRateLimitMax, webhookRateLimitWindowMs,
         hostClaudeDir, hostCodexDir, hostAntigravityDir,
         hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
@@ -320,15 +352,16 @@ export function resolveConfig(env = process.env, overrides = {}) {
         // Hosted UI tunnel settings (see resolution above). Defaults keep local
         // development unaffected: no instance id ⇒ no derived public URL.
         uiTunnelEnabled, uiTunnelToken, proprInstanceId, uiPublicApiUrl, cloudflaredImage,
+        trustedProxyPeers,
         // misc -e overrides the launcher computed from ports/env. When the UI
         // tunnel is enabled the API/worker must advertise the public proxy URL
         // (OAuth/session redirects, attachment links, browser-visible API refs)
         // and the frontend must point at the hosted UI origin. An explicit
         // API_PUBLIC_URL / FRONTEND_URL still wins; otherwise tunnel mode derives
         // them, falling back to the localhost defaults for local development.
-        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiPort}`),
-        frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiPort}`,
-        ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || (uiTunnelEnabled && uiPublicApiUrl ? `${uiPublicApiUrl}/api/auth/github/callback` : `http://localhost:${apiPort}/api/auth/github/callback`),
+        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiHostPort}`),
+        frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiHostPort}`,
+        ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || (uiTunnelEnabled && uiPublicApiUrl ? `${uiPublicApiUrl}/api/auth/github/callback` : `http://localhost:${apiHostPort}/api/auth/github/callback`),
         githubBotUsername: get('GITHUB_BOT_USERNAME') || 'propr.dev[bot]',
         indexingScanInterval: get('INDEXING_SCAN_INTERVAL_MS') || '300000',
         indexingReindexInterval: get('INDEXING_REINDEX_INTERVAL_MS') || '86400000',
@@ -441,6 +474,12 @@ function tunnelApiEnvArgs(cfg) {
     return args;
 }
 
+function proxyTrustApiEnvArgs(cfg) {
+    return cfg.trustedProxyPeers
+        ? ['-e', `PROPR_TRUSTED_PROXY_PEERS=${cfg.trustedProxyPeers}`]
+        : [];
+}
+
 // Validates host bind-mount paths for Linux deployments. ':' rejection prevents
 // malformed -v HOST:CONTAINER args; Windows drive paths (C:\...) are unsupported.
 export function validateDockerBindPath(name, value, { containerPath = false } = {}) {
@@ -511,10 +550,10 @@ export function dockerAvailable() {
     return res.status === 0;
 }
 
-function dockerRunDetached(cfg, name, service, args) {
+function dockerRunDetached(cfg, name, service, args, networkMode = cfg.network) {
     const full = [
         'run', '-d', '--init', '--name', name,
-        '--network', cfg.network, '--restart', 'unless-stopped',
+        '--network', networkMode, '--restart', 'unless-stopped',
         '--label', `propr.stack=${cfg.stack}`,
         '--label', `propr.service=${service}`,
         ...args,
@@ -809,6 +848,12 @@ export function ensureServiceImage(cfg, service, onLog, { freshnessCache } = {})
 export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api'];
 export const TOGGLE_SERVICES = ['ui', 'docs', 'tunnel'];
 export const SERVICES = [...CORE_SERVICES, ...TOGGLE_SERVICES];
+const DATABASE_SERVICES = new Set(['daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']);
+// This value is intentionally module-private. A caller cannot opt a database
+// service out of its migration gate by passing an option to startService();
+// only startStack(), after its owner process exits successfully, can provide
+// the handoff capability.
+const MIGRATIONS_PREAPPLIED_HANDOFF = Symbol('migrations-preapplied-handoff');
 
 function imageTagForService(cfg, service) {
     if (service === 'redis') return cfg.images.redis;
@@ -819,10 +864,24 @@ function imageTagForService(cfg, service) {
     return cfg.images.app;
 }
 
+function packagedRuntimeModeError(cfg) {
+    if (!cfg.nodeEnv || cfg.nodeEnv.trim().toLowerCase() === 'production') return null;
+    return `The existing stack .env sets NODE_ENV=${cfg.nodeEnv}, but packaged ProPR services must run with NODE_ENV=production. `
+        + 'This file may contain the old generated development default or an intentional user setting, so ProPR will not overwrite it silently. '
+        + 'Review the setting, change NODE_ENV to production in the stack .env, then run `propr check` and start again. '
+        + 'Source-development commands continue to support NODE_ENV=development outside the packaged launcher.';
+}
+
 function appBaseArgs(cfg) {
+    const runtimeModeError = packagedRuntimeModeError(cfg);
+    if (runtimeModeError) throw new Error(runtimeModeError);
     return [
         // --env-file is resolved by the docker CLI (inside the launcher / on host).
         '--env-file', cfg.envFileLocal,
+        // Published images default to production, but make the launcher contract
+        // explicit after --env-file so a missing value cannot regress it. A
+        // conflicting existing value is rejected above rather than overwritten.
+        '-e', 'NODE_ENV=production',
         '-v', `${cfg.hostLogs}:/usr/src/app/logs`,
         '-v', `${cfg.hostData}:/usr/src/app/data`,
         '-v', '/var/run/docker.sock:/var/run/docker.sock',
@@ -839,6 +898,42 @@ function appBaseArgs(cfg) {
 
 function appSpec(cfg, command, extraArgs = []) {
     return { image: cfg.images.app, args: [...appBaseArgs(cfg), ...extraArgs], command: ['node', ...command] };
+}
+
+function migrationSpec(cfg) {
+    const runtimeModeError = packagedRuntimeModeError(cfg);
+    if (runtimeModeError) throw new Error(runtimeModeError);
+    return {
+        image: cfg.images.app,
+        // The migration command imports only the database connection module.
+        // Keep its container equally narrow: the user-managed env file is
+        // unavoidable because it supplies DB_FILENAME, but the owner needs no
+        // app credentials, Docker access, repositories, Redis, tunnel state,
+        // worktrees, or persistent log directory. These forced values follow
+        // --env-file so stale user settings cannot change the packaged runtime
+        // or opt this sole owner out of applying migrations.
+        args: [
+            '--env-file', cfg.envFileLocal,
+            '-e', 'NODE_ENV=production',
+            '-e', 'PROPR_CONTAINERIZED=1',
+            '-e', 'PROPR_MIGRATIONS_PREAPPLIED=0',
+            '-v', `${cfg.hostData}:/usr/src/app/data`,
+        ],
+        command: ['node', 'dist/src/migrate.js'],
+    };
+}
+
+function withMigrationPolicy(spec, service, migrationHandoff) {
+    if (!DATABASE_SERVICES.has(service)) return spec;
+    return {
+        ...spec,
+        // This override is deliberately after --env-file. The marker is a
+        // launcher-internal handoff, never a trusted user configuration value.
+        args: [
+            ...spec.args,
+            '-e', `PROPR_MIGRATIONS_PREAPPLIED=${migrationHandoff === MIGRATIONS_PREAPPLIED_HANDOFF ? '1' : '0'}`,
+        ],
+    };
 }
 
 // Returns { image, args, command? } for a canonical service name.
@@ -910,17 +1005,28 @@ export function buildServiceSpec(cfg, service) {
                 '-e', `GH_OAUTH_CALLBACK_URL=${cfg.ghOauthCallbackUrl}`,
                 '-e', `SESSION_REDIS_HOST=${cfg.stack}-redis`,
                 '-e', 'CONFIG_REPO_PATH=/tmp/config_repo',
+                '-e', `PROPR_API_RATE_LIMIT_MAX=${cfg.apiRateLimitMax}`,
+                '-e', `PROPR_API_RATE_LIMIT_WINDOW_MS=${cfg.apiRateLimitWindowMs}`,
+                '-e', `PROPR_AUTH_RATE_LIMIT_MAX=${cfg.authRateLimitMax}`,
+                '-e', `PROPR_AUTH_RATE_LIMIT_WINDOW_MS=${cfg.authRateLimitWindowMs}`,
+                '-e', `PROPR_WEBHOOK_RATE_LIMIT_MAX=${cfg.webhookRateLimitMax}`,
+                '-e', `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS=${cfg.webhookRateLimitWindowMs}`,
                 ...tunnelApiEnvArgs(cfg),
+                ...proxyTrustApiEnvArgs(cfg),
             ]);
         case 'ui': {
             // The UI image's docker-entrypoint.sh rewrites public/config.js from
             // PROPR_UI_PUBLIC_API_URL so one prebuilt bundle can point at any
-            // per-instance proxy. Pass the tunnel base URL through unchanged — the
-            // UI appends /api/... to it for REST and uses /socket.io/ for Socket.IO,
-            // so the value must be the bare proxy origin (no /api suffix). Only set
-            // it when known; an unset value keeps the same-origin local default.
-            const uiArgs = ['-p', `${cfg.uiPort}:5173`];
-            if (cfg.uiPublicApiUrl) uiArgs.push('-e', `PROPR_UI_PUBLIC_API_URL=${cfg.uiPublicApiUrl}`);
+            // browser-visible API origin. A production UI container has no Vite
+            // development proxy: leaving this unset makes /api requests hit the UI
+            // server and its SPA fallback returns index.html. Prefer the managed
+            // tunnel URL when present; otherwise inject API_PUBLIC_URL (localhost
+            // by default, or the operator's explicit public API URL).
+            const uiApiBaseUrl = cfg.uiPublicApiUrl || cfg.apiPublicUrl;
+            const uiArgs = [
+                '-p', `${cfg.uiPort}:5173`,
+                '-e', `PROPR_UI_PUBLIC_API_URL=${uiApiBaseUrl}`,
+            ];
             return { image: cfg.images.ui, args: uiArgs };
         }
         case 'docs':
@@ -956,6 +1062,11 @@ export function buildServiceSpec(cfg, service) {
                 image: cfg.cloudflaredImage,
                 args: ['-e', `TUNNEL_TOKEN=${cfg.uiTunnelToken}`],
                 command: ['tunnel', '--no-autoupdate', 'run'],
+                // Sharing the API network namespace makes cloudflared's socket
+                // peer one of the API container's own addresses. The API can
+                // therefore trust this exact path without trusting unrelated
+                // containers or direct private-network clients.
+                networkMode: `container:${cfg.stack}-api`,
             };
         default:
             throw new Error(`unknown service: ${service}`);
@@ -967,13 +1078,14 @@ export function buildServiceSpec(cfg, service) {
  * the service image if it is missing so toggles (`propr docs on`) work even when
  * the image was skipped at startup.
  */
-export function startService(cfg, service, { onLog, pull = true, freshnessCache } = {}) {
+export function startService(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff } = {}) {
     const name = `${cfg.stack}-${service}`;
+    assertDatabaseServiceCanStart(cfg, service, migrationHandoff);
     if (pull) ensureServiceImage(cfg, service, onLog, { freshnessCache });
-    const spec = buildServiceSpec(cfg, service);
+    const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
     removeIfExists(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    dockerRunDetached(cfg, name, service, runArgs);
+    dockerRunDetached(cfg, name, service, runArgs, spec.networkMode);
     onLog?.(`  [ok] started ${name}`);
     return getServiceState(cfg, service);
 }
@@ -1015,8 +1127,20 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
     const started = [];
     const freshnessCache = new Map();
     try {
+        runMigrationPhase(cfg, { onLog, freshnessCache });
         for (const service of toStart) {
-            startService(cfg, service, { onLog, freshnessCache });
+            startService(cfg, service, {
+                onLog,
+                freshnessCache,
+                // The one-shot phase above is the sole migration owner for a
+                // full stack launch. Direct startService callers retain the
+                // service's normal fail-closed migration gate.
+                migrationHandoff: MIGRATIONS_PREAPPLIED_HANDOFF,
+                // The migration phase already verified/pulled this exact app
+                // image tag. Avoid repeating the freshness check for all five
+                // app containers.
+                pull: !DATABASE_SERVICES.has(service),
+            });
             started.push(service);
         }
     } catch (err) {
@@ -1031,6 +1155,98 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
         throw err;
     }
     return getStackStatus(cfg);
+}
+
+function migrationDockerArgs(cfg) {
+    const spec = migrationSpec(cfg);
+    return [
+        'run', '--rm', '--init', '--name', `${cfg.stack}-migrate`,
+        '--network', cfg.network,
+        '--label', `propr.stack=${cfg.stack}`,
+        '--label', 'propr.service=migrate',
+        ...spec.args,
+        spec.image,
+        ...spec.command,
+    ];
+}
+
+function migrationFailure(res) {
+    const detail = firstLine(res.stderr || res.stdout || res.error?.message || 'migration container exited unsuccessfully');
+    return new Error(`Database migration phase failed: ${detail}`);
+}
+
+function containerRunning(cfg, name) {
+    const res = docker(['ps', '--filter', `name=^${name}$`, '--format', '{{.Names}}'], { capture: true });
+    if (res.status !== 0) {
+        throw new Error(`Cannot safely inspect ${name} before database migration: ${firstLine(res.stderr || res.error?.message || 'docker ps failed')}`);
+    }
+    return res.stdout.trim().split('\n').includes(name);
+}
+
+function runningDatabaseServiceNames(cfg) {
+    return [...DATABASE_SERVICES]
+        .map((service) => `${cfg.stack}-${service}`)
+        .filter((name) => containerRunning(cfg, name));
+}
+
+function assertNoLiveMigrationOwner(cfg, service) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    const migrationName = `${cfg.stack}-migrate`;
+    if (containerRunning(cfg, migrationName)) {
+        throw new Error(`Refusing to start ${cfg.stack}-${service} while database migration owner ${migrationName} is running; the existing migration container was left untouched.`);
+    }
+}
+
+function directDatabaseStartError(cfg, service, running) {
+    return new Error(`Refusing to start ${cfg.stack}-${service} directly while database services are running (${running.join(', ')}). Restart the full stack instead (for the CLI, run \`propr start --restart\`); existing containers were left untouched.`);
+}
+
+function assertDatabaseServiceCanStart(cfg, service, migrationHandoff) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    assertNoLiveMigrationOwner(cfg, service);
+    if (migrationHandoff === MIGRATIONS_PREAPPLIED_HANDOFF) return;
+
+    const running = runningDatabaseServiceNames(cfg);
+    if (running.length > 0) throw directDatabaseStartError(cfg, service, running);
+}
+
+function assertMigrationCanStart(cfg) {
+    const running = runningDatabaseServiceNames(cfg);
+    if (running.length > 0) {
+        throw new Error(`Refusing to run database migrations while database services are running (${running.join(', ')}). Stop the stack first (for the CLI, run \`propr stop\`) and retry; existing containers were left untouched.`);
+    }
+
+    const migrationName = `${cfg.stack}-migrate`;
+    if (containerRunning(cfg, migrationName)) {
+        throw new Error(`Database migration owner ${migrationName} is already running; it was left untouched. Wait for it to finish, inspect its logs, or stop it explicitly before retrying.`);
+    }
+}
+
+function prepareMigrationOwner(cfg, onLog) {
+    assertMigrationCanStart(cfg);
+    const migrationName = `${cfg.stack}-migrate`;
+    if (!containerExists(cfg, migrationName)) return;
+
+    // Never use -f here. If the container became live after the check, Docker
+    // must reject this removal rather than killing a real migration owner.
+    onLog?.(`  · removing stopped migration container ${migrationName}`);
+    const removed = docker(['rm', migrationName], { capture: true });
+    if (removed.status !== 0) {
+        throw new Error(`Could not safely remove stopped migration container ${migrationName}; it may have started and was left untouched: ${firstLine(removed.stderr || removed.error?.message || 'docker rm failed')}`);
+    }
+}
+
+/** Run the sole schema-migration owner to completion before app services start. */
+export function runMigrationPhase(cfg, { onLog, freshnessCache } = {}) {
+    // Check before a potentially slow pull so an existing stack is rejected
+    // without side effects, then check again immediately before ownership.
+    assertMigrationCanStart(cfg);
+    ensureServiceImage(cfg, 'daemon', onLog, { freshnessCache });
+    prepareMigrationOwner(cfg, onLog);
+    onLog?.('  · running database migrations');
+    const res = docker(migrationDockerArgs(cfg), { capture: true });
+    if (res.status !== 0) throw migrationFailure(res);
+    onLog?.('  [ok] database migrations completed');
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,10 +1275,68 @@ async function removeIfExistsAsync(cfg, name, onLog) {
     }
 }
 
-async function dockerRunDetachedAsync(cfg, name, service, args) {
+async function containerRunningAsync(cfg, name) {
+    const res = await dockerAsync(['ps', '--filter', `name=^${name}$`, '--format', '{{.Names}}']);
+    if (res.status !== 0) {
+        throw new Error(`Cannot safely inspect ${name} before database migration: ${firstLine(res.stderr || res.error?.message || 'docker ps failed')}`);
+    }
+    return res.stdout.trim().split('\n').includes(name);
+}
+
+async function assertNoLiveMigrationOwnerAsync(cfg, service) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    const migrationName = `${cfg.stack}-migrate`;
+    if (await containerRunningAsync(cfg, migrationName)) {
+        throw new Error(`Refusing to start ${cfg.stack}-${service} while database migration owner ${migrationName} is running; the existing migration container was left untouched.`);
+    }
+}
+
+async function runningDatabaseServiceNamesAsync(cfg) {
+    const running = [];
+    for (const service of DATABASE_SERVICES) {
+        const name = `${cfg.stack}-${service}`;
+        if (await containerRunningAsync(cfg, name)) running.push(name);
+    }
+    return running;
+}
+
+async function assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff) {
+    if (!DATABASE_SERVICES.has(service)) return;
+    await assertNoLiveMigrationOwnerAsync(cfg, service);
+    if (migrationHandoff === MIGRATIONS_PREAPPLIED_HANDOFF) return;
+
+    const running = await runningDatabaseServiceNamesAsync(cfg);
+    if (running.length > 0) throw directDatabaseStartError(cfg, service, running);
+}
+
+async function assertMigrationCanStartAsync(cfg) {
+    const running = await runningDatabaseServiceNamesAsync(cfg);
+    if (running.length > 0) {
+        throw new Error(`Refusing to run database migrations while database services are running (${running.join(', ')}). Stop the stack first (for the CLI, run \`propr stop\`) and retry; existing containers were left untouched.`);
+    }
+
+    const migrationName = `${cfg.stack}-migrate`;
+    if (await containerRunningAsync(cfg, migrationName)) {
+        throw new Error(`Database migration owner ${migrationName} is already running; it was left untouched. Wait for it to finish, inspect its logs, or stop it explicitly before retrying.`);
+    }
+}
+
+async function prepareMigrationOwnerAsync(cfg, onLog) {
+    await assertMigrationCanStartAsync(cfg);
+    const migrationName = `${cfg.stack}-migrate`;
+    if (!(await containerExistsAsync(cfg, migrationName))) return;
+
+    onLog?.(`  · removing stopped migration container ${migrationName}`);
+    const removed = await dockerAsync(['rm', migrationName]);
+    if (removed.status !== 0) {
+        throw new Error(`Could not safely remove stopped migration container ${migrationName}; it may have started and was left untouched: ${firstLine(removed.stderr || removed.error?.message || 'docker rm failed')}`);
+    }
+}
+
+async function dockerRunDetachedAsync(cfg, name, service, args, networkMode = cfg.network) {
     const full = [
         'run', '-d', '--init', '--name', name,
-        '--network', cfg.network, '--restart', 'unless-stopped',
+        '--network', networkMode, '--restart', 'unless-stopped',
         '--label', `propr.stack=${cfg.stack}`,
         '--label', `propr.service=${service}`,
         ...args,
@@ -1115,13 +1389,14 @@ async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache } =
 }
 
 /** Async mirror of startService. */
-export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache } = {}) {
+export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff } = {}) {
     const name = `${cfg.stack}-${service}`;
+    await assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff);
     if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache });
-    const spec = buildServiceSpec(cfg, service);
+    const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
     await removeIfExistsAsync(cfg, name, onLog);
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    await dockerRunDetachedAsync(cfg, name, service, runArgs);
+    await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode);
     onLog?.(`  [ok] started ${name}`);
     return getServiceStateAsync(cfg, service);
 }
@@ -1153,8 +1428,14 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
     const started = [];
     const freshnessCache = new Map();
     try {
+        await runMigrationPhaseAsync(cfg, { onLog, freshnessCache });
         for (const service of toStart) {
-            await startServiceAsync(cfg, service, { onLog, freshnessCache });
+            await startServiceAsync(cfg, service, {
+                onLog,
+                freshnessCache,
+                migrationHandoff: MIGRATIONS_PREAPPLIED_HANDOFF,
+                pull: !DATABASE_SERVICES.has(service),
+            });
             started.push(service);
         }
     } catch (err) {
@@ -1169,6 +1450,17 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
         throw err;
     }
     return getStackStatusAsync(cfg);
+}
+
+/** Async mirror of runMigrationPhase for the interactive setup UI. */
+export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache } = {}) {
+    await assertMigrationCanStartAsync(cfg);
+    await ensureServiceImageAsync(cfg, 'daemon', onLog, { freshnessCache });
+    await prepareMigrationOwnerAsync(cfg, onLog);
+    onLog?.('  · running database migrations');
+    const res = await dockerAsync(migrationDockerArgs(cfg));
+    if (res.status !== 0) throw migrationFailure(res);
+    onLog?.('  [ok] database migrations completed');
 }
 
 /** Async mirror of getStackStatus. */
@@ -1382,6 +1674,9 @@ export function validateEnv(cfg) {
     const errors = [];
     const warnings = [];
 
+    const runtimeModeError = packagedRuntimeModeError(cfg);
+    if (runtimeModeError) errors.push(runtimeModeError);
+
     // Docker name constraint — the stack name is embedded in container, volume
     // and network names, so reject it early instead of failing mid-startup.
     const dockerNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
@@ -1390,6 +1685,23 @@ export function validateEnv(cfg) {
     }
     if (!dockerNamePattern.test(cfg.network)) {
         errors.push(`PROPR_NETWORK ("${cfg.network}") is not a valid Docker network name — use letters, digits, '_', '.' or '-', starting with a letter or digit.`);
+    }
+
+    // `uniquelocal` is intentionally broad: proxy-addr expands it to every
+    // private/link-local range. It is safe for the documented host-nginx path
+    // only because Docker publishes the API on host loopback, leaving the host
+    // bridge gateway as the sole reachable private peer. Refuse combinations
+    // that would expose this trust boundary to LAN or unrelated Docker peers.
+    const trustedProxyPeers = String(cfg.trustedProxyPeers ?? '')
+        .split(',')
+        .map((peer) => peer.trim().toLowerCase())
+        .filter(Boolean);
+    const apiIsLoopbackBound = /^(?:127\.0\.0\.1|\[::1\]):\d+$/.test(String(cfg.apiPort ?? '').trim());
+    if (trustedProxyPeers.includes('uniquelocal') && !apiIsLoopbackBound) {
+        errors.push(
+            'PROPR_TRUSTED_PROXY_PEERS=uniquelocal requires API_PORT to be bound to host loopback '
+            + '(for example, API_PORT=127.0.0.1:4000); otherwise private peers can spoof forwarded client addresses.'
+        );
     }
 
     if (!cfg.envFileHost) errors.push('env file path is not set (PROPR_ENV_FILE / <root>/.env)');
@@ -1556,7 +1868,7 @@ export function validateEnv(cfg) {
     // hosted UI cannot reach. Warn so the operator updates it (and the GitHub App
     // config) to the public proxy callback.
     if (cfg.uiTunnelEnabled && /^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(cfg.ghOauthCallbackUrl)) {
-        warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. GitHub OAuth will redirect the browser to a localhost URL the hosted UI cannot reach. Set GH_OAUTH_CALLBACK_URL to your public proxy callback (e.g. https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback) and register it in the GitHub App.`);
+        warnings.push(`GH_OAUTH_CALLBACK_URL ("${cfg.ghOauthCallbackUrl}") still points at localhost while the UI tunnel is enabled. Hosted login will redirect the browser to a localhost URL the hosted UI cannot reach. Run \`propr tunnel setup\` or set GH_OAUTH_CALLBACK_URL to the active proxy callback (e.g. https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX}/api/auth/github/callback).`);
     }
 
     const hasOpenCodeConfig = Boolean(cfg.hostOpencodeXdgDir);

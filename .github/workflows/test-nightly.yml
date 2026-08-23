@@ -101,6 +101,8 @@ jobs:
           PROPR_E2E_API_URL: ${{ secrets.PROPR_E2E_API_URL }}
           PROPR_E2E_TOKEN: ${{ secrets.PROPR_E2E_TOKEN }}
           PROPR_E2E_REPO: ${{ vars.PROPR_E2E_REPO }}
+          PROPR_E2E_MAX_MODEL_PAIRS: ${{ vars.PROPR_E2E_MAX_MODEL_PAIRS || '8' }}
+          PROPR_E2E_MODEL_TASK_TIMEOUT_MS: ${{ vars.PROPR_E2E_MODEL_TASK_TIMEOUT_MS || '1200000' }}
         run: |
           echo "Running E2E test suite..."
           npm run test:e2e 2>&1 | tee e2e_output.txt

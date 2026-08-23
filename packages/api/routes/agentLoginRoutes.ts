@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import type { FlatRequest } from '../requestTypes.js';
 import { getAgentRegistry, loadAgents, type AgentConfig } from '@propr/core';
 import {
   AgentLoginConflictError,
@@ -59,7 +60,7 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
     return agent?.id === canonicalAgentId;
   };
 
-  const startLogin = async (req: Request, res: Response): Promise<void> => {
+  const startLogin = async (req: FlatRequest, res: Response): Promise<void> => {
     const owner = username(req, res);
     if (!owner) return;
     try {
@@ -77,7 +78,7 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
     }
   };
 
-  const getLogin = async (req: Request, res: Response): Promise<void> => {
+  const getLogin = async (req: FlatRequest, res: Response): Promise<void> => {
     const owner = username(req, res);
     if (!owner) return;
     try {
@@ -92,7 +93,7 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
     }
   };
 
-  const sendInput = async (req: Request, res: Response): Promise<void> => {
+  const sendInput = async (req: FlatRequest, res: Response): Promise<void> => {
     const owner = username(req, res);
     if (!owner) return;
     try {
@@ -112,7 +113,7 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
     }
   };
 
-  const cancelLogin = async (req: Request, res: Response): Promise<void> => {
+  const cancelLogin = async (req: FlatRequest, res: Response): Promise<void> => {
     const owner = username(req, res);
     if (!owner) return;
     try {

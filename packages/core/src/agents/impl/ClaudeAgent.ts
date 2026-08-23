@@ -32,10 +32,25 @@ import {
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics } from '../../utils/llmLogger.js';
-import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, type PersistLogsParams } from './utils/index.js';
+import { processDockerResult, buildDockerArgs, getCorrectedTokenUsage, ensurePromptInConversationLog, executeWithUsageTracking, getClaudeAnalysisText, buildAnalysisSafetySuffix, type PersistLogsParams } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 
 export { UsageLimitError };
+
+function resolveClaudeAnalysisWorkspace(
+    readOnlyWorkspacePath: string | undefined,
+    allowReadOnlyCommands: boolean
+): { path: string; tools: string; readOnly: boolean; repositoryInspection: boolean } {
+    if (!readOnlyWorkspacePath) {
+        return { path: '/tmp/claude-analysis', tools: '', readOnly: false, repositoryInspection: false };
+    }
+    return {
+        path: readOnlyWorkspacePath,
+        tools: '',
+        readOnly: true,
+        repositoryInspection: allowReadOnlyCommands,
+    };
+}
 
 const DEFAULT_CLAUDE_MAX_TURNS = 1000;
 const ANALYSIS_AGENT_TANK_TIMEOUT_MS = parseInt(process.env.ANALYSIS_AGENT_TANK_TIMEOUT_MS || '2000', 10);
@@ -161,7 +176,7 @@ export class ClaudeAgent implements Agent {
 
     /** Runs a lightweight, read-only analysis for planning, summarization, and PR reviews. */
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
-        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog } = options || {};
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', reasoningLevel, useConfiguredReasoningLevel = false, suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands = false } = options || {};
         const startTime = Date.now();
 
         logger.info({
@@ -171,10 +186,9 @@ export class ClaudeAgent implements Agent {
 
         const effectiveModel = model || this.config.defaultModel;
         if (!effectiveModel) throw new NoDefaultModelConfiguredError();
-        const suffix = responseFormat === 'json'
-            ? '\n\nCRITICAL: Do not modify any files. Do not run any commands. Return only valid JSON matching the requested schema. Do not include markdown or explanatory text.'
-            : '\n\nCRITICAL: Do not modify any files. Do not run any commands. Only provide your analysis as plain text output.';
+        const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands, readOnlyWorkspacePath);
         const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
+        const analysisWorkspace = resolveClaudeAnalysisWorkspace(readOnlyWorkspacePath, allowReadOnlyCommands);
 
         try {
             const effectiveReasoningLevel = await this.resolveEffectiveReasoningLevel(
@@ -183,9 +197,11 @@ export class ClaudeAgent implements Agent {
                 useConfiguredReasoningLevel
             );
             const dockerArgs = buildDockerArgs(this.config, this.maxTurns, {
-                worktreePath: '/tmp/claude-analysis', githubToken: process.env.GITHUB_TOKEN || '',
+                worktreePath: analysisWorkspace.path, githubToken: process.env.GITHUB_TOKEN || '',
                 modelName: effectiveModel, issueNumber: 0, systemPrompt: 'You are a helpful assistant.',
-                tools: '', taskId, executionType,
+                tools: analysisWorkspace.tools, taskId, executionType,
+                readOnlyWorkspace: analysisWorkspace.readOnly,
+                repositoryInspection: analysisWorkspace.repositoryInspection,
                 reasoningLevel: effectiveReasoningLevel
             });
 

@@ -2,7 +2,8 @@
  * E2E Tests for ProPR API
  *
  * Requires: PROPR_E2E_API_URL, PROPR_E2E_REPO (+ PROPR_E2E_TOKEN or `gh auth token`)
- * Optional: PROPR_E2E_SKIP_SLOW=1, PROPR_E2E_NO_CLEANUP=1
+ * Optional: PROPR_E2E_SKIP_SLOW=1, PROPR_E2E_NO_CLEANUP=1,
+ * PROPR_E2E_MODEL_TASK_TIMEOUT_MS=1200000
  */
 
 import { describe, it, before, after } from "node:test";
@@ -13,12 +14,13 @@ import {
   createTestClient, sleep,
   type ModelTestResult, type AgentModelPair,
   newModelResult,
-  createAndGeneratePlan, waitForTasks, pollTasksToCompletion,
+  createAndGeneratePlan, waitForTasks, pollTasksToCompletion, assertModelTasksSucceeded,
   triggerSequentialImplementation, waitForPlanIssueCondition,
   hasInProgressIssue, getIssueStatusCounts,
   IN_PROGRESS_STATUSES,
 } from "./e2e/helpers.js";
 import { writeReport } from "./e2e/report.js";
+import { parseModelPairLimit, selectAgentModelPairs } from "./e2e/modelMatrix.js";
 
 import type { ApiClient } from "../packages/cli/src/api/client.js";
 import { getSystemStatus } from "../packages/cli/src/api/system.js";
@@ -57,13 +59,10 @@ const createdTodoIds: string[] = [];
 const createdCategoryIds: string[] = [];
 const createdPlanIds: string[] = [];
 let addedRepo = false;
+const modelPairLimit = parseModelPairLimit(process.env.PROPR_E2E_MAX_MODEL_PAIRS);
 
 function allPairs(): AgentModelPair[] {
-  const pairs: AgentModelPair[] = [];
-  for (const a of availableAgents) {
-    for (const m of a.supportedModels) pairs.push({ agent_alias: a.alias, model_name: m });
-  }
-  return pairs;
+  return selectAgentModelPairs(availableAgents, modelPairLimit);
 }
 
 async function listAllLlmLogs(options: Omit<ListLlmLogsOptions, "page" | "limit">): Promise<LlmLogEntry[]> {
@@ -469,11 +468,13 @@ describe("ProPR CLI E2E", {
     });
   });
 
-  // 11. All-models implementation
-  describe("11. All-models", { timeout: 2_400_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
+  // 11. Bounded model-matrix implementation
+  describe("11. Model matrix", { timeout: 3_600_000, skip: SKIP_SLOW ? "SKIP_SLOW" : false }, () => {
     it("create plans with enough issues", async () => {
       const pairs = allPairs();
       if (pairs.length === 0) return;
+      const availableCount = availableAgents.reduce((total, agent) => total + agent.supportedModels.length, 0);
+      console.log(`    Selected ${pairs.length}/${availableCount} agent/model pairs (limit=${modelPairLimit || "all"})`);
 
       const needed = pairs.length + 1;
       let collected: PlanIssue[] = [];
@@ -516,6 +517,7 @@ describe("ProPR CLI E2E", {
       const pr = modelTestResults.filter((r) => r.testMode === "parallel");
       await waitForTasks(pr, REPO!, client);
       await pollTasksToCompletion(pr, client);
+      assertModelTasksSucceeded(pr);
     });
 
     it("single-model: each model on a separate issue", async () => {
@@ -541,6 +543,7 @@ describe("ProPR CLI E2E", {
       const sr = modelTestResults.filter((r) => r.testMode === "single");
       await waitForTasks(sr, REPO!, client);
       await pollTasksToCompletion(sr, client);
+      assertModelTasksSucceeded(sr);
     });
 
     it("every model has execution history", async () => {
@@ -575,7 +578,7 @@ describe("ProPR CLI E2E", {
         { label: "Brownfield", id: brownfieldDraftId, plan: brownfieldPlan },
         ...createdPlanIds
           .filter((id) => id !== greenfieldDraftId && id !== brownfieldDraftId)
-          .map((id) => ({ label: `All-models (${id.substring(0, 8)})`, id, plan: null })),
+          .map((id) => ({ label: `Model matrix (${id.substring(0, 8)})`, id, plan: null })),
       ];
       const p = await writeReport({ repo: REPO!, apiUrl: API_URL!, client, planEntries, modelResults: modelTestResults });
       console.log(`    Report: ${p}`);

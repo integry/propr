@@ -12,6 +12,7 @@ import { useSocket } from '../contexts/useSocket';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { QueueStatsUpdatePayload, IndexingUpdatePayload, DraftUpdatePayload } from '@propr/shared';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
+import { ConnectCapacityBanner } from './ConnectPlusBanner';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -254,6 +255,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           MenuIcon={MenuIcon}
           isDemoMode={isDemoMode}
         />
+
+        {!isDemoMode && <ConnectCapacityBanner />}
 
         <main className="flex-1 overflow-y-auto">
           {children}

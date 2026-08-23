@@ -21,6 +21,11 @@ after(async () => {
 // Track call order to prove auth runs before git operations
 let callOrder: string[] = [];
 
+const mockSimpleGit = {
+    reset: mock.fn(async () => { callOrder.push('git:reset'); }),
+    push: mock.fn(async () => { callOrder.push('git:push'); })
+};
+
 const mockOctokitInstance = {
     request: mock.fn(async (route: string, params: Record<string, unknown>) => {
         if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}') {
@@ -102,18 +107,9 @@ await mock.module('@propr/core', {
         cleanupWorktree: mock.fn(async () => {
             callOrder.push('git:cleanup');
         }),
+        createHooklessGit: mock.fn(() => mockSimpleGit),
         generateAuthToken,
         buildAuthPayload: (await import('@propr/core')).buildAuthPayload
-    }
-});
-
-const mockSimpleGit = {
-    reset: mock.fn(async () => { callOrder.push('git:reset'); }),
-    push: mock.fn(async () => { callOrder.push('git:push'); })
-};
-await mock.module('simple-git', {
-    namedExports: {
-        simpleGit: mock.fn(() => mockSimpleGit)
     }
 });
 

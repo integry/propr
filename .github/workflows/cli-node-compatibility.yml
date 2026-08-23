@@ -1,0 +1,49 @@
+name: CLI Node Compatibility
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/cli-node-compatibility.yml'
+      - 'package-lock.json'
+      - 'packages/cli/**'
+      - 'packages/shared/**'
+
+concurrency:
+  group: cli-node-compatibility-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  project-options:
+    name: Project options (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build shared dependency
+        run: npm run build -w @propr/shared
+
+      - name: Run project option regressions
+        run: >-
+          npx tsx --test
+          packages/cli/src/projectOptions.cli.test.ts
+          packages/cli/src/utils/resolveProject.test.ts
+          packages/cli/src/commands/configCommands.test.ts
+          packages/cli/src/commands/implementCommands.test.ts
