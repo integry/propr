@@ -28,8 +28,7 @@ import {
   createRepoImprovementsRoutes,
   createRepoTodoRoutes,
   createUserRepoPreferencesRoutes,
-  createAgentRuntimeRoutes,
-  createNotificationRoutes,
+  createAgentRuntimeRoutes, createNotificationRoutes,
   createAdminRoutes,
   createInstanceCatalogRoutes,
   attachmentUpload
@@ -61,10 +60,7 @@ import { initializePushSubscriptionMaintenance } from './services/pushSubscripti
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
 import { configureApiProxyTrust, createApiRequestRateLimiter, createWebhookRequestRateLimiter } from './requestRateLimits.js';
-import {
-  startConfigReloadSubscription,
-  type ConfigReloadSubscription,
-} from './services/configReloadSubscription.js';
+import { startConfigReloadSubscription, type ConfigReloadSubscription } from './services/configReloadSubscription.js';
 import {
   assertNoDuplicateRoutes,
   createManagementRouteEntries,
