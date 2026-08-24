@@ -121,6 +121,16 @@ export const NOTIFICATION_SEVERITIES = [
 
 export type NotificationSeverity = (typeof NOTIFICATION_SEVERITIES)[number];
 
+/** Foreground actions an Inbox client may offer for a notification event. */
+export const NOTIFICATION_EVENT_ACTIONS = [
+  'stop',
+  'follow_up',
+  'open_pr',
+  'dismiss',
+] as const;
+
+export type NotificationEventAction = (typeof NOTIFICATION_EVENT_ACTIONS)[number];
+
 interface RepositoryNotificationTarget {
   /** Repository in `owner/name` format. */
   repository: string;
@@ -214,6 +224,8 @@ interface NotificationEventFields<K extends NotificationKind> {
   target: NotificationTargetFor<K>;
   title: string;
   body: string;
+  /** Actions explicitly advertised by the immutable event producer. */
+  actions: NotificationEventAction[];
   action?: NotificationAction;
   metadata?: JsonObject;
   occurredAt: ISO8601Timestamp;
@@ -1083,6 +1095,25 @@ export function parseNotificationAction(value: unknown): NotificationAction {
   };
 }
 
+export function parseNotificationEventActions(
+  value: unknown,
+  path = 'notificationEvent.actions',
+): NotificationEventAction[] {
+  if (!Array.isArray(value)) return invalid(path, 'an array');
+  if (value.length > NOTIFICATION_EVENT_ACTIONS.length) {
+    return invalid(path, `at most ${NOTIFICATION_EVENT_ACTIONS.length} actions`);
+  }
+  const actions = value.map((action, index) => parseEnum(
+    action,
+    NOTIFICATION_EVENT_ACTIONS,
+    `${path}[${index}]`,
+  ));
+  if (new Set(actions).size !== actions.length) {
+    return invalid(path, 'unique actions');
+  }
+  return actions;
+}
+
 function parseOptionalMetadata(
   value: unknown,
   path: string,
@@ -1196,7 +1227,21 @@ export function parseNotificationEvent(value: unknown): NotificationEvent {
   const action = event.action === undefined
     ? undefined
     : parseNotificationAction(event.action);
-  const metadata = parseOptionalMetadata(event.metadata, 'notificationEvent.metadata');
+  const storedMetadata = parseOptionalMetadata(event.metadata, 'notificationEvent.metadata');
+  const storedActions = storedMetadata?.actions;
+  const actions = event.actions === undefined
+    ? (storedActions === undefined ? [] : parseNotificationEventActions(storedActions))
+    : parseNotificationEventActions(event.actions);
+  if (event.actions !== undefined && storedActions !== undefined) {
+    const parsedStoredActions = parseNotificationEventActions(storedActions);
+    if (actions.some((action, index) => parsedStoredActions[index] !== action)
+      || actions.length !== parsedStoredActions.length) {
+      return invalid('notificationEvent.actions', 'the persisted action list');
+    }
+  }
+  const metadata = storedMetadata === undefined
+    ? undefined
+    : Object.fromEntries(Object.entries(storedMetadata).filter(([key]) => key !== 'actions'));
 
   const occurredAt = parseISO8601Timestamp(event.occurredAt);
   const createdAt = parseISO8601Timestamp(event.createdAt);
@@ -1234,8 +1279,9 @@ export function parseNotificationEvent(value: unknown): NotificationEvent {
       true,
       NOTIFICATION_PAYLOAD_LIMITS.bodyBytes,
     ),
+    actions,
     ...(action === undefined ? {} : { action }),
-    ...(metadata === undefined ? {} : { metadata }),
+    ...(metadata === undefined || Object.keys(metadata).length === 0 ? {} : { metadata }),
     occurredAt,
     createdAt,
   } as NotificationEvent;
@@ -2021,6 +2067,9 @@ export const notificationTargetSchema: RuntimeSchema<NotificationTarget> = {
 };
 export const notificationActionSchema: RuntimeSchema<NotificationAction> = {
   parse: parseNotificationAction,
+};
+export const notificationEventActionsSchema: RuntimeSchema<NotificationEventAction[]> = {
+  parse: parseNotificationEventActions,
 };
 export const notificationEventSchema: RuntimeSchema<NotificationEvent> = {
   parse: parseNotificationEvent,

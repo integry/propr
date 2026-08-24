@@ -180,6 +180,33 @@ describe('notification service', { concurrency: false }, () => {
         );
     });
 
+    test('persists and returns the immutable advertised action list', async () => {
+        const created = await service.createNotificationEvent({
+            eventId: 'action-event',
+            deduplicationKey: 'action-event-key',
+            kind: 'task',
+            target: {
+                type: 'task', repository: 'integry/propr', taskId: 'task-action-event'
+            },
+            title: 'Task appears stalled',
+            body: 'The task has not reported progress.',
+            actions: ['stop', 'dismiss'],
+            metadata: { source: 'stalled-detector' },
+            recipients: ['user-a']
+        });
+
+        assert.deepEqual(created.actions, ['stop', 'dismiss']);
+        const stored = await database('notification_events')
+            .where({ event_id: 'action-event' })
+            .first();
+        assert.deepEqual(JSON.parse(stored.metadata_json), {
+            source: 'stalled-detector', actions: ['stop', 'dismiss']
+        });
+        const listed = await service.listNotifications('user-a');
+        assert.deepEqual(listed.notifications[0].actions, ['stop', 'dismiss']);
+        assert.deepEqual(listed.notifications[0].metadata, { source: 'stalled-detector' });
+    });
+
     test('paginates by occurrence and ID while excluding non-Inbox receipts', async () => {
         await createEvent('event-a', '2026-08-02T07:00:00.000Z', ['user-a']);
         await createEvent('event-b', '2026-08-02T08:00:00.000Z', ['user-a']);

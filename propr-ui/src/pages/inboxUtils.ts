@@ -43,7 +43,7 @@ export function notificationRepository(notification: Notification): string {
 }
 
 export function notificationHref(notification: Notification): string {
-  if (notification.action) return notification.action.href;
+  if (notification.action?.type === 'navigate') return notification.action.href;
   switch (notification.target.type) {
     case 'plan': return `/studio/${encodeURIComponent(notification.target.draftId)}`;
     case 'task': return `/tasks/${encodeURIComponent(notification.target.taskId)}`;
@@ -58,6 +58,50 @@ export function notificationHref(notification: Notification): string {
         : '/repositories';
     }
     case 'system_failure': return '/';
+  }
+}
+
+/** Returns a trusted GitHub pull-request URL advertised by the event, if any. */
+function isTrustedGithubUrl(url: URL): boolean {
+  return url.protocol === 'https:'
+    && url.hostname === 'github.com'
+    && url.username === ''
+    && url.password === ''
+    && (url.port === '' || url.port === '443')
+    && url.search === ''
+    && url.hash === '';
+}
+
+function notificationPullRequestIdentity(notification: Notification): {
+  repository: string | null;
+  prNumber: number | undefined;
+} {
+  const repository = notification.target.type === 'system_failure'
+    ? null
+    : notification.target.repository;
+  switch (notification.target.type) {
+    case 'task':
+    case 'review':
+    case 'pull_request': return { repository, prNumber: notification.target.prNumber };
+    default: return { repository, prNumber: undefined };
+  }
+}
+
+export function notificationPullRequestUrl(notification: Notification): string | null {
+  if (notification.action?.type !== 'external_link') return null;
+  try {
+    const url = new URL(notification.action.href);
+    if (!isTrustedGithubUrl(url)) return null;
+    const match = /^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/.exec(url.pathname);
+    if (!match) return null;
+    const { repository, prNumber } = notificationPullRequestIdentity(notification);
+    if (repository !== null && `${match[1]}/${match[2]}`.toLowerCase() !== repository.toLowerCase()) {
+      return null;
+    }
+    if (prNumber !== undefined && Number(match[3]) !== prNumber) return null;
+    return url.href;
+  } catch {
+    return null;
   }
 }
 

@@ -157,6 +157,9 @@ export function useInboxNotifications(): InboxNotificationsState {
     try {
       const response = await dismissNotification(id);
       commitUnreadCount(response.unreadCount);
+      if (isActiveIdentity()) {
+        addToast({ type: 'success', message: 'Notification dismissed.' });
+      }
     } catch (dismissError) {
       hiddenIdsRef.current.delete(id);
       const rollback = removed ?? dismissSnapshotsRef.current.get(id);

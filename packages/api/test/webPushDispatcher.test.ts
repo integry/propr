@@ -73,6 +73,7 @@ async function queuedEvent(options: {
   endpoint?: string;
   service?: NotificationService;
   badgeEnabled?: boolean;
+  advertiseStop?: boolean;
 } = {}) {
   const service = options.service ?? notifications;
   userSequence += 1;
@@ -94,6 +95,7 @@ async function queuedEvent(options: {
     target: { type: 'task', repository: 'integry/propr', taskId: `task-${userId}` },
     title: 'Sensitive custom title',
     body: options.body ?? 'SECRET prompt text must stay out of the lock screen payload',
+    actions: options.advertiseStop ? ['stop', 'dismiss'] : [],
     recipients: [{ userId, pushEnabled: true }],
   });
   return { userId, subscription, event };
@@ -171,6 +173,21 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     const job = await database('push_delivery_jobs').first();
     assert.equal(job.status, 'delivered');
     assert.equal(job.attempt_count, 1);
+  });
+
+  test('never turns an advertised stop into a push-click action', async () => {
+    await queuedEvent({ advertiseStop: true });
+    const payloads: string[] = [];
+    const worker = dispatcher({
+      sendNotification: async (_subscription, payload) => {
+        payloads.push(payload);
+        return success;
+      },
+    });
+
+    assert.equal(await worker.runOnce(), 1);
+    const payload = JSON.parse(payloads[0]) as { actions?: Array<{ action?: string }> };
+    assert.equal(payload.actions?.some(action => action.action === 'stop'), false);
   });
 
   test('keeps the Inbox event but creates no job when the category is disabled', async () => {

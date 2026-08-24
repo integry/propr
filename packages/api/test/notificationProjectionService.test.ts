@@ -203,8 +203,11 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     const activity = await database('notification_source_activity').first();
     assert.equal(activity.status, 'processing');
     assert.equal(activity.last_activity_at, activeAt);
-    const events = await database('notification_events').select('kind', 'title');
-    assert.deepEqual(events, [{ kind: 'task', title: 'Task appears stalled' }]);
+    const events = await database('notification_events').select('kind', 'title', 'metadata_json');
+    assert.deepEqual(events.map(event => ({ kind: event.kind, title: event.title })), [
+      { kind: 'task', title: 'Task appears stalled' },
+    ]);
+    assert.deepEqual(JSON.parse(events[0].metadata_json), { actions: ['stop', 'dismiss'] });
   });
 
   test('projects a task failure once without copying error details', async () => {

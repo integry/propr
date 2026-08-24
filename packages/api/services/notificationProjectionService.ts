@@ -11,6 +11,7 @@ import {
   type DraftUpdatePayload,
   type IndexingUpdatePayload,
   type JsonObject,
+  type NotificationEventAction,
   type NotificationKind,
   type TaskUpdatePayload,
 } from '@propr/shared';
@@ -150,6 +151,26 @@ function safeGithubPullRequestUrl(repository: string, prNumber: number): string 
   return `https://github.com/${parts[0]}/${parts[1]}/pull/${prNumber}`;
 }
 
+function taskActions(options: {
+  active?: boolean;
+  followup?: boolean;
+  hasPullRequest?: boolean;
+}): NotificationEventAction[] {
+  return [
+    ...(options.active ? ['stop' as const] : []),
+    ...(options.followup ? ['follow_up' as const] : []),
+    ...(options.hasPullRequest ? ['open_pr' as const] : []),
+    'dismiss',
+  ];
+}
+
+function pullRequestAction(repository: string, prNumber: number) {
+  const href = safeGithubPullRequestUrl(repository, prNumber);
+  return href === undefined
+    ? {}
+    : { action: { type: 'external_link' as const, label: 'Open pull request', href } };
+}
+
 function sourceMetadata(row: SourceActivityRow): Record<string, unknown> {
   return parseJsonObject(row.metadata_json);
 }
@@ -222,6 +243,7 @@ export class NotificationProjectionService {
       target: { type: 'plan', repository: draft.repository, draftId: payload.draftId },
       title: 'Plan ready for review',
       body: `A plan for ${draft.repository} is ready for review.`,
+      actions: ['dismiss'],
       occurredAt,
     }, [{ userId: draft.user_id, pushEnabled: true }]);
   }
@@ -260,6 +282,13 @@ export class NotificationProjectionService {
         },
         title: 'Task failed',
         body: `Work for ${context.repository} did not complete.`,
+        actions: taskActions({
+          followup: true,
+          hasPullRequest: context.prNumber !== undefined,
+        }),
+        ...(context.prNumber === undefined
+          ? {}
+          : pullRequestAction(context.repository, context.prNumber)),
         occurredAt,
       }, recipients);
       return;
@@ -277,6 +306,8 @@ export class NotificationProjectionService {
         },
         title: 'Review completed',
         body: `Review of PR #${context.prNumber} is complete.`,
+        actions: taskActions({ followup: true, hasPullRequest: true }),
+        ...pullRequestAction(context.repository, context.prNumber),
         occurredAt,
       }, recipients);
     } else {
@@ -291,6 +322,13 @@ export class NotificationProjectionService {
         },
         title: 'Implementation completed',
         body: `Implementation work for ${context.repository} is complete.`,
+        actions: taskActions({
+          followup: true,
+          hasPullRequest: context.prNumber !== undefined,
+        }),
+        ...(context.prNumber === undefined
+          ? {}
+          : pullRequestAction(context.repository, context.prNumber)),
         occurredAt,
       }, recipients);
     }
@@ -306,6 +344,7 @@ export class NotificationProjectionService {
         },
         title: 'Pull request needs attention',
         body: `PR #${context.prNumber} is ready for attention.`,
+        actions: ['open_pr', 'dismiss'],
         ...(prUrl === undefined ? {} : {
           action: { type: 'external_link' as const, label: 'Open pull request', href: prUrl },
         }),
@@ -338,6 +377,7 @@ export class NotificationProjectionService {
       },
       title: 'Repository indexing failed',
       body: `Indexing did not complete for ${payload.repository}.`,
+      actions: ['dismiss'],
       occurredAt,
     }, recipients);
   }
@@ -371,6 +411,7 @@ export class NotificationProjectionService {
           },
           title: 'Task appears stalled',
           body: `Active work for ${row.repository} has not reported progress.`,
+          actions: taskActions({ active: true }),
           occurredAt: row.last_activity_at,
         }, await this.loadInstanceMemberRecipients());
       } else {
@@ -386,6 +427,7 @@ export class NotificationProjectionService {
           },
           title: 'Repository indexing appears stalled',
           body: `Indexing for ${row.repository} has not reported progress.`,
+          actions: ['dismiss'],
           occurredAt: row.last_activity_at,
         }, await this.loadAdministratorRecipients());
       }
@@ -424,6 +466,7 @@ export class NotificationProjectionService {
         target: { type: 'system_failure', component },
         title: 'System component unhealthy',
         body: `${component} is not reporting a healthy status.`,
+        actions: ['dismiss'],
         occurredAt: transition.occurredAt,
       }, recipients);
     }

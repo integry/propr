@@ -18,6 +18,7 @@ import {
     type JsonObject,
     type Notification,
     type NotificationAction,
+    type NotificationEventAction,
     type NotificationEvent,
     type NotificationKind,
     type NotificationListResponse,
@@ -77,6 +78,7 @@ export type CreateNotificationEventInput<
     target: NotificationTargetFor<K>;
     title: string;
     body: string;
+    actions?: readonly NotificationEventAction[];
     action?: NotificationAction;
     metadata?: JsonObject;
     occurredAt?: TimestampInput;
@@ -169,6 +171,14 @@ function toNotificationEvent(row: NotificationEventRow): NotificationEvent {
         occurredAt: row.occurred_at,
         createdAt: row.created_at
     });
+}
+
+function eventMetadataForStorage(event: NotificationEvent): string | null {
+    const metadata = {
+        ...(event.metadata ?? {}),
+        ...(event.actions.length === 0 ? {} : { actions: event.actions })
+    };
+    return Object.keys(metadata).length === 0 ? null : JSON.stringify(metadata);
 }
 
 function toNotification(row: NotificationRow): Notification {
@@ -315,6 +325,7 @@ export class NotificationService {
             target: input.target,
             title: input.title,
             body: input.body,
+            actions: input.actions ?? [],
             ...(input.action === undefined ? {} : { action: input.action }),
             ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
             occurredAt: input.occurredAt === undefined
@@ -335,7 +346,7 @@ export class NotificationService {
                     title: event.title,
                     body: event.body,
                     action_json: event.action === undefined ? null : JSON.stringify(event.action),
-                    metadata_json: event.metadata === undefined ? null : JSON.stringify(event.metadata),
+                    metadata_json: eventMetadataForStorage(event),
                     occurred_at: event.occurredAt,
                     created_at: event.createdAt
                 })

@@ -6,13 +6,12 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleAlert,
-  ExternalLink,
   Inbox,
   Loader2,
   RefreshCw,
   ServerCrash,
-  X,
 } from 'lucide-react';
+import NotificationActions from '../components/Inbox/NotificationActions';
 import type { InboxGroup } from './inboxUtils';
 import {
   formatRelativeTime,
@@ -60,13 +59,12 @@ function DetailLink({
 
 export const InboxCard: React.FC<{
   notification: Notification;
-  onDismiss: (id: string) => void;
+  onDismiss: (id: string) => Promise<void>;
   onOpen: (id: string) => void;
+  onChanged: () => Promise<void>;
   mutationsEnabled: boolean;
-}> = ({ notification, onDismiss, onOpen, mutationsEnabled }) => {
+}> = ({ notification, onDismiss, onOpen, onChanged, mutationsEnabled }) => {
   const unread = notification.readAt === null;
-  const actionLabel = notification.action?.label ?? 'View details';
-  const isExternal = /^https?:\/\//i.test(notificationHref(notification));
   return (
     <article className={`relative overflow-hidden rounded-xl border shadow-sm transition-colors ${
       unread ? 'border-teal-200 bg-teal-50/40' : 'border-slate-200 bg-white'
@@ -107,22 +105,16 @@ export const InboxCard: React.FC<{
         <DetailLink
           notification={notification}
           onOpen={onOpen}
-          className="inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-xs font-semibold text-teal-700 hover:bg-teal-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-2 text-xs font-semibold text-teal-700 hover:bg-teal-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
         >
-          {actionLabel}
-          {isExternal && <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />}
+          View details
         </DetailLink>
-        {mutationsEnabled && (
-          <button
-            type="button"
-            onClick={() => onDismiss(notification.id)}
-            className="inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
-            aria-label={`Dismiss ${notification.title}`}
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-            Dismiss
-          </button>
-        )}
+        <NotificationActions
+          notification={notification}
+          mutationsEnabled={mutationsEnabled}
+          onDismiss={() => onDismiss(notification.id)}
+          onChanged={onChanged}
+        />
       </div>
     </article>
   );
@@ -131,10 +123,11 @@ export const InboxCard: React.FC<{
 export const InboxGroupSection: React.FC<{
   group: InboxGroup;
   notifications: Notification[];
-  onDismiss: (id: string) => void;
+  onDismiss: (id: string) => Promise<void>;
   onOpen: (id: string) => void;
+  onChanged: () => Promise<void>;
   mutationsEnabled: boolean;
-}> = ({ group, notifications, onDismiss, onOpen, mutationsEnabled }) => {
+}> = ({ group, notifications, onDismiss, onOpen, onChanged, mutationsEnabled }) => {
   const Icon = GROUP_ICON[group];
   const headingId = `inbox-${group.replace(/ /g, '-').toLowerCase()}`;
   return (
@@ -153,6 +146,7 @@ export const InboxGroupSection: React.FC<{
             notification={notification}
             onDismiss={onDismiss}
             onOpen={onOpen}
+            onChanged={onChanged}
             mutationsEnabled={mutationsEnabled}
           />
         ))}

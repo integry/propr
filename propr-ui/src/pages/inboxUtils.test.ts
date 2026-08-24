@@ -6,6 +6,7 @@ import {
   notificationGroup,
   notificationHref,
   notificationKindLabel,
+  notificationPullRequestUrl,
 } from './inboxUtils';
 
 function item(overrides: Record<string, unknown>): Notification {
@@ -54,6 +55,24 @@ describe('Inbox notification presentation', () => {
       kind: 'indexing',
       target: { type: 'indexing', repository: 'integry/propr' },
     }))).toBe('/summaries/integry/propr');
+  });
+
+  test('accepts only matching HTTPS GitHub pull-request actions', () => {
+    const target = {
+      type: 'task', repository: 'integry/propr', taskId: 'task-1', prNumber: 1724,
+    };
+    expect(notificationPullRequestUrl(item({
+      target,
+      action: { type: 'external_link', label: 'Open PR', href: 'https://github.com/integry/propr/pull/1724' },
+    }))).toBe('https://github.com/integry/propr/pull/1724');
+    expect(notificationPullRequestUrl(item({
+      target,
+      action: { type: 'external_link', label: 'Open PR', href: 'https://example.com/integry/propr/pull/1724' },
+    }))).toBeNull();
+    expect(notificationPullRequestUrl(item({
+      target,
+      action: { type: 'external_link', label: 'Open PR', href: 'https://github.com/integry/propr/pull/99' },
+    }))).toBeNull();
   });
 
   test('de-duplicates cursor pages and retains newest ordering', () => {
