@@ -34,6 +34,8 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_RETRY_BASE_MS = 30_000;
 const DEFAULT_RETRY_CAP_MS = 15 * 60 * 1000;
 const MAX_PAYLOAD_BYTES = 3_500;
+const CLAIMABLE_AT_SQL = "CASE WHEN job.status = 'retryable' "
+  + 'THEN job.next_retry_at ELSE job.created_at END';
 
 type TimestampInput = string | number | Date;
 
@@ -52,6 +54,7 @@ interface PushSender {
 
 interface CandidateRow {
   job_id: string;
+  claimable_at: string;
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
   timezone: string | null;
@@ -415,36 +418,59 @@ export class WebPushDispatcher {
 
   private async dispatchBatch(): Promise<number> {
     await this.cancelIneligibleJobs();
-    const candidates = await this.database<CandidateRow>('push_delivery_claimable_jobs as job')
-      .leftJoin(
-        'notification_preference_settings as settings',
-        'settings.user_id',
-        'job.user_id',
-      )
-      .select(
-        'job.job_id',
-        'settings.quiet_hours_start',
-        'settings.quiet_hours_end',
-        'settings.timezone',
-      )
-      .orderByRaw("CASE WHEN job.status = 'retryable' THEN job.next_retry_at ELSE job.created_at END ASC")
-      .orderBy('job.job_id', 'asc')
-      .limit(this.batchSize * DEFAULT_SCAN_MULTIPLIER);
-
+    const scanSize = this.batchSize * DEFAULT_SCAN_MULTIPLIER;
+    let cursor: Pick<CandidateRow, 'claimable_at' | 'job_id'> | undefined;
     let delivered = 0;
-    for (const candidate of candidates) {
-      if (delivered >= this.batchSize) break;
-      const now = new Date(this.now());
-      if (isInNotificationQuietHours(
-        now,
-        candidate.quiet_hours_start,
-        candidate.quiet_hours_end,
-        candidate.timezone,
-      )) continue;
-      const claimed = await this.claim(candidate.job_id, now);
-      if (!claimed) continue;
-      await this.deliver(claimed);
-      delivered += 1;
+    while (delivered < this.batchSize) {
+      const query = this.database<CandidateRow>('push_delivery_claimable_jobs as job')
+        .leftJoin(
+          'notification_preference_settings as settings',
+          'settings.user_id',
+          'job.user_id',
+        )
+        .select(
+          'job.job_id',
+          this.database.raw(`${CLAIMABLE_AT_SQL} as claimable_at`),
+          'settings.quiet_hours_start',
+          'settings.quiet_hours_end',
+          'settings.timezone',
+        )
+        .orderByRaw(`${CLAIMABLE_AT_SQL} ASC`)
+        .orderBy('job.job_id', 'asc')
+        .limit(scanSize);
+      if (cursor) {
+        const after = cursor;
+        query.andWhere(afterCursor => {
+          afterCursor.whereRaw(`${CLAIMABLE_AT_SQL} > ?`, [after.claimable_at])
+            .orWhere(sameTimestamp => {
+              sameTimestamp.whereRaw(`${CLAIMABLE_AT_SQL} = ?`, [after.claimable_at])
+                .andWhere('job.job_id', '>', after.job_id);
+            });
+        });
+      }
+      const candidates = await query;
+      if (candidates.length === 0) break;
+      const lastCandidate = candidates[candidates.length - 1];
+      cursor = {
+        claimable_at: lastCandidate.claimable_at,
+        job_id: lastCandidate.job_id,
+      };
+
+      for (const candidate of candidates) {
+        if (delivered >= this.batchSize) break;
+        const now = new Date(this.now());
+        if (isInNotificationQuietHours(
+          now,
+          candidate.quiet_hours_start,
+          candidate.quiet_hours_end,
+          candidate.timezone,
+        )) continue;
+        const claimed = await this.claim(candidate.job_id, now);
+        if (!claimed) continue;
+        await this.deliver(claimed);
+        delivered += 1;
+      }
+      if (candidates.length < scanSize) break;
     }
     return delivered;
   }

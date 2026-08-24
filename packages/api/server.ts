@@ -189,6 +189,7 @@ let runtimeBuildQueue: Queue;
 let configReloadSubscription: ConfigReloadSubscription | undefined;
 let notificationProjection: NotificationProjectionService | undefined;
 let webPushDispatcher: WebPushDispatcher | undefined;
+let webPushDispatcherConfigured = false;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -272,7 +273,7 @@ function setupRoutes(): void {
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
-  const notificationRoutes = createNotificationRoutes();
+  const notificationRoutes = createNotificationRoutes({ webPushDispatcherConfigured });
   const adminRoutes = createAdminRoutes();
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
   const agentVersionRoutes = createAgentVersionRoutes();
@@ -410,10 +411,11 @@ async function start(): Promise<void> {
     if (!demoMode) {
       try {
         const dispatcher = new WebPushDispatcher({ database: db });
-        dispatcher.start();
+        webPushDispatcherConfigured = dispatcher.start().configured;
         webPushDispatcher = dispatcher;
       } catch {
         webPushDispatcher = undefined;
+        webPushDispatcherConfigured = false;
         console.warn('[notifications] Web Push dispatcher disabled: invalid dispatcher tuning configuration');
       }
       notificationProjection = new NotificationProjectionService({ database: db });

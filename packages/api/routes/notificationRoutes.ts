@@ -42,6 +42,7 @@ export type NotificationRouteService = Pick<
 export interface NotificationRouteDependencies {
     service?: NotificationRouteService;
     getWebPushConfiguration?: () => WebPushServerConfiguration;
+    webPushDispatcherConfigured?: boolean;
     logWarning?: (message: string) => void;
 }
 
@@ -163,10 +164,12 @@ export function createNotificationRoutes(
             WEB_PUSH_CONFIGURATION_WARNINGS[vapidValidation.issue]
         }`);
     }
+    const pushConfigured = vapidValidation.configured
+        && (dependencies.webPushDispatcherConfigured ?? true);
     const capabilityResponse = parseNotificationCapabilitiesResponse({
         push: {
-            configured: vapidValidation.configured,
-            vapidPublicKey: vapidValidation.configured ? vapidValidation.publicKey : null
+            configured: pushConfigured,
+            vapidPublicKey: pushConfigured ? vapidValidation.publicKey : null
         }
     });
 

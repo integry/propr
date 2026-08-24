@@ -184,6 +184,48 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     assert.equal((await database('push_delivery_jobs').first()).status, 'pending');
   });
 
+  test('paginates past a quiet-hour prefix larger than the scan window', async () => {
+    const quietUsers: string[] = [];
+    for (let index = 0; index < 21; index += 1) {
+      const queued = await queuedEvent({
+        quietHours: { start: '00:00', end: '23:59', timezone: 'UTC' },
+      });
+      quietUsers.push(queued.userId);
+    }
+    const eligible = await queuedEvent();
+    const dispatchAt = new Date();
+    const currentMinute = dispatchAt.getUTCHours() * 60 + dispatchAt.getUTCMinutes();
+    const formatMinute = (minute: number) => {
+      const normalized = (minute + 24 * 60) % (24 * 60);
+      return `${String(Math.floor(normalized / 60)).padStart(2, '0')}:${
+        String(normalized % 60).padStart(2, '0')
+      }`;
+    };
+    await database('notification_preference_settings')
+      .whereIn('user_id', quietUsers)
+      .update({
+        quiet_hours_start: formatMinute(currentMinute - 1),
+        quiet_hours_end: formatMinute(currentMinute + 1),
+      });
+    const deliveredEventIds: string[] = [];
+    const worker = dispatcher({
+      sendNotification: async (_subscription, payload) => {
+        deliveredEventIds.push((JSON.parse(payload) as { eventId: string }).eventId);
+        return success;
+      },
+    }, {
+      batchSize: 1,
+      now: () => dispatchAt,
+    });
+
+    assert.equal(await worker.runOnce(), 1);
+    assert.deepEqual(deliveredEventIds, [eligible.event.id]);
+    assert.equal(Number((await database('push_delivery_jobs')
+      .where({ status: 'pending' })
+      .count('* as count')
+      .first())?.count), 21);
+  });
+
   test('revokes and erases a subscription after a 410 response', async () => {
     const { subscription } = await queuedEvent();
     const worker = dispatcher({
