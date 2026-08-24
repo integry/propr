@@ -129,16 +129,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
           seenKeys.add(key);
           return true;
         });
-      const autoCiFollowupByRepository = new Map<string, boolean>();
-      for (const repo of parsedRepos) {
-        const key = getRepositoryConfigKey(repo.name);
-        autoCiFollowupByRepository.set(key, autoCiFollowupByRepository.get(key) === true || repo.autoFollowupOnFailedCi);
-      }
-      const validRepos = parsedRepos.map(repo => ({
-        ...repo,
-        autoFollowupOnFailedCi: autoCiFollowupByRepository.get(getRepositoryConfigKey(repo.name)) === true
-      }));
-      setRepos(validRepos);
+      setRepos(parsedRepos);
       configurationReloadRequiredRef.current = false;
     } catch (err) {
       setError((err as Error).message || 'Failed to load repositories');
@@ -353,7 +344,9 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     const targetRepo = repos.find(repo => repo.id === repoId);
     if (!targetRepo) return;
     const repositoryKey = getRepositoryConfigKey(targetRepo.name);
-    const autoFollowupOnFailedCi = !targetRepo.autoFollowupOnFailedCi;
+    const autoFollowupOnFailedCi = !repos.some(repo =>
+      getRepositoryConfigKey(repo.name) === repositoryKey && repo.autoFollowupOnFailedCi
+    );
     const newRepos = repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
       ? { ...repo, autoFollowupOnFailedCi }
       : repo);
@@ -395,7 +388,16 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const handleRetry = () => { setError(null); void loadRepos().catch(() => undefined); };
 
   const hiddenCount = repos.filter(r => r.hidden).length;
-  const filteredRepos = showHiddenRepos ? repos : repos.filter(r => !r.hidden);
+  const autoCiFollowupByRepository = new Map<string, boolean>();
+  for (const repo of repos) {
+    const key = getRepositoryConfigKey(repo.name);
+    autoCiFollowupByRepository.set(key, autoCiFollowupByRepository.get(key) === true || repo.autoFollowupOnFailedCi);
+  }
+  const reposForDisplay = repos.map(repo => ({
+    ...repo,
+    autoFollowupOnFailedCi: autoCiFollowupByRepository.get(getRepositoryConfigKey(repo.name)) === true
+  }));
+  const filteredRepos = showHiddenRepos ? reposForDisplay : reposForDisplay.filter(r => !r.hidden);
 
   return {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
