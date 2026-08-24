@@ -104,7 +104,7 @@ const ProfileSection: React.FC<ProfileSectionProps> = ({ user, onLogout, systemH
     {user && (
       <button
         onClick={onLogout}
-        className="hidden text-sm font-medium text-gray-500 transition-colors hover:text-red-600 sm:block"
+        className="text-sm font-medium text-gray-500 transition-colors hover:text-red-600"
       >
         Logout
       </button>
