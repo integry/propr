@@ -87,6 +87,15 @@ function createHarness(): WorkerHarness {
     }
     if (pathname.endsWith('.js')) return response('asset', 'text/javascript');
     if (pathname.endsWith('.css')) return response('asset', 'text/css');
+    if (pathname === '/pwa-shell-assets.json') {
+      return response(JSON.stringify([
+        '/assets/app-abc.js',
+        '/assets/vendor-def.js',
+        '/assets/app-abc.css',
+        '/assets/lazy-route.js',
+        'https://attacker.example/external.js',
+      ]), 'application/json');
+    }
     if (pathname.endsWith('.webmanifest')) return response('{}', 'application/manifest+json');
     return response('image', 'image/png');
   });
@@ -153,7 +162,9 @@ describe('PWA service worker', () => {
       'https://app.example.com/assets/app-abc.js',
       'https://app.example.com/assets/vendor-def.js',
       'https://app.example.com/assets/app-abc.css',
+      'https://app.example.com/assets/lazy-route.js',
     ]));
+    expect(harness.networkRequests).not.toContain('https://attacker.example/external.js');
     expect(harness.networkRequests).not.toContain('https://app.example.com/config.js');
   });
 
