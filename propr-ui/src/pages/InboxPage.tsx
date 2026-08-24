@@ -36,7 +36,7 @@ const InboxPage: React.FC = () => {
     ? 'loading'
     : inbox.notifications.length === 0 && inbox.error
       ? (inbox.isOnline ? 'error' : 'offline')
-      : inbox.notifications.length === 0
+      : inbox.notifications.length === 0 && !inbox.hasMore
         ? 'empty'
         : null;
 

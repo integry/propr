@@ -104,6 +104,27 @@ describe('Inbox page', () => {
     expect(screen.getAllByText('First task')).toHaveLength(1);
   });
 
+  test('keeps cursor pagination available after dismissing every loaded item', async () => {
+    const first = item('event-1', 'First task');
+    const second = item('event-2', 'Second task');
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [first, second], unreadCount: 2, nextCursor: 'cursor-1' })
+      .mockResolvedValueOnce({ notifications: [], unreadCount: 0, nextCursor: null });
+    vi.mocked(dismissNotification).mockImplementation(async id => ({
+      notification: id === first.id ? first : second,
+      unreadCount: id === first.id ? 1 : 0,
+    }));
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss First task' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss Second task' }));
+    const loadMore = await screen.findByRole('button', { name: 'Load more' });
+    expect(screen.queryByText('You’re all caught up')).not.toBeInTheDocument();
+
+    fireEvent.click(loadMore);
+    await waitFor(() => expect(listNotifications).toHaveBeenLastCalledWith({ cursor: 'cursor-1', limit: 25 }));
+  });
+
   test('consumes a service-worker dismissal intent', async () => {
     vi.mocked(listNotifications).mockResolvedValue({ notifications: [], unreadCount: 1, nextCursor: null });
     vi.mocked(dismissNotification).mockResolvedValue({
