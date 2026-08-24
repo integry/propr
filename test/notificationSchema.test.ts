@@ -1719,6 +1719,21 @@ describe('durable notification schema', { concurrency: false }, () => {
       actions: { label: 'producer-defined metadata' },
     });
 
+    const legacyReservedMetadata = {
+      __propr_notification_event_v1: {
+        schema: 'advertised-actions',
+        version: 1,
+        advertisedActions: ['stop'],
+        metadata: { source: 'producer-defined metadata' },
+      },
+    };
+    const parsedLegacyReservedMetadata = parseNotificationEvent({
+      ...createContractEvent(),
+      metadata: legacyReservedMetadata,
+    });
+    assert.deepStrictEqual(parsedLegacyReservedMetadata.actions, []);
+    assert.deepStrictEqual(parsedLegacyReservedMetadata.metadata, legacyReservedMetadata);
+
     const circular: Record<string, unknown> = {};
     circular.self = circular;
     const invalidMetadata = [

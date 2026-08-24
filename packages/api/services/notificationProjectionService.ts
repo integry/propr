@@ -53,6 +53,7 @@ interface TaskContext {
   issueNumber?: number;
   prNumber?: number;
   isReview: boolean;
+  followupEligible: boolean;
 }
 
 interface SourceActivityRow {
@@ -143,11 +144,14 @@ function activityStatusForIndexing(phase: string): SourceActivityStatus | undefi
   }
 }
 
-function safeGithubPullRequestUrl(repository: string, prNumber: number): string | undefined {
+function isValidGithubRepository(repository: string): boolean {
   const parts = repository.split('/');
-  if (parts.length !== 2 || parts.some(part => !/^[A-Za-z0-9_.-]+$/.test(part))) {
-    return undefined;
-  }
+  return parts.length === 2 && parts.every(part => /^[A-Za-z0-9_.-]+$/.test(part));
+}
+
+function safeGithubPullRequestUrl(repository: string, prNumber: number): string | undefined {
+  if (!isValidGithubRepository(repository)) return undefined;
+  const parts = repository.split('/');
   return `https://github.com/${parts[0]}/${parts[1]}/pull/${prNumber}`;
 }
 
@@ -285,7 +289,7 @@ export class NotificationProjectionService {
         title: 'Task failed',
         body: `Work for ${context.repository} did not complete.`,
         actions: taskActions({
-          followup: true,
+          followup: context.followupEligible,
           hasPullRequest: pullRequestUrl !== undefined,
         }),
         ...pullRequestAction(pullRequestUrl),
@@ -306,7 +310,10 @@ export class NotificationProjectionService {
         },
         title: 'Review completed',
         body: `Review of PR #${context.prNumber} is complete.`,
-        actions: taskActions({ followup: true, hasPullRequest: pullRequestUrl !== undefined }),
+        actions: taskActions({
+          followup: context.followupEligible,
+          hasPullRequest: pullRequestUrl !== undefined,
+        }),
         ...pullRequestAction(pullRequestUrl),
         occurredAt,
       }, recipients);
@@ -323,7 +330,7 @@ export class NotificationProjectionService {
         title: 'Implementation completed',
         body: `Implementation work for ${context.repository} is complete.`,
         actions: taskActions({
-          followup: true,
+          followup: context.followupEligible,
           hasPullRequest: pullRequestUrl !== undefined,
         }),
         ...pullRequestAction(pullRequestUrl),
@@ -507,6 +514,9 @@ export class NotificationProjectionService {
       issueNumber: positiveInteger(payload.issueNumber) ?? positiveInteger(task.issue_number),
       prNumber,
       isReview,
+      followupEligible: typeof task.repository === 'string'
+        && isValidGithubRepository(task.repository)
+        && positiveInteger(task.issue_number) !== undefined,
     };
   }
 

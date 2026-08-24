@@ -204,9 +204,9 @@ describe('notification service', { concurrency: false }, () => {
             .where({ event_id: 'action-event' })
             .first();
         assert.deepEqual(JSON.parse(stored.metadata_json), {
-            __propr_notification_event_v1: {
-                schema: 'advertised-actions',
-                version: 1,
+            __propr_notification_event_storage_v2: {
+                schema: 'actions-and-metadata',
+                version: 2,
                 advertisedActions: ['stop', 'dismiss'],
                 metadata: {
                     source: 'stalled-detector',
@@ -220,6 +220,47 @@ describe('notification service', { concurrency: false }, () => {
             source: 'stalled-detector',
             actions: { label: 'legacy producer metadata' }
         });
+    });
+
+    test('round-trips empty actions and producer metadata matching the legacy reserved key', async () => {
+        const metadata = {
+            __propr_notification_event_v1: {
+                schema: 'advertised-actions',
+                version: 1,
+                advertisedActions: ['stop'],
+                metadata: { source: 'producer-owned' }
+            }
+        };
+        const created = await service.createNotificationEvent({
+            eventId: 'empty-action-event',
+            deduplicationKey: 'empty-action-event-key',
+            kind: 'task',
+            target: {
+                type: 'task', repository: 'integry/propr', taskId: 'task-empty-action-event'
+            },
+            title: 'Legacy metadata event',
+            body: 'Producer metadata must remain intact.',
+            actions: [],
+            metadata,
+            recipients: ['user-a']
+        });
+
+        assert.deepEqual(created.actions, []);
+        assert.deepEqual(created.metadata, metadata);
+        const stored = await database('notification_events')
+            .where({ event_id: 'empty-action-event' })
+            .first();
+        assert.deepEqual(JSON.parse(stored.metadata_json), {
+            __propr_notification_event_storage_v2: {
+                schema: 'actions-and-metadata',
+                version: 2,
+                advertisedActions: [],
+                metadata
+            }
+        });
+        const listed = await service.listNotifications('user-a');
+        assert.deepEqual(listed.notifications[0].actions, []);
+        assert.deepEqual(listed.notifications[0].metadata, metadata);
     });
 
     test('rejects advertised actions when their combined metadata envelope is oversized', async () => {

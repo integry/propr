@@ -17,6 +17,22 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function visibleActions(
+  notification: Notification,
+  advertised: ReadonlySet<string>,
+  mutationsEnabled: boolean,
+  taskId: string | undefined,
+  prUrl: string | null,
+) {
+  const legacy = advertised.size === 0;
+  return {
+    stop: mutationsEnabled && advertised.has('stop') && notification.target.type === 'task',
+    followup: mutationsEnabled && advertised.has('follow_up') && taskId !== undefined,
+    openPullRequest: prUrl !== null && (advertised.has('open_pr') || legacy),
+    dismiss: mutationsEnabled && (advertised.has('dismiss') || legacy),
+  };
+}
+
 // The branching here deliberately mirrors the closed advertised-action union.
 export const NotificationActions: React.FC<NotificationActionsProps> = ({
   notification,
@@ -53,12 +69,21 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
     if (!begin()) return;
     try {
       await stopTaskExecution(taskId);
-      addToast({ type: 'success', message: 'Stop requested successfully.' });
-      await onChanged();
     } catch (error) {
       addToast({
         type: 'error',
         message: `Couldn't stop the task. ${errorMessage(error, 'Please try again.')}`,
+      });
+      finish();
+      return;
+    }
+    addToast({ type: 'success', message: 'Stop requested successfully.' });
+    try {
+      await onChanged();
+    } catch (error) {
+      addToast({
+        type: 'warning',
+        message: `Stop was requested, but the Inbox couldn't refresh. ${errorMessage(error, 'Please refresh manually.')}`,
       });
     } finally {
       finish();
@@ -69,14 +94,23 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
     if (!taskId || !begin()) throw new Error('A task action is already in progress.');
     try {
       await postTaskFollowup(taskId, body);
-      addToast({ type: 'success', message: 'Follow-up posted successfully.' });
-      await onChanged();
     } catch (error) {
       addToast({
         type: 'error',
         message: `Couldn't post the follow-up. ${errorMessage(error, 'Please try again.')}`,
       });
+      finish();
       throw error;
+    }
+    setFollowupOpen(false);
+    addToast({ type: 'success', message: 'Follow-up posted successfully.' });
+    try {
+      await onChanged();
+    } catch (error) {
+      addToast({
+        type: 'warning',
+        message: `Follow-up was posted, but the Inbox couldn't refresh. ${errorMessage(error, 'Please refresh manually.')}`,
+      });
     } finally {
       finish();
     }
@@ -108,16 +142,15 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
       ? notification.target.prNumber
       : undefined;
   const actionClass = 'inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-wait disabled:opacity-50';
-  const canOpenPullRequest = prUrl !== null
-    && (advertised.has('open_pr') || advertised.size === 0);
-  const hasVisibleAction = mutationsEnabled || canOpenPullRequest;
+  const visible = visibleActions(notification, advertised, mutationsEnabled, taskId, prUrl);
+  const hasVisibleAction = Object.values(visible).some(Boolean);
 
   if (!hasVisibleAction) return null;
 
   return (
     <>
       <div className="flex min-w-0 flex-wrap items-center gap-2" aria-label={`Actions for ${notification.title}`}>
-        {mutationsEnabled && advertised.has('stop') && notification.target.type === 'task' && (
+        {visible.stop && (
           <button
             type="button"
             disabled={busy}
@@ -129,7 +162,7 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
             Stop
           </button>
         )}
-        {mutationsEnabled && advertised.has('follow_up') && taskId !== undefined && (
+        {visible.followup && (
           <button
             type="button"
             disabled={busy}
@@ -141,7 +174,7 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
             Follow up
           </button>
         )}
-        {canOpenPullRequest && (
+        {visible.openPullRequest && (
           <button
             type="button"
             disabled={busy}
@@ -153,7 +186,7 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
             Open PR
           </button>
         )}
-        {mutationsEnabled && (
+        {visible.dismiss && (
           <button
             type="button"
             disabled={busy}

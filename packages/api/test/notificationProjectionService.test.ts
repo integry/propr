@@ -208,9 +208,9 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       { kind: 'task', title: 'Task appears stalled' },
     ]);
     assert.deepEqual(JSON.parse(events[0].metadata_json), {
-      __propr_notification_event_v1: {
-        schema: 'advertised-actions',
-        version: 1,
+      __propr_notification_event_storage_v2: {
+        schema: 'actions-and-metadata',
+        version: 2,
         advertisedActions: ['stop', 'dismiss'],
         metadata: null,
       },
@@ -283,9 +283,63 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       }>;
       return Object.values(metadata)[0]?.advertisedActions;
     }), [
-      ['follow_up', 'dismiss'],
+      ['dismiss'],
       ['dismiss'],
     ]);
+  });
+
+  test('advertises follow-up only with the stored repository and issue identity the endpoint requires', async () => {
+    const failedAt = iso();
+    const completedAt = iso(1_000);
+    const reviewAt = iso(2_000);
+    await database('tasks').insert([
+      {
+        task_id: 'failed-without-stored-issue', repository: 'integry/propr',
+        issue_number: null, pr_number: null, task_type: 'issue', initial_job_data: '{}',
+      },
+      {
+        task_id: 'completed-without-stored-issue', repository: 'integry/propr',
+        issue_number: null, pr_number: null, task_type: 'issue', initial_job_data: '{}',
+      },
+      {
+        task_id: 'review-without-stored-issue', repository: 'integry/propr',
+        issue_number: null, pr_number: 7, task_type: 'review', initial_job_data: '{}',
+      },
+    ]);
+    await database('task_history').insert([
+      {
+        task_id: 'completed-without-stored-issue', state: 'completed',
+        timestamp: completedAt, metadata: '{}',
+      },
+      {
+        task_id: 'review-without-stored-issue', state: 'completed',
+        timestamp: reviewAt, metadata: JSON.stringify({ commandMode: 'review' }),
+      },
+    ]);
+
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'failed-without-stored-issue', state: 'failed',
+      repository: 'integry/propr', issueNumber: 101, timestamp: failedAt,
+    });
+    clock += 1_000;
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'completed-without-stored-issue', state: 'completed',
+      repository: 'integry/propr', issueNumber: 102, timestamp: completedAt,
+    });
+    clock += 1_000;
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'review-without-stored-issue', state: 'completed',
+      repository: 'integry/propr', issueNumber: 103, timestamp: reviewAt,
+    });
+
+    const listed = await new NotificationService({ database }).listNotifications('admin-user');
+    const lifecycleEvents = listed.notifications.filter(notification => [
+      'Task failed', 'Implementation completed', 'Review completed',
+    ].includes(notification.title));
+    assert.deepEqual(lifecycleEvents.map(notification => notification.title).sort(), [
+      'Implementation completed', 'Review completed', 'Task failed',
+    ]);
+    assert.ok(lifecycleEvents.every(notification => !notification.actions.includes('follow_up')));
   });
 
   test('restricts indexing failures to administrators', async () => {

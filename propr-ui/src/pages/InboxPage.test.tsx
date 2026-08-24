@@ -162,6 +162,7 @@ describe('Inbox page', () => {
     const view = renderInbox();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Open pull request for Valid PR' }));
+    expect(screen.queryByRole('button', { name: 'Dismiss Valid PR' })).not.toBeInTheDocument();
     expect(open).toHaveBeenCalledWith(
       'https://github.com/integry/propr/pull/1724',
       '_blank',
