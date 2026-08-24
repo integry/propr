@@ -642,12 +642,14 @@ export class NotificationService {
 
         // Snapshot one job per subscription that was active when this recipient
         // was first assigned. The event/subscription unique index makes duplicate
-        // producer calls harmless, while the creation-time boundary prevents a
-        // newly enrolled browser from receiving historical events.
+        // producer calls harmless, while the creation/update-time boundaries
+        // prevent newly enrolled or reactivated browsers from receiving
+        // historical events.
         const fanoutRows = await transaction('notification_user_states as recipient')
             .join('push_subscriptions as subscription', function subscriptionJoin() {
                 this.on('subscription.user_id', '=', 'recipient.user_id')
-                    .andOn('subscription.created_at', '<=', 'recipient.created_at');
+                    .andOn('subscription.created_at', '<=', 'recipient.created_at')
+                    .andOn('subscription.updated_at', '<=', 'recipient.created_at');
             })
             .join('notification_preferences as preference', function preferenceJoin() {
                 this.on('preference.user_id', '=', 'recipient.user_id')

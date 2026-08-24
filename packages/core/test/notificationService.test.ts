@@ -451,6 +451,66 @@ describe('notification service', { concurrency: false }, () => {
         );
     });
 
+    test('does not fan out a historical event after subscription reactivation', async () => {
+        const userId = 'reactivated-user';
+        const endpoint = 'https://fcm.googleapis.com/fcm/send/reactivated-user';
+        await service.updateNotificationPreferences(userId, {
+            preferences: { task: { pushEnabled: true } }
+        });
+        const subscription = await service.upsertPushSubscription(userId, {
+            endpoint,
+            expirationTime: null,
+            keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+        });
+        await service.revokePushSubscription(userId, endpoint);
+
+        const createHistoricalEvent = (eventId: string) => service.createNotificationEvent({
+            eventId,
+            deduplicationKey: 'reactivation-history',
+            kind: 'task',
+            target: {
+                type: 'task',
+                repository: 'integry/propr',
+                taskId: 'task-reactivation-history'
+            },
+            title: 'Historical event',
+            body: 'Assigned while the browser was revoked',
+            occurredAt: '2026-08-02T09:00:00.000Z',
+            recipients: [{ userId, pushEnabled: true }]
+        });
+        await createHistoricalEvent('historical-event');
+        const recipient = await database('notification_user_states')
+            .where({ event_id: 'historical-event', user_id: userId })
+            .first();
+        assert.ok(recipient);
+        assert.equal(
+            await database('push_delivery_jobs').where({ event_id: 'historical-event' })
+                .count('* as count').first().then(row => Number(row?.count)),
+            0
+        );
+
+        const reactivated = await service.upsertPushSubscription(userId, {
+            endpoint,
+            expirationTime: null,
+            keys: { p256dh: p256dhKey2, auth: 'B'.repeat(21) + 'A' }
+        });
+        assert.equal(reactivated.id, subscription.id);
+        const reactivatedRow = await database('push_subscriptions')
+            .where({ subscription_id: subscription.id })
+            .first();
+        assert.ok(reactivatedRow);
+        assert.ok(reactivatedRow.created_at <= recipient.created_at);
+        assert.ok(reactivatedRow.updated_at > recipient.created_at);
+
+        const duplicate = await createHistoricalEvent('duplicate-historical-event');
+        assert.equal(duplicate.id, 'historical-event');
+        assert.equal(
+            await database('push_delivery_jobs').where({ event_id: 'historical-event' })
+                .count('* as count').first().then(row => Number(row?.count)),
+            0
+        );
+    });
+
     test('rejects invalid categories, quiet-hour values, and timezones', async () => {
         const invalidUpdates = [
             { preferences: { unknown: { pushEnabled: true } } },
