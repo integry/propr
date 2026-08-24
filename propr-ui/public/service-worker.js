@@ -3,6 +3,7 @@
 const CACHE_PREFIX = 'propr-shell-';
 const CACHE_NAME = `${CACHE_PREFIX}v1`;
 const SHELL_FALLBACK_URL = '/index.html';
+const SHELL_ASSET_MANIFEST_URL = '/pwa-shell-assets.json';
 const LOCAL_DISMISS_ACTION = 'propr-dismiss';
 const APP_ICON_URL = '/icons/pwa-192x192.png';
 const MAX_BADGE_COUNT = 99;
@@ -20,7 +21,10 @@ const PRECACHE_URLS = [
   '/media/logo-and-name.png',
 ];
 
-const EXPLICIT_SHELL_ASSETS = new Set(PRECACHE_URLS.filter(path => path !== '/'));
+const EXPLICIT_SHELL_ASSETS = new Set([
+  ...PRECACHE_URLS.filter(path => path !== '/'),
+  SHELL_ASSET_MANIFEST_URL,
+]);
 const APP_ROUTE_PATTERNS = [
   /^\/$/,
   /^\/repositories\/?$/,
@@ -107,14 +111,45 @@ async function fetchAndCache(cache, url, expectedKind) {
   return documentHtml;
 }
 
+async function fetchBuiltShellAssets(cache) {
+  const request = new Request(new URL(SHELL_ASSET_MANIFEST_URL, self.location.origin), {
+    cache: 'reload',
+    credentials: 'same-origin',
+  });
+  const response = await fetch(request);
+  if (!isCacheableResponse(response, 'asset')) {
+    throw new Error('Unable to cache the built shell asset manifest');
+  }
+  const entries = await response.clone().json();
+  if (!Array.isArray(entries)) {
+    throw new Error('Invalid built shell asset manifest');
+  }
+  const assets = entries.flatMap(value => {
+    if (typeof value !== 'string') return [];
+    try {
+      const url = new URL(value, self.location.origin);
+      return url.origin === self.location.origin && url.pathname.startsWith('/assets/')
+        ? [url.href]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  await cache.put(request, response);
+  return assets;
+}
+
 async function precacheShell() {
   const cache = await caches.open(CACHE_NAME);
-  const documents = await Promise.all(PRECACHE_URLS.map(path => {
-    const kind = path === '/' || path === SHELL_FALLBACK_URL ? 'document' : 'asset';
-    return fetchAndCache(cache, path, kind);
-  }));
+  const [documents, builtAssets] = await Promise.all([
+    Promise.all(PRECACHE_URLS.map(path => {
+      const kind = path === '/' || path === SHELL_FALLBACK_URL ? 'document' : 'asset';
+      return fetchAndCache(cache, path, kind);
+    })),
+    fetchBuiltShellAssets(cache),
+  ]);
   const index = documents[PRECACHE_URLS.indexOf(SHELL_FALLBACK_URL)] ?? '';
-  await Promise.all(shellAssetsFromDocument(index)
+  await Promise.all([...new Set([...shellAssetsFromDocument(index), ...builtAssets])]
     .map(url => fetchAndCache(cache, url, 'asset')));
 }
 
@@ -143,7 +178,10 @@ async function serveNavigation(request) {
 }
 
 async function serveStaticAsset(request) {
-  const cached = await caches.match(request);
+  // Static hosts commonly add `Vary: Origin`. Install-time fetches and later
+  // module requests can therefore have different Origin-header state even
+  // though they address the same immutable, same-origin build asset.
+  const cached = await caches.match(request, { ignoreVary: true });
   if (cached) return cached;
   const response = await fetch(request);
   if (isCacheableResponse(response, 'asset')) {
