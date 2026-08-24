@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- route registration and coordinated shutdown share startup state */
 import express, { Request, Response } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
@@ -57,6 +58,7 @@ import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfi
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
+import { NotificationProjectionService } from './services/notificationProjectionService.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
 import { configureApiProxyTrust, createApiRequestRateLimiter, createWebhookRequestRateLimiter } from './requestRateLimits.js';
@@ -184,6 +186,7 @@ let redisClient: RedisClientType;
 let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
 let configReloadSubscription: ConfigReloadSubscription | undefined;
+let notificationProjection: NotificationProjectionService | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -227,7 +230,15 @@ async function initRedis(): Promise<void> {
 }
 
 function setupRoutes(): void {
-  const statusRoutes = createStatusRoutes({ redisClient });
+  const statusRoutes = createStatusRoutes({
+    redisClient,
+    ...(notificationProjection === undefined ? {} : {
+      projectSystemSnapshot: (
+        snapshot: Record<string, unknown> & { timestamp: string },
+        additionalAdministratorIds: readonly string[],
+      ) => notificationProjection!.projectSystemSnapshot(snapshot, additionalAdministratorIds),
+    }),
+  });
   // INTENTIONALLY UNAUTHENTICATED: /api/compatibility is registered BEFORE the
   // `ensureAuthenticated` guard below so the hosted UI can run its pre-auth
   // version-gate before the user logs in. This is the one deliberate exception to
@@ -395,6 +406,8 @@ async function start(): Promise<void> {
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
+      notificationProjection = new NotificationProjectionService({ database: db });
+      notificationProjection.startStalledDetector();
       configReloadSubscription = await startConfigReloadSubscription(redisClient, reloadConfigs);
       // Subscribe first, then enqueue the initial load through the same serial
       // chain so no settings update can race with the startup snapshot.
@@ -418,7 +431,7 @@ async function start(): Promise<void> {
         authenticate: authenticateSocketRequest,
       });
       console.log('[WebSocket] Socket.IO server initialized');
-      socketService.initQueueFeatures({ taskQueue, redisClient, db });
+      socketService.initQueueFeatures({ taskQueue, redisClient, db, notificationProjection });
       console.log('[WebSocket] Queue features initialized for real-time updates');
       await initializeUltrafix(getIoRedisClient());
       // Register the webhook processors in THIS (API) process ONLY when the API

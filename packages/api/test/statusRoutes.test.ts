@@ -20,6 +20,10 @@ type StatusRoutesDeps = {
     cooldowns: Record<string, { repository: string; branch: string; until: string; reason: string }>;
     warning?: { mode: 'fallback_degraded' | 'fallback_promoted' | 'cooldown'; message: string; recorded_at: string };
   }>;
+  projectSystemSnapshot?: (
+    snapshot: Record<string, unknown> & { timestamp: string },
+    additionalAdministratorIds: readonly string[],
+  ) => Promise<void>;
 };
 
 type StatusAgentRegistry = {
@@ -213,6 +217,20 @@ test('/api/status returns default Claude fallback when no agents are configured'
     alias: 'default',
     status: 'disconnected',
   }]);
+});
+
+test('/api/status isolates system notification projection failures', async () => {
+  const snapshots: Array<Record<string, unknown>> = [];
+  const body = await readStatus({
+    projectSystemSnapshot: async snapshot => {
+      snapshots.push(snapshot);
+      throw new Error('notification persistence unavailable');
+    },
+  });
+
+  assert.equal(body.api, 'healthy');
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].api, 'healthy');
 });
 
 test('/api/status surfaces unified agent image outages', async () => {
