@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useId } from 'react';
 import { Loader2 } from 'lucide-react';
 
 interface FollowupModalProps {
@@ -24,6 +24,8 @@ const FollowupModal: React.FC<FollowupModalProps> = ({
   const [content, setContent] = useState(initialContent);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const titleId = useId();
+  const descriptionId = useId();
 
   // Reset content and state when modal opens - ensures fresh content each time
   useEffect(() => {
@@ -33,6 +35,15 @@ const FollowupModal: React.FC<FollowupModalProps> = ({
       setSubmitting(false);
     }
   }, [isOpen, initialContent]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !submitting) onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose, submitting]);
 
   if (!isOpen) return null;
 
@@ -61,18 +72,26 @@ const FollowupModal: React.FC<FollowupModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] flex flex-col border border-gray-300 shadow-lg">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] flex flex-col border border-gray-300 shadow-lg"
+      >
         <div className="flex justify-between items-center p-4 border-b border-gray-200">
           <div>
-            <h3 className="text-lg font-semibold text-gray-900">Follow Up on Task</h3>
-            <p className="text-sm text-gray-500 mt-1">
+            <h3 id={titleId} className="text-lg font-semibold text-gray-900">Follow Up on Task</h3>
+            <p id={descriptionId} className="text-sm text-gray-500 mt-1">
               Post a comment to {issueType} {issueLink}
             </p>
           </div>
           <button
-            className="text-gray-500 hover:text-gray-700 text-2xl leading-none"
+            type="button"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center text-gray-500 hover:text-gray-700 text-2xl leading-none"
             onClick={onClose}
             disabled={submitting}
+            aria-label="Close follow-up dialog"
           >
             &times;
           </button>
@@ -92,6 +111,7 @@ const FollowupModal: React.FC<FollowupModalProps> = ({
                 className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm resize-y"
                 placeholder="Enter your follow-up request..."
                 disabled={submitting}
+                autoFocus
               />
             </div>
 
@@ -106,16 +126,18 @@ const FollowupModal: React.FC<FollowupModalProps> = ({
 
         <div className="flex justify-end gap-3 p-4 border-t border-gray-200 bg-gray-50">
           <button
+            type="button"
             onClick={onClose}
             disabled={submitting}
-            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
+            className="min-h-11 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleSubmit}
             disabled={submitting || !content.trim()}
-            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            className="min-h-11 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             {submitting ? (
               <>

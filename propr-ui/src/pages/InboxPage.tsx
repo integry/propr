@@ -80,8 +80,9 @@ const InboxPage: React.FC = () => {
               key={section.group}
               group={section.group}
               notifications={section.notifications}
-              onDismiss={id => void inbox.dismiss(id)}
+              onDismiss={inbox.dismiss}
               onOpen={inbox.open}
+              onChanged={inbox.refresh}
               mutationsEnabled={inbox.mutationsEnabled}
             />
           ))}

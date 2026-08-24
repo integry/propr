@@ -7,6 +7,8 @@ import { up as createNotificationSchema } from
     '../src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from
     '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
+import { up as addAdvertisedActions } from
+    '../src/db/migrations/20260824020000_add_notification_advertised_actions.js';
 import { NotificationService } from '../src/services/notificationService.js';
 
 let database: Knex;
@@ -46,6 +48,7 @@ beforeEach(async () => {
     database = createDatabase();
     await createNotificationSchema(database);
     await addPreferenceApis(database);
+    await addAdvertisedActions(database);
 });
 
 afterEach(async () => database.destroy());

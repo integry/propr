@@ -8,6 +8,7 @@ import type { SendResult } from 'web-push';
 import { closeConnection, type BetterSqliteConnection } from '../../core/src/db/connection.js';
 import { up as createNotificationSchema } from '../../core/src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../../core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
+import { up as addAdvertisedActions } from '../../core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
 import { NotificationService } from '../../core/src/services/notificationService.js';
 import { WebPushDispatcher } from '../services/webPushDispatcher.js';
 
@@ -57,6 +58,7 @@ beforeEach(async () => {
   database = createDatabase();
   await createNotificationSchema(database);
   await addPreferenceApis(database);
+  await addAdvertisedActions(database);
   notifications = new NotificationService({
     database,
     now: () => new Date(Date.now() - 5_000),
@@ -73,6 +75,7 @@ async function queuedEvent(options: {
   endpoint?: string;
   service?: NotificationService;
   badgeEnabled?: boolean;
+  advertiseStop?: boolean;
 } = {}) {
   const service = options.service ?? notifications;
   userSequence += 1;
@@ -94,6 +97,7 @@ async function queuedEvent(options: {
     target: { type: 'task', repository: 'integry/propr', taskId: `task-${userId}` },
     title: 'Sensitive custom title',
     body: options.body ?? 'SECRET prompt text must stay out of the lock screen payload',
+    actions: options.advertiseStop ? ['stop', 'dismiss'] : [],
     recipients: [{ userId, pushEnabled: true }],
   });
   return { userId, subscription, event };
@@ -171,6 +175,21 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     const job = await database('push_delivery_jobs').first();
     assert.equal(job.status, 'delivered');
     assert.equal(job.attempt_count, 1);
+  });
+
+  test('never turns an advertised stop into a push-click action', async () => {
+    await queuedEvent({ advertiseStop: true });
+    const payloads: string[] = [];
+    const worker = dispatcher({
+      sendNotification: async (_subscription, payload) => {
+        payloads.push(payload);
+        return success;
+      },
+    });
+
+    assert.equal(await worker.runOnce(), 1);
+    const payload = JSON.parse(payloads[0]) as { actions?: Array<{ action?: string }> };
+    assert.equal(payload.actions?.some(action => action.action === 'stop'), false);
   });
 
   test('keeps the Inbox event but creates no job when the category is disabled', async () => {
@@ -416,8 +435,12 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     await retrying.runOnce();
     const retryable = await database('push_delivery_jobs').first();
     assert.equal(retryable.status, 'retryable');
-    assert.ok(retryable.next_retry_at > retryable.updated_at);
     const firstAttempt = await database('push_delivery_attempts').first();
+    assert.equal(firstAttempt.next_retry_at, retryable.next_retry_at);
+    assert.equal(
+      Date.parse(retryable.next_retry_at) - Date.parse(firstAttempt.attempted_at),
+      10,
+    );
     assert.equal(firstAttempt.error_code, 'http_429');
     assert.doesNotMatch(JSON.stringify(firstAttempt), /SECRET/);
 
@@ -425,6 +448,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     database = createDatabase();
     await createNotificationSchema(database);
     await addPreferenceApis(database);
+    await addAdvertisedActions(database);
     notifications = new NotificationService({ database, now: () => new Date(Date.now() - 5_000) });
     await queuedEvent();
     const exhausted = dispatcher({

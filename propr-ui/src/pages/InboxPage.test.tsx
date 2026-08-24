@@ -9,6 +9,7 @@ import {
   listNotifications,
   markNotificationRead,
 } from '../api/notificationApi';
+import { postTaskFollowup, stopTaskExecution } from '../api/proprApi';
 
 const commitUnreadCount = vi.fn();
 const refreshUnreadCount = vi.fn(async () => undefined);
@@ -26,9 +27,18 @@ vi.mock('../api/notificationApi', () => ({
   dismissNotification: vi.fn(),
   markNotificationRead: vi.fn(),
 }));
+vi.mock('../api/proprApi', () => ({
+  postTaskFollowup: vi.fn(),
+  stopTaskExecution: vi.fn(),
+}));
 vi.mock('../contexts/DemoModeContext', () => ({ useDemoMode: () => demoState }));
 
-function item(id: string, title: string, readAt: string | null = null): Notification {
+function item(
+  id: string,
+  title: string,
+  readAt: string | null = null,
+  overrides: Record<string, unknown> = {},
+): Notification {
   return notificationSchema.parse({
     id,
     deduplicationKey: `${id}-key`,
@@ -41,6 +51,8 @@ function item(id: string, title: string, readAt: string | null = null): Notifica
     createdAt: '2026-08-24T12:00:00.000Z',
     readAt,
     dismissedAt: null,
+    actions: ['dismiss'],
+    ...overrides,
   });
 }
 
@@ -74,13 +86,126 @@ describe('Inbox page', () => {
     vi.mocked(listNotifications).mockReset();
     vi.mocked(dismissNotification).mockReset();
     vi.mocked(markNotificationRead).mockReset();
+    vi.mocked(postTaskFollowup).mockReset();
+    vi.mocked(stopTaskExecution).mockReset();
     commitUnreadCount.mockReset();
     refreshUnreadCount.mockClear();
     demoState.isDemoMode = false;
   });
 
-  test('optimistically dismisses and restores an item when the request fails', async () => {
-    const notification = item('event-1', 'Task one failed');
+  test('renders only advertised actions and requires confirmation before stopping', async () => {
+    const notification = item('event-stalled', 'Stalled task', null, {
+      severity: 'warning',
+      actions: ['stop', 'dismiss'],
+    });
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [notification], unreadCount: 1, nextCursor: null });
+    vi.mocked(stopTaskExecution).mockResolvedValue({
+      success: true,
+      message: 'Stopping',
+      containerStopped: true,
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    renderInbox();
+
+    expect(await screen.findByRole('button', { name: 'Stop Stalled task' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Follow up on/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Open pull request/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop Stalled task' }));
+    expect(stopTaskExecution).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop Stalled task' }));
+    await waitFor(() => expect(stopTaskExecution).toHaveBeenCalledTimes(1));
+    expect(stopTaskExecution).toHaveBeenCalledWith('task-event-stalled');
+    await waitFor(() => expect(listNotifications).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Stop requested successfully.')).toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  test('posts one follow-up, closes the modal after success, and refreshes the Inbox', async () => {
+    const notification = item('event-followup', 'Completed task', null, {
+      severity: 'success',
+      actions: ['follow_up', 'dismiss'],
+    });
+    const request = deferred<Awaited<ReturnType<typeof postTaskFollowup>>>();
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [notification], unreadCount: 1, nextCursor: null });
+    vi.mocked(postTaskFollowup).mockReturnValue(request.promise);
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Follow up on Completed task' }));
+    const comment = screen.getByRole('textbox', { name: 'Comment' });
+    fireEvent.change(comment, { target: { value: 'Please add a regression test.' } });
+    const submit = screen.getByRole('button', { name: 'Post Comment' });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    expect(postTaskFollowup).toHaveBeenCalledTimes(1);
+    expect(postTaskFollowup).toHaveBeenCalledWith('task-event-followup', 'Please add a regression test.');
+    expect(await screen.findByRole('button', { name: 'Posting...' })).toBeDisabled();
+
+    await act(async () => request.resolve({ success: true, message: 'Posted' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(listNotifications).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Follow-up posted successfully.')).toBeInTheDocument();
+  });
+
+  test('opens only matching HTTPS GitHub pull-request URLs in a safe new context', async () => {
+    const valid = item('event-pr', 'Valid PR', null, {
+      target: {
+        type: 'task', repository: 'integry/propr', taskId: 'task-event-pr', prNumber: 1724,
+      },
+      actions: ['open_pr'],
+      action: {
+        type: 'external_link', label: 'Open pull request', href: 'https://github.com/integry/propr/pull/1724',
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [valid], unreadCount: 1, nextCursor: null });
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const view = renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open pull request for Valid PR' }));
+    expect(screen.queryByRole('button', { name: 'Dismiss Valid PR' })).not.toBeInTheDocument();
+    expect(open).toHaveBeenCalledWith(
+      'https://github.com/integry/propr/pull/1724',
+      '_blank',
+      'noopener,noreferrer',
+    );
+
+    view.unmount();
+    open.mockClear();
+    const actionless = item('event-actionless-pr', 'Actionless PR', null, {
+      target: {
+        type: 'task', repository: 'integry/propr', taskId: 'task-event-actionless-pr', prNumber: 1724,
+      },
+      actions: [],
+      action: {
+        type: 'external_link', label: 'Open pull request', href: 'https://github.com/integry/propr/pull/1724',
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [actionless], unreadCount: 1, nextCursor: null });
+    const actionlessView = renderInbox();
+    expect(await screen.findByText('Actionless PR')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open pull request for Actionless PR' }))
+      .not.toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+
+    actionlessView.unmount();
+    open.mockClear();
+    const invalid = item('event-invalid-pr', 'Invalid PR', null, {
+      actions: ['open_pr'],
+      action: {
+        type: 'external_link', label: 'Open pull request', href: 'https://example.com/integry/propr/pull/1724',
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [invalid], unreadCount: 1, nextCursor: null });
+    renderInbox();
+    expect(await screen.findByText('Invalid PR')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open pull request for Invalid PR' }))
+      .not.toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+
+  test('optimistically dismisses and restores an item advertising dismiss when the request fails', async () => {
+    const notification = item('event-1', 'Task one failed', null, { actions: ['dismiss'] });
     vi.mocked(listNotifications).mockResolvedValue({ notifications: [notification], unreadCount: 1, nextCursor: null });
     vi.mocked(dismissNotification).mockRejectedValue(new Error('Network unavailable'));
     renderInbox();

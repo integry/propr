@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
+import { NOTIFICATION_PAYLOAD_LIMITS } from '@propr/shared';
 import { closeConnection, type BetterSqliteConnection } from '../src/db/connection.js';
 import {
     NotificationQueryValidationError,
@@ -21,6 +22,10 @@ import {
 } from '../src/services/notificationService.js';
 import { up } from '../src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
+import {
+    down as removeAdvertisedActions,
+    up as addAdvertisedActions
+} from '../src/db/migrations/20260824020000_add_notification_advertised_actions.js';
 import {
     down as removeBadgePreference,
     up as addBadgePreference
@@ -90,6 +95,7 @@ beforeEach(async () => {
     await up(database);
     await addPreferenceApis(database);
     await addBadgePreference(database);
+    await addAdvertisedActions(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -178,6 +184,107 @@ describe('notification service', { concurrency: false }, () => {
                 { event_id: 'original-event', user_id: 'user-b' }
             ]
         );
+    });
+
+    test('persists and returns the immutable advertised action list', async () => {
+        const created = await service.createNotificationEvent({
+            eventId: 'action-event',
+            deduplicationKey: 'action-event-key',
+            kind: 'task',
+            target: {
+                type: 'task', repository: 'integry/propr', taskId: 'task-action-event'
+            },
+            title: 'Task appears stalled',
+            body: 'The task has not reported progress.',
+            actions: ['stop', 'dismiss'],
+            metadata: {
+                source: 'stalled-detector',
+                actions: { label: 'legacy producer metadata' }
+            },
+            recipients: ['user-a']
+        });
+
+        assert.deepEqual(created.actions, ['stop', 'dismiss']);
+        const stored = await database('notification_events')
+            .where({ event_id: 'action-event' })
+            .first();
+        assert.deepEqual(JSON.parse(stored.advertised_actions_json), ['stop', 'dismiss']);
+        assert.deepEqual(JSON.parse(stored.metadata_json), {
+            source: 'stalled-detector',
+            actions: { label: 'legacy producer metadata' }
+        });
+        const listed = await service.listNotifications('user-a');
+        assert.deepEqual(listed.notifications[0].actions, ['stop', 'dismiss']);
+        assert.deepEqual(listed.notifications[0].metadata, {
+            source: 'stalled-detector',
+            actions: { label: 'legacy producer metadata' }
+        });
+    });
+
+    test('treats the old storage envelope shape as producer metadata, including on legacy rows', async () => {
+        await removeAdvertisedActions(database);
+        const metadata = {
+            __propr_notification_event_storage_v2: {
+                schema: 'actions-and-metadata',
+                version: 2,
+                advertisedActions: ['stop'],
+                metadata: { source: 'producer-owned' }
+            }
+        };
+        await database('notification_events').insert({
+            event_id: 'legacy-metadata-event',
+            deduplication_key: 'legacy-metadata-event-key',
+            kind: 'task',
+            severity: 'info',
+            target_json: JSON.stringify({
+                type: 'task', repository: 'integry/propr', taskId: 'task-legacy-metadata-event'
+            }),
+            title: 'Legacy metadata event',
+            body: 'Producer metadata must remain intact.',
+            action_json: null,
+            metadata_json: JSON.stringify(metadata),
+            occurred_at: '2026-08-02T08:00:00.000Z',
+            created_at: '2026-08-02T08:00:00.000Z'
+        });
+        await database('notification_user_states').insert({
+            event_id: 'legacy-metadata-event',
+            user_id: 'user-a',
+            inbox_enabled: true,
+            push_enabled: false,
+            created_at: '2026-08-02T08:00:00.000Z'
+        });
+        await addAdvertisedActions(database);
+
+        const listed = await service.listNotifications('user-a');
+        assert.deepEqual(listed.notifications[0].actions, ['open_pr', 'dismiss']);
+        assert.deepEqual(listed.notifications[0].metadata, metadata);
+    });
+
+    test('accepts advertised actions with producer metadata at the published byte limit', async () => {
+        const metadataOverhead = Buffer.byteLength('{"value":""}');
+        const metadata = {
+            value: 'm'.repeat(NOTIFICATION_PAYLOAD_LIMITS.metadataBytes - metadataOverhead)
+        };
+
+        const created = await service.createNotificationEvent({
+            eventId: 'oversized-action-envelope',
+            deduplicationKey: 'oversized-action-envelope-key',
+            kind: 'task',
+            target: {
+                type: 'task', repository: 'integry/propr', taskId: 'task-action-envelope'
+            },
+            title: 'Task appears stalled',
+            body: 'The task has not reported progress.',
+            actions: ['stop'],
+            metadata
+        });
+        assert.deepEqual(created.actions, ['stop']);
+        assert.deepEqual(created.metadata, metadata);
+        const stored = await database('notification_events').where({
+            event_id: 'oversized-action-envelope'
+        }).first();
+        assert.deepEqual(JSON.parse(stored.advertised_actions_json), ['stop']);
+        assert.equal(Buffer.byteLength(stored.metadata_json), NOTIFICATION_PAYLOAD_LIMITS.metadataBytes);
     });
 
     test('paginates by occurrence and ID while excluding non-Inbox receipts', async () => {

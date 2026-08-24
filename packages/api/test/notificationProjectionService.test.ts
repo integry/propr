@@ -5,6 +5,7 @@ import { closeConnection, NotificationService } from '@propr/core';
 import { DRAFT_UPDATE, INDEXING_UPDATE, TASK_UPDATE } from '@propr/shared';
 import { up as createNotificationSchema } from '../../core/src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addNotificationPreferenceApis } from '../../core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
+import { up as addAdvertisedActions } from '../../core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
 import { NotificationProjectionService } from '../services/notificationProjectionService.js';
 
 let database: Knex;
@@ -66,6 +67,7 @@ beforeEach(async () => {
   await createProjectionTables(database);
   await createNotificationSchema(database);
   await addNotificationPreferenceApis(database);
+  await addAdvertisedActions(database);
   const notificationService = new NotificationService({
     database,
     now: () => new Date(clock),
@@ -203,8 +205,12 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     const activity = await database('notification_source_activity').first();
     assert.equal(activity.status, 'processing');
     assert.equal(activity.last_activity_at, activeAt);
-    const events = await database('notification_events').select('kind', 'title');
-    assert.deepEqual(events, [{ kind: 'task', title: 'Task appears stalled' }]);
+    const events = await database('notification_events')
+      .select('kind', 'title', 'advertised_actions_json');
+    assert.deepEqual(events.map(event => ({ kind: event.kind, title: event.title })), [
+      { kind: 'task', title: 'Task appears stalled' },
+    ]);
+    assert.deepEqual(JSON.parse(events[0].advertised_actions_json), ['stop', 'dismiss']);
   });
 
   test('projects a task failure once without copying error details', async () => {
@@ -236,6 +242,124 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       (await database('notification_user_states').pluck('user_id')).sort(),
       ['admin-user', 'member-user'],
     );
+  });
+
+  test('does not advertise Open PR when a trusted GitHub URL cannot be constructed', async () => {
+    await database('tasks').insert({
+      task_id: 'task-invalid-pr-url', repository: 'integry$/propr', issue_number: 99,
+      pr_number: 42, task_type: 'issue', initial_job_data: '{}',
+    });
+    await database('task_history').insert({
+      task_id: 'task-invalid-pr-url', state: 'completed', timestamp: iso(), metadata: '{}',
+    });
+
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE,
+      taskId: 'task-invalid-pr-url',
+      state: 'completed',
+      repository: 'integry$/propr',
+      timestamp: iso(),
+    });
+
+    const events = await database('notification_events')
+      .select('title', 'action_json', 'advertised_actions_json')
+      .orderBy('title') as Array<{
+        title: string;
+        action_json: string | null;
+        advertised_actions_json: string;
+      }>;
+    assert.deepEqual(events.map(event => event.title), [
+      'Implementation completed',
+      'Pull request needs attention',
+    ]);
+    assert.ok(events.every(event => event.action_json === null));
+    assert.deepEqual(events.map(event => JSON.parse(event.advertised_actions_json)), [
+      ['dismiss'],
+      ['dismiss'],
+    ]);
+  });
+
+  test('advertises follow-up only with the stored repository and issue identity the endpoint requires', async () => {
+    const failedAt = iso();
+    const completedAt = iso(1_000);
+    const reviewAt = iso(2_000);
+    await database('tasks').insert([
+      {
+        task_id: 'failed-with-mismatched-payload-issue', repository: 'integry/propr',
+        issue_number: 100, pr_number: null, task_type: 'issue', initial_job_data: '{}',
+      },
+      {
+        task_id: 'completed-without-stored-issue', repository: 'integry/propr',
+        issue_number: null, pr_number: null, task_type: 'issue', initial_job_data: '{}',
+      },
+      {
+        task_id: 'review-without-stored-issue', repository: 'integry/propr',
+        issue_number: null, pr_number: 7, task_type: 'review', initial_job_data: '{}',
+      },
+    ]);
+    await database('task_history').insert([
+      {
+        task_id: 'completed-without-stored-issue', state: 'completed',
+        timestamp: completedAt, metadata: '{}',
+      },
+      {
+        task_id: 'review-without-stored-issue', state: 'completed',
+        timestamp: reviewAt, metadata: JSON.stringify({ commandMode: 'review' }),
+      },
+    ]);
+
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'failed-with-mismatched-payload-issue', state: 'failed',
+      repository: 'integry/propr', issueNumber: 101, timestamp: failedAt,
+    });
+    clock += 1_000;
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'completed-without-stored-issue', state: 'completed',
+      repository: 'integry/propr', issueNumber: 102, timestamp: completedAt,
+    });
+    clock += 1_000;
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'review-without-stored-issue', state: 'completed',
+      repository: 'integry/propr', issueNumber: 103, timestamp: reviewAt,
+    });
+
+    const listed = await new NotificationService({ database }).listNotifications('admin-user');
+    const lifecycleEvents = listed.notifications.filter(notification => [
+      'Task failed', 'Implementation completed', 'Review completed',
+    ].includes(notification.title));
+    assert.deepEqual(lifecycleEvents.map(notification => notification.title).sort(), [
+      'Implementation completed', 'Review completed', 'Task failed',
+    ]);
+    assert.ok(lifecycleEvents.every(notification => !notification.actions.includes('follow_up')));
+  });
+
+  test('advertises review follow-up only when the endpoint issue is the reviewed PR', async () => {
+    const reviews = [
+      { taskId: 'review-mismatched-thread', issueNumber: 1724, timestamp: iso() },
+      { taskId: 'review-matching-thread', issueNumber: 1938, timestamp: iso(1_000) },
+    ];
+    await database('tasks').insert(reviews.map(review => ({
+      task_id: review.taskId, repository: 'integry/propr', issue_number: review.issueNumber,
+      pr_number: 1938, task_type: 'review', initial_job_data: '{}',
+    })));
+    await database('task_history').insert(reviews.map(review => ({
+      task_id: review.taskId, state: 'completed', timestamp: review.timestamp,
+      metadata: JSON.stringify({ commandMode: 'review' }),
+    })));
+    for (const review of reviews) {
+      clock = Date.parse(review.timestamp);
+      await projection.projectTaskUpdate({
+        eventType: TASK_UPDATE, taskId: review.taskId, state: 'completed',
+        repository: 'integry/propr', timestamp: review.timestamp,
+      });
+    }
+
+    const listed = await new NotificationService({ database }).listNotifications('admin-user');
+    const reviewByTask = new Map(listed.notifications
+      .filter(notification => notification.target.type === 'review')
+      .map(notification => [notification.target.taskId, notification]));
+    assert.equal(reviewByTask.get(reviews[0].taskId)?.actions.includes('follow_up'), false);
+    assert.equal(reviewByTask.get(reviews[1].taskId)?.actions.includes('follow_up'), true);
   });
 
   test('restricts indexing failures to administrators', async () => {

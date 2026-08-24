@@ -18,6 +18,7 @@ import {
     type JsonObject,
     type Notification,
     type NotificationAction,
+    type NotificationEventAction,
     type NotificationEvent,
     type NotificationKind,
     type NotificationListResponse,
@@ -77,6 +78,7 @@ export type CreateNotificationEventInput<
     target: NotificationTargetFor<K>;
     title: string;
     body: string;
+    actions?: readonly NotificationEventAction[];
     action?: NotificationAction;
     metadata?: JsonObject;
     occurredAt?: TimestampInput;
@@ -105,6 +107,7 @@ interface NotificationEventRow {
     title: string;
     body: string;
     action_json: string | null;
+    advertised_actions_json: string | null;
     metadata_json: string | null;
     occurred_at: string;
     created_at: string;
@@ -152,6 +155,9 @@ function parseStoredJson(value: string, field: string): unknown {
 }
 
 function toNotificationEvent(row: NotificationEventRow): NotificationEvent {
+    const storedMetadata = row.metadata_json === null
+        ? undefined
+        : parseStoredJson(row.metadata_json, 'metadata');
     return parseNotificationEvent({
         id: row.event_id,
         deduplicationKey: row.deduplication_key,
@@ -163,9 +169,10 @@ function toNotificationEvent(row: NotificationEventRow): NotificationEvent {
         ...(row.action_json === null
             ? {}
             : { action: parseStoredJson(row.action_json, 'action') }),
-        ...(row.metadata_json === null
-            ? {}
-            : { metadata: parseStoredJson(row.metadata_json, 'metadata') }),
+        actions: row.advertised_actions_json === null
+            ? ['open_pr', 'dismiss']
+            : parseStoredJson(row.advertised_actions_json, 'advertised actions'),
+        ...(storedMetadata === undefined ? {} : { metadata: storedMetadata }),
         occurredAt: row.occurred_at,
         createdAt: row.created_at
     });
@@ -249,6 +256,7 @@ function eventSelectColumns(): string[] {
         'event.title',
         'event.body',
         'event.action_json',
+        'event.advertised_actions_json',
         'event.metadata_json',
         'event.occurred_at',
         'event.created_at',
@@ -315,6 +323,7 @@ export class NotificationService {
             target: input.target,
             title: input.title,
             body: input.body,
+            actions: input.actions ?? [],
             ...(input.action === undefined ? {} : { action: input.action }),
             ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
             occurredAt: input.occurredAt === undefined
@@ -335,7 +344,10 @@ export class NotificationService {
                     title: event.title,
                     body: event.body,
                     action_json: event.action === undefined ? null : JSON.stringify(event.action),
-                    metadata_json: event.metadata === undefined ? null : JSON.stringify(event.metadata),
+                    advertised_actions_json: JSON.stringify(event.actions),
+                    metadata_json: event.metadata === undefined
+                        ? null
+                        : JSON.stringify(event.metadata),
                     occurred_at: event.occurredAt,
                     created_at: event.createdAt
                 })
