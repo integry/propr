@@ -23,6 +23,10 @@ import {
 import { up } from '../src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
 import {
+    down as removeAdvertisedActions,
+    up as addAdvertisedActions
+} from '../src/db/migrations/20260824020000_add_notification_advertised_actions.js';
+import {
     down as removeBadgePreference,
     up as addBadgePreference
 } from '../src/db/migrations/20260824010000_add_notification_badge_preference.js';
@@ -91,6 +95,7 @@ beforeEach(async () => {
     await up(database);
     await addPreferenceApis(database);
     await addBadgePreference(database);
+    await addAdvertisedActions(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -203,16 +208,10 @@ describe('notification service', { concurrency: false }, () => {
         const stored = await database('notification_events')
             .where({ event_id: 'action-event' })
             .first();
+        assert.deepEqual(JSON.parse(stored.advertised_actions_json), ['stop', 'dismiss']);
         assert.deepEqual(JSON.parse(stored.metadata_json), {
-            __propr_notification_event_storage_v2: {
-                schema: 'actions-and-metadata',
-                version: 2,
-                advertisedActions: ['stop', 'dismiss'],
-                metadata: {
-                    source: 'stalled-detector',
-                    actions: { label: 'legacy producer metadata' }
-                }
-            }
+            source: 'stalled-detector',
+            actions: { label: 'legacy producer metadata' }
         });
         const listed = await service.listNotifications('user-a');
         assert.deepEqual(listed.notifications[0].actions, ['stop', 'dismiss']);
@@ -222,54 +221,52 @@ describe('notification service', { concurrency: false }, () => {
         });
     });
 
-    test('round-trips empty actions and producer metadata matching the legacy reserved key', async () => {
+    test('treats the old storage envelope shape as producer metadata, including on legacy rows', async () => {
+        await removeAdvertisedActions(database);
         const metadata = {
-            __propr_notification_event_v1: {
-                schema: 'advertised-actions',
-                version: 1,
+            __propr_notification_event_storage_v2: {
+                schema: 'actions-and-metadata',
+                version: 2,
                 advertisedActions: ['stop'],
                 metadata: { source: 'producer-owned' }
             }
         };
-        const created = await service.createNotificationEvent({
-            eventId: 'empty-action-event',
-            deduplicationKey: 'empty-action-event-key',
+        await database('notification_events').insert({
+            event_id: 'legacy-metadata-event',
+            deduplication_key: 'legacy-metadata-event-key',
             kind: 'task',
-            target: {
-                type: 'task', repository: 'integry/propr', taskId: 'task-empty-action-event'
-            },
+            severity: 'info',
+            target_json: JSON.stringify({
+                type: 'task', repository: 'integry/propr', taskId: 'task-legacy-metadata-event'
+            }),
             title: 'Legacy metadata event',
             body: 'Producer metadata must remain intact.',
-            actions: [],
-            metadata,
-            recipients: ['user-a']
+            action_json: null,
+            metadata_json: JSON.stringify(metadata),
+            occurred_at: '2026-08-02T08:00:00.000Z',
+            created_at: '2026-08-02T08:00:00.000Z'
         });
+        await database('notification_user_states').insert({
+            event_id: 'legacy-metadata-event',
+            user_id: 'user-a',
+            inbox_enabled: true,
+            push_enabled: false,
+            created_at: '2026-08-02T08:00:00.000Z'
+        });
+        await addAdvertisedActions(database);
 
-        assert.deepEqual(created.actions, []);
-        assert.deepEqual(created.metadata, metadata);
-        const stored = await database('notification_events')
-            .where({ event_id: 'empty-action-event' })
-            .first();
-        assert.deepEqual(JSON.parse(stored.metadata_json), {
-            __propr_notification_event_storage_v2: {
-                schema: 'actions-and-metadata',
-                version: 2,
-                advertisedActions: [],
-                metadata
-            }
-        });
         const listed = await service.listNotifications('user-a');
         assert.deepEqual(listed.notifications[0].actions, []);
         assert.deepEqual(listed.notifications[0].metadata, metadata);
     });
 
-    test('rejects advertised actions when their combined metadata envelope is oversized', async () => {
+    test('accepts advertised actions with producer metadata at the published byte limit', async () => {
         const metadataOverhead = Buffer.byteLength('{"value":""}');
         const metadata = {
             value: 'm'.repeat(NOTIFICATION_PAYLOAD_LIMITS.metadataBytes - metadataOverhead)
         };
 
-        await assert.rejects(() => service.createNotificationEvent({
+        const created = await service.createNotificationEvent({
             eventId: 'oversized-action-envelope',
             deduplicationKey: 'oversized-action-envelope-key',
             kind: 'task',
@@ -280,10 +277,14 @@ describe('notification service', { concurrency: false }, () => {
             body: 'The task has not reported progress.',
             actions: ['stop'],
             metadata
-        }), /metadata no larger/);
-        assert.equal(await database('notification_events').where({
+        });
+        assert.deepEqual(created.actions, ['stop']);
+        assert.deepEqual(created.metadata, metadata);
+        const stored = await database('notification_events').where({
             event_id: 'oversized-action-envelope'
-        }).first(), undefined);
+        }).first();
+        assert.deepEqual(JSON.parse(stored.advertised_actions_json), ['stop']);
+        assert.equal(Buffer.byteLength(stored.metadata_json), NOTIFICATION_PAYLOAD_LIMITS.metadataBytes);
     });
 
     test('paginates by occurrence and ID while excluding non-Inbox receipts', async () => {

@@ -7,6 +7,7 @@ import {
     down as removeNotificationPreferenceApis,
     up as addNotificationPreferenceApis
 } from '../packages/core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
+import { up as addAdvertisedActions } from '../packages/core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
 import {
     NotificationService,
     PushSubscriptionConflictError
@@ -118,6 +119,7 @@ let database: Knex;
 beforeEach(async () => {
     database = createDatabase();
     await createNotificationSchema(database);
+    await addAdvertisedActions(database);
 });
 
 afterEach(async () => database.destroy());

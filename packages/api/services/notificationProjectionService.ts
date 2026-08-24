@@ -54,6 +54,7 @@ interface TaskContext {
   prNumber?: number;
   isReview: boolean;
   followupEligible: boolean;
+  reviewFollowupEligible: boolean;
 }
 
 interface SourceActivityRow {
@@ -317,7 +318,7 @@ export class NotificationProjectionService {
         title: 'Review completed',
         body: `Review of PR #${context.prNumber} is complete.`,
         actions: taskActions({
-          followup: context.followupEligible,
+          followup: context.reviewFollowupEligible,
           hasPullRequest: pullRequestUrl !== undefined,
         }),
         ...pullRequestAction(pullRequestUrl),
@@ -515,12 +516,15 @@ export class NotificationProjectionService {
       ?? positiveInteger(prResult.prNumber)
       ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
     const isReview = taskType === 'review' || historyMetadata.commandMode === 'review';
+    const storedIssueNumber = positiveInteger(task.issue_number);
+    const followupEligible = supportsTaskFollowup(task);
     return {
       repository,
       issueNumber: positiveInteger(payload.issueNumber) ?? positiveInteger(task.issue_number),
       prNumber,
       isReview,
-      followupEligible: supportsTaskFollowup(task),
+      followupEligible,
+      reviewFollowupEligible: followupEligible && storedIssueNumber === prNumber,
     };
   }
 

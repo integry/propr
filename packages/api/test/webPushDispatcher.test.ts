@@ -8,6 +8,7 @@ import type { SendResult } from 'web-push';
 import { closeConnection, type BetterSqliteConnection } from '../../core/src/db/connection.js';
 import { up as createNotificationSchema } from '../../core/src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../../core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
+import { up as addAdvertisedActions } from '../../core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
 import { NotificationService } from '../../core/src/services/notificationService.js';
 import { WebPushDispatcher } from '../services/webPushDispatcher.js';
 
@@ -57,6 +58,7 @@ beforeEach(async () => {
   database = createDatabase();
   await createNotificationSchema(database);
   await addPreferenceApis(database);
+  await addAdvertisedActions(database);
   notifications = new NotificationService({
     database,
     now: () => new Date(Date.now() - 5_000),
@@ -442,6 +444,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     database = createDatabase();
     await createNotificationSchema(database);
     await addPreferenceApis(database);
+    await addAdvertisedActions(database);
     notifications = new NotificationService({ database, now: () => new Date(Date.now() - 5_000) });
     await queuedEvent();
     const exhausted = dispatcher({

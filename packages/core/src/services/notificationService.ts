@@ -55,8 +55,6 @@ import {
 type TimestampInput = string | number | Date;
 type Database = Knex | Knex.Transaction;
 const PUSH_DELIVERY_FANOUT_CHUNK_SIZE = 100;
-const PERSISTED_NOTIFICATION_EVENT_ENVELOPE_KEY = '__propr_notification_event_storage_v2';
-const PERSISTED_NOTIFICATION_EVENT_ENVELOPE_SCHEMA = 'actions-and-metadata';
 
 export interface NotificationRecipientInput {
     userId: string;
@@ -109,6 +107,7 @@ interface NotificationEventRow {
     title: string;
     body: string;
     action_json: string | null;
+    advertised_actions_json: string | null;
     metadata_json: string | null;
     occurred_at: string;
     created_at: string;
@@ -159,23 +158,6 @@ function toNotificationEvent(row: NotificationEventRow): NotificationEvent {
     const storedMetadata = row.metadata_json === null
         ? undefined
         : parseStoredJson(row.metadata_json, 'metadata');
-    const envelopeCandidate = typeof storedMetadata === 'object'
-        && storedMetadata !== null
-        && !Array.isArray(storedMetadata)
-        && Object.keys(storedMetadata).length === 1
-        ? (storedMetadata as Record<string, unknown>)[PERSISTED_NOTIFICATION_EVENT_ENVELOPE_KEY]
-        : undefined;
-    const envelope = typeof envelopeCandidate === 'object'
-        && envelopeCandidate !== null
-        && !Array.isArray(envelopeCandidate)
-        ? envelopeCandidate as Record<string, unknown>
-        : undefined;
-    const isPersistedEnvelope = envelope?.schema === PERSISTED_NOTIFICATION_EVENT_ENVELOPE_SCHEMA
-        && envelope.version === 2
-        && Object.keys(envelope).length === 4
-        && Object.keys(envelope).every(key => [
-            'schema', 'version', 'advertisedActions', 'metadata'
-        ].includes(key));
     return parseNotificationEvent({
         id: row.event_id,
         deduplicationKey: row.deduplication_key,
@@ -187,31 +169,13 @@ function toNotificationEvent(row: NotificationEventRow): NotificationEvent {
         ...(row.action_json === null
             ? {}
             : { action: parseStoredJson(row.action_json, 'action') }),
-        actions: isPersistedEnvelope && envelope !== undefined
-            ? envelope.advertisedActions
-            : [],
-        ...(isPersistedEnvelope
-            && envelope !== undefined
-            ? (envelope.metadata === null ? {} : { metadata: envelope.metadata })
-            : (storedMetadata === undefined ? {} : { metadata: storedMetadata })),
+        actions: row.advertised_actions_json === null
+            ? []
+            : parseStoredJson(row.advertised_actions_json, 'advertised actions'),
+        ...(storedMetadata === undefined ? {} : { metadata: storedMetadata }),
         occurredAt: row.occurred_at,
         createdAt: row.created_at
     });
-}
-
-function eventMetadataForStorage(event: NotificationEvent): string | null {
-    const metadata = {
-        [PERSISTED_NOTIFICATION_EVENT_ENVELOPE_KEY]: {
-            schema: PERSISTED_NOTIFICATION_EVENT_ENVELOPE_SCHEMA,
-            version: 2,
-            advertisedActions: event.actions,
-            metadata: event.metadata ?? null
-        }
-    };
-    // The producer metadata was checked independently above. Validate the
-    // combined persisted envelope as well, before relying on database limits.
-    const validated = parseNotificationEvent({ ...event, metadata }).metadata;
-    return JSON.stringify(validated);
 }
 
 function toNotification(row: NotificationRow): Notification {
@@ -292,6 +256,7 @@ function eventSelectColumns(): string[] {
         'event.title',
         'event.body',
         'event.action_json',
+        'event.advertised_actions_json',
         'event.metadata_json',
         'event.occurred_at',
         'event.created_at',
@@ -379,7 +344,10 @@ export class NotificationService {
                     title: event.title,
                     body: event.body,
                     action_json: event.action === undefined ? null : JSON.stringify(event.action),
-                    metadata_json: eventMetadataForStorage(event),
+                    advertised_actions_json: JSON.stringify(event.actions),
+                    metadata_json: event.metadata === undefined
+                        ? null
+                        : JSON.stringify(event.metadata),
                     occurred_at: event.occurredAt,
                     created_at: event.createdAt
                 })
