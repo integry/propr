@@ -72,6 +72,7 @@ async function queuedEvent(options: {
   body?: string;
   endpoint?: string;
   service?: NotificationService;
+  badgeEnabled?: boolean;
 } = {}) {
   const service = options.service ?? notifications;
   userSequence += 1;
@@ -79,6 +80,7 @@ async function queuedEvent(options: {
   await service.updateNotificationPreferences(userId, {
     preferences: { task: { pushEnabled: options.pushEnabled ?? true } },
     ...(options.quietHours === undefined ? {} : { quietHours: options.quietHours }),
+    ...(options.badgeEnabled === undefined ? {} : { badgeEnabled: options.badgeEnabled }),
   });
   const subscription = await service.upsertPushSubscription(userId, {
     endpoint: options.endpoint ?? `https://fcm.googleapis.com/fcm/send/${userId}`,
@@ -176,6 +178,20 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
 
     assert.equal((await notifications.listNotifications(userId)).notifications.length, 1);
     assert.equal(Number((await database('push_delivery_jobs').count('* as count').first())?.count), 0);
+  });
+
+  test('omits unread badge counts when the user disables app badging', async () => {
+    await queuedEvent({ badgeEnabled: false });
+    const payloads: string[] = [];
+    const worker = dispatcher({
+      sendNotification: async (_subscription, payload) => {
+        payloads.push(payload);
+        return success;
+      },
+    });
+
+    assert.equal(await worker.runOnce(), 1);
+    assert.equal((JSON.parse(payloads[0]) as { unreadCount: unknown }).unreadCount, null);
   });
 
   test('does not claim work during quiet hours', async () => {

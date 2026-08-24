@@ -350,7 +350,7 @@ async function createNotificationPreferenceSettingsTriggers(knex) {
   `);
   await knex.raw(`
     CREATE TRIGGER notification_preference_settings_touch_updated_at
-    AFTER UPDATE OF user_id, quiet_hours_start, quiet_hours_end, timezone, created_at
+    AFTER UPDATE OF user_id, quiet_hours_start, quiet_hours_end, timezone, badge_enabled, created_at
     ON notification_preference_settings
     WHEN NEW.updated_at IS OLD.updated_at
     BEGIN
@@ -368,6 +368,7 @@ async function createNotificationPreferenceSettings(knex) {
       table.text('quiet_hours_start').nullable();
       table.text('quiet_hours_end').nullable();
       table.text('timezone').notNullable().defaultTo('UTC');
+      table.boolean('badge_enabled').notNullable().defaultTo(true);
       table.text('created_at').notNullable().defaultTo(knex.raw(`(${ISO_NOW_SQL})`));
       table.text('updated_at').notNullable().defaultTo(knex.raw(`(${ISO_NOW_SQL})`));
 
@@ -383,7 +384,8 @@ async function createNotificationPreferenceSettings(knex) {
         `${boundedNonBlankTextCheck('user_id')}
           AND ${quietHourCheck('quiet_hours_start')}
           AND ${quietHourCheck('quiet_hours_end')}
-          AND ${boundedNonBlankTextCheck('timezone')}`,
+          AND ${boundedNonBlankTextCheck('timezone')}
+          AND badge_enabled IN (0, 1)`,
         {},
         'notification_preference_settings_values_check'
       );

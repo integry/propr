@@ -85,6 +85,7 @@ interface LiveDeliveryRow extends ClaimedJobRow {
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
   timezone: string | null;
+  badge_enabled: number | boolean | null;
 }
 
 interface AttemptOutcome {
@@ -295,7 +296,7 @@ function parseStoredJson(value: string): unknown {
 
 function buildSafePayload(
   row: LiveDeliveryRow,
-  unreadCount: number,
+  unreadCount: number | null,
   frontendUrl: string,
   apiBaseUrl: string,
 ): string {
@@ -624,6 +625,7 @@ export class WebPushDispatcher {
         'subscription.updated_at as subscription_updated_at',
         'event.kind', 'event.severity', 'event.target_json', 'event.action_json',
         'settings.quiet_hours_start', 'settings.quiet_hours_end', 'settings.timezone',
+        'settings.badge_enabled',
       )
       .where({
         'job.job_id': claimed.job_id,
@@ -681,7 +683,9 @@ export class WebPushDispatcher {
       endpoint = parsePushSubscriptionEndpoint(live.endpoint, {
         allowInsecureLocalhost: this.allowInsecureLocalhost,
       });
-      const unreadCount = await this.unreadCount(live.user_id);
+      const unreadCount = live.badge_enabled === null || Boolean(live.badge_enabled)
+        ? await this.unreadCount(live.user_id)
+        : null;
       payload = buildSafePayload(
         live,
         unreadCount,

@@ -19,6 +19,7 @@ import { AuthProvider, useCurrentUser, userHasPermission } from './contexts/Auth
 import type { CurrentUser, InstancePermission } from './api/proprTypes'
 import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
 import { ConnectAccountProvider } from './contexts/ConnectAccountContext'
+import { BrowserPushProvider } from './hooks/useBrowserPush'
 
 const AiAgentsPage = lazy(() => import('./pages/AiAgentsPage'))
 const AccessManagementPage = lazy(() => import('./pages/AccessManagementPage'))
@@ -223,7 +224,8 @@ const AppContent: React.FC = () => {
           <DemoModeBanner />
           <div className="min-h-0 flex-1">
             <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
-              <Router>
+              <BrowserPushProvider>
+                <Router>
                 <HostedFlowRouteSync />
                 <ConnectAccountProvider disabled={isDemoMode || currentUser === null}>
                   <RouteChunkErrorBoundary>
@@ -301,9 +303,7 @@ const AppContent: React.FC = () => {
                       path="/settings"
                       element={
                         <Layout>
-                          <PermissionRequired permission="instance.manage_settings">
-                            <SettingsPage />
-                          </PermissionRequired>
+                          <SettingsPage />
                         </Layout>
                       }
                     />
@@ -345,7 +345,8 @@ const AppContent: React.FC = () => {
                     </Suspense>
                   </RouteChunkErrorBoundary>
                 </ConnectAccountProvider>
-              </Router>
+                </Router>
+              </BrowserPushProvider>
             </AuthProvider>
           </div>
         </div>

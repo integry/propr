@@ -246,6 +246,7 @@ describe('notification service', { concurrency: false }, () => {
             end: null,
             timezone: 'UTC'
         });
+        assert.equal(defaults.badgeEnabled, true);
         assert.equal(Number(beforeRead?.count), 0);
         assert.equal(
             await database('notification_preferences')
@@ -275,7 +276,8 @@ describe('notification service', { concurrency: false }, () => {
                 start: '22:30',
                 end: '07:15',
                 timezone: 'America/New_York'
-            }
+            },
+            badgeEnabled: false
         });
         assert.equal(updated.preferences.task.pushEnabled, true);
         assert.equal(updated.preferences.task.inboxEnabled, true);
@@ -287,6 +289,7 @@ describe('notification service', { concurrency: false }, () => {
             end: '07:15',
             timezone: 'America/New_York'
         });
+        assert.equal(updated.badgeEnabled, false);
 
         const partial = await service.updateNotificationPreference(
             'user-a',
@@ -302,6 +305,7 @@ describe('notification service', { concurrency: false }, () => {
             'an omitted persisted category must keep its timestamp'
         );
         assert.deepEqual(partial.quietHours, updated.quietHours);
+        assert.equal(partial.badgeEnabled, false);
     });
 
     test('persists only categories and settings named by a sparse preference patch', async () => {
