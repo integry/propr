@@ -200,7 +200,7 @@ export const SingleSelectMode: React.FC<SingleSelectModeProps> = ({
   const agentPadding = selectedAgent ? (compact ? 'pl-6' : 'pl-8') : '';
 
   return (
-    <div className={`flex items-center gap-1 sm:gap-2 ${className}`}>
+    <div className={`flex min-w-0 flex-wrap items-center gap-1 sm:gap-2 ${className}`}>
       <div className="relative">
         <div className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none">
           {selectedAgent && (

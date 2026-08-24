@@ -139,8 +139,8 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
       </div>
 
       {/* Mobile Footer - Compact with chat toggle */}
-      <div className="flex items-center justify-between px-3 py-3 border-t border-gray-200 bg-gray-100 flex-shrink-0 gap-2">
-        <div className="flex items-center gap-2">
+      <div className="mobile-safe-action-area sticky bottom-0 z-20 flex flex-wrap items-center justify-between px-3 pt-3 border-t border-gray-200 bg-gray-100 flex-shrink-0 gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <button
             onClick={() => onSetChatExpanded(true)}
             className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
@@ -180,7 +180,7 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
 
       {/* Mobile Chat Bottom Sheet */}
       {isChatExpanded && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-white">
+        <div className="fixed inset-0 z-50 flex flex-col bg-white pb-[env(safe-area-inset-bottom)]">
           {/* Chat Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-slate-50 flex-shrink-0">
             <h3 className="font-semibold text-gray-900">Refine Plan</h3>

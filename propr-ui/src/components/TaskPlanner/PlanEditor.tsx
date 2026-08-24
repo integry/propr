@@ -49,7 +49,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({
   onNotificationIntentConsumed,
 }) => {
   const navigate = useNavigate();
-  const isMobile = useIsMobile();
+  // Keep the dedicated Studio mobile workflow through Tailwind's md boundary.
+  const isMobile = useIsMobile(768);
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [enforcementNoticeDismissed, setEnforcementNoticeDismissed] = useState(false);

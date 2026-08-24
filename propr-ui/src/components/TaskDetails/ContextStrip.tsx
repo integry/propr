@@ -280,7 +280,7 @@ const ContextStrip: React.FC<ContextStripProps> = ({
   // Mobile: Show only metadata without repo name
   if (mobileMetadataOnly) {
     return (
-      <div className="flex items-center flex-wrap gap-1 text-sm text-gray-600">
+      <div className="flex min-w-0 flex-wrap items-center gap-1 text-sm text-gray-600">
         {prInfo && <PRInfoChip prInfo={prInfo} />}
         {taskInfo && <IssuePRChip taskInfo={taskInfo} />}
         {taskInfo && <LinkedIssueChip taskInfo={taskInfo} />}

@@ -135,12 +135,12 @@ export const ImplementButton: React.FC<ImplementButtonProps> = ({ implementing, 
     {implementing ? (
       <>
         <Loader2 size={14} className="animate-spin" />
-        <span className="hidden sm:inline">Starting...</span>
+        <span>Starting...</span>
       </>
     ) : (
       <>
         <Play size={14} className={!isFirstPending && hasAgent ? 'opacity-60' : ''} />
-        <span className="hidden sm:inline">{label}</span>
+        <span>{label}</span>
       </>
     )}
   </button>
@@ -217,7 +217,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
   const issueNumber = issue.issue_number;
 
   return (
-    <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
+    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3 sm:flex-shrink-0">
       {isPending && (
         <AgentModelSelector
           agents={agents}
@@ -336,7 +336,7 @@ export const IssueMetadata: React.FC<IssueMetadataProps> = ({ issue, isPending, 
   if (!prUrl && !showProgressLink && issue.followup_count <= 0 && !showMultiAgentInfo && !showAgentInfo) return null;
 
   return (
-    <div className="flex items-center gap-2 sm:gap-3 text-xs">
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs sm:gap-3">
       {prUrl && <PrLink prUrl={prUrl} prNumber={issue.pr_number!} />}
       {showProgressLink && <ViewProgressLink taskId={issue.task_id!} />}
       {issue.followup_count > 0 && <span className="hidden sm:block"><FollowupCount count={issue.followup_count} /></span>}

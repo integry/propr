@@ -144,7 +144,7 @@ export const PlanIssueRow: React.FC<PlanIssueRowProps> = ({
           </div>
 
           {/* Bottom row (mobile) / Right side (desktop): Metadata + Actions */}
-          <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-3 flex-shrink-0">
+          <div className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 sm:w-auto sm:justify-end sm:gap-3 sm:flex-shrink-0">
             <IssueMetadata issue={issue} isPending={isPending} isProcessing={isProcessing} selectedModels={selectedModels} />
             <RowActions
               isPending={isPending}
