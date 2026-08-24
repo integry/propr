@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
 import { after, describe, test } from 'node:test';
-import express from 'express';
-import type { Request, Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import { closeConnection, NotificationValidationError, PushSubscriptionConflictError,
     PushSubscriptionQuotaError, PushSubscriptionRateLimitError } from '@propr/core';
 import { NOTIFICATION_KINDS, parseNotificationPreferencesResponse,
