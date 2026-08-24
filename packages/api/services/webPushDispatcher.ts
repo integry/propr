@@ -1,5 +1,6 @@
 /* eslint-disable max-lines -- claiming, policy checks, delivery, and audit writes form one boundary */
 import { randomUUID } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import type { Knex } from 'knex';
 import webPush, {
   type PushSubscription as WebPushSubscription,
@@ -11,6 +12,7 @@ import {
   parseNotificationAction,
   parseNotificationTarget,
   parsePushSubscriptionEndpoint,
+  parseTruthyEnvValue,
   type NotificationAction,
   type NotificationKind,
   type NotificationSeverity,
@@ -34,6 +36,7 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_RETRY_BASE_MS = 30_000;
 const DEFAULT_RETRY_CAP_MS = 15 * 60 * 1000;
 const MAX_PAYLOAD_BYTES = 3_500;
+const LOCAL_DEPLOYMENT_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const CLAIMABLE_AT_SQL = "CASE WHEN job.status = 'retryable' "
   + 'THEN job.next_retry_at ELSE job.created_at END';
 
@@ -73,6 +76,7 @@ interface LiveDeliveryRow extends ClaimedJobRow {
   endpoint: string;
   p256dh_key: string;
   auth_key: string;
+  subscription_updated_at: string;
   kind: NotificationKind;
   severity: NotificationSeverity;
   target_json: string;
@@ -108,6 +112,7 @@ export interface WebPushDispatcherOptions {
   maxAttempts?: number;
   retryBaseMs?: number;
   retryCapMs?: number;
+  allowInsecureLocalhost?: boolean;
 }
 
 export interface WebPushDispatcherStartResult {
@@ -141,6 +146,76 @@ function normalizedPublicUrl(value: string | undefined, fallback: string): strin
   } catch {
     return new URL(fallback).toString();
   }
+}
+
+function isLocalDevelopmentDeployment(): boolean {
+  if (process.env.NODE_ENV === 'production') return false;
+  const configuredPublicUrl = process.env.API_PUBLIC_URL;
+  if (configuredPublicUrl === undefined || configuredPublicUrl.length === 0) return true;
+  try {
+    return LOCAL_DEPLOYMENT_HOSTS.has(new URL(configuredPublicUrl).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function responseHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).flatMap(([name, value]) => {
+    if (value === undefined) return [];
+    return [[name, Array.isArray(value) ? value.join(', ') : value]];
+  }));
+}
+
+function sendInsecureLocalNotification(
+  subscription: WebPushSubscription,
+  payload: string,
+  options: WebPushRequestOptions,
+): Promise<SendResult> {
+  const details = webPush.generateRequestDetails(subscription, payload, options);
+  const endpoint = new URL(details.endpoint);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(endpoint, {
+      method: details.method,
+      headers: details.headers,
+      timeout: options.timeout,
+    }, response => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => { body += chunk; });
+      response.on('end', () => {
+        const statusCode = response.statusCode ?? 500;
+        const headers = responseHeaders(response.headers);
+        if (statusCode < 200 || statusCode > 299) {
+          reject(new webPush.WebPushError(
+            'Received unexpected response code',
+            statusCode,
+            headers,
+            body,
+            details.endpoint,
+          ));
+          return;
+        }
+        resolve({ statusCode, headers, body });
+      });
+    });
+    request.on('timeout', () => request.destroy(new Error('Socket timeout')));
+    request.on('error', reject);
+    if (details.body) request.write(details.body);
+    request.end();
+  });
+}
+
+function createDefaultPushSender(allowInsecureLocalhost: boolean): PushSender {
+  return {
+    sendNotification(subscription, payload, options) {
+      const endpoint = parsePushSubscriptionEndpoint(subscription.endpoint, {
+        allowInsecureLocalhost,
+      });
+      return endpoint.startsWith('http:')
+        ? sendInsecureLocalNotification({ ...subscription, endpoint }, payload, options)
+        : webPush.sendNotification({ ...subscription, endpoint }, payload, options);
+    },
+  };
 }
 
 function quietHourMinutes(value: string): number {
@@ -296,6 +371,7 @@ export class WebPushDispatcher {
   private readonly database: Knex;
   private readonly configuration: ValidatedWebPushConfiguration;
   private readonly sender: PushSender;
+  private readonly allowInsecureLocalhost: boolean;
   private readonly now: () => TimestampInput;
   private readonly generateId: () => string;
   private readonly logger: DispatcherLogger;
@@ -318,7 +394,11 @@ export class WebPushDispatcher {
     this.configuration = validateWebPushConfiguration(
       options.configuration ?? webPushConfigurationFromEnvironment(),
     );
-    this.sender = options.sender ?? webPush;
+    const insecureLocalhostRequested = options.allowInsecureLocalhost
+      ?? parseTruthyEnvValue(process.env.PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH);
+    this.allowInsecureLocalhost = insecureLocalhostRequested
+      && isLocalDevelopmentDeployment();
+    this.sender = options.sender ?? createDefaultPushSender(this.allowInsecureLocalhost);
     this.now = options.now ?? (() => new Date());
     this.generateId = options.generateId ?? randomUUID;
     this.logger = options.logger ?? console;
@@ -540,6 +620,7 @@ export class WebPushDispatcher {
         'job.job_id', 'job.event_id', 'job.user_id', 'job.subscription_id',
         'job.attempt_count', 'job.claim_token',
         'subscription.endpoint', 'subscription.p256dh_key', 'subscription.auth_key',
+        'subscription.updated_at as subscription_updated_at',
         'event.kind', 'event.severity', 'event.target_json', 'event.action_json',
         'settings.quiet_hours_start', 'settings.quiet_hours_end', 'settings.timezone',
       )
@@ -577,7 +658,9 @@ export class WebPushDispatcher {
 
     let outcome: AttemptOutcome;
     try {
-      const endpoint = parsePushSubscriptionEndpoint(live.endpoint);
+      const endpoint = parsePushSubscriptionEndpoint(live.endpoint, {
+        allowInsecureLocalhost: this.allowInsecureLocalhost,
+      });
       const unreadCount = await this.unreadCount(live.user_id);
       const payload = buildSafePayload(
         live,
@@ -658,6 +741,10 @@ export class WebPushDispatcher {
           .where({
             subscription_id: live.subscription_id,
             user_id: live.user_id,
+            endpoint: live.endpoint,
+            p256dh_key: live.p256dh_key,
+            auth_key: live.auth_key,
+            updated_at: live.subscription_updated_at,
           })
           .whereNull('revoked_at')
           .update({ revoked_at: attemptedAt });

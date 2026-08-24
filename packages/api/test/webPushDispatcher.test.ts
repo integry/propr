@@ -1,5 +1,7 @@
+/* eslint-disable max-lines -- dispatcher policy and delivery regressions share one fixture */
 import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
+import { createServer } from 'node:http';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import type { SendResult } from 'web-push';
@@ -39,9 +41,9 @@ function vapidConfiguration() {
   };
 }
 
-function browserPublicKey(): string {
+function browserPublicKey(privateKeyValue = 7): string {
   const privateKey = Buffer.alloc(32);
-  privateKey[31] = 7;
+  privateKey[31] = privateKeyValue;
   const ecdh = createECDH('prime256v1');
   ecdh.setPrivateKey(privateKey);
   return ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url');
@@ -68,19 +70,22 @@ async function queuedEvent(options: {
   pushEnabled?: boolean;
   quietHours?: { start: string; end: string; timezone: string };
   body?: string;
+  endpoint?: string;
+  service?: NotificationService;
 } = {}) {
+  const service = options.service ?? notifications;
   userSequence += 1;
   const userId = `push-user-${userSequence}`;
-  await notifications.updateNotificationPreferences(userId, {
+  await service.updateNotificationPreferences(userId, {
     preferences: { task: { pushEnabled: options.pushEnabled ?? true } },
     ...(options.quietHours === undefined ? {} : { quietHours: options.quietHours }),
   });
-  const subscription = await notifications.upsertPushSubscription(userId, {
-    endpoint: `https://fcm.googleapis.com/fcm/send/${userId}`,
+  const subscription = await service.upsertPushSubscription(userId, {
+    endpoint: options.endpoint ?? `https://fcm.googleapis.com/fcm/send/${userId}`,
     expirationTime: null,
     keys: { p256dh: browserPublicKey(), auth: 'A'.repeat(22) },
   });
-  const event = await notifications.createNotificationEvent({
+  const event = await service.createNotificationEvent({
     deduplicationKey: `dispatcher:${userId}`,
     kind: 'task',
     severity: 'error',
@@ -90,6 +95,11 @@ async function queuedEvent(options: {
     recipients: [{ userId, pushEnabled: true }],
   });
   return { userId, subscription, event };
+}
+
+function restoreEnvironment(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }
 
 function dispatcher(sender: {
@@ -240,6 +250,141 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     assert.equal(stored.p256dh_key, null);
     assert.equal(stored.auth_key, null);
     assert.equal((await database('push_delivery_jobs').first()).status, 'failed');
+  });
+
+  test('does not revoke credentials refreshed while a 410 request is in flight', async () => {
+    const { subscription } = await queuedEvent();
+    const original = await database('push_subscriptions')
+      .where({ subscription_id: subscription.id })
+      .first();
+    const refreshedPublicKey = browserPublicKey(8);
+    const refreshedAuthKey = 'B'.repeat(21) + 'A';
+    let requestStarted!: () => void;
+    let returnStaleResponse!: () => void;
+    const started = new Promise<void>(resolve => { requestStarted = resolve; });
+    const pendingResponse = new Promise<void>(resolve => { returnStaleResponse = resolve; });
+    const worker = dispatcher({
+      sendNotification: async () => {
+        requestStarted();
+        await pendingResponse;
+        return Promise.reject({ statusCode: 410 });
+      },
+    });
+
+    const run = worker.runOnce();
+    await started;
+    await database('push_subscriptions')
+      .where({ subscription_id: subscription.id })
+      .update({
+        p256dh_key: refreshedPublicKey,
+        auth_key: refreshedAuthKey,
+      });
+    const refreshed = await database('push_subscriptions')
+      .where({ subscription_id: subscription.id })
+      .first();
+    assert.notEqual(refreshed.updated_at, original.updated_at);
+    assert.equal(refreshed.p256dh_key, refreshedPublicKey);
+    assert.equal(refreshed.auth_key, refreshedAuthKey);
+    returnStaleResponse();
+    assert.equal(await run, 1);
+    const stored = await database('push_subscriptions')
+      .where({ subscription_id: subscription.id })
+      .first();
+    assert.equal(stored.revoked_at, null);
+    assert.equal(stored.p256dh_key, refreshedPublicKey);
+    assert.equal(stored.auth_key, refreshedAuthKey);
+    assert.equal((await database('push_delivery_jobs').first()).status, 'failed');
+    assert.equal((await database('push_delivery_attempts').first()).response_status, 410);
+  });
+
+  test('delivers to an HTTP loopback endpoint in guarded local mode', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalApiPublicUrl = process.env.API_PUBLIC_URL;
+    const originalOptIn = process.env.PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH;
+    process.env.NODE_ENV = 'development';
+    process.env.API_PUBLIC_URL = 'http://127.0.0.1:4000';
+    process.env.PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH = 'true';
+    let requestBodyBytes = 0;
+    let contentEncoding: string | undefined;
+    const server = createServer((request, response) => {
+      contentEncoding = request.headers['content-encoding'];
+      request.on('data', chunk => { requestBodyBytes += Buffer.byteLength(chunk); });
+      request.on('end', () => {
+        response.statusCode = 201;
+        response.end();
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+
+    try {
+      const address = server.address();
+      assert.ok(address !== null && typeof address !== 'string');
+      const localNotifications = new NotificationService({
+        database,
+        now: () => new Date(Date.now() - 5_000),
+        allowInsecureLocalhost: true,
+      });
+      await queuedEvent({
+        service: localNotifications,
+        endpoint: `http://127.0.0.1:${address.port}/push/browser`,
+      });
+      const worker = new WebPushDispatcher({
+        database,
+        configuration: vapidConfiguration(),
+        frontendUrl: 'http://localhost:5173',
+        apiBaseUrl: 'http://127.0.0.1:4000',
+        leaseMs: 5_000,
+        requestTimeoutMs: 1_000,
+      });
+
+      assert.equal(await worker.runOnce(), 1);
+      assert.equal((await database('push_delivery_jobs').first()).status, 'delivered');
+      assert.equal(contentEncoding, 'aes128gcm');
+      assert.ok(requestBodyBytes > 0);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => {
+        if (error) reject(error);
+        else resolve();
+      }));
+      restoreEnvironment('NODE_ENV', originalNodeEnv);
+      restoreEnvironment('API_PUBLIC_URL', originalApiPublicUrl);
+      restoreEnvironment('PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH', originalOptIn);
+    }
+  });
+
+  test('rejects HTTP loopback delivery when production disables the local guard', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalApiPublicUrl = process.env.API_PUBLIC_URL;
+    const originalOptIn = process.env.PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH;
+    process.env.NODE_ENV = 'development';
+    process.env.API_PUBLIC_URL = 'http://localhost:4000';
+    const localNotifications = new NotificationService({
+      database,
+      now: () => new Date(Date.now() - 5_000),
+      allowInsecureLocalhost: true,
+    });
+    await queuedEvent({
+      service: localNotifications,
+      endpoint: 'http://localhost:4173/push/browser',
+    });
+    process.env.NODE_ENV = 'production';
+    process.env.PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH = 'true';
+    let calls = 0;
+
+    try {
+      const worker = dispatcher({
+        sendNotification: async () => { calls += 1; return success; },
+      }, { allowInsecureLocalhost: true });
+      assert.equal(await worker.runOnce(), 1);
+      assert.equal(calls, 0);
+    } finally {
+      restoreEnvironment('NODE_ENV', originalNodeEnv);
+      restoreEnvironment('API_PUBLIC_URL', originalApiPublicUrl);
+      restoreEnvironment('PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH', originalOptIn);
+    }
   });
 
   test('schedules 429 and 5xx responses, then retains a safe terminal summary', async () => {
