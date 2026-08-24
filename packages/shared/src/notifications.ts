@@ -731,6 +731,12 @@ function parseExpirationTime(value: unknown, path: string): number | null {
   return value as number;
 }
 
+function removeBase64UrlPadding(encoded: string): string {
+  let end = encoded.length;
+  while (end > 0 && encoded.charCodeAt(end - 1) === 0x3d) end -= 1;
+  return end === encoded.length ? encoded : encoded.slice(0, end);
+}
+
 function parseBase64Url(
   value: unknown,
   path: string,
@@ -738,7 +744,7 @@ function parseBase64Url(
   expectedFirstByte?: number,
 ): string {
   const encoded = parseString(value, path, false, 128);
-  const unpadded = encoded.replace(/=+$/, '');
+  const unpadded = removeBase64UrlPadding(encoded);
   const expectedUnpaddedLength = Math.ceil(expectedBytes * 8 / 6);
   const expectedPaddingLength = (3 - (expectedBytes % 3)) % 3;
   const paddingLength = encoded.length - unpadded.length;
@@ -773,7 +779,7 @@ function decodeBase64Url(encoded: string): Uint8Array {
   const bytes: number[] = [];
   let accumulator = 0;
   let availableBits = 0;
-  for (const character of encoded.replace(/=+$/, '')) {
+  for (const character of removeBase64UrlPadding(encoded)) {
     accumulator = (accumulator << 6) | BASE64URL_ALPHABET.indexOf(character);
     availableBits += 6;
     if (availableBits >= 8) {

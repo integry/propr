@@ -9,6 +9,7 @@ import { NOTIFICATION_KINDS, parseNotificationPreferencesResponse,
     parsePushSubscription } from '@propr/shared';
 import { ensureAuthenticated } from '../auth.js';
 import { configureDemoMode, demoModeReadOnlyMiddleware, resetConfiguredDemoMode } from '../demoMode.js';
+import { createApiRequestRateLimiter } from '../requestRateLimits.js';
 import { createNotificationRoutes, type NotificationRouteService } from '../routes/notificationRoutes.js';
 
 after(async () => closeConnection());
@@ -417,6 +418,7 @@ describe('notification routes', () => {
         });
         const app = express();
         app.use(express.json());
+        app.use('/api', createApiRequestRateLimiter());
         app.use('/api', demoModeReadOnlyMiddleware);
         app.use('/api', ensureAuthenticated);
         app.get('/api/notifications', routes.getNotifications);
