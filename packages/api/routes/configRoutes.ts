@@ -176,7 +176,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
       const repos = await configStore.loadMonitoredReposRaw();
-      res.json({ repos_to_monitor: repos });
+      res.json({
+        repos_to_monitor: repos.map(repo => ({
+          ...repo,
+          autoFollowupOnFailedCi: repo.autoFollowupOnFailedCi === true
+        }))
+      });
     } catch (error) {
       console.error('Error in /api/config/repos GET:', error);
       res.status(500).json({ error: 'Failed to load repository configuration' });

@@ -58,11 +58,15 @@ export function normalizeRepoConfig(repo: unknown): ValidationResult<RepoToMonit
   if (!baseBranch.ok) return baseBranch;
   const defaultBranch = normalizeOptionalBranchName(candidate.defaultBranch, 'defaultBranch', name);
   if (!defaultBranch.ok) return defaultBranch;
+  if (candidate.autoFollowupOnFailedCi !== undefined && typeof candidate.autoFollowupOnFailedCi !== 'boolean') {
+    return failure(`Invalid autoFollowupOnFailedCi format for ${name}: must be a boolean`);
+  }
 
   return success({
     id: candidate.id?.trim() || randomUUID(),
     name,
     enabled,
+    autoFollowupOnFailedCi: candidate.autoFollowupOnFailedCi ?? false,
     alias: alias.value,
     baseBranch: baseBranch.value,
     defaultBranch: defaultBranch.value
