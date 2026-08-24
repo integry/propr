@@ -20,11 +20,13 @@ import type { CurrentUser, InstancePermission } from './api/proprTypes'
 import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
 import { ConnectAccountProvider } from './contexts/ConnectAccountContext'
 import { BrowserPushProvider } from './hooks/useBrowserPush'
+import { NotificationCenterProvider } from './contexts/NotificationCenterContext'
 
 const AiAgentsPage = lazy(() => import('./pages/AiAgentsPage'))
 const AccessManagementPage = lazy(() => import('./pages/AccessManagementPage'))
 const Dashboard = lazy(() => import('./components/Dashboard'))
 const LlmLogsPage = lazy(() => import('./pages/LlmLogsPage'))
+const InboxPage = lazy(() => import('./pages/InboxPage'))
 const LoginPage = lazy(() => import('./pages/LoginPage'))
 const PlansPage = lazy(() => import('./pages/PlansPage'))
 const PlanStudioPage = lazy(() => import('./pages/PlanStudioPage'))
@@ -225,7 +227,8 @@ const AppContent: React.FC = () => {
           <div className="min-h-0 flex-1">
             <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
               <BrowserPushProvider>
-                <Router>
+                <NotificationCenterProvider key={currentUser?.id ?? (isDemoMode ? 'demo' : 'anonymous')}>
+                  <Router>
                 <HostedFlowRouteSync />
                 <ConnectAccountProvider disabled={isDemoMode || currentUser === null}>
                   <RouteChunkErrorBoundary>
@@ -241,6 +244,7 @@ const AppContent: React.FC = () => {
                         </Layout>
                       }
                     />
+                    <Route path="/inbox" element={<Layout><InboxPage /></Layout>} />
                     <Route
                       path="/repositories"
                       element={
@@ -345,7 +349,8 @@ const AppContent: React.FC = () => {
                     </Suspense>
                   </RouteChunkErrorBoundary>
                 </ConnectAccountProvider>
-                </Router>
+                  </Router>
+                </NotificationCenterProvider>
               </BrowserPushProvider>
             </AuthProvider>
           </div>

@@ -7,6 +7,7 @@ const SHELL_ASSET_MANIFEST_URL = '/pwa-shell-assets.json';
 const LOCAL_DISMISS_ACTION = 'propr-dismiss';
 const APP_ICON_URL = '/icons/pwa-192x192.png';
 const MAX_BADGE_COUNT = 99;
+const MAX_EVENT_ID_BYTES = 255;
 
 const PRECACHE_URLS = [
   '/',
@@ -31,6 +32,7 @@ const APP_ROUTE_PATTERNS = [
   /^\/tasks(?:\/[^/]+)?\/?$/,
   /^\/studio(?:\/[^/]+)?\/?$/,
   /^\/plans\/?$/,
+  /^\/inbox\/?$/,
   /^\/ai-agents\/?$/,
   /^\/settings\/?$/,
   /^\/admin\/members\/?$/,
@@ -236,10 +238,20 @@ function safeBadgeCount(value) {
   return Math.min(value, MAX_BADGE_COUNT);
 }
 
-function safeEventId(value) {
+function safeEventTag(value) {
   return typeof value === 'string'
     ? value.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80)
     : '';
+}
+
+function safeEventId(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) return '';
+  try {
+    const byteLength = encodeURIComponent(value).replace(/%[0-9A-F]{2}/gi, 'x').length;
+    return byteLength <= MAX_EVENT_ID_BYTES ? value : '';
+  } catch {
+    return '';
+  }
 }
 
 function safeActionUrl(value, action, fallbackUrl) {
@@ -303,6 +315,7 @@ async function displayPushNotification(event) {
   const payloadActions = safePayloadActions(payload.actions, deepLink);
   const badgeCount = safeBadgeCount(payload.unreadCount);
   const eventId = safeEventId(payload.eventId);
+  const eventTag = safeEventTag(eventId);
   const actionUrls = payloadActions.map(({ action, url }) => ({ action, url }));
   const actions = payloadActions.map(({ action, title }) => ({ action, title }));
   actions.push({ action: LOCAL_DISMISS_ACTION, title: 'Dismiss' });
@@ -314,10 +327,10 @@ async function displayPushNotification(event) {
         body: cleanText(payload.body, 'A ProPR update is available.', 180),
         icon: APP_ICON_URL,
         badge: APP_ICON_URL,
-        tag: eventId ? `propr-${eventId}` : 'propr-notification',
+        tag: eventTag ? `propr-${eventTag}` : 'propr-notification',
         renotify: false,
         actions,
-        data: { deepLink, actionUrls, unreadCount: badgeCount },
+        data: { deepLink, actionUrls, unreadCount: badgeCount, eventId },
       },
     ),
     updateAppBadge(badgeCount),
@@ -369,7 +382,17 @@ async function handleNotificationClick(event) {
   event.notification.close();
   const count = safeBadgeCount(data.unreadCount);
   await updateAppBadge(count === null ? null : Math.max(0, count - 1));
-  if (event.action === LOCAL_DISMISS_ACTION) return;
+  if (event.action === LOCAL_DISMISS_ACTION) {
+    const eventId = safeEventId(data.eventId);
+    if (!eventId) return;
+    const source = new URL(safeOpenUrl(data.deepLink));
+    const target = new URL('/inbox', self.location.origin);
+    for (const [key, value] of source.searchParams) target.searchParams.append(key, value);
+    target.searchParams.set('intent', 'dismiss');
+    target.searchParams.set('notification', eventId);
+    await focusOrOpenApp(target.href);
+    return;
+  }
   const target = safeActionUrl(actionUrl(data, event.action), event.action, data.deepLink);
   await focusOrOpenApp(target);
 }
