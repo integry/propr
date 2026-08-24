@@ -1333,6 +1333,16 @@ export async function up(knex) {
         OLD.status = 'processing'
         AND NEW.status = 'processing'
         AND NEW.attempt_count = OLD.attempt_count
+        AND NEW.next_retry_at IS OLD.next_retry_at
+        AND NEW.claim_token IS OLD.claim_token
+        AND NEW.claimed_at IS OLD.claimed_at
+        AND OLD.lease_expires_at > ${ISO_NOW_SQL}
+        AND NEW.lease_expires_at > OLD.lease_expires_at
+      )
+      OR (
+        OLD.status = 'processing'
+        AND NEW.status = 'processing'
+        AND NEW.attempt_count = OLD.attempt_count
         AND NEW.claim_token IS NOT OLD.claim_token
         AND OLD.lease_expires_at <= ${ISO_NOW_SQL}
         AND NEW.claimed_at >= OLD.lease_expires_at

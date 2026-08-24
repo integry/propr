@@ -31,6 +31,7 @@ const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_SCAN_MULTIPLIER = 20;
 const DEFAULT_LEASE_MS = 60_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+const REQUEST_LEASE_SAFETY_MARGIN_MS = 5_000;
 const DEFAULT_TTL_SECONDS = 5 * 60;
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_RETRY_BASE_MS = 30_000;
@@ -641,33 +642,70 @@ export class WebPushDispatcher {
       .first() as Promise<LiveDeliveryRow | null>;
   }
 
+  private async renewClaimForRequest(claimed: ClaimedJobRow, at: Date): Promise<boolean> {
+    const renewedAt = normalizeISO8601Timestamp(at);
+    const leaseExpiresAt = normalizeISO8601Timestamp(
+      at.getTime() + Math.max(
+        this.leaseMs,
+        this.requestTimeoutMs + REQUEST_LEASE_SAFETY_MARGIN_MS,
+      ),
+    );
+    const renewed = await this.database('push_delivery_jobs')
+      .where({
+        job_id: claimed.job_id,
+        status: 'processing',
+        claim_token: claimed.claim_token,
+      })
+      .andWhere('lease_expires_at', '>', renewedAt)
+      .update({ lease_expires_at: leaseExpiresAt });
+    return renewed === 1;
+  }
+
   private async deliver(claimed: ClaimedJobRow): Promise<void> {
     const configuration = this.configuration;
     if (!configuration.configured) return;
     const live = await this.liveDelivery(claimed);
     if (!live) return;
-    const attemptedAtDate = new Date(this.now());
+    const policyCheckedAt = new Date(this.now());
     if (isInNotificationQuietHours(
-      attemptedAtDate,
+      policyCheckedAt,
       live.quiet_hours_start,
       live.quiet_hours_end,
       live.timezone,
     )) return;
-    const attemptedAt = normalizeISO8601Timestamp(attemptedAtDate);
     const attemptNumber = live.attempt_count + 1;
 
-    let outcome: AttemptOutcome;
+    let endpoint: string;
+    let payload: string;
     try {
-      const endpoint = parsePushSubscriptionEndpoint(live.endpoint, {
+      endpoint = parsePushSubscriptionEndpoint(live.endpoint, {
         allowInsecureLocalhost: this.allowInsecureLocalhost,
       });
       const unreadCount = await this.unreadCount(live.user_id);
-      const payload = buildSafePayload(
+      payload = buildSafePayload(
         live,
         unreadCount,
         this.frontendUrl,
         this.apiBaseUrl,
       );
+    } catch (error) {
+      const attemptedAt = normalizeISO8601Timestamp(policyCheckedAt);
+      const outcome = error instanceof Error && error.message === 'safe_payload_too_large'
+        ? {
+          status: 'failed' as const, responseStatus: null, errorCode: 'payload_too_large',
+          errorMessage: 'Safe push payload exceeded the delivery size limit',
+          nextRetryAt: null, revokeSubscription: false,
+        }
+        : this.failureOutcome(statusFromError(error), attemptNumber, policyCheckedAt);
+      await this.recordOutcome(live, attemptedAt, attemptNumber, outcome);
+      return;
+    }
+
+    const attemptedAtDate = new Date(this.now());
+    if (!await this.renewClaimForRequest(live, attemptedAtDate)) return;
+    const attemptedAt = normalizeISO8601Timestamp(attemptedAtDate);
+    let outcome: AttemptOutcome;
+    try {
       const response = await this.sender.sendNotification({
         endpoint,
         keys: { p256dh: live.p256dh_key, auth: live.auth_key },
@@ -689,15 +727,7 @@ export class WebPushDispatcher {
         }
         : this.failureOutcome(response.statusCode, attemptNumber, attemptedAtDate);
     } catch (error) {
-      if (error instanceof Error && error.message === 'safe_payload_too_large') {
-        outcome = {
-          status: 'failed', responseStatus: null, errorCode: 'payload_too_large',
-          errorMessage: 'Safe push payload exceeded the delivery size limit',
-          nextRetryAt: null, revokeSubscription: false,
-        };
-      } else {
-        outcome = this.failureOutcome(statusFromError(error), attemptNumber, attemptedAtDate);
-      }
+      outcome = this.failureOutcome(statusFromError(error), attemptNumber, attemptedAtDate);
     }
     await this.recordOutcome(live, attemptedAt, attemptNumber, outcome);
   }

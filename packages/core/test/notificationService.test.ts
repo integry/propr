@@ -451,6 +451,73 @@ describe('notification service', { concurrency: false }, () => {
         );
     });
 
+    test('chunks large per-subscription fanout without losing Inbox projection', async () => {
+        let generatedId = 0;
+        const fanoutService = new NotificationService({
+            database,
+            now: () => new Date(clock += 1000),
+            generateId: () => `large-fanout-${generatedId += 1}`,
+            allowInsecureLocalhost: false
+        });
+        const recipients: Array<{ userId: string; pushEnabled: true }> = [];
+        for (let userIndex = 0; userIndex < 15; userIndex += 1) {
+            const userId = `large-fanout-user-${userIndex}`;
+            recipients.push({ userId, pushEnabled: true });
+            await fanoutService.updateNotificationPreferences(userId, {
+                preferences: { task: { pushEnabled: true } }
+            });
+            for (let subscriptionIndex = 0; subscriptionIndex < 10; subscriptionIndex += 1) {
+                await fanoutService.upsertPushSubscription(userId, {
+                    endpoint: 'https://fcm.googleapis.com/fcm/send/'
+                        + `${userId}-${subscriptionIndex}`,
+                    expirationTime: null,
+                    keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+                });
+            }
+        }
+
+        const fanoutInserts: Array<{ sql: string; bindings?: readonly unknown[] }> = [];
+        const captureFanoutInsert = (query: { sql: string; bindings?: readonly unknown[] }) => {
+            if (query.sql.startsWith('insert into `push_delivery_jobs`')) {
+                fanoutInserts.push(query);
+            }
+        };
+        database.on('query', captureFanoutInsert);
+        try {
+            await fanoutService.createNotificationEvent({
+                eventId: 'large-fanout-event',
+                deduplicationKey: 'large-fanout-event',
+                kind: 'task',
+                target: {
+                    type: 'task',
+                    repository: 'integry/propr',
+                    taskId: 'large-fanout-task'
+                },
+                title: 'Large fanout',
+                body: 'Every active browser receives a job.',
+                recipients
+            });
+        } finally {
+            database.removeListener('query', captureFanoutInsert);
+        }
+
+        assert.equal(fanoutInserts.length, 2);
+        assert.equal(
+            fanoutInserts.every(query => (query.bindings?.length ?? 0) <= 700),
+            true
+        );
+        assert.equal(
+            await database('push_delivery_jobs').where({ event_id: 'large-fanout-event' })
+                .count('* as count').first().then(row => Number(row?.count)),
+            150
+        );
+        assert.equal(
+            await database('notification_user_states').where({ event_id: 'large-fanout-event' })
+                .count('* as count').first().then(row => Number(row?.count)),
+            15
+        );
+    });
+
     test('does not fan out a historical event after subscription reactivation', async () => {
         const userId = 'reactivated-user';
         const endpoint = 'https://fcm.googleapis.com/fcm/send/reactivated-user';

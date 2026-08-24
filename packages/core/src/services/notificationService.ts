@@ -53,6 +53,7 @@ import {
 
 type TimestampInput = string | number | Date;
 type Database = Knex | Knex.Transaction;
+const PUSH_DELIVERY_FANOUT_CHUNK_SIZE = 100;
 
 export interface NotificationRecipientInput {
     userId: string;
@@ -673,21 +674,29 @@ export class NotificationService {
             }) as PushDeliveryFanoutRow[];
         if (fanoutRows.length === 0) return;
 
-        await transaction('push_delivery_jobs')
-            .insert(fanoutRows.map(row => {
-                const identity = pushDeliveryIdentity(event.id, row.subscription_id);
-                return {
-                    job_id: `push:${identity}`,
-                    deduplication_key: `web-push:v1:${identity}`,
-                    event_id: event.id,
-                    user_id: row.user_id,
-                    subscription_id: row.subscription_id,
-                    created_at: row.assigned_at,
-                    updated_at: row.assigned_at
-                };
-            }))
-            .onConflict(['event_id', 'subscription_id'])
-            .ignore();
+        for (
+            let offset = 0;
+            offset < fanoutRows.length;
+            offset += PUSH_DELIVERY_FANOUT_CHUNK_SIZE
+        ) {
+            await transaction('push_delivery_jobs')
+                .insert(fanoutRows
+                    .slice(offset, offset + PUSH_DELIVERY_FANOUT_CHUNK_SIZE)
+                    .map(row => {
+                        const identity = pushDeliveryIdentity(event.id, row.subscription_id);
+                        return {
+                            job_id: `push:${identity}`,
+                            deduplication_key: `web-push:v1:${identity}`,
+                            event_id: event.id,
+                            user_id: row.user_id,
+                            subscription_id: row.subscription_id,
+                            created_at: row.assigned_at,
+                            updated_at: row.assigned_at
+                        };
+                    }))
+                .onConflict(['event_id', 'subscription_id'])
+                .ignore();
+        }
     }
 
     private async updateInboxTimestamp(

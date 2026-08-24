@@ -447,6 +447,52 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     assert.equal(calls, 1);
   });
 
+  test('renews the current claim to cover the request timeout and safety margin', async () => {
+    await queuedEvent();
+    const baseTime = Date.now() - 4_000;
+    let nowCalls = 0;
+    let lastNow = baseTime;
+    const requestTimeoutMs = 4_999;
+    const worker = dispatcher({
+      sendNotification: async () => {
+        const job = await database('push_delivery_jobs').first();
+        assert.ok(Date.parse(job.lease_expires_at) - lastNow >= requestTimeoutMs + 5_000);
+        return success;
+      },
+    }, {
+      leaseMs: 5_000,
+      requestTimeoutMs,
+      now: () => {
+        lastNow = baseTime + nowCalls * 1_000;
+        nowCalls += 1;
+        return new Date(lastNow);
+      },
+    });
+
+    assert.equal(await worker.runOnce(), 1);
+    assert.equal((await database('push_delivery_jobs').first()).status, 'delivered');
+  });
+
+  test('skips network I/O when the claim expires during delivery preparation', async () => {
+    await queuedEvent();
+    const baseTime = Date.now() - 4_000;
+    let nowCalls = 0;
+    let sends = 0;
+    const worker = dispatcher({
+      sendNotification: async () => { sends += 1; return success; },
+    }, {
+      leaseMs: 5_000,
+      requestTimeoutMs: 4_999,
+      now: () => new Date(baseTime + nowCalls++ * 2_000),
+    });
+
+    assert.equal(await worker.runOnce(), 1);
+    assert.equal(sends, 0);
+    assert.equal((await database('push_delivery_jobs').first()).status, 'processing');
+    assert.equal(Number((await database('push_delivery_attempts')
+      .count('* as count').first())?.count), 0);
+  });
+
   test('missing VAPID configuration disables startup with one sanitized warning', () => {
     const warnings: string[] = [];
     const worker = new WebPushDispatcher({
