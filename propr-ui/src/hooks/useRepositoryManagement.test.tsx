@@ -224,6 +224,31 @@ describe('useRepositoryManagement', () => {
     });
   });
 
+  it('preserves enabled automatic CI follow-up when adding another branch unchecked', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', autoFollowupOnFailedCi: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      result.current.handleAddRepo('integry/propr', '', 'release', false);
+    });
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos).toHaveLength(2);
+    expect(savedRepos[0].autoFollowupOnFailedCi).toBe(true);
+    expect(savedRepos[1]).toMatchObject({
+      name: 'integry/propr',
+      baseBranch: 'release',
+      autoFollowupOnFailedCi: false
+    });
+  });
+
   it('toggles automatic CI follow-up for one repository without changing others', async () => {
     mockGetRepoConfig.mockResolvedValue({
       repos_to_monitor: [

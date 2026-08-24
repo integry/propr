@@ -325,7 +325,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     const repositoryKey = getRepositoryConfigKey(newRepo);
     const newRepos = [
       ...repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
-        ? { ...repo, autoFollowupOnFailedCi }
+        ? { ...repo, autoFollowupOnFailedCi: repo.autoFollowupOnFailedCi || autoFollowupOnFailedCi }
         : repo),
       newEntry
     ];
