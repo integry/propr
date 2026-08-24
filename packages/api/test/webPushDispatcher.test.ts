@@ -435,8 +435,12 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     await retrying.runOnce();
     const retryable = await database('push_delivery_jobs').first();
     assert.equal(retryable.status, 'retryable');
-    assert.ok(retryable.next_retry_at > retryable.updated_at);
     const firstAttempt = await database('push_delivery_attempts').first();
+    assert.equal(firstAttempt.next_retry_at, retryable.next_retry_at);
+    assert.equal(
+      Date.parse(retryable.next_retry_at) - Date.parse(firstAttempt.attempted_at),
+      10,
+    );
     assert.equal(firstAttempt.error_code, 'http_429');
     assert.doesNotMatch(JSON.stringify(firstAttempt), /SECRET/);
 
