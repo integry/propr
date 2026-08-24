@@ -7,10 +7,12 @@ interface AddRepositoryModalProps {
   newRepo: string;
   newAlias: string;
   newBaseBranch: string;
+  autoFollowupOnFailedCi: boolean;
   availableRepos: string[];
   onRepoChange: (value: string) => void;
   onAliasChange: (value: string) => void;
   onBaseBranchChange: (value: string) => void;
+  onAutoFollowupOnFailedCiChange: (value: boolean) => void;
   onAdd: () => void;
   onClose: () => void;
   isReadOnly?: boolean;
@@ -21,10 +23,12 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
   newRepo,
   newAlias,
   newBaseBranch,
+  autoFollowupOnFailedCi,
   availableRepos,
   onRepoChange,
   onAliasChange,
   onBaseBranchChange,
+  onAutoFollowupOnFailedCiChange,
   onAdd,
   onClose,
   isReadOnly = false,
@@ -107,6 +111,22 @@ export const AddRepositoryModal: React.FC<AddRepositoryModalProps> = ({
               You can add the same repository multiple times with different base branches.
             </p>
           </div>
+
+          <label className="flex items-start gap-3 rounded-md border border-gray-200 p-3">
+            <input
+              type="checkbox"
+              checked={autoFollowupOnFailedCi}
+              onChange={(e) => onAutoFollowupOnFailedCiChange(e.target.checked)}
+              disabled={isReadOnly}
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            />
+            <span>
+              <span className="block text-sm font-medium text-gray-700">Automatic CI follow-up</span>
+              <span className="block text-xs text-gray-500 mt-0.5">
+                Start an automatic follow-up when this repository's CI fails. Off by default.
+              </span>
+            </span>
+          </label>
         </form>
 
         {/* Modal Footer */}

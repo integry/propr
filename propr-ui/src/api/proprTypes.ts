@@ -118,6 +118,8 @@ export interface MonitoredRepo {
   id: string;
   name: string;
   enabled: boolean;
+  /** Whether failed CI triggers an automatic follow-up. Missing legacy values are off. */
+  autoFollowupOnFailedCi?: boolean;
   alias?: string;
   baseBranch?: string;
   starred?: boolean;

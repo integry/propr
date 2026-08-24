@@ -38,7 +38,9 @@ function shouldIgnoreStaleProgressUpdate(
   return currentStatus ? hasSeenTerminalSocketUpdate && TERMINAL_INDEXING_STATUSES.has(currentStatus.indexing_status) : false;
 }
 
-export type Repo = MonitoredRepo;
+export type Repo = Omit<MonitoredRepo, 'autoFollowupOnFailedCi'> & {
+  autoFollowupOnFailedCi: boolean;
+};
 
 export interface UseRepositoryManagementResult {
   repos: Repo[];
@@ -53,9 +55,10 @@ export interface UseRepositoryManagementResult {
   loadRepos: () => Promise<void>;
   handleStopIndexing: (repoName: string, baseBranch?: string) => Promise<void>;
   handleReindexRepo: (repoName: string, baseBranch?: string) => Promise<void>;
-  handleAddRepo: (newRepo: string, newAlias: string, newBaseBranch: string) => boolean;
+  handleAddRepo: (newRepo: string, newAlias: string, newBaseBranch: string, autoFollowupOnFailedCi: boolean) => boolean;
   handleRemoveRepo: (repoId: string) => void;
   handleToggleRepo: (repoId: string) => void;
+  handleToggleAutoCiFollowup: (repoId: string) => void;
   handleToggleStar: (repoId: string) => Promise<void>;
   handleToggleHidden: (repoId: string) => Promise<void>;
   handleToggleShowHidden: () => void;
@@ -100,17 +103,18 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
         .map((repo: unknown): Repo | null => {
           if (typeof repo === 'string') {
             const userPref = prefs[repo] || {};
-            return { id: generateId(), name: repo, enabled: true, starred: userPref.starred, hidden: userPref.hidden };
+            return { id: generateId(), name: repo, enabled: true, autoFollowupOnFailedCi: false, starred: userPref.starred, hidden: userPref.hidden };
           } else if (repo && typeof repo === 'object') {
             const repoObj = repo as Record<string, unknown>;
             const name = (repoObj.name as string) || (repoObj.full_name as string);
             const enabled = typeof repoObj.enabled === 'boolean' ? repoObj.enabled : true;
+            const autoFollowupOnFailedCi = repoObj.autoFollowupOnFailedCi === true;
             const id = (repoObj.id as string) || generateId();
             const alias = repoObj.alias as string | undefined;
             const baseBranch = repoObj.baseBranch as string | undefined;
             const userPref = name ? (prefs[name] || {}) : {};
             if (name) {
-              return { id, name, enabled, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
+              return { id, name, enabled, autoFollowupOnFailedCi, alias, baseBranch, starred: userPref.starred, hidden: userPref.hidden };
             }
           }
           return null;
@@ -292,7 +296,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
     }
   };
 
-  const handleAddRepo = (newRepo: string, newAlias: string, newBaseBranch: string): boolean => {
+  const handleAddRepo = (newRepo: string, newAlias: string, newBaseBranch: string, autoFollowupOnFailedCi: boolean): boolean => {
     if (!canManageRepositories || !newRepo) return false;
     const isDuplicate = repos.some(r => r.name === newRepo && (r.baseBranch || '') === (newBaseBranch || ''));
     if (isDuplicate) {
@@ -300,7 +304,14 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       alert(`Repository "${newRepo}"${branchInfo} has already been added to the list.`);
       return false;
     }
-    const newEntry: Repo = { id: generateId(), name: newRepo, enabled: true, alias: newAlias.trim() || undefined, baseBranch: newBaseBranch.trim() || undefined };
+    const newEntry: Repo = {
+      id: generateId(),
+      name: newRepo,
+      enabled: true,
+      autoFollowupOnFailedCi,
+      alias: newAlias.trim() || undefined,
+      baseBranch: newBaseBranch.trim() || undefined
+    };
     const newRepos = [...repos, newEntry];
     setRepos(newRepos);
     performAutoSave(newRepos);
@@ -317,6 +328,15 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   const handleToggleRepo = (repoId: string) => {
     if (!canManageRepositories) return;
     const newRepos = repos.map(repo => repo.id === repoId ? { ...repo, enabled: !repo.enabled } : repo);
+    setRepos(newRepos);
+    performAutoSave(newRepos);
+  };
+
+  const handleToggleAutoCiFollowup = (repoId: string) => {
+    if (!canManageRepositories) return;
+    const newRepos = repos.map(repo => repo.id === repoId
+      ? { ...repo, autoFollowupOnFailedCi: !repo.autoFollowupOnFailedCi }
+      : repo);
     setRepos(newRepos);
     performAutoSave(newRepos);
   };
@@ -360,7 +380,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
   return {
     repos, loading, error, availableRepos, indexingStatuses, saveStatus, showHiddenRepos,
     filteredRepos, hiddenCount, loadRepos, handleStopIndexing, handleReindexRepo, handleAddRepo,
-    handleRemoveRepo, handleToggleRepo, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
+    handleRemoveRepo, handleToggleRepo, handleToggleAutoCiFollowup, handleToggleStar, handleToggleHidden, handleToggleShowHidden,
     handleRetry, setError
   };
 }
