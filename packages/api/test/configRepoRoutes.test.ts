@@ -101,3 +101,52 @@ test('POST repository config persists an enabled option without enabling other r
     }
   ]);
 });
+
+test('POST repository config preserves an omitted option for existing repositories', async () => {
+  const saveMonitoredRepos = mock.fn(async () => true);
+  const routes = createConfigRoutes({
+    redisClient: {
+      set: mock.fn(async () => 'OK'),
+      eval: mock.fn(async () => 1),
+      publish: mock.fn(async () => 1),
+      lPush: mock.fn(async () => 1),
+      lTrim: mock.fn(async () => 'OK')
+    } as never,
+    configStore: {
+      loadMonitoredReposRaw: async () => [
+        { id: 'repo-1', name: 'integry/propr', enabled: false, autoFollowupOnFailedCi: true },
+        { id: 'repo-2', name: 'integry/other', enabled: true, autoFollowupOnFailedCi: true }
+      ],
+      saveMonitoredRepos,
+      clearRemovedRepositoryIndexData: async () => {}
+    },
+    database: {
+      transaction: async (callback: (transaction: never) => Promise<unknown>) => callback({} as never)
+    } as never
+  });
+  const response = createResponse();
+
+  await routes.postRepos({
+    body: {
+      repos_to_monitor: [
+        { id: 'repo-1', name: 'integry/propr', enabled: true },
+        { id: 'repo-2', name: 'integry/other', enabled: true, autoFollowupOnFailedCi: false },
+        { id: 'repo-3', name: 'integry/new', enabled: true }
+      ]
+    }
+  } as never, response as never);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(saveMonitoredRepos.mock.calls.length, 1);
+  assert.deepEqual(
+    saveMonitoredRepos.mock.calls[0]?.arguments[0].map(repo => ({
+      id: repo.id,
+      autoFollowupOnFailedCi: repo.autoFollowupOnFailedCi
+    })),
+    [
+      { id: 'repo-1', autoFollowupOnFailedCi: true },
+      { id: 'repo-2', autoFollowupOnFailedCi: false },
+      { id: 'repo-3', autoFollowupOnFailedCi: false }
+    ]
+  );
+});
