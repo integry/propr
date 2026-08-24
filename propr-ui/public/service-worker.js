@@ -272,17 +272,19 @@ function safeActionUrl(value, action, fallbackUrl) {
 
 function safePayloadActions(value, fallbackUrl) {
   if (!Array.isArray(value)) return [];
+  const actions = [];
   for (const candidate of value) {
     if (!candidate || typeof candidate !== 'object') continue;
     const action = cleanText(candidate.action, 'view', 32).replace(/[^a-zA-Z0-9_-]/g, '');
     if (!action || action === LOCAL_DISMISS_ACTION) continue;
-    return [{
+    actions.push({
       action,
       title: cleanText(candidate.title, 'View details', 40),
       url: safeActionUrl(candidate.url, action, fallbackUrl),
-    }];
+    });
+    if (actions.length === 2) break;
   }
-  return [];
+  return actions;
 }
 
 function readPushPayload(event) {
@@ -318,7 +320,7 @@ async function displayPushNotification(event) {
   const eventTag = safeEventTag(eventId);
   const actionUrls = payloadActions.map(({ action, url }) => ({ action, url }));
   const actions = payloadActions.map(({ action, title }) => ({ action, title }));
-  actions.push({ action: LOCAL_DISMISS_ACTION, title: 'Dismiss' });
+  if (actions.length < 2) actions.push({ action: LOCAL_DISMISS_ACTION, title: 'Dismiss' });
 
   await Promise.all([
     self.registration.showNotification(

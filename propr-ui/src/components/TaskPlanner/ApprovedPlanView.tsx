@@ -10,10 +10,13 @@ import { PlanTask, reviseDraft, pauseDraft, resumeDraft, updateExecutionSettings
 import { PlanIssue } from '../../api/planIssuesApi';
 import { useToast } from '../ui/useToast';
 import { useDemoMode } from '../../contexts/DemoModeContext';
+import type { PlanNotificationIntent } from '../../utils/notificationIntents';
 
 interface ApprovedPlanViewProps {
   draft: DraftWithPlan;
   onRefetch?: () => void;
+  notificationIntent?: PlanNotificationIntent | null;
+  onNotificationIntentConsumed?: () => void;
 }
 const OriginalPromptPopover: React.FC<{ prompt: string }> = ({ prompt }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -236,7 +239,12 @@ const PlanHeaderSummary: React.FC<PlanHeaderSummaryProps> = ({ planName, draftSt
   </div>
 );
 
-export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRefetch }) => {
+export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({
+  draft,
+  onRefetch,
+  notificationIntent = null,
+  onNotificationIntentConsumed,
+}) => {
   const navigate = useNavigate();
   const { addToast } = useToast();
   const { isDemoMode } = useDemoMode();
@@ -391,7 +399,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({ draft, onRef
         <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => { if (!isDemoMode) setShowReviseDialog(true); }} onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }} isReadOnly={isDemoMode} />
       </div>
       <div className="flex-1 overflow-auto p-4">
-        <PlanIssuesManager draftId={draft.draft_id} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} isSavingExecutionSettings={isSavingExecutionSettings} isReadOnly={isDemoMode} />
+        <PlanIssuesManager draftId={draft.draft_id} repository={repository} tasks={tasks} onRefresh={onRefetch} onIssuesChange={handleIssuesChange} refreshKey={refreshKey} useEpic={useEpic} autoMerge={autoMerge} onUseEpicChange={handleUseEpicChange} onAutoMergeChange={handleAutoMergeChange} runUltrafix={runUltrafix} ultrafixGoal={ultrafixGoal} ultrafixMaxCycles={ultrafixMaxCycles} onRunUltrafixChange={handleRunUltrafixChange} onUltrafixGoalChange={handleUltrafixGoalChange} onUltrafixMaxCyclesChange={handleUltrafixMaxCyclesChange} draftStatus={draft.status} onCreationComplete={handleCreationComplete} isSavingExecutionSettings={isSavingExecutionSettings} isReadOnly={isDemoMode} notificationIntent={notificationIntent} onNotificationIntentConsumed={onNotificationIntentConsumed} />
       </div>
       <PlanFooterStats stats={footerStats} onRefresh={handleRefresh} />
       <DeletePlanDialog isOpen={showDeleteDialog} onClose={() => setShowDeleteDialog(false)} onConfirm={handleDeletePlanConfirm} isLoading={isDeleting} />

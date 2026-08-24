@@ -18,12 +18,12 @@ async function createValidationTrigger(knex) {
       WHEN NEW.${COLUMN} IS NULL THEN 0
       WHEN typeof(NEW.${COLUMN}) != 'text' OR NOT json_valid(NEW.${COLUMN}) THEN 1
       WHEN json_type(NEW.${COLUMN}) != 'array' THEN 1
-      WHEN json_array_length(NEW.${COLUMN}) > 4 THEN 1
+      WHEN json_array_length(NEW.${COLUMN}) > 6 THEN 1
       WHEN EXISTS (
         SELECT 1
         FROM json_each(NEW.${COLUMN})
         WHERE type != 'text'
-          OR value NOT IN ('stop', 'follow_up', 'open_pr', 'dismiss')
+          OR value NOT IN ('refine', 'approve_execute', 'stop', 'follow_up', 'open_pr', 'dismiss')
       ) THEN 1
       WHEN (
         SELECT count(*) FROM json_each(NEW.${COLUMN})

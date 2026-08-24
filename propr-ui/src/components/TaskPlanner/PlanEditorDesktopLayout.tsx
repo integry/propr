@@ -56,6 +56,7 @@ interface PlanEditorPanelsProps {
   onRefine: PlanRefinementState['handleRefine'];
   onChatMessagesChange: (messages: ChatMessage[]) => void;
   onStopRefinement: () => Promise<void>;
+  focusComposerRequest?: number;
 }
 
 const PlanEditorPanels: React.FC<PlanEditorPanelsProps> = ({
@@ -70,7 +71,8 @@ const PlanEditorPanels: React.FC<PlanEditorPanelsProps> = ({
   onReorderTasks,
   onRefine,
   onChatMessagesChange,
-  onStopRefinement
+  onStopRefinement,
+  focusComposerRequest,
 }) => (
   <div className="flex-1 overflow-hidden">
     <PanelGroup direction="horizontal">
@@ -100,6 +102,7 @@ const PlanEditorPanels: React.FC<PlanEditorPanelsProps> = ({
             refinementProgress={refinementProgress}
             defaultModel={defaultModel}
             onStop={onStopRefinement}
+            focusComposerRequest={focusComposerRequest}
           />
         </div>
       </Panel>
@@ -246,6 +249,7 @@ export interface PlanEditorDesktopLayoutProps {
   onRefine: PlanRefinementState['handleRefine'];
   onChatMessagesChange: (messages: ChatMessage[]) => void;
   onStopRefinement: () => Promise<void>;
+  focusComposerRequest?: number;
   onSetShowBackToSetupDialog: React.Dispatch<React.SetStateAction<boolean>>;
   onSetShowDeleteDialog: React.Dispatch<React.SetStateAction<boolean>>;
   onBackToSetupConfirm: () => Promise<void>;
@@ -286,6 +290,7 @@ export const PlanEditorDesktopLayout: React.FC<PlanEditorDesktopLayoutProps> = (
   onRefine,
   onChatMessagesChange,
   onStopRefinement,
+  focusComposerRequest,
   onSetShowBackToSetupDialog,
   onSetShowDeleteDialog,
   onBackToSetupConfirm,
@@ -330,6 +335,7 @@ export const PlanEditorDesktopLayout: React.FC<PlanEditorDesktopLayoutProps> = (
       onRefine={onRefine}
       onChatMessagesChange={onChatMessagesChange}
       onStopRefinement={onStopRefinement}
+      focusComposerRequest={focusComposerRequest}
     />
 
     <PlanEditorFooter
