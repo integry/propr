@@ -12,6 +12,7 @@ import {
 } from '../../api/notificationApi';
 import { useCurrentUser } from '../../contexts/AuthContext';
 import { useBrowserPush } from '../../hooks/useBrowserPush';
+import { useNotificationCenter } from '../../contexts/NotificationCenterContext';
 
 const CATEGORY_LABELS: Record<NotificationKind, { label: string; description: string }> = {
   plan: { label: 'Plans', description: 'Plan generation and execution updates.' },
@@ -143,6 +144,7 @@ const EnrollmentControl: React.FC = () => {
 const NotificationSettingsSection: React.FC = () => {
   const user = useCurrentUser();
   const push = useBrowserPush();
+  const { commitBadgeEnabled } = useNotificationCenter();
   const [snapshot, setSnapshot] = useState<NotificationPreferencesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -156,6 +158,7 @@ const NotificationSettingsSection: React.FC = () => {
       .then(preferences => {
         if (!active) return;
         setSnapshot(preferences);
+        commitBadgeEnabled(preferences.badgeEnabled);
         void applyBadgePreference(preferences.badgeEnabled);
       })
       .catch(loadError => {
@@ -165,7 +168,7 @@ const NotificationSettingsSection: React.FC = () => {
         if (active) setLoading(false);
       });
     return () => { active = false; };
-  }, [user?.id]);
+  }, [commitBadgeEnabled, user?.id]);
 
   const save = async (update: NotificationPreferencesUpdate): Promise<void> => {
     setSaving(true);
@@ -173,6 +176,7 @@ const NotificationSettingsSection: React.FC = () => {
     try {
       const updated = await updateNotificationPreferences(update);
       setSnapshot(updated);
+      if (update.badgeEnabled !== undefined) commitBadgeEnabled(updated.badgeEnabled);
       if (update.badgeEnabled !== undefined) void applyBadgePreference(updated.badgeEnabled);
     } catch (saveError) {
       setError((saveError as Error).message || 'Notification preferences could not be saved.');

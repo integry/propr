@@ -31,6 +31,7 @@ const APP_ROUTE_PATTERNS = [
   /^\/tasks(?:\/[^/]+)?\/?$/,
   /^\/studio(?:\/[^/]+)?\/?$/,
   /^\/plans\/?$/,
+  /^\/inbox\/?$/,
   /^\/ai-agents\/?$/,
   /^\/settings\/?$/,
   /^\/admin\/members\/?$/,
@@ -317,7 +318,7 @@ async function displayPushNotification(event) {
         tag: eventId ? `propr-${eventId}` : 'propr-notification',
         renotify: false,
         actions,
-        data: { deepLink, actionUrls, unreadCount: badgeCount },
+        data: { deepLink, actionUrls, unreadCount: badgeCount, eventId },
       },
     ),
     updateAppBadge(badgeCount),
@@ -369,7 +370,17 @@ async function handleNotificationClick(event) {
   event.notification.close();
   const count = safeBadgeCount(data.unreadCount);
   await updateAppBadge(count === null ? null : Math.max(0, count - 1));
-  if (event.action === LOCAL_DISMISS_ACTION) return;
+  if (event.action === LOCAL_DISMISS_ACTION) {
+    const eventId = safeEventId(data.eventId);
+    if (!eventId) return;
+    const source = new URL(safeOpenUrl(data.deepLink));
+    const target = new URL('/inbox', self.location.origin);
+    for (const [key, value] of source.searchParams) target.searchParams.append(key, value);
+    target.searchParams.set('intent', 'dismiss');
+    target.searchParams.set('notification', eventId);
+    await focusOrOpenApp(target.href);
+    return;
+  }
   const target = safeActionUrl(actionUrl(data, event.action), event.action, data.deepLink);
   await focusOrOpenApp(target);
 }

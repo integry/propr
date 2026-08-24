@@ -224,6 +224,7 @@ describe('PWA service worker', () => {
       deepLink: 'https://app.example.com/',
       actionUrls: [{ action: 'stop', url: 'https://app.example.com/' }],
       unreadCount: 7,
+      eventId: 'unsafe-id',
     });
     expect(options.actions).toEqual([
       { action: 'stop', title: 'Stop task' },
@@ -308,17 +309,22 @@ describe('PWA service worker', () => {
     expect(harness.networkRequests).toEqual([]);
   });
 
-  test('handles dismiss locally without opening a window or making a request', async () => {
+  test('hands dismiss to the authenticated Inbox without making a request', async () => {
     const harness = createHarness();
     const click = waitableEvent({
-      notification: { data: { deepLink: '/tasks', unreadCount: 1 }, close: vi.fn() },
+      notification: {
+        data: { deepLink: '/tasks?connect_api_url=flow', unreadCount: 1, eventId: 'event-1' },
+        close: vi.fn(),
+      },
       action: 'propr-dismiss',
     });
 
     harness.listeners.get('notificationclick')?.(click.event);
     await click.completion();
 
-    expect(harness.openedUrls).toEqual([]);
+    expect(harness.openedUrls).toEqual([
+      'https://app.example.com/inbox?connect_api_url=flow&intent=dismiss&notification=event-1',
+    ]);
     expect(harness.networkRequests).toEqual([]);
     expect(harness.badgeCounts).toEqual([0]);
   });

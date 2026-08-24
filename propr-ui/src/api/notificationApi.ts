@@ -1,11 +1,17 @@
 import {
   notificationCapabilitiesResponseSchema,
+  notificationListResponseSchema,
   notificationPreferencesResponseSchema,
+  notificationStateResponseSchema,
+  notificationUnreadCountResponseSchema,
   pushSubscriptionEnrollmentResponseSchema,
   pushSubscriptionsResponseSchema,
   type NotificationCapabilitiesResponse,
+  type NotificationListResponse,
   type NotificationPreferencesResponse,
   type NotificationPreferencesUpdate,
+  type NotificationStateResponse,
+  type NotificationUnreadCountResponse,
   type PushSubscriptionEnrollmentResponse,
   type PushSubscriptionInput,
   type PushSubscriptionsResponse,
@@ -13,6 +19,11 @@ import {
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 const NOTIFICATIONS_URL = `${API_BASE_URL}/api/notifications`;
+
+export interface ListNotificationsOptions {
+  cursor?: string;
+  limit?: number;
+}
 
 export class PushSubscriptionOwnershipConflictError extends Error {
   constructor() {
@@ -40,6 +51,32 @@ async function requestJson<T>(
 
 export function getNotificationCapabilities(): Promise<NotificationCapabilitiesResponse> {
   return requestJson('/config', notificationCapabilitiesResponseSchema);
+}
+
+export function listNotifications(
+  options: ListNotificationsOptions = {},
+): Promise<NotificationListResponse> {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set('cursor', options.cursor);
+  if (options.limit !== undefined) query.set('limit', String(options.limit));
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
+  return requestJson(suffix, notificationListResponseSchema);
+}
+
+export function getNotificationUnreadCount(): Promise<NotificationUnreadCountResponse> {
+  return requestJson('/unread-count', notificationUnreadCountResponseSchema);
+}
+
+export function markNotificationRead(id: string): Promise<NotificationStateResponse> {
+  return requestJson(`/${encodeURIComponent(id)}/read`, notificationStateResponseSchema, {
+    method: 'POST',
+  });
+}
+
+export function dismissNotification(id: string): Promise<NotificationStateResponse> {
+  return requestJson(`/${encodeURIComponent(id)}/dismiss`, notificationStateResponseSchema, {
+    method: 'POST',
+  });
 }
 
 export function getNotificationPreferences(): Promise<NotificationPreferencesResponse> {
