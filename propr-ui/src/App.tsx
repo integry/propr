@@ -227,7 +227,7 @@ const AppContent: React.FC = () => {
           <div className="min-h-0 flex-1">
             <AuthProvider user={currentUser} refreshUser={refreshCurrentUser}>
               <BrowserPushProvider>
-                <NotificationCenterProvider>
+                <NotificationCenterProvider key={currentUser?.id ?? (isDemoMode ? 'demo' : 'anonymous')}>
                   <Router>
                 <HostedFlowRouteSync />
                 <ConnectAccountProvider disabled={isDemoMode || currentUser === null}>

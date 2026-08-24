@@ -29,19 +29,30 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+let observedActions: {
+  commitUnreadCount: (count: number) => void;
+  refreshUnreadCount: () => Promise<void>;
+} | null = null;
+
 const Consumer = () => {
   const center = useNotificationCenter();
+  observedActions = center;
   return (
     <>
       <span>{center.badgeEnabled ? 'enabled' : 'disabled'}</span>
+      <span>count:{center.unreadCount ?? 'pending'}</span>
       <button type="button" onClick={() => center.commitBadgeEnabled(true)}>Enable badge</button>
     </>
   );
 };
 
-function renderCenter() {
-  return render(<NotificationCenterProvider><Consumer /></NotificationCenterProvider>);
-}
+const centerTree = () => (
+  <NotificationCenterProvider key={authState.user?.id ?? 'anonymous'}>
+    <Consumer />
+  </NotificationCenterProvider>
+);
+
+function renderCenter() { return render(centerTree()); }
 
 describe('NotificationCenterProvider', () => {
   beforeEach(() => {
@@ -49,6 +60,7 @@ describe('NotificationCenterProvider', () => {
     notificationApi.getNotificationPreferences.mockReset();
     notificationApi.getNotificationUnreadCount.mockReset();
     notificationApi.getNotificationUnreadCount.mockResolvedValue({ unreadCount: 0 });
+    observedActions = null;
   });
 
   test('does not let an initial preference response overwrite a newer Settings choice', async () => {
@@ -56,6 +68,7 @@ describe('NotificationCenterProvider', () => {
     notificationApi.getNotificationPreferences.mockReturnValue(initialPreference.promise);
     renderCenter();
 
+    await waitFor(() => expect(notificationApi.getNotificationPreferences).toHaveBeenCalledTimes(1));
     expect(await screen.findByText('disabled')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Enable badge' }));
     expect(screen.getByText('enabled')).toBeInTheDocument();
@@ -66,14 +79,28 @@ describe('NotificationCenterProvider', () => {
 
   test('ignores a previous account preference after identity changes', async () => {
     const firstPreference = deferred<NotificationPreferencesResponse>();
+    const secondUnread = deferred<{ unreadCount: number }>();
+    notificationApi.getNotificationUnreadCount
+      .mockResolvedValueOnce({ unreadCount: 7 })
+      .mockReturnValueOnce(secondUnread.promise);
     notificationApi.getNotificationPreferences
       .mockReturnValueOnce(firstPreference.promise)
       .mockResolvedValueOnce(preferences(true));
     const view = renderCenter();
     await waitFor(() => expect(notificationApi.getNotificationPreferences).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('count:7')).toBeInTheDocument();
+    const oldActions = observedActions;
+    if (!oldActions) throw new Error('Notification center was not observed');
 
     authState.user = { id: 'user-2', username: 'second-user' };
-    view.rerender(<NotificationCenterProvider><Consumer /></NotificationCenterProvider>);
+    view.rerender(centerTree());
+    expect(screen.getByText('count:pending')).toBeInTheDocument();
+    oldActions.commitUnreadCount(99);
+    await oldActions.refreshUnreadCount();
+    expect(screen.getByText('count:pending')).toBeInTheDocument();
+    expect(notificationApi.getNotificationUnreadCount).toHaveBeenCalledTimes(2);
+    await act(async () => secondUnread.resolve({ unreadCount: 2 }));
+    expect(await screen.findByText('count:2')).toBeInTheDocument();
     expect(await screen.findByText('enabled')).toBeInTheDocument();
     await act(async () => firstPreference.resolve(preferences(false)));
 

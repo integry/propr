@@ -41,7 +41,8 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
   const user = useCurrentUser();
   const { isDemoMode } = useDemoMode();
   const [unreadCount, setUnreadCount] = useState<number | null>(null);
-  const [badgeEnabled, setBadgeEnabled] = useState(true);
+  const [badgeEnabled, setBadgeEnabled] = useState(false);
+  const activeRef = useRef(true);
   const generationRef = useRef(0);
   const preferenceGenerationRef = useRef(0);
   const unreadCountRef = useRef(unreadCount);
@@ -49,7 +50,13 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
   unreadCountRef.current = unreadCount;
   badgeEnabledRef.current = badgeEnabled;
 
+  useEffect(() => {
+    activeRef.current = true;
+    return () => { activeRef.current = false; };
+  }, []);
+
   const commitUnreadCount = useCallback((count: number) => {
+    if (!activeRef.current) return;
     generationRef.current += 1;
     const safeCount = Number.isSafeInteger(count) && count >= 0 ? count : 0;
     setUnreadCount(safeCount);
@@ -58,6 +65,7 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
   }, []);
 
   const commitBadgeEnabled = useCallback((enabled: boolean) => {
+    if (!activeRef.current) return;
     preferenceGenerationRef.current += 1;
     badgeEnabledRef.current = enabled;
     setBadgeEnabled(enabled);
@@ -65,9 +73,10 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
   }, []);
 
   const refreshUnreadCount = useCallback(async () => {
+    if (!activeRef.current) return;
     const generation = ++generationRef.current;
     const response = await getNotificationUnreadCount();
-    if (generation !== generationRef.current) return;
+    if (!activeRef.current || generation !== generationRef.current) return;
     setUnreadCount(response.unreadCount);
     unreadCountRef.current = response.unreadCount;
     void updateInstalledBadge(response.unreadCount, badgeEnabledRef.current);
@@ -89,7 +98,10 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
         commitBadgeEnabled(preferences.badgeEnabled);
       })
       .catch(() => undefined);
-    return () => { preferenceGenerationRef.current += 1; };
+    return () => {
+      generationRef.current += 1;
+      preferenceGenerationRef.current += 1;
+    };
   }, [commitBadgeEnabled, commitUnreadCount, identityKey, refreshUnreadCount]);
 
   useEffect(() => {
