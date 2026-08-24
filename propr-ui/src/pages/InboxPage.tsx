@@ -82,6 +82,7 @@ const InboxPage: React.FC = () => {
               notifications={section.notifications}
               onDismiss={id => void inbox.dismiss(id)}
               onOpen={inbox.open}
+              mutationsEnabled={inbox.mutationsEnabled}
             />
           ))}
           {inbox.hasMore && (

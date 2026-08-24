@@ -62,7 +62,8 @@ export const InboxCard: React.FC<{
   notification: Notification;
   onDismiss: (id: string) => void;
   onOpen: (id: string) => void;
-}> = ({ notification, onDismiss, onOpen }) => {
+  mutationsEnabled: boolean;
+}> = ({ notification, onDismiss, onOpen, mutationsEnabled }) => {
   const unread = notification.readAt === null;
   const actionLabel = notification.action?.label ?? 'View details';
   const isExternal = /^https?:\/\//i.test(notificationHref(notification));
@@ -111,15 +112,17 @@ export const InboxCard: React.FC<{
           {actionLabel}
           {isExternal && <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />}
         </DetailLink>
-        <button
-          type="button"
-          onClick={() => onDismiss(notification.id)}
-          className="inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
-          aria-label={`Dismiss ${notification.title}`}
-        >
-          <X className="h-4 w-4" aria-hidden="true" />
-          Dismiss
-        </button>
+        {mutationsEnabled && (
+          <button
+            type="button"
+            onClick={() => onDismiss(notification.id)}
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+            aria-label={`Dismiss ${notification.title}`}
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+            Dismiss
+          </button>
+        )}
       </div>
     </article>
   );
@@ -130,7 +133,8 @@ export const InboxGroupSection: React.FC<{
   notifications: Notification[];
   onDismiss: (id: string) => void;
   onOpen: (id: string) => void;
-}> = ({ group, notifications, onDismiss, onOpen }) => {
+  mutationsEnabled: boolean;
+}> = ({ group, notifications, onDismiss, onOpen, mutationsEnabled }) => {
   const Icon = GROUP_ICON[group];
   const headingId = `inbox-${group.replace(/ /g, '-').toLowerCase()}`;
   return (
@@ -144,7 +148,13 @@ export const InboxGroupSection: React.FC<{
       </div>
       <div className="space-y-3">
         {notifications.map(notification => (
-          <InboxCard key={notification.id} notification={notification} onDismiss={onDismiss} onOpen={onOpen} />
+          <InboxCard
+            key={notification.id}
+            notification={notification}
+            onDismiss={onDismiss}
+            onOpen={onOpen}
+            mutationsEnabled={mutationsEnabled}
+          />
         ))}
       </div>
     </section>

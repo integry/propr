@@ -12,6 +12,7 @@ import {
 
 const commitUnreadCount = vi.fn();
 const refreshUnreadCount = vi.fn(async () => undefined);
+const demoState = { isDemoMode: false };
 vi.mock('../contexts/NotificationCenterContext', () => ({
   useNotificationCenter: () => ({
     unreadCount: 3,
@@ -25,6 +26,7 @@ vi.mock('../api/notificationApi', () => ({
   dismissNotification: vi.fn(),
   markNotificationRead: vi.fn(),
 }));
+vi.mock('../contexts/DemoModeContext', () => ({ useDemoMode: () => demoState }));
 
 function item(id: string, title: string, readAt: string | null = null): Notification {
   return notificationSchema.parse({
@@ -74,6 +76,7 @@ describe('Inbox page', () => {
     vi.mocked(markNotificationRead).mockReset();
     commitUnreadCount.mockReset();
     refreshUnreadCount.mockClear();
+    demoState.isDemoMode = false;
   });
 
   test('optimistically dismisses and restores an item when the request fails', async () => {
@@ -200,6 +203,7 @@ describe('Inbox page', () => {
   test('reconciles an older refresh response with a completed read mutation', async () => {
     const notification = notificationSchema.parse({
       ...item('event-read-race', 'Read race notification'),
+      createdAt: '2026-08-24T12:05:00.000Z',
       action: { type: 'external_link', label: 'Open pull request', href: 'https://github.com/integry/propr/pull/1937' },
     });
     const staleRefresh = deferred<Awaited<ReturnType<typeof listNotifications>>>();
@@ -209,7 +213,7 @@ describe('Inbox page', () => {
     vi.mocked(markNotificationRead).mockResolvedValue({
       notification: notificationSchema.parse({
         ...notification,
-        readAt: '2026-08-24T12:01:00.000Z',
+        readAt: '2026-08-24T12:06:00.000Z',
       }),
       unreadCount: 0,
     });
@@ -254,5 +258,20 @@ describe('Inbox page', () => {
     await act(async () => newLoadMoreRequest.resolve({ notifications: [final], unreadCount: 2, nextCursor: null }));
     expect(await screen.findByText('New cursor item')).toBeInTheDocument();
     expect(listNotifications).toHaveBeenLastCalledWith({ cursor: 'cursor-2', limit: 25 });
+  });
+
+  test('keeps demo Inbox navigation read-only and hides dismissal', async () => {
+    demoState.isDemoMode = true;
+    const notification = item('event-demo', 'Demo notification');
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [notification], unreadCount: 1, nextCursor: null });
+    renderInbox();
+
+    expect(await screen.findByText('Demo notification')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Dismiss Demo notification' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('link', { name: /Demo notification/ }));
+
+    expect(await screen.findByText('Task details')).toBeInTheDocument();
+    expect(markNotificationRead).not.toHaveBeenCalled();
+    expect(dismissNotification).not.toHaveBeenCalled();
   });
 });

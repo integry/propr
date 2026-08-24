@@ -7,6 +7,7 @@ import {
 } from '../api/notificationApi';
 import { useNotificationCenter } from '../contexts/NotificationCenterContext';
 import { useToast } from '../components/ui/useToast';
+import { useDemoMode } from '../contexts/DemoModeContext';
 import { mergeNotifications } from './inboxUtils';
 
 const PAGE_SIZE = 25;
@@ -19,6 +20,7 @@ export interface InboxNotificationsState {
   error: string | null;
   isOnline: boolean;
   hasMore: boolean;
+  mutationsEnabled: boolean;
   refresh: () => Promise<void>;
   loadMore: () => Promise<void>;
   dismiss: (id: string) => Promise<void>;
@@ -53,6 +55,7 @@ export function useInboxNotifications(): InboxNotificationsState {
     isActiveIdentity,
   } = useNotificationCenter();
   const { addToast } = useToast();
+  const { isDemoMode } = useDemoMode();
   notificationsRef.current = notifications;
 
   useEffect(() => {
@@ -140,7 +143,7 @@ export function useInboxNotifications(): InboxNotificationsState {
   }, [commitUnreadCount, initialLoading, loadingMore, nextCursor, reconcileIncoming, refreshing]);
 
   const dismiss = useCallback(async (id: string) => {
-    if (dismissingRef.current.has(id)) return;
+    if (isDemoMode || dismissingRef.current.has(id)) return;
     mutationEpochRef.current += 1;
     dismissingRef.current.add(id);
     hiddenIdsRef.current.add(id);
@@ -173,14 +176,14 @@ export function useInboxNotifications(): InboxNotificationsState {
       dismissSnapshotsRef.current.delete(id);
       void refreshUnreadCount().catch(() => undefined);
     }
-  }, [addToast, commitUnreadCount, isActiveIdentity, refreshUnreadCount, unreadCount]);
+  }, [addToast, commitUnreadCount, isActiveIdentity, isDemoMode, refreshUnreadCount, unreadCount]);
 
   const open = useCallback((id: string) => {
     const current = notificationsRef.current.find(notification => notification.id === id);
-    if (!current || current.readAt !== null) return;
+    if (isDemoMode || !current || current.readAt !== null) return;
     mutationEpochRef.current += 1;
     const priorUnreadCount = unreadCount;
-    const optimistic = { ...current, readAt: current.occurredAt };
+    const optimistic = { ...current, readAt: current.createdAt };
     readOverridesRef.current.set(id, optimistic);
     setNotifications(items => items.map(notification => notification.id === id
       ? optimistic
@@ -212,7 +215,7 @@ export function useInboxNotifications(): InboxNotificationsState {
       mutationEpochRef.current += 1;
       void refreshUnreadCount().catch(() => undefined);
     });
-  }, [addToast, commitUnreadCount, isActiveIdentity, refreshUnreadCount, unreadCount]);
+  }, [addToast, commitUnreadCount, isActiveIdentity, isDemoMode, refreshUnreadCount, unreadCount]);
 
   return {
     notifications,
@@ -222,6 +225,7 @@ export function useInboxNotifications(): InboxNotificationsState {
     error,
     isOnline,
     hasMore: nextCursor !== null,
+    mutationsEnabled: !isDemoMode,
     refresh,
     loadMore,
     dismiss,
