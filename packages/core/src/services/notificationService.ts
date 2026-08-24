@@ -409,34 +409,7 @@ export class NotificationService {
                     .merge(values);
             }
 
-            if (update.quietHours !== undefined || update.badgeEnabled !== undefined) {
-                const values: Record<string, string | boolean | null> = {};
-                if (update.quietHours?.start !== undefined) {
-                    values.quiet_hours_start = update.quietHours.start;
-                }
-                if (update.quietHours?.end !== undefined) {
-                    values.quiet_hours_end = update.quietHours.end;
-                }
-                if (update.quietHours?.timezone !== undefined) {
-                    values.timezone = update.quietHours.timezone;
-                }
-                if (update.badgeEnabled !== undefined) {
-                    values.badge_enabled = update.badgeEnabled;
-                }
-                await transaction('notification_preference_settings')
-                    .insert({
-                        user_id: userId,
-                        quiet_hours_start: update.quietHours?.start
-                            ?? DEFAULT_NOTIFICATION_QUIET_HOURS.start,
-                        quiet_hours_end: update.quietHours?.end
-                            ?? DEFAULT_NOTIFICATION_QUIET_HOURS.end,
-                        timezone: update.quietHours?.timezone
-                            ?? DEFAULT_NOTIFICATION_QUIET_HOURS.timezone,
-                        badge_enabled: update.badgeEnabled ?? true
-                    })
-                    .onConflict('user_id')
-                    .merge(values);
-            }
+            await this.updatePreferenceSettings(transaction, userId, update);
 
             return this.readPreferenceSnapshot(transaction, userId);
         });
@@ -594,6 +567,41 @@ export class NotificationService {
                 ? true
                 : Boolean(settings.badge_enabled)
         });
+    }
+
+    private async updatePreferenceSettings(
+        transaction: Knex.Transaction,
+        userId: string,
+        update: NotificationPreferencesUpdate
+    ): Promise<void> {
+        if (update.quietHours === undefined && update.badgeEnabled === undefined) return;
+
+        const values: Record<string, string | boolean | null> = {};
+        if (update.quietHours?.start !== undefined) {
+            values.quiet_hours_start = update.quietHours.start;
+        }
+        if (update.quietHours?.end !== undefined) {
+            values.quiet_hours_end = update.quietHours.end;
+        }
+        if (update.quietHours?.timezone !== undefined) {
+            values.timezone = update.quietHours.timezone;
+        }
+        if (update.badgeEnabled !== undefined) {
+            values.badge_enabled = update.badgeEnabled;
+        }
+        await transaction('notification_preference_settings')
+            .insert({
+                user_id: userId,
+                quiet_hours_start: update.quietHours?.start
+                    ?? DEFAULT_NOTIFICATION_QUIET_HOURS.start,
+                quiet_hours_end: update.quietHours?.end
+                    ?? DEFAULT_NOTIFICATION_QUIET_HOURS.end,
+                timezone: update.quietHours?.timezone
+                    ?? DEFAULT_NOTIFICATION_QUIET_HOURS.timezone,
+                badge_enabled: update.badgeEnabled ?? true
+            })
+            .onConflict('user_id')
+            .merge(values);
     }
 
     private async assignRecipients(
