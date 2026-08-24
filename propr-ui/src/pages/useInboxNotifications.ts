@@ -38,6 +38,7 @@ export function useInboxNotifications(): InboxNotificationsState {
   const [error, setError] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const requestGenerationRef = useRef(0);
+  const loadMoreGenerationRef = useRef(0);
   const notificationsRef = useRef(notifications);
   const dismissingRef = useRef(new Set<string>());
   const hiddenIdsRef = useRef(new Set<string>());
@@ -66,7 +67,9 @@ export function useInboxNotifications(): InboxNotificationsState {
 
   const loadFirstPage = useCallback(async (isRefresh: boolean) => {
     const generation = ++requestGenerationRef.current;
+    loadMoreGenerationRef.current += 1;
     const mutationEpoch = mutationEpochRef.current;
+    setLoadingMore(false);
     if (isRefresh) setRefreshing(true);
     else setInitialLoading(true);
     setError(null);
@@ -111,6 +114,7 @@ export function useInboxNotifications(): InboxNotificationsState {
     if (!nextCursor || loadingMore || refreshing || initialLoading) return;
     const cursor = nextCursor;
     const generation = requestGenerationRef.current;
+    const loadMoreGeneration = ++loadMoreGenerationRef.current;
     const mutationEpoch = mutationEpochRef.current;
     setLoadingMore(true);
     setError(null);
@@ -126,7 +130,7 @@ export function useInboxNotifications(): InboxNotificationsState {
     } catch (loadError) {
       if (generation === requestGenerationRef.current) setError(messageFrom(loadError));
     } finally {
-      setLoadingMore(false);
+      if (loadMoreGeneration === loadMoreGenerationRef.current) setLoadingMore(false);
     }
   }, [commitUnreadCount, initialLoading, loadingMore, nextCursor, reconcileIncoming, refreshing]);
 

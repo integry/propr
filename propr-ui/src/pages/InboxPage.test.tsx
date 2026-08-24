@@ -211,18 +211,29 @@ describe('Inbox page', () => {
   test('ignores an error from load-more after a refresh supersedes it', async () => {
     const first = item('event-first', 'First page item');
     const refreshed = item('event-refreshed', 'Refreshed item');
+    const final = item('event-final', 'New cursor item');
     const loadMoreRequest = deferred<Awaited<ReturnType<typeof listNotifications>>>();
+    const newLoadMoreRequest = deferred<Awaited<ReturnType<typeof listNotifications>>>();
     vi.mocked(listNotifications)
       .mockResolvedValueOnce({ notifications: [first], unreadCount: 1, nextCursor: 'cursor-1' })
       .mockReturnValueOnce(loadMoreRequest.promise)
-      .mockResolvedValueOnce({ notifications: [refreshed], unreadCount: 1, nextCursor: null });
+      .mockResolvedValueOnce({ notifications: [refreshed], unreadCount: 2, nextCursor: 'cursor-2' })
+      .mockReturnValueOnce(newLoadMoreRequest.promise);
     renderInbox();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
     fireEvent.click(screen.getByRole('button', { name: 'Refresh Inbox' }));
     expect(await screen.findByText('Refreshed item')).toBeInTheDocument();
+    const refreshedLoadMore = screen.getByRole('button', { name: 'Load more' });
+    expect(refreshedLoadMore).toBeEnabled();
+    fireEvent.click(refreshedLoadMore);
+    expect(await screen.findByRole('button', { name: 'Loading…' })).toBeDisabled();
     await act(async () => loadMoreRequest.reject(new Error('Superseded page failed')));
 
     expect(screen.queryByText(/Superseded page failed/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Loading…' })).toBeDisabled();
+    await act(async () => newLoadMoreRequest.resolve({ notifications: [final], unreadCount: 2, nextCursor: null }));
+    expect(await screen.findByText('New cursor item')).toBeInTheDocument();
+    expect(listNotifications).toHaveBeenLastCalledWith({ cursor: 'cursor-2', limit: 25 });
   });
 });
