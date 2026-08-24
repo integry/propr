@@ -43,6 +43,7 @@ export interface PlanEditorMobileLayoutProps {
   onRefine: (message: string, signal?: AbortSignal, generationModel?: string) => Promise<{ success: boolean; message: string; action?: 'modified' | 'answered' | 'both'; cancelled?: boolean }>;
   onChatMessagesChange: (messages: ChatMessage[]) => void;
   onStopRefinement: () => Promise<void>;
+  focusComposerRequest?: number;
   onSetShowBackToSetupDialog: (value: boolean) => void;
   onSetShowDeleteDialog: (value: boolean) => void;
   onBackToSetupConfirm: () => Promise<void>;
@@ -85,6 +86,7 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
   onRefine,
   onChatMessagesChange,
   onStopRefinement,
+  focusComposerRequest,
   onSetShowBackToSetupDialog,
   onSetShowDeleteDialog,
   onBackToSetupConfirm,
@@ -198,6 +200,7 @@ export const PlanEditorMobileLayout: React.FC<PlanEditorMobileLayoutProps> = ({
               refinementProgress={refinementProgress}
               defaultModel={defaultModel}
               onStop={onStopRefinement}
+              focusComposerRequest={focusComposerRequest}
             />
           </div>
         </div>

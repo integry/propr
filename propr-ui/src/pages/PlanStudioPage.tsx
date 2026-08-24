@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { useParams, Link, useLocation } from 'react-router-dom';
+import { useParams, Link, useLocation, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { useDraft } from '../hooks/useDraft';
@@ -10,6 +10,11 @@ import ApprovedPlanView from '../components/TaskPlanner/ApprovedPlanView';
 import { GenerationProgress } from '../components/TaskPlanner/GenerationProgress';
 import StudioStepper, { StudioStage } from '../components/TaskPlanner/StudioStepper';
 import { PlannerDraft, DraftWithPlan } from '../api/plannerApi';
+import {
+  parsePlanNotificationIntent,
+  removeNotificationIntent,
+  type PlanNotificationIntent,
+} from '../utils/notificationIntents';
 
 interface LocationState {
   initialDraft?: DraftWithPlan;
@@ -125,7 +130,22 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
   );
 };
 
-const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
+interface IntentAwareViewProps {
+  notificationIntent: PlanNotificationIntent | null;
+  onNotificationIntentConsumed: () => void;
+}
+
+const ApprovedView: React.FC<{
+  currentStage: StudioStage;
+  draft: DraftWithPlan;
+  onRefetch: () => void;
+} & IntentAwareViewProps> = ({
+  currentStage,
+  draft,
+  onRefetch,
+  notificationIntent,
+  onNotificationIntentConsumed,
+}) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
     <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
@@ -134,12 +154,27 @@ const ApprovedView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; 
 
     {/* Scrollable Canvas */}
     <div className="flex-1 overflow-auto bg-white">
-      <ApprovedPlanView draft={draft} onRefetch={onRefetch} />
+      <ApprovedPlanView
+        draft={draft}
+        onRefetch={onRefetch}
+        notificationIntent={notificationIntent}
+        onNotificationIntentConsumed={onNotificationIntentConsumed}
+      />
     </div>
   </div>
 );
 
-const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; onRefetch: () => void }> = ({ currentStage, draft, onRefetch }) => (
+const ReviewView: React.FC<{
+  currentStage: StudioStage;
+  draft: DraftWithPlan;
+  onRefetch: () => void;
+} & IntentAwareViewProps> = ({
+  currentStage,
+  draft,
+  onRefetch,
+  notificationIntent,
+  onNotificationIntentConsumed,
+}) => (
   <div className="h-[calc(100vh-64px)] flex flex-col">
     {/* Fixed Header */}
     <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
@@ -153,6 +188,8 @@ const ReviewView: React.FC<{ currentStage: StudioStage; draft: DraftWithPlan; on
         originalPrompt={draft.initial_prompt}
         onFinalize={onRefetch}
         onBackToSetup={onRefetch}
+        notificationIntent={notificationIntent}
+        onNotificationIntentConsumed={onNotificationIntentConsumed}
       />
     </div>
   </div>
@@ -224,33 +261,113 @@ const NewDraftView: React.FC<{
   </div>
 );
 
+interface DraftViewOptions extends IntentAwareViewProps {
+  draft: PlannerDraft;
+  currentStage: StudioStage;
+  refetch: () => void;
+  onGenerationStarted: (runId: string) => void;
+}
+
 // Helper to render the appropriate view based on draft status
-const renderDraftView = (
-  draft: PlannerDraft,
-  currentStage: StudioStage,
-  refetch: () => void,
-  onGenerationStarted: (runId: string) => void,
-): React.ReactElement => {
+const renderDraftView = ({
+  draft,
+  currentStage,
+  refetch,
+  onGenerationStarted,
+  notificationIntent,
+  onNotificationIntentConsumed,
+}: DraftViewOptions): React.ReactElement => {
   if (isGeneratingStatus(draft.status)) {
     return <GeneratingView currentStage={currentStage} draft={draft} onRefetch={refetch} />;
   }
 
   if (isApprovedStatus(draft.status)) {
-    return <ApprovedView currentStage={currentStage} draft={draft as DraftWithPlan} onRefetch={refetch} />;
+    return (
+      <ApprovedView
+        currentStage={currentStage}
+        draft={draft as DraftWithPlan}
+        onRefetch={refetch}
+        notificationIntent={notificationIntent}
+        onNotificationIntentConsumed={onNotificationIntentConsumed}
+      />
+    );
   }
 
   if (isReviewStatus(draft.status)) {
-    return <ReviewView currentStage={currentStage} draft={draft as DraftWithPlan} onRefetch={refetch} />;
+    return (
+      <ReviewView
+        currentStage={currentStage}
+        draft={draft as DraftWithPlan}
+        onRefetch={refetch}
+        notificationIntent={notificationIntent}
+        onNotificationIntentConsumed={onNotificationIntentConsumed}
+      />
+    );
   }
 
   return <DraftView currentStage={currentStage} draft={draft} onRefetch={refetch} onGenerationStarted={onGenerationStarted} />;
 };
 
+interface StudioIntentRouting {
+  draftId?: string;
+  pathname: string;
+  search: string;
+  hash: string;
+  state: unknown;
+  navigate: ReturnType<typeof useNavigate>;
+}
+
+function useStudioNotificationIntent({
+  draftId,
+  pathname,
+  search,
+  hash,
+  state,
+  navigate,
+}: StudioIntentRouting): [
+  { draftId: string; value: PlanNotificationIntent } | null,
+  () => void,
+] {
+  const [notificationIntent, setNotificationIntent] = useState<{
+    draftId: string;
+    value: PlanNotificationIntent;
+  } | null>(null);
+
+  useEffect(() => {
+    const parsed = parsePlanNotificationIntent(search);
+    if (!parsed || !draftId) return;
+    setNotificationIntent({ draftId, value: parsed });
+    navigate({ pathname, search: removeNotificationIntent(search), hash }, {
+      replace: true,
+      state,
+    });
+  }, [draftId, hash, navigate, pathname, search, state]);
+
+  const consume = useCallback(() => setNotificationIntent(null), []);
+  return [notificationIntent, consume];
+}
+
+function intentForDraft(
+  pending: { draftId: string; value: PlanNotificationIntent } | null,
+  draftId: string,
+): PlanNotificationIntent | null {
+  return pending?.draftId === draftId ? pending.value : null;
+}
+
 const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
   const { draftId } = useParams<{ draftId: string }>();
   const location = useLocation();
+  const navigate = useNavigate();
   const locationState = location.state as LocationState | undefined;
   const initialDraft = locationState?.initialDraft;
+  const [notificationIntent, handleNotificationIntentConsumed] = useStudioNotificationIntent({
+    draftId,
+    pathname: location.pathname,
+    search: location.search,
+    hash: location.hash,
+    state: location.state,
+    navigate,
+  });
 
   // For /studio/new: track draft created in-place (without navigation)
   const [inPlaceDraft, setInPlaceDraft] = useState<PlannerDraft | null>(null);
@@ -312,7 +429,16 @@ const PlanStudioPage: React.FC<PlanStudioPageProps> = ({ isNew = false }) => {
     return <ErrorView error={error} />;
   }
 
-  return renderDraftView(draft, currentStage, refetch, activateGenerationRun);
+  const activeNotificationIntent = intentForDraft(notificationIntent, draft.draft_id);
+
+  return renderDraftView({
+    draft,
+    currentStage,
+    refetch,
+    onGenerationStarted: activateGenerationRun,
+    notificationIntent: activeNotificationIntent,
+    onNotificationIntentConsumed: handleNotificationIntentConsumed,
+  });
 };
 
 export default PlanStudioPage;

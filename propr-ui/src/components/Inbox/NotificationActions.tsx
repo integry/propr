@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import type { Notification } from '@propr/shared';
-import { ExternalLink, Loader2, MessageSquarePlus, OctagonX, X } from 'lucide-react';
+import { ExternalLink, Loader2, MessageSquarePlus, OctagonX, Play, WandSparkles, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { postTaskFollowup, stopTaskExecution } from '../../api/proprApi';
 import { notificationPullRequestUrl } from '../../pages/inboxUtils';
 import FollowupModal from '../TaskDetails/FollowupModal';
@@ -25,6 +26,8 @@ function visibleActions(
   prUrl: string | null,
 ) {
   return {
+    refine: notification.target.type === 'plan' && advertised.has('refine'),
+    approveExecute: notification.target.type === 'plan' && advertised.has('approve_execute'),
     stop: mutationsEnabled && advertised.has('stop') && notification.target.type === 'task',
     followup: mutationsEnabled && advertised.has('follow_up') && taskId !== undefined,
     openPullRequest: prUrl !== null && advertised.has('open_pr'),
@@ -143,12 +146,35 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
   const actionClass = 'inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-wait disabled:opacity-50';
   const visible = visibleActions(notification, advertised, mutationsEnabled, taskId, prUrl);
   const hasVisibleAction = Object.values(visible).some(Boolean);
+  const planHref = notification.target.type === 'plan'
+    ? `/studio/${encodeURIComponent(notification.target.draftId)}`
+    : null;
 
   if (!hasVisibleAction) return null;
 
   return (
     <>
       <div className="flex min-w-0 flex-wrap items-center gap-2" aria-label={`Actions for ${notification.title}`}>
+        {visible.refine && planHref && (
+          <Link
+            to={`${planHref}?intent=refine`}
+            className={`${actionClass} border-teal-200 text-teal-700 hover:bg-teal-50 focus-visible:ring-teal-500`}
+            aria-label={`Refine ${notification.title}`}
+          >
+            <WandSparkles className="h-4 w-4" aria-hidden="true" />
+            Refine
+          </Link>
+        )}
+        {visible.approveExecute && planHref && (
+          <Link
+            to={`${planHref}?intent=approve_execute`}
+            className={`${actionClass} border-teal-600 bg-teal-600 text-white hover:bg-teal-700 focus-visible:ring-teal-500`}
+            aria-label={`Approve or execute ${notification.title}`}
+          >
+            <Play className="h-4 w-4" aria-hidden="true" />
+            Approve / Execute
+          </Link>
+        )}
         {visible.stop && (
           <button
             type="button"

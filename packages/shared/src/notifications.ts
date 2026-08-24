@@ -123,6 +123,8 @@ export type NotificationSeverity = (typeof NOTIFICATION_SEVERITIES)[number];
 
 /** Foreground actions an Inbox client may offer for a notification event. */
 export const NOTIFICATION_EVENT_ACTIONS = [
+  'refine',
+  'approve_execute',
   'stop',
   'follow_up',
   'open_pr',

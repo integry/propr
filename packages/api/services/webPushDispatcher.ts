@@ -10,6 +10,7 @@ import webPush, {
 import {
   normalizeISO8601Timestamp,
   parseNotificationAction,
+  parseNotificationEventActions,
   parseNotificationTarget,
   parsePushSubscriptionEndpoint,
   parseTruthyEnvValue,
@@ -82,6 +83,7 @@ interface LiveDeliveryRow extends ClaimedJobRow {
   severity: NotificationSeverity;
   target_json: string;
   action_json: string | null;
+  advertised_actions_json: string | null;
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
   timezone: string | null;
@@ -290,6 +292,18 @@ function notificationActionUrl(
     : action.href;
 }
 
+function planIntentUrl(
+  frontendUrl: string,
+  draftId: string,
+  intent: 'refine' | 'approve_execute',
+): string {
+  const url = new URL(
+    absoluteUiUrl(frontendUrl, `/studio/${encodeURIComponent(draftId)}`),
+  );
+  url.searchParams.set('intent', intent);
+  return url.toString();
+}
+
 function parseStoredJson(value: string): unknown {
   return JSON.parse(value) as unknown;
 }
@@ -304,15 +318,37 @@ function buildSafePayload(
   const action = row.action_json === null
     ? null
     : parseNotificationAction(parseStoredJson(row.action_json));
+  const advertisedActions = row.advertised_actions_json === null
+    ? []
+    : parseNotificationEventActions(parseStoredJson(row.advertised_actions_json));
   const fallbackDeepLink = absoluteUiUrl(frontendUrl, targetPath(target));
   const deepLink = action?.type === 'navigate'
     ? notificationActionUrl(action, frontendUrl)
     : fallbackDeepLink;
-  const actions = action === null ? [] : [{
-    action: 'view',
-    title: 'View details',
-    url: notificationActionUrl(action, frontendUrl),
-  }];
+  const planActions = target.type === 'plan' ? advertisedActions.flatMap(advertised => {
+    if (advertised === 'refine') {
+      return [{
+        action: 'refine',
+        title: 'Refine',
+        url: planIntentUrl(frontendUrl, target.draftId, 'refine'),
+      }];
+    }
+    if (advertised === 'approve_execute') {
+      return [{
+        action: 'approve-execute',
+        title: 'Approve / Execute',
+        url: planIntentUrl(frontendUrl, target.draftId, 'approve_execute'),
+      }];
+    }
+    return [];
+  }) : [];
+  const actions = planActions.length > 0
+    ? planActions
+    : action === null ? [] : [{
+      action: 'view',
+      title: 'View details',
+      url: notificationActionUrl(action, frontendUrl),
+    }];
   const summary = row.severity === 'error' || row.severity === 'warning'
     ? 'An operational alert needs your attention.'
     : 'A ProPR update is available.';
@@ -624,6 +660,7 @@ export class WebPushDispatcher {
         'subscription.endpoint', 'subscription.p256dh_key', 'subscription.auth_key',
         'subscription.updated_at as subscription_updated_at',
         'event.kind', 'event.severity', 'event.target_json', 'event.action_json',
+        'event.advertised_actions_json',
         'settings.quiet_hours_start', 'settings.quiet_hours_end', 'settings.timezone',
         'settings.badge_enabled',
       )

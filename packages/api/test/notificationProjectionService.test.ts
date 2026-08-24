@@ -113,6 +113,11 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     const events = await database('notification_events').select('*');
     assert.equal(events.length, 1);
     assert.equal(events[0].kind, 'plan');
+    assert.deepEqual(JSON.parse(events[0].advertised_actions_json), [
+      'refine',
+      'approve_execute',
+      'dismiss',
+    ]);
     assert.doesNotMatch(JSON.stringify(events[0]), /SECRET|run-secret/);
     assert.deepEqual(
       await database('notification_user_states').pluck('user_id'),

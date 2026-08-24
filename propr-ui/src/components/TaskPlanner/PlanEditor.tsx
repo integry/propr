@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { debounce } from 'lodash';
@@ -8,12 +8,19 @@ import { useToast } from '../ui/useToast';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { PlanEditorDesktopLayout } from './PlanEditorDesktopLayout';
 import { PlanEditorMobileLayout } from './PlanEditorMobileLayout';
+import PlanIntentConfirmationDialog from './PlanIntentConfirmationDialog';
+import {
+  describePlanPrBehavior,
+  type PlanNotificationIntent,
+} from '../../utils/notificationIntents';
 
 interface PlanEditorProps {
   draft: DraftWithPlan;
   originalPrompt?: string;
   onFinalize?: () => void;
   onBackToSetup?: () => void;
+  notificationIntent?: PlanNotificationIntent | null;
+  onNotificationIntentConsumed?: () => void;
 }
 
 const noop = () => {};
@@ -33,7 +40,14 @@ const parseInitialPlan = (planJson: DraftWithPlan['plan_json'] | string): PlanTa
 const getPlanName = (draft: DraftWithPlan) => draft.name || draft.initial_prompt || 'Untitled Plan';
 const getBaseBranch = (draft: DraftWithPlan) => draft.context_config?.baseBranch || 'main';
 
-export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, onFinalize, onBackToSetup }) => {
+export const PlanEditor: React.FC<PlanEditorProps> = ({
+  draft,
+  originalPrompt,
+  onFinalize,
+  onBackToSetup,
+  notificationIntent = null,
+  onNotificationIntentConsumed,
+}) => {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [isFinalizing, setIsFinalizing] = useState(false);
@@ -44,6 +58,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
   const [isResettingToSetup, setIsResettingToSetup] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isChatExpanded, setIsChatExpanded] = useState(false);
+  const [focusComposerRequest, setFocusComposerRequest] = useState(0);
+  const [showApproveIntentDialog, setShowApproveIntentDialog] = useState(false);
   const { addToast } = useToast();
   const { isDemoMode } = useDemoMode();
 
@@ -114,7 +130,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
     }
   };
 
-  const handleFinalize = async () => {
+  const handleFinalize = useCallback(async () => {
+    if (isFinalizing || plan.length === 0) return;
     if (isDemoMode) {
       addToast({ type: 'warning', message: 'Demo mode is read-only. GitHub issue creation is disabled.', duration: 4000 });
       return;
@@ -132,7 +149,41 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
     } finally {
       setIsFinalizing(false);
     }
-  };
+  }, [addToast, draft.draft_id, isDemoMode, isFinalizing, onFinalize, plan.length]);
+
+  useEffect(() => {
+    if (!notificationIntent) return;
+    if (notificationIntent === 'refine') {
+      setIsChatExpanded(true);
+      setFocusComposerRequest(request => request + 1);
+    } else {
+      setShowApproveIntentDialog(true);
+    }
+    onNotificationIntentConsumed?.();
+  }, [notificationIntent, onNotificationIntentConsumed]);
+
+  const approvalDialog = (
+    <PlanIntentConfirmationDialog
+      isOpen={showApproveIntentDialog}
+      mode="approve"
+      repository={repository}
+      issueCount={plan.length}
+      agentModelSelection="Selected after issue creation (no agent starts yet)"
+      prBehavior={describePlanPrBehavior(
+        draft.context_config?.useEpic,
+        draft.context_config?.autoMerge,
+      )}
+      isLoading={isFinalizing}
+      confirmDisabled={plan.length === 0 || isFinalizing}
+      readOnly={isDemoMode}
+      unavailableReason={plan.length === 0 ? 'The plan must contain at least one issue before it can be approved.' : null}
+      onClose={() => { if (!isFinalizing) setShowApproveIntentDialog(false); }}
+      onConfirm={() => {
+        setShowApproveIntentDialog(false);
+        void handleFinalize();
+      }}
+    />
+  );
 
   const handleBackToSetup = async () => {
     if (isDemoMode) {
@@ -163,7 +214,8 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
 
   if (isMobile) {
     return (
-      <PlanEditorMobileLayout
+      <>
+        <PlanEditorMobileLayout
         planName={planName}
         repository={repository}
         baseBranch={baseBranch}
@@ -198,17 +250,21 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
         onRefine={handleRefineRequest}
         onChatMessagesChange={handleChatMessagesChange}
         onStopRefinement={handleStopRefinement}
+        focusComposerRequest={focusComposerRequest}
         onSetShowBackToSetupDialog={setShowBackToSetupDialog}
         onSetShowDeleteDialog={setShowDeleteDialog}
         onBackToSetupConfirm={handleBackToSetup}
         onDeleteConfirm={handleDeletePlanConfirm}
         isReadOnly={isDemoMode}
-      />
+        />
+        {approvalDialog}
+      </>
     );
   }
 
   return (
-    <PlanEditorDesktopLayout
+    <>
+      <PlanEditorDesktopLayout
       planName={planName}
       repository={repository}
       baseBranch={baseBranch}
@@ -241,12 +297,15 @@ export const PlanEditor: React.FC<PlanEditorProps> = ({ draft, originalPrompt, o
       onRefine={handleRefineRequest}
       onChatMessagesChange={handleChatMessagesChange}
       onStopRefinement={handleStopRefinement}
+      focusComposerRequest={focusComposerRequest}
       onSetShowBackToSetupDialog={setShowBackToSetupDialog}
       onSetShowDeleteDialog={setShowDeleteDialog}
       onBackToSetupConfirm={handleBackToSetup}
       onDeleteConfirm={handleDeletePlanConfirm}
       isReadOnly={isDemoMode}
-    />
+      />
+      {approvalDialog}
+    </>
   );
 };
 

@@ -192,6 +192,46 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     assert.equal(payload.actions?.some(action => action.action === 'stop'), false);
   });
 
+  test('turns plan actions into intent-only Planner Studio links', async () => {
+    userSequence += 1;
+    const userId = `plan-push-user-${userSequence}`;
+    await notifications.updateNotificationPreferences(userId, {
+      preferences: { plan: { pushEnabled: true } },
+    });
+    await notifications.upsertPushSubscription(userId, {
+      endpoint: `https://fcm.googleapis.com/fcm/send/${userId}`,
+      expirationTime: null,
+      keys: { p256dh: browserPublicKey(), auth: 'A'.repeat(22) },
+    });
+    await notifications.createNotificationEvent({
+      deduplicationKey: `plan-dispatcher:${userId}`,
+      kind: 'plan',
+      severity: 'success',
+      target: { type: 'plan', repository: 'integry/propr', draftId: 'draft-1' },
+      title: 'Plan ready',
+      body: 'A plan is ready.',
+      actions: ['refine', 'approve_execute', 'dismiss'],
+      recipients: [{ userId, pushEnabled: true }],
+    });
+    const payloads: string[] = [];
+    const worker = dispatcher({
+      sendNotification: async (_subscription, payload) => {
+        payloads.push(payload);
+        return success;
+      },
+    });
+
+    assert.equal(await worker.runOnce(), 1);
+    const payload = JSON.parse(payloads[0]) as {
+      deepLink: string;
+      actions: Array<{ action: string; url: string }>;
+    };
+    assert.equal(new URL(payload.deepLink).searchParams.has('intent'), false);
+    assert.deepEqual(payload.actions.map(action => action.action), ['refine', 'approve-execute']);
+    assert.equal(new URL(payload.actions[0].url).searchParams.get('intent'), 'refine');
+    assert.equal(new URL(payload.actions[1].url).searchParams.get('intent'), 'approve_execute');
+  });
+
   test('keeps the Inbox event but creates no job when the category is disabled', async () => {
     const { userId } = await queuedEvent({ pushEnabled: false });
 

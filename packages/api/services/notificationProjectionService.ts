@@ -258,7 +258,7 @@ export class NotificationProjectionService {
       target: { type: 'plan', repository: draft.repository, draftId: payload.draftId },
       title: 'Plan ready for review',
       body: `A plan for ${draft.repository} is ready for review.`,
-      actions: ['dismiss'],
+      actions: ['refine', 'approve_execute', 'dismiss'],
       occurredAt,
     }, [{ userId: draft.user_id, pushEnabled: true }]);
   }

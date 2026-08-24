@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { postTaskFollowup, stopTaskExecution } from '../../api/proprApi';
 import { ToastProvider } from '../ui/Toast';
 import NotificationActions from './NotificationActions';
+import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../../api/proprApi', () => ({
   postTaskFollowup: vi.fn(),
@@ -84,5 +85,31 @@ describe('Notification actions reconciliation', () => {
       .toBeInTheDocument();
     expect(screen.queryByText(/Couldn't stop the task/)).not.toBeInTheDocument();
     confirm.mockRestore();
+  });
+
+  test('offers plan-specific refine and confirmation-gated approval destinations', () => {
+    const plan = notificationSchema.parse({
+      ...notification('Plan ready', []),
+      kind: 'plan',
+      target: { type: 'plan', repository: 'integry/propr', draftId: 'draft/one' },
+      actions: ['refine', 'approve_execute', 'dismiss'],
+    });
+    render(
+      <MemoryRouter>
+        <ToastProvider>
+          <NotificationActions
+            notification={plan}
+            mutationsEnabled
+            onDismiss={vi.fn()}
+            onChanged={vi.fn()}
+          />
+        </ToastProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('link', { name: 'Refine Plan ready' }))
+      .toHaveAttribute('href', '/studio/draft%2Fone?intent=refine');
+    expect(screen.getByRole('link', { name: 'Approve or execute Plan ready' }))
+      .toHaveAttribute('href', '/studio/draft%2Fone?intent=approve_execute');
   });
 });

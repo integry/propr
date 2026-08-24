@@ -310,6 +310,41 @@ describe('PWA service worker', () => {
     expect(harness.networkRequests).toEqual([]);
   });
 
+  test('shows both plan actions and hands approval to the in-app confirmation intent', async () => {
+    const harness = createHarness();
+    const push = waitableEvent({
+      data: {
+        json: () => ({
+          deepLink: 'https://app.example.com/studio/draft-1',
+          actions: [
+            { action: 'refine', title: 'Refine', url: 'https://app.example.com/studio/draft-1?intent=refine' },
+            { action: 'approve-execute', title: 'Approve / Execute', url: 'https://app.example.com/studio/draft-1?intent=approve_execute' },
+          ],
+        }),
+      },
+    });
+    harness.listeners.get('push')?.(push.event);
+    await push.completion();
+
+    expect(harness.shownNotifications[0].options.actions).toEqual([
+      { action: 'refine', title: 'Refine' },
+      { action: 'approve-execute', title: 'Approve / Execute' },
+    ]);
+
+    const click = waitableEvent({
+      notification: harness.shownNotifications[0].options,
+      action: 'approve-execute',
+    });
+    (click.event.notification as { close?: () => void }).close = vi.fn();
+    harness.listeners.get('notificationclick')?.(click.event);
+    await click.completion();
+
+    expect(harness.openedUrls).toEqual([
+      'https://app.example.com/studio/draft-1?intent=approve_execute',
+    ]);
+    expect(harness.networkRequests).toEqual([]);
+  });
+
   test('hands dismiss to the authenticated Inbox without making a request', async () => {
     const harness = createHarness();
     const click = waitableEvent({
