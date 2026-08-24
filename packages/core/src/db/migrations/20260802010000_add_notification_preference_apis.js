@@ -384,8 +384,7 @@ async function createNotificationPreferenceSettings(knex) {
         `${boundedNonBlankTextCheck('user_id')}
           AND ${quietHourCheck('quiet_hours_start')}
           AND ${quietHourCheck('quiet_hours_end')}
-          AND ${boundedNonBlankTextCheck('timezone')}
-          AND badge_enabled IN (0, 1)`,
+          AND ${boundedNonBlankTextCheck('timezone')}`,
         {},
         'notification_preference_settings_values_check'
       );

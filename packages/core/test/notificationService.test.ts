@@ -21,6 +21,10 @@ import {
 } from '../src/services/notificationService.js';
 import { up } from '../src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addPreferenceApis } from '../src/db/migrations/20260802010000_add_notification_preference_apis.js';
+import {
+    down as removeBadgePreference,
+    up as addBadgePreference
+} from '../src/db/migrations/20260824010000_add_notification_badge_preference.js';
 
 let database: Knex;
 let service: NotificationService;
@@ -85,6 +89,7 @@ beforeEach(async () => {
     database = createDatabase();
     await up(database);
     await addPreferenceApis(database);
+    await addBadgePreference(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -97,6 +102,41 @@ afterEach(async () => database.destroy());
 after(async () => closeConnection());
 
 describe('notification service', { concurrency: false }, () => {
+    test('applies and rolls back badge preference validation on existing schemas', async () => {
+        await removeBadgePreference(database);
+        assert.equal(
+            await database.schema.hasColumn('notification_preference_settings', 'badge_enabled'),
+            false
+        );
+
+        await database('notification_preference_settings').insert({
+            user_id: 'badge-upgrade-user',
+            quiet_hours_start: null,
+            quiet_hours_end: null,
+            timezone: 'UTC'
+        });
+        await addBadgePreference(database);
+
+        const before = await database('notification_preference_settings')
+            .where({ user_id: 'badge-upgrade-user' })
+            .first();
+        assert.equal(Number(before.badge_enabled), 1);
+        await assert.rejects(
+            database('notification_preference_settings')
+                .where({ user_id: 'badge-upgrade-user' })
+                .update({ badge_enabled: 2 }),
+            /invalid notification badge preference/
+        );
+        await database('notification_preference_settings')
+            .where({ user_id: 'badge-upgrade-user' })
+            .update({ badge_enabled: false });
+        const after = await database('notification_preference_settings')
+            .where({ user_id: 'badge-upgrade-user' })
+            .first();
+        assert.equal(Number(after.badge_enabled), 0);
+        assert.notEqual(after.updated_at, before.updated_at);
+    });
+
     test('returns the original event and assigns new recipients on a duplicate', async () => {
         const original = await service.createNotificationEvent({
             eventId: 'original-event',

@@ -29,16 +29,37 @@ async function createTouchTrigger(knex, includeBadge) {
   `);
 }
 
+async function dropBadgeValidationTriggers(knex) {
+  await knex.raw('DROP TRIGGER IF EXISTS notification_preference_settings_badge_insert');
+  await knex.raw('DROP TRIGGER IF EXISTS notification_preference_settings_badge_update');
+}
+
+async function createBadgeValidationTriggers(knex) {
+  await dropBadgeValidationTriggers(knex);
+  for (const operation of ['INSERT', 'UPDATE']) {
+    await knex.raw(`
+      CREATE TRIGGER notification_preference_settings_badge_${operation.toLowerCase()}
+      BEFORE ${operation} ON notification_preference_settings
+      WHEN NEW.badge_enabled NOT IN (0, 1)
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid notification badge preference');
+      END
+    `);
+  }
+}
+
 export async function up(knex) {
   if (!(await knex.schema.hasColumn('notification_preference_settings', 'badge_enabled'))) {
     await knex.schema.alterTable('notification_preference_settings', (table) => {
       table.boolean('badge_enabled').notNullable().defaultTo(true);
     });
   }
+  await createBadgeValidationTriggers(knex);
   await createTouchTrigger(knex, true);
 }
 
 export async function down(knex) {
+  await dropBadgeValidationTriggers(knex);
   if (await knex.schema.hasColumn('notification_preference_settings', 'badge_enabled')) {
     await knex.raw('DROP TRIGGER IF EXISTS notification_preference_settings_touch_updated_at');
     await knex.schema.alterTable('notification_preference_settings', (table) => {
