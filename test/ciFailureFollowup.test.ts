@@ -1,5 +1,6 @@
-import { describe, test, mock } from 'node:test';
+import { after, describe, test, mock } from 'node:test';
 import assert from 'node:assert';
+import { closeConnection } from '../packages/core/src/db/connection.js';
 import {
     buildCiFailureDedupeKey,
     buildCiFailureFollowupMarker,
@@ -9,6 +10,10 @@ import {
     stripCiFailureFollowupMarker,
     type CiFailureFollowupRequest,
 } from '../packages/core/src/webhook/ciFailureFollowup.js';
+
+after(async () => {
+    await closeConnection();
+});
 
 function createRequest(): CiFailureFollowupRequest {
     return {
