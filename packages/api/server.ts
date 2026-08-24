@@ -59,6 +59,7 @@ import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
 import { NotificationProjectionService } from './services/notificationProjectionService.js';
+import { WebPushDispatcher } from './services/webPushDispatcher.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
 import { configureApiProxyTrust, createApiRequestRateLimiter, createWebhookRequestRateLimiter } from './requestRateLimits.js';
@@ -187,6 +188,7 @@ let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
 let configReloadSubscription: ConfigReloadSubscription | undefined;
 let notificationProjection: NotificationProjectionService | undefined;
+let webPushDispatcher: WebPushDispatcher | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -406,6 +408,8 @@ async function start(): Promise<void> {
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
+      webPushDispatcher = new WebPushDispatcher({ database: db });
+      webPushDispatcher.start();
       notificationProjection = new NotificationProjectionService({ database: db });
       notificationProjection.startStalledDetector();
       configReloadSubscription = await startConfigReloadSubscription(redisClient, reloadConfigs);
@@ -475,6 +479,7 @@ async function start(): Promise<void> {
       ];
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'Web Push dispatcher', close: () => webPushDispatcher?.close() ?? Promise.resolve() },
           { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },

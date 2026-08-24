@@ -411,21 +411,18 @@ describe('notification service', { concurrency: false }, () => {
                 .then(row => row?.push_enabled),
             1
         );
-        await insertJob('stored-opt-in', 'stored-opt-in-job');
-        assert.equal(
-            await database('push_delivery_jobs')
-                .where({ job_id: 'stored-opt-in-job' })
-                .first()
-                .then(row => row?.status),
-            'pending'
-        );
+        const automaticJob = await database('push_delivery_jobs')
+            .where({ event_id: 'stored-opt-in', subscription_id: subscription.id })
+            .first();
+        assert.ok(automaticJob);
+        assert.equal(automaticJob?.status, 'pending');
 
         await service.updateNotificationPreferences(userId, {
             preferences: { task: { pushEnabled: false } }
         });
         assert.equal(
             await database('push_delivery_jobs')
-                .where({ job_id: 'stored-opt-in-job' })
+                .where({ job_id: automaticJob.job_id })
                 .first()
                 .then(row => row?.status),
             'cancelled',

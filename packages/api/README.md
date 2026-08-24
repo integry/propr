@@ -93,20 +93,20 @@ intersected with the stored category preference. In particular, an explicit
 producer `pushEnabled: true` cannot bypass a user opt-out, while an opt-in only
 enables Push for events whose producer also selected that channel. Object-form
 recipient assignments must always provide `pushEnabled`; the string shorthand
-is explicitly Inbox-only. The repository currently has no production event
-producers, so there are no omitted call sites to migrate.
+is explicitly Inbox-only. Production lifecycle projections select Push as an
+eligible channel, but the user opt-in remains authoritative.
 
-This API currently stores notification delivery policy and browser enrollment;
-it does not include a Web Push dispatcher. Quiet hours therefore do not yet
-suppress outbound requests. A future dispatcher must apply both boundaries in
-the stored IANA timezone at claim time (including retries and DST transitions),
-treat either null boundary as disabled, treat equal non-null boundaries as a
-zero-length window, and retain jobs until the quiet window ends. Preference
+The API owns a Web Push dispatcher that fans eligible events out to every
+subscription active at assignment time. It applies both quiet-hour boundaries
+in the stored IANA timezone at claim time (including retries and DST
+transitions), treats either null boundary as disabled, treats equal non-null
+boundaries as a zero-length window, and retains jobs until the quiet window
+ends. Preference
 opt-outs atomically cancel pending, retryable, and expired-lease jobs; current
 preferences are also checked when jobs are created or claimed. Revocation erases
 stored keys and cancels the same queued work, but both opt-out and subscription
 refresh/revocation remain best-effort for a live lease that may already hold old
-state. A future dispatcher must re-read the current category preference,
+state. The dispatcher re-reads the current category preference,
 subscription, and job immediately before network I/O, use the latest refreshed
 keys, and skip an opted-out user, revoked subscription, expired subscription, or
 cancelled job. It must also reject loopback destinations independently unless it
@@ -144,8 +144,12 @@ non-production `NODE_ENV` and a loopback `API_PUBLIC_URL` (or its unset localhos
 default), so the flag is ineffective on remote preview/staging URLs. The SQLite
 constraint is deliberately stable across restarts and permits loopback rows;
 the authenticated service deployment checks are the enrollment policy boundary.
-Missing, malformed, and mismatched VAPID configuration is reported with a
-sanitized startup warning that never includes either key.
+Set `WEB_PUSH_VAPID_SUBJECT`, `WEB_PUSH_VAPID_PUBLIC_KEY`, and
+`WEB_PUSH_VAPID_PRIVATE_KEY` to enable delivery. Missing, malformed, and
+mismatched VAPID configuration is reported with one sanitized startup warning
+that never includes the subject or either key. Provider throttling, server
+errors, and network failures use capped exponential retry scheduling; HTTP 404
+and 410 responses revoke and erase the subscription.
 
 Quiet-hour timezone aliases are canonicalized using the server's ICU database
 before storage. Shared response parsing validates the returned identifier's

@@ -79,10 +79,11 @@ function createService(overrides: Partial<NotificationRouteService> = {}): Notif
     };
 }
 
-function createVapidConfiguration(): { publicKey: string; privateKey: string } {
+function createVapidConfiguration(): { subject: string; publicKey: string; privateKey: string } {
     const ecdh = createECDH('prime256v1');
     ecdh.generateKeys();
     return {
+        subject: 'mailto:notifications@example.com',
         publicKey: ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url'),
         privateKey: ecdh.getPrivateKey().toString('base64url')
     };
@@ -223,10 +224,10 @@ describe('notification routes', () => {
         const other = createVapidConfiguration();
 
         for (const configuration of [
-            { publicKey: ` ${valid.publicKey}`, privateKey: valid.privateKey },
-            { publicKey: `${valid.publicKey}=`, privateKey: valid.privateKey },
-            { publicKey: valid.publicKey, privateKey: other.privateKey },
-            { publicKey: 'not-a-p256-key', privateKey: 'not-a-private-key' }
+            { subject: valid.subject, publicKey: ` ${valid.publicKey}`, privateKey: valid.privateKey },
+            { subject: valid.subject, publicKey: `${valid.publicKey}=`, privateKey: valid.privateKey },
+            { subject: valid.subject, publicKey: valid.publicKey, privateKey: other.privateKey },
+            { subject: valid.subject, publicKey: 'not-a-p256-key', privateKey: 'not-a-private-key' }
         ]) {
             const routes = createNotificationRoutes({
                 service: createService(),

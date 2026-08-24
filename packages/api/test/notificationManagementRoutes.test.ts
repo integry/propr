@@ -133,11 +133,15 @@ describe('notification subscription management routes', () => {
         const cases = [
             { configuration: {}, expected: 'missing' },
             {
-                configuration: { publicKey: 'invalid-public', privateKey: 'invalid-private' },
+                configuration: { subject: 'ftp://example.com', publicKey: first.publicKey, privateKey: first.privateKey },
+                expected: 'subject'
+            },
+            {
+                configuration: { subject: 'mailto:notifications@example.com', publicKey: 'invalid-public', privateKey: 'invalid-private' },
                 expected: 'malformed'
             },
             {
-                configuration: { publicKey: first.publicKey, privateKey: second.privateKey },
+                configuration: { subject: 'mailto:notifications@example.com', publicKey: first.publicKey, privateKey: second.privateKey },
                 expected: 'do not match'
             }
         ];
