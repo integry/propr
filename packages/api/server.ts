@@ -408,8 +408,14 @@ async function start(): Promise<void> {
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
-      webPushDispatcher = new WebPushDispatcher({ database: db });
-      webPushDispatcher.start();
+      try {
+        const dispatcher = new WebPushDispatcher({ database: db });
+        dispatcher.start();
+        webPushDispatcher = dispatcher;
+      } catch {
+        webPushDispatcher = undefined;
+        console.warn('[notifications] Web Push dispatcher disabled: invalid dispatcher tuning configuration');
+      }
       notificationProjection = new NotificationProjectionService({ database: db });
       notificationProjection.startStalledDetector();
       configReloadSubscription = await startConfigReloadSubscription(redisClient, reloadConfigs);
