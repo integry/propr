@@ -41,7 +41,7 @@ export function useInboxNotifications(): InboxNotificationsState {
   const notificationsRef = useRef(notifications);
   const dismissingRef = useRef(new Set<string>());
   const hiddenIdsRef = useRef(new Set<string>());
-  const { unreadCount, commitUnreadCount } = useNotificationCenter();
+  const { unreadCount, commitUnreadCount, refreshUnreadCount } = useNotificationCenter();
   const { addToast } = useToast();
   notificationsRef.current = notifications;
 
@@ -132,8 +132,9 @@ export function useInboxNotifications(): InboxNotificationsState {
       });
     } finally {
       dismissingRef.current.delete(id);
+      void refreshUnreadCount().catch(() => undefined);
     }
-  }, [addToast, commitUnreadCount, unreadCount]);
+  }, [addToast, commitUnreadCount, refreshUnreadCount, unreadCount]);
 
   const open = useCallback((id: string) => {
     const current = notificationsRef.current.find(notification => notification.id === id);
@@ -157,8 +158,10 @@ export function useInboxNotifications(): InboxNotificationsState {
         type: 'error',
         message: `Couldn't mark the notification read. ${messageFrom(readError)}`,
       });
+    }).finally(() => {
+      void refreshUnreadCount().catch(() => undefined);
     });
-  }, [addToast, commitUnreadCount, unreadCount]);
+  }, [addToast, commitUnreadCount, refreshUnreadCount, unreadCount]);
 
   return {
     notifications,

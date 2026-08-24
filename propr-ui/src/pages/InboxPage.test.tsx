@@ -11,8 +11,9 @@ import {
 } from '../api/notificationApi';
 
 const commitUnreadCount = vi.fn();
+const refreshUnreadCount = vi.fn(async () => undefined);
 vi.mock('../contexts/NotificationCenterContext', () => ({
-  useNotificationCenter: () => ({ unreadCount: 3, commitUnreadCount, refreshUnreadCount: vi.fn() }),
+  useNotificationCenter: () => ({ unreadCount: 3, commitUnreadCount, refreshUnreadCount }),
 }));
 vi.mock('../api/notificationApi', () => ({
   listNotifications: vi.fn(),
@@ -57,6 +58,7 @@ describe('Inbox page', () => {
     vi.mocked(dismissNotification).mockReset();
     vi.mocked(markNotificationRead).mockReset();
     commitUnreadCount.mockReset();
+    refreshUnreadCount.mockClear();
   });
 
   test('optimistically dismisses and restores an item when the request fails', async () => {
@@ -70,6 +72,7 @@ describe('Inbox page', () => {
     expect(screen.queryByText('Task one failed')).not.toBeInTheDocument();
     expect(await screen.findByText('Task one failed')).toBeInTheDocument();
     expect(screen.getByText(/Couldn't dismiss the notification/)).toBeInTheDocument();
+    expect(refreshUnreadCount).toHaveBeenCalledTimes(1);
   });
 
   test('marks an unread card read while following its deep link', async () => {
@@ -85,6 +88,7 @@ describe('Inbox page', () => {
     expect(await screen.findByText('Task details')).toBeInTheDocument();
     expect(markNotificationRead).toHaveBeenCalledWith('event-1');
     await waitFor(() => expect(commitUnreadCount).toHaveBeenCalledWith(0));
+    await waitFor(() => expect(refreshUnreadCount).toHaveBeenCalledTimes(1));
   });
 
   test('merges cursor pages without duplicating notifications', async () => {
