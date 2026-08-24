@@ -23,6 +23,7 @@ interface NotificationCenterValue {
   commitUnreadCount: (count: number) => void;
   commitBadgeEnabled: (enabled: boolean) => void;
   refreshUnreadCount: () => Promise<void>;
+  isActiveIdentity: () => boolean;
 }
 
 const NotificationCenterContext = createContext<NotificationCenterValue | null>(null);
@@ -82,6 +83,8 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
     void updateInstalledBadge(response.unreadCount, badgeEnabledRef.current);
   }, []);
 
+  const isActiveIdentity = useCallback(() => activeRef.current, []);
+
   const identityKey = user ? `user:${user.id}` : isDemoMode ? 'demo' : null;
 
   useEffect(() => {
@@ -127,7 +130,8 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
     commitUnreadCount,
     commitBadgeEnabled,
     refreshUnreadCount,
-  }), [badgeEnabled, commitBadgeEnabled, commitUnreadCount, refreshUnreadCount, unreadCount]);
+    isActiveIdentity,
+  }), [badgeEnabled, commitBadgeEnabled, commitUnreadCount, isActiveIdentity, refreshUnreadCount, unreadCount]);
 
   return (
     <NotificationCenterContext.Provider value={value}>

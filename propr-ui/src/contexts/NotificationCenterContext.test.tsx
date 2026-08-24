@@ -32,6 +32,7 @@ function deferred<T>() {
 let observedActions: {
   commitUnreadCount: (count: number) => void;
   refreshUnreadCount: () => Promise<void>;
+  isActiveIdentity: () => boolean;
 } | null = null;
 
 const Consumer = () => {
@@ -95,6 +96,8 @@ describe('NotificationCenterProvider', () => {
     authState.user = { id: 'user-2', username: 'second-user' };
     view.rerender(centerTree());
     expect(screen.getByText('count:pending')).toBeInTheDocument();
+    expect(oldActions.isActiveIdentity()).toBe(false);
+    expect(observedActions?.isActiveIdentity()).toBe(true);
     oldActions.commitUnreadCount(99);
     await oldActions.refreshUnreadCount();
     expect(screen.getByText('count:pending')).toBeInTheDocument();

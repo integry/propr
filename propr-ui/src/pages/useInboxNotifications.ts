@@ -46,7 +46,12 @@ export function useInboxNotifications(): InboxNotificationsState {
   const readOverridesRef = useRef(new Map<string, Notification>());
   const mutationEpochRef = useRef(0);
   const mountedRef = useRef(true);
-  const { unreadCount, commitUnreadCount, refreshUnreadCount } = useNotificationCenter();
+  const {
+    unreadCount,
+    commitUnreadCount,
+    refreshUnreadCount,
+    isActiveIdentity,
+  } = useNotificationCenter();
   const { addToast } = useToast();
   notificationsRef.current = notifications;
 
@@ -156,7 +161,7 @@ export function useInboxNotifications(): InboxNotificationsState {
         setNotifications(current => mergeNotifications(current, [rollback]));
       }
       if (priorUnreadCount !== null) commitUnreadCount(priorUnreadCount);
-      if (mountedRef.current) {
+      if (isActiveIdentity()) {
         addToast({
           type: 'error',
           message: `Couldn't dismiss the notification. ${messageFrom(dismissError)}`,
@@ -168,7 +173,7 @@ export function useInboxNotifications(): InboxNotificationsState {
       dismissSnapshotsRef.current.delete(id);
       void refreshUnreadCount().catch(() => undefined);
     }
-  }, [addToast, commitUnreadCount, refreshUnreadCount, unreadCount]);
+  }, [addToast, commitUnreadCount, isActiveIdentity, refreshUnreadCount, unreadCount]);
 
   const open = useCallback((id: string) => {
     const current = notificationsRef.current.find(notification => notification.id === id);
@@ -197,7 +202,7 @@ export function useInboxNotifications(): InboxNotificationsState {
           : notification));
       }
       if (priorUnreadCount !== null) commitUnreadCount(priorUnreadCount);
-      if (mountedRef.current) {
+      if (isActiveIdentity()) {
         addToast({
           type: 'error',
           message: `Couldn't mark the notification read. ${messageFrom(readError)}`,
@@ -207,7 +212,7 @@ export function useInboxNotifications(): InboxNotificationsState {
       mutationEpochRef.current += 1;
       void refreshUnreadCount().catch(() => undefined);
     });
-  }, [addToast, commitUnreadCount, refreshUnreadCount, unreadCount]);
+  }, [addToast, commitUnreadCount, isActiveIdentity, refreshUnreadCount, unreadCount]);
 
   return {
     notifications,

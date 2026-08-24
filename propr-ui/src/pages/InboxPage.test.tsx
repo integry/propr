@@ -13,7 +13,12 @@ import {
 const commitUnreadCount = vi.fn();
 const refreshUnreadCount = vi.fn(async () => undefined);
 vi.mock('../contexts/NotificationCenterContext', () => ({
-  useNotificationCenter: () => ({ unreadCount: 3, commitUnreadCount, refreshUnreadCount }),
+  useNotificationCenter: () => ({
+    unreadCount: 3,
+    commitUnreadCount,
+    refreshUnreadCount,
+    isActiveIdentity: () => true,
+  }),
 }));
 vi.mock('../api/notificationApi', () => ({
   listNotifications: vi.fn(),
@@ -99,6 +104,20 @@ describe('Inbox page', () => {
     expect(markNotificationRead).toHaveBeenCalledWith('event-1');
     await waitFor(() => expect(commitUnreadCount).toHaveBeenCalledWith(0));
     await waitFor(() => expect(refreshUnreadCount).toHaveBeenCalledTimes(1));
+  });
+
+  test('shows a read failure toast after an internal detail link unmounts the Inbox', async () => {
+    const notification = item('event-read-failure', 'Read failure notification');
+    const readRequest = deferred<Awaited<ReturnType<typeof markNotificationRead>>>();
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [notification], unreadCount: 1, nextCursor: null });
+    vi.mocked(markNotificationRead).mockReturnValue(readRequest.promise);
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('link', { name: /Read failure notification/ }));
+    expect(await screen.findByText('Task details')).toBeInTheDocument();
+    await act(async () => readRequest.reject(new Error('Read state unavailable')));
+
+    expect(await screen.findByText(/Couldn't mark the notification read.*Read state unavailable/)).toBeInTheDocument();
   });
 
   test('merges cursor pages without duplicating notifications', async () => {
