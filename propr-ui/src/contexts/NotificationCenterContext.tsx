@@ -43,6 +43,7 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
   const [unreadCount, setUnreadCount] = useState<number | null>(null);
   const [badgeEnabled, setBadgeEnabled] = useState(true);
   const generationRef = useRef(0);
+  const preferenceGenerationRef = useRef(0);
   const unreadCountRef = useRef(unreadCount);
   const badgeEnabledRef = useRef(badgeEnabled);
   unreadCountRef.current = unreadCount;
@@ -57,6 +58,7 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
   }, []);
 
   const commitBadgeEnabled = useCallback((enabled: boolean) => {
+    preferenceGenerationRef.current += 1;
     badgeEnabledRef.current = enabled;
     setBadgeEnabled(enabled);
     void updateInstalledBadge(unreadCountRef.current ?? 0, enabled);
@@ -71,19 +73,27 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
     void updateInstalledBadge(response.unreadCount, badgeEnabledRef.current);
   }, []);
 
+  const identityKey = user ? `user:${user.id}` : isDemoMode ? 'demo' : null;
+
   useEffect(() => {
-    if (!user && !isDemoMode) {
+    commitBadgeEnabled(false);
+    const preferenceGeneration = preferenceGenerationRef.current;
+    if (identityKey === null) {
       commitUnreadCount(0);
       return;
     }
     void refreshUnreadCount().catch(() => undefined);
     void getNotificationPreferences()
-      .then(preferences => commitBadgeEnabled(preferences.badgeEnabled))
+      .then(preferences => {
+        if (preferenceGeneration !== preferenceGenerationRef.current) return;
+        commitBadgeEnabled(preferences.badgeEnabled);
+      })
       .catch(() => undefined);
-  }, [commitBadgeEnabled, commitUnreadCount, isDemoMode, refreshUnreadCount, user]);
+    return () => { preferenceGenerationRef.current += 1; };
+  }, [commitBadgeEnabled, commitUnreadCount, identityKey, refreshUnreadCount]);
 
   useEffect(() => {
-    if (!user && !isDemoMode) return;
+    if (identityKey === null) return;
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible') {
         void refreshUnreadCount().catch(() => undefined);
@@ -97,7 +107,7 @@ export const NotificationCenterProvider: React.FC<{ children: React.ReactNode }>
       window.removeEventListener('focus', refreshWhenVisible);
       document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
-  }, [isDemoMode, refreshUnreadCount, user]);
+  }, [identityKey, refreshUnreadCount]);
 
   const value = useMemo(() => ({
     unreadCount,

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { notificationSchema, type Notification } from '@propr/shared';
@@ -35,6 +35,16 @@ function item(id: string, title: string, readAt: string | null = null): Notifica
     readAt,
     dismissedAt: null,
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 const Location = () => <div data-testid="location">{useLocation().search}</div>;
@@ -148,5 +158,71 @@ describe('Inbox page', () => {
     resolveList({ notifications: [notification], unreadCount: 1, nextCursor: null });
     expect(await screen.findByText('You’re all caught up')).toBeInTheDocument();
     expect(screen.queryByText('Already dismissed')).not.toBeInTheDocument();
+    expect(commitUnreadCount).not.toHaveBeenCalledWith(1);
+  });
+
+  test('restores an intent-dismissed item when the request fails after the list arrives', async () => {
+    const notification = item('event-race', 'Restore this notification');
+    const listRequest = deferred<Awaited<ReturnType<typeof listNotifications>>>();
+    const dismissRequest = deferred<Awaited<ReturnType<typeof dismissNotification>>>();
+    vi.mocked(listNotifications).mockReturnValue(listRequest.promise);
+    vi.mocked(dismissNotification).mockReturnValue(dismissRequest.promise);
+    renderInbox('/inbox?intent=dismiss&notification=event-race');
+
+    await waitFor(() => expect(dismissNotification).toHaveBeenCalledWith('event-race'));
+    await act(async () => listRequest.resolve({ notifications: [notification], unreadCount: 1, nextCursor: null }));
+    expect(await screen.findByText('You’re all caught up')).toBeInTheDocument();
+    await act(async () => dismissRequest.reject(new Error('Dismiss failed')));
+
+    expect(await screen.findByText('Restore this notification')).toBeInTheDocument();
+    expect(screen.getByText(/Couldn't dismiss the notification/)).toBeInTheDocument();
+  });
+
+  test('reconciles an older refresh response with a completed read mutation', async () => {
+    const notification = notificationSchema.parse({
+      ...item('event-read-race', 'Read race notification'),
+      action: { type: 'external_link', label: 'Open pull request', href: 'https://github.com/integry/propr/pull/1937' },
+    });
+    const staleRefresh = deferred<Awaited<ReturnType<typeof listNotifications>>>();
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [notification], unreadCount: 1, nextCursor: null })
+      .mockReturnValueOnce(staleRefresh.promise);
+    vi.mocked(markNotificationRead).mockResolvedValue({
+      notification: notificationSchema.parse({
+        ...notification,
+        readAt: '2026-08-24T12:01:00.000Z',
+      }),
+      unreadCount: 0,
+    });
+    renderInbox();
+
+    await screen.findByText('Read race notification');
+    commitUnreadCount.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh Inbox' }));
+    await waitFor(() => expect(listNotifications).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('link', { name: /Read race notification/ }));
+    await waitFor(() => expect(markNotificationRead).toHaveBeenCalledWith('event-read-race'));
+    await act(async () => staleRefresh.resolve({ notifications: [notification], unreadCount: 9, nextCursor: null }));
+
+    await waitFor(() => expect(screen.queryByText('Unread')).not.toBeInTheDocument());
+    expect(commitUnreadCount).not.toHaveBeenCalledWith(9);
+  });
+
+  test('ignores an error from load-more after a refresh supersedes it', async () => {
+    const first = item('event-first', 'First page item');
+    const refreshed = item('event-refreshed', 'Refreshed item');
+    const loadMoreRequest = deferred<Awaited<ReturnType<typeof listNotifications>>>();
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({ notifications: [first], unreadCount: 1, nextCursor: 'cursor-1' })
+      .mockReturnValueOnce(loadMoreRequest.promise)
+      .mockResolvedValueOnce({ notifications: [refreshed], unreadCount: 1, nextCursor: null });
+    renderInbox();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh Inbox' }));
+    expect(await screen.findByText('Refreshed item')).toBeInTheDocument();
+    await act(async () => loadMoreRequest.reject(new Error('Superseded page failed')));
+
+    expect(screen.queryByText(/Superseded page failed/)).not.toBeInTheDocument();
   });
 });

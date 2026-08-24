@@ -41,12 +41,26 @@ export function useInboxNotifications(): InboxNotificationsState {
   const notificationsRef = useRef(notifications);
   const dismissingRef = useRef(new Set<string>());
   const hiddenIdsRef = useRef(new Set<string>());
+  const dismissSnapshotsRef = useRef(new Map<string, Notification>());
+  const readOverridesRef = useRef(new Map<string, Notification>());
+  const mutationEpochRef = useRef(0);
   const { unreadCount, commitUnreadCount, refreshUnreadCount } = useNotificationCenter();
   const { addToast } = useToast();
   notificationsRef.current = notifications;
 
+  const reconcileIncoming = useCallback((incoming: readonly Notification[]) => incoming.flatMap(notification => {
+    if (hiddenIdsRef.current.has(notification.id)) {
+      if (dismissingRef.current.has(notification.id)) {
+        dismissSnapshotsRef.current.set(notification.id, notification);
+      }
+      return [];
+    }
+    return [readOverridesRef.current.get(notification.id) ?? notification];
+  }), []);
+
   const loadFirstPage = useCallback(async (isRefresh: boolean) => {
     const generation = ++requestGenerationRef.current;
+    const mutationEpoch = mutationEpochRef.current;
     if (isRefresh) setRefreshing(true);
     else setInitialLoading(true);
     setError(null);
@@ -55,10 +69,10 @@ export function useInboxNotifications(): InboxNotificationsState {
       if (generation !== requestGenerationRef.current) return;
       setNotifications(mergeNotifications(
         [],
-        response.notifications.filter(notification => !hiddenIdsRef.current.has(notification.id)),
+        reconcileIncoming(response.notifications),
       ));
       setNextCursor(response.nextCursor);
-      commitUnreadCount(response.unreadCount);
+      if (mutationEpoch === mutationEpochRef.current) commitUnreadCount(response.unreadCount);
     } catch (loadError) {
       if (generation === requestGenerationRef.current) setError(messageFrom(loadError));
     } finally {
@@ -67,7 +81,7 @@ export function useInboxNotifications(): InboxNotificationsState {
         setRefreshing(false);
       }
     }
-  }, [commitUnreadCount]);
+  }, [commitUnreadCount, reconcileIncoming]);
 
   useEffect(() => {
     void loadFirstPage(false);
@@ -91,6 +105,7 @@ export function useInboxNotifications(): InboxNotificationsState {
     if (!nextCursor || loadingMore || refreshing || initialLoading) return;
     const cursor = nextCursor;
     const generation = requestGenerationRef.current;
+    const mutationEpoch = mutationEpochRef.current;
     setLoadingMore(true);
     setError(null);
     try {
@@ -98,22 +113,24 @@ export function useInboxNotifications(): InboxNotificationsState {
       if (generation !== requestGenerationRef.current) return;
       setNotifications(current => mergeNotifications(
         current,
-        response.notifications.filter(notification => !hiddenIdsRef.current.has(notification.id)),
+        reconcileIncoming(response.notifications),
       ));
       setNextCursor(response.nextCursor);
-      commitUnreadCount(response.unreadCount);
+      if (mutationEpoch === mutationEpochRef.current) commitUnreadCount(response.unreadCount);
     } catch (loadError) {
-      setError(messageFrom(loadError));
+      if (generation === requestGenerationRef.current) setError(messageFrom(loadError));
     } finally {
       setLoadingMore(false);
     }
-  }, [commitUnreadCount, initialLoading, loadingMore, nextCursor, refreshing]);
+  }, [commitUnreadCount, initialLoading, loadingMore, nextCursor, reconcileIncoming, refreshing]);
 
   const dismiss = useCallback(async (id: string) => {
     if (dismissingRef.current.has(id)) return;
+    mutationEpochRef.current += 1;
     dismissingRef.current.add(id);
     hiddenIdsRef.current.add(id);
     const removed = notificationsRef.current.find(notification => notification.id === id);
+    if (removed) dismissSnapshotsRef.current.set(id, removed);
     const priorUnreadCount = unreadCount;
     setNotifications(current => current.filter(notification => notification.id !== id));
     if (removed?.readAt === null && priorUnreadCount !== null) {
@@ -124,14 +141,17 @@ export function useInboxNotifications(): InboxNotificationsState {
       commitUnreadCount(response.unreadCount);
     } catch (dismissError) {
       hiddenIdsRef.current.delete(id);
-      if (removed) setNotifications(current => mergeNotifications(current, [removed]));
+      const rollback = removed ?? dismissSnapshotsRef.current.get(id);
+      if (rollback) setNotifications(current => mergeNotifications(current, [rollback]));
       if (priorUnreadCount !== null) commitUnreadCount(priorUnreadCount);
       addToast({
         type: 'error',
         message: `Couldn't dismiss the notification. ${messageFrom(dismissError)}`,
       });
     } finally {
+      mutationEpochRef.current += 1;
       dismissingRef.current.delete(id);
+      dismissSnapshotsRef.current.delete(id);
       void refreshUnreadCount().catch(() => undefined);
     }
   }, [addToast, commitUnreadCount, refreshUnreadCount, unreadCount]);
@@ -139,17 +159,22 @@ export function useInboxNotifications(): InboxNotificationsState {
   const open = useCallback((id: string) => {
     const current = notificationsRef.current.find(notification => notification.id === id);
     if (!current || current.readAt !== null) return;
+    mutationEpochRef.current += 1;
     const priorUnreadCount = unreadCount;
+    const optimistic = { ...current, readAt: current.occurredAt };
+    readOverridesRef.current.set(id, optimistic);
     setNotifications(items => items.map(notification => notification.id === id
-      ? { ...notification, readAt: notification.occurredAt }
+      ? optimistic
       : notification));
     if (priorUnreadCount !== null) commitUnreadCount(Math.max(0, priorUnreadCount - 1));
     void markNotificationRead(id).then(response => {
+      readOverridesRef.current.set(id, response.notification);
       setNotifications(items => items.map(notification => notification.id === id
         ? response.notification
         : notification));
       commitUnreadCount(response.unreadCount);
     }).catch(readError => {
+      readOverridesRef.current.delete(id);
       setNotifications(items => items.map(notification => notification.id === id
         ? current
         : notification));
@@ -159,6 +184,7 @@ export function useInboxNotifications(): InboxNotificationsState {
         message: `Couldn't mark the notification read. ${messageFrom(readError)}`,
       });
     }).finally(() => {
+      mutationEpochRef.current += 1;
       void refreshUnreadCount().catch(() => undefined);
     });
   }, [addToast, commitUnreadCount, refreshUnreadCount, unreadCount]);
