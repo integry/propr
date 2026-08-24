@@ -176,7 +176,12 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   async function getRepos(_req: Request, res: Response): Promise<void> {
     try {
       const repos = await configStore.loadMonitoredReposRaw();
-      res.json({ repos_to_monitor: repos });
+      res.json({
+        repos_to_monitor: repos.map(repo => ({
+          ...repo,
+          autoFollowupOnFailedCi: repo.autoFollowupOnFailedCi === true
+        }))
+      });
     } catch (error) {
       console.error('Error in /api/config/repos GET:', error);
       res.status(500).json({ error: 'Failed to load repository configuration' });
@@ -196,17 +201,26 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       return;
     }
     // Validate and process repos before taking the lock to avoid blocking valid updates on malformed requests.
-    const processedRepos: RepoToMonitor[] = [];
+    const validatedRepos: RepoToMonitor[] = [];
     for (const repo of repos_to_monitor) {
       const normalized = normalizeRepoConfig(repo);
       if (!normalized.ok) {
         res.status(400).json({ error: normalized.error });
         return;
       }
-      processedRepos.push(normalized.value);
+      validatedRepos.push(normalized.value);
     }
     const result = await withConfigLock(redisClient, 'config:repos:lock', async lock => {
       const previousRepos = await configStore.loadMonitoredReposRaw();
+      const processedRepos = validatedRepos.map((repo, index) => {
+        const incomingRepo = repos_to_monitor[index] as Partial<RepoToMonitor>;
+        if (incomingRepo.autoFollowupOnFailedCi !== undefined) return repo;
+        const previousRepo = previousRepos.find(candidate => candidate.id === repo.id);
+        return {
+          ...repo,
+          autoFollowupOnFailedCi: previousRepo?.autoFollowupOnFailedCi === true
+        };
+      });
       return saveThenPublishConfigUpdate({
         save: async () => {
           await database.transaction(async trx => {
@@ -231,7 +245,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     });
     if (result.status === 200) {
       try {
-        await logActivityHelper(`Updated monitored repositories list (${processedRepos.length} repos)`, 'config-update', 'config_updated', req.user?.username);
+        await logActivityHelper(`Updated monitored repositories list (${validatedRepos.length} repos)`, 'config-update', 'config_updated', req.user?.username);
       } catch (error) { console.error('Failed to log monitored repositories update activity:', error); }
     }
     res.status(result.status).json(result.body);

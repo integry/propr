@@ -295,6 +295,7 @@ export {
     getReposFromEnv,
     getRepos,
     isMonitoredRepository,
+    isAutoCiFollowupEnabledForRepository,
     resolveMonitoredRepositories,
     getAiPrimaryTag,
     getPrimaryProcessingLabels,
