@@ -11,9 +11,10 @@ import {
   TasksButton,
 } from './GlobalHeaderComponents';
 import type { CurrentUser } from '../api/proprTypes';
+import MobileBottomNavigation from './MobileBottomNavigation';
 
 interface GlobalHeaderProps {
-  user: Pick<CurrentUser, 'id' | 'username' | 'displayName' | 'avatarUrl'> | null;
+  user: CurrentUser | null;
   onLogout: () => void;
   onMenuToggle: () => void;
   MenuIcon: React.FC<{ className?: string }>;
@@ -134,9 +135,10 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
   const newPlanTitle = isDemoMode ? 'Demo mode is read-only' : 'New Plan';
 
   return (
-    // Global navigation owns app-wide dropdowns, so its stacking context must stay
-    // above route-level sticky headers such as task details summaries.
-    <header className="bg-white border-b border-gray-200 h-12 sm:h-16 flex items-stretch shadow-sm z-40 sticky top-0">
+    <>
+    {/* Global navigation owns app-wide dropdowns, so its stacking context must stay
+        above route-level sticky headers such as task details summaries. */}
+    <header className="bg-white border-b border-gray-200 h-16 hidden md:flex items-stretch shadow-sm z-40 sticky top-0">
       <div className="flex items-center lg:hidden px-4">
         <button
           onClick={onMenuToggle}
@@ -215,6 +217,14 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
 
       <ProfileSection user={user} onLogout={onLogout} systemHealth={systemHealth} />
     </header>
+    <MobileBottomNavigation
+      user={user}
+      onLogout={onLogout}
+      isDemoMode={isDemoMode}
+      unreadCount={inboxUnreadCount}
+      systemHealth={systemHealth}
+    />
+    </>
   );
 };
 

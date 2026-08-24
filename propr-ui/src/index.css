@@ -7,6 +7,22 @@ body {
   font-family: 'Inter', sans-serif;
 }
 
+/* Keep mobile route controls above the fixed primary navigation, including the
+   additional home-indicator area on iPhones. */
+.mobile-content-clearance {
+  padding-bottom: calc(4rem + env(safe-area-inset-bottom));
+}
+
+.mobile-bottom-navigation {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@media (min-width: 768px) {
+  .mobile-content-clearance {
+    padding-bottom: 0;
+  }
+}
+
 /* Stats label styling - small, uppercase, lighter grey */
 .stat-label {
   @apply text-xs font-semibold text-slate-500 uppercase tracking-wider;

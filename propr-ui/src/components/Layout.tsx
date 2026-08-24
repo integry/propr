@@ -265,7 +265,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
         {!isDemoMode && <ConnectCapacityBanner />}
 
-        <main className="flex-1 overflow-y-auto">
+        <main className="mobile-content-clearance flex-1 overflow-y-auto md:pb-0">
           {children}
         </main>
       </div>
