@@ -13,7 +13,7 @@ const user: CurrentUser = {
   email: 'octocat@example.com',
   avatarUrl: null,
   role: 'admin',
-  permissions: ['instance.manage_agents'],
+  permissions: ['instance.manage_agents', 'instance.manage_members'],
   authorizationSource: 'local',
 };
 
@@ -35,11 +35,15 @@ const Location = () => {
   return <div data-testid="location">{location.pathname}</div>;
 };
 
-function renderNavigation(initialEntry = '/tasks/task-1', onLogout = vi.fn()) {
+function renderNavigation(
+  initialEntry = '/tasks/task-1',
+  onLogout = vi.fn(),
+  currentUser: CurrentUser | null = user
+) {
   render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <MobileBottomNavigation
-        user={user}
+        user={currentUser}
         onLogout={onLogout}
         isDemoMode={false}
         unreadCount={7}
@@ -78,10 +82,12 @@ describe('MobileBottomNavigation', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'More' });
     expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Plans' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Coding Agents' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Logs' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Access' })).toBeInTheDocument();
     expect(screen.getByText('System health')).toBeInTheDocument();
     expect(screen.getByText('The Octocat')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
@@ -109,6 +115,24 @@ describe('MobileBottomNavigation', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/plans');
     expect(screen.queryByRole('dialog', { name: 'More' })).not.toBeInTheDocument();
     expect(moreButton).toHaveAttribute('aria-current', 'page');
+  });
+
+  it.each(['/', '/admin/members'])('marks More active for %s', route => {
+    renderNavigation(route);
+
+    expect(screen.getByRole('button', { name: 'More' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('hides Access without member management permission', () => {
+    renderNavigation('/tasks', vi.fn(), {
+      ...user,
+      permissions: ['instance.manage_agents'],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'More' }));
+
+    expect(screen.getByRole('link', { name: 'Dashboard' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Access' })).not.toBeInTheDocument();
   });
 
   it('signs out from the identity section', () => {

@@ -9,11 +9,13 @@ import {
   CircleCheck,
   CircleAlert,
   Cpu,
+  Home,
   Inbox,
   LogOut,
   MoreHorizontal,
   ScrollText,
   Settings,
+  ShieldCheck,
   X,
 } from 'lucide-react';
 import type { HeaderStats } from '../hooks/useHeaderStats';
@@ -45,20 +47,24 @@ const getNavigationState = (pathname: string) => {
     activity: pathMatches(pathname, '/tasks'),
     newPlan,
     repositories: pathMatches(pathname, '/repositories') || pathMatches(pathname, '/summaries'),
-    more: pathMatches(pathname, '/plans') ||
+    more: pathname === '/' || pathMatches(pathname, '/plans') ||
       (pathMatches(pathname, '/studio') && !newPlan) ||
       pathMatches(pathname, '/ai-agents') || pathMatches(pathname, '/llm-logs') ||
-      pathMatches(pathname, '/settings'),
+      pathMatches(pathname, '/settings') || pathMatches(pathname, '/admin/members'),
   };
 };
 
 const getMoreItems = (user: CurrentUser | null) => [
+  { label: 'Dashboard', to: '/', icon: Home },
   { label: 'Plans', to: '/plans', icon: ScrollText },
   ...(userHasPermission(user, 'instance.manage_agents')
     ? [{ label: 'Coding Agents', to: '/ai-agents', icon: Bot }]
     : []),
   { label: 'Logs', to: '/llm-logs', icon: Cpu },
   { label: 'Settings', to: '/settings', icon: Settings },
+  ...(userHasPermission(user, 'instance.manage_members')
+    ? [{ label: 'Access', to: '/admin/members', icon: ShieldCheck }]
+    : []),
 ];
 
 interface MobileNavLinkProps {
