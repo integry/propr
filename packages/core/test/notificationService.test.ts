@@ -256,7 +256,7 @@ describe('notification service', { concurrency: false }, () => {
         await addAdvertisedActions(database);
 
         const listed = await service.listNotifications('user-a');
-        assert.deepEqual(listed.notifications[0].actions, []);
+        assert.deepEqual(listed.notifications[0].actions, ['open_pr', 'dismiss']);
         assert.deepEqual(listed.notifications[0].metadata, metadata);
     });
 

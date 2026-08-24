@@ -170,7 +170,7 @@ function toNotificationEvent(row: NotificationEventRow): NotificationEvent {
             ? {}
             : { action: parseStoredJson(row.action_json, 'action') }),
         actions: row.advertised_actions_json === null
-            ? []
+            ? ['open_pr', 'dismiss']
             : parseStoredJson(row.advertised_actions_json, 'advertised actions'),
         ...(storedMetadata === undefined ? {} : { metadata: storedMetadata }),
         occurredAt: row.occurred_at,

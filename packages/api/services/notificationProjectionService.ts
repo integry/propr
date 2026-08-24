@@ -150,10 +150,15 @@ function isValidGithubRepository(repository: string): boolean {
   return parts.length === 2 && parts.every(part => /^[A-Za-z0-9_.-]+$/.test(part));
 }
 
-function supportsTaskFollowup(task: Record<string, unknown>): boolean {
+function supportsTaskFollowup(
+  task: Record<string, unknown>,
+  projectedIssueNumber: number | undefined,
+): boolean {
+  const storedIssueNumber = positiveInteger(task.issue_number);
   return typeof task.repository === 'string'
     && isValidGithubRepository(task.repository)
-    && positiveInteger(task.issue_number) !== undefined;
+    && storedIssueNumber !== undefined
+    && storedIssueNumber === projectedIssueNumber;
 }
 
 function safeGithubPullRequestUrl(repository: string, prNumber: number): string | undefined {
@@ -517,14 +522,14 @@ export class NotificationProjectionService {
       ?? (isPullRequestTask ? positiveInteger(initial.number) : undefined);
     const isReview = taskType === 'review' || historyMetadata.commandMode === 'review';
     const storedIssueNumber = positiveInteger(task.issue_number);
-    const followupEligible = supportsTaskFollowup(task);
+    const issueNumber = positiveInteger(payload.issueNumber) ?? storedIssueNumber;
     return {
       repository,
-      issueNumber: positiveInteger(payload.issueNumber) ?? positiveInteger(task.issue_number),
+      issueNumber,
       prNumber,
       isReview,
-      followupEligible,
-      reviewFollowupEligible: followupEligible && storedIssueNumber === prNumber,
+      followupEligible: supportsTaskFollowup(task, issueNumber),
+      reviewFollowupEligible: supportsTaskFollowup(task, prNumber),
     };
   }
 

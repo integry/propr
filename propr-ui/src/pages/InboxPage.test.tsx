@@ -171,25 +171,23 @@ describe('Inbox page', () => {
 
     view.unmount();
     open.mockClear();
-    const legacy = item('event-legacy-pr', 'Legacy PR', null, {
+    const actionless = item('event-actionless-pr', 'Actionless PR', null, {
       target: {
-        type: 'task', repository: 'integry/propr', taskId: 'task-event-legacy-pr', prNumber: 1724,
+        type: 'task', repository: 'integry/propr', taskId: 'task-event-actionless-pr', prNumber: 1724,
       },
       actions: [],
       action: {
         type: 'external_link', label: 'Open pull request', href: 'https://github.com/integry/propr/pull/1724',
       },
     });
-    vi.mocked(listNotifications).mockResolvedValue({ notifications: [legacy], unreadCount: 1, nextCursor: null });
-    const legacyView = renderInbox();
-    fireEvent.click(await screen.findByRole('button', { name: 'Open pull request for Legacy PR' }));
-    expect(open).toHaveBeenCalledWith(
-      'https://github.com/integry/propr/pull/1724',
-      '_blank',
-      'noopener,noreferrer',
-    );
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [actionless], unreadCount: 1, nextCursor: null });
+    const actionlessView = renderInbox();
+    expect(await screen.findByText('Actionless PR')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open pull request for Actionless PR' }))
+      .not.toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
 
-    legacyView.unmount();
+    actionlessView.unmount();
     open.mockClear();
     const invalid = item('event-invalid-pr', 'Invalid PR', null, {
       actions: ['open_pr'],
@@ -206,8 +204,8 @@ describe('Inbox page', () => {
     open.mockRestore();
   });
 
-  test('optimistically dismisses and restores an item with no advertised actions when the request fails', async () => {
-    const notification = item('event-1', 'Task one failed', null, { actions: [] });
+  test('optimistically dismisses and restores an item advertising dismiss when the request fails', async () => {
+    const notification = item('event-1', 'Task one failed', null, { actions: ['dismiss'] });
     vi.mocked(listNotifications).mockResolvedValue({ notifications: [notification], unreadCount: 1, nextCursor: null });
     vi.mocked(dismissNotification).mockRejectedValue(new Error('Network unavailable'));
     renderInbox();

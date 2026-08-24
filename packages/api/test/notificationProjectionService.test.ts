@@ -285,8 +285,8 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     const reviewAt = iso(2_000);
     await database('tasks').insert([
       {
-        task_id: 'failed-without-stored-issue', repository: 'integry/propr',
-        issue_number: null, pr_number: null, task_type: 'issue', initial_job_data: '{}',
+        task_id: 'failed-with-mismatched-payload-issue', repository: 'integry/propr',
+        issue_number: 100, pr_number: null, task_type: 'issue', initial_job_data: '{}',
       },
       {
         task_id: 'completed-without-stored-issue', repository: 'integry/propr',
@@ -309,7 +309,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     ]);
 
     await projection.projectTaskUpdate({
-      eventType: TASK_UPDATE, taskId: 'failed-without-stored-issue', state: 'failed',
+      eventType: TASK_UPDATE, taskId: 'failed-with-mismatched-payload-issue', state: 'failed',
       repository: 'integry/propr', issueNumber: 101, timestamp: failedAt,
     });
     clock += 1_000;

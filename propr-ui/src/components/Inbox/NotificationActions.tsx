@@ -24,12 +24,11 @@ function visibleActions(
   taskId: string | undefined,
   prUrl: string | null,
 ) {
-  const legacy = advertised.size === 0;
   return {
     stop: mutationsEnabled && advertised.has('stop') && notification.target.type === 'task',
     followup: mutationsEnabled && advertised.has('follow_up') && taskId !== undefined,
-    openPullRequest: prUrl !== null && (advertised.has('open_pr') || legacy),
-    dismiss: mutationsEnabled && (advertised.has('dismiss') || legacy),
+    openPullRequest: prUrl !== null && advertised.has('open_pr'),
+    dismiss: mutationsEnabled && advertised.has('dismiss'),
   };
 }
 
