@@ -33,8 +33,12 @@ The backend authenticates to GitHub in one of three modes — `demo`, `relay`, o
 | `API_PUBLIC_URL` | `http://localhost:4000` when unset | Public URL the API is reached at (auth redirects, attachment links, cookie security). Derived to the `t-<id>.propr.dev` host in tunnel mode. | Custom deployments; derived in tunnel mode. |
 | `COOKIE_DOMAIN` | Unset | Session cookie domain. Leave unset — including for tunnel proxy sessions, which run host-only on a single `t-<id>.propr.dev` host. | Custom multi-subdomain deployments only. |
 | `AUTH_REDIRECT_ALLOWED_HOSTS` | Unset | Comma-separated extra redirect hosts for auth preview flows. Entries are exact-match unless prefixed with `.` or `*.` for trusted parent domains. | Preview auth flows. |
-| `VAPID_PUBLIC_KEY` | Unset | Browser-safe public half of the installation's P-256 Web Push VAPID key pair. The API advertises it only when its format and match with the private key are valid. | Web Push. |
-| `VAPID_PRIVATE_KEY` | Unset | Secret half of the same P-256 VAPID pair, retained server-side for validation and future request signing. Its value is never returned by the API. | Web Push; keep server-side only. |
+| `WEB_PUSH_VAPID_SUBJECT` | Unset | HTTPS contact URL or `mailto:` address placed in VAPID assertions. Delivery stays disabled when it is missing or malformed. | Web Push. |
+| `WEB_PUSH_VAPID_PUBLIC_KEY` | Unset | Browser-safe public half of the installation's P-256 Web Push VAPID key pair. The API advertises it only when the complete configuration is valid. | Web Push. |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | Unset | Secret half of the same P-256 VAPID pair used only for request signing. Its value is never returned by the API. | Web Push; keep server-side only. |
+| `WEB_PUSH_ENABLED` | `true` | Global delivery switch. Set to `false` to stop claiming Push jobs without changing user preferences or subscriptions. | Optional Web Push control. |
+| `WEB_PUSH_MAX_ATTEMPTS` | `5` | Maximum provider requests per delivery job before a transient failure becomes terminal. | Optional Web Push tuning. |
+| `WEB_PUSH_RETRY_BASE_MS` / `WEB_PUSH_RETRY_CAP_MS` | `30000` / `900000` | Base and cap for exponential retry scheduling after throttling, provider errors, or network failures. | Optional Web Push tuning. |
 | `PROPR_ALLOW_INSECURE_LOCAL_WEB_PUSH` | `false` | Requests loopback HTTP Push enrollment for isolated local development. It is honored only outside production when `API_PUBLIC_URL` is unset/local or has a loopback host, and can be changed without migrating the stable schema. | Local browser development only. |
 | `PROPR_API_RATE_LIMIT_MAX` / `PROPR_API_RATE_LIMIT_WINDOW_MS` | `600` / `60000` | Per-client quota and window (milliseconds) for all `/api` requests. | Optional tuning. |
 | `PROPR_AUTH_RATE_LIMIT_MAX` / `PROPR_AUTH_RATE_LIMIT_WINDOW_MS` | `30` / `900000` | Additional, tighter per-client quota for OAuth and session endpoints. | Optional tuning. |

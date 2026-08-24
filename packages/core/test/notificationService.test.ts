@@ -411,21 +411,18 @@ describe('notification service', { concurrency: false }, () => {
                 .then(row => row?.push_enabled),
             1
         );
-        await insertJob('stored-opt-in', 'stored-opt-in-job');
-        assert.equal(
-            await database('push_delivery_jobs')
-                .where({ job_id: 'stored-opt-in-job' })
-                .first()
-                .then(row => row?.status),
-            'pending'
-        );
+        const automaticJob = await database('push_delivery_jobs')
+            .where({ event_id: 'stored-opt-in', subscription_id: subscription.id })
+            .first();
+        assert.ok(automaticJob);
+        assert.equal(automaticJob?.status, 'pending');
 
         await service.updateNotificationPreferences(userId, {
             preferences: { task: { pushEnabled: false } }
         });
         assert.equal(
             await database('push_delivery_jobs')
-                .where({ job_id: 'stored-opt-in-job' })
+                .where({ job_id: automaticJob.job_id })
                 .first()
                 .then(row => row?.status),
             'cancelled',
@@ -450,6 +447,133 @@ describe('notification service', { concurrency: false }, () => {
                 .where({ event_id: 'stored-opt-out-again', user_id: userId })
                 .first()
                 .then(row => row?.push_enabled),
+            0
+        );
+    });
+
+    test('chunks large per-subscription fanout without losing Inbox projection', async () => {
+        let generatedId = 0;
+        const fanoutService = new NotificationService({
+            database,
+            now: () => new Date(clock += 1000),
+            generateId: () => `large-fanout-${generatedId += 1}`,
+            allowInsecureLocalhost: false
+        });
+        const recipients: Array<{ userId: string; pushEnabled: true }> = [];
+        for (let userIndex = 0; userIndex < 15; userIndex += 1) {
+            const userId = `large-fanout-user-${userIndex}`;
+            recipients.push({ userId, pushEnabled: true });
+            await fanoutService.updateNotificationPreferences(userId, {
+                preferences: { task: { pushEnabled: true } }
+            });
+            for (let subscriptionIndex = 0; subscriptionIndex < 10; subscriptionIndex += 1) {
+                await fanoutService.upsertPushSubscription(userId, {
+                    endpoint: 'https://fcm.googleapis.com/fcm/send/'
+                        + `${userId}-${subscriptionIndex}`,
+                    expirationTime: null,
+                    keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+                });
+            }
+        }
+
+        const fanoutInserts: Array<{ sql: string; bindings?: readonly unknown[] }> = [];
+        const captureFanoutInsert = (query: { sql: string; bindings?: readonly unknown[] }) => {
+            if (query.sql.startsWith('insert into `push_delivery_jobs`')) {
+                fanoutInserts.push(query);
+            }
+        };
+        database.on('query', captureFanoutInsert);
+        try {
+            await fanoutService.createNotificationEvent({
+                eventId: 'large-fanout-event',
+                deduplicationKey: 'large-fanout-event',
+                kind: 'task',
+                target: {
+                    type: 'task',
+                    repository: 'integry/propr',
+                    taskId: 'large-fanout-task'
+                },
+                title: 'Large fanout',
+                body: 'Every active browser receives a job.',
+                recipients
+            });
+        } finally {
+            database.removeListener('query', captureFanoutInsert);
+        }
+
+        assert.equal(fanoutInserts.length, 2);
+        assert.equal(
+            fanoutInserts.every(query => (query.bindings?.length ?? 0) <= 700),
+            true
+        );
+        assert.equal(
+            await database('push_delivery_jobs').where({ event_id: 'large-fanout-event' })
+                .count('* as count').first().then(row => Number(row?.count)),
+            150
+        );
+        assert.equal(
+            await database('notification_user_states').where({ event_id: 'large-fanout-event' })
+                .count('* as count').first().then(row => Number(row?.count)),
+            15
+        );
+    });
+
+    test('does not fan out a historical event after subscription reactivation', async () => {
+        const userId = 'reactivated-user';
+        const endpoint = 'https://fcm.googleapis.com/fcm/send/reactivated-user';
+        await service.updateNotificationPreferences(userId, {
+            preferences: { task: { pushEnabled: true } }
+        });
+        const subscription = await service.upsertPushSubscription(userId, {
+            endpoint,
+            expirationTime: null,
+            keys: { p256dh: p256dhKey1, auth: 'A'.repeat(22) }
+        });
+        await service.revokePushSubscription(userId, endpoint);
+
+        const createHistoricalEvent = (eventId: string) => service.createNotificationEvent({
+            eventId,
+            deduplicationKey: 'reactivation-history',
+            kind: 'task',
+            target: {
+                type: 'task',
+                repository: 'integry/propr',
+                taskId: 'task-reactivation-history'
+            },
+            title: 'Historical event',
+            body: 'Assigned while the browser was revoked',
+            occurredAt: '2026-08-02T09:00:00.000Z',
+            recipients: [{ userId, pushEnabled: true }]
+        });
+        await createHistoricalEvent('historical-event');
+        const recipient = await database('notification_user_states')
+            .where({ event_id: 'historical-event', user_id: userId })
+            .first();
+        assert.ok(recipient);
+        assert.equal(
+            await database('push_delivery_jobs').where({ event_id: 'historical-event' })
+                .count('* as count').first().then(row => Number(row?.count)),
+            0
+        );
+
+        const reactivated = await service.upsertPushSubscription(userId, {
+            endpoint,
+            expirationTime: null,
+            keys: { p256dh: p256dhKey2, auth: 'B'.repeat(21) + 'A' }
+        });
+        assert.equal(reactivated.id, subscription.id);
+        const reactivatedRow = await database('push_subscriptions')
+            .where({ subscription_id: subscription.id })
+            .first();
+        assert.ok(reactivatedRow);
+        assert.ok(reactivatedRow.created_at <= recipient.created_at);
+        assert.ok(reactivatedRow.updated_at > recipient.created_at);
+
+        const duplicate = await createHistoricalEvent('duplicate-historical-event');
+        assert.equal(duplicate.id, 'historical-event');
+        assert.equal(
+            await database('push_delivery_jobs').where({ event_id: 'historical-event' })
+                .count('* as count').first().then(row => Number(row?.count)),
             0
         );
     });

@@ -59,6 +59,7 @@ import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
 import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
 import { NotificationProjectionService } from './services/notificationProjectionService.js';
+import { WebPushDispatcher } from './services/webPushDispatcher.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
 import { configureApiProxyTrust, createApiRequestRateLimiter, createWebhookRequestRateLimiter } from './requestRateLimits.js';
@@ -187,6 +188,8 @@ let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
 let configReloadSubscription: ConfigReloadSubscription | undefined;
 let notificationProjection: NotificationProjectionService | undefined;
+let webPushDispatcher: WebPushDispatcher | undefined;
+let webPushDispatcherConfigured = false;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -270,7 +273,7 @@ function setupRoutes(): void {
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
-  const notificationRoutes = createNotificationRoutes();
+  const notificationRoutes = createNotificationRoutes({ webPushDispatcherConfigured });
   const adminRoutes = createAdminRoutes();
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
   const agentVersionRoutes = createAgentVersionRoutes();
@@ -406,6 +409,15 @@ async function start(): Promise<void> {
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
+      try {
+        const dispatcher = new WebPushDispatcher({ database: db });
+        webPushDispatcherConfigured = dispatcher.start().configured;
+        webPushDispatcher = dispatcher;
+      } catch {
+        webPushDispatcher = undefined;
+        webPushDispatcherConfigured = false;
+        console.warn('[notifications] Web Push dispatcher disabled: invalid dispatcher tuning configuration');
+      }
       notificationProjection = new NotificationProjectionService({ database: db });
       notificationProjection.startStalledDetector();
       configReloadSubscription = await startConfigReloadSubscription(redisClient, reloadConfigs);
@@ -475,6 +487,7 @@ async function start(): Promise<void> {
       ];
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'Web Push dispatcher', close: () => webPushDispatcher?.close() ?? Promise.resolve() },
           { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },

@@ -186,8 +186,10 @@ export class NotificationProjectionService {
   async bestEffort(label: string, projection: () => Promise<void>): Promise<void> {
     try {
       await projection();
-    } catch (error) {
-      this.logger.warn(`[NotificationProjection] Failed to project ${label}`, error);
+    } catch {
+      // Persistence errors may embed SQL bindings containing notification or
+      // prompt text, so this boundary logs only the fixed projection label.
+      this.logger.warn(`[NotificationProjection] Failed to project ${label}`);
     }
   }
 
@@ -221,7 +223,7 @@ export class NotificationProjectionService {
       title: 'Plan ready for review',
       body: `A plan for ${draft.repository} is ready for review.`,
       occurredAt,
-    }, [draft.user_id]);
+    }, [{ userId: draft.user_id, pushEnabled: true }]);
   }
 
   async projectTaskUpdate(payload: TaskUpdatePayload): Promise<void> {
@@ -533,21 +535,25 @@ export class NotificationProjectionService {
     });
   }
 
-  private async loadInstanceMemberRecipients(): Promise<string[]> {
+  private async loadInstanceMemberRecipients(): Promise<NotificationRecipient[]> {
     const rows = await this.database('instance_members').distinct('github_user_id') as Array<{
       github_user_id?: unknown;
     }>;
-    return rows.flatMap(row => typeof row.github_user_id === 'string' ? [row.github_user_id] : []);
+    return rows.flatMap(row => typeof row.github_user_id === 'string'
+      ? [{ userId: row.github_user_id, pushEnabled: true }]
+      : []);
   }
 
-  private async loadAdministratorRecipients(additionalIds: readonly string[] = []): Promise<string[]> {
+  private async loadAdministratorRecipients(
+    additionalIds: readonly string[] = [],
+  ): Promise<NotificationRecipient[]> {
     const rows = await this.database('instance_members')
       .distinct('github_user_id')
       .where({ role: 'admin' }) as Array<{ github_user_id?: unknown }>;
     return [...new Set([
       ...rows.flatMap(row => typeof row.github_user_id === 'string' ? [row.github_user_id] : []),
       ...additionalIds,
-    ])];
+    ])].map(userId => ({ userId, pushEnabled: true }));
   }
 }
 

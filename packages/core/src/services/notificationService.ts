@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- event creation, preferences, and Inbox state share transactions */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import {
     DEFAULT_NOTIFICATION_PREFERENCE_CHANNELS,
@@ -53,6 +53,7 @@ import {
 
 type TimestampInput = string | number | Date;
 type Database = Knex | Knex.Transaction;
+const PUSH_DELIVERY_FANOUT_CHUNK_SIZE = 100;
 
 export interface NotificationRecipientInput {
     userId: string;
@@ -133,6 +134,12 @@ interface NormalizedRecipient {
     userId: string;
     inboxEnabled: boolean;
     pushEnabled: boolean;
+}
+
+interface PushDeliveryFanoutRow {
+    user_id: string;
+    subscription_id: string;
+    assigned_at: string;
 }
 
 function parseStoredJson(value: string, field: string): unknown {
@@ -247,6 +254,14 @@ function eventSelectColumns(): string[] {
         'receipt.read_at',
         'receipt.dismissed_at'
     ];
+}
+
+function pushDeliveryIdentity(eventId: string, subscriptionId: string): string {
+    return createHash('sha256')
+        .update(eventId)
+        .update('\0')
+        .update(subscriptionId)
+        .digest('hex');
 }
 
 async function unreadCount(database: Database, userId: string): Promise<number> {
@@ -620,6 +635,68 @@ export class NotificationService {
             })))
             .onConflict(['event_id', 'user_id'])
             .ignore();
+
+        const pushRecipientIds = eligibleRecipients
+            .filter(recipient => recipient.pushEnabled)
+            .map(recipient => recipient.userId);
+        if (pushRecipientIds.length === 0) return;
+
+        // Snapshot one job per subscription that was active when this recipient
+        // was first assigned. The event/subscription unique index makes duplicate
+        // producer calls harmless, while the creation/update-time boundaries
+        // prevent newly enrolled or reactivated browsers from receiving
+        // historical events.
+        const fanoutRows = await transaction('notification_user_states as recipient')
+            .join('push_subscriptions as subscription', function subscriptionJoin() {
+                this.on('subscription.user_id', '=', 'recipient.user_id')
+                    .andOn('subscription.created_at', '<=', 'recipient.created_at')
+                    .andOn('subscription.updated_at', '<=', 'recipient.created_at');
+            })
+            .join('notification_preferences as preference', function preferenceJoin() {
+                this.on('preference.user_id', '=', 'recipient.user_id')
+                    .andOnVal('preference.notification_kind', '=', event.kind);
+            })
+            .select(
+                'recipient.user_id',
+                'subscription.subscription_id',
+                { assigned_at: 'recipient.created_at' }
+            )
+            .where({
+                'recipient.event_id': event.id,
+                'recipient.push_enabled': true,
+                'preference.push_enabled': true
+            })
+            .whereIn('recipient.user_id', pushRecipientIds)
+            .whereNull('subscription.revoked_at')
+            .andWhere(expiration => {
+                expiration.whereNull('subscription.expires_at')
+                    .orWhere('subscription.expires_at', '>', now);
+            }) as PushDeliveryFanoutRow[];
+        if (fanoutRows.length === 0) return;
+
+        for (
+            let offset = 0;
+            offset < fanoutRows.length;
+            offset += PUSH_DELIVERY_FANOUT_CHUNK_SIZE
+        ) {
+            await transaction('push_delivery_jobs')
+                .insert(fanoutRows
+                    .slice(offset, offset + PUSH_DELIVERY_FANOUT_CHUNK_SIZE)
+                    .map(row => {
+                        const identity = pushDeliveryIdentity(event.id, row.subscription_id);
+                        return {
+                            job_id: `push:${identity}`,
+                            deduplication_key: `web-push:v1:${identity}`,
+                            event_id: event.id,
+                            user_id: row.user_id,
+                            subscription_id: row.subscription_id,
+                            created_at: row.assigned_at,
+                            updated_at: row.assigned_at
+                        };
+                    }))
+                .onConflict(['event_id', 'subscription_id'])
+                .ignore();
+        }
     }
 
     private async updateInboxTimestamp(

@@ -79,10 +79,11 @@ function createService(overrides: Partial<NotificationRouteService> = {}): Notif
     };
 }
 
-function createVapidConfiguration(): { publicKey: string; privateKey: string } {
+function createVapidConfiguration(): { subject: string; publicKey: string; privateKey: string } {
     const ecdh = createECDH('prime256v1');
     ecdh.generateKeys();
     return {
+        subject: 'mailto:notifications@example.com',
         publicKey: ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url'),
         privateKey: ecdh.getPrivateKey().toString('base64url')
     };
@@ -218,19 +219,21 @@ describe('notification routes', () => {
         assert.equal(configurationReads, 1, 'VAPID key-pair validation is cached per router');
     });
 
-    test('does not advertise malformed, padded, or mismatched VAPID keys', async () => {
+    test('does not advertise invalid VAPID keys or a disabled dispatcher', async () => {
         const valid = createVapidConfiguration();
         const other = createVapidConfiguration();
 
-        for (const configuration of [
-            { publicKey: ` ${valid.publicKey}`, privateKey: valid.privateKey },
-            { publicKey: `${valid.publicKey}=`, privateKey: valid.privateKey },
-            { publicKey: valid.publicKey, privateKey: other.privateKey },
-            { publicKey: 'not-a-p256-key', privateKey: 'not-a-private-key' }
+        for (const [configuration, webPushDispatcherConfigured] of [
+            [{ subject: valid.subject, publicKey: ` ${valid.publicKey}`, privateKey: valid.privateKey }, true],
+            [{ subject: valid.subject, publicKey: `${valid.publicKey}=`, privateKey: valid.privateKey }, true],
+            [{ subject: valid.subject, publicKey: valid.publicKey, privateKey: other.privateKey }, true],
+            [{ subject: valid.subject, publicKey: 'not-a-p256-key', privateKey: 'not-a-private-key' }, true],
+            [valid, false]
         ]) {
             const routes = createNotificationRoutes({
                 service: createService(),
-                getWebPushConfiguration: () => configuration
+                getWebPushConfiguration: () => configuration,
+                webPushDispatcherConfigured
             });
             const { response, status, body } = responseRecorder();
             await routes.getConfiguration(authenticatedRequest(), response);
