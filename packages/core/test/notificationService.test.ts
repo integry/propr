@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import knex, { type Knex } from 'knex';
+import { NOTIFICATION_PAYLOAD_LIMITS } from '@propr/shared';
 import { closeConnection, type BetterSqliteConnection } from '../src/db/connection.js';
 import {
     NotificationQueryValidationError,
@@ -191,7 +192,10 @@ describe('notification service', { concurrency: false }, () => {
             title: 'Task appears stalled',
             body: 'The task has not reported progress.',
             actions: ['stop', 'dismiss'],
-            metadata: { source: 'stalled-detector' },
+            metadata: {
+                source: 'stalled-detector',
+                actions: { label: 'legacy producer metadata' }
+            },
             recipients: ['user-a']
         });
 
@@ -200,11 +204,45 @@ describe('notification service', { concurrency: false }, () => {
             .where({ event_id: 'action-event' })
             .first();
         assert.deepEqual(JSON.parse(stored.metadata_json), {
-            source: 'stalled-detector', actions: ['stop', 'dismiss']
+            __propr_notification_event_v1: {
+                schema: 'advertised-actions',
+                version: 1,
+                advertisedActions: ['stop', 'dismiss'],
+                metadata: {
+                    source: 'stalled-detector',
+                    actions: { label: 'legacy producer metadata' }
+                }
+            }
         });
         const listed = await service.listNotifications('user-a');
         assert.deepEqual(listed.notifications[0].actions, ['stop', 'dismiss']);
-        assert.deepEqual(listed.notifications[0].metadata, { source: 'stalled-detector' });
+        assert.deepEqual(listed.notifications[0].metadata, {
+            source: 'stalled-detector',
+            actions: { label: 'legacy producer metadata' }
+        });
+    });
+
+    test('rejects advertised actions when their combined metadata envelope is oversized', async () => {
+        const metadataOverhead = Buffer.byteLength('{"value":""}');
+        const metadata = {
+            value: 'm'.repeat(NOTIFICATION_PAYLOAD_LIMITS.metadataBytes - metadataOverhead)
+        };
+
+        await assert.rejects(() => service.createNotificationEvent({
+            eventId: 'oversized-action-envelope',
+            deduplicationKey: 'oversized-action-envelope-key',
+            kind: 'task',
+            target: {
+                type: 'task', repository: 'integry/propr', taskId: 'task-action-envelope'
+            },
+            title: 'Task appears stalled',
+            body: 'The task has not reported progress.',
+            actions: ['stop'],
+            metadata
+        }), /metadata no larger/);
+        assert.equal(await database('notification_events').where({
+            event_id: 'oversized-action-envelope'
+        }).first(), undefined);
     });
 
     test('paginates by occurrence and ID while excluding non-Inbox receipts', async () => {

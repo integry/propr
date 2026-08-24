@@ -170,6 +170,26 @@ describe('Inbox page', () => {
 
     view.unmount();
     open.mockClear();
+    const legacy = item('event-legacy-pr', 'Legacy PR', null, {
+      target: {
+        type: 'task', repository: 'integry/propr', taskId: 'task-event-legacy-pr', prNumber: 1724,
+      },
+      actions: [],
+      action: {
+        type: 'external_link', label: 'Open pull request', href: 'https://github.com/integry/propr/pull/1724',
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue({ notifications: [legacy], unreadCount: 1, nextCursor: null });
+    const legacyView = renderInbox();
+    fireEvent.click(await screen.findByRole('button', { name: 'Open pull request for Legacy PR' }));
+    expect(open).toHaveBeenCalledWith(
+      'https://github.com/integry/propr/pull/1724',
+      '_blank',
+      'noopener,noreferrer',
+    );
+
+    legacyView.unmount();
+    open.mockClear();
     const invalid = item('event-invalid-pr', 'Invalid PR', null, {
       actions: ['open_pr'],
       action: {
@@ -178,9 +198,10 @@ describe('Inbox page', () => {
     });
     vi.mocked(listNotifications).mockResolvedValue({ notifications: [invalid], unreadCount: 1, nextCursor: null });
     renderInbox();
-    fireEvent.click(await screen.findByRole('button', { name: 'Open pull request for Invalid PR' }));
+    expect(await screen.findByText('Invalid PR')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open pull request for Invalid PR' }))
+      .not.toBeInTheDocument();
     expect(open).not.toHaveBeenCalled();
-    expect(screen.getByText(/GitHub URL is invalid/)).toBeInTheDocument();
     open.mockRestore();
   });
 

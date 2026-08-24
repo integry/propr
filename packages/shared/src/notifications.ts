@@ -131,6 +131,9 @@ export const NOTIFICATION_EVENT_ACTIONS = [
 
 export type NotificationEventAction = (typeof NOTIFICATION_EVENT_ACTIONS)[number];
 
+const PERSISTED_NOTIFICATION_EVENT_ENVELOPE_KEY = '__propr_notification_event_v1';
+const PERSISTED_NOTIFICATION_EVENT_ENVELOPE_SCHEMA = 'advertised-actions';
+
 interface RepositoryNotificationTarget {
   /** Repository in `owner/name` format. */
   repository: string;
@@ -1228,20 +1231,46 @@ export function parseNotificationEvent(value: unknown): NotificationEvent {
     ? undefined
     : parseNotificationAction(event.action);
   const storedMetadata = parseOptionalMetadata(event.metadata, 'notificationEvent.metadata');
-  const storedActions = storedMetadata?.actions;
-  const actions = event.actions === undefined
-    ? (storedActions === undefined ? [] : parseNotificationEventActions(storedActions))
-    : parseNotificationEventActions(event.actions);
-  if (event.actions !== undefined && storedActions !== undefined) {
-    const parsedStoredActions = parseNotificationEventActions(storedActions);
-    if (actions.some((action, index) => parsedStoredActions[index] !== action)
-      || actions.length !== parsedStoredActions.length) {
-      return invalid('notificationEvent.actions', 'the persisted action list');
+  const envelopeCandidate = storedMetadata === undefined
+    || Object.keys(storedMetadata).length !== 1
+    ? undefined
+    : storedMetadata[PERSISTED_NOTIFICATION_EVENT_ENVELOPE_KEY];
+  const envelope = event.actions !== undefined
+    || typeof envelopeCandidate !== 'object'
+    || envelopeCandidate === null
+    || Array.isArray(envelopeCandidate)
+    || envelopeCandidate.schema !== PERSISTED_NOTIFICATION_EVENT_ENVELOPE_SCHEMA
+    || envelopeCandidate.version !== 1
+    ? undefined
+    : parseRecord(envelopeCandidate, 'notificationEvent.metadata persisted envelope');
+  if (envelope !== undefined) {
+    const envelopeKeys = Object.keys(envelope);
+    if (envelopeKeys.length !== 4
+      || !envelopeKeys.every(key => [
+        'schema', 'version', 'advertisedActions', 'metadata',
+      ].includes(key))) {
+      return invalid(
+        'notificationEvent.metadata persisted envelope',
+        'the version 1 notification event envelope',
+      );
     }
   }
-  const metadata = storedMetadata === undefined
-    ? undefined
-    : Object.fromEntries(Object.entries(storedMetadata).filter(([key]) => key !== 'actions'));
+  const actions = event.actions === undefined
+    ? (envelope === undefined
+      ? []
+      : parseNotificationEventActions(
+        envelope.advertisedActions,
+        'notificationEvent.metadata persisted envelope.advertisedActions',
+      ))
+    : parseNotificationEventActions(event.actions);
+  const metadata = envelope === undefined
+    ? storedMetadata
+    : envelope.metadata === null
+      ? undefined
+      : parseOptionalMetadata(
+        envelope.metadata,
+        'notificationEvent.metadata persisted envelope.metadata',
+      );
 
   const occurredAt = parseISO8601Timestamp(event.occurredAt);
   const createdAt = parseISO8601Timestamp(event.createdAt);

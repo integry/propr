@@ -55,6 +55,7 @@ import {
 type TimestampInput = string | number | Date;
 type Database = Knex | Knex.Transaction;
 const PUSH_DELIVERY_FANOUT_CHUNK_SIZE = 100;
+const PERSISTED_NOTIFICATION_EVENT_ENVELOPE_KEY = '__propr_notification_event_v1';
 
 export interface NotificationRecipientInput {
     userId: string;
@@ -174,11 +175,21 @@ function toNotificationEvent(row: NotificationEventRow): NotificationEvent {
 }
 
 function eventMetadataForStorage(event: NotificationEvent): string | null {
+    if (event.actions.length === 0) {
+        return event.metadata === undefined ? null : JSON.stringify(event.metadata);
+    }
     const metadata = {
-        ...(event.metadata ?? {}),
-        ...(event.actions.length === 0 ? {} : { actions: event.actions })
+        [PERSISTED_NOTIFICATION_EVENT_ENVELOPE_KEY]: {
+            schema: 'advertised-actions',
+            version: 1,
+            advertisedActions: event.actions,
+            metadata: event.metadata ?? null
+        }
     };
-    return Object.keys(metadata).length === 0 ? null : JSON.stringify(metadata);
+    // The producer metadata was checked independently above. Validate the
+    // combined persisted envelope as well, before relying on database limits.
+    const validated = parseNotificationEvent({ ...event, metadata }).metadata;
+    return JSON.stringify(validated);
 }
 
 function toNotification(row: NotificationRow): Notification {

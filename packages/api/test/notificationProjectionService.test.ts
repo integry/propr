@@ -207,7 +207,14 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     assert.deepEqual(events.map(event => ({ kind: event.kind, title: event.title })), [
       { kind: 'task', title: 'Task appears stalled' },
     ]);
-    assert.deepEqual(JSON.parse(events[0].metadata_json), { actions: ['stop', 'dismiss'] });
+    assert.deepEqual(JSON.parse(events[0].metadata_json), {
+      __propr_notification_event_v1: {
+        schema: 'advertised-actions',
+        version: 1,
+        advertisedActions: ['stop', 'dismiss'],
+        metadata: null,
+      },
+    });
   });
 
   test('projects a task failure once without copying error details', async () => {
@@ -239,6 +246,46 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       (await database('notification_user_states').pluck('user_id')).sort(),
       ['admin-user', 'member-user'],
     );
+  });
+
+  test('does not advertise Open PR when a trusted GitHub URL cannot be constructed', async () => {
+    await database('tasks').insert({
+      task_id: 'task-invalid-pr-url', repository: 'integry$/propr', issue_number: 99,
+      pr_number: 42, task_type: 'issue', initial_job_data: '{}',
+    });
+    await database('task_history').insert({
+      task_id: 'task-invalid-pr-url', state: 'completed', timestamp: iso(), metadata: '{}',
+    });
+
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE,
+      taskId: 'task-invalid-pr-url',
+      state: 'completed',
+      repository: 'integry$/propr',
+      timestamp: iso(),
+    });
+
+    const events = await database('notification_events')
+      .select('title', 'action_json', 'metadata_json')
+      .orderBy('title') as Array<{
+        title: string;
+        action_json: string | null;
+        metadata_json: string;
+      }>;
+    assert.deepEqual(events.map(event => event.title), [
+      'Implementation completed',
+      'Pull request needs attention',
+    ]);
+    assert.ok(events.every(event => event.action_json === null));
+    assert.deepEqual(events.map(event => {
+      const metadata = JSON.parse(event.metadata_json) as Record<string, {
+        advertisedActions: string[];
+      }>;
+      return Object.values(metadata)[0]?.advertisedActions;
+    }), [
+      ['follow_up', 'dismiss'],
+      ['dismiss'],
+    ]);
   });
 
   test('restricts indexing failures to administrators', async () => {

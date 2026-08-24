@@ -164,8 +164,7 @@ function taskActions(options: {
   ];
 }
 
-function pullRequestAction(repository: string, prNumber: number) {
-  const href = safeGithubPullRequestUrl(repository, prNumber);
+function pullRequestAction(href: string | undefined) {
   return href === undefined
     ? {}
     : { action: { type: 'external_link' as const, label: 'Open pull request', href } };
@@ -270,6 +269,9 @@ export class NotificationProjectionService {
     if (!accepted) return;
 
     const recipients = await this.loadInstanceMemberRecipients();
+    const pullRequestUrl = context.prNumber === undefined
+      ? undefined
+      : safeGithubPullRequestUrl(context.repository, context.prNumber);
     if (payload.state === 'failed') {
       await this.notifications.createNotificationEvent({
         deduplicationKey: stableKey('task-failed', payload.taskId, payload.state, occurredAt),
@@ -284,11 +286,9 @@ export class NotificationProjectionService {
         body: `Work for ${context.repository} did not complete.`,
         actions: taskActions({
           followup: true,
-          hasPullRequest: context.prNumber !== undefined,
+          hasPullRequest: pullRequestUrl !== undefined,
         }),
-        ...(context.prNumber === undefined
-          ? {}
-          : pullRequestAction(context.repository, context.prNumber)),
+        ...pullRequestAction(pullRequestUrl),
         occurredAt,
       }, recipients);
       return;
@@ -306,8 +306,8 @@ export class NotificationProjectionService {
         },
         title: 'Review completed',
         body: `Review of PR #${context.prNumber} is complete.`,
-        actions: taskActions({ followup: true, hasPullRequest: true }),
-        ...pullRequestAction(context.repository, context.prNumber),
+        actions: taskActions({ followup: true, hasPullRequest: pullRequestUrl !== undefined }),
+        ...pullRequestAction(pullRequestUrl),
         occurredAt,
       }, recipients);
     } else {
@@ -324,17 +324,14 @@ export class NotificationProjectionService {
         body: `Implementation work for ${context.repository} is complete.`,
         actions: taskActions({
           followup: true,
-          hasPullRequest: context.prNumber !== undefined,
+          hasPullRequest: pullRequestUrl !== undefined,
         }),
-        ...(context.prNumber === undefined
-          ? {}
-          : pullRequestAction(context.repository, context.prNumber)),
+        ...pullRequestAction(pullRequestUrl),
         occurredAt,
       }, recipients);
     }
 
     if (context.prNumber !== undefined) {
-      const prUrl = safeGithubPullRequestUrl(context.repository, context.prNumber);
       await this.notifications.createNotificationEvent({
         deduplicationKey: stableKey('pr-attention', payload.taskId, context.prNumber, occurredAt),
         kind: 'pull_request',
@@ -344,10 +341,11 @@ export class NotificationProjectionService {
         },
         title: 'Pull request needs attention',
         body: `PR #${context.prNumber} is ready for attention.`,
-        actions: ['open_pr', 'dismiss'],
-        ...(prUrl === undefined ? {} : {
-          action: { type: 'external_link' as const, label: 'Open pull request', href: prUrl },
-        }),
+        actions: [
+          ...(pullRequestUrl === undefined ? [] : ['open_pr' as const]),
+          'dismiss',
+        ],
+        ...pullRequestAction(pullRequestUrl),
         occurredAt,
       }, recipients);
     }

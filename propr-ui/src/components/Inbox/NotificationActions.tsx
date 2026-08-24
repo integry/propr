@@ -108,7 +108,9 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
       ? notification.target.prNumber
       : undefined;
   const actionClass = 'inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-wait disabled:opacity-50';
-  const hasVisibleAction = mutationsEnabled || advertised.has('open_pr');
+  const canOpenPullRequest = prUrl !== null
+    && (advertised.has('open_pr') || advertised.size === 0);
+  const hasVisibleAction = mutationsEnabled || canOpenPullRequest;
 
   if (!hasVisibleAction) return null;
 
@@ -139,7 +141,7 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
             Follow up
           </button>
         )}
-        {advertised.has('open_pr') && (
+        {canOpenPullRequest && (
           <button
             type="button"
             disabled={busy}

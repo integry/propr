@@ -1710,6 +1710,15 @@ describe('durable notification schema', { concurrency: false }, () => {
     });
     assert.doesNotThrow(() => JSON.stringify(parsed));
 
+    const legacyActionsMetadata = parseNotificationEvent({
+      ...createContractEvent(),
+      metadata: { actions: { label: 'producer-defined metadata' } },
+    });
+    assert.deepStrictEqual(legacyActionsMetadata.actions, []);
+    assert.deepStrictEqual(legacyActionsMetadata.metadata, {
+      actions: { label: 'producer-defined metadata' },
+    });
+
     const circular: Record<string, unknown> = {};
     circular.self = circular;
     const invalidMetadata = [
