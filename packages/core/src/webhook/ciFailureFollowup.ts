@@ -333,7 +333,7 @@ function truncate(value: string): string {
 }
 
 function escapeInlineCode(value: string): string {
-    return value.replace(/`/gu, '\\`');
+    return value.replace(/([\\`])/gu, '\\$1');
 }
 
 function escapeInlineMarkdown(value: string): string {
