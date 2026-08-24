@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { useRepositoryManagement } from './useRepositoryManagement';
@@ -172,13 +173,73 @@ describe('useRepositoryManagement', () => {
     expect(result.current.repos[0]).toMatchObject({
       name: 'integry/propr',
       enabled: true,
+      autoFollowupOnFailedCi: false,
       baseBranch: 'release/2026'
     });
 
     act(() => result.current.handleToggleRepo(result.current.repos[0].id));
+    act(() => result.current.handleToggleAutoCiFollowup(result.current.repos[0].id));
 
     expect(result.current.repos[0].enabled).toBe(true);
+    expect(result.current.repos[0].autoFollowupOnFailedCi).toBe(false);
     expect(mockUpdateRepoConfig).not.toHaveBeenCalled();
+  });
+
+  it('preserves loaded automatic CI follow-up state and defaults legacy entries off', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-1', name: 'integry/propr', enabled: true, autoFollowupOnFailedCi: true },
+        { id: 'repo-2', name: 'integry/legacy', enabled: true }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.repos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([true, false]);
+  });
+
+  it('adds the selected automatic CI setting without changing existing repositories', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-1', name: 'integry/propr', enabled: true, autoFollowupOnFailedCi: false }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      result.current.handleAddRepo('integry/new', 'New', 'main', true);
+    });
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos[0].autoFollowupOnFailedCi).toBe(false);
+    expect(savedRepos[1]).toMatchObject({
+      name: 'integry/new',
+      autoFollowupOnFailedCi: true,
+      alias: 'New',
+      baseBranch: 'main'
+    });
+  });
+
+  it('toggles automatic CI follow-up for one repository without changing others', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-1', name: 'integry/propr', enabled: true, autoFollowupOnFailedCi: true },
+        { id: 'repo-2', name: 'integry/other', enabled: true, autoFollowupOnFailedCi: false }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.handleToggleAutoCiFollowup('repo-2'));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([true, true]);
   });
 
   it('reloads authoritative repositories before surfacing a committed-write warning', async () => {
