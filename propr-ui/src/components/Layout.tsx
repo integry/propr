@@ -56,9 +56,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       ? [{ name: 'Coding Agents', href: '/ai-agents', icon: Bot }]
       : []),
     { name: 'LLM Log', href: '/llm-logs', icon: Cpu },
-    ...(userHasPermission(user, 'instance.manage_settings')
-      ? [{ name: 'Settings', href: '/settings', icon: SettingsIcon }]
-      : []),
+    { name: 'Settings', href: '/settings', icon: SettingsIcon },
     ...(userHasPermission(user, 'instance.manage_members')
       ? [{ name: 'Access', href: '/admin/members', icon: ShieldCheck }]
       : []),

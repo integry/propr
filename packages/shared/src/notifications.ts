@@ -315,6 +315,8 @@ export type NotificationPreferencesPatch = Partial<Record<
 export interface NotificationPreferencesUpdate {
   preferences?: NotificationPreferencesPatch;
   quietHours?: Partial<NotificationQuietHours>;
+  /** Whether unread Web Push deliveries may update the installed app badge. */
+  badgeEnabled?: boolean;
 }
 
 /** The encryption keys supplied by the browser Push API. */
@@ -564,6 +566,7 @@ export interface NotificationStateResponse {
 export interface NotificationPreferencesResponse {
   preferences: NotificationPreferences;
   quietHours: NotificationQuietHours;
+  badgeEnabled: boolean;
 }
 
 /** Web Push capability advertised by the authenticated notification API. */
@@ -1399,13 +1402,17 @@ export function parseNotificationPreferencesUpdate(
   const update = parseRecord(value, 'notificationPreferencesUpdate');
   assertOnlyKnownProperties(
     update,
-    ['preferences', 'quietHours'],
+    ['preferences', 'quietHours', 'badgeEnabled'],
     'notificationPreferencesUpdate',
   );
-  if (update.preferences === undefined && update.quietHours === undefined) {
+  if (
+    update.preferences === undefined
+    && update.quietHours === undefined
+    && update.badgeEnabled === undefined
+  ) {
     return invalid(
       'notificationPreferencesUpdate',
-      'at least one preferences or quietHours update',
+      'at least one preferences, quietHours, or badgeEnabled update',
     );
   }
 
@@ -1504,6 +1511,12 @@ export function parseNotificationPreferencesUpdate(
   return {
     ...(preferences === undefined ? {} : { preferences }),
     ...(quietHours === undefined ? {} : { quietHours }),
+    ...(update.badgeEnabled === undefined ? {} : {
+      badgeEnabled: parseBoolean(
+        update.badgeEnabled,
+        'notificationPreferencesUpdate.badgeEnabled',
+      ),
+    }),
   };
 }
 
@@ -1942,6 +1955,11 @@ export function parseNotificationPreferencesResponse(
     quietHours: response.quietHours === undefined
       ? { ...DEFAULT_NOTIFICATION_QUIET_HOURS }
       : parseNotificationQuietHoursWith(response.quietHours, parseIanaTimezoneIdentifier),
+    // Older preference rows and API fixtures predate badge controls. Badging
+    // was historically always on, so that remains the backwards-safe default.
+    badgeEnabled: response.badgeEnabled === undefined
+      ? true
+      : parseBoolean(response.badgeEnabled, 'notificationPreferencesResponse.badgeEnabled'),
   };
 }
 
