@@ -149,6 +149,12 @@ function isValidGithubRepository(repository: string): boolean {
   return parts.length === 2 && parts.every(part => /^[A-Za-z0-9_.-]+$/.test(part));
 }
 
+function supportsTaskFollowup(task: Record<string, unknown>): boolean {
+  return typeof task.repository === 'string'
+    && isValidGithubRepository(task.repository)
+    && positiveInteger(task.issue_number) !== undefined;
+}
+
 function safeGithubPullRequestUrl(repository: string, prNumber: number): string | undefined {
   if (!isValidGithubRepository(repository)) return undefined;
   const parts = repository.split('/');
@@ -514,9 +520,7 @@ export class NotificationProjectionService {
       issueNumber: positiveInteger(payload.issueNumber) ?? positiveInteger(task.issue_number),
       prNumber,
       isReview,
-      followupEligible: typeof task.repository === 'string'
-        && isValidGithubRepository(task.repository)
-        && positiveInteger(task.issue_number) !== undefined,
+      followupEligible: supportsTaskFollowup(task),
     };
   }
 
