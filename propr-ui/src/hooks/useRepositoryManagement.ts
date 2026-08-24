@@ -21,6 +21,7 @@ import { isCommittedConfigWriteError } from '../api/apiClient';
 
 const generateId = (): string => crypto.randomUUID();
 const TERMINAL_INDEXING_STATUSES = new Set<RepositoryIndexingStatus['indexing_status']>(['idle', 'completed', 'failed']);
+const getRepositoryConfigKey = (name: string): string => name.trim().toLowerCase();
 
 function shouldIgnoreStaleProgressUpdate(
   payload: IndexingUpdatePayload,
@@ -99,7 +100,7 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       const rawRepos = repoData.repos_to_monitor || [];
       setUserRepoPrefs(prefs);
       const seenKeys = new Set<string>();
-      const validRepos: Repo[] = rawRepos
+      const parsedRepos: Repo[] = rawRepos
         .map((repo: unknown): Repo | null => {
           if (typeof repo === 'string') {
             const userPref = prefs[repo] || {};
@@ -128,6 +129,15 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
           seenKeys.add(key);
           return true;
         });
+      const autoCiFollowupByRepository = new Map<string, boolean>();
+      for (const repo of parsedRepos) {
+        const key = getRepositoryConfigKey(repo.name);
+        autoCiFollowupByRepository.set(key, autoCiFollowupByRepository.get(key) === true || repo.autoFollowupOnFailedCi);
+      }
+      const validRepos = parsedRepos.map(repo => ({
+        ...repo,
+        autoFollowupOnFailedCi: autoCiFollowupByRepository.get(getRepositoryConfigKey(repo.name)) === true
+      }));
       setRepos(validRepos);
       configurationReloadRequiredRef.current = false;
     } catch (err) {
@@ -312,7 +322,13 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
       alias: newAlias.trim() || undefined,
       baseBranch: newBaseBranch.trim() || undefined
     };
-    const newRepos = [...repos, newEntry];
+    const repositoryKey = getRepositoryConfigKey(newRepo);
+    const newRepos = [
+      ...repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+        ? { ...repo, autoFollowupOnFailedCi }
+        : repo),
+      newEntry
+    ];
     setRepos(newRepos);
     performAutoSave(newRepos);
     return true;
@@ -334,8 +350,12 @@ export function useRepositoryManagement(): UseRepositoryManagementResult {
 
   const handleToggleAutoCiFollowup = (repoId: string) => {
     if (!canManageRepositories) return;
-    const newRepos = repos.map(repo => repo.id === repoId
-      ? { ...repo, autoFollowupOnFailedCi: !repo.autoFollowupOnFailedCi }
+    const targetRepo = repos.find(repo => repo.id === repoId);
+    if (!targetRepo) return;
+    const repositoryKey = getRepositoryConfigKey(targetRepo.name);
+    const autoFollowupOnFailedCi = !targetRepo.autoFollowupOnFailedCi;
+    const newRepos = repos.map(repo => getRepositoryConfigKey(repo.name) === repositoryKey
+      ? { ...repo, autoFollowupOnFailedCi }
       : repo);
     setRepos(newRepos);
     performAutoSave(newRepos);

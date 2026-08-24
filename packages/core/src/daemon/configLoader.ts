@@ -37,14 +37,24 @@ export function isMonitoredRepository(repository: string, repos: readonly string
  * Missing or malformed options are treated as disabled so legacy repository
  * configurations cannot opt into autonomous follow-up work after an upgrade.
  */
-export async function isAutoCiFollowupEnabledForRepository(owner: string, repo: string): Promise<boolean> {
+export async function isAutoCiFollowupEnabledForRepository(
+    owner: string,
+    repo: string,
+    loadConfiguredRepos: typeof loadMonitoredReposRaw = loadMonitoredReposRaw,
+): Promise<boolean> {
     const repository = `${owner.trim()}/${repo.trim()}`.toLowerCase();
     if (repository === '/') return false;
 
     try {
-        const configuredRepos = await loadMonitoredReposRaw();
-        const configuredRepo = configuredRepos.find(candidate => candidate.name.trim().toLowerCase() === repository);
-        return configuredRepo?.autoFollowupOnFailedCi === true;
+        const configuredRepos = await loadConfiguredRepos();
+        // Branch-specific entries can share a repository name. Treat the option
+        // as enabled when any matching entry explicitly opts in so the result is
+        // independent of configuration order while the UI keeps those entries
+        // synchronized on subsequent writes.
+        return configuredRepos.some(candidate =>
+            candidate.name.trim().toLowerCase() === repository
+            && candidate.autoFollowupOnFailedCi === true
+        );
     } catch (error) {
         const err = error as Error;
         logger.warn({ repository, error: err.message }, 'Failed to load automatic CI follow-up repository configuration; treating it as disabled');

@@ -259,6 +259,17 @@ export async function handleCheckRunEvent(
     if (failure) {
         for (const pr of pullRequests) {
             try {
+                const currentPrHead = await getCurrentPRHead(owner, repoName, pr.number);
+                if (currentPrHead !== failure.sha) {
+                    log.debug({
+                        owner,
+                        repoName,
+                        prNumber: pr.number,
+                        failedCiSha: failure.sha,
+                        currentPrHead,
+                    }, 'Failed check run SHA does not match current PR head, skipping follow-up');
+                    continue;
+                }
                 await postCiFailureFollowup({ owner, repo: repoName, prNumber: pr.number, evidence: failure }, correlationId);
             } catch (error) {
                 log.warn(
@@ -333,6 +344,17 @@ export async function handleStatusEvent(
     for (const pr of prs) {
         if (failure) {
             try {
+                const currentPrHead = await getCurrentPRHead(owner, repoName, pr.number);
+                if (currentPrHead !== failure.sha) {
+                    log.debug({
+                        owner,
+                        repoName,
+                        prNumber: pr.number,
+                        failedCiSha: failure.sha,
+                        currentPrHead,
+                    }, 'Failed status SHA does not match current PR head, skipping follow-up');
+                    continue;
+                }
                 await postCiFailureFollowup({ owner, repo: repoName, prNumber: pr.number, evidence: failure }, correlationId);
             } catch (error) {
                 log.warn(

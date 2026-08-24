@@ -242,6 +242,27 @@ describe('useRepositoryManagement', () => {
     expect(savedRepos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([true, true]);
   });
 
+  it('keeps automatic CI follow-up consistent across duplicate branch configurations', async () => {
+    mockGetRepoConfig.mockResolvedValue({
+      repos_to_monitor: [
+        { id: 'repo-main', name: 'integry/propr', enabled: true, baseBranch: 'main', autoFollowupOnFailedCi: false },
+        { id: 'repo-release', name: 'INTEGRY/PROPR', enabled: true, baseBranch: 'release', autoFollowupOnFailedCi: true },
+        { id: 'repo-other', name: 'integry/other', enabled: true, autoFollowupOnFailedCi: false }
+      ]
+    });
+
+    const { result } = renderHook(() => useRepositoryManagement());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.repos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([true, true, false]);
+
+    act(() => result.current.handleToggleAutoCiFollowup('repo-main'));
+    await waitFor(() => expect(mockUpdateRepoConfig).toHaveBeenCalledTimes(1));
+
+    const savedRepos = mockUpdateRepoConfig.mock.calls[0][0];
+    expect(savedRepos.map(repo => repo.autoFollowupOnFailedCi)).toEqual([false, false, false]);
+  });
+
   it('reloads authoritative repositories before surfacing a committed-write warning', async () => {
     mockGetRepoConfig
       .mockResolvedValueOnce({ repos_to_monitor: [{ id: 'repo-1', name: 'integry/propr', enabled: true, baseBranch: 'release/2026' }] })
