@@ -6,8 +6,6 @@ import { notificationPullRequestUrl } from '../../pages/inboxUtils';
 import FollowupModal from '../TaskDetails/FollowupModal';
 import { useToast } from '../ui/useToast';
 
-/* eslint-disable complexity -- The component exhaustively renders the closed advertised-action union. */
-
 interface NotificationActionsProps {
   notification: Notification;
   mutationsEnabled: boolean;
@@ -110,11 +108,7 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
       ? notification.target.prNumber
       : undefined;
   const actionClass = 'inline-flex min-h-11 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:cursor-wait disabled:opacity-50';
-  const hasVisibleAction = (mutationsEnabled && (
-    (advertised.has('stop') && notification.target.type === 'task')
-    || (advertised.has('follow_up') && taskId !== undefined)
-    || advertised.has('dismiss')
-  )) || advertised.has('open_pr');
+  const hasVisibleAction = mutationsEnabled || advertised.has('open_pr');
 
   if (!hasVisibleAction) return null;
 
@@ -157,7 +151,7 @@ export const NotificationActions: React.FC<NotificationActionsProps> = ({
             Open PR
           </button>
         )}
-        {mutationsEnabled && advertised.has('dismiss') && (
+        {mutationsEnabled && (
           <button
             type="button"
             disabled={busy}

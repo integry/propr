@@ -184,8 +184,8 @@ describe('Inbox page', () => {
     open.mockRestore();
   });
 
-  test('optimistically dismisses and restores an item when the request fails', async () => {
-    const notification = item('event-1', 'Task one failed');
+  test('optimistically dismisses and restores an item with no advertised actions when the request fails', async () => {
+    const notification = item('event-1', 'Task one failed', null, { actions: [] });
     vi.mocked(listNotifications).mockResolvedValue({ notifications: [notification], unreadCount: 1, nextCursor: null });
     vi.mocked(dismissNotification).mockRejectedValue(new Error('Network unavailable'));
     renderInbox();
