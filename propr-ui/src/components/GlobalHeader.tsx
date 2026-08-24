@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Inbox, ScrollText } from 'lucide-react';
+import { Inbox, LogOut, ScrollText } from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
 import AIActivityMonitor from './AIActivityMonitor';
 import QuickAddTodo from './QuickAddTodo';
@@ -68,7 +68,7 @@ interface ProfileSectionProps {
 }
 
 const ProfileSection: React.FC<ProfileSectionProps> = ({ user, onLogout, systemHealth }) => (
-  <div className="relative flex items-center gap-2 px-2 sm:px-4">
+  <div className="relative flex items-center gap-1 px-1 sm:gap-2 sm:px-4">
     <div className="absolute left-0 top-[20%] h-[60%] w-px bg-slate-200" />
     <div className="hidden md:flex h-full">
       <SystemHealth systemHealth={systemHealth} />
@@ -78,7 +78,7 @@ const ProfileSection: React.FC<ProfileSectionProps> = ({ user, onLogout, systemH
         href={`https://github.com/${user.username}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="group flex h-full items-center gap-3 px-1 transition-colors hover:bg-slate-50 sm:px-2"
+        className="group flex h-full flex-none items-center gap-3 transition-colors hover:bg-slate-50 sm:px-2"
       >
         <div className="hidden lg:flex flex-col items-end">
           <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
@@ -104,9 +104,12 @@ const ProfileSection: React.FC<ProfileSectionProps> = ({ user, onLogout, systemH
     {user && (
       <button
         onClick={onLogout}
-        className="text-sm font-medium text-gray-500 transition-colors hover:text-red-600"
+        className="flex h-full flex-none items-center px-1 text-sm font-medium text-gray-500 transition-colors hover:text-red-600 sm:px-0"
+        aria-label="Logout"
+        title="Logout"
       >
-        Logout
+        <LogOut className="h-5 w-5 sm:hidden" aria-hidden="true" />
+        <span className="hidden sm:inline">Logout</span>
       </button>
     )}
   </div>
