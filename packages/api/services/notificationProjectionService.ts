@@ -494,6 +494,10 @@ export class NotificationProjectionService {
         .select('status', 'last_activity_at')
         .where({ activity_type: input.type, activity_key: input.key })
         .first() as { status?: unknown; last_activity_at?: unknown } | undefined;
+      if (existing !== undefined && (
+        typeof existing.last_activity_at !== 'string'
+        || input.occurredAt < existing.last_activity_at
+      )) return false;
       if (
         typeof existing?.status === 'string'
         && TERMINAL_ACTIVITY_STATUSES.has(existing.status)
