@@ -5,6 +5,7 @@
 
 const COLUMN = 'advertised_actions_json';
 const VALIDATION_TRIGGER = 'notification_events_advertised_actions_insert';
+const IMMUTABILITY_TRIGGER = 'notification_events_immutable_update';
 
 async function createValidationTrigger(knex, actions) {
   const allowed = actions.map(action => `'${action}'`).join(', ');
@@ -47,6 +48,32 @@ export async function up(knex) {
 }
 
 export async function down(knex) {
+  const immutableTrigger = await knex('sqlite_master')
+    .select('sql')
+    .where({ type: 'trigger', name: IMMUTABILITY_TRIGGER })
+    .first();
+  if (!immutableTrigger?.sql) {
+    throw new Error(`Missing required trigger ${IMMUTABILITY_TRIGGER}`);
+  }
+
+  await knex.raw(`DROP TRIGGER ${IMMUTABILITY_TRIGGER}`);
+  try {
+    await knex.raw(`
+      UPDATE notification_events AS event
+      SET ${COLUMN} = (
+        SELECT json_group_array(value)
+        FROM (
+          SELECT value
+          FROM json_each(event.${COLUMN})
+          WHERE value IN ('stop', 'follow_up', 'open_pr', 'dismiss')
+          ORDER BY key
+        )
+      )
+      WHERE event.${COLUMN} IS NOT NULL
+    `);
+  } finally {
+    await knex.raw(immutableTrigger.sql);
+  }
   await createValidationTrigger(knex, [
     'stop',
     'follow_up',
