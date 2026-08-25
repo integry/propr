@@ -52,14 +52,14 @@ interface SelectedModelsChipsProps {
 }
 
 const SelectedModelsChips: React.FC<SelectedModelsChipsProps> = ({ selectedModels }) => (
-  <div className="flex items-center gap-1 flex-wrap">
+  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
     {selectedModels.map(m => (
       <span
         key={`${m.agent_alias}-${m.model_name}`}
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-xs bg-indigo-50 text-indigo-700 rounded border border-indigo-200"
+        className="inline-flex max-w-full min-w-0 items-center gap-1 rounded border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-xs text-indigo-700"
       >
-        <ProviderLogo provider={m.agent_alias} className="w-2.5 h-2.5" />
-        {getModelDisplayName(m.model_name)}
+        <ProviderLogo provider={m.agent_alias} className="h-2.5 w-2.5 flex-shrink-0" />
+        <span className="truncate">{getModelDisplayName(m.model_name)}</span>
       </span>
     ))}
   </div>
@@ -90,8 +90,8 @@ export const MultiSelectMode: React.FC<MultiSelectModeProps> = ({
   onBackToSingle,
   onConfirm
 }) => (
-  <div className={`flex items-center gap-2 ${className}`}>
-    <div className="relative">
+  <div className={`flex min-w-0 flex-wrap items-center gap-2 ${className}`}>
+    <div className="relative flex-shrink-0">
       <button
         onClick={() => !disabled && setMultiDropdownOpen(!multiDropdownOpen)}
         disabled={disabled}

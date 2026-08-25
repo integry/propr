@@ -217,7 +217,7 @@ export const RowActions: React.FC<RowActionsProps> = ({
   const issueNumber = issue.issue_number;
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3 sm:flex-shrink-0">
+    <div className="flex w-full min-w-0 flex-wrap items-center gap-2 lg:w-auto lg:flex-1 lg:justify-end lg:gap-3">
       {isPending && (
         <AgentModelSelector
           agents={agents}
