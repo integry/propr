@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- route registration and coordinated shutdown share startup state */
 import express, { Request, Response } from 'express';
 import { createServer, Server as HttpServer } from 'http';
 import cors from 'cors';
@@ -28,7 +29,7 @@ import {
   createRepoImprovementsRoutes,
   createRepoTodoRoutes,
   createUserRepoPreferencesRoutes,
-  createAgentRuntimeRoutes,
+  createAgentRuntimeRoutes, createNotificationRoutes,
   createAdminRoutes,
   createInstanceCatalogRoutes,
   attachmentUpload
@@ -56,13 +57,13 @@ import { initializeUltrafix } from './services/ultrafixInit.js';
 import type { WebhookEventType, DetectedIssue, CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
 import { handleWebhookRequest } from './webhookHandler.js';
 import { stopTaskExecution } from './routes/dockerRoutes.js';
+import { initializePushSubscriptionMaintenance } from './services/pushSubscriptionMaintenance.js';
+import { NotificationProjectionService } from './services/notificationProjectionService.js';
+import { WebPushDispatcher } from './services/webPushDispatcher.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
 import { configureApiProxyTrust, createApiRequestRateLimiter, createWebhookRequestRateLimiter } from './requestRateLimits.js';
-import {
-  startConfigReloadSubscription,
-  type ConfigReloadSubscription,
-} from './services/configReloadSubscription.js';
+import { startConfigReloadSubscription, type ConfigReloadSubscription } from './services/configReloadSubscription.js';
 import {
   assertNoDuplicateRoutes,
   createManagementRouteEntries,
@@ -186,6 +187,9 @@ let redisClient: RedisClientType;
 let taskQueue: Queue;
 let runtimeBuildQueue: Queue;
 let configReloadSubscription: ConfigReloadSubscription | undefined;
+let notificationProjection: NotificationProjectionService | undefined;
+let webPushDispatcher: WebPushDispatcher | undefined;
+let webPushDispatcherConfigured = false;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -229,7 +233,15 @@ async function initRedis(): Promise<void> {
 }
 
 function setupRoutes(): void {
-  const statusRoutes = createStatusRoutes({ redisClient });
+  const statusRoutes = createStatusRoutes({
+    redisClient,
+    ...(notificationProjection === undefined ? {} : {
+      projectSystemSnapshot: (
+        snapshot: Record<string, unknown> & { timestamp: string },
+        additionalAdministratorIds: readonly string[],
+      ) => notificationProjection!.projectSystemSnapshot(snapshot, additionalAdministratorIds),
+    }),
+  });
   // INTENTIONALLY UNAUTHENTICATED: /api/compatibility is registered BEFORE the
   // `ensureAuthenticated` guard below so the hosted UI can run its pre-auth
   // version-gate before the user logs in. This is the one deliberate exception to
@@ -261,6 +273,7 @@ function setupRoutes(): void {
   const repoTodoRoutes = createRepoTodoRoutes();
   const userRepoPreferencesRoutes = createUserRepoPreferencesRoutes();
   const agentRuntimeRoutes = createAgentRuntimeRoutes({ getRuntimeBuildQueue: () => runtimeBuildQueue });
+  const notificationRoutes = createNotificationRoutes({ webPushDispatcherConfigured });
   const adminRoutes = createAdminRoutes();
   const instanceCatalogRoutes = createInstanceCatalogRoutes();
   const agentVersionRoutes = createAgentVersionRoutes();
@@ -286,7 +299,8 @@ function setupRoutes(): void {
     ['get', '/api/repos/todos/categories', repoTodoRoutes.getCategories], ['post', '/api/repos/todos/categories', repoTodoRoutes.createCategory], ['put', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.updateCategory], ['delete', '/api/repos/todos/categories/:categoryId', repoTodoRoutes.deleteCategory],
     ['post', '/api/repos/todos/categories/reorder', repoTodoRoutes.reorderCategories], ['get', '/api/repos/todos', repoTodoRoutes.getTodos], ['get', '/api/repos/todos/:todoId', repoTodoRoutes.getTodo], ['post', '/api/repos/todos', repoTodoRoutes.createTodo],
     ['put', '/api/repos/todos/:todoId', repoTodoRoutes.updateTodo], ['delete', '/api/repos/todos/:todoId', repoTodoRoutes.deleteTodo], ['post', '/api/repos/todos/reorder', repoTodoRoutes.reorderTodos], ['get', '/api/user/repo-preferences', userRepoPreferencesRoutes.getRepoPreferences],
-    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences],
+    ['post', '/api/user/repo-preferences', userRepoPreferencesRoutes.updateRepoPreferences], ['get', '/api/notifications', notificationRoutes.getNotifications], ['get', '/api/notifications/unread-count', notificationRoutes.getUnreadCount], ['get', '/api/notifications/config', notificationRoutes.getConfiguration], ['get', '/api/notifications/capabilities', notificationRoutes.getCapabilities],
+    ['get', '/api/notifications/preferences', notificationRoutes.getPreferences], ['patch', '/api/notifications/preferences', notificationRoutes.updatePreferences], ['get', '/api/notifications/push-subscriptions', notificationRoutes.listPushSubscriptions], ['post', '/api/notifications/push-subscriptions', notificationRoutes.createPushSubscription], ['delete', '/api/notifications/push-subscriptions', notificationRoutes.revokePushSubscription], ['delete', '/api/notifications/push-subscriptions/:subscriptionId', notificationRoutes.revokePushSubscriptionById], ['post', '/api/notifications/:id/read', notificationRoutes.markRead], ['post', '/api/notifications/:id/dismiss', notificationRoutes.dismiss],
   ];
   const routes = [
     ...operationalRoutes,
@@ -382,9 +396,7 @@ function setupWebhookRoute(): void {
   console.log('[webhook] Webhook endpoint enabled at POST /webhook');
 }
 
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok' });
-});
+app.get('/health', (_req: Request, res: Response) => { res.json({ status: 'ok' }); });
 
 // Create HTTP server to wrap Express app (required for Socket.IO)
 const httpServer: HttpServer = createServer(app);
@@ -397,10 +409,22 @@ async function start(): Promise<void> {
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
+      try {
+        const dispatcher = new WebPushDispatcher({ database: db });
+        webPushDispatcherConfigured = dispatcher.start().configured;
+        webPushDispatcher = dispatcher;
+      } catch {
+        webPushDispatcher = undefined;
+        webPushDispatcherConfigured = false;
+        console.warn('[notifications] Web Push dispatcher disabled: invalid dispatcher tuning configuration');
+      }
+      notificationProjection = new NotificationProjectionService({ database: db });
+      notificationProjection.startStalledDetector();
       configReloadSubscription = await startConfigReloadSubscription(redisClient, reloadConfigs);
       // Subscribe first, then enqueue the initial load through the same serial
       // chain so no settings update can race with the startup snapshot.
       await configReloadSubscription.reload();
+      await initializePushSubscriptionMaintenance();
       try {
         const removed = await agentLoginSessionManager.cleanupOrphanedContainers();
         if (removed > 0) console.log(`Removed ${removed} orphaned agent login container(s)`);
@@ -419,7 +443,7 @@ async function start(): Promise<void> {
         authenticate: authenticateSocketRequest,
       });
       console.log('[WebSocket] Socket.IO server initialized');
-      socketService.initQueueFeatures({ taskQueue, redisClient, db });
+      socketService.initQueueFeatures({ taskQueue, redisClient, db, notificationProjection });
       console.log('[WebSocket] Queue features initialized for real-time updates');
       await initializeUltrafix(getIoRedisClient());
       // Register the webhook processors in THIS (API) process ONLY when the API
@@ -463,6 +487,7 @@ async function start(): Promise<void> {
       ];
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'Web Push dispatcher', close: () => webPushDispatcher?.close() ?? Promise.resolve() },
           { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
           { name: 'socket service', close: () => closeSocketService() },

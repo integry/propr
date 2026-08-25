@@ -9,9 +9,10 @@ import AgentTankSection from './AgentTankSection';
 import AgentRuntimePackagesSection from './AgentRuntimePackagesSection';
 import { useSettingsState } from './useSettingsState';
 import { useDemoMode } from '../../contexts/DemoModeContext';
+import { useCurrentUser, userHasPermission } from '../../contexts/AuthContext';
+import NotificationSettingsSection from './NotificationSettingsSection';
 
-const SettingsPage: React.FC = () => {
-  useDocumentTitle('Settings');
+const AdminSettingsPage: React.FC = () => {
   const { isDemoMode } = useDemoMode();
 
   const {
@@ -140,6 +141,10 @@ const SettingsPage: React.FC = () => {
           <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-4">Automation Rules</h3>
 
           <div className="space-y-6">
+            <NotificationSettingsSection />
+
+            <div className="border-t border-gray-200" />
+
             <TagListSection
               title="GitHub User Whitelist"
               description="Only process issues/comments from these users."
@@ -279,6 +284,33 @@ const SettingsPage: React.FC = () => {
           </div>
         </div>
       </div>
+    </div>
+  );
+};
+
+const SettingsPage: React.FC = () => {
+  useDocumentTitle('Settings');
+  const user = useCurrentUser();
+  const { isDemoMode } = useDemoMode();
+
+  if (userHasPermission(user, 'instance.manage_settings')) {
+    return <AdminSettingsPage />;
+  }
+
+  return (
+    <div className="flex h-full flex-col bg-white">
+      <div className="flex-shrink-0 border-b border-gray-200 px-6 py-4">
+        <h2 className="text-xl font-semibold text-gray-900">Settings</h2>
+        <p className="mt-1 text-xs text-gray-500">Preferences for {user?.displayName || user?.username || 'your account'}.</p>
+      </div>
+      <fieldset
+        disabled={isDemoMode}
+        className={`flex-1 overflow-y-auto p-6 ${isDemoMode ? 'opacity-70' : ''}`}
+      >
+        <div className="mx-auto max-w-2xl">
+          <NotificationSettingsSection />
+        </div>
+      </fieldset>
     </div>
   );
 };

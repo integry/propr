@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { ScrollText } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Inbox, LogOut, ScrollText } from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
 import AIActivityMonitor from './AIActivityMonitor';
 import QuickAddTodo from './QuickAddTodo';
@@ -11,9 +11,10 @@ import {
   TasksButton,
 } from './GlobalHeaderComponents';
 import type { CurrentUser } from '../api/proprTypes';
+import MobileBottomNavigation from './MobileBottomNavigation';
 
 interface GlobalHeaderProps {
-  user: Pick<CurrentUser, 'id' | 'username' | 'displayName' | 'avatarUrl'> | null;
+  user: CurrentUser | null;
   onLogout: () => void;
   onMenuToggle: () => void;
   MenuIcon: React.FC<{ className?: string }>;
@@ -23,6 +24,7 @@ interface GlobalHeaderProps {
     dismissTask?: HeaderStats['dismissTask'];
   };
   newPlanPressedOverride?: boolean;
+  inboxUnreadCount?: number | null;
 }
 
 function resolveHeaderStats(
@@ -67,7 +69,7 @@ interface ProfileSectionProps {
 }
 
 const ProfileSection: React.FC<ProfileSectionProps> = ({ user, onLogout, systemHealth }) => (
-  <div className="flex items-center gap-2 px-4 relative">
+  <div className="relative flex items-center gap-1 px-1 sm:gap-2 sm:px-4">
     <div className="absolute left-0 top-[20%] h-[60%] w-px bg-slate-200" />
     <div className="hidden md:flex h-full">
       <SystemHealth systemHealth={systemHealth} />
@@ -77,7 +79,7 @@ const ProfileSection: React.FC<ProfileSectionProps> = ({ user, onLogout, systemH
         href={`https://github.com/${user.username}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="flex items-center gap-3 hover:bg-slate-50 h-full px-2 transition-colors group"
+        className="group flex h-full flex-none items-center gap-3 transition-colors hover:bg-slate-50 sm:px-2"
       >
         <div className="hidden lg:flex flex-col items-end">
           <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">
@@ -103,15 +105,18 @@ const ProfileSection: React.FC<ProfileSectionProps> = ({ user, onLogout, systemH
     {user && (
       <button
         onClick={onLogout}
-        className="text-sm text-gray-500 hover:text-red-600 font-medium transition-colors"
+        className="flex h-full flex-none items-center px-1 text-sm font-medium text-gray-500 transition-colors hover:text-red-600 sm:px-0"
+        aria-label="Logout"
+        title="Logout"
       >
-        Logout
+        <LogOut className="h-5 w-5 sm:hidden" aria-hidden="true" />
+        <span className="hidden sm:inline">Logout</span>
       </button>
     )}
   </div>
 );
 
-const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false, headerStatsOverride, newPlanPressedOverride = false }) => {
+const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggle, MenuIcon, isDemoMode = false, headerStatsOverride, newPlanPressedOverride = false, inboxUnreadCount = null }) => {
   const navigate = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
@@ -130,9 +135,10 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
   const newPlanTitle = isDemoMode ? 'Demo mode is read-only' : 'New Plan';
 
   return (
-    // Global navigation owns app-wide dropdowns, so its stacking context must stay
-    // above route-level sticky headers such as task details summaries.
-    <header className="bg-white border-b border-gray-200 h-12 sm:h-16 flex items-stretch shadow-sm z-40 sticky top-0">
+    <>
+    {/* Global navigation owns app-wide dropdowns, so its stacking context must stay
+        above route-level sticky headers such as task details summaries. */}
+    <header className="bg-white border-b border-gray-200 h-16 hidden md:flex items-stretch shadow-sm z-40 sticky top-0">
       <div className="flex items-center lg:hidden px-4">
         <button
           onClick={onMenuToggle}
@@ -193,8 +199,32 @@ const GlobalHeader: React.FC<GlobalHeaderProps> = ({ user, onLogout, onMenuToggl
         <ScrollText className="w-5 h-5" />
       </button>
 
+      <Link
+        to="/inbox"
+        className="relative flex items-center px-3 text-slate-600 transition-colors hover:bg-slate-50 hover:text-teal-700"
+        aria-label={inboxUnreadCount && inboxUnreadCount > 0
+          ? `Inbox, ${inboxUnreadCount} unread notifications`
+          : 'Inbox'}
+        title="Inbox"
+      >
+        <Inbox className="h-5 w-5" aria-hidden="true" />
+        {inboxUnreadCount !== null && inboxUnreadCount > 0 && (
+          <span className="absolute right-1.5 top-1 inline-flex min-w-4 items-center justify-center rounded-full bg-primary-500 px-1 text-[10px] font-bold leading-4 text-white">
+            {inboxUnreadCount > 99 ? '99+' : inboxUnreadCount}
+          </span>
+        )}
+      </Link>
+
       <ProfileSection user={user} onLogout={onLogout} systemHealth={systemHealth} />
     </header>
+    <MobileBottomNavigation
+      user={user}
+      onLogout={onLogout}
+      isDemoMode={isDemoMode}
+      unreadCount={inboxUnreadCount}
+      systemHealth={systemHealth}
+    />
+    </>
   );
 };
 

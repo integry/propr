@@ -50,12 +50,12 @@ const StopExecutionButton: React.FC<{
       {stoppingExecution ? (
         <>
           <Loader2 size={14} className="animate-spin" />
-          <span className="hidden sm:inline">Stopping...</span>
+          <span>Stopping...</span>
         </>
       ) : (
         <>
           <Square size={14} />
-          <span className="hidden sm:inline">Stop</span>
+          <span>Stop</span>
         </>
       )}
     </button>
@@ -96,7 +96,7 @@ const DeleteButton: React.FC<{
       ) : (
         <Trash2 size={14} />
       )}
-      <span className="hidden sm:inline">Delete</span>
+      <span>Delete</span>
     </button>
   );
 };
@@ -120,7 +120,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
   const isCancelled = currentStatus === 'CANCELLED';
 
   return (
-    <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+    <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-1.5 sm:w-auto sm:flex-shrink-0">
       <CancelledBadge isCancelled={isCancelled} />
 
       {/* View Prompt Button - Ghost style */}
@@ -131,7 +131,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
           className={ghostButtonClass}
         >
           <FileText size={13} />
-          <span className="hidden sm:inline">Prompt</span>
+          <span>Prompt</span>
         </button>
       )}
 
@@ -143,7 +143,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
           className={ghostButtonClass}
         >
           <Terminal size={13} />
-          <span className="hidden sm:inline">Logs</span>
+          <span>Logs</span>
         </button>
       )}
 
@@ -155,7 +155,7 @@ const ActionBar: React.FC<ActionBarProps> = ({
           className={ghostButtonClass}
         >
           <MessageSquarePlus size={13} />
-          <span className="hidden sm:inline">Follow Up</span>
+          <span>Follow Up</span>
         </button>
       )}
 

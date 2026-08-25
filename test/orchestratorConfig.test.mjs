@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createECDH } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -20,6 +21,63 @@ function envValues(args, name) {
 }
 
 const manifestPath = fileURLToPath(new URL('../docker/launcher/manifest.json', import.meta.url));
+
+function vapidKeyPair() {
+  const ecdh = createECDH('prime256v1');
+  ecdh.generateKeys();
+  return {
+    publicKey: ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url'),
+    privateKey: ecdh.getPrivateKey().toString('base64url'),
+  };
+}
+
+test('validateEnv accepts absent or complete matching VAPID configuration', () => {
+  assert.deepEqual(
+    validateEnv(resolveConfig({}, { manifestPath })).errors.filter(error => /VAPID/.test(error)),
+    [],
+  );
+  const pair = vapidKeyPair();
+  const cfg = resolveConfig({
+    WEB_PUSH_VAPID_SUBJECT: 'mailto:operator@example.com',
+    WEB_PUSH_VAPID_PUBLIC_KEY: pair.publicKey,
+    WEB_PUSH_VAPID_PRIVATE_KEY: pair.privateKey,
+  }, { manifestPath });
+  assert.equal(cfg.webPushVapidSubject, 'mailto:operator@example.com');
+  assert.deepEqual(validateEnv(cfg).errors.filter(error => /VAPID/.test(error)), []);
+});
+
+test('validateEnv fails safely when only one VAPID key is configured', () => {
+  const privateKey = vapidKeyPair().privateKey;
+  const cfg = resolveConfig({ WEB_PUSH_VAPID_PRIVATE_KEY: privateKey }, { manifestPath });
+  const error = validateEnv(cfg).errors.find(candidate => /VAPID/.test(candidate));
+
+  assert.match(error ?? '', /incomplete/);
+  assert.match(error ?? '', /WEB_PUSH_VAPID_PUBLIC_KEY/);
+  assert.doesNotMatch(error ?? '', new RegExp(privateKey));
+});
+
+test('validateEnv rejects malformed and mismatched VAPID configuration without exposing keys', () => {
+  const first = vapidKeyPair();
+  const second = vapidKeyPair();
+  const base = { WEB_PUSH_VAPID_SUBJECT: 'https://operator.example.com/push-contact' };
+  const malformed = resolveConfig({
+    ...base,
+    WEB_PUSH_VAPID_PUBLIC_KEY: 'not-a-vapid-key',
+    WEB_PUSH_VAPID_PRIVATE_KEY: first.privateKey,
+  }, { manifestPath });
+  assert.match(validateEnv(malformed).errors.join('\n'), /VAPID configuration is malformed/);
+  assert.doesNotMatch(validateEnv(malformed).errors.join('\n'), /not-a-vapid-key/);
+
+  const mismatched = resolveConfig({
+    ...base,
+    WEB_PUSH_VAPID_PUBLIC_KEY: first.publicKey,
+    WEB_PUSH_VAPID_PRIVATE_KEY: second.privateKey,
+  }, { manifestPath });
+  const errors = validateEnv(mismatched).errors.join('\n');
+  assert.match(errors, /do not belong to the same VAPID pair/);
+  assert.doesNotMatch(errors, new RegExp(first.publicKey));
+  assert.doesNotMatch(errors, new RegExp(second.privateKey));
+});
 
 test('resolveHostConfig honors stack .env values for ports and docs', () => {
   const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
@@ -43,6 +101,18 @@ test('resolveHostConfig honors stack .env values for ports and docs', () => {
     cfg.managedCredentialsDir,
     join(homedir(), '.propr', 'agent-credentials'),
   );
+});
+
+test('api service receives the configured stack env file', () => {
+  const rootDir = mkdtempSync(join(tmpdir(), 'propr-orch-'));
+  const envFile = join(rootDir, '.env');
+  writeFileSync(envFile, 'EXAMPLE_API_SETTING=configured\n');
+  const cfg = resolveHostConfig({ rootDir, env: {}, manifestPath });
+
+  const { args } = buildServiceSpec(cfg, 'api');
+  const envFileIndex = args.indexOf('--env-file');
+  assert.notEqual(envFileIndex, -1);
+  assert.equal(args[envFileIndex + 1], envFile);
 });
 
 test('launcher derives and mounts managed agent credentials without another host-path setting', () => {

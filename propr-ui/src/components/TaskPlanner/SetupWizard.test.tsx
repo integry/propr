@@ -384,11 +384,19 @@ describe('SetupWizard', () => {
   });
 
   it('preserves right-pane preview progress on desktop while generating', () => {
-    setViewportWidth(1024);
+    setViewportWidth(768);
     setGeneratingState(previewTrace);
     mockPreviewTrace = previewTrace;
     renderSetupWizard({ status: 'generating', generation_trace: previewTrace, context_config: {} });
     const rightPane = within(screen.getByTestId('setup-wizard-right-pane'));
     expect(rightPane.getByTestId('generation-progress')).toBeInTheDocument();
+  });
+
+  it.each([320, 390])('keeps setup actions, including context export, reachable at %ipx', width => {
+    setViewportWidth(width);
+    renderSetupWizard({ context_config: {} });
+
+    expect(screen.getByRole('button', { name: 'Generate' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Export Context' })).toBeInTheDocument();
   });
 });
