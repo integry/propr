@@ -135,6 +135,7 @@ describe('BrowserPushProvider enrollment', () => {
     return (
       <div>
         <span>{push.isLoading ? 'loading' : push.subscription ? 'subscribed' : 'ready'}</span>
+        <span data-testid="push-permission">{push.permission}</span>
         <button type="button" onClick={() => void push.enable()}>Enable</button>
         <button type="button" onClick={() => void push.disable()}>Disable</button>
       </div>
@@ -167,5 +168,25 @@ describe('BrowserPushProvider enrollment', () => {
     await waitFor(() => expect(screen.getByText('ready')).toBeInTheDocument());
     expect(mocks.revokeBackend).toHaveBeenCalledWith(subscription.endpoint);
     expect(unsubscribeBrowser).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not subscribe or call the backend when the permission prompt is denied', async () => {
+    requestPermission.mockImplementationOnce(async () => {
+      permission = 'denied';
+      return permission;
+    });
+    render(
+      <AuthProvider user={user}>
+        <BrowserPushProvider><Probe /></BrowserPushProvider>
+      </AuthProvider>,
+    );
+
+    await screen.findByText('ready');
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+
+    await waitFor(() => expect(screen.getByTestId('push-permission')).toHaveTextContent('denied'));
+    expect(requestPermission).toHaveBeenCalledTimes(1);
+    expect(subscribeBrowser).not.toHaveBeenCalled();
+    expect(mocks.registerBackend).not.toHaveBeenCalled();
   });
 });

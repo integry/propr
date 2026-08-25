@@ -149,6 +149,34 @@ function waitableEvent(properties: Record<string, unknown>): {
 }
 
 describe('PWA service worker', () => {
+  test.each([
+    ['missing data', undefined],
+    ['invalid JSON', { json: () => { throw new SyntaxError('invalid payload'); } }],
+    ['a non-object payload', { json: () => ['not', 'an', 'object'] }],
+  ])('shows a safe fallback notification for %s', async (_label, data) => {
+    const harness = createHarness();
+    const push = waitableEvent({ ...(data === undefined ? {} : { data }) });
+
+    harness.listeners.get('push')?.(push.event);
+    await push.completion();
+
+    expect(harness.shownNotifications).toEqual([{
+      title: 'ProPR notification',
+      options: expect.objectContaining({
+        body: 'A ProPR update is available.',
+        tag: 'propr-notification',
+        actions: [{ action: 'propr-dismiss', title: 'Dismiss' }],
+        data: {
+          deepLink: 'https://app.example.com/',
+          actionUrls: [],
+          unreadCount: null,
+          eventId: '',
+        },
+      }),
+    }]);
+    expect(harness.badgeCounts).toEqual([]);
+  });
+
   test('pre-caches the built shell references but never runtime config', async () => {
     const harness = createHarness();
     const install = waitableEvent({});

@@ -93,6 +93,45 @@ describe('Inbox page', () => {
     demoState.isDemoMode = false;
   });
 
+  test('renders notifications in the four operational groups and omits empty groups', async () => {
+    const attention = item('event-attention', 'Task needs attention');
+    const review = item('event-plan', 'Plan ready', null, {
+      kind: 'plan',
+      severity: 'info',
+      target: { type: 'plan', repository: 'integry/propr', draftId: 'draft-1' },
+    });
+    const completed = item('event-completed', 'Task completed', null, { severity: 'success' });
+    const system = item('event-system', 'System failure', null, {
+      kind: 'system_failure',
+      severity: 'error',
+      target: { type: 'system_failure', component: 'dispatcher' },
+    });
+    vi.mocked(listNotifications).mockResolvedValue({
+      notifications: [attention, review, completed, system],
+      unreadCount: 4,
+      nextCursor: null,
+    });
+
+    renderInbox();
+
+    await screen.findByRole('heading', { level: 2, name: 'Needs attention' });
+    const headings = screen.getAllByRole('heading', { level: 2 });
+    expect(headings.map(heading => heading.textContent)).toEqual([
+      'Needs attention',
+      'Ready for review',
+      'Completed',
+      'System',
+    ]);
+    expect(screen.getByRole('heading', { level: 3, name: 'Task needs attention' }).closest('section'))
+      .toHaveAccessibleName('Needs attention');
+    expect(screen.getByRole('heading', { level: 3, name: 'Plan ready' }).closest('section'))
+      .toHaveAccessibleName('Ready for review');
+    expect(screen.getByRole('heading', { level: 3, name: 'Task completed' }).closest('section'))
+      .toHaveAccessibleName('Completed');
+    expect(screen.getByRole('heading', { level: 3, name: 'System failure' }).closest('section'))
+      .toHaveAccessibleName('System');
+  });
+
   test('renders only advertised actions and requires confirmation before stopping', async () => {
     const notification = item('event-stalled', 'Stalled task', null, {
       severity: 'warning',
