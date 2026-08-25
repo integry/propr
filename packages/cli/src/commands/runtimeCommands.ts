@@ -3,7 +3,9 @@ import {
   applyAgentRuntimePackages,
   getAgentRuntimePackages,
   updateAgentRuntimePackages,
-  type AgentRuntimePackageState
+  verifyAgentRuntimePackages,
+  type AgentRuntimePackageState,
+  type AgentRuntimePackageVerificationResult
 } from '../api/agentRuntime.js';
 
 const POLL_INTERVAL_MS = 2000;
@@ -48,6 +50,36 @@ async function finishUpdate(state: AgentRuntimePackageState, options: { wait?: b
 function handleError(error: unknown): never {
   console.error(`Error: ${(error as Error).message}`);
   process.exit(1);
+}
+
+export function printRuntimePackageVerification(
+  result: AgentRuntimePackageVerificationResult,
+  json = false
+): void {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  const label = result.status === 'healthy' ? 'HEALTHY' : result.status === 'disabled' ? 'DISABLED' : 'UNHEALTHY';
+  console.log(`Runtime package verification: ${label}`);
+  console.log(`Desired: ${result.desiredPackages.length ? result.desiredPackages.join(', ') : '(none)'}`);
+  console.log(`Active:  ${result.activePackages.length ? result.activePackages.join(', ') : '(none)'}`);
+  if (result.disabled) {
+    console.log('Runtime package profile is disabled; agent execution uses the configured base image directly.');
+    return;
+  }
+  for (const error of result.configurationErrors) console.log(`Configuration: ${error}`);
+  for (const verificationIssue of result.issues) console.log(`Issue: ${verificationIssue.message}`);
+  for (const image of result.images) {
+    console.log(`${image.healthy ? 'OK' : 'FAILED'}: ${image.baseImage}`);
+    if (image.recordedImage) console.log(`  Runtime image: ${image.recordedImage}`);
+    for (const verificationIssue of image.issues) console.log(`  - ${verificationIssue.message}`);
+  }
+  if (result.remediation) console.log(`Remediation: ${result.remediation}`);
+}
+
+export function runtimePackageVerificationExitCode(result: AgentRuntimePackageVerificationResult): number {
+  return result.healthy ? 0 : 1;
 }
 
 function normalizePackageSpec(value: string): string {
@@ -112,6 +144,17 @@ export function createRuntimeCommand(): Command {
     .action(async (options: { wait?: boolean; json?: boolean }) => {
       try { await finishUpdate(await applyAgentRuntimePackages(), options); }
       catch (error) { handleError(error); }
+    });
+
+  packages.command('verify')
+    .description('Verify configured packages and current runtime images without changing them')
+    .option('-j, --json', 'Output structured JSON')
+    .action(async (options: { json?: boolean }) => {
+      try {
+        const result = await verifyAgentRuntimePackages();
+        printRuntimePackageVerification(result, Boolean(options.json));
+        if (runtimePackageVerificationExitCode(result) !== 0) process.exitCode = 1;
+      } catch (error) { handleError(error); }
     });
 
   runtime.command('status')

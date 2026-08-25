@@ -115,6 +115,18 @@ cd .propr && npm install <package>
 
 The generated `.propr/setup.sh` runs before each implementation execution. Use it for repository-local setup such as npm helper packages; install Debian system tools at the ProPR installation level with `propr runtime packages add <package> --wait`.
 
+## Agent Runtime Packages
+
+Runtime-package administration uses the installation runtime-management permission. After changing packages, replacing an agent base image, or pruning local images, verify the images ProPR currently uses:
+
+```bash
+propr runtime packages apply --wait
+propr runtime packages verify
+propr runtime packages verify --json
+```
+
+Verification is read-only and exits nonzero for desired/active drift, stale or missing images, missing packages, pinned-version mismatches, or incorrect runtime labels/final users. Package inspection runs in a short-lived network-disabled container. Use `propr runtime packages apply --wait` to rebuild an unhealthy profile, then run verification again. An empty runtime-package profile returns a successful explicit disabled result.
+
 ## ProPR Operator Agent Skill
 
 `propr setup` detects configured agent tools and offers once to install the bundled ProPR Operator skill, showing every destination before writing. Skip the offer with `--no-skill`, or choose targets explicitly with `--install-skill codex,claude`. A setup-time skill error is reported with a recovery command and does not invalidate an otherwise healthy stack. Piped/CI setup never writes agent homes unless explicit targets are passed.
