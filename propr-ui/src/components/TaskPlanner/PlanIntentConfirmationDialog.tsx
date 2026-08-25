@@ -61,7 +61,7 @@ export const PlanIntentConfirmationDialog: React.FC<PlanIntentConfirmationDialog
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="mobile-plan-intent-overlay fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 md:items-center md:p-4"
           onClick={event => { if (event.target === event.currentTarget && !isLoading) onClose(); }}
         >
           <motion.div
@@ -69,13 +69,13 @@ export const PlanIntentConfirmationDialog: React.FC<PlanIntentConfirmationDialog
             initial={{ opacity: 0, scale: 0.96 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.96 }}
-            className="w-full max-w-lg rounded-lg border border-gray-300 bg-white shadow-xl"
+            className="max-h-full w-full max-w-lg overflow-y-auto rounded-lg border border-gray-300 bg-white shadow-xl"
             role="dialog"
             aria-modal="true"
             aria-labelledby="plan-intent-confirmation-title"
             tabIndex={-1}
           >
-            <div className="p-6">
+            <div className="p-4 sm:p-6">
               <div className="flex items-start gap-4">
                 <div className="flex h-10 w-10 flex-none items-center justify-center rounded-full bg-amber-100">
                   <AlertTriangle className="h-5 w-5 text-amber-600" aria-hidden="true" />
@@ -116,7 +116,7 @@ export const PlanIntentConfirmationDialog: React.FC<PlanIntentConfirmationDialog
                 </p>
               )}
             </div>
-            <div className="flex justify-end gap-3 rounded-b-lg border-t border-gray-200 bg-gray-50 px-6 py-4">
+            <div className="sticky bottom-0 flex flex-wrap justify-end gap-3 rounded-b-lg border-t border-gray-200 bg-gray-50 px-4 py-3 sm:px-6 sm:py-4">
               <button
                 type="button"
                 onClick={onClose}

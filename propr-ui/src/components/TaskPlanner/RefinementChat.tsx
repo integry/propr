@@ -194,7 +194,7 @@ const getVisibleMessages = (syncInitialMessages: boolean, syncedMessages: Messag
 );
 
 export const RefinementChat: React.FC<RefinementChatProps> = ({ onSendMessage, initialMessages, onMessagesChange, refinementProgress, onStop, defaultModel, inputValueOverride, isLoadingOverride, sendButtonPressed = false, sendButtonForceEnabled = false, showStopButtonOverride, syncInitialMessages = false, disableSmoothAutoScroll = false, disableAutoScroll = false, stableComposerHeight, focusComposerRequest = 0 }) => {
-  const isMobile = useIsMobile();
+  const isMobile = useIsMobile(768);
   const agents = useAgentsLoader();
   const syncedMessages = useMemo<Message[]>(() => toMessages(initialMessages), [initialMessages]);
   const [messages, setMessages] = useState<Message[]>(() => initMessages(initialMessages));

@@ -94,7 +94,7 @@ const GeneratingView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft;
   const taskTitle = getTaskTitle(draft);
 
   return (
-    <div className="h-[calc(100vh-64px)] flex flex-col">
+    <div className="planner-studio-viewport flex flex-col">
       {/* Fixed Header */}
       <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
         <StudioStepper currentStage={currentStage} />
@@ -146,7 +146,7 @@ const ApprovedView: React.FC<{
   notificationIntent,
   onNotificationIntentConsumed,
 }) => (
-  <div className="h-[calc(100vh-64px)] flex flex-col">
+  <div className="planner-studio-viewport flex flex-col">
     {/* Fixed Header */}
     <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
       <StudioStepper currentStage={currentStage} />
@@ -175,7 +175,7 @@ const ReviewView: React.FC<{
   notificationIntent,
   onNotificationIntentConsumed,
 }) => (
-  <div className="h-[calc(100vh-64px)] flex flex-col">
+  <div className="planner-studio-viewport flex flex-col">
     {/* Fixed Header */}
     <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
       <StudioStepper currentStage={currentStage} />
@@ -196,7 +196,7 @@ const ReviewView: React.FC<{
 );
 
 const DraftView: React.FC<{ currentStage: StudioStage; draft: PlannerDraft; onRefetch: () => void; onGenerationStarted: (runId: string) => void }> = ({ currentStage, draft, onRefetch, onGenerationStarted }) => (
-  <div className="h-[calc(100vh-64px)] flex flex-col">
+  <div className="planner-studio-viewport flex flex-col">
     {/* Fixed Header */}
     <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
       <StudioStepper currentStage={currentStage} />
@@ -243,7 +243,7 @@ const NewDraftView: React.FC<{
   onRefetch?: () => void;
   onGenerationStarted?: (runId: string) => void;
 }> = ({ draft, onDraftCreated, onRefetch, onGenerationStarted }) => (
-  <div className="h-[calc(100vh-64px)] flex flex-col">
+  <div className="planner-studio-viewport flex flex-col">
     {/* Fixed Header */}
     <div className="bg-gray-100 px-4 py-2 md:px-6 md:py-4 border-b border-gray-300">
       <StudioStepper currentStage="draft" />

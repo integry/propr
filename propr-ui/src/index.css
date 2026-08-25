@@ -7,20 +7,53 @@ body {
   font-family: 'Inter', sans-serif;
 }
 
+:root {
+  --mobile-bottom-navigation-height: calc(4rem + env(safe-area-inset-bottom));
+}
+
 /* Keep mobile route controls above the fixed primary navigation, including the
    additional home-indicator area on iPhones. */
 .mobile-content-clearance {
-  padding-bottom: calc(4rem + env(safe-area-inset-bottom));
+  padding-bottom: var(--mobile-bottom-navigation-height);
 }
 
 .mobile-bottom-navigation {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* Planner Studio owns full-height, internally scrolling canvases. Fit those
+   canvases above the mobile navigation instead of relying on outer-page
+   padding, which does not move sticky descendants out from behind a fixed nav. */
+.planner-studio-viewport {
+  height: 100%;
+  min-height: 0;
+}
+
+/* A wrapped task summary must never grow into the fixed mobile navigation. */
+.task-mobile-sticky-summary {
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (max-width: 767.98px) {
+  /* Keep mobile action docks comfortable around home indicators when they are
+     reused outside the standard app shell. The containing Studio viewport
+     already keeps the dock above the fixed bottom navigation. */
+  .mobile-safe-action-area {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .mobile-plan-intent-overlay {
+    padding-bottom: calc(var(--mobile-bottom-navigation-height) + 0.75rem);
+  }
+}
+
 @media (min-width: 768px) {
   .mobile-content-clearance {
     padding-bottom: 0;
   }
+
 }
 
 /* Stats label styling - small, uppercase, lighter grey */

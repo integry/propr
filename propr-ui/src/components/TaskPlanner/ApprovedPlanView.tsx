@@ -69,7 +69,7 @@ interface FooterStats {
   processing: number;
 }
 const PlanFooterStats: React.FC<{ stats: FooterStats; onRefresh: () => void }> = ({ stats, onRefresh }) => (
-  <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
+  <div className="mobile-safe-action-area flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-t border-gray-200 bg-gray-100 flex-shrink-0">
     <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs sm:text-sm text-gray-600">
       <span className="font-medium">{stats.total} {stats.total === 1 ? 'Issue' : 'Issues'}</span>
       {stats.merged > 0 && (
@@ -141,7 +141,7 @@ async function persistExecutionSetting(draftId: string, update: Parameters<typeo
 const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete, isReadOnly = false }) => {
   const showPauseResume = draftStatus === 'executed' || draftStatus === 'pr_created';
   return (
-    <div className="flex items-center gap-2 flex-shrink-0">
+    <div className="flex w-full flex-wrap items-center gap-2 md:w-auto md:flex-shrink-0 md:justify-end">
       {showPauseResume && (
         <button
           onClick={onPauseResume}
@@ -160,7 +160,7 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPa
           ) : (
             <Pause size={16} />
           )}
-          <span className="hidden sm:inline">{isPaused ? 'Resume' : 'Pause'}</span>
+          <span>{isPaused ? 'Resume' : 'Pause'}</span>
         </button>
       )}
       <button
@@ -170,7 +170,7 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPa
         title={isReadOnly ? 'Demo mode is read-only' : 'Revise Plan'}
       >
         {isRevising ? <Loader2 size={16} className="animate-spin" /> : <Edit3 size={16} />}
-        <span className="hidden sm:inline">Revise</span>
+        <span>Revise</span>
       </button>
       <button
         onClick={onDelete}
@@ -190,7 +190,7 @@ const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPa
             className="flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-sm"
           >
             <Github size={16} />
-            <span className="hidden sm:inline">View Issues on GitHub</span>
+            <span>View Issues on GitHub</span>
             <ExternalLink size={14} />
           </a>
         </>
@@ -394,7 +394,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
+      <div className="flex flex-col gap-2 border-b border-gray-200 bg-gray-100 px-4 py-3 flex-shrink-0 sm:px-6 md:flex-row md:items-center md:justify-between md:gap-4">
         <PlanHeaderSummary planName={planName} draftStatus={draft.status} isPaused={isPaused} repository={repository} baseBranch={baseBranch} initialPrompt={draft.initial_prompt} />
         <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => { if (!isDemoMode) setShowReviseDialog(true); }} onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }} isReadOnly={isDemoMode} />
       </div>
