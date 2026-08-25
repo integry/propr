@@ -166,6 +166,14 @@ export { parseProjectSlug } from './projectSlug.js';
 
 export { normalizeWorkEvidenceCommentIds } from './workEvidence.js';
 
+// Export the task lifecycle vocabulary shared by the API and CLI. This keeps
+// active-task workflows aligned with the states returned by the server.
+export {
+  TASK_LIFECYCLE_STATES,
+  ACTIVE_TASK_LIFECYCLE_STATES,
+  type TaskLifecycleState,
+} from './taskLifecycle.js';
+
 export {
   AGENT_LOGIN_DESCRIPTORS,
   LOGINABLE_AGENT_TYPES,

@@ -3,6 +3,7 @@ import { Knex } from 'knex';
 import { Queue } from 'bullmq';
 import { issueQueue, COMMENT_BATCH_DELAY_MS, getAuthenticatedOctokit, generateCorrelationId, logger } from '@propr/core';
 import type { CommentJobData, UnprocessedComment } from '@propr/core';
+import { ACTIVE_TASK_LIFECYCLE_STATES } from '@propr/shared';
 import { getTasksFromDb } from './taskHelpers.js';
 import { validateTaskId, validateRepositoryFilter, validateStringLength, validatePositiveInteger } from './validation.js';
 import { validateRevertRequestBody, formatCommit, validateRevertPreviewParams, checkRevertAuthorization, checkRevertPreviewAuthorization, lookupPr, buildRevertJobData, verifyCommitBelongsToPr, resolveRepoAndCheckAccess } from './revertHelpers.js';
@@ -242,10 +243,9 @@ export function createTaskRoutes(deps: TaskRoutesDeps) {
         return;
       }
 
-      const activeStates = ['pending', 'queued', 'processing', 'claude_execution', 'post_processing'];
       const forceDelete = force === 'true';
 
-      if (activeStates.includes(latestState.state?.toLowerCase()) && !forceDelete) {
+      if ((ACTIVE_TASK_LIFECYCLE_STATES as readonly string[]).includes(latestState.state?.toLowerCase()) && !forceDelete) {
         res.status(400).json({
           error: 'Cannot delete task in active state',
           message: `Task is currently in "${latestState.state}" state. Please stop the task before deleting.`,

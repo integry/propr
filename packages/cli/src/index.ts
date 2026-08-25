@@ -150,7 +150,8 @@ Examples:
   $ propr use myorg/myrepo
   $ propr plan create "Add dark mode toggle" --wait
   $ propr issue implement abc123/1 --wait --auto-merge
-  $ propr task list -s processing
+  $ propr task inspect                 # Active work, including queued tasks
+  $ propr task inspect <task-id>       # Current state and full run history
   $ propr remote-status
 
 Command Groups:
@@ -159,7 +160,7 @@ Command Groups:
   Configuration:  config, remote, use, login, logout
   Plans:          plan [create|list|get|delete|abort]
   Implementation: issue [implement]
-  Tasks:          task [list|get|stop|delete|followup|import|revert]
+  Tasks:          task [inspect|list|get|stop|delete|followup|import|revert]
   Repositories:   repo [list|add|remove|toggle|index|status]
   Agents:         agent [list|add|enable|disable|delete]
   Settings:       setting [get|update|reindex-summaries]

@@ -226,6 +226,9 @@ propr task list                          # List all tasks
 propr task list -s processing            # Filter by status
 propr task list -p owner/repo            # Filter by project
 propr task list --search "auth" -l 100   # Search with limit
+propr task inspect                       # Inspect all active tasks
+propr task inspect --state queued        # Fetch one exact lifecycle state
+propr task inspect <task-id>             # Current details and full run history
 propr task get <task-id>                 # View task details with history
 propr task stop <task-id>                # Stop a running task
 propr task delete <task-id>              # Delete a task (with confirmation)
@@ -239,10 +242,34 @@ propr task revert owner/repo 123 abc 456 # Revert a commit from a PR
 | `-s, --status` | `list` | Filter by status (see below) |
 | `-l, --limit` | `list` | Max results (default: 50) |
 | `--search` | `list` | Search by term |
+| `-s, --state` | `inspect` | Fetch one exact lifecycle state |
+| `-p, --project` | `inspect` | Filter active tasks by project |
+| `-l, --limit` | `inspect` | Max combined results (default: 50) |
+| `-j, --json` | `inspect` | Stable version 1 inspection JSON |
 | `-f, --force` | `delete` | Force deletion of active tasks |
 | `-o, --owner` | `revert` | Repo owner if not in owner/repo format |
 
 **Status values:** `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, `all`
+
+`task inspect` is the focused, read-only operator workflow. With no ID it
+requests the canonical active states from the server—`pending`, `queued`,
+`processing`, `claude_execution`, and `post_processing`—so queued work is not
+lost to client-side filtering. `--state` selects any one canonical lifecycle
+state. With an ID, the command uses the task details endpoint and includes the
+complete available run history.
+
+Human output distinguishes queueing and execution and shows the task ID,
+repository, title, state, agent/model, elapsed time, and last update. JSON is
+versioned and always uses one of these top-level shapes:
+
+```json
+{"version":1,"kind":"task-list","states":["pending"],"tasks":[],"total":0}
+{"version":1,"kind":"task-detail","task":{"id":"task-id","repository":"owner/repo","title":"Title","state":"processing","agent":"codex","model":"gpt-5.6-sol","elapsedMs":1200,"updatedAt":"2026-08-25T20:00:00.000Z","inProgress":true,"completed":false,"failed":false,"failureReason":null,"pr":null,"details":{},"history":[]}}
+```
+
+List task objects always contain `id`, `repository`, `title`, `state`, `agent`,
+`model`, `elapsedMs`, and `updatedAt`. Unavailable values are `null`; timestamps
+are ISO 8601 strings and durations are integer milliseconds.
 
 ---
 
@@ -449,8 +476,8 @@ propr plan issues <draft-id>
 propr issue implement <draft-id>/1 --wait --auto-merge
 
 # Monitor tasks
-propr task list -s processing
-propr task get <task-id>
+propr task inspect
+propr task inspect <task-id>
 ```
 
 ### Managing To-Dos
@@ -476,7 +503,8 @@ propr status                             # System health
 propr queue                              # Queue statistics
 propr log list --failed                  # Failed LLM executions
 propr log list -l 100 --success          # Successful executions
-propr task get <task-id>                 # Detailed task info
+propr task inspect                       # Queued and executing work
+propr task inspect <task-id>             # Detailed task info and run history
 ```
 
 ### Managing Multiple Projects
