@@ -34,6 +34,10 @@ export interface OrchestratorConfig {
   readonly authRateLimitWindowMs: string;
   readonly webhookRateLimitMax: string;
   readonly webhookRateLimitWindowMs: string;
+  readonly webPushVapidSubject?: string;
+  readonly webPushVapidPublicKey?: string;
+  /** Secret server-side half of the VAPID pair; never render this value. */
+  readonly webPushVapidPrivateKey?: string;
   readonly hostClaudeDir?: string;
   readonly hostCodexDir?: string;
   readonly hostAntigravityDir?: string;
