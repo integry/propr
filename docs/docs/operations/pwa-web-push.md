@@ -49,7 +49,7 @@ On **iOS or iPadOS 16.4 and later**, Web Push is available only to a Home Screen
 4. Sign in, open **Settings → Personal notifications**, and choose **Enable on this browser**.
 5. Accept the system notification prompt, then enable the desired Push categories.
 
-Apple describes the platform behavior in [Web Push for Web Apps on iOS and iPadOS](https://webkit.org/blog/13966/web-push-for-web-apps-on-ios-and-ipados/). A permission prompt cannot be triggered silently; it must follow the user's action. If permission is denied, ProPR cannot ask again until it is allowed in browser/site or OS notification settings.
+Apple describes the platform behavior in [Web Push for Web Apps on iOS and iPadOS](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/). A permission prompt cannot be triggered silently; it must follow the user's action. If permission is denied, ProPR cannot ask again until it is allowed in browser/site or OS notification settings.
 
 Each browser profile or installed app creates its own subscription. Enabling one device does not enable another.
 
