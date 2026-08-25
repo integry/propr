@@ -31,7 +31,7 @@ body {
 
 /* A wrapped task summary must never grow into the fixed mobile navigation. */
 .task-mobile-sticky-summary {
-  max-height: calc(100dvh - var(--mobile-bottom-navigation-height));
+  max-height: 100%;
   overflow-y: auto;
   overscroll-behavior: contain;
 }

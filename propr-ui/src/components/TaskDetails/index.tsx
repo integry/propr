@@ -39,7 +39,7 @@ const MobileStickySummary: React.FC<{
 }> = ({ title, contextStripProps, actionBarProps, todos }) => (
   // Page-local sticky UI should sit below the global header dropdown stacking
   // context while remaining sticky within the task details route.
-  <div className="task-mobile-sticky-summary sm:hidden sticky top-0 z-10 bg-white">
+  <div className="task-mobile-sticky-summary sm:hidden sticky top-0 z-10 flex-shrink-0 bg-white">
     <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200">
       <div className="flex flex-col gap-2">
         <div className="truncate text-xs font-semibold text-slate-700">{title}</div>
@@ -189,7 +189,7 @@ const TaskDetails: React.FC = () => {
   };
 
   return (
-    <div className="min-h-full flex flex-col overflow-x-hidden bg-white sm:h-full sm:overflow-hidden">
+    <div className="h-full flex flex-col overflow-x-hidden overflow-y-auto bg-white sm:overflow-hidden">
       {/* Mobile title block scrolls away with the page */}
       <header className="sm:hidden flex-shrink-0 bg-white">
         <div className="px-3 py-2 border-b border-slate-100">
