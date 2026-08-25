@@ -84,6 +84,7 @@ The proxy must preserve HTTPS, content types, and these exact UI-origin paths. E
 | `/manifest.webmanifest` | Serve as a web app manifest; never SPA-rewrite it | `no-cache, must-revalidate` |
 | `/pwa-shell-assets.json` | Serve the release's shell asset list | `no-cache, must-revalidate` |
 | `/icons/pwa-192x192.png`, `/icons/pwa-512x512.png`, `/icons/pwa-maskable-512x512.png`, `/apple-touch-icon.png` | Serve the real PNG files | `public, max-age=86400` (purge when replaced) |
+| `/logo.png`, `/logo-loading.png`, `/media/logo-and-name.png` | Serve the real precached image files; never SPA-rewrite them | `public, max-age=86400` (purge when replaced) |
 | `/config.js` | Serve the per-deployment runtime API selection; never cache or SPA-rewrite it | `no-store, no-cache, must-revalidate` |
 | `/assets/*` | Serve the hashed files from the same UI release | `public, max-age=31536000, immutable` |
 | `/`, `/index.html`, and application routes | Serve the current HTML; application routes may fall back to `index.html` | `no-cache, must-revalidate` |
