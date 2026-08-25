@@ -141,7 +141,7 @@ async function persistExecutionSetting(draftId: string, update: Parameters<typeo
 const PlanHeaderActions: React.FC<PlanHeaderActionsProps> = ({ draftStatus, isPaused, isPauseLoading, isRevising, isDeleting, repoUrl, onPauseResume, onRevise, onDelete, isReadOnly = false }) => {
   const showPauseResume = draftStatus === 'executed' || draftStatus === 'pr_created';
   return (
-    <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-shrink-0 sm:justify-end">
+    <div className="flex w-full flex-wrap items-center gap-2 md:w-auto md:flex-shrink-0 md:justify-end">
       {showPauseResume && (
         <button
           onClick={onPauseResume}
@@ -394,7 +394,7 @@ export const ApprovedPlanView: React.FC<ApprovedPlanViewProps> = ({
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full bg-white overflow-hidden flex flex-col">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 border-b border-gray-200 bg-gray-100 flex-shrink-0 gap-2 sm:gap-4">
+      <div className="flex flex-col gap-2 border-b border-gray-200 bg-gray-100 px-4 py-3 flex-shrink-0 sm:px-6 md:flex-row md:items-center md:justify-between md:gap-4">
         <PlanHeaderSummary planName={planName} draftStatus={draft.status} isPaused={isPaused} repository={repository} baseBranch={baseBranch} initialPrompt={draft.initial_prompt} />
         <PlanHeaderActions draftStatus={draft.status} isPaused={isPaused} isPauseLoading={isPauseLoading} isRevising={isRevising} isDeleting={isDeleting} repoUrl={repoUrl} onPauseResume={handlePauseResume} onRevise={() => { if (!isDemoMode) setShowReviseDialog(true); }} onDelete={() => { if (!isDemoMode) setShowDeleteDialog(true); }} isReadOnly={isDemoMode} />
       </div>
