@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deleteTask, followupTask, getRevertPreview, importTasks, stopTask } from "./tasks.js";
+import { deleteTask, followupTask, getRevertPreview, importTasks, listTasks, stopTask } from "./tasks.js";
+import { getTaskStatus } from "./implement.js";
 import type { ApiClient } from "./client.js";
 
 function clientWithCalls(responseData: unknown) {
@@ -80,5 +81,35 @@ test("deleteTask safely encodes the task ID path segment with force query", asyn
     method: "DELETE",
     endpoint: "/api/tasks/task%2Fid%3Fx%3D1",
     options: { params: { force: "true" } },
+  }]);
+});
+
+test("listTasks sends lifecycle-state filters to the server", async () => {
+  const response = { tasks: [], total: 0, offset: 0, limit: 25 };
+  const { client, calls } = clientWithCalls(response);
+
+  await listTasks({ status: "claude_execution", limit: 25 }, client);
+
+  assert.deepEqual(calls, [{
+    method: "GET",
+    endpoint: "/api/tasks",
+    options: { params: { status: "claude_execution", limit: "25" } },
+  }]);
+});
+
+test("getTaskStatus uses the task detail/history path for a supplied ID", async () => {
+  const { client, calls } = clientWithCalls({
+    taskId: "task/id?attempt=2",
+    history: [{ state: "processing", timestamp: "2026-08-25T20:00:00.000Z" }],
+    taskInfo: null,
+  });
+
+  const result = await getTaskStatus("task/id?attempt=2", client);
+
+  assert.equal(result.currentState, "processing");
+  assert.deepEqual(calls, [{
+    method: "GET",
+    endpoint: "/api/task/task%2Fid%3Fattempt%3D2/history",
+    options: undefined,
   }]);
 });

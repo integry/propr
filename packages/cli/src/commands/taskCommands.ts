@@ -2,10 +2,15 @@
  * Task Management Commands
  *
  * CLI commands for managing tasks using the ProPR backend.
- * Provides the `task` command group with `list`, `get`, `stop`, `delete`, and `revert` subcommands.
+ * Provides the `task` command group with inspection and management subcommands.
  */
 
 import { Command } from "commander";
+import {
+  ACTIVE_TASK_LIFECYCLE_STATES,
+  TASK_LIFECYCLE_STATES,
+  type TaskLifecycleState,
+} from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import { parsePositiveInteger, resolveProject, resolveOptionalProject, ProjectResolutionError, printOutput } from "../utils/index.js";
 import { classifyApiError, presentApiError } from "../utils/apiErrorPresentation.js";
@@ -32,6 +37,7 @@ const TASK_LIST_STATUSES = [
   "all",
 ] as const;
 const TASK_LIST_STATUS_SET = new Set<string>(TASK_LIST_STATUSES);
+const TASK_INSPECTION_STATE_SET = new Set<string>(TASK_LIFECYCLE_STATES);
 
 /**
  * Formats a task status for display.
@@ -57,6 +63,134 @@ function formatDate(dateStr: string | null): string {
   if (!dateStr) return "-";
   const date = new Date(dateStr);
   return date.toLocaleString();
+}
+
+function parseTimestamp(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatDuration(durationMs: number | null): string {
+  if (durationMs === null) return "-";
+  let seconds = Math.max(0, Math.floor(durationMs / 1000));
+  const days = Math.floor(seconds / 86_400);
+  seconds %= 86_400;
+  const hours = Math.floor(seconds / 3_600);
+  seconds %= 3_600;
+  const minutes = Math.floor(seconds / 60);
+  seconds %= 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function formatUpdatedAt(value: string | null): string {
+  const timestamp = parseTimestamp(value);
+  if (timestamp === null) return "-";
+  const age = Math.max(0, Date.now() - timestamp);
+  return `${formatDuration(age)} ago`;
+}
+
+function summaryUpdatedAt(task: TaskSummary): string {
+  return task.updatedAt ?? task.completedAt ?? task.processedAt ?? task.createdAt;
+}
+
+function summaryElapsedMs(task: TaskSummary, now = Date.now()): number | null {
+  const startedAt = parseTimestamp(task.processedAt ?? task.createdAt);
+  if (startedAt === null) return null;
+  const endedAt = parseTimestamp(task.completedAt) ?? now;
+  return Math.max(0, endedAt - startedAt);
+}
+
+function taskAgent(status: TaskStatus): string | null {
+  if (status.taskInfo?.agentAlias) return status.taskInfo.agentAlias;
+  for (let index = status.history.length - 1; index >= 0; index--) {
+    const metadata = status.history[index].metadata;
+    const candidate = metadata?.agentAlias ?? metadata?.agent ?? metadata?.provider;
+    if (typeof candidate === "string" && candidate.length > 0) return candidate;
+  }
+  return null;
+}
+
+function taskModel(status: TaskStatus): string | null {
+  if (status.taskInfo?.modelName) return status.taskInfo.modelName;
+  for (let index = status.history.length - 1; index >= 0; index--) {
+    const model = status.history[index].metadata?.model;
+    if (typeof model === "string" && model.length > 0) return model;
+  }
+  return null;
+}
+
+function taskTiming(status: TaskStatus, now = Date.now()): {
+  elapsedMs: number | null;
+  updatedAt: string | null;
+} {
+  const firstTimestamp = status.history[0]?.timestamp ?? null;
+  const updatedAt = status.history.at(-1)?.timestamp ?? null;
+  const startedAtMs = parseTimestamp(firstTimestamp);
+  if (startedAtMs === null) return { elapsedMs: null, updatedAt };
+  const isActive = (ACTIVE_TASK_LIFECYCLE_STATES as readonly string[]).includes(
+    status.currentState.toLowerCase()
+  );
+  const endedAtMs = isActive ? now : (parseTimestamp(updatedAt) ?? now);
+  return { elapsedMs: Math.max(0, endedAtMs - startedAtMs), updatedAt };
+}
+
+interface InspectedTaskSummary {
+  id: string;
+  repository: string;
+  title: string | null;
+  state: string;
+  agent: string | null;
+  model: string | null;
+  elapsedMs: number | null;
+  updatedAt: string;
+}
+
+class TaskInspectionNotFoundError extends Error {}
+
+function toInspectedTaskSummary(task: TaskSummary, now = Date.now()): InspectedTaskSummary {
+  return {
+    id: task.id,
+    repository: task.repository,
+    title: task.title,
+    state: task.status,
+    agent: task.llmProvider,
+    model: task.modelName,
+    elapsedMs: summaryElapsedMs(task, now),
+    updatedAt: summaryUpdatedAt(task),
+  };
+}
+
+function taskInspectionJson(status: TaskStatus, now = Date.now()): Record<string, unknown> {
+  const timing = taskTiming(status, now);
+  return {
+    version: 1,
+    kind: "task-detail",
+    task: {
+      id: status.taskId,
+      repository: status.taskInfo
+        ? `${status.taskInfo.repoOwner}/${status.taskInfo.repoName}`
+        : null,
+      title: status.taskInfo?.title ?? null,
+      state: status.currentState,
+      agent: taskAgent(status),
+      model: taskModel(status),
+      elapsedMs: timing.elapsedMs,
+      updatedAt: timing.updatedAt,
+      inProgress: status.isInProgress,
+      completed: status.isCompleted,
+      failed: status.isFailed,
+      failureReason: status.failureReason ?? null,
+      pr: status.prNumber
+        ? { number: status.prNumber, url: status.prUrl ?? null }
+        : null,
+      details: status.taskInfo,
+      history: status.history,
+    },
+  };
 }
 
 /**
@@ -170,10 +304,43 @@ function displayTasksTable(tasks: TaskSummary[]): void {
   }
 }
 
+/** Displays the focused active-task view. */
+function displayTaskInspectionTable(tasks: InspectedTaskSummary[]): void {
+  const columns = [
+    { heading: "ID", values: tasks.map((task) => task.id) },
+    { heading: "Repository", values: tasks.map((task) => truncate(task.repository, 24)) },
+    { heading: "Title", values: tasks.map((task) => truncate(task.title, 28)) },
+    { heading: "State", values: tasks.map((task) => formatStatus(task.state)) },
+    {
+      heading: "Agent / Model",
+      values: tasks.map((task) => truncate(
+        [task.agent, task.model].filter(Boolean).join(" / ") || "-",
+        28
+      )),
+    },
+    { heading: "Elapsed", values: tasks.map((task) => formatDuration(task.elapsedMs)) },
+    { heading: "Updated", values: tasks.map((task) => formatUpdatedAt(task.updatedAt)) },
+  ];
+  const widths = columns.map((column) => Math.max(
+    column.heading.length,
+    ...column.values.map((value) => value.length)
+  ));
+  const header = columns
+    .map((column, index) => column.heading.padEnd(widths[index]))
+    .join("  ");
+  console.log(header);
+  console.log("-".repeat(header.length));
+  for (let row = 0; row < tasks.length; row++) {
+    console.log(columns
+      .map((column, index) => column.values[row].padEnd(widths[index]))
+      .join("  "));
+  }
+}
+
 /**
  * Displays detailed task information from TaskStatus.
  */
-function displayTaskDetails(status: TaskStatus): void {
+function displayTaskDetails(status: TaskStatus, showInspectionTiming = false): void {
   console.log("");
   console.log("=".repeat(60));
   console.log("Task Details");
@@ -198,6 +365,9 @@ function displayTaskDetails(status: TaskStatus): void {
     if (info.modelName) {
       console.log(`Model:        ${info.modelName}`);
     }
+    if (info.agentAlias) {
+      console.log(`Agent:        ${info.agentAlias}`);
+    }
     if (info.correlationId) {
       console.log(`Correlation:  ${info.correlationId}`);
     }
@@ -211,6 +381,18 @@ function displayTaskDetails(status: TaskStatus): void {
   }
   if (status.prUrl) {
     console.log(`PR URL:       ${status.prUrl}`);
+  }
+
+  if (showInspectionTiming) {
+    const timing = taskTiming(status);
+    if (!status.taskInfo?.agentAlias && taskAgent(status)) {
+      console.log(`Agent:        ${taskAgent(status)}`);
+    }
+    if (!status.taskInfo?.modelName && taskModel(status)) {
+      console.log(`Model:        ${taskModel(status)}`);
+    }
+    console.log(`Elapsed:      ${formatDuration(timing.elapsedMs)}`);
+    console.log(`Updated:      ${timing.updatedAt ? formatDate(timing.updatedAt) : "-"}`);
   }
 
   if (status.isFailed && status.failureReason) {
@@ -331,6 +513,8 @@ export function createTaskCommand(): Command {
 Examples:
   $ propr task list                              # List all tasks
   $ propr task list -s processing                # Filter by status
+  $ propr task inspect                           # Inspect active tasks
+  $ propr task inspect abc123                    # Inspect one task and its run history
   $ propr task get abc123                        # View task details
   $ propr task stop abc123                       # Stop a running task
   $ propr task delete abc123                     # Delete a task
@@ -448,6 +632,143 @@ Examples:
         }
       }
     );
+
+  // task inspect
+  task
+    .command("inspect [task-id]")
+    .description("Inspect active tasks, or the full details and run history for one task")
+    .option("-s, --state <state>", "Fetch one authoritative lifecycle state instead of all active states")
+    .option("--status <state>", "Alias for --state")
+    .option("-p, --project <project>", "Filter active tasks by project (owner/repo)")
+    .option("-l, --limit <limit>", "Maximum number of tasks to show", "50")
+    .option("-j, --json", "Output the documented version 1 inspection JSON shape")
+    .addHelpText("after", `
+Without a task ID, this command fetches each active state from the server:
+  pending, queued, processing, claude_execution, post_processing
+
+Use --state to request one exact server lifecycle state. State, project, and
+limit filters apply only when no task ID is supplied.
+
+JSON shapes:
+  List:   { "version": 1, "kind": "task-list", "states": [...], "tasks": [...], "total": number }
+  Detail: { "version": 1, "kind": "task-detail", "task": { ..., "details": object, "history": [...] } }
+
+Examples:
+  $ propr task inspect
+  $ propr task inspect --state queued
+  $ propr task inspect --state claude_execution -p myorg/myrepo
+  $ propr task inspect abc123-task-id
+  $ propr task inspect abc123-task-id --json
+`)
+    .action(async (
+      taskId: string | undefined,
+      options: {
+        state?: string;
+        status?: string;
+        project?: string;
+        limit: string;
+        json?: boolean;
+      }
+    ) => {
+      try {
+        if (options.state && options.status) {
+          throw new Error("Use only one of --state or --status.");
+        }
+
+        if (taskId) {
+          if (options.state || options.status || options.project) {
+            throw new Error("--state, --status, and --project cannot be used with a task ID.");
+          }
+          const status = await getTaskStatus(taskId);
+          if (status.history.length === 0 && status.taskInfo === null) {
+            throw new TaskInspectionNotFoundError(taskId);
+          }
+          if (options.json) {
+            console.log(JSON.stringify(taskInspectionJson(status), null, 2));
+            return;
+          }
+          displayTaskDetails(status, true);
+          return;
+        }
+
+        const requestedState = options.state ?? options.status;
+        let states: readonly TaskLifecycleState[] = ACTIVE_TASK_LIFECYCLE_STATES;
+        if (requestedState) {
+          const normalizedState = requestedState.toLowerCase();
+          if (!TASK_INSPECTION_STATE_SET.has(normalizedState)) {
+            throw new Error(
+              `Invalid state "${requestedState}". Expected one of: ${TASK_LIFECYCLE_STATES.join(", ")}.`
+            );
+          }
+          states = [normalizedState as TaskLifecycleState];
+        }
+
+        const project = resolveOptionalProject(options);
+        const limit = parsePositiveInteger(options.limit, "Limit");
+        const results = await Promise.all(states.map((state) => listTasks({
+          status: state,
+          repository: project,
+          limit,
+        })));
+        const now = Date.now();
+        const allTasks = results
+          .flatMap((result) => result.tasks)
+          .sort((left, right) => {
+            const timeDifference = (parseTimestamp(summaryUpdatedAt(right)) ?? 0)
+              - (parseTimestamp(summaryUpdatedAt(left)) ?? 0);
+            return timeDifference || left.id.localeCompare(right.id);
+          });
+        const inspectedTasks = allTasks.slice(0, limit).map((item) =>
+          toInspectedTaskSummary(item, now)
+        );
+        const total = results.reduce((sum, result) => sum + result.total, 0);
+
+        if (options.json) {
+          console.log(JSON.stringify({
+            version: 1,
+            kind: "task-list",
+            states: [...states],
+            tasks: inspectedTasks,
+            total,
+          }, null, 2));
+          return;
+        }
+
+        if (inspectedTasks.length === 0) {
+          console.log("No tasks found in the selected lifecycle state(s).");
+          console.log(`States: ${states.join(", ")}`);
+          if (project) console.log(`Project filter: ${project}`);
+          return;
+        }
+
+        displayTaskInspectionTable(inspectedTasks);
+        console.log("");
+        console.log(`Showing ${inspectedTasks.length} of ${total} task(s) in: ${states.join(", ")}`);
+        if (inspectedTasks.length < total) {
+          console.log(`Use --limit to show more (currently showing ${limit})`);
+        }
+      } catch (error) {
+        if (error instanceof ProjectResolutionError) {
+          console.error(`Error: ${error.message}`);
+        } else if (taskId) {
+          const classification = classifyApiError(error);
+          if (error instanceof TaskInspectionNotFoundError || classification.status === 404) {
+            console.error(`Error: Task not found: ${taskId}`);
+          } else {
+            presentApiError(error, {
+              forbiddenMessage: "Error: Access denied. You do not have permission to view this task.",
+              fallbackMessage: (message) => `Error inspecting task: ${message}`,
+            });
+          }
+        } else {
+          presentApiError(error, {
+            forbiddenMessage: "Error: Access denied. You do not have permission to view tasks.",
+            fallbackMessage: (message) => `Error inspecting tasks: ${message}`,
+          });
+        }
+        process.exit(1);
+      }
+    });
 
   // task get
   task

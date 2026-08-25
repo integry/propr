@@ -24,6 +24,7 @@ propr repo list
 propr agent list
 propr check agents
 propr task list
+propr task inspect
 ```
 
 Inspect the installed CLI's current `propr --help` and subcommand `--help` before using it; do not assume unstable flags.

@@ -91,7 +91,7 @@ See [PR Automation And Fine-Tuning](../features/pr-followup.md) for the full pic
 
 Where to look:
 
-- **The task record.** Open the task detail view first: it shows the failure message, current state, selected agent and model, the exact prompt sent to the agent (View Prompt), execution log files (View Logs), the live execution event log, and per-file diffs. `propr task get <task-id>` shows the same details with run history from the CLI.
+- **The task record.** Open the task detail view first: it shows the failure message, current state, selected agent and model, the exact prompt sent to the agent (View Prompt), execution log files (View Logs), the live execution event log, and per-file diffs. `propr task inspect` shows all queued and executing work; `propr task inspect <task-id>` shows one task's current details and run history.
 - **Agent session logs** under `/tmp/claude-logs`, surfaced per task in the task detail view.
 - **The LLM Log page** (or `propr log list --failed`) for per-call status when the failure is a model call.
 
