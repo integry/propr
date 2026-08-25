@@ -196,6 +196,16 @@ export function resolveSessionSecretCheck(
   return { name: "Session secret", status: "ok", detail: "strong secret configured", group: "Configuration" };
 }
 
+/** Turn an orchestrator validation error into the row shown by `propr check`. */
+export function configurationErrorCheck(error: string): CheckResult {
+  return {
+    name: /^Web Push VAPID configuration\b/.test(error) ? "Web Push VAPID" : "Config error",
+    status: "fail",
+    detail: error,
+    group: "Configuration",
+  };
+}
+
 /** Run all checks and return the structured outcome (no printing). */
 export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksOutcome> {
   const results: CheckResult[] = [];
@@ -447,7 +457,7 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
     // env file / data dir absence is already surfaced by steps 4–6 above; skip duplicates.
     if (/env file path is not set/i.test(err)) continue;
     if (/data directory.*is not set/i.test(err)) continue;
-    emit({ name: "Config error", status: "fail", detail: err, group: "Configuration" });
+    emit(configurationErrorCheck(err));
   }
 
   // 10. Deep verify (opt-in): image/CLI smoke test per selected agent

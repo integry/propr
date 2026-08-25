@@ -271,6 +271,8 @@ Terminate TLS at your reverse proxy or ingress, then:
 
 If the UI and API are served from different origins, the API's CORS configuration uses `FRONTEND_URL` and browser requests send session cookies cross-origin — keep both URLs consistent with the actual public origins.
 
+The UI origin must also serve the PWA files as real files before any SPA fallback. In particular, preserve `/service-worker.js`, `/manifest.webmanifest`, `/pwa-shell-assets.json`, `/icons/*`, `/apple-touch-icon.png`, and `/config.js`; do not rewrite them to `index.html`. Revalidate the worker and manifest, do not cache `config.js`, and reserve long-lived immutable caching for hashed `/assets/*`. The exact path/header contract and public-response checks are in [PWA, Web Push, and Badges → Reverse proxy and caching contract](./pwa-web-push.md#reverse-proxy-and-caching-contract).
+
 Leave `PROPR_TRUSTED_PROXY_PEERS` unset when clients connect directly. In that fail-closed mode the API ignores forwarded client/protocol headers, preventing a direct client from choosing another quota bucket or claiming HTTPS. The legacy source-build `docker-compose.prod.yml` passes this variable through but does not choose a peer for an operator-managed proxy.
 
 ## Hosted UI Tunnel
