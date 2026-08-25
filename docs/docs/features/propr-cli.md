@@ -149,6 +149,8 @@ propr runtime packages list
 propr runtime packages add chromium ffmpeg --wait
 propr runtime packages remove ffmpeg --wait
 propr runtime packages apply --wait
+propr runtime packages verify
+propr runtime packages verify --json
 propr runtime status --json
 ```
 
@@ -157,6 +159,8 @@ Use runtime packages for Debian system tools needed across repositories or by a 
 The Settings package field searches the configured runtime catalogs and validates availability across every agent image before a build is queued. The first search after an API restart may take a few seconds while package indexes are refreshed.
 
 Package search and validation inspect the unified agent image with the local Docker daemon, so the image must be present locally (pulled by the launcher/worker or built with `scripts/build-images.sh`) before the package UI or these CLI commands can be used. A remote-only registry reference is not enough.
+
+Run `propr runtime packages verify` after replacing or pulling an agent base image, after applying runtime-package changes, or when local Docker images may have been pruned. Verification is read-only: it compares desired and active profiles, checks the current base-image lineage and derived-image labels/final user, and queries installed Debian packages in a short-lived container with networking disabled. It does not install packages or rebuild images. An unhealthy result exits nonzero and identifies missing images or packages, pinned-version mismatches, stale lineage, and profile drift; repair these with `propr runtime packages apply --wait` and verify again. An empty profile reports `DISABLED` successfully.
 
 ## Plans
 

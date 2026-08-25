@@ -256,6 +256,7 @@ export type {
     AgentRuntimePackageState,
     RuntimePackageValidation
 } from './agents/runtime/agentRuntimePackages.js';
+export * from './agents/runtime/agentRuntimePackageVerification.js';
 export {
     clearAgentRuntimePackageCatalogCache,
     searchAgentRuntimePackages,
