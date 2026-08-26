@@ -11,6 +11,65 @@ import {
 const CONTAINER_CONFIG_PATH = '/home/node/.codex';
 const GITHUB_CREDENTIAL_ENV_NAMES = new Set(['GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN']);
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
+const PROPR_OPENAI_PROVIDER_ID = 'propr_openai';
+
+export const DEFAULT_CODEX_STREAM_TRANSPORT = 'sse' as const;
+export const DEFAULT_CODEX_STREAM_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+export const DEFAULT_CODEX_STREAM_MAX_RETRIES = 5;
+
+export type CodexStreamTransport = 'sse' | 'websocket' | 'inherit';
+
+export interface CodexStreamConfig {
+    transport: CodexStreamTransport;
+    idleTimeoutMs: number;
+    maxRetries: number;
+}
+
+function parseIntegerSetting(value: string | undefined, fallback: number, allowZero: boolean): number {
+    if (!value?.trim()) return fallback;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && (allowZero ? parsed >= 0 : parsed > 0)
+        ? parsed
+        : fallback;
+}
+
+export function resolveCodexStreamConfig(
+    environment: Record<string, string | undefined> = process.env
+): CodexStreamConfig {
+    const configuredTransport = environment.CODEX_STREAM_TRANSPORT?.trim().toLowerCase();
+    const transport: CodexStreamTransport = configuredTransport === 'websocket' || configuredTransport === 'inherit'
+        ? configuredTransport
+        : DEFAULT_CODEX_STREAM_TRANSPORT;
+
+    return {
+        transport,
+        idleTimeoutMs: parseIntegerSetting(
+            environment.CODEX_STREAM_IDLE_TIMEOUT_MS,
+            DEFAULT_CODEX_STREAM_IDLE_TIMEOUT_MS,
+            false
+        ),
+        maxRetries: parseIntegerSetting(
+            environment.CODEX_STREAM_MAX_RETRIES,
+            DEFAULT_CODEX_STREAM_MAX_RETRIES,
+            true
+        ),
+    };
+}
+
+function buildCodexStreamConfigArgs(config: CodexStreamConfig): string[] {
+    if (config.transport === 'inherit') return [];
+
+    return [
+        '--config', `model_provider="${PROPR_OPENAI_PROVIDER_ID}"`,
+        '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.name="OpenAI"`,
+        '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.wire_api="responses"`,
+        '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.requires_openai_auth=true`,
+        '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.supports_websockets=${config.transport === 'websocket'}`,
+        '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.supports_standalone_web_search=true`,
+        '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.stream_idle_timeout_ms=${config.idleTimeoutMs}`,
+        '--config', `model_providers.${PROPR_OPENAI_PROVIDER_ID}.stream_max_retries=${config.maxRetries}`,
+    ];
+}
 
 function isGitHubCredentialEnvironmentVariable(name: string): boolean {
     const normalizedName = name.toUpperCase();
@@ -59,6 +118,11 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
     const dockerImage = config.dockerImage;
     const configPath = resolveConfigPath(config.configPath);
     const envVars = buildEnvironmentVariableArgs([config.envVars, environment], repositoryInspection);
+    const streamConfig = resolveCodexStreamConfig({
+        ...process.env,
+        ...config.envVars,
+        ...environment,
+    });
     const shortTaskId = createContainerExecutionId(taskId);
     const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
     const containerName = `${config.alias || 'codex'}-${taskType}-${shortTaskId}`;
@@ -85,6 +149,7 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
         ...(repositoryInspection
             ? buildCodexRepositoryScoutArgs()
             : ['--dangerously-bypass-approvals-and-sandbox', '--config', 'features.multi_agent=false']),
+        ...buildCodexStreamConfigArgs(streamConfig),
         ...(reasoningLevel ? ['--config', `model_reasoning_effort="${reasoningLevel}"`] : []),
         '--skip-git-repo-check',
         '--cd', '/home/node/workspace',
