@@ -27,7 +27,18 @@ export interface DesktopDiscoveryAdapter {
 }
 
 export interface DesktopAuthenticationAdapter {
+  /**
+   * Resolves only after the desktop host has completed authentication and
+   * installed credentials that are ready for requests to this profile.
+   * Opening the system browser alone is not successful authentication.
+   */
   authenticate(profile: DesktopProfile): Promise<void>;
+}
+
+export const DESKTOP_AUTHENTICATION_COMPLETE_EVENT = 'propr:desktop-authentication-complete';
+
+export interface DesktopAuthenticationCompleteEventDetail {
+  profileId: string;
 }
 
 export interface DesktopExternalBrowserAdapter {
@@ -65,4 +76,3 @@ declare global {
     __PROPR_DESKTOP__?: ProprDesktopBridge;
   }
 }
-

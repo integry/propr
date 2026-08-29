@@ -1,15 +1,18 @@
 import { evaluateProprApiCompatibility } from '@propr/shared';
 import type {
   DesktopAdapters,
+  DesktopAuthenticationCompleteEventDetail,
   DesktopConnectionResult,
   DesktopPlatform,
   DesktopProfile,
   ProprDesktopBridge,
 } from './types';
+import { DESKTOP_AUTHENTICATION_COMPLETE_EVENT } from './types';
 
 const PROFILES_KEY = 'propr.desktop.profiles';
 const ACTIVE_PROFILE_KEY = 'propr.desktop.activeProfile';
 const FIXTURE_QUERY_KEY = 'desktop-fixture';
+const AUTHENTICATION_TIMEOUT_MS = 5 * 60_000;
 
 type DesktopFixture = 'first-run' | 'recents' | 'offline' | 'incompatible' | 'connected';
 
@@ -97,6 +100,37 @@ const probeProfile = async (profile: DesktopProfile): Promise<DesktopConnectionR
   }
 };
 
+const authenticateBrowserFixture = (profile: DesktopProfile): Promise<void> => new Promise((resolve, reject) => {
+  const complete = (event: Event) => {
+    const detail = (event as CustomEvent<DesktopAuthenticationCompleteEventDetail>).detail;
+    if (detail?.profileId !== profile.id) return;
+    cleanup();
+    resolve();
+  };
+  const timeoutId = window.setTimeout(() => {
+    cleanup();
+    reject(new Error('GitHub sign-in timed out.'));
+  }, AUTHENTICATION_TIMEOUT_MS);
+  const cleanup = () => {
+    window.clearTimeout(timeoutId);
+    window.removeEventListener(DESKTOP_AUTHENTICATION_COMPLETE_EVENT, complete);
+  };
+
+  window.addEventListener(DESKTOP_AUTHENTICATION_COMPLETE_EVENT, complete);
+  const redirect = new URL('propr://authentication-complete');
+  redirect.searchParams.set('profile_id', profile.id);
+  try {
+    window.open(
+      `${normalizeBaseUrl(profile.baseUrl)}/api/auth/github?redirect_to=${encodeURIComponent(redirect.toString())}`,
+      '_blank',
+      'noopener,noreferrer'
+    );
+  } catch (error) {
+    cleanup();
+    reject(error);
+  }
+});
+
 const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters => ({
   platform: detectPlatform(),
   profiles: {
@@ -127,10 +161,7 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
   discovery: { async discover() { return fixture ? [fixtureProfile] : []; } },
   externalBrowser: { async open(url) { window.open(url, '_blank', 'noopener,noreferrer'); } },
   authentication: {
-    async authenticate(profile) {
-      const redirect = encodeURIComponent('propr://authentication-complete');
-      window.open(`${normalizeBaseUrl(profile.baseUrl)}/api/auth/github?redirect_to=${redirect}`, '_blank', 'noopener,noreferrer');
-    },
+    authenticate: authenticateBrowserFixture,
   },
   localSetup: {
     async setup() {

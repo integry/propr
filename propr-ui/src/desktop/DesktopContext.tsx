@@ -7,6 +7,7 @@ export interface DesktopContextValue {
   profile: DesktopProfile;
   connection: DesktopConnectionResult;
   openProfileManager(): void;
+  /** Resolves when authenticated requests for the active profile are ready. */
   authenticate(): Promise<void>;
   openConnectionHelp(): Promise<void>;
   retry(): void;
