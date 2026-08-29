@@ -10,13 +10,18 @@
   "type": "module",
   "main": ".vite/build/main.cjs",
   "scripts": {
+    "prepare:renderer": "npm run build -w @propr/shared",
+    "predev": "npm run prepare:renderer",
     "dev": "electron-forge start",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
     "package": "electron-forge package",
     "smoke:package": "node scripts/smoke-packaged.mjs",
+    "premake": "npm run prepare:renderer",
     "make": "electron-forge make",
+    "premake:deb": "npm run prepare:renderer",
     "make:deb": "PROPR_DESKTOP_ENABLE_DEB=1 electron-forge make --targets @electron-forge/maker-deb",
+    "premake:rpm": "npm run prepare:renderer",
     "make:rpm": "PROPR_DESKTOP_ENABLE_RPM=1 electron-forge make --targets @electron-forge/maker-rpm"
   },
   "devDependencies": {

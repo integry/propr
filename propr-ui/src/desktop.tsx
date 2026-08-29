@@ -5,6 +5,7 @@ import type {
   DesktopProfile,
   StorageSecurity,
 } from '../../apps/desktop/src/shared/contract';
+import { activateDesktopProfile } from './desktop-profile';
 import './index.css';
 import './desktop.css';
 
@@ -189,8 +190,7 @@ export const DesktopRoot = () => {
   const connect = async (label: string, apiBaseUrl: string) => {
     if (!bridge) return;
     const saved = await bridge.profiles.save({ label, apiBaseUrl });
-    await bridge.profiles.setActive(saved.id);
-    await loadDashboard(saved);
+    await activateDesktopProfile(bridge.profiles, saved);
   };
 
   const disconnect = async () => {

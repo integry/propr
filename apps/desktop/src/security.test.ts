@@ -43,10 +43,13 @@ describe('desktop URL security', () => {
     );
   });
 
-  it('only trusts the packaged renderer URL', () => {
+  it('retains IPC trust for hash-routed packaged renderer URLs only', () => {
     const renderer = 'propr-app://renderer/renderer.html';
     assert.equal(isTrustedRendererUrl(renderer, undefined, renderer), true);
+    assert.equal(isTrustedRendererUrl(`${renderer}#/plans/123`, undefined, renderer), true);
+    assert.equal(isTrustedRendererUrl(`${renderer}?profile=123#/plans/123`, undefined, renderer), false);
     assert.equal(isTrustedRendererUrl('propr-app://renderer/other.html', undefined, renderer), false);
+    assert.equal(isTrustedRendererUrl('propr-app://other/renderer.html#/plans/123', undefined, renderer), false);
     assert.equal(isTrustedRendererUrl('https://propr.example.com', undefined, renderer), false);
   });
 

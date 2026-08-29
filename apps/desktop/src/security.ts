@@ -45,7 +45,11 @@ export const isTrustedRendererUrl = (
   if (!candidateUrl) return false;
   const devUrl = validatedDevServerUrl(devServerUrl);
   if (devUrl) return candidateUrl.origin === devUrl.origin;
-  return candidateUrl.href === packagedRendererUrl;
+  const packagedUrl = parseUrl(packagedRendererUrl);
+  if (!packagedUrl || hasCredentials(candidateUrl) || candidateUrl.search) return false;
+  return candidateUrl.protocol === packagedUrl.protocol
+    && candidateUrl.host === packagedUrl.host
+    && candidateUrl.pathname === packagedUrl.pathname;
 };
 
 export const normalizeDeepLink = (value: string): string | null => {
