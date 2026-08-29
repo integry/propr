@@ -17,7 +17,7 @@ const MAIN_PROCESS_ERROR_MARKERS = [
   'Uncaught Exception:',
 ];
 const TIMEOUT_MS = 30_000;
-const binaryPath = resolve('out', `ProPR Desktop-linux-${process.arch}`, 'propr-desktop');
+const binaryPath = resolve('out', `propr-desktop-linux-${process.arch}`, 'propr-desktop');
 
 if (process.platform !== 'linux') {
   throw new Error('The packaged-binary smoke test currently targets the Linux artifact');

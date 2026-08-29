@@ -10,6 +10,7 @@ import { resolve } from 'node:path';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    name: 'propr-desktop',
     executableName: 'propr-desktop',
   },
   rebuildConfig: {},
