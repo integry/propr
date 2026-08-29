@@ -98,19 +98,29 @@ describe('desktop browser pairing', () => {
     );
   });
 
-  test('does not treat an explicit-port spelling as a hosted Connect selector', async () => {
-    const explicitPort = new DesktopAuthService({
-      database,
-      now: () => new Date(now),
-      approvalBaseUrl: 'https://app.propr.dev',
-      publicApiUrl: 'https://t-instance123.propr.dev:443',
-    });
-    const pairing = await explicitPort.startPairing('Port test');
+  test('rejects noncanonical reserved API_PUBLIC_URL spellings before starting pairing', async () => {
+    for (const publicApiUrl of [
+      'https://t-instance123.propr.dev:443',
+      'https://t-%69nstance123.propr.dev',
+    ]) {
+      const invalidConnect = new DesktopAuthService({
+        database,
+        now: () => new Date(now),
+        approvalBaseUrl: 'https://app.propr.dev',
+        publicApiUrl,
+      });
 
-    assert.equal(
-      explicitPort.getFrontendApprovalUrl(pairing.pairingId).toString(),
-      `https://app.propr.dev/desktop/pairing?pairing_id=${pairing.pairingId}`,
-    );
+      await assert.rejects(
+        invalidConnect.startPairing('Invalid Connect test'),
+        (error: unknown) => error instanceof DesktopAuthError
+          && error.code === 'PAIRING_CONFIGURATION_INVALID'
+          && error.status === 503
+          && error.message === 'Desktop pairing is unavailable because the public API URL is invalid',
+      );
+    }
+
+    assert.equal(await database('desktop_pairing_requests').count<{ count: number }>('* as count').first()
+      .then(result => Number(result?.count)), 0);
   });
 
   test('issues an opaque token once, resolves its owner, and never stores plaintext credentials', async () => {

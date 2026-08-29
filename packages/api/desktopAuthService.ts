@@ -153,6 +153,17 @@ function publicApiBase(configured?: string): URL | null {
   const raw = configured ?? process.env.API_PUBLIC_URL;
   if (!raw) return null;
   const url = new URL(raw);
+  const canonicalConnectEndpoint = parseProprConnectEndpoint(raw);
+  // Use the normalized hostname only to reserve the managed namespace. The
+  // original spelling must still pass the strict parser before it is trusted.
+  const normalizedHostnameIsReserved = parseProprConnectEndpoint(`https://${url.hostname}`) !== null;
+  if (normalizedHostnameIsReserved && !canonicalConnectEndpoint) {
+    throw new DesktopAuthError(
+      'PAIRING_CONFIGURATION_INVALID',
+      503,
+      'Desktop pairing is unavailable because the public API URL is invalid',
+    );
+  }
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname))) {
     throw new Error('Desktop pairing browser entry requires HTTPS except on loopback hosts');
   }
@@ -203,11 +214,11 @@ export class DesktopAuthService {
 
   async startPairing(clientNameInput: unknown): Promise<DesktopPairingStart> {
     const clientName = validClientName(clientNameInput);
+    const apiApprovalUrl = publicApiBase(this.publicApiUrl);
     const pairingId = `dpr_${opaqueValue(16)}`;
     const deviceSecret = opaqueValue();
     const createdAt = this.now();
     const expiresAt = new Date(createdAt.getTime() + this.pairingTtlMs);
-    const apiApprovalUrl = publicApiBase(this.publicApiUrl);
     const approvalUrl = apiApprovalUrl ?? this.getFrontendApprovalUrl(pairingId);
     if (apiApprovalUrl) {
       approvalUrl.pathname = `${approvalUrl.pathname.replace(/\/$/, '')}/api/desktop/pairings/${pairingId}/browser`;
