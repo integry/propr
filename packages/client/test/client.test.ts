@@ -13,6 +13,7 @@ describe('Propr API base URLs and instance profiles', () => {
     assert.equal(normalizeApiBaseUrl(), '');
     assert.equal(normalizeApiBaseUrl('  http://localhost:4000///  '), 'http://localhost:4000');
     assert.equal(normalizeApiBaseUrl('http://127.0.0.1:3000'), 'http://127.0.0.1:3000');
+    assert.equal(normalizeApiBaseUrl('http://[::1]:3000'), 'http://[::1]:3000');
     assert.equal(normalizeApiBaseUrl('https://propr.example.com/'), 'https://propr.example.com');
 
     const profile = normalizeInstanceProfile({
