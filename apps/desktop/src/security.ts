@@ -29,16 +29,39 @@ const isSafeDashboardPathForm = (value: string): boolean => {
   return !pathname.split('/').some(segment => segment === '.' || segment === '..');
 };
 
-const fullyDecodeDashboardPath = (value: string): string | null => {
+const isSafeDecodedPathScope = (value: string): boolean => {
+  if (!value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\')) return false;
+  if (/[\u0000-\u001F\u007F\\]/.test(value)) return false;
+  return !value.split('/').some(segment => segment === '.' || segment === '..');
+};
+
+const isAllowedDashboardUrl = (url: URL): boolean => {
+  if (url.origin !== DESKTOP_DASHBOARD_ORIGIN) return false;
+  const route = url.pathname.toLowerCase().replace(/\/+$/, '') || '/';
+  if (route === '/login' || route.startsWith('/login/') || route === '/desktop/pairing') return false;
+  return ![...url.searchParams.keys()].some(key => RESERVED_DASHBOARD_PARAMETERS.has(key.toLowerCase()));
+};
+
+const fullyDecodeDashboardPath = (value: string): URL | null => {
   let decoded = value;
+  // Keep the original path scope while decoding so encoded delimiters cannot hide traversal in a later layer.
+  let decodedPathScope = value.split(/[?#]/, 1)[0];
   for (let remaining = value.length + 1; remaining > 0; remaining -= 1) {
-    if (!isSafeDashboardPathForm(decoded)) return null;
-    if (!decoded.includes('%')) return decoded;
+    if (!isSafeDashboardPathForm(decoded) || !isSafeDecodedPathScope(decodedPathScope)) return null;
+    let url: URL;
+    try {
+      url = new URL(decoded, DESKTOP_DASHBOARD_ORIGIN);
+    } catch {
+      return null;
+    }
+    if (!isAllowedDashboardUrl(url)) return null;
+    if (!decoded.includes('%')) return url;
     if (/%(?![\da-f]{2})/i.test(decoded)) return null;
     try {
       const next = decodeURIComponent(decoded);
-      if (next === decoded) return decoded;
+      if (next === decoded) return url;
       decoded = next;
+      decodedPathScope = decodeURIComponent(decodedPathScope);
     } catch {
       return null;
     }
@@ -48,21 +71,9 @@ const fullyDecodeDashboardPath = (value: string): string | null => {
 
 export const normalizeDesktopDashboardPath = (value: string): string | null => {
   if (!value || value.length > 2_048) return null;
-  const fullyDecoded = fullyDecodeDashboardPath(value);
-  if (!fullyDecoded) return null;
-  try {
-    const url = new URL(value, DESKTOP_DASHBOARD_ORIGIN);
-    const decodedUrl = new URL(fullyDecoded, DESKTOP_DASHBOARD_ORIGIN);
-    if (url.origin !== DESKTOP_DASHBOARD_ORIGIN || decodedUrl.origin !== DESKTOP_DASHBOARD_ORIGIN) return null;
-    const route = decodedUrl.pathname.toLowerCase().replace(/\/+$/, '') || '/';
-    if (route === '/login' || route.startsWith('/login/') || route === '/desktop/pairing') return null;
-    if ([...decodedUrl.searchParams.keys()].some(key => RESERVED_DASHBOARD_PARAMETERS.has(key.toLowerCase()))) {
-      return null;
-    }
-    return `${url.pathname}${url.search}${url.hash}`;
-  } catch {
-    return null;
-  }
+  const url = fullyDecodeDashboardPath(value);
+  if (!url) return null;
+  return `${url.pathname}${url.search}${url.hash}`;
 };
 
 export const dashboardPathFromDeepLink = (value: string): string | null => {
