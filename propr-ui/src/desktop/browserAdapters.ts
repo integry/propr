@@ -48,9 +48,17 @@ const readProfiles = (): DesktopProfile[] => {
 const isDesktopProfile = (value: unknown): value is DesktopProfile => {
   if (!value || typeof value !== 'object') return false;
   const profile = value as Partial<DesktopProfile>;
+  if (typeof profile.baseUrl !== 'string') return false;
+  let normalizedBaseUrl: string;
+  try { normalizedBaseUrl = normalizeBaseUrl(profile.baseUrl); } catch { return false; }
   return typeof profile.id === 'string'
+    && profile.id.length > 0
+    && profile.id.length <= 64
     && typeof profile.name === 'string'
+    && profile.name.length > 0
+    && profile.name.length <= 80
     && typeof profile.baseUrl === 'string'
+    && normalizedBaseUrl === profile.baseUrl
     && (profile.kind === 'local' || profile.kind === 'remote');
 };
 

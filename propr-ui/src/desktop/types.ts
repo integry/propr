@@ -53,6 +53,15 @@ export interface DesktopConnectionAdapter {
   probe(profile: DesktopProfile): Promise<DesktopConnectionResult>;
 }
 
+export interface DesktopManagedTunnelRecoveryAdapter {
+  /**
+   * Request a secret-free Connect endpoint refresh for an existing profile.
+   * The renderer supplies only the opaque profile id and must explicitly
+   * confirm a returned candidate before it can replace the saved endpoint.
+   */
+  rediscover(profileId: string): Promise<DesktopProfile | null>;
+}
+
 export interface DesktopAdapters {
   platform: DesktopPlatform;
   profiles: DesktopProfileAdapter;
@@ -61,6 +70,7 @@ export interface DesktopAdapters {
   externalBrowser: DesktopExternalBrowserAdapter;
   localSetup: DesktopLocalSetupAdapter;
   connection: DesktopConnectionAdapter;
+  managedTunnelRecovery?: DesktopManagedTunnelRecoveryAdapter;
 }
 
 /**

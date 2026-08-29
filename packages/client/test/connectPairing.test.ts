@@ -60,4 +60,33 @@ describe('ProPR Connect desktop pairing approval URLs', () => {
       approvalUrl: `https://app.propr.dev/desktop/pairing?pairing_id=${pairingId}&tunnel=t-instance123.foo.propr.dev`,
     }), null);
   });
+
+  it('rejects every noncanonical reserved-host base before generic HTTPS fallback', () => {
+    for (const untrustedBase of [
+      'https://t-instance123.propr.dev:443',
+      'https://t-instance123.propr.dev:8443',
+      'https://user:secret@t-instance123.propr.dev',
+      'https://t-%69nstance123.propr.dev',
+      'https://t-instance123.propr.dev.',
+      'https://t-instance123.foo.propr.dev',
+    ]) {
+      assert.equal(normalizeDesktopPairingApprovalUrl({
+        apiBaseUrl: untrustedBase,
+        pairingId,
+        approvalUrl: `${untrustedBase}/api/desktop/pairings/${pairingId}/browser`,
+      }), null, untrustedBase);
+    }
+  });
+
+  it('preserves unrelated HTTPS remotes, outside lookalikes, and loopback HTTP', () => {
+    for (const baseUrl of [
+      'https://remote.example.com',
+      'https://t-instance123.propr.dev.example.com',
+      'http://127.0.0.1:4000',
+      'http://localhost:4000',
+    ]) {
+      const approvalUrl = `${baseUrl}/api/desktop/pairings/${pairingId}/browser`;
+      assert.equal(normalizeDesktopPairingApprovalUrl({ apiBaseUrl: baseUrl, pairingId, approvalUrl }), approvalUrl);
+    }
+  });
 });

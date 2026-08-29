@@ -30,7 +30,11 @@
 //   - A new tab opened to app.propr.dev (no tunnel/flow in URL) never has URL
 //     authority, even if sessionStorage was copied from an existing tab.
 
-import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl, proprInstanceProxyUrl } from '@propr/shared';
+import {
+  DEFAULT_PROPR_UI_ORIGIN,
+  isProprProxyUrl,
+  MAX_PROPR_API_BASE_URL_LENGTH,
+} from '@propr/shared';
 import { normalizeApiBaseUrl } from '@propr/client';
 
 export interface ProprRuntimeConfig {
@@ -39,8 +43,14 @@ export interface ProprRuntimeConfig {
 }
 
 export interface HostedUiConnectionIssue {
+  code: 'HOSTED_STACK_REQUIRED' | 'INVALID_RUNTIME_CONFIGURATION';
   title: string;
   message: string;
+}
+
+export interface RuntimeApiBaseUrlState {
+  apiBaseUrl: string;
+  issue: HostedUiConnectionIssue | null;
 }
 
 declare global {
@@ -60,6 +70,17 @@ export const HOSTED_TUNNEL_CONTEXT_ID_KEY = 'propr.hostedTunnelContextId';
 
 const WINDOW_NAME_CONTEXT_PREFIX = 'propr-hosted-flow-context:';
 const WINDOW_NAME_CONTEXT_SEPARATOR = '|';
+const MAX_HOSTED_QUERY_LENGTH = 4096;
+const MAX_HOSTED_FLOW_ID_LENGTH = 128;
+const CANONICAL_CONNECT_HOST_PATTERN = /^t-(?:[a-z0-9]|[a-z0-9][a-z0-9-]{0,59}[a-z0-9])\.propr\.dev$/;
+
+export const INVALID_RUNTIME_CONFIGURATION_CODE = 'INVALID_RUNTIME_CONFIGURATION';
+
+const invalidRuntimeConfigurationIssue = (): HostedUiConnectionIssue => ({
+  code: INVALID_RUNTIME_CONFIGURATION_CODE,
+  title: 'Invalid ProPR configuration',
+  message: 'ProPR cannot use the configured connection. Re-enter or rediscover the instance, then try again.',
+});
 
 let activeHostedTunnelFlowId: string | null = null;
 let desktopApiBaseUrl: string | null = null;
@@ -98,6 +119,7 @@ export const isHostedOAuthCompletionRoute = (
  * unit testing.
  */
 export const isValidHttpUrl = (value: string): boolean => {
+  if (value.length > MAX_PROPR_API_BASE_URL_LENGTH) return false;
   try {
     const url = new URL(value);
     return url.protocol === 'http:' || url.protocol === 'https:';
@@ -117,24 +139,43 @@ export const hostedTunnelQueryApiBaseUrl = (
   hostname: string,
   search: string
 ): string | null => {
-  if (!isHostedUiOrigin(hostname)) return null;
+  if (!isHostedUiOrigin(hostname) || search.length > MAX_HOSTED_QUERY_LENGTH) return null;
 
-  const raw = new URLSearchParams(search).get('tunnel')?.trim();
-  if (!raw) return null;
+  const query = search.startsWith('?') ? search.slice(1) : search;
+  const rawValues = query.split('&').flatMap(parameter => {
+    const separator = parameter.indexOf('=');
+    const name = separator === -1 ? parameter : parameter.slice(0, separator);
+    return name === 'tunnel' ? [separator === -1 ? '' : parameter.slice(separator + 1)] : [];
+  });
+  const decodedValues = new URLSearchParams(search).getAll('tunnel');
+  if (rawValues.length !== 1 || decodedValues.length !== 1) return null;
 
-  if (isProprProxyUrl(raw)) return raw.replace(/\/+$/, '');
+  const rawComponent = rawValues[0];
+  const value = decodedValues[0];
+  if (
+    !value
+    || value.length > MAX_PROPR_API_BASE_URL_LENGTH
+    || /[^\x21-\x7e]/.test(value)
+  ) return null;
 
-  const instanceUrl = proprInstanceProxyUrl(raw);
-  if (instanceUrl) return instanceUrl;
-
-  try {
-    const url = new URL(`https://${raw}`);
-    if (/[^/]/.test(url.pathname) || url.search || url.hash) return null;
-    const normalized = `https://${url.hostname}`;
-    return isProprProxyUrl(normalized) ? normalized : null;
-  } catch {
-    return null;
+  if (/^https:\/\//.test(value)) {
+    if (!isProprProxyUrl(value)) return null;
+    return value.replace(/\/+$/, '');
   }
+
+  // Scheme-less shorthand is trusted only when its complete raw query spelling
+  // is already canonical. Parsing and rebuilding a hostname here would erase
+  // credentials, ports, escapes, or path delimiters before the trust decision.
+  if (rawComponent !== value) return null;
+  const host = value.replace(/\/+$/, '');
+  if (!CANONICAL_CONNECT_HOST_PATTERN.test(host)) return null;
+  return `https://${host}`;
+};
+
+const hasHostedTunnelQueryParameter = (search: string): boolean => {
+  if (search.length > MAX_HOSTED_QUERY_LENGTH) return true;
+  const query = search.startsWith('?') ? search.slice(1) : search;
+  return query.split('&').some(parameter => parameter === 'tunnel' || parameter.startsWith('tunnel='));
 };
 
 type HostedTunnelStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
@@ -159,12 +200,15 @@ const generateFlowId = (): string => {
 
 const generateHostedTunnelContextId = (): string => generateFlowId();
 
+const isValidHostedFlowToken = (value: string | null | undefined): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9-]{1,128}$/.test(value);
+
 const contextIdFromWindowName = (name: string): string | null => {
   if (!name.startsWith(WINDOW_NAME_CONTEXT_PREFIX)) return null;
   const rest = name.slice(WINDOW_NAME_CONTEXT_PREFIX.length);
   const separatorIndex = rest.indexOf(WINDOW_NAME_CONTEXT_SEPARATOR);
-  const contextId = (separatorIndex === -1 ? rest : rest.slice(0, separatorIndex)).trim();
-  return contextId || null;
+  const contextId = separatorIndex === -1 ? rest : rest.slice(0, separatorIndex);
+  return isValidHostedFlowToken(contextId) ? contextId : null;
 };
 
 const currentHostedTunnelContextId = (): string | null => {
@@ -199,7 +243,12 @@ const ensureHostedTunnelContextId = (): string | null => {
 
 /** Extract the `?flow=` token from a URL search string. */
 const flowIdFromSearch = (search: string): string | null =>
-  new URLSearchParams(search).get('flow') || null;
+  search.length <= MAX_HOSTED_QUERY_LENGTH
+    ? (() => {
+      const value = new URLSearchParams(search).get('flow');
+      return isValidHostedFlowToken(value) ? value : null;
+    })()
+    : null;
 
 const effectiveHostedTunnelContextId = (
   _flowId: string,
@@ -222,7 +271,14 @@ export const rememberHostedTunnelApiBaseUrl = (
   storage: HostedTunnelStorage | undefined = storageForWindow(),
   contextId: string | null = ensureHostedTunnelContextId()
 ): string | null => {
-  if (!isHostedUiOrigin(hostname) || !storage || !contextId || !isProprProxyUrl(apiBaseUrl)) return null;
+  if (
+    !isHostedUiOrigin(hostname)
+    || !storage
+    || !contextId
+    || !isValidHostedFlowToken(contextId)
+    || apiBaseUrl.length > MAX_PROPR_API_BASE_URL_LENGTH
+    || !isProprProxyUrl(apiBaseUrl)
+  ) return null;
   try {
     const flowId = generateFlowId();
     storage.setItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY, apiBaseUrl.replace(/\/+$/, ''));
@@ -250,8 +306,15 @@ export const readStoredHostedTunnelApiBaseUrl = (
 ): string | null => {
   if (!isHostedUiOrigin(hostname) || !storage) return null;
   try {
-    const storedFlowId = storage.getItem(HOSTED_TUNNEL_FLOW_ID_KEY)?.trim() || null;
-    const storedContextId = storage.getItem(HOSTED_TUNNEL_CONTEXT_ID_KEY)?.trim() || null;
+    const rawStoredFlowId = storage.getItem(HOSTED_TUNNEL_FLOW_ID_KEY);
+    const rawStoredContextId = storage.getItem(HOSTED_TUNNEL_CONTEXT_ID_KEY);
+    if (
+      (rawStoredFlowId?.length ?? 0) > MAX_HOSTED_FLOW_ID_LENGTH
+      || (rawStoredContextId?.length ?? 0) > MAX_HOSTED_FLOW_ID_LENGTH
+    ) return null;
+    if (!isValidHostedFlowToken(rawStoredFlowId) || !isValidHostedFlowToken(rawStoredContextId)) return null;
+    const storedFlowId = rawStoredFlowId;
+    const storedContextId = rawStoredContextId;
     // Reject if storage has no flow token (never legitimately set by this tab)
     // or context token, or if the URL/current tab tokens do not match storage.
     if (!storedFlowId || storedFlowId !== flowId || !storedContextId) {
@@ -260,7 +323,16 @@ export const readStoredHostedTunnelApiBaseUrl = (
     if (effectiveHostedTunnelContextId(storedFlowId, storedContextId, contextId) !== storedContextId) {
       return null;
     }
-    const stored = storage.getItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY)?.trim();
+    const rawStored = storage.getItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
+    if ((rawStored?.length ?? 0) > MAX_PROPR_API_BASE_URL_LENGTH) {
+      storage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
+      return null;
+    }
+    if (rawStored !== rawStored?.trim()) {
+      storage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
+      return null;
+    }
+    const stored = rawStored || undefined;
     if (stored && isProprProxyUrl(stored)) return stored.replace(/\/+$/, '');
     if (stored) storage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
   } catch {
@@ -288,20 +360,21 @@ export const runtimeConfigWarning = (
 ): string | null => {
   if (!isHostedUiOrigin(hostname)) return null;
   if (hostedTunnelQueryApiBaseUrl(hostname, search)) return null;
+  if (hasHostedTunnelQueryParameter(search)) return `[propr] ${INVALID_RUNTIME_CONFIGURATION_CODE}`;
   if (readStoredHostedTunnelApiBaseUrl(hostname, flowIdFromSearch(search), storage, contextId)) return null;
   if (!config) {
-    return (
-      '[propr] window.__PROPR_CONFIG__ is not set — config.js did not load. ' +
-      'The hosted UI needs a selected tunnel before it can reach a per-instance proxy.'
-    );
+    return '[propr] HOSTED_STACK_REQUIRED';
   }
-  const apiBaseUrl = config.apiBaseUrl?.trim();
+  const configured = config.apiBaseUrl;
+  if (configured !== undefined && typeof configured !== 'string') {
+    return `[propr] ${INVALID_RUNTIME_CONFIGURATION_CODE}`;
+  }
+  if ((configured?.length ?? 0) > MAX_PROPR_API_BASE_URL_LENGTH) {
+    return `[propr] ${INVALID_RUNTIME_CONFIGURATION_CODE}`;
+  }
+  const apiBaseUrl = configured?.trim();
   if (!apiBaseUrl) {
-    return (
-      '[propr] window.__PROPR_CONFIG__.apiBaseUrl is empty — config.js loaded but ' +
-      'PROPR_UI_PUBLIC_API_URL was not set at container start. ' +
-      'The hosted UI needs a selected tunnel before it can reach a per-instance proxy.'
-    );
+    return '[propr] HOSTED_STACK_REQUIRED';
   }
   // The launcher validates PROPR_UI_PUBLIC_API_URL before injecting it, but a
   // hand-served config.js or vendor-hosted injection can still provide a
@@ -309,11 +382,7 @@ export const runtimeConfigWarning = (
   // that is not an absolute http(s) URL (a path, a host with no scheme, junk)
   // produces broken requests — warn so hosted misconfiguration is diagnosable.
   if (!isValidHttpUrl(apiBaseUrl)) {
-    return (
-      `[propr] window.__PROPR_CONFIG__.apiBaseUrl is not a valid http(s) URL: "${apiBaseUrl}". ` +
-      'Expected an absolute per-instance proxy URL like https://t-abc123.propr.dev. ' +
-      'API calls built from this base will fail.'
-    );
+    return `[propr] ${INVALID_RUNTIME_CONFIGURATION_CODE}`;
   }
   // Hosted UI tunnel mode is explicitly limited to per-instance proxy hosts:
   // propr-routing only forwards /api/* and /socket.io/* on
@@ -323,11 +392,7 @@ export const runtimeConfigWarning = (
   // request time. This is a warning, not a hard block — a future hosting setup
   // could legitimately front a different proxy domain.
   if (!isProprProxyUrl(apiBaseUrl)) {
-    return (
-      `[propr] window.__PROPR_CONFIG__.apiBaseUrl is not a hosted ProPR proxy URL: "${apiBaseUrl}". ` +
-      'Hosted UI tunnel mode only routes https://t-<id>.propr.dev, so API calls built ' +
-      'from this base may not reach the local stack.'
-    );
+    return `[propr] ${INVALID_RUNTIME_CONFIGURATION_CODE}`;
   }
   return null;
 };
@@ -341,31 +406,26 @@ export const hostedUiConnectionIssue = (
 ): HostedUiConnectionIssue | null => {
   if (!isHostedUiOrigin(hostname)) return null;
   if (hostedTunnelQueryApiBaseUrl(hostname, search)) return null;
+  if (hasHostedTunnelQueryParameter(search)) return invalidRuntimeConfigurationIssue();
   if (readStoredHostedTunnelApiBaseUrl(hostname, flowIdFromSearch(search), storage, contextId)) return null;
 
-  const apiBaseUrl = config?.apiBaseUrl?.trim();
+  const configured = config?.apiBaseUrl;
+  if (configured !== undefined && typeof configured !== 'string') return invalidRuntimeConfigurationIssue();
+  if ((configured?.length ?? 0) > MAX_PROPR_API_BASE_URL_LENGTH) return invalidRuntimeConfigurationIssue();
+  const apiBaseUrl = configured?.trim();
   if (!apiBaseUrl) {
     return {
+      code: 'HOSTED_STACK_REQUIRED',
       title: 'Connect a ProPR stack',
       message:
         'This hosted UI needs a selected local stack before it can make API calls. Open ProPR Connect and choose a tunnel, or use the hosted UI link shown after tunnel setup.',
     };
   }
   if (!isValidHttpUrl(apiBaseUrl)) {
-    return {
-      title: 'Invalid hosted UI configuration',
-      message:
-        `The configured API URL is not a valid http(s) URL: "${apiBaseUrl}". ` +
-        'Restart the stack after setting a hosted proxy URL such as https://t-abc123.propr.dev.',
-    };
+    return invalidRuntimeConfigurationIssue();
   }
   if (!isProprProxyUrl(apiBaseUrl)) {
-    return {
-      title: 'Invalid hosted UI tunnel',
-      message:
-        `The configured API URL is not a hosted ProPR proxy URL: "${apiBaseUrl}". ` +
-        'Hosted UI tunnel mode requires a bare https://t-<id>.propr.dev URL.',
-    };
+    return invalidRuntimeConfigurationIssue();
   }
   return null;
 };
@@ -426,8 +486,8 @@ export const resolveApiBaseUrl = (
   const selectedApiBaseUrl = (
     queryApiBaseUrl ||
     storedApiBaseUrl ||
-    config?.apiBaseUrl?.trim() ||
-    buildTimeApiBaseUrl?.trim() ||
+    config?.apiBaseUrl ||
+    buildTimeApiBaseUrl ||
     ''
   );
   return normalizeApiBaseUrl(selectedApiBaseUrl);
@@ -493,6 +553,11 @@ if (typeof window !== 'undefined') {
  * `VITE_API_BASE_URL`, or manually set apiBaseUrl can still carry one.
  */
 export const getApiBaseUrl = (): string => {
+  return getRuntimeApiBaseUrlState().apiBaseUrl;
+};
+
+/** Resolve configuration without allowing malformed injected values to throw at import time. */
+export const getRuntimeApiBaseUrlState = (): RuntimeApiBaseUrlState => {
   if (
     typeof window !== 'undefined' &&
     isHostedOAuthCompletionRoute(
@@ -501,18 +566,35 @@ export const getApiBaseUrl = (): string => {
       window.location.search
     )
   ) {
-    return '';
+    return { apiBaseUrl: '', issue: null };
   }
 
-  if (desktopApiBaseUrl !== null) return desktopApiBaseUrl;
+  if (desktopApiBaseUrl !== null) return { apiBaseUrl: desktopApiBaseUrl, issue: null };
 
-  return resolveApiBaseUrl(
-    typeof window !== 'undefined' ? window.location.hostname : '',
-    typeof window !== 'undefined' ? window.location.search : '',
-    runtimeConfig,
-    import.meta.env.VITE_API_BASE_URL,
-    storageForWindow()
-  );
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+  const search = typeof window !== 'undefined' ? window.location.search : '';
+  if (
+    isHostedUiOrigin(hostname)
+    && hasHostedTunnelQueryParameter(search)
+    && !hostedTunnelQueryApiBaseUrl(hostname, search)
+  ) {
+    return { apiBaseUrl: '', issue: invalidRuntimeConfigurationIssue() };
+  }
+
+  try {
+    return {
+      apiBaseUrl: resolveApiBaseUrl(
+        hostname,
+        search,
+        runtimeConfig,
+        import.meta.env.VITE_API_BASE_URL,
+        storageForWindow()
+      ),
+      issue: null,
+    };
+  } catch {
+    return { apiBaseUrl: '', issue: invalidRuntimeConfigurationIssue() };
+  }
 };
 
 /** Set by the desktop presentation boundary after a profile has passed its probe. */
@@ -521,7 +603,9 @@ export const setDesktopApiBaseUrl = (value: string | null): void => {
     desktopApiBaseUrl = null;
     return;
   }
-  const normalized = value.trim().replace(/\/+$/, '');
-  if (normalized && !isValidHttpUrl(normalized)) throw new Error('Desktop API base URL must use http(s).');
-  desktopApiBaseUrl = normalized;
+  try {
+    desktopApiBaseUrl = normalizeApiBaseUrl(value);
+  } catch {
+    throw new Error('The ProPR connection configuration is invalid.');
+  }
 };

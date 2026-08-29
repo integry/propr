@@ -1,4 +1,8 @@
-import { parseProprConnectEndpoint } from '@propr/shared';
+import {
+  isProprConnectReservedHostAttempt,
+  MAX_PROPR_API_BASE_URL_LENGTH,
+  parseProprConnectEndpoint,
+} from '@propr/shared';
 import { DESKTOP_PROTOCOL } from './shared/contract';
 
 // WHATWG URL.hostname retains brackets around IPv6 literals.
@@ -16,16 +20,14 @@ const parseUrl = (value: string): URL | null => {
 const hasCredentials = (url: URL): boolean => Boolean(url.username || url.password);
 
 export const normalizeApiBaseUrl = (value: string): string | null => {
+  if (value.length > MAX_PROPR_API_BASE_URL_LENGTH) return null;
   const candidate = value.trim();
   const url = parseUrl(candidate);
   if (!url || hasCredentials(url) || url.hash || url.search) return null;
   if (url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) return null;
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
   if (url.pathname.replace(/\//g, '') !== '') return null;
-  if (
-    parseProprConnectEndpoint(`https://${url.hostname}`)
-    && !parseProprConnectEndpoint(candidate)
-  ) return null;
+  if (isProprConnectReservedHostAttempt(candidate) && !parseProprConnectEndpoint(candidate)) return null;
   return url.origin;
 };
 

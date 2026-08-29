@@ -1,5 +1,7 @@
 import {
   DEFAULT_PROPR_UI_ORIGIN,
+  isProprConnectReservedHostAttempt,
+  MAX_PROPR_API_BASE_URL_LENGTH,
   parseProprConnectEndpoint,
 } from './proprServiceUrls.js';
 
@@ -27,6 +29,9 @@ const isLoopbackHostname = (hostname: string): boolean => {
 };
 
 const bareHttpOrigin = (value: string): URL | null => {
+  if (value.length > MAX_PROPR_API_BASE_URL_LENGTH) return null;
+  const connectEndpoint = parseProprConnectEndpoint(value);
+  if (isProprConnectReservedHostAttempt(value) && !connectEndpoint) return null;
   try {
     const url = new URL(value);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;

@@ -53,13 +53,38 @@ describe('Propr API base URLs and instance profiles', () => {
     assert.equal(classifyApiBaseUrl('http://127.0.0.1:4000').kind, 'loopback');
     assert.equal(classifyApiBaseUrl('https://propr.example.com').kind, 'remote');
 
-    for (const lookalike of [
-      'https://t-instance-123.propr.dev.example.com',
+    for (const rejectedReserved of [
       'https://t-instance-123.foo.propr.dev',
       'https://t-\u0430bc.propr.dev',
+    ]) {
+      assert.throws(() => classifyApiBaseUrl(rejectedReserved), (error: unknown) =>
+        error instanceof ProprClientError
+        && error.code === 'INVALID_API_BASE_URL'
+        && !error.message.includes(rejectedReserved));
+    }
+
+    for (const lookalike of [
+      'https://t-instance-123.propr.dev.example.com',
       'https://t-abc.pr\u03bfpr.dev',
     ]) {
       assert.notEqual(classifyApiBaseUrl(lookalike).kind, 'propr-connect', lookalike);
+    }
+  });
+
+  it('bounds malformed configuration and reports only a fixed safe code and message', () => {
+    const unsafeValues = [
+      'https://user:password-sentinel@t-instance123.propr.dev',
+      'https://t-instance123.propr.dev?token=query-token-sentinel',
+      `https://example.com/${'private-path-sentinel'.repeat(200)}`,
+    ];
+    for (const value of unsafeValues) {
+      assert.throws(() => normalizeApiBaseUrl(value), (error: unknown) => {
+        assert.ok(error instanceof ProprClientError);
+        assert.equal(error.code, 'INVALID_API_BASE_URL');
+        assert.equal(error.message, 'The configured ProPR API URL is invalid.');
+        assert.doesNotMatch(JSON.stringify(error), /password-sentinel|query-token-sentinel|private-path-sentinel/);
+        return true;
+      });
     }
   });
 });

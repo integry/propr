@@ -11,6 +11,7 @@ import { getCurrentUser, INSTANCE_AUTHORIZATION_CHANGED_EVENT } from './api/prop
 import { checkProprApiCompatibility, ProprCompatibilityCheckError } from './api/compatibility'
 import {
   hostedUiConnectionIssue,
+  getRuntimeApiBaseUrlState,
   isHostedOAuthCompletionRoute,
   isHostedUiOrigin,
   pathWithActiveHostedTunnelFlow,
@@ -378,7 +379,7 @@ const WebApp: React.FC = () => {
   );
   const connectionIssue = isHostedOAuthCompletion
     ? null
-    : hostedUiConnectionIssue(
+    : getRuntimeApiBaseUrlState().issue ?? hostedUiConnectionIssue(
       window.location.hostname,
       window.__PROPR_CONFIG__,
       window.location.search
@@ -386,7 +387,6 @@ const WebApp: React.FC = () => {
   const [compatibility, setCompatibility] = useState<CompatibilityState>(
     isHosted && !isHostedOAuthCompletion && !connectionIssue ? { status: 'checking' } : { status: 'ready' }
   );
-
   useEffect(() => {
     if (!isHosted || isHostedOAuthCompletion || connectionIssue) return;
     let cancelled = false;

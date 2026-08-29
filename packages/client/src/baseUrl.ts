@@ -1,4 +1,8 @@
-import { parseProprConnectEndpoint } from '@propr/shared';
+import {
+  isProprConnectReservedHostAttempt,
+  MAX_PROPR_API_BASE_URL_LENGTH,
+  parseProprConnectEndpoint,
+} from '@propr/shared';
 import { ProprClientError } from './errors.js';
 
 declare const normalizedApiBaseUrl: unique symbol;
@@ -30,14 +34,20 @@ const isLoopbackHostname = (hostname: string): boolean => {
 };
 
 const configurationError = (message: string): never => {
-  throw new ProprClientError(message, { kind: 'configuration' });
+  throw new ProprClientError(message, { kind: 'configuration', code: 'INVALID_API_BASE_URL' });
 };
+
+const invalidApiBaseUrl = (): never =>
+  configurationError('The configured ProPR API URL is invalid.');
 
 /** Validate and normalize a REST/Socket.IO endpoint without retaining credentials. */
 export const normalizeApiBaseUrl = (
   value?: string | null,
   options: NormalizeApiBaseUrlOptions = {}
 ): ProprApiBaseUrl => {
+  if (typeof value === 'string' && value.length > MAX_PROPR_API_BASE_URL_LENGTH) {
+    return invalidApiBaseUrl();
+  }
   const candidate = value?.trim() ?? '';
   if (!candidate) return '' as ProprApiBaseUrl;
 
@@ -45,32 +55,31 @@ export const normalizeApiBaseUrl = (
   try {
     parsed = new URL(candidate);
   } catch {
-    return configurationError('The ProPR API URL must be an absolute HTTP(S) URL.');
+    return invalidApiBaseUrl();
   }
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return configurationError('The ProPR API URL must use HTTP or HTTPS.');
+    return invalidApiBaseUrl();
   }
   if (parsed.username || parsed.password) {
-    return configurationError('The ProPR API URL must not contain embedded credentials.');
+    return invalidApiBaseUrl();
   }
   if (parsed.search || parsed.hash) {
-    return configurationError('The ProPR API URL must not contain a query string or fragment.');
+    return invalidApiBaseUrl();
   }
   if (parsed.pathname.replace(/\//g, '') !== '') {
-    return configurationError('The ProPR API URL must be an origin without a path.');
+    return invalidApiBaseUrl();
   }
   if (
     parsed.protocol === 'http:'
     && !isLoopbackHostname(parsed.hostname)
     && options.allowInsecureHttp !== true
   ) {
-    return configurationError('Plain HTTP is only allowed for loopback ProPR API URLs.');
+    return invalidApiBaseUrl();
   }
 
-  const connectHostname = parseProprConnectEndpoint(`https://${parsed.hostname}`);
-  if (connectHostname && !parseProprConnectEndpoint(candidate)) {
-    return configurationError('ProPR Connect URLs must use the canonical HTTPS origin without credentials, a port, path, query, fragment, or encoded host.');
+  if (isProprConnectReservedHostAttempt(candidate) && !parseProprConnectEndpoint(candidate)) {
+    return invalidApiBaseUrl();
   }
 
   return parsed.origin as ProprApiBaseUrl;

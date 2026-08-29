@@ -30,10 +30,14 @@ describe('desktop browser fixtures', () => {
 
   it('normalizes safe instance origins and rejects unsafe URL components', () => {
     expect(normalizeBaseUrl(' https://propr.example.com/// ')).toBe('https://propr.example.com');
-    expect(() => normalizeBaseUrl('file:///tmp/propr')).toThrow(/http/i);
-    expect(() => normalizeBaseUrl('https://user:secret@example.com')).toThrow(/credentials/);
-    expect(() => normalizeBaseUrl('https://propr.example.com/api')).toThrow(/without a path/);
-    expect(() => normalizeBaseUrl('https://propr.example.com?token=secret')).toThrow(/query string/);
+    for (const unsafe of [
+      'file:///tmp/propr',
+      'https://user:secret@example.com',
+      'https://propr.example.com/api',
+      'https://propr.example.com?token=secret',
+    ]) {
+      expect(() => normalizeBaseUrl(unsafe)).toThrow('The configured ProPR API URL is invalid.');
+    }
   });
 
   it('resolves fixture authentication only after the matching desktop completion signal', async () => {

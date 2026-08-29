@@ -27,6 +27,10 @@ describe('desktop URL security', () => {
     assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev:8443'), null);
     assert.equal(normalizeApiBaseUrl('https://t-%69nstance123.propr.dev'), null);
     assert.equal(normalizeApiBaseUrl('https://t-instance123.propr%2edev'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.foo.propr.dev'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev.'), null);
+    assert.equal(normalizeApiBaseUrl(`https://example.com/${'private'.repeat(400)}`), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev.example.com'), 'https://t-instance123.propr.dev.example.com');
     assert.equal(normalizeApiBaseUrl('file:///tmp/propr'), null);
   });
 

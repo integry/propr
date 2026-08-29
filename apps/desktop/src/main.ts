@@ -38,10 +38,10 @@ let shutdownStarted = false;
 const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>
   logger
     ? logger.log(level, event, fields)
-    : console.error(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...fields }));
+    : console.error(JSON.stringify({ timestamp: new Date().toISOString(), level, event, code: fields ? 'DETAIL_REDACTED' : undefined }));
 
-process.on('uncaughtExceptionMonitor', error => {
-  log('error', 'desktop.main_process.uncaught_exception', { error });
+process.on('uncaughtExceptionMonitor', () => {
+  log('error', 'desktop.main_process.uncaught_exception', { code: 'UNCAUGHT_EXCEPTION' });
 });
 
 protocol.registerSchemesAsPrivileged([{

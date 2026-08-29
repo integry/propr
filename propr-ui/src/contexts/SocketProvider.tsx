@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import type { Socket } from '@propr/client';
 import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
-import { proprClient } from '../api/apiClient';
+import { getProprClient } from '../api/apiClient';
 
 interface SocketProviderProps {
   children: React.ReactNode;
@@ -25,7 +25,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       return;
     }
 
-    const newSocket = proprClient.connectSocket({
+    const newSocket = getProprClient().connectSocket({
       transports: ['websocket'],
       withCredentials: true,
       autoConnect: true,

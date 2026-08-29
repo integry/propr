@@ -34,8 +34,8 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
       try {
         return await handler(event, ...args);
       } catch (error) {
-        options.logger.log('error', 'desktop.ipc.failed', { channel, error });
-        throw error;
+        options.logger.log('error', 'desktop.ipc.failed', { channel, code: 'IPC_OPERATION_FAILED' });
+        throw new Error('Desktop operation failed [IPC_OPERATION_FAILED]');
       }
     });
   };

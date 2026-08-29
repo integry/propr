@@ -49,6 +49,7 @@ export const DESKTOP_RENDERER_ORIGIN = 'propr-app://renderer';
  */
 export const PROPR_UI_PROXY_SUFFIX = 'propr.dev';
 export const PROPR_UI_PROXY_LABEL_PREFIX = 't-';
+export const MAX_PROPR_API_BASE_URL_LENGTH = 2048;
 
 /** A verified, canonical ProPR Connect API origin. */
 export interface ProprConnectEndpoint {
@@ -108,6 +109,7 @@ export function proprInstanceProxyUrl(instanceId: string | undefined | null): st
  * double it up (`.../api/api/status`). Returns false for a malformed URL.
  */
 export function parseProprConnectEndpoint(url: string | undefined | null): ProprConnectEndpoint | null {
+  if (typeof url !== 'string' || url.length > MAX_PROPR_API_BASE_URL_LENGTH) return null;
   const candidate = url?.trim();
   if (!candidate) return null;
   try {
@@ -146,6 +148,44 @@ export function parseProprConnectEndpoint(url: string | undefined | null): Propr
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether an absolute URL is trying to address the reserved ProPR Connect DNS
+ * namespace. This deliberately recognizes noncanonical spellings so a failed
+ * strict Connect parse cannot fall through and acquire ordinary remote-origin
+ * behavior. It does not reserve suffix lookalikes outside `*.propr.dev`.
+ */
+export function isProprConnectReservedHostAttempt(url: string | undefined | null): boolean {
+  if (typeof url !== 'string' || !url || url.length > MAX_PROPR_API_BASE_URL_LENGTH) return false;
+  if (parseProprConnectEndpoint(url)) return true;
+
+  const isReservedHostname = (hostname: string): boolean => {
+    const normalized = hostname.toLowerCase().replace(/\.+$/, '');
+    return normalized.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+      && normalized.endsWith(`.${PROPR_UI_PROXY_SUFFIX}`);
+  };
+
+  try {
+    if (isReservedHostname(new URL(url).hostname)) return true;
+  } catch {
+    // Raw authority inspection below still catches malformed reserved attempts.
+  }
+
+  const authority = /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i.exec(url)?.[1];
+  if (!authority) return false;
+  const spellings = [authority];
+  try {
+    const decoded = decodeURIComponent(authority);
+    if (decoded !== authority) spellings.push(decoded);
+  } catch {
+    // A malformed escape cannot become a canonical endpoint, but the literal
+    // spelling can still identify an attempted reserved hostname.
+  }
+  return spellings.some(spelling => spelling
+    .split('@')
+    .flatMap(part => part.split('\\'))
+    .some(part => isReservedHostname(part.replace(/:\d+$/, ''))));
 }
 
 /**

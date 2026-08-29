@@ -1,5 +1,6 @@
 import { StrictMode, type ComponentType, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { normalizeApiBaseUrl } from '@propr/client';
 import { parseProprConnectEndpoint } from '@propr/shared';
 import type {
   DesktopAppMetadata,
@@ -64,8 +65,8 @@ export const ConnectionPlaceholder = ({
     setSaving(true);
     try {
       await onConnect(label, apiBaseUrl);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not save this connection.');
+    } catch {
+      setError('Could not save this connection. Check the address and try again.');
     } finally {
       setSaving(false);
     }
@@ -108,6 +109,7 @@ export const ConnectionPlaceholder = ({
               placeholder="http://localhost:4000"
               inputMode="url"
               spellCheck={false}
+              maxLength={2048}
               className="desktop-input font-mono"
             />
             <span className="mt-2 block text-xs font-normal text-slate-500">
@@ -168,7 +170,14 @@ export const DesktopRoot = () => {
         const deepLink = new URL(value);
         if (deepLink.hostname === 'connect') {
           const apiUrl = deepLink.searchParams.get('api');
-          if (apiUrl) setInitialApiUrl(apiUrl);
+          if (apiUrl) {
+            try {
+              const normalized = normalizeApiBaseUrl(apiUrl);
+              if (normalized) setInitialApiUrl(normalized);
+            } catch {
+              // Keep the current safe value; configuration errors are generic.
+            }
+          }
         }
       } catch {
         // Main validates protocol input; ignore malformed values defensively.
@@ -182,8 +191,8 @@ export const DesktopRoot = () => {
         const active = profiles.profiles.find(item => item.id === profiles.activeProfileId);
         if (active) await loadDashboard(active);
       })
-      .catch(error => {
-        if (!cancelled) setFatalError(error instanceof Error ? error.message : 'Desktop startup failed.');
+      .catch(() => {
+        if (!cancelled) setFatalError('Desktop startup failed. Restart ProPR Desktop and try again.');
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

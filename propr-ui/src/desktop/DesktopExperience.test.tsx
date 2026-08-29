@@ -24,6 +24,13 @@ const remoteProfile: DesktopProfile = {
   kind: 'remote',
 };
 
+const connectProfile: DesktopProfile = {
+  id: 'connect',
+  name: 'Managed workspace',
+  baseUrl: 'https://t-stale123.propr.dev',
+  kind: 'remote',
+};
+
 const adaptersFor = (
   profiles: DesktopProfile[] = [],
   activeId: string | null = null,
@@ -101,11 +108,85 @@ describe('DesktopExperience', () => {
     render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
 
     expect(await screen.findByRole('heading', { name: 'This computer' })).toBeInTheDocument();
-    expect(screen.getByText('The instance is offline.')).toBeInTheDocument();
+    expect(screen.getByText(/could not reach this instance/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Try again/i }));
 
     expect(await screen.findByText('Dashboard content')).toBeInTheDocument();
     expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows bounded managed-tunnel recovery guidance and accessible actions without the endpoint', async () => {
+    const adapters = adaptersFor(
+      [connectProfile],
+      connectProfile.id,
+      async () => ({ status: 'offline', message: 'Failed at https://t-stale123.propr.dev?token=secret-sentinel' })
+    );
+    render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
+
+    expect(await screen.findByText(/endpoint may be stale or the local stack may have restarted/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Re-enter Connect address' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rediscover Connect endpoint' })).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('t-stale123.propr.dev');
+    expect(document.body).not.toHaveTextContent('secret-sentinel');
+  });
+
+  it('requires confirmation before a rediscovered managed endpoint replaces the profile', async () => {
+    const candidate = { ...connectProfile, baseUrl: 'https://t-restarted456.propr.dev' };
+    const adapters = adaptersFor(
+      [connectProfile],
+      connectProfile.id,
+      vi.fn()
+        .mockResolvedValueOnce({ status: 'offline', message: 'offline' })
+        .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' })
+    );
+    adapters.managedTunnelRecovery = { rediscover: vi.fn(async () => candidate) };
+    render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Rediscover Connect endpoint' }));
+    expect(await screen.findByRole('heading', { name: 'Use the rediscovered endpoint?' })).toBeInTheDocument();
+    expect(adapters.managedTunnelRecovery.rediscover).toHaveBeenCalledWith(connectProfile.id);
+    expect(adapters.profiles.save).not.toHaveBeenCalled();
+    expect(document.body).not.toHaveTextContent(candidate.baseUrl);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Connect to rediscovered endpoint' }));
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument();
+    expect(adapters.profiles.save).toHaveBeenCalledWith(expect.objectContaining({
+      id: connectProfile.id,
+      baseUrl: candidate.baseUrl,
+    }));
+  });
+
+  it('re-enters a managed address without exposing or overwriting the stale value', async () => {
+    const adapters = adaptersFor(
+      [connectProfile],
+      connectProfile.id,
+      async () => ({ status: 'offline', message: 'offline' })
+    );
+    render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Re-enter Connect address' }));
+    expect(screen.getByLabelText('Instance URL')).toHaveValue('');
+    expect(document.body).not.toHaveTextContent(connectProfile.baseUrl);
+    expect(adapters.profiles.save).not.toHaveBeenCalled();
+  });
+
+  it('turns a managed pairing failure into the same recovery state without leaking the failure', async () => {
+    const adapters = adaptersFor(
+      [connectProfile],
+      connectProfile.id,
+      async () => ({ status: 'authentication-required', message: 'pair at private-path-sentinel' })
+    );
+    vi.mocked(adapters.authentication.authenticate).mockRejectedValueOnce(
+      new Error('password-sentinel at /Users/private/config')
+    );
+    render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in in browser' }));
+    expect(await screen.findByText(/endpoint may be stale or the local stack may have restarted/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('password-sentinel');
+    expect(document.body).not.toHaveTextContent('/Users/private/config');
   });
 
   it('shows a retryable failure when the connection adapter rejects', async () => {
@@ -116,7 +197,7 @@ describe('DesktopExperience', () => {
     render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
 
     expect(await screen.findByText(/could not check this instance/i)).toBeInTheDocument();
-    expect(screen.getByText(/desktop host did not respond/i)).toBeInTheDocument();
+    expect(screen.queryByText(/desktop host did not respond/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Try again/i }));
 
     expect(await screen.findByText('Dashboard content')).toBeInTheDocument();
@@ -131,7 +212,7 @@ describe('DesktopExperience', () => {
     render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
 
     expect(await screen.findByText(/could not save this connection/i)).toBeInTheDocument();
-    expect(screen.getByText(/profile storage is unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/profile storage is unavailable/i)).not.toBeInTheDocument();
     expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /Try again/i }));
 
@@ -158,13 +239,13 @@ describe('DesktopExperience', () => {
 
     await waitFor(() => expect(firstProbe).toHaveBeenCalledOnce());
     rerender(<DesktopExperience adapters={replacementAdapters}><div>Replacement dashboard</div></DesktopExperience>);
-    expect(await screen.findByText('The replacement instance is unavailable.')).toBeInTheDocument();
+    expect(await screen.findByText(/could not reach this instance/i)).toBeInTheDocument();
 
     await act(async () => {
       resolveFirstProbe?.({ status: 'ready', version: '0.8.15' });
     });
 
-    expect(screen.getByText('The replacement instance is unavailable.')).toBeInTheDocument();
+    expect(screen.getByText(/could not reach this instance/i)).toBeInTheDocument();
     expect(screen.queryByText('Stale dashboard')).not.toBeInTheDocument();
     expect(firstAdapters.profiles.save).not.toHaveBeenCalled();
   });
@@ -378,7 +459,7 @@ describe('DesktopExperience', () => {
     fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://unavailable.example.com/' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(await screen.findByText('The updated server is unavailable.')).toBeInTheDocument();
+    expect(await screen.findByText(/could not reach this instance/i)).toBeInTheDocument();
     expect(adapters.profiles.save).not.toHaveBeenCalled();
     expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
     expect(runtimeMock.setDesktopApiBaseUrl).not.toHaveBeenCalled();
@@ -399,7 +480,8 @@ describe('DesktopExperience', () => {
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Retryable edit' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/could not save this instance.*storage is locked.*try again/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not save this instance.*try again/i);
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/storage is locked/i);
     expect(screen.getByLabelText('Display name')).toHaveValue('Retryable edit');
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByText('Retryable edit')).toBeInTheDocument();
@@ -413,7 +495,8 @@ describe('DesktopExperience', () => {
     expect(await screen.findByText('Team server')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove Team server' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/could not remove this instance.*storage is locked.*try again/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not remove this instance.*try again/i);
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/storage is locked/i);
     expect(screen.getByText('Team server')).toBeInTheDocument();
     expect(adapters.profiles.remove).toHaveBeenCalledWith(remoteProfile.id);
   });
@@ -443,11 +526,13 @@ describe('DesktopExperience', () => {
     render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
 
     fireEvent.click(await screen.findByRole('button', { name: /Sign in in browser/i }));
-    expect(await screen.findByText(/could not open sign in.*browser launch failed.*try again/i)).toBeInTheDocument();
+    expect(await screen.findByText(/could not open sign in.*try again/i)).toBeInTheDocument();
+    expect(screen.queryByText(/browser launch failed/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Sign in in browser/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Open connection help/i }));
-    expect(await screen.findByText(/could not open connection help.*no browser is configured.*try again/i)).toBeInTheDocument();
+    expect(await screen.findByText(/could not open connection help.*try again/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no browser is configured/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open connection help/i })).toBeInTheDocument();
   });
 

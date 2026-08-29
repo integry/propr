@@ -1,6 +1,6 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import { ProprClient } from '@propr/client';
-import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
+import { ProprClient, ProprClientError } from '@propr/client';
+import { getRuntimeApiBaseUrlState, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import { currentUiPathname, navigateToUiPath } from '../config/runtimeMode';
 
 const createProprClient = (baseUrl: string): ProprClient => new ProprClient({
@@ -10,8 +10,20 @@ const createProprClient = (baseUrl: string): ProprClient => new ProprClient({
   authentication: { type: 'session', applyByDefault: false },
 });
 
-export let API_BASE_URL = getApiBaseUrl();
-export let proprClient = createProprClient(API_BASE_URL);
+const initialApiConfiguration = getRuntimeApiBaseUrlState();
+
+export let API_BASE_URL = initialApiConfiguration.apiBaseUrl;
+export let proprClient: ProprClient | null = initialApiConfiguration.issue
+  ? null
+  : createProprClient(API_BASE_URL);
+
+export const getProprClient = (): ProprClient => {
+  if (proprClient) return proprClient;
+  throw new ProprClientError('The ProPR connection configuration is invalid.', {
+    kind: 'configuration',
+    code: 'INVALID_RUNTIME_CONFIGURATION',
+  });
+};
 
 /** Update the live bindings used by existing API modules when desktop profiles switch. */
 export const setApiBaseUrl = (value: string): void => {
@@ -148,9 +160,10 @@ export const apiFetch = async (
   init?: RequestInit,
   options: ApiFetchOptions = {}
 ): Promise<Response> => {
-  const response = await proprClient.fetch(input, init);
+  const client = getProprClient();
+  const response = await client.fetch(input, init);
   if (isReplayableApiRequest(input, init, options) && await shouldRetryAfterTokenRefresh(response)) {
-    return proprClient.fetch(input, init);
+    return client.fetch(input, init);
   }
   return response;
 };

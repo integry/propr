@@ -11,7 +11,7 @@ const socketMock = vi.hoisted(() => ({
 const connectSocketMock = vi.hoisted(() => vi.fn(() => socketMock));
 
 vi.mock('../api/apiClient', () => ({
-  proprClient: { connectSocket: connectSocketMock },
+  getProprClient: () => ({ connectSocket: connectSocketMock }),
 }));
 
 describe('SocketProvider', () => {
