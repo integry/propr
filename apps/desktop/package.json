@@ -18,6 +18,7 @@
     "dev": "electron-forge start",
     "pretypecheck": "npm run prepare:renderer",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm run prepare:renderer",
     "test": "tsx --test src/**/*.test.ts",
     "prepackage": "npm run prepare:renderer",
     "package": "electron-forge package",
