@@ -200,7 +200,7 @@ describe('DMG application layout', () => {
     );
   });
 
-  test('rejects alternate roots, unsafe links, special files, and non-helper nested apps', async context => {
+  test('rejects alternate top-level application bundles', async context => {
     const alternateRoot = await mkdtemp(join(tmpdir(), 'propr-dmg-extra-root-'));
     context.after(() => rm(alternateRoot, { recursive: true, force: true }));
     await createDmgLayout(alternateRoot);
@@ -209,7 +209,9 @@ describe('DMG application layout', () => {
       inspectDmgLayout({ root: alternateRoot, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
       /unclaimed or alternate top-level payload/,
     );
+  });
 
+  test('rejects unsafe links inside the canonical application bundle', async context => {
     const unsafeLink = await mkdtemp(join(tmpdir(), 'propr-dmg-unsafe-link-'));
     context.after(() => rm(unsafeLink, { recursive: true, force: true }));
     await createDmgLayout(unsafeLink);
@@ -218,7 +220,9 @@ describe('DMG application layout', () => {
       inspectDmgLayout({ root: unsafeLink, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
       /unsafe absolute symbolic link/,
     );
+  });
 
+  test('rejects non-helper nested application bundles', async context => {
     const nestedApp = await mkdtemp(join(tmpdir(), 'propr-dmg-nested-app-'));
     context.after(() => rm(nestedApp, { recursive: true, force: true }));
     await createDmgLayout(nestedApp);
@@ -227,25 +231,35 @@ describe('DMG application layout', () => {
       inspectDmgLayout({ root: nestedApp, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
       /alternate application bundle/,
     );
+  });
 
+  test('rejects case-colliding top-level entries when the filesystem permits them', async context => {
     const caseCollision = await mkdtemp(join(tmpdir(), 'propr-dmg-case-collision-'));
     context.after(() => rm(caseCollision, { recursive: true, force: true }));
     await createDmgLayout(caseCollision);
-    await symlink('/Applications', join(caseCollision, 'applications'));
+    try {
+      await symlink('/Applications', join(caseCollision, 'applications'));
+    } catch (error) {
+      if (error?.code === 'EEXIST') {
+        context.skip('filesystem does not permit distinct case-colliding entries');
+        return;
+      }
+      throw error;
+    }
     await assert.rejects(
       inspectDmgLayout({ root: caseCollision, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
       /duplicate or case-colliding top-level entry/,
     );
+  });
 
-    if (process.platform !== 'win32') {
-      const special = await mkdtemp(join(tmpdir(), 'propr-dmg-special-'));
-      context.after(() => rm(special, { recursive: true, force: true }));
-      await createDmgLayout(special);
-      execFileSync('mkfifo', [join(special, 'propr-desktop.app', 'Contents', 'special')]);
-      await assert.rejects(
-        inspectDmgLayout({ root: special, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
-        /special file/,
-      );
-    }
+  test('rejects special files inside the canonical application bundle', { skip: process.platform === 'win32' }, async context => {
+    const special = await mkdtemp(join(tmpdir(), 'propr-dmg-special-'));
+    context.after(() => rm(special, { recursive: true, force: true }));
+    await createDmgLayout(special);
+    execFileSync('mkfifo', [join(special, 'propr-desktop.app', 'Contents', 'special')]);
+    await assert.rejects(
+      inspectDmgLayout({ root: special, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /special file/,
+    );
   });
 });
