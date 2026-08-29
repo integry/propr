@@ -28,6 +28,7 @@ const Dashboard = lazy(() => import('./components/Dashboard'))
 const LlmLogsPage = lazy(() => import('./pages/LlmLogsPage'))
 const InboxPage = lazy(() => import('./pages/InboxPage'))
 const LoginPage = lazy(() => import('./pages/LoginPage'))
+const DesktopPairingPage = lazy(() => import('./pages/DesktopPairingPage'))
 const PlansPage = lazy(() => import('./pages/PlansPage'))
 const PlanStudioPage = lazy(() => import('./pages/PlanStudioPage'))
 const RepositoriesPage = lazy(() => import('./pages/RepositoriesPage'))
@@ -235,6 +236,7 @@ const AppContent: React.FC = () => {
                     <Suspense fallback={<LoadingSpinner />}>
                       <Routes>
                     <Route path="/login" element={<LoginPage />} />
+                    <Route path="/desktop/pairing" element={<DesktopPairingPage />} />
                     <Route path="/revert" element={<RevertPage />} />
                     <Route
                       path="/"

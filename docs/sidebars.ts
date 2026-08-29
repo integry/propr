@@ -127,6 +127,7 @@ const sidebars: SidebarsConfig = {
         'operations/propr-connect',
         'operations/connect-dashboard',
         'operations/hosted-ui-tunnel',
+        'operations/desktop-pairing',
         'operations/pwa-web-push',
         'operations/configuration-reference',
         'operations/metrics',

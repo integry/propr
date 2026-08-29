@@ -205,6 +205,33 @@ test('/api/compatibility returns public version contract metadata', async () => 
     version: PROPR_VERSION,
     apiCompatibility: PROPR_API_COMPATIBILITY,
     uiCompatibility: PROPR_UI_COMPATIBILITY,
+    desktopAuthentication: {
+      protocolVersion: 1,
+      browserPairing: true,
+      instanceBearerTokens: true,
+      socketIoBearerAuthentication: true,
+    },
+  });
+});
+
+test('/api/desktop/discovery adds only the stable product name to compatibility metadata', async () => {
+  configureStatusEnv();
+  const { response, body } = createJsonResponse();
+  const routes = await createRoutes({ redisClient: createRedisClient() as never });
+
+  routes.getDesktopDiscovery({} as Request, response);
+
+  assert.deepEqual(body(), {
+    product: 'ProPR',
+    version: PROPR_VERSION,
+    apiCompatibility: PROPR_API_COMPATIBILITY,
+    uiCompatibility: PROPR_UI_COMPATIBILITY,
+    desktopAuthentication: {
+      protocolVersion: 1,
+      browserPairing: true,
+      instanceBearerTokens: true,
+      socketIoBearerAuthentication: true,
+    },
   });
 });
 
