@@ -97,10 +97,22 @@ export {
   PROPR_UI_PROXY_LABEL_PREFIX,
   DEFAULT_CLOUDFLARED_IMAGE,
   proprInstanceProxyUrl,
+  canonicalProprProxyUrl,
   isValidProprInstanceId,
   isProprProxyUrl,
   proprTunnelEndpoints,
 } from './proprServiceUrls.js';
+
+export {
+  PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION,
+  PROPR_CONNECT_DISCOVERY_MAX_BYTES,
+  PUBLIC_INSTANCE_IDENTITY_SCHEMA_VERSION,
+  PUBLIC_INSTANCE_IDENTITY_FILENAME,
+  isPublicInstanceIdentity,
+  parsePublicInstanceIdentityDocument,
+  type PublicInstanceIdentityDocument,
+  type ProprDesktopDiscovery,
+} from './connectDiscovery.js';
 
 // Export routing URL validation (shared by intake prerequisites and the daemon
 // routing service so the boot/CLI checks and the dialer agree on one policy)

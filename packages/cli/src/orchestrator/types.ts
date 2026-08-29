@@ -54,12 +54,15 @@ export interface OrchestratorConfig {
   readonly cloudflaredImage: string;
   /** Immediate socket peers whose forwarded client/protocol headers the API trusts. */
   readonly trustedProxyPeers?: string;
+  /** Public origin injected into the running API container. */
+  readonly apiPublicUrl: string;
   /**
    * Hosted UI origin allowed by CORS/redirects. Always resolves to a value:
    * an explicit FRONTEND_URL, the hosted origin in tunnel mode, or the
    * localhost UI default for local development.
    */
   readonly frontendUrl: string;
+  readonly ghOauthCallbackUrl: string;
   readonly mistralApiKey?: string;
   readonly vibeConfigPath?: string;
   readonly manifest: { version: string; images: Record<string, string> } & Record<string, unknown>;
@@ -195,12 +198,12 @@ export interface OrchestratorModule {
     opts?: { remove?: boolean; removeNetwork?: boolean; onLog?: (line: string) => void }
   ): { failed: string[] };
 
-  getStackStatus(cfg: OrchestratorConfig): StackStatus;
+  getStackStatus(cfg: OrchestratorConfig, opts?: { timeout?: number }): StackStatus;
   getStackStatusAsync(cfg: OrchestratorConfig): Promise<StackStatus>;
   /** Pure parse of `docker ps` tab-separated output into per-service state. */
   parseStackStatus(cfg: OrchestratorConfig, stdout: string): StackStatus;
   getTunnelStatus(cfg: OrchestratorConfig, stackStatus?: StackStatus): Promise<TunnelStatus>;
-  getServiceState(cfg: OrchestratorConfig, service: string): ServiceState | undefined;
+  getServiceState(cfg: OrchestratorConfig, service: string, opts?: { timeout?: number }): ServiceState | undefined;
   getServiceLogs(
     cfg: OrchestratorConfig,
     service: string,

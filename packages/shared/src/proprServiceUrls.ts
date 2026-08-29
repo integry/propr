@@ -62,13 +62,13 @@ export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:2024.12.2';
 /**
  * Whether an instance id is usable as a single DNS label in the per-instance
  * proxy hostname (`t-<id>.propr.dev`). Enforces the standard label rules:
- * 1–63 characters, ASCII letters/digits/hyphens only, and no leading or
- * trailing hyphen. This rejects spaces, slashes, dots, underscores, and other
- * characters that would produce an invalid or ambiguous hostname.
+ * 1–61 characters (leaving room for the `t-` prefix), ASCII
+ * letters/digits/hyphens only, and no leading or trailing hyphen. This rejects
+ * values that would produce an invalid or ambiguous complete DNS label.
  */
 export function isValidProprInstanceId(instanceId: string | undefined | null): boolean {
   const id = (instanceId ?? '').trim();
-  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(id);
+  return /^[a-z0-9]([a-z0-9-]{0,59}[a-z0-9])?$/i.test(id);
 }
 
 /**
@@ -89,6 +89,48 @@ export function proprInstanceProxyUrl(instanceId: string | undefined | null): st
 }
 
 /**
+ * Return the one canonical Connect proxy origin, or undefined for anything
+ * else. The raw value must be ASCII and carry no userinfo, port, path, query,
+ * fragment, IDNA spelling, or alternate DNS representation. This is the
+ * authority parser used by setup, local discovery, and remote identity checks.
+ */
+export function canonicalProprProxyUrl(url: string | undefined | null): string | undefined {
+  if (!url || url !== url.trim() || /[^\x20-\x7e]/.test(url)) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (
+      parsed.protocol !== 'https:'
+      || parsed.username !== ''
+      || parsed.password !== ''
+      || parsed.port !== ''
+      || parsed.pathname !== '/'
+      || parsed.search !== ''
+      || parsed.hash !== ''
+    ) return undefined;
+
+    const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+    if (!parsed.hostname.endsWith(suffix)) return undefined;
+    const label = parsed.hostname.slice(0, -suffix.length);
+    if (
+      label.length > 63
+      || label.includes('.')
+      || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+    ) return undefined;
+    const id = label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length);
+    if (!isValidProprInstanceId(id)) return undefined;
+
+    const canonical = `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}`;
+    // URL parsing canonicalizes case and an optional single trailing slash, but
+    // no other raw spelling is accepted at this trust boundary.
+    return url.toLowerCase() === canonical || url.toLowerCase() === `${canonical}/`
+      ? canonical
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Whether a URL is a hosted per-instance proxy URL (`https://t-<id>.propr.dev`).
  * propr-routing only forwards `/api/*` and `/socket.io/*` on these hosts, so the
  * tunnel base URL must be one of them. Requires https and *exactly one* valid
@@ -100,25 +142,7 @@ export function proprInstanceProxyUrl(instanceId: string | undefined | null): st
  * double it up (`.../api/api/status`). Returns false for a malformed URL.
  */
 export function isProprProxyUrl(url: string | undefined | null): boolean {
-  if (!url) return false;
-  try {
-    const { protocol, hostname, pathname, search, hash } = new URL(url);
-    if (protocol !== 'https:') return false;
-    // Must be a bare origin — the tunnel endpoint helpers own the path suffix.
-    // Trailing slashes (`/`, `//`) are tolerated (callers trim them); any real
-    // path segment, query, or fragment is rejected so a base path can't double
-    // up the appended `/api/...`.
-    if (/[^/]/.test(pathname) || search || hash) return false;
-    const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
-    if (!hostname.endsWith(suffix)) return false;
-    const label = hostname.slice(0, -suffix.length);
-    if (label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) {
-      return false;
-    }
-    return isValidProprInstanceId(label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length));
-  } catch {
-    return false;
-  }
+  return canonicalProprProxyUrl(url) !== undefined;
 }
 
 function normalizeProprInstanceId(instanceId: string | undefined | null): string {

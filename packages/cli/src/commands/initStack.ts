@@ -20,6 +20,7 @@ import {
   secureExistingPrivateFile,
   writePrivateFileAtomic,
 } from "../utils/privateFilesystem.js";
+import { getOrCreatePublicInstanceIdentity } from "../connectIdentity.js";
 
 export function materializeSessionSecret(
   template: string,
@@ -174,6 +175,11 @@ export async function scaffoldStack(
     ensurePrivateDirectory(dir);
     (created ? result.dirsCreated : result.dirsSkipped).push(sub);
   }
+
+  // The public installation identity belongs to the durable data boundary, not
+  // .env or a tunnel credential. Re-scaffolding/upgrading preserves it; replacing
+  // the stack data creates a fresh identity on the next initialization.
+  getOrCreatePublicInstanceIdentity(join(rootDir, "data"));
 
   // 2. Load the environment content that will be used below.
   const envExists = existsSync(envPath);

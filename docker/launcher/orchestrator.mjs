@@ -43,11 +43,11 @@ export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:2024.12.2';
 export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
 
 // Whether an instance id is a valid single DNS label for the proxy hostname
-// (t-<id>.propr.dev): 1–63 chars, ASCII letters/digits/hyphens only, no
-// leading/trailing hyphen. Mirrors isValidProprInstanceId() in the shared pkg.
+// (t-<id>.propr.dev): 1–61 chars (leaving room for `t-`), ASCII
+// letters/digits/hyphens only, no leading/trailing hyphen.
 export function isValidProprInstanceId(instanceId) {
     const id = (instanceId ?? '').trim();
-    return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(id);
+    return /^[a-z0-9]([a-z0-9-]{0,59}[a-z0-9])?$/i.test(id);
 }
 
 // Derive the per-instance public API/UI URL (https://t-<instanceId>.propr.dev)
@@ -61,6 +61,25 @@ export function proprInstanceProxyUrl(instanceId) {
     return isValidProprInstanceId(id) ? `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}` : undefined;
 }
 
+export function canonicalProprProxyUrl(url) {
+    if (!url || url !== url.trim() || /[^\x20-\x7e]/.test(url)) return undefined;
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== ''
+            || parsed.port !== '' || parsed.pathname !== '/' || parsed.search !== '' || parsed.hash !== '') return undefined;
+        const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+        if (!parsed.hostname.endsWith(suffix)) return undefined;
+        const label = parsed.hostname.slice(0, -suffix.length);
+        if (label.length > 63 || label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) return undefined;
+        const id = label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length);
+        if (!isValidProprInstanceId(id)) return undefined;
+        const canonical = `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}`;
+        return url.toLowerCase() === canonical || url.toLowerCase() === `${canonical}/` ? canonical : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 // Whether a URL is a hosted per-instance proxy URL (https://t-<id>.propr.dev).
 // propr-routing only forwards /api/* and /socket.io/* on these hosts, so the
 // tunnel base URL must be one of them. Requires exactly one t-<instance-id>
@@ -69,23 +88,7 @@ export function proprInstanceProxyUrl(instanceId) {
 // proprTunnelEndpoints does not double up the /api prefix). Mirrors
 // isProprProxyUrl() in the shared pkg.
 export function isProprProxyUrl(url) {
-    if (!url) return false;
-    try {
-        const { protocol, hostname, pathname, search, hash } = new URL(url);
-        if (protocol !== 'https:') return false;
-        // Trailing slashes are tolerated; any real path segment/query/fragment
-        // is rejected so a base path can't double up the appended /api prefix.
-        if (/[^/]/.test(pathname) || search || hash) return false;
-        const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
-        if (!hostname.endsWith(suffix)) return false;
-        const label = hostname.slice(0, -suffix.length);
-        if (label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) {
-            return false;
-        }
-        return isValidProprInstanceId(label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length));
-    } catch {
-        return false;
-    }
+    return canonicalProprProxyUrl(url) !== undefined;
 }
 
 function normalizeProprInstanceId(instanceId) {
@@ -342,8 +345,13 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // slashes are stripped once here so every consumer (API/worker/UI env, status
     // output, endpoint rendering) sees one canonical form — the derived URL never
     // has one, but an explicit PROPR_UI_PUBLIC_API_URL might.
-    const uiPublicApiUrl =
-        (get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId))?.replace(/\/+$/, '') || undefined;
+    const configuredUiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId);
+    // Normalize one ordinary origin slash, but do not erase repeated slashes:
+    // strict Connect discovery must still be able to reject that alternate URL
+    // spelling rather than silently converting it into a trusted origin.
+    const uiPublicApiUrl = configuredUiPublicApiUrl?.endsWith('/')
+        ? configuredUiPublicApiUrl.slice(0, -1)
+        : configuredUiPublicApiUrl || undefined;
 
     return Object.freeze({
         stack, network, envFileLocal, envFileHost, nodeEnv,
@@ -1568,13 +1576,13 @@ export function parseStackStatus(cfg, stdout) {
 const STACK_STATUS_PS_ARGS = ['ps', '-a', '--format', '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'];
 
 /** Per-service state for the whole stack, discovered by canonical container name. */
-export function getStackStatus(cfg) {
-    const res = docker(STACK_STATUS_PS_ARGS, { capture: true });
+export function getStackStatus(cfg, { timeout } = {}) {
+    const res = docker(STACK_STATUS_PS_ARGS, { capture: true, timeout });
     return parseStackStatus(cfg, res.stdout);
 }
 
-export function getServiceState(cfg, service) {
-    return getStackStatus(cfg).services.find((s) => s.service === service);
+export function getServiceState(cfg, service, opts) {
+    return getStackStatus(cfg, opts).services.find((s) => s.service === service);
 }
 
 // Best-effort GET <publicApiUrl>/api/status behind a hard timeout. propr-routing

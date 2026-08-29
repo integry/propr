@@ -37,6 +37,7 @@ import {
   createUiCommand,
   createDocsCommand,
   createTunnelCommand,
+  createConnectCommand,
   createTankCommand,
   createRelayCommand,
   createRuntimeCommand,
@@ -333,6 +334,7 @@ program.addCommand(createStopCommand());
 program.addCommand(createUiCommand());
 program.addCommand(createDocsCommand());
 program.addCommand(createTunnelCommand());
+program.addCommand(createConnectCommand());
 program.addCommand(createTankCommand());
 program.addCommand(createRelayCommand());
 program.addCommand(createRuntimeCommand());

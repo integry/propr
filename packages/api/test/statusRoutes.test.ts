@@ -24,6 +24,7 @@ type StatusRoutesDeps = {
     snapshot: Record<string, unknown> & { timestamp: string },
     additionalAdministratorIds: readonly string[],
   ) => Promise<void>;
+  getPublicInstanceIdentity?: () => string;
 };
 
 type StatusAgentRegistry = {
@@ -57,15 +58,22 @@ const MANAGED_ENV_VARS = [
   'PROPR_GH_RELAY_TOKEN',
   'GITHUB_EVENT_INTAKE_MODE',
   'ENABLE_GITHUB_WEBHOOKS',
+  'API_PUBLIC_URL',
 ] as const;
 
 const originalEnv: Record<string, string | undefined> = Object.fromEntries(
   MANAGED_ENV_VARS.map((key) => [key, process.env[key]]),
 );
 
-function createJsonResponse(): { response: ExpressResponse; status: () => number; body: () => Record<string, unknown> } {
+function createJsonResponse(): {
+  response: ExpressResponse;
+  status: () => number;
+  body: () => Record<string, unknown>;
+  headers: () => Record<string, string>;
+} {
   let statusCode = 200;
   let payload: Record<string, unknown> = {};
+  let responseHeaders: Record<string, string> = {};
   const response = {
     status(code: number) {
       statusCode = code;
@@ -74,9 +82,18 @@ function createJsonResponse(): { response: ExpressResponse; status: () => number
     json(body: Record<string, unknown>) {
       payload = body;
       return response;
-    }
+    },
+    set(headers: Record<string, string>) {
+      responseHeaders = { ...responseHeaders, ...headers };
+      return response;
+    },
   } as unknown as ExpressResponse;
-  return { response, status: () => statusCode, body: () => payload };
+  return {
+    response,
+    status: () => statusCode,
+    body: () => payload,
+    headers: () => responseHeaders,
+  };
 }
 
 function createRedisClient() {
@@ -214,15 +231,22 @@ test('/api/compatibility returns public version contract metadata', async () => 
   });
 });
 
-test('/api/desktop/discovery adds only the stable product name to compatibility metadata', async () => {
+test('/api/desktop/discovery returns the bounded public identity and runtime origin', async () => {
   configureStatusEnv();
-  const { response, body } = createJsonResponse();
-  const routes = await createRoutes({ redisClient: createRedisClient() as never });
+  process.env.API_PUBLIC_URL = 'https://t-abc123.propr.dev';
+  const { response, body, headers } = createJsonResponse();
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    getPublicInstanceIdentity: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  });
 
   routes.getDesktopDiscovery({} as Request, response);
 
   assert.deepEqual(body(), {
+    schemaVersion: 1,
     product: 'ProPR',
+    canonicalEndpoint: 'https://t-abc123.propr.dev',
+    publicInstanceIdentity: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     version: PROPR_VERSION,
     apiCompatibility: PROPR_API_COMPATIBILITY,
     uiCompatibility: PROPR_UI_COMPATIBILITY,
@@ -233,6 +257,26 @@ test('/api/desktop/discovery adds only the stable product name to compatibility 
       socketIoBearerAuthentication: true,
     },
   });
+  assert.equal(headers()['Cache-Control'], 'no-store, max-age=0');
+  assert.equal(JSON.stringify(body()).includes('SENTINEL'), false);
+});
+
+test('/api/desktop/discovery redacts identity persistence failures', async () => {
+  configureStatusEnv();
+  process.env.API_PUBLIC_URL = 'https://t-abc123.propr.dev';
+  const { response, status, body } = createJsonResponse();
+  const routes = await createRoutes({
+    redisClient: createRedisClient() as never,
+    getPublicInstanceIdentity: () => {
+      throw new Error('/private/path includes connector-token-SENTINEL');
+    },
+  });
+
+  routes.getDesktopDiscovery({} as Request, response);
+
+  assert.equal(status(), 503);
+  assert.deepEqual(body(), { schemaVersion: 1, code: 'IDENTITY_UNAVAILABLE' });
+  assert.equal(JSON.stringify(body()).includes('SENTINEL'), false);
 });
 
 test('/api/status returns default Claude fallback when no agents are configured', async () => {

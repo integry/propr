@@ -46,7 +46,7 @@ The hosted PWA's manifest, service worker, installation, notification permission
 
 ### Compatibility check
 
-Before the hosted UI starts its normal auth/session checks, it calls the public `/api/compatibility` endpoint on the selected API origin. The endpoint returns the local stack version plus the API/UI compatibility contract. If the hosted UI cannot support that contract, it stops at a clear version-mismatch screen instead of running against incompatible endpoints or Socket.IO events. `/api/status` includes the same metadata for authenticated diagnostics.
+Before the hosted UI starts its normal auth/session checks, it calls the public `/api/compatibility` endpoint on the selected API origin. Desktop discovery uses the separately bounded, rate-limited, cache-disabled `/api/desktop/discovery` response. That response adds only the canonical managed endpoint and the stack's random public installation identity to version/capability metadata; it contains no credential or account state. If the hosted UI cannot support the compatibility contract, it stops at a clear version-mismatch screen instead of running against incompatible endpoints or Socket.IO events. `/api/status` includes the same version metadata for authenticated diagnostics.
 
 Only a **definitive** mismatch (the API reports a contract the UI knows it is too old or too new for) hard-blocks. A v1 rollout exception applies when the metadata is simply *absent* — an older API that predates `/api/compatibility` (returns 404) or returns no contract: the UI logs a console warning and continues, so an otherwise-working stack is never trapped mid-upgrade. This soft-warning fallback is temporary; once publishing the compatibility contract is a baseline expectation, missing metadata is intended to become a hard block like any other mismatch.
 
@@ -62,7 +62,7 @@ This writes the tunnel `.env` values for you (`PROPR_UI_TUNNEL_TOKEN`, `PROPR_IN
 
 ### Manual `.env` fallback
 
-For older CLI versions or manual recovery, set the same values in the stack `.env`. Replace `abc123` with your instance id (a valid DNS label: letters, digits, hyphens; 1-63 chars):
+For older CLI versions or manual recovery, set the same values in the stack `.env`. Replace `abc123` with your instance id (letters, digits, and hyphens; 1-61 chars so the complete `t-<id>` DNS label stays within 63 characters):
 
 ```bash
 # --- Hosted UI tunnel (v1, optional) ---
@@ -122,6 +122,20 @@ propr tunnel verify
 - `GET <url>/socket.io/` is reachable.
 
 It exits non-zero if any check fails. `propr status` probes `<url>/api/status` for tunnel reachability for the same reason — the root `/` and the legacy `/health` path are unrouted through the tunnel.
+
+### Secret-free desktop discovery
+
+Desktop invokes an explicit stack root; the CLI never scans for installations:
+
+```bash
+propr connect status --json --root /explicit/stack/root
+```
+
+Stdout is exactly one schema-versioned JSON document. It reports only the canonical endpoint, public installation identity, configured/enabled/sidecar/API readiness, restart requirement, compatibility/version, and bounded reason codes. `configured` means that a valid canonical endpoint exists; it deliberately says nothing about whether any credential is present. Diagnostics go to stderr. It never reports token presence or values, GitHub/account/repository identity, host details, environment contents, or filesystem paths. Exit codes are stable: `0` ready, `2` known not ready, `3` incompatible discovery/API, `4` invalid configuration/root, `5` probe timeout, and `1` internal failure.
+
+The public identity is generated randomly in the stack's durable `data/` boundary. It survives normal restart, image upgrade, and tunnel rotation. Replacing/reinitializing that durable stack data generates a new identity. A sidecar is not `apiReady` until the remote discovery response matches both the expected canonical origin and this identity; consequently, `propr tunnel on` without an API restart reports `restartRequired` instead of a false-ready endpoint.
+
+ProPR Connect permanently retires a deleted managed tunnel hostname and does not reassign it to another installation. Identity matching remains mandatory defense in depth against stale DNS, proxy configuration, restore mistakes, and any failure of that allocation guarantee.
 
 ## Troubleshooting
 
