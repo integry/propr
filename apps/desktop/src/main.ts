@@ -256,11 +256,7 @@ if (squirrelStartupHandled) {
           currentVersion: app.getVersion(),
           platform: process.platform,
           arch: process.arch,
-          fetchBytes: async url => {
-            const response = await net.fetch(url, { cache: 'no-store' });
-            if (!response.ok) throw new Error(`Update metadata request failed with HTTP ${response.status}`);
-            return Buffer.from(await response.arrayBuffer());
-          },
+          request: (url, init) => net.fetch(url, init),
         }).then(result => log('info', 'desktop.update.check_complete', { result }))
           .catch(error => log('error', 'desktop.update.check_failed', { error }));
       };

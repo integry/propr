@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -46,10 +46,36 @@ export interface SignedUpdateRuntimeConfig {
   signingIdentity: string;
 }
 
+export type SignedUpdateRequest = (url: string, init: RequestInit) => Promise<Response>;
+
+export const SIGNED_UPDATE_DOWNLOAD_LIMITS = {
+  manifestBytes: 512 * 1024,
+  signatureBytes: 1024,
+  feedBytes: 1024 * 1024,
+  // Desktop packages should remain far below this; the cap bounds disk use even for signed misconfiguration.
+  artifactBytes: 1024 * 1024 * 1024,
+  metadataTimeoutMs: 30_000,
+  artifactTimeoutMs: 10 * 60_000,
+} as const;
+
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const TARGET_PATTERN = /^(darwin|win32)-(x64|arm64)$/;
 const execFileAsync = promisify(execFile);
+
+interface ExpectedDownloadBytes {
+  size: number;
+  sha256: string;
+}
+
+interface BoundedDownloadOptions {
+  request: SignedUpdateRequest;
+  url: string;
+  label: string;
+  maxBytes: number;
+  timeoutMs: number;
+  expected?: ExpectedDownloadBytes;
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -94,6 +120,12 @@ const parseFeed = (value: unknown, target: string, version: string): SignedUpdat
   }
   const feed = parseBytes(value.feed, `${label} metadata`);
   const parsedArtifact = parseBytes(value.artifact, `${label} artifact`);
+  if (feed.size > SIGNED_UPDATE_DOWNLOAD_LIMITS.feedBytes) {
+    throw new Error(`${label} metadata exceeds the runtime download limit`);
+  }
+  if (parsedArtifact.size > SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes) {
+    throw new Error(`${label} artifact exceeds the runtime download limit`);
+  }
   if (!isRecord(value.artifact)
     || typeof value.artifact.fileName !== 'string'
     || basename(value.artifact.fileName) !== value.artifact.fileName
@@ -214,6 +246,161 @@ const verifyBytes = (bytes: Buffer, expected: SignedUpdateBytes, label: string):
   if (actualHash !== expected.sha256) throw new Error(`${label} SHA-256 does not match the signed manifest`);
 };
 
+const responseContentLength = (response: Response, label: string): number | undefined => {
+  const header = response.headers.get('content-length');
+  if (header === null) return undefined;
+  if (!/^(0|[1-9]\d*)$/.test(header)) throw new Error(`${label} has an invalid Content-Length header`);
+  const length = Number(header);
+  if (!Number.isSafeInteger(length)) throw new Error(`${label} has an invalid Content-Length header`);
+  return length;
+};
+
+const validateDownloadResponse = (
+  requestedUrl: string,
+  response: Response,
+  label: string,
+  maxBytes: number,
+  expected?: ExpectedDownloadBytes,
+): void => {
+  const requested = new URL(requestedUrl);
+  let finalUrl: URL;
+  try {
+    finalUrl = new URL(response.url);
+  } catch {
+    throw new Error(`${label} response has no valid final URL`);
+  }
+  if (finalUrl.protocol !== 'https:' || finalUrl.username || finalUrl.password || finalUrl.origin !== requested.origin) {
+    throw new Error(`${label} response redirected outside its signed HTTPS origin`);
+  }
+
+  const contentLength = responseContentLength(response, label);
+  if (contentLength !== undefined && contentLength > maxBytes) {
+    throw new Error(`${label} Content-Length exceeds the runtime download limit`);
+  }
+  if (contentLength !== undefined && expected && contentLength !== expected.size) {
+    throw new Error(`${label} Content-Length does not match the signed size`);
+  }
+  if (!response.ok) throw new Error(`${label} request failed with HTTP ${response.status}`);
+};
+
+const withBoundedResponse = async <T>(
+  options: BoundedDownloadOptions,
+  consume: (response: Response, signal: AbortSignal) => Promise<T>,
+): Promise<T> => {
+  const { request, url, label, maxBytes, timeoutMs, expected } = options;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  let response: Response | undefined;
+  try {
+    response = await request(url, {
+      cache: 'no-store',
+      credentials: 'omit',
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    validateDownloadResponse(url, response, label, maxBytes, expected);
+    return await consume(response, controller.signal);
+  } catch (error) {
+    controller.abort();
+    if (response?.body && !response.body.locked) await response.body.cancel().catch(() => undefined);
+    if (timedOut) throw new Error(`${label} request timed out and was aborted`);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const consumeResponse = async (
+  response: Response,
+  signal: AbortSignal,
+  { label, maxBytes, expected }: Pick<BoundedDownloadOptions, 'label' | 'maxBytes' | 'expected'>,
+  consumeChunk: (chunk: Uint8Array) => Promise<void> | void,
+): Promise<void> => {
+  if (!response.body) {
+    if (expected?.size) throw new Error(`${label} size does not match the signed size`);
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const hash = expected ? createHash('sha256') : undefined;
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (signal.aborted) throw signal.reason;
+      if (!value?.byteLength) continue;
+      received += value.byteLength;
+      if (received > maxBytes || (expected && received > expected.size)) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`${label} received bytes exceed the runtime download limit`);
+      }
+      hash?.update(value);
+      await consumeChunk(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (expected && received !== expected.size) throw new Error(`${label} size does not match the signed size`);
+  if (expected && hash?.digest('hex') !== expected.sha256) {
+    throw new Error(`${label} SHA-256 does not match the signed manifest`);
+  }
+};
+
+export const fetchBoundedUpdateBytes = async (options: BoundedDownloadOptions): Promise<Buffer> => {
+  if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes <= 0) {
+    throw new Error(`${options.label} runtime download limit is invalid`);
+  }
+  if (options.expected && options.expected.size > options.maxBytes) {
+    throw new Error(`${options.label} signed size exceeds the runtime download limit`);
+  }
+
+  return withBoundedResponse(options, async (response, signal) => {
+    const bytes = Buffer.alloc(options.expected?.size ?? options.maxBytes);
+    let offset = 0;
+    await consumeResponse(response, signal, options, chunk => {
+      Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).copy(bytes, offset);
+      offset += chunk.byteLength;
+    });
+    return bytes.subarray(0, offset);
+  });
+};
+
+export const downloadBoundedUpdateFile = async (
+  options: BoundedDownloadOptions & { destinationPath: string; expected: ExpectedDownloadBytes },
+): Promise<void> => {
+  if (options.expected.size > options.maxBytes) {
+    throw new Error(`${options.label} signed size exceeds the runtime download limit`);
+  }
+
+  let file;
+  try {
+    file = await open(options.destinationPath, 'wx', 0o600);
+    await withBoundedResponse(options, async (response, signal) => {
+      await consumeResponse(response, signal, options, async chunk => {
+        const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const { bytesWritten } = await file!.write(bytes, offset, bytes.length - offset);
+          offset += bytesWritten;
+        }
+      });
+    });
+    await file.close();
+    file = undefined;
+  } catch (error) {
+    await file?.close().catch(() => undefined);
+    await rm(options.destinationPath, { force: true });
+    throw error;
+  }
+};
+
 const verifyFeedReferencesArtifact = (
   target: string,
   version: string,
@@ -241,15 +428,13 @@ const verifyFeedReferencesArtifact = (
 };
 
 export const verifyNativeUpdateSigner = async (
-  artifactBytes: Buffer,
+  packagePath: string,
   artifact: SignedUpdateArtifact,
   expected: SignedUpdateSigner,
 ): Promise<SignedUpdateSigner> => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-update-check-'));
   try {
-    const packagePath = join(directory, artifact.fileName);
     const extracted = join(directory, 'extracted');
-    await writeFile(packagePath, artifactBytes, { mode: 0o600 });
     if (expected.type === 'apple-team-id') {
       await execFileAsync('/usr/bin/ditto', ['-x', '-k', packagePath, extracted]);
       const { stdout: appPath } = await execFileAsync('/usr/bin/find', [extracted, '-type', 'd', '-name', '*.app', '-print', '-quit']);
@@ -296,16 +481,16 @@ export const checkForSignedUpdates = async ({
   currentVersion,
   platform,
   arch,
-  fetchBytes,
+  request,
   verifyNativeSigner = verifyNativeUpdateSigner,
 }: {
   config: SignedUpdateRuntimeConfig;
   currentVersion: string;
   platform: NodeJS.Platform;
   arch: string;
-  fetchBytes: (url: string) => Promise<Buffer>;
+  request: SignedUpdateRequest;
   verifyNativeSigner?: (
-    bytes: Buffer,
+    packagePath: string,
     artifact: SignedUpdateArtifact,
     signer: SignedUpdateSigner,
   ) => Promise<SignedUpdateSigner>;
@@ -319,8 +504,20 @@ export const checkForSignedUpdates = async ({
     { allowQuery: false },
   );
   const [payload, signature] = await Promise.all([
-    fetchBytes(manifestUrl),
-    fetchBytes(`${manifestUrl}.sig`),
+    fetchBoundedUpdateBytes({
+      request,
+      url: manifestUrl,
+      label: 'Signed update manifest',
+      maxBytes: SIGNED_UPDATE_DOWNLOAD_LIMITS.manifestBytes,
+      timeoutMs: SIGNED_UPDATE_DOWNLOAD_LIMITS.metadataTimeoutMs,
+    }),
+    fetchBoundedUpdateBytes({
+      request,
+      url: `${manifestUrl}.sig`,
+      label: 'Signed update manifest signature',
+      maxBytes: SIGNED_UPDATE_DOWNLOAD_LIMITS.signatureBytes,
+      timeoutMs: SIGNED_UPDATE_DOWNLOAD_LIMITS.metadataTimeoutMs,
+    }),
   ]);
   const manifest = verifySignedUpdateManifest(payload, signature.toString('ascii'), config.publicKey);
   if (manifest.manifestUrl !== manifestUrl) {
@@ -338,16 +535,36 @@ export const checkForSignedUpdates = async ({
     throw new Error('Signed update native signer does not match the identity embedded in this build');
   }
 
-  const feedBytes = await fetchBytes(feed.feed.url);
+  const feedBytes = await fetchBoundedUpdateBytes({
+    request,
+    url: feed.feed.url,
+    label: 'Native update feed',
+    maxBytes: SIGNED_UPDATE_DOWNLOAD_LIMITS.feedBytes,
+    timeoutMs: SIGNED_UPDATE_DOWNLOAD_LIMITS.metadataTimeoutMs,
+    expected: feed.feed,
+  });
   verifyBytes(feedBytes, feed.feed, 'Native update feed');
   verifyFeedReferencesArtifact(target, manifest.version, feedBytes, feed.artifact);
-  const artifactBytes = await fetchBytes(feed.artifact.url);
-  verifyBytes(artifactBytes, feed.artifact, 'Native update artifact');
-  const actualSigner = await verifyNativeSigner(artifactBytes, feed.artifact, feed.signer);
-  if (actualSigner.type !== feed.signer.type
-    || actualSigner.identity !== feed.signer.identity
-    || actualSigner.designatedRequirement !== feed.signer.designatedRequirement) {
-    throw new Error('Native update artifact signer does not match the signed build pin');
+  const directory = await mkdtemp(join(tmpdir(), 'propr-update-download-'));
+  try {
+    const packagePath = join(directory, feed.artifact.fileName);
+    await downloadBoundedUpdateFile({
+      request,
+      url: feed.artifact.url,
+      destinationPath: packagePath,
+      label: 'Native update artifact',
+      maxBytes: SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes,
+      timeoutMs: SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactTimeoutMs,
+      expected: feed.artifact,
+    });
+    const actualSigner = await verifyNativeSigner(packagePath, feed.artifact, feed.signer);
+    if (actualSigner.type !== feed.signer.type
+      || actualSigner.identity !== feed.signer.identity
+      || actualSigner.designatedRequirement !== feed.signer.designatedRequirement) {
+      throw new Error('Native update artifact signer does not match the signed build pin');
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 
   // Electron autoUpdater cannot install these preverified bytes without fetching the mutable feed again.

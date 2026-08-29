@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   checkForSignedUpdates,
+  downloadBoundedUpdateFile,
+  fetchBoundedUpdateBytes,
+  SIGNED_UPDATE_DOWNLOAD_LIMITS,
   type SignedUpdateManifest,
+  type SignedUpdateRequest,
   verifySignedUpdateManifest,
 } from './signed-updates';
 
@@ -44,11 +51,32 @@ const signed = (value: unknown = manifest) => {
   return { payload, signature: sign(null, payload, keys.privateKey).toString('base64') };
 };
 
-const fetcher = (payload: Buffer, signature: string, overrides: Record<string, Buffer> = {}) => async (url: string) => {
-  if (url.endsWith('desktop-release.json.sig')) return Buffer.from(signature);
-  if (url.endsWith('desktop-release.json')) return payload;
-  if (url === manifest.feeds['win32-x64'].feed.url) return overrides.feed ?? feed;
-  if (url === artifactUrl) return overrides.artifact ?? artifact;
+const response = (
+  url: string,
+  chunks: Uint8Array[],
+  { headers, status = 200 }: { headers?: HeadersInit; status?: number } = {},
+): Response => {
+  const value = new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  }), { headers, status });
+  Object.defineProperty(value, 'url', { value: url });
+  return value;
+};
+
+const byteResponse = (url: string, value: Buffer): Response => response(
+  url,
+  [value],
+  { headers: { 'content-length': String(value.length) } },
+);
+
+const fetcher = (payload: Buffer, signature: string, overrides: Record<string, Buffer> = {}): SignedUpdateRequest => async (url: string) => {
+  if (url.endsWith('desktop-release.json.sig')) return byteResponse(url, Buffer.from(signature));
+  if (url.endsWith('desktop-release.json')) return byteResponse(url, payload);
+  if (url === manifest.feeds['win32-x64'].feed.url) return byteResponse(url, overrides.feed ?? feed);
+  if (url === artifactUrl) return byteResponse(url, overrides.artifact ?? artifact);
   throw new Error(`Unexpected URL ${url}`);
 };
 
@@ -68,22 +96,35 @@ describe('signed desktop updates', () => {
     );
   });
 
+  test('rejects a signed artifact size above the global runtime limit', () => {
+    const oversized = structuredClone(manifest);
+    oversized.feeds['win32-x64'].artifact.size = SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes + 1;
+    const release = signed(oversized);
+    assert.throws(
+      () => verifySignedUpdateManifest(release.payload, release.signature, publicKey),
+      /artifact exceeds the runtime download limit/,
+    );
+  });
+
   test('checks exact feed, artifact, and native signer without invoking Electron autoUpdater', async () => {
     const release = signed();
     let verifiedBytes: Buffer | undefined;
+    let verifiedPath: string | undefined;
     const result = await checkForSignedUpdates({
       config,
       currentVersion: '1.2.3',
       platform: 'win32',
       arch: 'x64',
-      fetchBytes: fetcher(release.payload, release.signature),
-      verifyNativeSigner: async value => {
-        verifiedBytes = value;
+      request: fetcher(release.payload, release.signature),
+      verifyNativeSigner: async packagePath => {
+        verifiedPath = packagePath;
+        verifiedBytes = await readFile(packagePath);
         return { type: 'authenticode-subject', identity: 'CN=Example Publisher' };
       },
     });
     assert.equal(result, 'available');
-    assert.equal(verifiedBytes, artifact);
+    assert.deepEqual(verifiedBytes, artifact);
+    await assert.rejects(access(verifiedPath!));
   });
 
   test('rejects tampered native feed bytes', async () => {
@@ -96,7 +137,7 @@ describe('signed desktop updates', () => {
         currentVersion: '1.2.3',
         platform: 'win32',
         arch: 'x64',
-        fetchBytes: fetcher(release.payload, release.signature, { feed: tamperedFeed }),
+        request: fetcher(release.payload, release.signature, { feed: tamperedFeed }),
         verifyNativeSigner: async () => assert.fail('must not inspect a package from a tampered feed'),
       }),
       /feed SHA-256/i,
@@ -113,7 +154,7 @@ describe('signed desktop updates', () => {
         currentVersion: '1.2.3',
         platform: 'win32',
         arch: 'x64',
-        fetchBytes: fetcher(release.payload, release.signature, { artifact: tamperedArtifact }),
+        request: fetcher(release.payload, release.signature, { artifact: tamperedArtifact }),
         verifyNativeSigner: async () => assert.fail('must not inspect a tampered package'),
       }),
       /artifact SHA-256/i,
@@ -122,17 +163,22 @@ describe('signed desktop updates', () => {
 
   test('rejects the actual native signer when it differs from the signed build pin', async () => {
     const release = signed();
+    let inspectedPath: string | undefined;
     await assert.rejects(
       checkForSignedUpdates({
         config,
         currentVersion: '1.2.3',
         platform: 'win32',
         arch: 'x64',
-        fetchBytes: fetcher(release.payload, release.signature),
-        verifyNativeSigner: async () => ({ type: 'authenticode-subject', identity: 'CN=Attacker' }),
+        request: fetcher(release.payload, release.signature),
+        verifyNativeSigner: async packagePath => {
+          inspectedPath = packagePath;
+          return { type: 'authenticode-subject', identity: 'CN=Attacker' };
+        },
       }),
       /artifact signer does not match/,
     );
+    await assert.rejects(access(inspectedPath!));
   });
 
   test('rejects wrong target, version, and architecture bindings', async () => {
@@ -145,7 +191,7 @@ describe('signed desktop updates', () => {
         currentVersion: '1.2.3',
         platform: 'win32',
         arch: 'x64',
-        fetchBytes: fetcher(targetRelease.payload, targetRelease.signature),
+        request: fetcher(targetRelease.payload, targetRelease.signature),
       }),
       /exact target and version/,
     );
@@ -159,7 +205,7 @@ describe('signed desktop updates', () => {
         currentVersion: '1.2.3',
         platform: 'win32',
         arch: 'x64',
-        fetchBytes: fetcher(versionRelease.payload, versionRelease.signature),
+        request: fetcher(versionRelease.payload, versionRelease.signature),
       }),
       /exact target and version/,
     );
@@ -171,7 +217,7 @@ describe('signed desktop updates', () => {
         currentVersion: '1.2.3',
         platform: 'win32',
         arch: 'arm64',
-        fetchBytes: fetcher(release.payload, release.signature),
+        request: fetcher(release.payload, release.signature),
       }),
       /does not contain a feed for win32-arm64/,
     );
@@ -184,7 +230,7 @@ describe('signed desktop updates', () => {
         currentVersion: '1.2.3',
         platform: 'win32',
         arch: 'x64',
-        fetchBytes: async () => assert.fail('query-bearing manifest URL must not be fetched'),
+        request: async () => assert.fail('query-bearing manifest URL must not be fetched'),
       }),
       /without credentials, a fragment, or a query/,
     );
@@ -193,24 +239,127 @@ describe('signed desktop updates', () => {
   test('does not fetch update bytes for current or unsupported builds', async () => {
     const release = signed();
     let artifactFetched = false;
-    const currentFetcher = async (url: string) => {
+    const currentFetcher: SignedUpdateRequest = async (url, init) => {
       if (!url.includes('desktop-release.json')) artifactFetched = true;
-      return fetcher(release.payload, release.signature)(url);
+      return fetcher(release.payload, release.signature)(url, init);
     };
     assert.equal(await checkForSignedUpdates({
       config,
       currentVersion: '1.2.4',
       platform: 'win32',
       arch: 'x64',
-      fetchBytes: currentFetcher,
+      request: currentFetcher,
     }), 'current');
     assert.equal(await checkForSignedUpdates({
       config,
       currentVersion: '1.2.3',
       platform: 'linux',
       arch: 'x64',
-      fetchBytes: async () => assert.fail('unsupported builds must not fetch metadata'),
+      request: async () => assert.fail('unsupported builds must not fetch metadata'),
     }), 'unsupported');
     assert.equal(artifactFetched, false);
+  });
+});
+
+describe('signed update download boundary', () => {
+  const url = 'https://updates.example.test/update.bin';
+
+  test('aborts before reading a response with an oversized Content-Length', async () => {
+    let signal: AbortSignal | undefined;
+    const request: SignedUpdateRequest = async (requestedUrl, init) => {
+      signal = init.signal as AbortSignal;
+      return response(requestedUrl, [Buffer.from('ignored')], {
+        headers: { 'content-length': '6' },
+      });
+    };
+    await assert.rejects(
+      fetchBoundedUpdateBytes({ request, url, label: 'Test metadata', maxBytes: 5, timeoutMs: 1_000 }),
+      /Content-Length exceeds/,
+    );
+    assert.equal(signal?.aborted, true);
+  });
+
+  test('aborts a chunked response as soon as received bytes overflow the limit', async () => {
+    let signal: AbortSignal | undefined;
+    const request: SignedUpdateRequest = async (requestedUrl, init) => {
+      signal = init.signal as AbortSignal;
+      return response(requestedUrl, [Buffer.from('abc'), Buffer.from('def')]);
+    };
+    await assert.rejects(
+      fetchBoundedUpdateBytes({ request, url, label: 'Test metadata', maxBytes: 5, timeoutMs: 1_000 }),
+      /received bytes exceed/,
+    );
+    assert.equal(signal?.aborted, true);
+  });
+
+  test('aborts a stalled request at its timeout', async () => {
+    let signal: AbortSignal | undefined;
+    const request: SignedUpdateRequest = async (_requestedUrl, init) => new Promise((_resolve, reject) => {
+      signal = init.signal as AbortSignal;
+      signal.addEventListener('abort', () => reject(signal?.reason), { once: true });
+    });
+    await assert.rejects(
+      fetchBoundedUpdateBytes({ request, url, label: 'Test metadata', maxBytes: 5, timeoutMs: 10 }),
+      /timed out and was aborted/,
+    );
+    assert.equal(signal?.aborted, true);
+  });
+
+  test('removes a partial artifact when a chunked response is undersized', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-update-boundary-test-'));
+    const destinationPath = join(directory, 'update.bin');
+    try {
+      const request: SignedUpdateRequest = async requestedUrl => response(requestedUrl, [Buffer.from('four')]);
+      await assert.rejects(
+        downloadBoundedUpdateFile({
+          request,
+          url,
+          destinationPath,
+          label: 'Test artifact',
+          maxBytes: 10,
+          timeoutMs: 1_000,
+          expected: { size: 5, sha256: createHash('sha256').update('wrong').digest('hex') },
+        }),
+        /size does not match the signed size/,
+      );
+      await assert.rejects(access(destinationPath));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('streams an exact-size artifact to one file and verifies its SHA-256', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-update-boundary-test-'));
+    const destinationPath = join(directory, 'update.bin');
+    const exact = Buffer.from('exact artifact bytes');
+    try {
+      const request: SignedUpdateRequest = async requestedUrl => response(
+        requestedUrl,
+        [exact.subarray(0, 5), exact.subarray(5)],
+      );
+      await downloadBoundedUpdateFile({
+        request,
+        url,
+        destinationPath,
+        label: 'Test artifact',
+        maxBytes: 100,
+        timeoutMs: 1_000,
+        expected: bytes(url, exact),
+      });
+      assert.deepEqual(await readFile(destinationPath), exact);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a cross-origin final redirect URL', async () => {
+    const request: SignedUpdateRequest = async () => response(
+      'https://cdn.example.test/update.bin',
+      [Buffer.from('bytes')],
+    );
+    await assert.rejects(
+      fetchBoundedUpdateBytes({ request, url, label: 'Test metadata', maxBytes: 10, timeoutMs: 1_000 }),
+      /redirected outside its signed HTTPS origin/,
+    );
   });
 });
