@@ -286,6 +286,20 @@ describe('DesktopExperience', () => {
     expect(adapters.profiles.remove).toHaveBeenCalledWith(remoteProfile.id);
   });
 
+  it('reconnects after authentication completes and advances to the connected app', async () => {
+    const probe = vi.fn()
+      .mockResolvedValueOnce({ status: 'authentication-required', message: 'Please sign in.' })
+      .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' });
+    const adapters = adaptersFor([remoteProfile], remoteProfile.id, probe);
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Sign in in browser/i }));
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(adapters.authentication.authenticate).toHaveBeenCalledWith(remoteProfile);
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
   it('reports rejected authentication and connection-help operations in the blocked panel', async () => {
     const adapters = adaptersFor(
       [remoteProfile],
