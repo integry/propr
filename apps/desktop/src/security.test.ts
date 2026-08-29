@@ -85,6 +85,25 @@ describe('desktop URL security', () => {
     assert.equal(normalizeDesktopDashboardPath('/tasks?status=open#recent'), '/tasks?status=open#recent');
   });
 
+  it('revalidates open links after canonical serialization', () => {
+    const rawPath = `/tasks/${'é '.repeat(300)}end`;
+    const rawLink = `propr://open?path=${rawPath}`;
+    const expandedCanonicalLink = new URL(rawLink).href;
+    assert.ok(rawLink.length < 2_048);
+    assert.ok(expandedCanonicalLink.length > 2_048);
+    assert.notEqual(dashboardPathFromDeepLink(rawLink), null);
+    assert.equal(dashboardPathFromDeepLink(expandedCanonicalLink), null);
+    assert.equal(normalizeDeepLink(rawLink), null);
+
+    const canonicalPrefix = 'propr://open?path=%2Ftasks%2F';
+    const suffix = 'a'.repeat(2_048 - canonicalPrefix.length);
+    const boundaryCanonicalLink = `${canonicalPrefix}${suffix}`;
+    assert.equal(boundaryCanonicalLink.length, 2_048);
+    assert.equal(new URL(boundaryCanonicalLink).href, boundaryCanonicalLink);
+    assert.equal(dashboardPathFromDeepLink(boundaryCanonicalLink), `/tasks/${suffix}`);
+    assert.equal(normalizeDeepLink(boundaryCanonicalLink), boundaryCanonicalLink);
+  });
+
   it('rejects encoded delimiters combined with encoded traversal', () => {
     const rejectedPaths = [
       '/tasks%23/%2e%2e/login',
