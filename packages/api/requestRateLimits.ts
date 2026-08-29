@@ -15,12 +15,18 @@ interface RequestRateLimitPolicy {
 export interface RequestRateLimitPolicies {
   api: RequestRateLimitPolicy;
   auth: RequestRateLimitPolicy;
+  discovery: RequestRateLimitPolicy;
+  pairingStart: RequestRateLimitPolicy;
+  pairingPoll: RequestRateLimitPolicy;
   webhook: RequestRateLimitPolicy;
 }
 
 const DEFAULT_POLICIES: RequestRateLimitPolicies = {
   api: { identifier: 'api', limit: 600, windowMs: 60_000 },
   auth: { identifier: 'auth', limit: 30, windowMs: 15 * 60_000 },
+  discovery: { identifier: 'desktop-discovery', limit: 60, windowMs: 60_000 },
+  pairingStart: { identifier: 'desktop-pairing-start', limit: 10, windowMs: 15 * 60_000 },
+  pairingPoll: { identifier: 'desktop-pairing-poll', limit: 180, windowMs: 15 * 60_000 },
   webhook: { identifier: 'webhook', limit: 300, windowMs: 60_000 },
 };
 
@@ -101,6 +107,21 @@ export function resolveRequestRateLimitPolicies(
       limit: positiveInteger(environment, 'PROPR_AUTH_RATE_LIMIT_MAX', DEFAULT_POLICIES.auth.limit),
       windowMs: windowMilliseconds(environment, 'PROPR_AUTH_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.auth.windowMs),
     },
+    discovery: {
+      identifier: 'desktop-discovery',
+      limit: positiveInteger(environment, 'PROPR_DISCOVERY_RATE_LIMIT_MAX', DEFAULT_POLICIES.discovery.limit),
+      windowMs: windowMilliseconds(environment, 'PROPR_DISCOVERY_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.discovery.windowMs),
+    },
+    pairingStart: {
+      identifier: 'desktop-pairing-start',
+      limit: positiveInteger(environment, 'PROPR_PAIRING_START_RATE_LIMIT_MAX', DEFAULT_POLICIES.pairingStart.limit),
+      windowMs: windowMilliseconds(environment, 'PROPR_PAIRING_START_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.pairingStart.windowMs),
+    },
+    pairingPoll: {
+      identifier: 'desktop-pairing-poll',
+      limit: positiveInteger(environment, 'PROPR_PAIRING_POLL_RATE_LIMIT_MAX', DEFAULT_POLICIES.pairingPoll.limit),
+      windowMs: windowMilliseconds(environment, 'PROPR_PAIRING_POLL_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.pairingPoll.windowMs),
+    },
     webhook: {
       identifier: 'webhook',
       limit: positiveInteger(environment, 'PROPR_WEBHOOK_RATE_LIMIT_MAX', DEFAULT_POLICIES.webhook.limit),
@@ -155,6 +176,24 @@ export function createAuthRequestRateLimiter(
   environment: RateLimitEnvironment = process.env,
 ): RateLimitRequestHandler {
   return createRequestRateLimiter(resolveRequestRateLimitPolicies(environment).auth);
+}
+
+export function createDiscoveryRequestRateLimiter(
+  environment: RateLimitEnvironment = process.env,
+): RateLimitRequestHandler {
+  return createRequestRateLimiter(resolveRequestRateLimitPolicies(environment).discovery);
+}
+
+export function createPairingStartRateLimiter(
+  environment: RateLimitEnvironment = process.env,
+): RateLimitRequestHandler {
+  return createRequestRateLimiter(resolveRequestRateLimitPolicies(environment).pairingStart);
+}
+
+export function createPairingPollRateLimiter(
+  environment: RateLimitEnvironment = process.env,
+): RateLimitRequestHandler {
+  return createRequestRateLimiter(resolveRequestRateLimitPolicies(environment).pairingPoll);
 }
 
 export function createWebhookRequestRateLimiter(

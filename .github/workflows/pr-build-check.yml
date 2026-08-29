@@ -328,6 +328,7 @@ jobs:
               - 'packages/shared/**'
             ui:
               - 'propr-ui/**'
+              - 'packages/client/**'
               - 'packages/shared/**'
             docs:
               - 'docs/**'
@@ -443,6 +444,18 @@ jobs:
               echo "$SHARED_OUTPUT" >> build_log.txt
               UI_FAILED=1
               EXIT_CODE=1
+            fi
+
+            if [ $UI_FAILED -eq 0 ]; then
+              CLIENT_OUTPUT=$(npm run typecheck -w @propr/client 2>&1 && npm test -w @propr/client 2>&1 && npm run build -w @propr/client 2>&1) || {
+                echo "❌ Client Package Validation FAILED (UI transport dependency)" >> build_log.txt
+                echo "$CLIENT_OUTPUT" >> build_log.txt
+                UI_FAILED=1
+                EXIT_CODE=1
+              }
+              if [ $UI_FAILED -eq 0 ]; then
+                echo "✅ Client Package validation passed" >> build_log.txt
+              fi
             fi
 
             if [ $UI_FAILED -eq 0 ]; then

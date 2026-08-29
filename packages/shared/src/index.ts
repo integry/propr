@@ -148,6 +148,7 @@ export {
   getProprCompatibilityMetadata,
   evaluateProprApiCompatibility,
   type ProprCompatibilityMetadata,
+  type ProprDesktopAuthenticationCapabilities,
   type ProprApiCompatibilityInput,
   type ProprApiCompatibilityResult,
 } from './proprCompatibility.js';

@@ -18,6 +18,14 @@ export interface ProprCompatibilityMetadata {
   version: string;
   apiCompatibility: string;
   uiCompatibility: string;
+  desktopAuthentication: ProprDesktopAuthenticationCapabilities;
+}
+
+export interface ProprDesktopAuthenticationCapabilities {
+  protocolVersion: 1;
+  browserPairing: boolean;
+  instanceBearerTokens: boolean;
+  socketIoBearerAuthentication: boolean;
 }
 
 export interface ProprApiCompatibilityInput {
@@ -39,11 +47,17 @@ export type ProprApiCompatibilityResult =
       message: string;
     };
 
-export function getProprCompatibilityMetadata(): ProprCompatibilityMetadata {
+export function getProprCompatibilityMetadata(desktopAuthenticationEnabled = true): ProprCompatibilityMetadata {
   return {
     version: PROPR_VERSION,
     apiCompatibility: PROPR_API_COMPATIBILITY,
     uiCompatibility: PROPR_UI_COMPATIBILITY,
+    desktopAuthentication: {
+      protocolVersion: 1,
+      browserPairing: desktopAuthenticationEnabled,
+      instanceBearerTokens: desktopAuthenticationEnabled,
+      socketIoBearerAuthentication: desktopAuthenticationEnabled,
+    },
   };
 }
 
