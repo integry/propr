@@ -13,7 +13,7 @@ const DEFINITIVE_INVALID_CODES = new Set([
 export interface CredentialServiceDependencies {
   profiles: Pick<ProfileStore,
     'list' | 'save' | 'remove' | 'setActive' | 'security'
-    | 'readCredential' | 'writeCredential' | 'removeCredential'>;
+    | 'readCredential' | 'writeCredential' | 'removeCredential' | 'removeCredentialIfCurrent'>;
   fetch: typeof globalThis.fetch;
   openExternal(url: string): Promise<void>;
   clientName: string;
@@ -252,8 +252,19 @@ export class DesktopCredentialService {
 
     const code = await parseCode(response);
     if (code && DEFINITIVE_INVALID_CODES.has(code)) {
-      await this.#profiles.removeCredential(input.id);
-      if (this.#active?.profileId === input.id) this.#active = null;
+      const removed = await this.#profiles.removeCredentialIfCurrent(
+        credential,
+        origin,
+        () => this.#generation(input.id!) === operationGeneration
+          && this.#selectionGeneration === operationSelection,
+      );
+      if (!removed) {
+        return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
+      }
+      if (this.#active?.profileId === input.id
+        && this.#active.profileGeneration === operationGeneration
+        && this.#active.origin === credential.origin
+        && this.#active.token === credential.token) this.#active = null;
       return {
         status: 'authentication-required',
         message: 'Access to this instance was revoked or expired. Pair again to continue.',

@@ -37,6 +37,11 @@ const credential = (profileId: string, origin: string, character: string): Store
   origin,
   token: token(character),
 });
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(settle => { resolve = settle; });
+  return { promise, resolve };
+};
 
 const createStore = async (): Promise<ProfileStore> => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
@@ -172,6 +177,111 @@ describe('main-process desktop credential service', () => {
     assert.equal(requests.some(request => request.url === 'https://a.example.test/api/desktop/tokens/current'
       && request.authorization === `Bearer ${token('A')}`), true);
     assert.equal(await store.readCredential(profile.id), null);
+  });
+
+  it('preserves a re-paired credential and current connection after a stale definitive probe response', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    const oldCredential = credential(profile.id, profile.apiBaseUrl, 'A');
+    const replacement = credential(profile.id, profile.apiBaseUrl, 'B');
+    await store.writeCredential(oldCredential);
+    const oldProbeResponse = deferred<Response>();
+    const oldProbePending = deferred<void>();
+    const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        const authorization = new Headers(init?.headers).get('Authorization');
+        if (url.endsWith('/api/desktop/discovery')) return json(discovery);
+        if (url.endsWith('/api/desktop/pairings')) return json({
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'C'.repeat(43),
+          approvalUrl: 'https://a.example.test/approve',
+          expiresAt: new Date(pairingNow + 10_000).toISOString(),
+          interval: 1,
+        }, 201);
+        if (url.endsWith('/poll')) {
+          return json({ status: 'complete', token: replacement.token, tokenType: 'Bearer', expiresAt: null });
+        }
+        if (url.endsWith('/api/auth/user') && authorization === `Bearer ${oldCredential.token}`) {
+          oldProbePending.resolve();
+          return oldProbeResponse.promise;
+        }
+        if (url.endsWith('/api/auth/user') && authorization === `Bearer ${replacement.token}`) {
+          return json({ username: 'replacement' });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+
+    const staleProbe = service.probe({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    await oldProbePending.promise;
+    await service.pair({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    const current = await service.probe({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    assert.equal(current.status, 'ready');
+
+    oldProbeResponse.resolve(json({ code: 'INVALID_INSTANCE_TOKEN' }, 401));
+    const staleResult = await staleProbe;
+
+    assert.equal(staleResult.status, 'offline');
+    assert.match(staleResult.message, /connection changed.*try again/i);
+    assert.deepEqual(await store.readCredential(profile.id), replacement);
+    assert.deepEqual(service.authorizeRequest('https://a.example.test/api/tasks', {}), {
+      Authorization: `Bearer ${replacement.token}`,
+    });
+  });
+
+  it('preserves a replacement credential at a changed origin after a stale definitive probe response', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    const oldCredential = credential(profile.id, profile.apiBaseUrl, 'A');
+    const replacement = credential(profile.id, 'https://b.example.test', 'B');
+    await store.writeCredential(oldCredential);
+    const oldProbeResponse = deferred<Response>();
+    const oldProbePending = deferred<void>();
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        const authorization = new Headers(init?.headers).get('Authorization');
+        if (url.endsWith('/api/desktop/discovery')) return json(discovery);
+        if (url === 'https://a.example.test/api/desktop/tokens/current') return new Response(null, { status: 204 });
+        if (url.endsWith('/api/auth/user') && authorization === `Bearer ${oldCredential.token}`) {
+          oldProbePending.resolve();
+          return oldProbeResponse.promise;
+        }
+        if (url === 'https://b.example.test/api/auth/user'
+          && authorization === `Bearer ${replacement.token}`) return json({ username: 'replacement' });
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+
+    const staleProbe = service.probe({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    await oldProbePending.promise;
+    const changed = await service.saveProfile({
+      id: profile.id,
+      label: profile.label,
+      apiBaseUrl: replacement.origin,
+    });
+    await store.writeCredential(replacement);
+    const current = await service.probe({ id: changed.id, label: changed.label, apiBaseUrl: changed.apiBaseUrl });
+    assert.equal(current.status, 'ready');
+
+    oldProbeResponse.resolve(json({ code: 'INVALID_INSTANCE_TOKEN' }, 401));
+    const staleResult = await staleProbe;
+
+    assert.equal(staleResult.status, 'offline');
+    assert.match(staleResult.message, /connection changed.*try again/i);
+    assert.deepEqual(await store.readCredential(profile.id), replacement);
+    assert.deepEqual(service.authorizeRequest('https://b.example.test/api/tasks', {}), {
+      Authorization: `Bearer ${replacement.token}`,
+    });
   });
 
   it('ignores delayed A invalidation after B connects and preserves tokens for authorization/transient codes', async () => {

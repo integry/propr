@@ -22,6 +22,15 @@ const discovery = {
 };
 const protocolNow = Date.parse('2026-01-01T00:00:00.000Z');
 const protocolDeadline = new Date(protocolNow + 10 * 60 * 1000).toISOString();
+const bounded = <T>(promise: Promise<T>, milliseconds = 1_000): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('Pairing did not settle within the test timeout')), milliseconds);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+};
 
 describe('desktop instance protocol', () => {
   it('discovers capabilities, opens approval, and polls to a single opaque token', async () => {
@@ -95,6 +104,66 @@ describe('desktop instance protocol', () => {
       }, { signal: controller.signal })),
       (error: unknown) => error instanceof ProprClientError && error.kind === 'aborted',
     );
+  });
+
+  it('expires while the approval callback is still pending and ignores its late completion', async () => {
+    const { completeDesktopPairing } = await import('../src/index.js');
+    let finishApproval!: () => void;
+    let polls = 0;
+    const approvalStarted = new Promise<void>(resolve => { finishApproval = resolve; });
+    let completeApproval!: () => void;
+    const client = new ProprClient({ fetch: async () => {
+      polls += 1;
+      throw new Error('must not poll after approval expiry');
+    } });
+    const pairing = completeDesktopPairing(client, {
+      pairingId: `dpr_${'A'.repeat(22)}`,
+      deviceSecret: 'B'.repeat(43),
+      approvalUrl: 'https://propr.example.test/approve',
+      expiresAt: new Date(Date.now() + 50).toISOString(),
+      interval: 1,
+    }, {
+      onApprovalRequired: () => new Promise<void>(resolve => {
+        completeApproval = resolve;
+        finishApproval();
+      }),
+    });
+
+    await approvalStarted;
+    await assert.rejects(bounded(pairing), (error: unknown) =>
+      error instanceof ProprClientError && error.code === 'PAIRING_EXPIRED');
+    completeApproval();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(polls, 0);
+  });
+
+  it('aborts while the approval callback is pending and handles a late callback rejection', async () => {
+    const { completeDesktopPairing } = await import('../src/index.js');
+    const controller = new AbortController();
+    let approvalStarted!: () => void;
+    const started = new Promise<void>(resolve => { approvalStarted = resolve; });
+    let rejectApproval!: (error: Error) => void;
+    const client = new ProprClient({ fetch: async () => { throw new Error('must not poll'); } });
+    const pairing = completeDesktopPairing(client, {
+      pairingId: `dpr_${'A'.repeat(22)}`,
+      deviceSecret: 'B'.repeat(43),
+      approvalUrl: 'https://propr.example.test/approve',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      interval: 1,
+    }, {
+      signal: controller.signal,
+      onApprovalRequired: () => new Promise<void>((_resolve, reject) => {
+        rejectApproval = reject;
+        approvalStarted();
+      }),
+    });
+
+    await started;
+    controller.abort('test cancellation');
+    await assert.rejects(bounded(pairing), (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'aborted');
+    rejectApproval(new Error('late approval failure'));
+    await new Promise<void>(resolve => setImmediate(resolve));
   });
 
   it('rejects an unsafe approval URL', async () => {

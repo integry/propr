@@ -172,6 +172,10 @@ export class ProfileStore {
   async readCredential(profileId: string): Promise<StoredCredential | null> {
     assertProfileId(profileId);
     if (!this.security().available) return null;
+    return this.#readCredentialFile(profileId);
+  }
+
+  async #readCredentialFile(profileId: string): Promise<StoredCredential | null> {
     try {
       const encrypted = await readFile(this.#credentialPath(profileId));
       const value = JSON.parse(this.#encryption.decrypt(encrypted)) as unknown;
@@ -213,6 +217,32 @@ export class ProfileStore {
   removeCredential(profileId: string): Promise<void> {
     assertProfileId(profileId);
     return this.#mutateCredential(profileId, () => this.#removeCredentialFile(profileId));
+  }
+
+  removeCredentialIfCurrent(
+    expected: StoredCredential,
+    expectedProfileOrigin: string,
+    isCurrent: () => boolean,
+  ): Promise<boolean> {
+    const profileId = expected?.profileId;
+    assertProfileId(profileId);
+    if (normalizeApiBaseUrl(expectedProfileOrigin) !== expectedProfileOrigin) {
+      throw new Error('Invalid desktop API URL');
+    }
+    return this.#mutate(() => this.#mutateCredential(profileId, async () => {
+      const state = await this.#readState();
+      const profile = state.profiles.find(item => item.id === profileId);
+      const credential = await this.#readCredentialFile(profileId);
+      if (!isCurrent()
+        || profile?.apiBaseUrl !== expectedProfileOrigin
+        || !credential
+        || credential.version !== expected.version
+        || credential.profileId !== expected.profileId
+        || credential.origin !== expected.origin
+        || credential.token !== expected.token) return false;
+      await this.#removeCredentialFile(profileId);
+      return true;
+    }));
   }
 
   async #removeCredentialFile(profileId: string): Promise<void> {

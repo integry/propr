@@ -166,73 +166,124 @@ export const completeDesktopPairing = async (
   if (options.signal?.aborted) throw cancelled(options.signal.reason);
   const deadline = Date.parse(start.expiresAt);
   const startedAt = now();
+  const lifetimeMs = deadline - startedAt;
   if (!validPollInterval(start.interval)
     || !Number.isFinite(deadline)
     || !Number.isFinite(startedAt)
-    || deadline - startedAt > MAX_PAIRING_LIFETIME_MS) {
+    || lifetimeMs > MAX_PAIRING_LIFETIME_MS) {
     throw new ProprClientError('The ProPR instance returned an invalid pairing deadline.', {
       kind: 'invalid_response',
     });
   }
-  if (deadline <= startedAt) throw expired();
-  let intervalSeconds = start.interval;
-  await options.onApprovalRequired?.(start.approvalUrl, start.expiresAt);
+  if (lifetimeMs <= 0) throw expired();
 
-  while (true) {
-    if (options.signal?.aborted) throw cancelled(options.signal.reason);
-    const remainingBeforeSleep = deadline - now();
-    if (remainingBeforeSleep <= 0) throw expired();
-    const delay = safeDelay(Math.min(intervalSeconds * 1000, remainingBeforeSleep));
-    await sleep(delay, options.signal);
-    if (options.signal?.aborted) throw cancelled(options.signal.reason);
-    const remaining = deadline - now();
-    if (remaining <= 0) throw expired();
+  const lifetimeController = new AbortController();
+  const monotonicStartedAt = performance.now();
+  let terminal: 'caller' | 'deadline' | undefined;
+  const abortForCaller = () => {
+    if (terminal) return;
+    terminal = 'caller';
+    lifetimeController.abort(options.signal?.reason);
+  };
+  const abortForDeadline = () => {
+    if (terminal) return;
+    terminal = 'deadline';
+    lifetimeController.abort(expired());
+  };
+  const deadlineTimer = setTimeout(abortForDeadline, safeDelay(lifetimeMs));
+  if (options.signal?.aborted) abortForCaller();
+  else options.signal?.addEventListener('abort', abortForCaller, { once: true });
 
-    const deadlineController = new AbortController();
-    const deadlineTimer = setTimeout(
-      () => deadlineController.abort(expired()),
-      safeDelay(remaining),
-    );
-    const requestController = new AbortController();
-    const forwardCallerAbort = () => requestController.abort(options.signal?.reason);
-    const forwardDeadlineAbort = () => requestController.abort(deadlineController.signal.reason);
-    if (options.signal?.aborted) forwardCallerAbort();
-    else options.signal?.addEventListener('abort', forwardCallerAbort, { once: true });
-    deadlineController.signal.addEventListener('abort', forwardDeadlineAbort, { once: true });
-
-    let value: unknown;
-    try {
-      value = await client.request<unknown>(
-        `/api/desktop/pairings/${encodeURIComponent(start.pairingId)}/poll`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ deviceSecret: start.deviceSecret }),
-          signal: requestController.signal,
-        },
-        { timeoutMs: Math.min(PAIRING_REQUEST_TIMEOUT_MS, safeDelay(remaining)) },
-      );
-    } catch (error) {
-      if (options.signal?.aborted) throw cancelled(error);
-      if (deadlineController.signal.aborted || now() >= deadline) throw expired(error);
-      throw error;
-    } finally {
-      clearTimeout(deadlineTimer);
-      options.signal?.removeEventListener('abort', forwardCallerAbort);
-      deadlineController.signal.removeEventListener('abort', forwardDeadlineAbort);
+  const terminalError = (cause?: unknown): ProprClientError => terminal === 'caller'
+    ? cancelled(cause ?? options.signal?.reason)
+    : expired(cause);
+  const remainingLifetime = (): number => Math.min(
+    deadline - now(),
+    lifetimeMs - (performance.now() - monotonicStartedAt),
+  );
+  const requireRemainingLifetime = (): number => {
+    if (terminal) throw terminalError();
+    const remaining = remainingLifetime();
+    if (remaining <= 0) {
+      abortForDeadline();
+      throw terminalError();
     }
-    const body = record(value);
-    if (body.status === 'pending' && validPollInterval(body.interval)) {
-      intervalSeconds = body.interval;
-      continue;
-    }
-    if (body.status === 'complete' && string(body.token)
-      && /^propr_it_[A-Za-z0-9_-]{43}$/.test(body.token) && body.tokenType === 'Bearer'
-      && (body.expiresAt === null || (string(body.expiresAt) && Number.isFinite(Date.parse(body.expiresAt))))) {
-      return { token: body.token, tokenType: 'Bearer', expiresAt: body.expiresAt as string | null };
-    }
-    throw new ProprClientError('The ProPR instance returned an invalid pairing status.', {
-      kind: 'invalid_response',
+    return remaining;
+  };
+  const raceLifetime = <T>(operation: PromiseLike<T>): Promise<T> => {
+    let removeAbortListener: () => void = () => undefined;
+    let abortSettlement: ReturnType<typeof setTimeout> | undefined;
+    const result = new Promise<T>((resolve, reject) => {
+      // Give an operation that already settled in this turn precedence. This
+      // lets callers securely dispose of a just-issued token while still
+      // bounding genuinely pending approval, sleep, and transport work.
+      const rejectForAbort = () => {
+        abortSettlement = setTimeout(() => reject(terminalError()), 0);
+      };
+      removeAbortListener = () => {
+        lifetimeController.signal.removeEventListener('abort', rejectForAbort);
+        if (abortSettlement) clearTimeout(abortSettlement);
+      };
+      if (lifetimeController.signal.aborted) rejectForAbort();
+      else lifetimeController.signal.addEventListener('abort', rejectForAbort, { once: true });
+      // Always attach both handlers, even if the lifetime already ended, so a
+      // callback or transport that settles late cannot become unhandled.
+      Promise.resolve(operation).then(resolve, error => {
+        reject(terminal ? terminalError(error) : error);
+      });
     });
+    return result.finally(() => removeAbortListener());
+  };
+
+  try {
+    let intervalSeconds = start.interval;
+    if (options.onApprovalRequired) {
+      const approval = Promise.resolve().then(() =>
+        options.onApprovalRequired?.(start.approvalUrl, start.expiresAt));
+      await raceLifetime(approval);
+    }
+
+    while (true) {
+      const remainingBeforeSleep = requireRemainingLifetime();
+      const delay = safeDelay(Math.min(intervalSeconds * 1000, remainingBeforeSleep));
+      await raceLifetime(sleep(delay, lifetimeController.signal));
+      const remaining = requireRemainingLifetime();
+
+      let value: unknown;
+      try {
+        value = await raceLifetime(client.request<unknown>(
+          `/api/desktop/pairings/${encodeURIComponent(start.pairingId)}/poll`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceSecret: start.deviceSecret }),
+            signal: lifetimeController.signal,
+          },
+          { timeoutMs: Math.min(PAIRING_REQUEST_TIMEOUT_MS, safeDelay(remaining)) },
+        ));
+      } catch (error) {
+        if (terminal || remainingLifetime() <= 0) {
+          if (!terminal) abortForDeadline();
+          throw terminalError(error);
+        }
+        throw error;
+      }
+      const body = record(value);
+      if (body.status === 'pending' && validPollInterval(body.interval)) {
+        intervalSeconds = body.interval;
+        continue;
+      }
+      if (body.status === 'complete' && string(body.token)
+        && /^propr_it_[A-Za-z0-9_-]{43}$/.test(body.token) && body.tokenType === 'Bearer'
+        && (body.expiresAt === null || (string(body.expiresAt) && Number.isFinite(Date.parse(body.expiresAt))))) {
+        return { token: body.token, tokenType: 'Bearer', expiresAt: body.expiresAt as string | null };
+      }
+      throw new ProprClientError('The ProPR instance returned an invalid pairing status.', {
+        kind: 'invalid_response',
+      });
+    }
+  } finally {
+    clearTimeout(deadlineTimer);
+    options.signal?.removeEventListener('abort', abortForCaller);
   }
 };
