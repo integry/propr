@@ -1,4 +1,4 @@
-import { StrictMode, type ComponentType, useEffect, useState } from 'react';
+import { StrictMode, type ComponentType, useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
   DesktopAppMetadata,
@@ -6,6 +6,7 @@ import type {
   StorageSecurity,
 } from '../../apps/desktop/src/shared/contract';
 import { activateDesktopProfile } from './desktop-profile';
+import { DesktopDeepLinkNavigation } from './desktop-deep-link';
 import './index.css';
 import './desktop.css';
 
@@ -141,13 +142,17 @@ export const DesktopRoot = () => {
   const [initialApiUrl, setInitialApiUrl] = useState('http://localhost:4000');
   const [loading, setLoading] = useState(true);
   const [fatalError, setFatalError] = useState<string | null>(null);
+  const [deepLinkNavigation] = useState(() => new DesktopDeepLinkNavigation(path => {
+    window.location.hash = path;
+  }));
 
-  const loadDashboard = async (activeProfile: DesktopProfile) => {
+  const loadDashboard = useCallback(async (activeProfile: DesktopProfile) => {
     window.__PROPR_CONFIG__ = { apiBaseUrl: activeProfile.apiBaseUrl };
     const application = await import('./App');
     setProfile(activeProfile);
     setDashboardApp(() => application.default);
-  };
+    deepLinkNavigation.setDashboardReady();
+  }, [deepLinkNavigation]);
 
   useEffect(() => {
     if (!bridge) {
@@ -162,6 +167,8 @@ export const DesktopRoot = () => {
         if (deepLink.hostname === 'connect') {
           const apiUrl = deepLink.searchParams.get('api');
           if (apiUrl) setInitialApiUrl(apiUrl);
+        } else if (deepLink.hostname === 'open') {
+          deepLinkNavigation.receive(value);
         }
       } catch {
         // Main validates protocol input; ignore malformed values defensively.
@@ -185,7 +192,7 @@ export const DesktopRoot = () => {
       cancelled = true;
       unsubscribe();
     };
-  }, [bridge]);
+  }, [bridge, deepLinkNavigation, loadDashboard]);
 
   const connect = async (label: string, apiBaseUrl: string) => {
     if (!bridge) return;
@@ -198,6 +205,7 @@ export const DesktopRoot = () => {
     await bridge.profiles.setActive(null);
     setProfile(null);
     setDashboardApp(null);
+    deepLinkNavigation.setDashboardUnavailable();
     window.__PROPR_CONFIG__ = undefined;
     window.location.hash = '';
   };

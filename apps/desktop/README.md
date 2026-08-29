@@ -29,11 +29,13 @@ generated workspace `dist` directories.
 Development renderer URLs are accepted only when Electron Forge supplies an HTTP loopback URL. Packaged builds load
 the generated renderer from the application ASAR through an app-owned protocol.
 
-The packaged-binary smoke test verifies the hardened fuse states, launches artifacts where the host permits, rejects
-main-process uncaught exceptions, and requires proof that `window.proprDesktop` is exposed before accepting
-renderer-ready and a clean exit. `desktop:smoke:inspect` performs executable and fuse inspection without launching a
-window. Release CI launches both Linux architectures under Xvfb, inspects macOS and Windows packages on their native
-runners, validates DMG/ZIP/DEB/RPM/NuGet containers, and validates configured OS signatures.
+The packaged-binary smoke test verifies the hardened fuse states, launches artifacts where the host permits (at
+1280x820 on Linux) without a sandbox-disabling flag, rejects main-process uncaught exceptions, and requires proof that
+`window.proprDesktop` is exposed. It also checks the real renderer bounds for the title-bar logo and connection-card
+controls before accepting renderer-ready and a clean exit. `desktop:smoke:inspect` performs executable and fuse
+inspection without launching a window. Release CI launches both Linux architectures under Xvfb, inspects macOS and
+Windows packages on their native runners, validates DMG/ZIP/DEB/RPM/NuGet containers, and validates configured OS
+signatures.
 
 `desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
 the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release
