@@ -208,6 +208,9 @@ test('resolves secure defaults and explicit positive-integer overrides', () => {
   const defaults = resolveRequestRateLimitPolicies({});
   assert.deepEqual(defaults.api, { identifier: 'api', limit: 600, windowMs: 60_000 });
   assert.deepEqual(defaults.auth, { identifier: 'auth', limit: 30, windowMs: 900_000 });
+  assert.deepEqual(defaults.discovery, { identifier: 'desktop-discovery', limit: 60, windowMs: 60_000 });
+  assert.deepEqual(defaults.pairingStart, { identifier: 'desktop-pairing-start', limit: 10, windowMs: 900_000 });
+  assert.deepEqual(defaults.pairingPoll, { identifier: 'desktop-pairing-poll', limit: 180, windowMs: 900_000 });
   assert.deepEqual(defaults.webhook, { identifier: 'webhook', limit: 300, windowMs: 60_000 });
 
   const configured = resolveRequestRateLimitPolicies({
