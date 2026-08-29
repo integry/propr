@@ -37,3 +37,7 @@ apps/release-site-videos/
 
 # Standalone publish staging (scripts/build-publish.mjs)
 dist-publish/
+
+# Electron Forge build and package output
+apps/desktop/.vite/
+apps/desktop/out/

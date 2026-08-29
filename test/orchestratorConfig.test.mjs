@@ -25,9 +25,14 @@ const manifestPath = fileURLToPath(new URL('../docker/launcher/manifest.json', i
 function vapidKeyPair() {
   const ecdh = createECDH('prime256v1');
   ecdh.generateKeys();
+  const privateKey = ecdh.getPrivateKey();
+  const canonicalPrivateKey = Buffer.alloc(32);
+  // OpenSSL may omit leading zero bytes from the generated P-256 scalar.
+  // VAPID encodes that scalar at its fixed 32-byte width.
+  privateKey.copy(canonicalPrivateKey, canonicalPrivateKey.length - privateKey.length);
   return {
     publicKey: ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url'),
-    privateKey: ecdh.getPrivateKey().toString('base64url'),
+    privateKey: canonicalPrivateKey.toString('base64url'),
   };
 }
 

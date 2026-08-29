@@ -36,6 +36,12 @@ export const DEFAULT_PROPR_GH_RELAY_URL = 'https://webhook.propr.dev/v1';
 export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
 
 /**
+ * Exact browser origin used by the packaged Electron renderer. The API uses
+ * this value as a narrow CORS exception for desktop REST and Socket.IO calls.
+ */
+export const DESKTOP_RENDERER_ORIGIN = 'propr-app://renderer';
+
+/**
  * DNS suffix and label prefix for per-instance UI/API tunnel hostnames. Each
  * local stack with an instance id is reachable at
  * `https://t-<instanceId>.propr.dev`, so the hosted UI at

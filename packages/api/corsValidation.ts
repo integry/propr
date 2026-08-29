@@ -3,10 +3,11 @@
 // The hosted UI origin (FRONTEND_URL, e.g. https://app.propr.dev) is always
 // allowed. When COOKIE_DOMAIN is set, the base domain and any of its subdomains
 // are also allowed so PR preview environments that share sessions via
-// cross-subdomain cookies can talk to the API. localhost/127.0.0.1 are allowed
-// for local development.
+// cross-subdomain cookies can talk to the API. localhost/127.0.0.1/[::1] are
+// allowed for local development.
 
 import type { ErrorRequestHandler } from 'express';
+import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 
 export type CorsOriginCallback = (err: Error | null, allow?: boolean) => void;
 export type CorsOriginValidator = (origin: string | undefined, callback: CorsOriginCallback) => void;
@@ -45,6 +46,13 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
       callback(null, true);
       return;
     }
+    // Electron registers this as a standard, secure scheme, which gives the
+    // packaged renderer a stable serialized origin. Match that origin exactly;
+    // never accept the generic `null` value used by arbitrary opaque origins.
+    if (origin === DESKTOP_RENDERER_ORIGIN) {
+      callback(null, true);
+      return;
+    }
     try {
       const url = new URL(origin);
       // Allow the base domain and any subdomain. The previous inline validator
@@ -60,11 +68,11 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
       } else if (url.origin === frontendOrigin) {
         callback(null, true);
       } else if (
-        (url.hostname === 'localhost' || url.hostname === '127.0.0.1') &&
+        (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]') &&
         (url.protocol === 'http:' || url.protocol === 'https:')
       ) {
-        // Allow localhost for development, but only over http/https so an unusual
-        // scheme (e.g. file:, chrome-extension:) on localhost is not trusted.
+        // Allow loopback hosts for development, but only over http/https so an
+        // unusual scheme (e.g. file:, chrome-extension:) is not trusted.
         callback(null, true);
       } else {
         callback(new CorsOriginError());
