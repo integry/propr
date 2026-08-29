@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, Check, ChevronRight, CircleAlert, Folder, KeyRound, LoaderCircle, RotateCcw, X } from 'lucide-react';
-import type { DesktopFilesystemSelection, DesktopProfileView, DesktopSetupRequest, DesktopSetupSnapshot } from '../../../apps/desktop/src/shared/contract';
+import type { DesktopFilesystemSelection, DesktopProfileView, DesktopSecretSelection, DesktopSetupRequest, DesktopSetupSnapshot } from '../../../apps/desktop/src/shared/contract';
 import type { DesktopLocalSetupAdapter } from './types';
 
 type FormStage = 'prerequisites' | 'directory' | 'github' | 'intake' | 'agents' | 'summary';
@@ -17,9 +17,8 @@ interface SetupDraft {
   privateKey: DesktopFilesystemSelection | null;
   installationId: string;
   intakeMode: IntakeMode;
-  webhookSecret: string;
+  intakeSecretApproval: DesktopSecretSelection | null;
   selectedAgents: string[];
-  loginAgents: string[];
   reinitialize: boolean;
   whitelist: string[] | null;
   repository: DesktopSetupRequest['repository'];
@@ -30,12 +29,11 @@ const buildSetupRequest = (sessionId: string, draft: SetupDraft): DesktopSetupRe
   root: draft.root.mode === 'selected' ? { mode: 'selected', capability: draft.root.capability } : { mode: draft.root.mode },
   reinitialize: draft.reinitialize,
   agents: draft.selectedAgents,
-  loginAgents: draft.loginAgents,
   github: draft.githubMode === 'app'
     ? { mode: 'app', appId: draft.appId, privateKeyCapability: draft.privateKey?.capability ?? '', installationId: draft.installationId }
     : { mode: draft.githubMode },
   intake: draft.intakeMode === 'direct_webhook'
-    ? { mode: 'direct_webhook', webhookSecret: draft.webhookSecret }
+    ? { mode: 'direct_webhook', secretCapability: draft.intakeSecretApproval?.capability ?? '' }
     : { mode: draft.intakeMode },
   whitelist: draft.whitelist,
   repository: draft.repository,
@@ -78,12 +76,12 @@ interface FormProps extends Omit<SetupDraft, 'whitelist'> {
   setAppId(value: string): void;
   setInstallationId(value: string): void;
   setIntakeMode(value: IntakeMode): void;
-  setWebhookSecret(value: string): void;
   setSelectedAgents(value: React.SetStateAction<string[]>): void;
   setWhitelist(value: string): void;
   whitelist: string;
   onChooseDirectory(): void;
   onChoosePrivateKey(): void;
+  onAcquireWebhookSecret(): void;
   onBack(): void;
   onContinue(): void;
 }
@@ -97,7 +95,7 @@ const FormContent: React.FC<FormProps> = props => {
     case 'github': return <GithubStage {...props} />;
     case 'intake': {
       const allowed: IntakeMode[] = props.githubMode === 'relay' ? ['keep', 'routing_websocket', 'polling'] : props.githubMode === 'app' ? ['keep', 'polling', 'direct_webhook'] : props.githubMode === 'demo' ? ['keep'] : ['keep', 'routing_websocket', 'polling', 'direct_webhook'];
-      return <><h1>Choose GitHub event intake</h1><div className="desktop-setup-options">{allowed.map(mode => <label key={mode}><input type="radio" checked={props.intakeMode === mode} onChange={() => props.setIntakeMode(mode)} /><span><strong>{mode.replace(/_/g, ' ')}</strong></span></label>)}</div>{props.intakeMode === 'direct_webhook' && <label className="desktop-setup-field"><span>Webhook secret</span><div><input type="password" value={props.webhookSecret} onChange={event => props.setWebhookSecret(event.target.value)} /></div></label>}</>;
+      return <><h1>Choose GitHub event intake</h1><div className="desktop-setup-options">{allowed.map(mode => <label key={mode}><input type="radio" checked={props.intakeMode === mode} onChange={() => props.setIntakeMode(mode)} /><span><strong>{mode.replace(/_/g, ' ')}</strong></span></label>)}</div>{props.intakeMode === 'direct_webhook' && <div className="desktop-setup-wide"><button type="button" className="desktop-secondary-button" onClick={props.onAcquireWebhookSecret}><KeyRound /> Enter webhook secret securely</button><small>{props.intakeSecretApproval?.label ?? 'No secret entered'}</small></div>}</>;
     }
     case 'agents': return <><h1>Select coding agents</h1><div className="desktop-agent-options">{agents.map(agent => <label key={agent}><input type="checkbox" checked={props.selectedAgents.includes(agent)} onChange={() => props.setSelectedAgents(current => current.includes(agent) ? current.filter(value => value !== agent) : [...current, agent])} /><span>{agent}</span></label>)}</div>{props.githubMode !== 'demo' && <label className="desktop-setup-field"><span>Allowed GitHub users (comma-separated, optional)</span><div><input value={props.whitelist} onChange={event => props.setWhitelist(event.target.value)} /></div></label>}</>;
     case 'summary': return <><h1>Ready to install</h1><dl className="desktop-setup-summary"><div><dt>Directory</dt><dd>{props.root.label}</dd></div><div><dt>GitHub</dt><dd>{props.githubMode}</dd></div><div><dt>Intake</dt><dd>{props.intakeMode}</dd></div><div><dt>Agents</dt><dd>{props.selectedAgents.join(', ') || 'None'}</dd></div></dl></>;
@@ -118,9 +116,8 @@ export const LocalSetupWizard: React.FC<{ adapter: DesktopLocalSetupAdapter; onB
   const [privateKey, setPrivateKey] = useState<DesktopFilesystemSelection | null>(null);
   const [installationId, setInstallationId] = useState('');
   const [intakeMode, setIntakeMode] = useState<IntakeMode>('routing_websocket');
-  const [webhookSecret, setWebhookSecret] = useState('');
+  const [intakeSecretApproval, setIntakeSecretApproval] = useState<DesktopSecretSelection | null>(null);
   const [selectedAgents, setSelectedAgents] = useState<string[]>(['codex']);
-  const [loginAgents, setLoginAgents] = useState<string[]>([]);
   const [reinitialize, setReinitialize] = useState(false);
   const [whitelistText, setWhitelistText] = useState('');
   const [whitelist, setWhitelistChoice] = useState<string[] | null>(null);
@@ -139,7 +136,6 @@ export const LocalSetupWizard: React.FC<{ adapter: DesktopLocalSetupAdapter; onB
       setRoot({ mode: value.resume ? 'resume' : 'default', label: value.rootDir ?? 'Desktop default directory' });
       if (value.resume) {
         setSelectedAgents(value.resume.agents);
-        setLoginAgents(value.resume.loginAgents);
         setReinitialize(value.resume.reinitialize);
         setGithubMode(value.resume.github.mode);
         if (value.resume.github.mode === 'app') { setAppId(value.resume.github.appId); setInstallationId(value.resume.github.installationId); }
@@ -152,7 +148,7 @@ export const LocalSetupWizard: React.FC<{ adapter: DesktopLocalSetupAdapter; onB
     return () => { mounted = false; unsubscribe(); };
   }, [adapter]);
 
-  const draft = useMemo<SetupDraft>(() => ({ root, githubMode, appId, privateKey, installationId, intakeMode, webhookSecret, selectedAgents, loginAgents, reinitialize, whitelist, repository }), [appId, githubMode, installationId, intakeMode, loginAgents, privateKey, reinitialize, repository, root, selectedAgents, webhookSecret, whitelist]);
+  const draft = useMemo<SetupDraft>(() => ({ root, githubMode, appId, privateKey, installationId, intakeMode, intakeSecretApproval, selectedAgents, reinitialize, whitelist, repository }), [appId, githubMode, installationId, intakeMode, intakeSecretApproval, privateKey, reinitialize, repository, root, selectedAgents, whitelist]);
   const request = snapshot ? buildSetupRequest(snapshot.sessionId, draft) : null;
 
   const run = async (retry = false) => {
@@ -180,6 +176,11 @@ export const LocalSetupWizard: React.FC<{ adapter: DesktopLocalSetupAdapter; onB
     try { const selection = await adapter.selectPrivateKey(); if (selection) setPrivateKey(selection); }
     catch { setError('Choose a regular, owner-only private-key file.'); } finally { setBusy(false); }
   };
+  const acquireWebhookSecret = async () => {
+    setError(null); setBusy(true);
+    try { const selection = await adapter.acquireWebhookSecret(); if (selection) setIntakeSecretApproval(selection); }
+    catch { setError('The secure secret prompt could not be opened.'); } finally { setBusy(false); }
+  };
 
   if (!snapshot) return <div className="desktop-loading"><LoaderCircle className="desktop-spin" /> Loading setup…</div>;
   if (snapshot.phase === 'unsupported') return <UnsupportedSetup error={snapshot.error} onBack={onBack} />;
@@ -190,7 +191,7 @@ export const LocalSetupWizard: React.FC<{ adapter: DesktopLocalSetupAdapter; onB
   const continueForm = () => {
     setError(null);
     if (stage === 'github' && githubMode === 'app' && (!/^\d{1,20}$/.test(appId) || !/^\d{1,20}$/.test(installationId) || !privateKey)) { setError('Enter numeric App and installation IDs, then choose the private key.'); return; }
-    if (stage === 'intake' && intakeMode === 'direct_webhook' && !webhookSecret) { setError('Enter the webhook secret.'); return; }
+    if (stage === 'intake' && intakeMode === 'direct_webhook' && !intakeSecretApproval) { setError('Enter the webhook secret.'); return; }
     const index = stages.indexOf(stage);
     if (index === stages.length - 1) void run(reconfiguring); else setStage(stages[index + 1]);
   };
@@ -204,5 +205,5 @@ export const LocalSetupWizard: React.FC<{ adapter: DesktopLocalSetupAdapter; onB
     setWhitelistText(value);
     setWhitelistChoice(value.split(',').map(item => item.trim()).filter(Boolean));
   };
-  return <SetupForm {...draft} whitelist={whitelistText} stage={stage} busy={busy} error={error} setStage={setStage} setGithubMode={chooseGithubMode} setAppId={setAppId} setInstallationId={setInstallationId} setIntakeMode={setIntakeMode} setWebhookSecret={setWebhookSecret} setSelectedAgents={setSelectedAgents} setWhitelist={setWhitelist} onChooseDirectory={() => void chooseDirectory()} onChoosePrivateKey={() => void choosePrivateKey()} onBack={onBack} onContinue={continueForm} />;
+  return <SetupForm {...draft} whitelist={whitelistText} stage={stage} busy={busy} error={error} setStage={setStage} setGithubMode={chooseGithubMode} setAppId={setAppId} setInstallationId={setInstallationId} setIntakeMode={setIntakeMode} setSelectedAgents={setSelectedAgents} setWhitelist={setWhitelist} onChooseDirectory={() => void chooseDirectory()} onChoosePrivateKey={() => void choosePrivateKey()} onAcquireWebhookSecret={() => void acquireWebhookSecret()} onBack={onBack} onContinue={continueForm} />;
 };

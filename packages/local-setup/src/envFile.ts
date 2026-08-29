@@ -9,13 +9,13 @@
  * literally and must fit on one line.
  */
 
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readPrivateFile, writePrivateFileAtomic } from "./privateFilesystem.js";
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function upsertEnvVars(envPath: string, vars: Record<string, string>): void {
+export function upsertEnvVars(envPath: string, vars: Record<string, string>, signal?: AbortSignal): void {
   for (const [key, value] of Object.entries(vars)) {
     if (/[\r\n]/.test(value)) {
       throw new Error(`${key} cannot contain newlines; Docker --env-file only supports one KEY=VALUE assignment per line.`);
@@ -30,7 +30,8 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
     }
   }
 
-  const raw = existsSync(envPath) ? readFileSync(envPath, "utf-8") : "";
+  const previous = readPrivateFile(envPath);
+  const raw = previous?.toString("utf-8") ?? "";
   const lines = raw.split(/\r?\n/);
 
   // Drop trailing blank lines so appends stay tidy; we re-add one newline at the end.
@@ -50,24 +51,7 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
     }
   }
 
-  const isNew = !existsSync(envPath);
-  let tightenedFrom: number | null = null;
-  if (!isNew) {
-    try {
-      const before = statSync(envPath).mode & 0o777;
-      if (before !== 0o600) {
-        chmodSync(envPath, 0o600);
-        tightenedFrom = before;
-      }
-    } catch {
-      // Best-effort — may fail on Windows or non-owned files.
-    }
-  }
-
-  writeFileSync(envPath, `${lines.join("\n")}\n`, { encoding: "utf-8", mode: isNew ? 0o600 : undefined });
-  if (tightenedFrom !== null) {
-    console.warn(`Note: tightened ${envPath} permissions from ${tightenedFrom.toString(8)} to 600 (secrets file).`);
-  }
+  writePrivateFileAtomic(envPath, `${lines.join("\n")}\n`, { signal });
 }
 
 /**
@@ -86,32 +70,19 @@ export function upsertEnvVars(envPath: string, vars: Record<string, string>): vo
  * switching auth/intake modes) use this so the value does not silently return on
  * the next read or restart.
  */
-export function clearEnvKeys(envPath: string, keys: string[]): void {
-  if (keys.length === 0 || !existsSync(envPath)) return;
+export function clearEnvKeys(envPath: string, keys: string[], signal?: AbortSignal): void {
+  if (keys.length === 0) return;
 
-  const lines = readFileSync(envPath, "utf-8").split(/\r?\n/);
+  const previous = readPrivateFile(envPath);
+  if (!previous) return;
+  const lines = previous.toString("utf-8").split(/\r?\n/);
   const patterns = keys.map((key) => new RegExp(`^\\s*(export\\s+)?${escapeRegExp(key)}\\s*=`));
   const kept = lines.filter((line) => !patterns.some((pattern) => pattern.test(line)));
 
   // Nothing matched → leave the file (and its mode) untouched.
   if (kept.length === lines.length) return;
 
-  // Tighten permissions like upsertEnvVars does — this is still the secrets file.
-  let tightenedFrom: number | null = null;
-  try {
-    const before = statSync(envPath).mode & 0o777;
-    if (before !== 0o600) {
-      chmodSync(envPath, 0o600);
-      tightenedFrom = before;
-    }
-  } catch {
-    // Best-effort — may fail on Windows or non-owned files.
-  }
-
   // Drop trailing blank lines, then re-add exactly one terminating newline.
   while (kept.length > 0 && kept[kept.length - 1] === "") kept.pop();
-  writeFileSync(envPath, `${kept.join("\n")}\n`, "utf-8");
-  if (tightenedFrom !== null) {
-    console.warn(`Note: tightened ${envPath} permissions from ${tightenedFrom.toString(8)} to 600 (secrets file).`);
-  }
+  writePrivateFileAtomic(envPath, `${kept.join("\n")}\n`, { signal });
 }

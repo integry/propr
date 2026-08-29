@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, realpathSync } from 'node:fs';
-import { chmod, lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import {
+  readPrivateFile,
+  writePrivateFileAtomic,
   getLocalSetupCapability,
   retrySetup,
   runSetup,
@@ -12,7 +12,7 @@ import {
 } from '@propr/local-setup';
 import { DEFAULT_PROPR_GH_RELAY_URL } from '@propr/shared';
 import { redactDesktopValue, safeRendererError } from './secret-redaction';
-import { SetupFilesystemCapabilities, validatePrivateKeyPath } from './setup-capabilities';
+import { RootDirectoryAuthority, SetupFilesystemCapabilities, SetupSecretCapabilities } from './setup-capabilities';
 import { parseDesktopSetupRequest, SetupRequestError } from './setup-schema';
 import type {
   DesktopFilesystemSelection,
@@ -20,6 +20,7 @@ import type {
   DesktopSetupRequest,
   DesktopSetupResumeView,
   DesktopSetupSnapshot,
+  DesktopSecretSelection,
 } from './shared/contract';
 
 interface ResumePlan extends DesktopSetupResumeView {
@@ -39,7 +40,8 @@ interface ResolvedRequest {
   rootDir: string;
   rootMode: 'default' | 'selected';
   privateKeyPath?: string;
-  rootIdentity?: { device: bigint; inode: bigint };
+  webhookSecret?: string;
+  rootAuthority: RootDirectoryAuthority;
 }
 
 export interface DesktopSetupControllerOptions {
@@ -47,8 +49,10 @@ export interface DesktopSetupControllerOptions {
   platform?: NodeJS.Platform;
   statePath: string;
   defaultRootDir: string;
+  keyStorageDir?: string;
   selectDirectory(): Promise<string | null>;
   selectPrivateKey(): Promise<string | null>;
+  promptWebhookSecret?(): Promise<string | null>;
   resolveApiBaseUrl(rootDir: string, signal?: AbortSignal): Promise<string>;
   registerProfile(profile: { name: string; apiBaseUrl: string }, signal?: AbortSignal): Promise<DesktopProfileView>;
   emit(snapshot: DesktopSetupSnapshot): void;
@@ -66,7 +70,7 @@ const assertPath = (value: unknown): value is string => typeof value === 'string
 const parseResumePlan = (value: unknown): ResumePlan => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid resume plan');
   const plan = value as Record<string, unknown>;
-  if (Object.keys(plan).some(key => !['root', 'reinitialize', 'agents', 'loginAgents', 'github', 'intake', 'whitelist', 'repository', 'reconfigurationStage'].includes(key))) throw new Error('Invalid resume plan');
+  if (Object.keys(plan).some(key => !['root', 'reinitialize', 'agents', 'github', 'intake', 'whitelist', 'repository', 'reconfigurationStage'].includes(key))) throw new Error('Invalid resume plan');
   const root = plan.root as Record<string, unknown> | undefined;
   if (!root || Object.keys(root).some(key => !['mode', 'path'].includes(key)) || Object.keys(root).length !== 2 || !['default', 'selected'].includes(String(root.mode)) || !assertPath(root.path)) throw new Error('Invalid resume root');
   const github = plan.github as Record<string, unknown> | undefined;
@@ -81,23 +85,21 @@ const parseResumePlan = (value: unknown): ResumePlan => {
     root: { mode: 'default' },
     reinitialize: plan.reinitialize,
     agents: plan.agents,
-    loginAgents: plan.loginAgents,
     github: github?.mode === 'app'
       ? { mode: 'app', appId: github.appId, installationId: github.installationId, privateKeyCapability: 'A'.repeat(43) }
       : github,
-    intake: intake?.mode === 'direct_webhook' ? { mode: 'direct_webhook', webhookSecret: 'reconfigure' } : intake,
+    intake: intake?.mode === 'direct_webhook' ? { mode: 'direct_webhook', secretCapability: 'A'.repeat(43) } : intake,
     whitelist: plan.whitelist,
     repository: plan.repository,
   });
   if (github?.mode === 'app' && github.reconfigurationRequired !== true) throw new Error('Invalid resume plan');
   if (intake?.mode === 'direct_webhook' && intake.reconfigurationRequired !== true) throw new Error('Invalid resume plan');
-  const expectedStage = github?.mode === 'app' ? 'github' : intake?.mode === 'direct_webhook' ? 'intake' : undefined;
+  const expectedStage = root.mode === 'selected' ? 'directory' : github?.mode === 'app' ? 'github' : intake?.mode === 'direct_webhook' ? 'intake' : undefined;
   if (plan.reconfigurationStage !== expectedStage) throw new Error('Invalid resume plan');
   return {
     root: { mode: root.mode as 'default' | 'selected', path: resolve(root.path as string) },
     reinitialize: synthetic.reinitialize,
     agents: synthetic.agents,
-    loginAgents: synthetic.loginAgents,
     github: github as unknown as ResumePlan['github'],
     intake: intake as unknown as ResumePlan['intake'],
     whitelist: synthetic.whitelist,
@@ -124,7 +126,6 @@ const parsePersisted = (contents: string): PersistedSetupState => {
 const resumeView = (plan: ResumePlan): DesktopSetupResumeView => ({
   reinitialize: plan.reinitialize,
   agents: [...plan.agents],
-  loginAgents: [...plan.loginAgents],
   github: structuredClone(plan.github),
   intake: structuredClone(plan.intake),
   whitelist: plan.whitelist ? [...plan.whitelist] : null,
@@ -136,6 +137,7 @@ export class DesktopSetupController {
   readonly #options: DesktopSetupControllerOptions;
   readonly #sessionId: string;
   readonly #filesystem = new SetupFilesystemCapabilities();
+  readonly #secrets = new SetupSecretCapabilities();
   #abortController: AbortController | null = null;
   #activeSecrets: string[] = [];
   #busy = false;
@@ -194,6 +196,19 @@ export class DesktopSetupController {
     }
   }
 
+  async acquireWebhookSecret(): Promise<DesktopSecretSelection | null> {
+    await this.#load();
+    this.#enforceCapability(true);
+    try {
+      if (!this.#options.promptWebhookSecret) throw new SetupRequestError('A secure native secret prompt is unavailable.');
+      const value = await this.#options.promptWebhookSecret();
+      return value === null ? null : this.#secrets.issue(this.#sessionId, value);
+    } catch (error) {
+      this.#diagnose('desktop.setup.webhook_secret_prompt_failed', { error });
+      throw new Error(safeRendererError);
+    }
+  }
+
   start(input: unknown): Promise<DesktopSetupSnapshot> {
     return this.#begin(parseDesktopSetupRequest(input), false);
   }
@@ -202,6 +217,9 @@ export class DesktopSetupController {
     await this.#load();
     this.#enforceCapability(true);
     if (input !== undefined) return this.#begin(parseDesktopSetupRequest(input), true);
+    if (this.#resume?.reconfigurationStage === 'github' || this.#resume?.reconfigurationStage === 'intake') {
+      throw new SetupRequestError(`Re-enter the ${this.#resume.reconfigurationStage} configuration before retrying.`);
+    }
     if (this.#runtimeRetry) return this.#beginResolved(this.#runtimeRetry, true);
     if (!this.#resume) throw new SetupRequestError('There is no local setup to resume');
     if (this.#resume.reconfigurationStage) throw new SetupRequestError(`Re-enter the ${this.#resume.reconfigurationStage} configuration before retrying.`);
@@ -210,7 +228,6 @@ export class DesktopSetupController {
       root: { mode: 'resume' },
       reinitialize: this.#resume.reinitialize,
       agents: this.#resume.agents,
-      loginAgents: this.#resume.loginAgents,
       github: this.#resume.github,
       intake: this.#resume.intake,
       whitelist: this.#resume.whitelist,
@@ -230,6 +247,8 @@ export class DesktopSetupController {
     await this.#currentRun?.catch(() => undefined);
     await this.#persistQueue;
     this.#filesystem.clear();
+    this.#secrets.clear();
+    this.#runtimeRetry?.rootAuthority.close();
   }
 
   async #begin(request: DesktopSetupRequest, retry: boolean): Promise<DesktopSetupSnapshot> {
@@ -239,30 +258,39 @@ export class DesktopSetupController {
     this.#busy = true;
     try {
       if (request.sessionId !== this.#sessionId) throw new SetupRequestError('The setup session expired. Start again.');
-      const consumed: string[] = [];
+      if (request.root.mode === 'selected') await this.#filesystem.validate(request.root.capability, 'directory', this.#sessionId);
+      if (request.github.mode === 'app') await this.#filesystem.validate(request.github.privateKeyCapability, 'private-key', this.#sessionId);
+      if (request.intake.mode === 'direct_webhook') this.#secrets.validate(request.intake.secretCapability, this.#sessionId);
       let rootDir: string;
       let rootMode: 'default' | 'selected';
+      let rootAuthority: RootDirectoryAuthority;
       if (request.root.mode === 'default') {
         rootDir = resolve(this.#options.defaultRootDir);
         rootMode = 'default';
+        rootAuthority = RootDirectoryAuthority.open(rootDir, true);
       } else if (request.root.mode === 'resume') {
         if (!this.#resume) throw new SetupRequestError('The resumed setup directory is unavailable.');
-        rootDir = await this.#validatedResumeRoot(this.#resume.root);
+        rootAuthority = this.#validatedResumeRoot(this.#resume.root);
+        rootDir = rootAuthority.path;
         rootMode = this.#resume.root.mode;
       } else {
         const selectedRoot = request.root as { mode: 'selected'; capability: string };
-        rootDir = await this.#filesystem.validate(selectedRoot.capability, 'directory', this.#sessionId);
+        rootAuthority = await this.#filesystem.consumeDirectory(selectedRoot.capability, this.#sessionId);
+        rootDir = rootAuthority.path;
         rootMode = 'selected';
-        consumed.push(selectedRoot.capability);
       }
       let privateKeyPath: string | undefined;
       if (request.github.mode === 'app') {
-        privateKeyPath = await this.#filesystem.validate(request.github.privateKeyCapability, 'private-key', this.#sessionId);
-        consumed.push(request.github.privateKeyCapability);
+        privateKeyPath = await this.#filesystem.consumePrivateKey(
+          request.github.privateKeyCapability,
+          this.#sessionId,
+          this.#options.keyStorageDir ?? `${this.#options.statePath}.keys`,
+        );
       }
-      this.#filesystem.consume(consumed);
-      const rootInfo = rootMode === 'selected' ? lstatSync(rootDir, { bigint: true }) : undefined;
-      return await this.#beginResolved({ publicRequest: request, rootDir, rootMode, privateKeyPath, ...(rootInfo ? { rootIdentity: { device: rootInfo.dev, inode: rootInfo.ino } } : {}) }, retry);
+      const webhookSecret = request.intake.mode === 'direct_webhook'
+        ? this.#secrets.consume(request.intake.secretCapability, this.#sessionId)
+        : undefined;
+      return await this.#beginResolved({ publicRequest: request, rootDir, rootMode, rootAuthority, privateKeyPath, webhookSecret }, retry);
     } finally {
       if (!this.#currentRun) this.#busy = false;
     }
@@ -272,9 +300,10 @@ export class DesktopSetupController {
     this.#enforceCapability(true);
     if (this.#currentRun) throw new SetupRequestError('Local setup is already running');
     this.#busy = true;
+    if (this.#runtimeRetry && this.#runtimeRetry.rootAuthority !== resolved.rootAuthority) this.#runtimeRetry.rootAuthority.close();
     this.#resume = this.#resumePlan(resolved);
     this.#runtimeRetry = resolved;
-    this.#activeSecrets = [resolved.privateKeyPath, resolved.publicRequest.intake.mode === 'direct_webhook' ? resolved.publicRequest.intake.webhookSecret : undefined].filter((value): value is string => Boolean(value));
+    this.#activeSecrets = [resolved.privateKeyPath, resolved.webhookSecret].filter((value): value is string => Boolean(value));
     this.#abortController = new AbortController();
     this.#snapshot = {
       phase: 'running',
@@ -346,7 +375,6 @@ export class DesktopSetupController {
           case 'relay': return { mode: 'relay', enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL } };
           case 'app':
             if (!resolved.privateKeyPath) throw new SetupRequestError('Select the GitHub App private key again.');
-            await validatePrivateKeyPath(resolved.privateKeyPath);
             return { mode: 'app', vars: { PROPR_DEMO_MODE: 'false', GH_AUTH_MODE: 'app', GH_APP_ID: request.github.appId, HOST_GH_PRIVATE_KEY: resolved.privateKeyPath, GH_INSTALLATION_ID: request.github.installationId } };
         }
       },
@@ -354,10 +382,10 @@ export class DesktopSetupController {
       confirmGithubAppInstall: async () => true,
       confirmGithubAppInstalled: async () => false,
       configureIntake: async () => request.intake.mode === 'keep' ? { keep: true } : request.intake.mode === 'direct_webhook'
-        ? { mode: request.intake.mode, webhookSecret: request.intake.webhookSecret }
+        ? { mode: request.intake.mode, webhookSecret: resolved.webhookSecret }
         : { mode: request.intake.mode },
       confirmStartStack: async () => true,
-      confirmAgentLogin: async () => [],
+      confirmAgentLogin: async ({ candidates }: { candidates: string[] }) => candidates.filter(candidate => request.agents.includes(candidate)),
       configureWhitelist: async () => request.whitelist,
       addRepository: async () => request.repository,
       launchUi: async () => false,
@@ -365,28 +393,20 @@ export class DesktopSetupController {
   }
 
   #boundActions(resolved: ResolvedRequest): SetupActions {
-    if (!resolved.rootIdentity) return this.#options.actions;
-    const guard = () => {
-      const current = lstatSync(resolved.rootDir, { bigint: true });
-      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== resolved.rootIdentity!.device
-        || current.ino !== resolved.rootIdentity!.inode || realpathSync(resolved.rootDir) !== resolved.rootDir) {
-        throw new SetupRequestError('The selected setup directory changed. Select it again.');
-      }
-      for (const name of ['.env', 'data', 'logs', 'repos']) {
-        const child = join(resolved.rootDir, name);
-        if (!existsSync(child)) continue;
-        const childInfo = lstatSync(child);
-        const childRelative = relative(resolved.rootDir, realpathSync(child));
-        if (childInfo.isSymbolicLink() || childRelative.startsWith('..') || isAbsolute(childRelative)) {
-          throw new SetupRequestError('The selected setup directory contains an unsafe managed path.');
-        }
-      }
-    };
+    const guard = () => resolved.rootAuthority.validate();
     return new Proxy(this.#options.actions, {
       get(target, property, receiver) {
         const value = Reflect.get(target, property, receiver);
         if (typeof value !== 'function') return value;
-        return (...args: unknown[]) => { guard(); return Reflect.apply(value, target, args); };
+        return (...args: unknown[]) => {
+          guard();
+          const result = Reflect.apply(value, target, args);
+          if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+            return Promise.resolve(result).then(output => { guard(); return output; });
+          }
+          guard();
+          return result;
+        };
       },
     });
   }
@@ -403,24 +423,21 @@ export class DesktopSetupController {
       root: { mode: resolved.rootMode, path: resolved.rootDir },
       reinitialize: request.reinitialize,
       agents: [...request.agents],
-      loginAgents: [...request.loginAgents],
       github,
       intake,
       whitelist: request.whitelist ? [...request.whitelist] : null,
       repository: request.repository ? { ...request.repository } : null,
-      ...(request.github.mode === 'app' ? { reconfigurationStage: 'github' as const } : request.intake.mode === 'direct_webhook' ? { reconfigurationStage: 'intake' as const } : {}),
+      ...(resolved.rootMode === 'selected' ? { reconfigurationStage: 'directory' as const } : request.github.mode === 'app' ? { reconfigurationStage: 'github' as const } : request.intake.mode === 'direct_webhook' ? { reconfigurationStage: 'intake' as const } : {}),
     };
   }
 
-  async #validatedResumeRoot(root: ResumePlan['root']): Promise<string> {
+  #validatedResumeRoot(root: ResumePlan['root']): RootDirectoryAuthority {
     if (root.mode === 'default') {
       const expected = resolve(this.#options.defaultRootDir);
       if (root.path !== expected) throw new SetupRequestError('The resumed setup directory is invalid.');
-      return expected;
+      return RootDirectoryAuthority.open(expected, true);
     }
-    const info = await lstat(root.path);
-    if (!info.isDirectory() || info.isSymbolicLink() || await realpath(root.path) !== root.path) throw new SetupRequestError('Select the setup directory again.');
-    return root.path;
+    throw new SetupRequestError('Select the setup directory again. Saved paths are display metadata, not directory authority.');
   }
 
   #platform(): NodeJS.Platform {
@@ -444,7 +461,9 @@ export class DesktopSetupController {
 
   async #hydrate(): Promise<void> {
     try {
-      const parsed = parsePersisted(await readFile(this.#options.statePath, 'utf8'));
+      const contents = readPrivateFile(this.#options.statePath);
+      if (!contents) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      const parsed = parsePersisted(contents.toString('utf8'));
       this.#resume = parsed.resume;
       const interrupted = parsed.phase === 'running';
       this.#snapshot = {
@@ -477,13 +496,12 @@ export class DesktopSetupController {
       resume: this.#resume,
     };
     this.#persistQueue = this.#persistQueue.then(async () => {
-      await mkdir(dirname(this.#options.statePath), { recursive: true, mode: 0o700 });
-      const temporary = `${this.#options.statePath}.${process.pid}.tmp`;
-      await writeFile(temporary, `${JSON.stringify(redactDesktopValue(persisted), null, 2)}\n`, { mode: 0o600 });
-      await rename(temporary, this.#options.statePath);
-      await chmod(this.#options.statePath, 0o600);
+      const signal = this.#abortController?.signal;
+      signal?.throwIfAborted();
+      writePrivateFileAtomic(this.#options.statePath, `${JSON.stringify(redactDesktopValue(persisted), null, 2)}\n`, { signal });
       this.#snapshot = { ...this.#snapshot, resumeAvailable: true };
     }).catch(error => {
+      if ((error as Error).name === 'AbortError' || (error as NodeJS.ErrnoException).code === 'ABORT_ERR') return;
       this.#persistFailed = true;
       this.#diagnose('desktop.setup.persistence_failed', { error });
       this.#snapshot = { ...this.#snapshot, resumeAvailable: false, error: 'Setup progress could not be saved. Resume after restart is unavailable.' };

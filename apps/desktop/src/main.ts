@@ -9,6 +9,7 @@ import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
 import { DesktopSetupController } from './setup-controller';
+import { promptForWebhookSecret } from './secure-secret-prompt';
 import { redactDesktopValue } from './secret-redaction';
 import {
   deepLinkFromArguments,
@@ -228,7 +229,8 @@ if (!hasSingleInstanceLock) {
       actions: localHost.actions,
       platform: process.platform,
       statePath: join(app.getPath('userData'), 'desktop', 'setup-state.json'),
-      defaultRootDir: localHost.config.getStackRoot() ?? join(app.getPath('documents'), 'ProPR'),
+      defaultRootDir: join(app.getPath('userData'), 'desktop', 'local-stack'),
+      keyStorageDir: join(app.getPath('userData'), 'desktop', 'setup-keys'),
       async selectDirectory() {
         const options = {
           title: 'Choose the ProPR setup directory',
@@ -246,6 +248,7 @@ if (!hasSingleInstanceLock) {
         const selected = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
         return selected.canceled ? null : selected.filePaths[0] ?? null;
       },
+      promptWebhookSecret: promptForWebhookSecret,
       resolveApiBaseUrl: localHost.resolveApiBaseUrl,
       async registerProfile({ name, apiBaseUrl }, signal) {
         signal?.throwIfAborted();

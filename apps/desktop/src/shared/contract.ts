@@ -20,6 +20,7 @@ export const IPC_CHANNELS = Object.freeze({
   setupCancel: 'desktop:setup-cancel',
   setupSelectDirectory: 'desktop:setup-select-directory',
   setupSelectPrivateKey: 'desktop:setup-select-private-key',
+  setupAcquireWebhookSecret: 'desktop:setup-acquire-webhook-secret',
   setupProgress: 'desktop:setup-progress',
   deepLink: 'desktop:deep-link',
 } as const);
@@ -124,7 +125,6 @@ export interface DesktopSetupRequest {
   root: { mode: 'default' | 'resume' } | { mode: 'selected'; capability: string };
   reinitialize: boolean;
   agents: string[];
-  loginAgents: string[];
   github:
     | { mode: 'keep' }
     | { mode: 'demo' }
@@ -133,7 +133,7 @@ export interface DesktopSetupRequest {
   intake:
     | { mode: 'keep' }
     | { mode: 'routing_websocket' | 'polling' }
-    | { mode: 'direct_webhook'; webhookSecret: string };
+    | { mode: 'direct_webhook'; secretCapability: string };
   whitelist: string[] | null;
   repository: { fullName: string; alias?: string; baseBranch?: string } | null;
 }
@@ -143,15 +143,19 @@ export interface DesktopFilesystemSelection {
   label: string;
 }
 
+export interface DesktopSecretSelection {
+  capability: string;
+  label: 'Secret entered';
+}
+
 export interface DesktopSetupResumeView {
   agents: string[];
-  loginAgents: string[];
   reinitialize: boolean;
   github: { mode: 'keep' | 'demo' | 'relay' } | { mode: 'app'; appId: string; installationId: string; reconfigurationRequired: true };
   intake: { mode: 'keep' | 'routing_websocket' | 'polling' } | { mode: 'direct_webhook'; reconfigurationRequired: true };
   whitelist: string[] | null;
   repository: { fullName: string; alias?: string; baseBranch?: string } | null;
-  reconfigurationStage?: 'github' | 'intake';
+  reconfigurationStage?: 'directory' | 'github' | 'intake';
 }
 
 export type DesktopSetupPhase =
@@ -199,6 +203,7 @@ export interface DesktopRendererBridge {
     cancel(): Promise<DesktopSetupSnapshot>;
     selectDirectory(): Promise<DesktopFilesystemSelection | null>;
     selectPrivateKey(): Promise<DesktopFilesystemSelection | null>;
+    acquireWebhookSecret(): Promise<DesktopSecretSelection | null>;
     onProgress(listener: (snapshot: DesktopSetupSnapshot) => void): () => void;
   };
   connection: { probe(profile: DesktopProfileView): Promise<DesktopConnectionResult> };

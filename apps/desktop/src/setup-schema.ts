@@ -30,7 +30,7 @@ const bounded = (value: unknown, max: number): value is string => typeof value =
 
 export const parseDesktopSetupRequest = (input: unknown): DesktopSetupRequest => {
   const value = record(input);
-  exact(value, ['sessionId', 'root', 'reinitialize', 'agents', 'loginAgents', 'github', 'intake', 'whitelist', 'repository']);
+  exact(value, ['sessionId', 'root', 'reinitialize', 'agents', 'github', 'intake', 'whitelist', 'repository']);
   if (typeof value.sessionId !== 'string' || !SESSION.test(value.sessionId)) throw new SetupRequestError();
   if (typeof value.reinitialize !== 'boolean') throw new SetupRequestError();
 
@@ -41,11 +41,9 @@ export const parseDesktopSetupRequest = (input: unknown): DesktopSetupRequest =>
   } else if (root.mode === 'default' || root.mode === 'resume') exact(root, ['mode']);
   else throw new SetupRequestError();
 
-  for (const key of ['agents', 'loginAgents'] as const) {
-    const values = value[key];
-    if (!Array.isArray(values) || values.length > AGENTS.size || !values.every(item => typeof item === 'string' && AGENTS.has(item)) || new Set(values).size !== values.length) {
-      throw new SetupRequestError('Invalid agent selection');
-    }
+  const agents = value.agents;
+  if (!Array.isArray(agents) || agents.length > AGENTS.size || !agents.every(item => typeof item === 'string' && AGENTS.has(item)) || new Set(agents).size !== agents.length) {
+    throw new SetupRequestError('Invalid agent selection');
   }
 
   const github = record(value.github);
@@ -62,8 +60,8 @@ export const parseDesktopSetupRequest = (input: unknown): DesktopSetupRequest =>
   const intake = record(value.intake);
   if (intake.mode === 'keep' || intake.mode === 'routing_websocket' || intake.mode === 'polling') exact(intake, ['mode']);
   else if (intake.mode === 'direct_webhook') {
-    exact(intake, ['mode', 'webhookSecret']);
-    if (!bounded(intake.webhookSecret, 512) || /[\0\r\n]/.test(intake.webhookSecret)) throw new SetupRequestError('Invalid webhook secret');
+    exact(intake, ['mode', 'secretCapability']);
+    if (typeof intake.secretCapability !== 'string' || !CAPABILITY.test(intake.secretCapability)) throw new SetupRequestError('Invalid webhook secret capability');
   } else throw new SetupRequestError('Invalid GitHub intake configuration');
   if ((github.mode === 'relay' && intake.mode === 'direct_webhook')
     || (github.mode === 'app' && intake.mode === 'routing_websocket')

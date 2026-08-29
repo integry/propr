@@ -88,4 +88,8 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
     if (args.length) throw new Error('Invalid private-key selection request');
     return options.setup.selectPrivateKey();
   });
+  handle(IPC_CHANNELS.setupAcquireWebhookSecret, (_event, ...args) => {
+    if (args.length) throw new Error('Invalid webhook-secret acquisition request');
+    return options.setup.acquireWebhookSecret();
+  });
 };

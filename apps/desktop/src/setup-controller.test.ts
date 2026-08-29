@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -79,7 +79,6 @@ describe('desktop local setup controller', () => {
       root: { mode: 'default' },
       reinitialize: false,
       agents: [],
-      loginAgents: [],
       github: { mode: 'demo' },
       intake: { mode: 'keep' },
       whitelist: null,
@@ -137,7 +136,7 @@ describe('desktop local setup controller', () => {
       registerProfile: async () => { registered = true; throw new Error('must not run'); }, emit() {},
     });
     const { sessionId } = await controller.status();
-    const running = controller.start({ sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], loginAgents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    const running = controller.start({ sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
     await started;
     await assert.rejects(controller.retry(), /already running/);
     const cancelled = await controller.cancel();
@@ -166,7 +165,7 @@ describe('desktop local setup controller', () => {
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
     });
     const { sessionId } = await controller.status();
-    const request = { sessionId, root: { mode: 'default' as const }, reinitialize: false, agents: [], loginAgents: [], github: { mode: 'relay' as const }, intake: { mode: 'polling' as const }, whitelist: ['octocat'], repository: null };
+    const request = { sessionId, root: { mode: 'default' as const }, reinitialize: false, agents: [], github: { mode: 'relay' as const }, intake: { mode: 'polling' as const }, whitelist: ['octocat'], repository: null };
     await controller.start(request);
     assert.ok(seen.length >= 2);
     assert.equal(seen.every(value => JSON.stringify(value).includes('https://webhook.propr.dev/v1')), true);
@@ -190,7 +189,7 @@ describe('desktop local setup controller', () => {
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
     });
     const status = await controller.status();
-    const run = controller.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], loginAgents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    const run = controller.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
     await started;
     await controller.shutdown();
     assert.equal(stopped, true);
@@ -214,7 +213,7 @@ describe('desktop local setup controller', () => {
       }, emit() {},
     });
     const status = await controller.status();
-    const run = controller.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], loginAgents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    const run = controller.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
     await registering;
     const result = await controller.cancel();
     assert.equal(result.phase, 'cancelled');
@@ -232,16 +231,19 @@ describe('desktop local setup controller', () => {
     const options = {
       actions: fakeActions(), platform: 'linux' as const, statePath, defaultRootDir: join(directory, 'stack'),
       selectDirectory: async () => directory, selectPrivateKey: async () => keyPath,
+      promptWebhookSecret: async () => 'arbitrary-webhook-value',
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' as const }), emit() {},
     };
     const first = new DesktopSetupController(options);
     const status = await first.status();
     const key = await first.selectPrivateKey();
+    const secret = await first.acquireWebhookSecret();
     assert.ok(key);
+    assert.ok(secret);
     await first.start({
-      sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: true, agents: ['claude'], loginAgents: ['claude'],
+      sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: true, agents: ['claude'],
       github: { mode: 'app', appId: '123', installationId: '456', privateKeyCapability: key.capability },
-      intake: { mode: 'direct_webhook', webhookSecret: 'arbitrary-webhook-value' }, whitelist: [], repository: { fullName: 'integry/propr', alias: 'propr', baseBranch: 'main' },
+      intake: { mode: 'direct_webhook', secretCapability: secret.capability }, whitelist: [], repository: { fullName: 'integry/propr', alias: 'propr', baseBranch: 'main' },
     });
     const persisted = await readFile(statePath, 'utf8');
     assert.doesNotMatch(persisted, /arbitrary-webhook-value|ultra-secret-key-content|github-app\.pem/);
@@ -265,7 +267,7 @@ describe('desktop local setup controller', () => {
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
     });
     const current = await linux.status();
-    await linux.start({ sessionId: current.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], loginAgents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    await linux.start({ sessionId: current.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
 
     const concurrentSession = '33333333-3333-4333-8333-333333333333';
     const rehydrated = new DesktopSetupController({
@@ -274,7 +276,7 @@ describe('desktop local setup controller', () => {
     });
     const [hydratedStatus, hydratedStart] = await Promise.all([
       rehydrated.status(),
-      rehydrated.start({ sessionId: concurrentSession, root: { mode: 'resume' }, reinitialize: false, agents: [], loginAgents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null }),
+      rehydrated.start({ sessionId: concurrentSession, root: { mode: 'resume' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null }),
     ]);
     assert.equal(hydratedStatus.capability.supported, true);
     assert.equal(hydratedStart.phase, 'completed');
@@ -287,7 +289,7 @@ describe('desktop local setup controller', () => {
     const [one, two] = await Promise.all([darwin.status(), darwin.status()]);
     assert.equal(one.phase, 'unsupported');
     assert.deepEqual(one.capability, two.capability);
-    await assert.rejects(darwin.start({ sessionId, root: { mode: 'resume' }, reinitialize: false, agents: [], loginAgents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null }), /not supported/);
+    await assert.rejects(darwin.start({ sessionId, root: { mode: 'resume' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null }), /not supported/);
   });
 
   it('surfaces persistence failure as resume unavailable', async () => {
@@ -300,7 +302,7 @@ describe('desktop local setup controller', () => {
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
     });
     const status = await controller.status();
-    const result = await controller.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], loginAgents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    const result = await controller.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
     assert.equal(result.resumeAvailable, false);
     assert.match(result.error ?? '', /Resume after restart is unavailable/);
   });
@@ -318,7 +320,7 @@ describe('desktop local setup controller', () => {
     const status = await controller.status();
     const selection = await controller.selectDirectory();
     assert.ok(selection);
-    const result = await controller.start({ sessionId: status.sessionId, root: { mode: 'selected', capability: selection.capability }, reinitialize: false, agents: [], loginAgents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    const result = await controller.start({ sessionId: status.sessionId, root: { mode: 'selected', capability: selection.capability }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
     assert.equal(result.phase, 'failed');
     assert.doesNotMatch(result.error ?? '', new RegExp(outside));
   });
@@ -334,10 +336,122 @@ describe('desktop local setup controller', () => {
       diagnose: (_event, fields) => diagnostics.push(fields),
     });
     const status = await controller.status();
-    const result = await controller.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], loginAgents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    const result = await controller.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
     assert.match(result.error ?? '', /failed unexpectedly/);
     const serialized = JSON.stringify(diagnostics);
     assert.doesNotMatch(serialized, /ghp_1234567890abcdef|relay-auth-value/);
     assert.match(serialized, /REDACTED/);
+  });
+
+  it('requires fresh chooser authority after restart even when a replacement appears at the saved path', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-root-reselect-'));
+    const root = join(directory, 'chosen');
+    await mkdir(root, { mode: 0o700 });
+    const statePath = join(directory, 'state.json');
+    const first = new DesktopSetupController({
+      actions: fakeActions(), platform: 'linux', statePath, defaultRootDir: join(directory, 'default'),
+      selectDirectory: async () => root, selectPrivateKey: async () => null,
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
+    });
+    const status = await first.status();
+    const selected = await first.selectDirectory();
+    assert.ok(selected);
+    await first.start({ sessionId: status.sessionId, root: { mode: 'selected', capability: selected.capability }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    await first.shutdown();
+    await rename(root, `${root}-original`);
+    await mkdir(root, { mode: 0o700 });
+
+    let actions = 0;
+    const replacementActions = fakeActions();
+    replacementActions.runChecks = async ({ root: checked }) => { actions += 1; return { rootDir: checked!, anyFail: false, results: [] }; };
+    const restarted = new DesktopSetupController({
+      actions: replacementActions, platform: 'linux', statePath, defaultRootDir: join(directory, 'default'),
+      selectDirectory: async () => root, selectPrivateKey: async () => null,
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
+    });
+    const resumed = await restarted.status();
+    assert.equal(resumed.resume?.reconfigurationStage, 'directory');
+    await assert.rejects(restarted.retry(), /Re-enter the directory/);
+    assert.equal(actions, 0);
+  });
+
+  it('copies a consumed private key once and never reopens a swapped chooser pathname', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-key-copy-'));
+    const keyPath = join(directory, 'app.pem');
+    const original = 'ORIGINAL_PRIVATE_KEY_BYTES';
+    const replacement = 'REPLACEMENT_MUST_NOT_BE_READ';
+    await writeFile(keyPath, original, { mode: 0o600 });
+    let release!: () => void;
+    let entered!: () => void;
+    const atChecks = new Promise<void>(resolve => { entered = resolve; });
+    const continueChecks = new Promise<void>(resolve => { release = resolve; });
+    let mountedPath: string | undefined;
+    const actions = fakeActions();
+    actions.runChecks = async ({ root }) => {
+      entered(); await continueChecks;
+      return { rootDir: root!, anyFail: false, results: [{ name: 'Docker daemon', group: 'Docker', status: 'ok', detail: 'ready' }] };
+    };
+    const baseApply = actions.applyEnvSelection;
+    actions.applyEnvSelection = (root, values, options, signal) => {
+      if (values.HOST_GH_PRIVATE_KEY) mountedPath = values.HOST_GH_PRIVATE_KEY;
+      return baseApply(root, values, options, signal);
+    };
+    const controller = new DesktopSetupController({
+      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'stack'), keyStorageDir: join(directory, 'owned-keys'),
+      selectDirectory: async () => directory, selectPrivateKey: async () => keyPath,
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
+    });
+    const status = await controller.status();
+    const selected = await controller.selectPrivateKey();
+    assert.ok(selected);
+    const running = controller.start({
+      sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [],
+      github: { mode: 'app', appId: '1', installationId: '2', privateKeyCapability: selected.capability },
+      intake: { mode: 'polling' }, whitelist: null, repository: null,
+    });
+    await atChecks;
+    await rename(keyPath, `${keyPath}.original`);
+    await writeFile(keyPath, replacement, { mode: 0o600 });
+    release();
+    await running;
+    assert.ok(mountedPath);
+    assert.notEqual(mountedPath, keyPath);
+    assert.equal(await readFile(mountedPath, 'utf8'), original);
+    assert.doesNotMatch(await readFile(mountedPath, 'utf8'), /REPLACEMENT/);
+  });
+
+  it('keeps native webhook secret bytes out of snapshots, resume state, logs, errors, and diagnostics', async () => {
+    const sentinel = 'SENTINEL_NATIVE_SECRET_9f08c7';
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-secret-boundary-'));
+    const emitted: unknown[] = [];
+    const diagnostics: unknown[] = [];
+    const actions = fakeActions();
+    actions.hasGithubToken = () => true;
+    actions.inspectDatastoreAdministrators = async () => ({ status: 'has-admin' });
+    actions.pullImages = async ({ onLog }) => {
+      onLog?.(`progress ${sentinel}`);
+      return { pulledCore: ['api'], pulledAgents: [], failedCore: [], failedAgents: [] };
+    };
+    actions.startStack = async () => { throw new Error(`daemon failure ${sentinel}`); };
+    const statePath = join(directory, 'state.json');
+    const controller = new DesktopSetupController({
+      actions, platform: 'linux', statePath, defaultRootDir: join(directory, 'stack'),
+      selectDirectory: async () => directory, selectPrivateKey: async () => null, promptWebhookSecret: async () => sentinel,
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit: snapshot => emitted.push(snapshot),
+      diagnose: (_event, fields) => diagnostics.push(fields),
+    });
+    const status = await controller.status();
+    const secret = await controller.acquireWebhookSecret();
+    assert.ok(secret);
+    assert.doesNotMatch(JSON.stringify(secret), new RegExp(sentinel));
+    const result = await controller.start({
+      sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [],
+      github: { mode: 'keep' },
+      intake: { mode: 'direct_webhook', secretCapability: secret.capability }, whitelist: null, repository: null,
+    });
+    const rendererVisible = JSON.stringify({ result, emitted, diagnostics, persisted: await readFile(statePath, 'utf8') });
+    assert.doesNotMatch(rendererVisible, new RegExp(sentinel));
+    assert.match(rendererVisible, /REDACTED/);
+    await assert.rejects(controller.retry(), /Re-enter the intake/);
   });
 });

@@ -53,7 +53,7 @@ describe('desktop preload bridge', () => {
     const received: unknown[] = [];
     bridge.localSetup.onProgress(snapshot => received.push(snapshot));
     const request = {
-      sessionId: '00000000-0000-4000-8000-000000000000', root: { mode: 'default' as const }, reinitialize: false, agents: [], loginAgents: [],
+      sessionId: '00000000-0000-4000-8000-000000000000', root: { mode: 'default' as const }, reinitialize: false, agents: [],
       github: { mode: 'demo' as const }, intake: { mode: 'keep' as const }, whitelist: null, repository: null,
     };
     await bridge.localSetup.start(request);

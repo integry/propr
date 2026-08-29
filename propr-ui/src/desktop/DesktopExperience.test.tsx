@@ -56,7 +56,7 @@ const adaptersFor = (
       capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const }, sessionId: '00000000-0000-4000-8000-000000000000',
       logs: [],
     })),
-    selectDirectory: vi.fn(async () => null), selectPrivateKey: vi.fn(async () => null), onProgress: vi.fn(() => () => undefined),
+    selectDirectory: vi.fn(async () => null), selectPrivateKey: vi.fn(async () => null), acquireWebhookSecret: vi.fn(async () => null), onProgress: vi.fn(() => () => undefined),
   },
   connection: { probe: vi.fn(probe) },
 });
@@ -298,7 +298,10 @@ describe('DesktopExperience', () => {
 
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
     vi.clearAllMocks();
-    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    await waitFor(() => {
+      fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+      expect(screen.getByRole('dialog', { name: 'Manage instances' })).toBeInTheDocument();
+    });
     fireEvent.click(await screen.findByRole('button', { name: /Add instance/i }));
     fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'New server' } });
     fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://new.example.com/' } });
@@ -323,7 +326,10 @@ describe('DesktopExperience', () => {
     render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
 
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
-    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    await waitFor(() => {
+      fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+      expect(screen.getByRole('dialog', { name: 'Manage instances' })).toBeInTheDocument();
+    });
     if (profileKind === 'new') {
       fireEvent.click(await screen.findByRole('button', { name: /Add instance/i }));
       fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'New server' } });

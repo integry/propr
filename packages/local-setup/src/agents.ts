@@ -22,6 +22,7 @@
  */
 
 import { AGENT_DEFAULTS, type AgentType } from "@propr/shared";
+import { rethrowCancellation } from "./cancellation.js";
 
 /** Minimal backend agent shape needed by the setup engine. */
 export interface AgentConfig {
@@ -133,6 +134,7 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
     existing = await actions.listAgents(rootDir, signal);
     signal?.throwIfAborted();
   } catch (error) {
+    rethrowCancellation(error);
     outcome.errors.push(`could not read backend agents: ${(error as Error).message}`);
     return outcome;
   }
@@ -164,6 +166,7 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
       outcome.added.push(type);
       configuredTypes.add(type as AgentType);
     } catch (error) {
+      rethrowCancellation(error);
       outcome.errors.push(`could not enable ${type}: ${(error as Error).message}`);
     }
   }
@@ -176,6 +179,7 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
     loginable = new Set(await actions.loginableAgents(signal));
     signal?.throwIfAborted();
   } catch (error) {
+    rethrowCancellation(error);
     outcome.errors.push(`could not determine which agents support image login: ${(error as Error).message}`);
     loginable = new Set();
   }
@@ -185,6 +189,7 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
     try {
       chosen = await confirmLogin({ candidates, rootDir });
     } catch (error) {
+      rethrowCancellation(error);
       // A failed/cancelled prompt must not abort the whole run — validation and
       // exact recovery commands are still useful.
       outcome.errors.push(`agent login prompt failed: ${(error as Error).message}`);
@@ -202,6 +207,7 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
         if (result.available && result.success) outcome.authenticated.push(type);
         else outcome.authFailed.push(type);
       } catch (error) {
+        rethrowCancellation(error);
         outcome.authFailed.push(type);
         outcome.errors.push(`login for ${type} failed: ${(error as Error).message}`);
       }
@@ -228,6 +234,7 @@ export async function runAgentSetup(params: AgentSetupParams): Promise<AgentSetu
       outcome.nextCommands.push(`propr check agents --agents ${check.type}`);
     }
   } catch (error) {
+    rethrowCancellation(error);
     outcome.errors.push(`could not validate agent connectivity: ${(error as Error).message}`);
     for (const type of selectedAgents) {
       if (loginable.has(type)) outcome.nextCommands.push(`propr agent login ${type}`);

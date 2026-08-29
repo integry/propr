@@ -52,6 +52,7 @@ import {
   runAgentSetup,
   type AgentSetupActions,
 } from "./agents.js";
+import { isSetupCancellation } from "./cancellation.js";
 import {
   createSetupState,
   getStep,
@@ -568,6 +569,11 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       throw new SetupCancellation(state);
     }
   };
+  const rethrowIfCancelled = (error: unknown): void => {
+    if (!isSetupCancellation(error)) return;
+    checkCancelled();
+    throw error;
+  };
   const begin = (id: SetupStepId): void => {
     checkCancelled();
     state = updateStep(state, id, { status: "active", detail: undefined, nextAction: undefined });
@@ -629,7 +635,9 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     //    enabling raw mode; the sequential renderer prompts through this hook.
     if (!actions.hasGithubToken(options.signal)) {
       const reason = "Relay enrollment needs a GitHub token.";
-      if (prompts.confirmGithubLogin && (await prompts.confirmGithubLogin({ reason }))) {
+      const loginConfirmed = prompts.confirmGithubLogin ? await prompts.confirmGithubLogin({ reason }) : false;
+      checkCancelled();
+      if (loginConfirmed) {
         await actions.loginWithGithub({ onLog: log, signal: options.signal });
         checkCancelled();
       }
@@ -652,12 +660,15 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
         relayUrl.replace(/\/+$/, "") === DEFAULT_PROPR_GH_RELAY_URL.replace(/\/+$/, "");
       if (installations.length === 0 && usingHostedRelay && prompts.confirmGithubAppInstall) {
         const installUrl = DEFAULT_PROPR_GITHUB_APP_INSTALL_URL;
-        if (await prompts.confirmGithubAppInstall({ url: installUrl })) {
+        const installConfirmed = await prompts.confirmGithubAppInstall({ url: installUrl });
+        checkCancelled();
+        if (installConfirmed) {
           await actions.openUrl(installUrl, options.signal);
           checkCancelled();
           const installed = prompts.confirmGithubAppInstalled
             ? await prompts.confirmGithubAppInstalled({ url: installUrl })
             : false;
+          checkCancelled();
           if (installed) {
             ({ username, installations } = await actions.fetchRelayInstallations({ relayUrl, signal: options.signal }));
             checkCancelled();
@@ -680,6 +691,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
         log(`relay: using installation ${installationId} (${installations[0].account_login})`);
       } else if (prompts.selectInstallation) {
         installationId = await prompts.selectInstallation({ installations });
+        checkCancelled();
       } else {
         installationId = String(installations[0].installation_id);
       }
@@ -771,6 +783,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
         detail: `auth mode: relay (installation ${installationId}); ${adminDetail}`,
       };
     } catch (error) {
+      rethrowIfCancelled(error);
       return {
         note: {
           detail: `relay enrollment failed — ${(error as Error).message}`,
@@ -788,6 +801,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     checks = await actions.runChecks({ root: rootDir, skipRemoteImageCheck, signal: options.signal });
     checkCancelled();
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("check", {
       status: "failed",
       detail: `could not run environment checks: ${(error as Error).message}`,
@@ -820,6 +834,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     let userChoseReinit = false;
     if (prompts.resolveStackRoot) {
       const decision = await prompts.resolveStackRoot({ currentRoot: rootDir, init });
+      checkCancelled();
       if (decision.rootDir && decision.rootDir !== rootDir) {
         rootDir = decision.rootDir;
         state = { ...state, rootDir };
@@ -889,6 +904,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     // mode does not require an instance administrator.
     settle("init-stack", initSettlement);
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("init-stack", {
       status: "failed",
       detail: `could not initialize stack: ${(error as Error).message}`,
@@ -905,6 +921,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     const requested = prompts.selectAgents
       ? await prompts.selectAgents({ available: catalog.map((a) => a.type), detected })
       : detected;
+    checkCancelled();
     // Guard the engine boundary: a renderer may hand back unknown or duplicate
     // agent names. Keep only types we know about, de-duped (first occurrence
     // wins), so unknown names never reach pullImages() and a duplicate can't
@@ -933,6 +950,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       settle("pull-images", { status: "done", detail: `pulled ${pulledCount} image(s)` });
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("pull-images", {
       status: "failed",
       detail: `could not pull images: ${(error as Error).message}`,
@@ -977,6 +995,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       settle("configure-agents", { status: "done", detail: detailParts.join("; ") });
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("configure-agents", {
       status: "failed",
       detail: `could not record agent credentials: ${(error as Error).message}`,
@@ -999,7 +1018,10 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   try {
     const currentAuth = actions.detectGithubAuthMode(rootDir, options.signal);
     let authDecision: GithubAuthDecision | undefined;
-    if (prompts.configureGithubAuth) authDecision = await prompts.configureGithubAuth({ current: currentAuth });
+    if (prompts.configureGithubAuth) {
+      authDecision = await prompts.configureGithubAuth({ current: currentAuth });
+      checkCancelled();
+    }
     if (authDecision?.enrollRelay) {
       const outcome = await enrollRelayForSetup(authDecision.enrollRelay.relayUrl);
       relayNote = outcome.note;
@@ -1012,6 +1034,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       ? { mode: "relay", warnings: [] }
       : actions.detectGithubAuthMode(rootDir, options.signal);
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("github-auth", {
       status: "failed",
       detail: `could not configure GitHub auth: ${(error as Error).message}`,
@@ -1090,6 +1113,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
           keptRelayBootstrapIdentity = username;
         }
       } catch (error) {
+      rethrowIfCancelled(error);
         log(`administrator bootstrap: could not verify the configured relay identity: ${(error as Error).message}`);
       }
     }
@@ -1121,7 +1145,9 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   // token; this covers custom-App and GitHub-only demo configurations alike.
   if (!demoModeEnabled && !actions.hasGithubToken(options.signal)) {
     const reason = "Finishing setup requires a GitHub user token for protected backend API steps.";
-    if (prompts.confirmGithubLogin && (await prompts.confirmGithubLogin({ reason }))) {
+    const loginConfirmed = prompts.confirmGithubLogin ? await prompts.confirmGithubLogin({ reason }) : false;
+    checkCancelled();
+    if (loginConfirmed) {
       await actions.loginWithGithub({ onLog: log, signal: options.signal });
       checkCancelled();
     }
@@ -1183,6 +1209,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       let decision: GithubIntakeDecision | undefined;
       if (prompts.configureIntake) {
         decision = await prompts.configureIntake({ authMode: resolvedAuth.mode, defaultMode, currentMode });
+        checkCancelled();
       }
       // The mode that will be in effect after this step — the explicit pick, or
       // the current `.env` value when the user keeps it. `effectiveEnv` mirrors
@@ -1230,6 +1257,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       }
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     // An IntakeConfigError (e.g. direct webhooks chosen with no secret) is
     // non-blocking: leave intake as-is and tell the user how to finish it.
     settle("intake", {
@@ -1245,7 +1273,9 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   begin("start-stack");
   try {
     const alreadyRunning = await actions.isStackRunning(rootDir, options.signal);
+    checkCancelled();
     const startConfirmed = prompts.confirmStartStack ? await prompts.confirmStartStack({ rootDir, alreadyRunning }) : true;
+    checkCancelled();
     if (!startConfirmed) {
       settle("start-stack", {
         status: "skipped",
@@ -1283,6 +1313,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       }
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("start-stack", {
       status: "failed",
       detail: `could not start the stack: ${(error as Error).message}`,
@@ -1345,6 +1376,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       }
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     // runAgentSetup is built not to throw for expected conditions; anything that
     // escapes is treated as a non-blocking warning so it can't abort setup.
     settle("enable-agents", {
@@ -1362,7 +1394,10 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     const currentWhitelist = (envNow.GITHUB_USER_WHITELIST ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     const demoMode = resolvedAuth.mode === "demo";
     let whitelist: string[] | null = null;
-    if (prompts.configureWhitelist) whitelist = await prompts.configureWhitelist({ current: currentWhitelist, demoMode });
+    if (prompts.configureWhitelist) {
+      whitelist = await prompts.configureWhitelist({ current: currentWhitelist, demoMode });
+      checkCancelled();
+    }
     if (whitelist !== null) {
       // Trim, drop blanks, and de-dupe (first occurrence wins) so the value
       // matches saveWhitelist's "cleaned, de-duped usernames" contract — a
@@ -1389,6 +1424,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
             actions.clearEnvKeys(rootDir, ["GITHUB_USER_WHITELIST"], options.signal);
           }
         },
+        signal: options.signal,
       });
       checkCancelled();
       const where = saved.target === "settings" ? "via settings API" : "in .env";
@@ -1414,6 +1450,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       });
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("whitelist", {
       status: "failed",
       detail: `could not configure the whitelist: ${(error as Error).message}`,
@@ -1438,6 +1475,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     // The prompt itself is part of this optional step — a renderer that throws
     // while collecting the repo must degrade to a warning, not abort the run.
     const repoSelection = prompts.addRepository ? await prompts.addRepository({ rootDir }) : null;
+    checkCancelled();
     if (!repoSelection) {
       settle("repo", { status: "skipped", detail: "no repository added" });
     } else {
@@ -1446,6 +1484,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
         checkCancelled();
         settle("repo", { status: "done", detail: `monitoring ${repoSelection.fullName}` });
       } catch (error) {
+      rethrowIfCancelled(error);
         settle("repo", {
           status: "warning",
           detail: `could not add ${repoSelection.fullName}: ${(error as Error).message}`,
@@ -1454,6 +1493,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       }
     }
   } catch (error) {
+      rethrowIfCancelled(error);
     settle("repo", {
       status: "warning",
       detail: `could not collect a repository to add: ${(error as Error).message}`,
@@ -1477,7 +1517,8 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
   try {
     uiUrl = await actions.resolveUiUrl(rootDir, options.signal);
     checkCancelled();
-  } catch {
+  } catch (error) {
+      rethrowIfCancelled(error);
     /* non-fatal: just omit the URL */
   }
   let opened = false;
@@ -1486,17 +1527,20 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     // The prompt only asks *whether* to open; the engine performs the open so
     // both renderers behave identically and neither has to import a launcher.
     const wantsOpen = uiUrl && prompts.launchUi ? await prompts.launchUi({ url: uiUrl }) : false;
+    checkCancelled();
     if (wantsOpen) {
       try {
         await actions.openUrl(uiUrl, options.signal);
         checkCancelled();
         opened = true;
-      } catch {
+      } catch (error) {
+      rethrowIfCancelled(error);
         // Headless host, no launcher, etc. — fall back to just printing the URL.
         openFailed = true;
       }
     }
-  } catch {
+  } catch (error) {
+      rethrowIfCancelled(error);
     /* opening the UI is best-effort; a failed launch prompt must not fail setup */
   }
   settle("launch-ui", {
@@ -1515,6 +1559,18 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
 
 /** Run or safely re-run the setup state machine. Existing host state is re-inspected on every call. */
 export async function runSetup(options: RunSetupOptions): Promise<SetupRunResult> {
+  const capability = getLocalSetupCapability(options.platform);
+  if (!capability.supported) {
+    const rootDir = resolve(options.root ?? process.cwd());
+    return {
+      rootDir,
+      state: createSetupState(rootDir),
+      capability,
+      completed: false,
+      cancelled: false,
+      errors: [{ code: "local-unsupported", message: capability.reason, retryable: false }],
+    };
+  }
   try {
     return await runSetupAttempt(options);
   } catch (error) {

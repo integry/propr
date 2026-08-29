@@ -18,7 +18,7 @@
 // The CLI imports this .mjs dynamically and types it via src/orchestrator/types.ts.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { createECDH, timingSafeEqual } from 'node:crypto';
+import { createECDH, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync, existsSync, statSync, accessSync, constants as fsConstants } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve, dirname, isAbsolute, join } from 'node:path';
@@ -1219,13 +1219,14 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
     return getStackStatus(cfg);
 }
 
-function migrationDockerArgs(cfg) {
+function migrationDockerArgs(cfg, setupRunId) {
     const spec = migrationSpec(cfg);
     return [
         'run', '--rm', '--init', '--name', `${cfg.stack}-migrate`,
         '--network', cfg.network,
         '--label', `propr.stack=${cfg.stack}`,
         '--label', 'propr.service=migrate',
+        ...(setupRunId ? ['--label', `propr.setup-run=${setupRunId}`] : []),
         ...spec.args,
         spec.image,
         ...spec.command,
@@ -1395,12 +1396,13 @@ async function prepareMigrationOwnerAsync(cfg, onLog, signal) {
     }
 }
 
-async function dockerRunDetachedAsync(cfg, name, service, args, networkMode = cfg.network, signal) {
+async function dockerRunDetachedAsync(cfg, name, service, args, networkMode = cfg.network, signal, setupRunId) {
     const full = [
         'run', '-d', '--init', '--name', name,
         '--network', networkMode, '--restart', 'unless-stopped',
         '--label', `propr.stack=${cfg.stack}`,
         '--label', `propr.service=${service}`,
+        ...(setupRunId ? ['--label', `propr.setup-run=${setupRunId}`] : []),
         ...args,
     ];
     const res = await dockerAsync(full, { signal });
@@ -1451,14 +1453,20 @@ async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, si
 }
 
 /** Async mirror of startService. */
-export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff, signal } = {}) {
+export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff, signal, setupRunId } = {}) {
     const name = `${cfg.stack}-${service}`;
     await assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff, signal);
     if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, signal });
     const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
-    await removeIfExistsAsync(cfg, name, onLog, signal);
+    if (setupRunId) {
+        if (await containerExistsAsync(cfg, name, signal)) {
+            throw new Error(`Refusing to replace preexisting container ${name} during setup; it was left untouched.`);
+        }
+    } else {
+        await removeIfExistsAsync(cfg, name, onLog, signal);
+    }
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
-    await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode, signal);
+    await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode, signal, setupRunId);
     onLog?.(`  [ok] started ${name}`);
     return getServiceStateAsync(cfg, service, signal);
 }
@@ -1487,43 +1495,86 @@ async function stopServiceAsync(cfg, service, { remove = true, onLog } = {}) {
  */
 export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, onLog, signal } = {}) {
     const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
-    const started = [];
+    const setupRunId = randomUUID();
+    const journal = [];
     const freshnessCache = new Map();
+    const recordBeforeLaunch = async (name, service) => {
+        const preexisting = await containerExistsAsync(cfg, name, signal);
+        journal.push({ name, service, preexisting });
+        if (preexisting) throw new Error(`Refusing to replace preexisting container ${name} during setup; it was left untouched.`);
+    };
     try {
-        await runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal });
+        await recordBeforeLaunch(`${cfg.stack}-migrate`, 'migrate');
+        await runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal, setupRunId });
         for (const service of toStart) {
+            await recordBeforeLaunch(`${cfg.stack}-${service}`, service);
             await startServiceAsync(cfg, service, {
                 onLog,
                 freshnessCache,
                 migrationHandoff: MIGRATIONS_PREAPPLIED_HANDOFF,
                 pull: !DATABASE_SERVICES.has(service),
                 signal,
+                setupRunId,
             });
-            started.push(service);
         }
     } catch (err) {
-        onLog?.(`  ! startup failed (${err.message}) — rolling back already-started services`);
-        for (const service of started.reverse()) {
-            try {
-                await stopServiceAsync(cfg, service, { onLog });
-            } catch (stopErr) {
-                onLog?.(`  ! rollback: ${stopErr.message}`);
-            }
-        }
+        onLog?.(`  ! startup failed (${err.message}) — cleaning up run-owned containers`);
+        await cleanupSetupRunContainers(cfg, setupRunId, journal, onLog);
         throw err;
     }
     return getStackStatusAsync(cfg, signal);
 }
 
 /** Async mirror of runMigrationPhase for the interactive setup UI. */
-export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal } = {}) {
+export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal, setupRunId } = {}) {
     await assertMigrationCanStartAsync(cfg, signal);
     await ensureServiceImageAsync(cfg, 'daemon', onLog, { freshnessCache, signal });
-    await prepareMigrationOwnerAsync(cfg, onLog, signal);
+    if (setupRunId) {
+        const migrationName = `${cfg.stack}-migrate`;
+        if (await containerExistsAsync(cfg, migrationName, signal)) {
+            throw new Error(`Refusing to replace preexisting container ${migrationName} during setup; it was left untouched.`);
+        }
+    } else {
+        await prepareMigrationOwnerAsync(cfg, onLog, signal);
+    }
     onLog?.('  · running database migrations');
-    const res = await dockerAsync(migrationDockerArgs(cfg), { signal });
+    const res = await dockerAsync(migrationDockerArgs(cfg, setupRunId), { signal });
     if (res.status !== 0) throw migrationFailure(res);
     onLog?.('  [ok] database migrations completed');
+}
+
+async function inspectSetupRunOwnership(cfg, name, service, setupRunId, signal) {
+    const inspected = await dockerAsync(['inspect', '--format', '{{json .Config.Labels}}', name], { signal });
+    if (inspected.status !== 0) return false;
+    try {
+        const labels = JSON.parse(inspected.stdout.trim());
+        return labels?.['propr.stack'] === cfg.stack
+            && labels?.['propr.service'] === service
+            && labels?.['propr.setup-run'] === setupRunId;
+    } catch {
+        return false;
+    }
+}
+
+/** Cleanup uses a fresh bounded signal because the setup signal is already aborted. */
+async function cleanupSetupRunContainers(cfg, setupRunId, journal, onLog) {
+    const cleanup = new AbortController();
+    const timer = setTimeout(() => cleanup.abort(), 15_000);
+    try {
+        for (const entry of [...journal].reverse()) {
+            if (entry.preexisting) continue;
+            try {
+                if (!(await inspectSetupRunOwnership(cfg, entry.name, entry.service, setupRunId, cleanup.signal))) continue;
+                await dockerAsync(['stop', '-t', '2', entry.name], { signal: cleanup.signal });
+                const removed = await dockerAsync(['rm', '-f', entry.name], { signal: cleanup.signal });
+                if (removed.status === 0) onLog?.(`  [ok] removed run-owned ${entry.name}`);
+            } catch (cleanupError) {
+                onLog?.(`  ! rollback: ${cleanupError.message}`);
+            }
+        }
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 /** Async mirror of getStackStatus. */

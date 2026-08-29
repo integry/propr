@@ -3,7 +3,7 @@ import { chmod, mkdtemp, mkdir, rename, symlink, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { SetupFilesystemCapabilities } from './setup-capabilities';
+import { SetupFilesystemCapabilities, SetupSecretCapabilities } from './setup-capabilities';
 import { parseDesktopSetupRequest } from './setup-schema';
 
 const sessionId = '00000000-0000-4000-8000-000000000000';
@@ -12,7 +12,6 @@ const baseRequest = () => ({
   root: { mode: 'default' },
   reinitialize: false,
   agents: ['codex'],
-  loginAgents: [],
   github: { mode: 'relay' },
   intake: { mode: 'routing_websocket' },
   whitelist: ['octocat'],
@@ -74,5 +73,23 @@ describe('desktop setup filesystem capabilities', () => {
     await symlink(key, link);
     await assert.rejects(capabilities.issue('private-key', sessionId, link), /Symbolic-link/);
     await assert.rejects(capabilities.issue('private-key', sessionId, parent));
+  });
+});
+
+describe('desktop setup secret capabilities', () => {
+  it('is opaque, expiring, session-bound, single-use, and rejects forgery/replay', () => {
+    const sentinel = 'SENTINEL_SECRET_CAPABILITY_VALUE';
+    let now = 1_000;
+    const secrets = new SetupSecretCapabilities(() => now);
+    const issued = secrets.issue(sessionId, sentinel);
+    assert.doesNotMatch(JSON.stringify(issued), new RegExp(sentinel));
+    assert.throws(() => secrets.consume('A'.repeat(43), sessionId));
+    assert.throws(() => secrets.consume(issued.capability, '11111111-1111-4111-8111-111111111111'));
+    const fresh = secrets.issue(sessionId, sentinel);
+    assert.equal(secrets.consume(fresh.capability, sessionId), sentinel);
+    assert.throws(() => secrets.consume(fresh.capability, sessionId));
+    const expired = secrets.issue(sessionId, sentinel);
+    now += 5 * 60_000 + 1;
+    assert.throws(() => secrets.consume(expired.capability, sessionId));
   });
 });

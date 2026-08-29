@@ -12,10 +12,11 @@
  * and unit-tested without Docker, Ink, or readline.
  */
 
-import { lstatSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { resolveGithubAuthMode, type GithubAuthModeResult } from "@propr/shared";
 import { clearEnvKeys as clearEnvFileKeys, upsertEnvVars } from "./envFile.js";
+import { readPrivateFile } from "./privateFilesystem.js";
 import {
   SETUP_STEP_DEFINITIONS,
   type SetupState,
@@ -246,14 +247,17 @@ export function isStackInitialized(rootDir: string): boolean {
  * full dotenv implementation — it does not handle escaped quotes or multiline
  * values.
  */
-export function readEnvVars(rootDir: string): Record<string, string> {
+export function readEnvVars(rootDir: string, signal?: AbortSignal): Record<string, string> {
+  signal?.throwIfAborted();
   const envPath = envPathFor(rootDir);
   // Treat anything that is not a regular file (absent, a directory, a broken
   // symlink) as "no vars", matching inspectStackInit's `isFile` guard, so a
   // malformed stack surfaces as not-initialized instead of crashing the read.
   if (!isFile(envPath)) return {};
+  const contents = readPrivateFile(envPath);
+  if (!contents) return {};
   const vars: Record<string, string> = {};
-  for (const line of readFileSync(envPath, "utf-8").split(/\r?\n/)) {
+  for (const line of contents.toString("utf-8").split(/\r?\n/)) {
     const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/);
     if (!match) continue;
     const [, key, rawValue] = match;
@@ -296,9 +300,11 @@ export interface EnvSelectionResult {
 export function applyEnvSelection(
   rootDir: string,
   vars: Record<string, string>,
-  opts: { overwrite?: boolean } = {}
+  opts: { overwrite?: boolean } = {},
+  signal?: AbortSignal,
 ): EnvSelectionResult {
-  const existing = readEnvVars(rootDir);
+  signal?.throwIfAborted();
+  const existing = readEnvVars(rootDir, signal);
   const toWrite: Record<string, string> = {};
   const written: string[] = [];
   const skipped: string[] = [];
@@ -315,7 +321,7 @@ export function applyEnvSelection(
   }
 
   if (written.length > 0) {
-    upsertEnvVars(envPathFor(rootDir), toWrite);
+    upsertEnvVars(envPathFor(rootDir), toWrite, signal);
   }
   return { written, skipped };
 }
@@ -330,8 +336,9 @@ export function applyEnvSelection(
  * user whitelist back to "none", removing a key when switching modes — call this
  * instead. A missing `.env` or absent keys are no-ops.
  */
-export function clearEnvKeys(rootDir: string, keys: string[]): void {
-  clearEnvFileKeys(envPathFor(rootDir), keys);
+export function clearEnvKeys(rootDir: string, keys: string[], signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+  clearEnvFileKeys(envPathFor(rootDir), keys, signal);
 }
 
 /**

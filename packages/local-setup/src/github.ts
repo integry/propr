@@ -34,6 +34,7 @@
  */
 
 import type { GithubAuthMode, GithubEventIntakeMode } from "@propr/shared";
+import { rethrowCancellation } from "./cancellation.js";
 
 /**
  * How the backend ingests GitHub events. Aliased to the shared
@@ -238,6 +239,8 @@ export interface SaveWhitelistParams {
   saveViaSettings(users: string[]): Promise<void>;
   /** Persist into `.env` (non-destructive, single key). */
   saveViaEnv(users: string[]): void;
+  /** Abort is observed before each persistence commit and never triggers fallback. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -250,20 +253,25 @@ export interface SaveWhitelistParams {
  * unrelated settings are never overwritten.
  */
 export async function saveWhitelist(params: SaveWhitelistParams): Promise<SaveWhitelistResult> {
-  const { users, backendRunning, saveViaSettings, saveViaEnv } = params;
+  const { users, backendRunning, saveViaSettings, saveViaEnv, signal } = params;
+  signal?.throwIfAborted();
   if (backendRunning) {
     try {
       await saveViaSettings(users);
+      signal?.throwIfAborted();
       // Mirror into `.env` so the whitelist persists across `propr start`.
       saveViaEnv(users);
       return { target: "settings", count: users.length };
     } catch (error) {
+      rethrowCancellation(error);
+      signal?.throwIfAborted();
       // The backend rejected the update (or was unreachable after all) — keep
       // the value in `.env` so it is not lost, and surface why.
       saveViaEnv(users);
       return { target: "env", count: users.length, error: (error as Error).message };
     }
   }
+  signal?.throwIfAborted();
   saveViaEnv(users);
   return { target: "env", count: users.length };
 }

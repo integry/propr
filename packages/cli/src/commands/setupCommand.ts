@@ -223,6 +223,9 @@ cannot prompt and exits with guidance — scaffold non-interactively instead wit
 `)
     .action(async (options: SetupCommandOptions) => {
       try {
+        if (process.platform !== "linux") {
+          throw new Error(`Local setup is not supported on ${process.platform}; use a remote ProPR deployment.`);
+        }
         let skillReadline: ReturnType<typeof createInterface> | undefined;
         const canPromptForSkill = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
         await (dependencies.offerAgentSkill ?? offerSetupAgentSkill)({

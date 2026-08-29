@@ -12,6 +12,7 @@ import {
   readEnvVars,
   type PullImagesResult,
   type SetupActions,
+  rethrowCancellation,
 } from "@propr/local-setup";
 import type { ConfigManager } from "../../config/index.js";
 import type { RelayClientOptions } from "../../api/relay.js";
@@ -55,10 +56,11 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       const { scaffoldStack } = await import("../initStack.js");
       return scaffoldStack(options);
     },
-    async persistStackRoot(rootDir) {
+    async persistStackRoot(rootDir, signal) {
       // Mirror scaffoldStack's `configManager.setStackRoot` so the reuse path
       // records the root too. Best-effort: without a config there is nowhere to
       // persist it (tests run this way), so it is simply a no-op.
+      signal?.throwIfAborted();
       await configManager?.setStackRoot(rootDir);
     },
     readEnvVars,
@@ -89,7 +91,8 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
         if (pulled.status === 0) {
           try {
             await orch.tagAgentLatestAsync(key, tag, signal);
-          } catch {
+          } catch (error) {
+            rethrowCancellation(error);
             /* best-effort local retag; the pull itself succeeded */
           }
           (isAgent ? result.pulledAgents : result.pulledCore).push(tag);
@@ -147,6 +150,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
           }
           lastError = `API reports "${status.api}"`;
         } catch (error) {
+          rethrowCancellation(error);
           // A 401/403 is not an unhealthy backend — the API answered but denied
           // this protected request. Return immediately so setup does not stall
           // on a running backend, while preserving whether remediation requires
