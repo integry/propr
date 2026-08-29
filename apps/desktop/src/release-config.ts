@@ -7,9 +7,29 @@ export interface TrustedUpdateBuildConfig {
   manifestUrl: string;
   publicKey: string;
   signingIdentity: string;
+  windowsSignerPins: readonly string[];
 }
 
 const RELEASE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const WINDOWS_SIGNER_PIN_PATTERN = /^(?:certificate|spki)-sha256:[a-f0-9]{64}$/;
+const MAX_WINDOWS_SIGNER_PINS = 16;
+
+export const parseWindowsSignerPins = (
+  value: string | undefined,
+  label = 'PROPR_DESKTOP_WINDOWS_SIGNER_PINS',
+): readonly string[] => {
+  if (!value) throw new Error(`${label} is required`);
+  const pins = value.split(',');
+  if (pins.length > MAX_WINDOWS_SIGNER_PINS
+    || pins.some(pin => !WINDOWS_SIGNER_PIN_PATTERN.test(pin))
+    || new Set(pins).size !== pins.length
+    || pins.join(',') !== [...pins].sort().join(',')) {
+    throw new Error(
+      `${label} must be a sorted, unique comma-separated allowlist of canonical certificate-sha256 or spki-sha256 fingerprints`,
+    );
+  }
+  return pins;
+};
 
 export const resolveDesktopVersion = (packageVersion: string, env: Environment = process.env): string => {
   const version = env.PROPR_DESKTOP_VERSION?.trim() || packageVersion;
@@ -44,9 +64,10 @@ const validateEd25519PublicKey = (value: string): string => {
 
 export const resolveTrustedUpdateBuildConfig = (
   env: Environment = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): TrustedUpdateBuildConfig => {
   if (env.PROPR_DESKTOP_ENABLE_UPDATES !== '1') {
-    return { enabled: false, manifestUrl: '', publicKey: '', signingIdentity: '' };
+    return { enabled: false, manifestUrl: '', publicKey: '', signingIdentity: '', windowsSignerPins: [] };
   }
   if (env.PROPR_DESKTOP_CODE_SIGNED !== '1') {
     throw new Error('Signed updates require PROPR_DESKTOP_CODE_SIGNED=1 from the trusted signing job');
@@ -66,6 +87,9 @@ export const resolveTrustedUpdateBuildConfig = (
     manifestUrl: validateHttpsUrl(manifestUrl, 'PROPR_DESKTOP_UPDATE_MANIFEST_URL'),
     publicKey: validateEd25519PublicKey(publicKey),
     signingIdentity,
+    windowsSignerPins: platform === 'win32'
+      ? parseWindowsSignerPins(env.PROPR_DESKTOP_WINDOWS_SIGNER_PINS)
+      : [],
   };
 };
 
@@ -105,5 +129,8 @@ export const requireProductionReleaseConfiguration = ({
   }
   if (platform === 'win32' && (!windowsSigning || !updateConfig.enabled)) {
     throw new Error('Production Windows releases require Authenticode signing and signed updates');
+  }
+  if (platform === 'win32' && updateConfig.windowsSignerPins.length === 0) {
+    throw new Error('Production Windows releases require an Authenticode certificate or SPKI SHA-256 signer pin');
   }
 };

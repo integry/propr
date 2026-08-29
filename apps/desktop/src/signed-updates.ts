@@ -1,9 +1,10 @@
-import { createHash, createPublicKey, verify } from 'node:crypto';
+import { createHash, createPublicKey, verify, X509Certificate } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { mkdtemp, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
+import { parseWindowsSignerPins } from './release-config';
 
 export interface SignedUpdateBytes {
   url: string;
@@ -20,6 +21,8 @@ export interface SignedUpdateSigner {
   type: 'apple-team-id' | 'authenticode-subject';
   identity: string;
   designatedRequirement?: string;
+  certificateSha256?: string;
+  spkiSha256?: string;
 }
 
 export interface SignedUpdateFeed {
@@ -44,6 +47,7 @@ export interface SignedUpdateRuntimeConfig {
   manifestUrl: string;
   publicKey: string;
   signingIdentity: string;
+  windowsSignerPins: readonly string[];
 }
 
 export type SignedUpdateRequest = (url: string, init: RequestInit) => Promise<Response>;
@@ -153,6 +157,13 @@ const parseFeed = (value: unknown, target: string, version: string): SignedUpdat
     && (typeof value.signer.designatedRequirement !== 'string' || !value.signer.designatedRequirement.trim())) {
     throw new Error(`${label} macOS designated requirement is invalid`);
   }
+  if (expectedSignerType === 'authenticode-subject'
+    && (typeof value.signer.certificateSha256 !== 'string'
+      || !SHA256_PATTERN.test(value.signer.certificateSha256)
+      || typeof value.signer.spkiSha256 !== 'string'
+      || !SHA256_PATTERN.test(value.signer.spkiSha256))) {
+    throw new Error(`${label} Windows signer fingerprint evidence is invalid`);
+  }
   return {
     target,
     version,
@@ -167,7 +178,10 @@ const parseFeed = (value: unknown, target: string, version: string): SignedUpdat
       identity: value.signer.identity,
       ...(expectedSignerType === 'apple-team-id'
         ? { designatedRequirement: value.signer.designatedRequirement as string }
-        : {}),
+        : {
+            certificateSha256: value.signer.certificateSha256 as string,
+            spkiSha256: value.signer.spkiSha256 as string,
+          }),
     },
   };
 };
@@ -461,16 +475,29 @@ export const verifyNativeUpdateSigner = async (
       '$zip = "$package.zip"',
       'Copy-Item -LiteralPath $package -Destination $zip',
       'Expand-Archive -LiteralPath $zip -DestinationPath $extract',
-      "$executable = Get-ChildItem -LiteralPath $extract -Recurse -Filter 'propr-desktop.exe' | Select-Object -First 1",
-      "if (!$executable) { throw 'Windows update package contains no application executable' }",
+      "$executable = Get-Item -LiteralPath (Join-Path $extract 'lib/net45/propr-desktop.exe')",
+      "if (!$executable -or $executable.PSIsContainer) { throw 'Windows update package canonical application is missing' }",
       '$signature = Get-AuthenticodeSignature -LiteralPath $executable.FullName',
-      "if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate) { throw 'Windows update Authenticode signature is invalid' }",
-      '$signature.SignerCertificate.Subject',
+      "if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or !$signature.TimeStamperCertificate) { throw 'Windows update Authenticode chain or timestamp status is invalid' }",
+      '$certificateBase64 = [Convert]::ToBase64String($signature.SignerCertificate.RawData)',
+      '@{ identity = $signature.SignerCertificate.Subject; certificateBase64 = $certificateBase64 } | ConvertTo-Json -Compress',
     ].join('; ');
     const { stdout } = await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script]);
-    const identity = stdout.trim();
-    if (!identity) throw new Error('Windows update has no Authenticode signer subject');
-    return { type: 'authenticode-subject', identity };
+    let evidence: { identity?: string; certificateBase64?: string };
+    try { evidence = JSON.parse(stdout.trim()); } catch { throw new Error('Windows update signer evidence is invalid'); }
+    if (!evidence.identity || !evidence.certificateBase64) {
+      throw new Error('Windows update has incomplete Authenticode signer evidence');
+    }
+    let certificate: X509Certificate;
+    try { certificate = new X509Certificate(Buffer.from(evidence.certificateBase64, 'base64')); } catch {
+      throw new Error('Windows update signer certificate evidence is invalid');
+    }
+    return {
+      type: 'authenticode-subject',
+      identity: evidence.identity,
+      certificateSha256: certificate.fingerprint256.replaceAll(':', '').toLowerCase(),
+      spkiSha256: createHash('sha256').update(certificate.publicKey.export({ format: 'der', type: 'spki' })).digest('hex'),
+    };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -534,6 +561,17 @@ export const checkForSignedUpdates = async ({
   if (feed.signer.identity !== config.signingIdentity) {
     throw new Error('Signed update native signer does not match the identity embedded in this build');
   }
+  if (platform === 'win32') {
+    if (!Array.isArray(config.windowsSignerPins)) throw new Error('Embedded Windows signer pin allowlist is invalid');
+    const configuredPins = parseWindowsSignerPins(config.windowsSignerPins.join(','), 'Embedded Windows signer pin allowlist');
+    const evidencePins = new Set([
+      `certificate-sha256:${feed.signer.certificateSha256}`,
+      `spki-sha256:${feed.signer.spkiSha256}`,
+    ]);
+    if (!configuredPins.some(pin => evidencePins.has(pin))) {
+      throw new Error('Signed update Windows signer fingerprint is not in the embedded allowlist');
+    }
+  }
 
   const feedBytes = await fetchBoundedUpdateBytes({
     request,
@@ -560,7 +598,9 @@ export const checkForSignedUpdates = async ({
     const actualSigner = await verifyNativeSigner(packagePath, feed.artifact, feed.signer);
     if (actualSigner.type !== feed.signer.type
       || actualSigner.identity !== feed.signer.identity
-      || actualSigner.designatedRequirement !== feed.signer.designatedRequirement) {
+      || actualSigner.designatedRequirement !== feed.signer.designatedRequirement
+      || actualSigner.certificateSha256 !== feed.signer.certificateSha256
+      || actualSigner.spkiSha256 !== feed.signer.spkiSha256) {
       throw new Error('Native update artifact signer does not match the signed build pin');
     }
   } finally {

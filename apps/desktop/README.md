@@ -132,6 +132,9 @@ GitHub Actions variables (public configuration, not secrets):
 - `PROPR_DESKTOP_MAC_SIGNING_IDENTITY`: exact Developer ID Application identity.
 - `PROPR_DESKTOP_MAC_TEAM_ID`: exact Team ID embedded in signed macOS update builds and verified from produced apps.
 - `PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY`: exact Authenticode certificate subject expected by installed builds.
+- `PROPR_DESKTOP_WINDOWS_SIGNER_PINS`: sorted, unique comma-separated allowlist of one or more
+  `certificate-sha256:<64 lowercase hex>` or `spki-sha256:<64 lowercase hex>` fingerprints. Production Windows
+  packaging fails closed when this public operator pin is absent, malformed, or does not match the signing key.
 - `PROPR_DESKTOP_UPDATE_PUBLIC_KEY`: base64 Ed25519 SPKI DER public key matching the update private key.
 - `PROPR_DESKTOP_UPDATE_MANIFEST_URL`: stable HTTPS URL from which clients fetch `desktop-release.json`; the detached
   signature must be published beside it as `desktop-release.json.sig`.
@@ -166,6 +169,9 @@ the documented pathname plus `.sig`.
 
 Linux never checks for native updates. macOS and Windows operate as check-only channels: they verify the Ed25519
 manifest, exact target/version/feed bytes, package URL/size/SHA-256, and the actual Team ID/designated requirement or
-Authenticode certificate subject extracted from the downloaded package. Electron's `autoUpdater` is not initialized,
+Authenticode certificate subject plus certificate/SPKI SHA-256 fingerprints extracted from the downloaded package.
+Windows requires the identical valid, timestamped signer on the installer, packaged application, and the exact
+`lib/net45/propr-desktop.exe` from the validated NUPKG; the runtime also requires its signed fingerprint evidence to
+match the allowlist embedded in the installed build. Electron's `autoUpdater` is not initialized,
 because it would re-fetch mutable URLs instead of installing the already verified bytes. Unsigned developer packages
 remain update-disabled.

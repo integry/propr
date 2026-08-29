@@ -8,6 +8,13 @@ import { inflateRawSync } from 'node:zlib';
 
 const execFile = promisify(execFileCallback);
 const EXECUTABLE_NAME = 'propr-desktop';
+const DMG_INSTALL_LINK = 'Applications';
+const DMG_HELPER_BUNDLES = new Set([
+  `${EXECUTABLE_NAME} Helper.app`,
+  `${EXECUTABLE_NAME} Helper (GPU).app`,
+  `${EXECUTABLE_NAME} Helper (Plugin).app`,
+  `${EXECUTABLE_NAME} Helper (Renderer).app`,
+]);
 const LINUX_APP_DIRECTORY = join('usr', 'lib', EXECUTABLE_NAME);
 const LINUX_PAYLOAD = join(LINUX_APP_DIRECTORY, EXECUTABLE_NAME);
 const LINUX_LAUNCHER = join('usr', 'bin', EXECUTABLE_NAME);
@@ -576,6 +583,7 @@ export const inspectDmgLayout = async ({ root, platform, arch, artifact }) => {
   const contents = join(application, 'Contents');
   const macos = join(contents, 'MacOS');
   const executable = join(macos, EXECUTABLE_NAME);
+  const installLink = join(rootPath, DMG_INSTALL_LINK);
   for (const [path, description, expectedType] of [
     [application, `${EXECUTABLE_NAME}.app`, 'directory'],
     [contents, `${EXECUTABLE_NAME}.app/Contents`, 'directory'],
@@ -591,6 +599,27 @@ export const inspectDmgLayout = async ({ root, platform, arch, artifact }) => {
       throw new Error(`DMG canonical ${description} must be a real ${expectedType}, found ${describeFileType(stats)}`);
     }
   }
+  let installLinkStats;
+  try { installLinkStats = await lstat(installLink); } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`DMG is missing canonical ${DMG_INSTALL_LINK} install link`);
+    throw error;
+  }
+  if (!installLinkStats.isSymbolicLink() || await readlink(installLink) !== '/Applications') {
+    throw new Error(`DMG canonical ${DMG_INSTALL_LINK} install link must be the exact /Applications symbolic link`);
+  }
+
+  const topLevel = await readdir(rootPath, { withFileTypes: true });
+  const topLevelCaseNames = new Set();
+  for (const entry of topLevel) {
+    const caseName = entry.name.toLocaleLowerCase('en-US');
+    if (topLevelCaseNames.has(caseName)) throw new Error(`DMG has duplicate or case-colliding top-level entry ${entry.name}`);
+    topLevelCaseNames.add(caseName);
+  }
+  const allowedTopLevel = new Set([`${EXECUTABLE_NAME}.app`, DMG_INSTALL_LINK]);
+  if (topLevel.length !== allowedTopLevel.size || topLevel.some(entry => !allowedTopLevel.has(entry.name))) {
+    throw new Error(`DMG contains an unclaimed or alternate top-level payload; expected only ${[...allowedTopLevel].join(' and ')}`);
+  }
+
   const applications = [];
   const sameNameExecutables = [];
   const visit = async directory => {
@@ -599,12 +628,44 @@ export const inspectDmgLayout = async ({ root, platform, arch, artifact }) => {
       const stats = await lstat(entryPath);
       if (entry.name.toLocaleLowerCase('en-US').endsWith('.app')) applications.push(entryPath);
       if (entry.name.toLocaleLowerCase('en-US') === EXECUTABLE_NAME) sameNameExecutables.push(entryPath);
-      if (stats.isDirectory() && !stats.isSymbolicLink()) await visit(entryPath);
+      if (stats.isSymbolicLink()) {
+        const target = await readlink(entryPath);
+        if (isAbsolute(target)) throw new Error(`DMG application bundle contains unsafe absolute symbolic link ${displayPackagePath(rootPath, entryPath)}`);
+        const resolvedTarget = resolve(dirname(entryPath), target);
+        if (!pathInside(application, resolvedTarget)) {
+          throw new Error(`DMG application bundle symbolic link escapes the canonical application: ${displayPackagePath(rootPath, entryPath)}`);
+        }
+      } else if (stats.isDirectory()) {
+        await visit(entryPath);
+      } else if (!stats.isFile()) {
+        throw new Error(`DMG contains special file ${displayPackagePath(rootPath, entryPath)}`);
+      }
     }
   };
-  await visit(rootPath);
-  if (applications.length !== 1 || applications[0] !== application) {
-    throw new Error(`DMG must contain exactly the canonical ${EXECUTABLE_NAME}.app bundle`);
+  await visit(application);
+  const helperDirectory = join(contents, 'Frameworks');
+  const unexpectedApplications = applications.filter(path => (
+    dirname(path) !== helperDirectory || !DMG_HELPER_BUNDLES.has(basename(path))
+  ));
+  if (unexpectedApplications.length > 0) {
+    throw new Error(`DMG contains an alternate application bundle outside the canonical Electron helper layout`);
+  }
+  const helperNames = new Set(applications.map(path => basename(path)));
+  if (helperNames.size !== DMG_HELPER_BUNDLES.size
+    || [...DMG_HELPER_BUNDLES].some(name => !helperNames.has(name))) {
+    throw new Error('DMG canonical application is missing a required Electron helper bundle');
+  }
+  for (const helperBundle of DMG_HELPER_BUNDLES) {
+    const helperName = helperBundle.slice(0, -'.app'.length);
+    const helperExecutable = join(helperDirectory, helperBundle, 'Contents', 'MacOS', helperName);
+    let helperStats;
+    try { helperStats = await lstat(helperExecutable); } catch (error) {
+      if (error?.code === 'ENOENT') throw new Error(`DMG Electron helper bundle is missing canonical executable ${helperName}`);
+      throw error;
+    }
+    if (!helperStats.isFile() || helperStats.isSymbolicLink()) {
+      throw new Error(`DMG Electron helper executable ${helperName} must be a real regular file`);
+    }
   }
   if (sameNameExecutables.length !== 1 || sameNameExecutables[0] !== executable) {
     throw new Error(`DMG contains a missing or alternate same-name executable outside the canonical application bundle path`);

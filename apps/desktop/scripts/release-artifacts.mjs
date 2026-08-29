@@ -6,6 +6,7 @@ import { inspectArtifactArchitecture } from './release-architecture.mjs';
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const WINDOWS_SIGNER_PIN_PATTERN = /^(?:certificate|spki)-sha256:[a-f0-9]{64}$/;
 const SHA1_PATTERN = /^[a-fA-F0-9]{40}$/;
 const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true });
 const TARGETS = new Map([
@@ -31,6 +32,21 @@ const recursiveFiles = async directory => {
 const checksumBytes = value => createHash('sha256').update(value).digest('hex');
 const checksum = async path => checksumBytes(await readFile(path));
 const squirrelChecksumBytes = value => createHash('sha1').update(value).digest('hex');
+
+const parseWindowsSignerPins = value => {
+  if (!value) throw new Error('PROPR_DESKTOP_WINDOWS_SIGNER_PINS is required');
+  const pins = value.split(',');
+  if (pins.length > 16 || pins.some(pin => !WINDOWS_SIGNER_PIN_PATTERN.test(pin))
+    || new Set(pins).size !== pins.length || pins.join(',') !== [...pins].sort().join(',')) {
+    throw new Error('PROPR_DESKTOP_WINDOWS_SIGNER_PINS must be a sorted, unique canonical SHA-256 fingerprint allowlist');
+  }
+  return pins;
+};
+
+const windowsSignerMatchesPins = (signer, pins) => pins.some(pin => (
+  pin === `certificate-sha256:${signer.certificateSha256}`
+  || pin === `spki-sha256:${signer.spkiSha256}`
+));
 
 export const parseSquirrelReleases = bytes => {
   let text;
@@ -118,15 +134,23 @@ const readNativeSigner = (platform, env) => {
   const type = env.PROPR_DESKTOP_ACTUAL_SIGNER_TYPE?.trim();
   const identity = env.PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY?.trim();
   const designatedRequirement = env.PROPR_DESKTOP_ACTUAL_MAC_DESIGNATED_REQUIREMENT?.trim();
-  if (!type && !identity && !designatedRequirement) return undefined;
+  const certificateSha256 = env.PROPR_DESKTOP_ACTUAL_WINDOWS_CERTIFICATE_SHA256?.trim();
+  const spkiSha256 = env.PROPR_DESKTOP_ACTUAL_WINDOWS_SPKI_SHA256?.trim();
+  if (!type && !identity && !designatedRequirement && !certificateSha256 && !spkiSha256) return undefined;
   const expectedType = platform === 'darwin' ? 'apple-team-id' : 'authenticode-subject';
-  if (type !== expectedType || !identity || (platform === 'darwin' && !designatedRequirement)) {
+  if (type !== expectedType || !identity
+    || (platform === 'darwin' && (!designatedRequirement || certificateSha256 || spkiSha256))
+    || (platform === 'win32' && (designatedRequirement
+      || !SHA256_PATTERN.test(certificateSha256 ?? '')
+      || !SHA256_PATTERN.test(spkiSha256 ?? '')))) {
     throw new Error(`Native signer evidence is incomplete or invalid for ${platform}`);
   }
   return {
     type,
     identity,
-    ...(platform === 'darwin' ? { designatedRequirement } : {}),
+    ...(platform === 'darwin'
+      ? { designatedRequirement }
+      : { certificateSha256, spkiSha256 }),
   };
 };
 
@@ -197,6 +221,12 @@ export const stageArtifacts = async ({
   if (env.PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS === '1' && platform !== 'linux' && !nativeSigner) {
     throw new Error(`Production ${platform} artifacts require verified native signer evidence`);
   }
+  if (env.PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS === '1' && platform === 'win32') {
+    const pins = parseWindowsSignerPins(env.PROPR_DESKTOP_WINDOWS_SIGNER_PINS);
+    if (!windowsSignerMatchesPins(nativeSigner, pins)) {
+      throw new Error('Production Windows signer fingerprint is not in the configured allowlist');
+    }
+  }
   const fragment = {
     schemaVersion: 2,
     version,
@@ -256,6 +286,8 @@ export const finalizeArtifacts = async ({
       PROPR_DESKTOP_ACTUAL_SIGNER_TYPE: value.nativeSigner?.type,
       PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY: value.nativeSigner?.identity,
       PROPR_DESKTOP_ACTUAL_MAC_DESIGNATED_REQUIREMENT: value.nativeSigner?.designatedRequirement,
+      PROPR_DESKTOP_ACTUAL_WINDOWS_CERTIFICATE_SHA256: value.nativeSigner?.certificateSha256,
+      PROPR_DESKTOP_ACTUAL_WINDOWS_SPKI_SHA256: value.nativeSigner?.spkiSha256,
     });
     if (expectedSigner) nativeSigners[value.target] = expectedSigner;
     for (const artifact of value.artifacts) {
@@ -307,6 +339,10 @@ export const finalizeArtifacts = async ({
   }
   for (const target of TARGETS.keys()) {
     if (!seenTargets.has(target)) throw new Error(`Missing release target ${target}`);
+  }
+  const windowsSigners = ['win32-x64', 'win32-arm64'].map(target => nativeSigners[target]).filter(Boolean);
+  if (windowsSigners.length === 2 && JSON.stringify(windowsSigners[0]) !== JSON.stringify(windowsSigners[1])) {
+    throw new Error('Windows release targets contain mixed native signer evidence');
   }
 
   artifacts.sort((left, right) => left.fileName.localeCompare(right.fileName));
@@ -424,24 +460,44 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
     'PROPR_DESKTOP_UPDATE_MANIFEST_URL',
     'PROPR_DESKTOP_MAC_TEAM_ID',
     'PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY',
+    'PROPR_DESKTOP_WINDOWS_SIGNER_PINS',
     ...configuredFeedDefinitions.map(([, name]) => name),
   ];
   const present = configurationNames.filter(name => env[name]?.trim());
   if (present.length !== configurationNames.length) {
     throw new Error(`Trusted update signing configuration is incomplete; missing ${configurationNames.filter(name => !env[name]?.trim()).join(', ')}`);
   }
+  const windowsSignerPins = parseWindowsSignerPins(env.PROPR_DESKTOP_WINDOWS_SIGNER_PINS);
 
   for (const target of ['darwin-x64', 'darwin-arm64']) {
-    if (unsignedManifest.nativeSigners?.[target]?.type !== 'apple-team-id'
-      || unsignedManifest.nativeSigners[target].identity !== env.PROPR_DESKTOP_MAC_TEAM_ID.trim()) {
+    const signer = readNativeSigner('darwin', {
+      PROPR_DESKTOP_ACTUAL_SIGNER_TYPE: unsignedManifest.nativeSigners?.[target]?.type,
+      PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY: unsignedManifest.nativeSigners?.[target]?.identity,
+      PROPR_DESKTOP_ACTUAL_MAC_DESIGNATED_REQUIREMENT: unsignedManifest.nativeSigners?.[target]?.designatedRequirement,
+      PROPR_DESKTOP_ACTUAL_WINDOWS_CERTIFICATE_SHA256: unsignedManifest.nativeSigners?.[target]?.certificateSha256,
+      PROPR_DESKTOP_ACTUAL_WINDOWS_SPKI_SHA256: unsignedManifest.nativeSigners?.[target]?.spkiSha256,
+    });
+    if (!signer || signer.identity !== env.PROPR_DESKTOP_MAC_TEAM_ID.trim()) {
       throw new Error(`Actual native signer mismatch for ${target}`);
     }
   }
+  const windowsSigners = [];
   for (const target of ['win32-x64', 'win32-arm64']) {
-    if (unsignedManifest.nativeSigners?.[target]?.type !== 'authenticode-subject'
-      || unsignedManifest.nativeSigners[target].identity !== env.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY.trim()) {
+    const signer = readNativeSigner('win32', {
+      PROPR_DESKTOP_ACTUAL_SIGNER_TYPE: unsignedManifest.nativeSigners?.[target]?.type,
+      PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY: unsignedManifest.nativeSigners?.[target]?.identity,
+      PROPR_DESKTOP_ACTUAL_MAC_DESIGNATED_REQUIREMENT: unsignedManifest.nativeSigners?.[target]?.designatedRequirement,
+      PROPR_DESKTOP_ACTUAL_WINDOWS_CERTIFICATE_SHA256: unsignedManifest.nativeSigners?.[target]?.certificateSha256,
+      PROPR_DESKTOP_ACTUAL_WINDOWS_SPKI_SHA256: unsignedManifest.nativeSigners?.[target]?.spkiSha256,
+    });
+    if (!signer || signer.identity !== env.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY.trim()
+      || !windowsSignerMatchesPins(signer, windowsSignerPins)) {
       throw new Error(`Actual native signer mismatch for ${target}`);
     }
+    windowsSigners.push(signer);
+  }
+  if (JSON.stringify(windowsSigners[0]) !== JSON.stringify(windowsSigners[1])) {
+    throw new Error('Windows release targets contain mixed native signer evidence');
   }
 
   const manifestUrl = parseHttpsUrl(

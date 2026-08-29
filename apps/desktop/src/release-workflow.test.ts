@@ -95,6 +95,7 @@ describe('desktop trusted release workflow', () => {
       'UPDATE_MAC_TEAM_ID',
       'CERTIFICATE_PFX_BASE64',
       'UPDATE_WINDOWS_SIGNING_IDENTITY',
+      'UPDATE_WINDOWS_SIGNER_PINS',
       'UPDATE_PUBLIC_KEY',
       'UPDATE_MANIFEST_URL',
     ]) assert.ok(production.includes(field), `missing fail-closed production field ${field}`);
@@ -110,6 +111,11 @@ describe('desktop trusted release workflow', () => {
     assert.match(production, /spctl --assess/);
     assert.match(production, /stapler validate/);
     assert.match(production, /Authenticode signer does not match the configured build pin/);
+    assert.match(production, /TimeStamperCertificate/);
+    assert.match(production, /CertificateSha256/);
+    assert.match(production, /SpkiSha256/);
+    assert.match(production, /Windows artifacts have mixed Authenticode signers/);
+    assert.match(production, /certificate\|spki\)-sha256:\[a-f0-9\]\{64\}/);
     assert.match(production, /release-architecture\.mjs inspect[\s\S]*--kind nupkg[\s\S]*lib\/net45\/propr-desktop\.exe/);
     assert.ok(
       production.indexOf('release-architecture.mjs inspect') < production.indexOf('Expand-Archive'),

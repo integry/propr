@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
-import { access, mkdir, readFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
-import { resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 const execFileAsync = promisify(execFile);
 if (process.platform !== 'darwin') throw new Error('DMG artifacts must be built on a native macOS host');
@@ -20,12 +21,19 @@ const outputDirectory = resolve('out', 'make', 'dmg', arch);
 const outputPath = resolve(outputDirectory, `ProPR-Desktop-${version}-macos-${arch}.dmg`);
 await access(appPath);
 await mkdir(outputDirectory, { recursive: true });
-await execFileAsync('hdiutil', [
-  'create',
-  '-volname', 'ProPR Desktop',
-  '-srcfolder', appPath,
-  '-ov',
-  '-format', 'UDZO',
-  outputPath,
-]);
+const stagingDirectory = await mkdtemp(join(tmpdir(), 'propr-dmg-layout-'));
+try {
+  await cp(appPath, join(stagingDirectory, basename(appPath)), { recursive: true, verbatimSymlinks: true });
+  await symlink('/Applications', join(stagingDirectory, 'Applications'));
+  await execFileAsync('hdiutil', [
+    'create',
+    '-volname', 'ProPR Desktop',
+    '-srcfolder', stagingDirectory,
+    '-ov',
+    '-format', 'UDZO',
+    outputPath,
+  ]);
+} finally {
+  await rm(stagingDirectory, { recursive: true, force: true });
+}
 console.log(outputPath);

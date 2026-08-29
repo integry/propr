@@ -306,6 +306,7 @@ jobs:
       UPDATE_MAC_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_MAC_SIGNING_IDENTITY }}
       UPDATE_MAC_TEAM_ID: ${{ vars.PROPR_DESKTOP_MAC_TEAM_ID }}
       UPDATE_WINDOWS_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY }}
+      UPDATE_WINDOWS_SIGNER_PINS: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNER_PINS }}
     steps:
       - name: Revalidate immutable tag before checkout
         shell: bash
@@ -404,12 +405,21 @@ jobs:
             CERTIFICATE_PFX_BASE64 = $env:CERTIFICATE_PFX_BASE64
             CERTIFICATE_PASSWORD = $env:CERTIFICATE_PASSWORD
             UPDATE_WINDOWS_SIGNING_IDENTITY = $env:UPDATE_WINDOWS_SIGNING_IDENTITY
+            UPDATE_WINDOWS_SIGNER_PINS = $env:UPDATE_WINDOWS_SIGNER_PINS
           }
           foreach ($entry in $values.GetEnumerator()) { if (!$entry.Value) { throw "Required production Windows field $($entry.Key) is missing" } }
+          $pins = $env:UPDATE_WINDOWS_SIGNER_PINS -split ','
+          if ($pins.Count -gt 16 -or (($pins | Sort-Object -CaseSensitive -Unique) -join ',') -cne $env:UPDATE_WINDOWS_SIGNER_PINS) {
+            throw 'Windows signer pin allowlist is not sorted and unique'
+          }
+          foreach ($pin in $pins) {
+            if ($pin -cnotmatch '^(certificate|spki)-sha256:[a-f0-9]{64}$') { throw 'Windows signer pin is not canonical' }
+          }
           $certificate = Join-Path $env:RUNNER_TEMP 'propr-desktop-signing.pfx'
           [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_PFX_BASE64))
           "PROPR_DESKTOP_WINDOWS_CERTIFICATE_FILE=$certificate" | Out-File -FilePath $env:GITHUB_ENV -Append
           "PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD=$env:CERTIFICATE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PROPR_DESKTOP_WINDOWS_SIGNER_PINS=$env:UPDATE_WINDOWS_SIGNER_PINS" | Out-File -FilePath $env:GITHUB_ENV -Append
           'DESKTOP_PLATFORM_CODE_SIGNED=1' | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Require signed-update runtime configuration
@@ -422,7 +432,12 @@ jobs:
           test -n "$UPDATE_PUBLIC_KEY" || { echo 'Required Ed25519 update public key is missing' >&2; exit 1; }
           test -n "$UPDATE_MANIFEST_URL" || { echo 'Required update manifest URL is missing' >&2; exit 1; }
           test "${DESKTOP_PLATFORM_CODE_SIGNED:-}" = 1 || { echo 'Production updates require a code-signed build' >&2; exit 1; }
-          if [ "$PLATFORM" = darwin ]; then identity="$UPDATE_MAC_TEAM_ID"; else identity="$UPDATE_WINDOWS_SIGNING_IDENTITY"; fi
+          if [ "$PLATFORM" = darwin ]; then
+            identity="$UPDATE_MAC_TEAM_ID"
+          else
+            identity="$UPDATE_WINDOWS_SIGNING_IDENTITY"
+            test -n "$UPDATE_WINDOWS_SIGNER_PINS" || { echo 'Required Windows signer pin allowlist is missing' >&2; exit 1; }
+          fi
           test -n "$identity" || { echo 'Required native signing identity is missing' >&2; exit 1; }
           echo "PROPR_DESKTOP_ENABLE_UPDATES=1" >> "$GITHUB_ENV"
           echo "PROPR_DESKTOP_CODE_SIGNED=1" >> "$GITHUB_ENV"
@@ -505,10 +520,12 @@ jobs:
         shell: pwsh
         run: |
           npm run desktop:smoke:inspect
-          $installer = Get-ChildItem apps/desktop/out/make -Recurse -Filter '*.exe' | Select-Object -First 1
-          $package = Get-ChildItem apps/desktop/out/make -Recurse -Filter '*-full.nupkg' | Select-Object -First 1
+          $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Setup.exe')
+          $packages = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*-full.nupkg')
           $appExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/propr-desktop.exe"
-          if (!$installer -or !$package) { throw 'Windows release artifacts are missing' }
+          if ($installers.Count -ne 1 -or $packages.Count -ne 1) { throw 'Windows release artifacts are missing or ambiguous' }
+          $installer = $installers[0]
+          $package = $packages[0]
           node apps/desktop/scripts/release-architecture.mjs inspect `
             --path $package.FullName `
             --kind nupkg `
@@ -520,17 +537,41 @@ jobs:
           Expand-Archive -LiteralPath $zip -DestinationPath $extracted
           $packageExecutable = Get-Item -LiteralPath (Join-Path $extracted 'lib/net45/propr-desktop.exe')
           if (!$packageExecutable -or $packageExecutable.PSIsContainer) { throw 'Windows update package canonical application is missing' }
-          $signatures = @(
-            Get-AuthenticodeSignature $installer.FullName
-            Get-AuthenticodeSignature $appExecutable
-            Get-AuthenticodeSignature $packageExecutable.FullName
+          function Get-ValidatedSignerEvidence([string]$Path) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $Path
+            if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or !$signature.TimeStamperCertificate) {
+              throw "Windows Authenticode chain or timestamp status is invalid for $Path"
+            }
+            $certificateBase64 = [Convert]::ToBase64String($signature.SignerCertificate.RawData)
+            $fingerprints = (node -e 'const {createHash,X509Certificate}=require("node:crypto");const certificate=new X509Certificate(Buffer.from(process.argv[1],"base64"));process.stdout.write(JSON.stringify({certificateSha256:certificate.fingerprint256.replaceAll(":","").toLowerCase(),spkiSha256:createHash("sha256").update(certificate.publicKey.export({format:"der",type:"spki"})).digest("hex")}))' $certificateBase64) | ConvertFrom-Json
+            [PSCustomObject]@{
+              Subject = $signature.SignerCertificate.Subject
+              CertificateSha256 = $fingerprints.certificateSha256
+              SpkiSha256 = $fingerprints.spkiSha256
+            }
+          }
+          $evidence = @(
+            Get-ValidatedSignerEvidence $installer.FullName
+            Get-ValidatedSignerEvidence $appExecutable
+            Get-ValidatedSignerEvidence $packageExecutable.FullName
           )
-          foreach ($signature in $signatures) {
-            if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate) { throw 'Windows Authenticode signature is invalid' }
-            if ($signature.SignerCertificate.Subject -ne $env:UPDATE_WINDOWS_SIGNING_IDENTITY) { throw 'Windows Authenticode signer does not match the configured build pin' }
+          foreach ($signer in $evidence) {
+            if ($signer.Subject -cne $env:UPDATE_WINDOWS_SIGNING_IDENTITY) { throw 'Windows Authenticode signer does not match the configured exact subject' }
+          }
+          $distinctSigners = @($evidence | ForEach-Object { $_ | ConvertTo-Json -Compress } | Sort-Object -Unique)
+          if ($distinctSigners.Count -ne 1) { throw 'Windows artifacts have mixed Authenticode signers' }
+          $actualPins = @(
+            "certificate-sha256:$($evidence[0].CertificateSha256)"
+            "spki-sha256:$($evidence[0].SpkiSha256)"
+          )
+          $allowedPins = @($env:UPDATE_WINDOWS_SIGNER_PINS -split ',')
+          if (@($actualPins | Where-Object { $allowedPins -ccontains $_ }).Count -eq 0) {
+            throw 'Windows Authenticode signer does not match the configured build pin'
           }
           "PROPR_DESKTOP_ACTUAL_SIGNER_TYPE=authenticode-subject" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY=$($signatures[0].SignerCertificate.Subject)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY=$($evidence[0].Subject)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PROPR_DESKTOP_ACTUAL_WINDOWS_CERTIFICATE_SHA256=$($evidence[0].CertificateSha256)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PROPR_DESKTOP_ACTUAL_WINDOWS_SPKI_SHA256=$($evidence[0].SpkiSha256)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Inspect native Linux production packages
         if: matrix.platform == 'linux'
@@ -642,6 +683,7 @@ jobs:
           PROPR_DESKTOP_UPDATE_MANIFEST_URL: ${{ vars.PROPR_DESKTOP_UPDATE_MANIFEST_URL }}
           PROPR_DESKTOP_MAC_TEAM_ID: ${{ vars.PROPR_DESKTOP_MAC_TEAM_ID }}
           PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY }}
+          PROPR_DESKTOP_WINDOWS_SIGNER_PINS: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNER_PINS }}
           PROPR_DESKTOP_DARWIN_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_X64_FEED_URL }}
           PROPR_DESKTOP_DARWIN_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_ARM64_FEED_URL }}
           PROPR_DESKTOP_WINDOWS_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_WINDOWS_X64_FEED_URL }}

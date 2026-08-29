@@ -3,6 +3,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { describe, test } from 'node:test';
 import {
   readCompleteEnvironmentGroup,
+  parseWindowsSignerPins,
   requireProductionReleaseConfiguration,
   resolveDesktopVersion,
   resolveTrustedUpdateBuildConfig,
@@ -10,6 +11,8 @@ import {
 import { squirrelAppUserModelId } from './squirrel-events';
 
 const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+const certificatePin = `certificate-sha256:${'1'.repeat(64)}`;
+const spkiPin = `spki-sha256:${'2'.repeat(64)}`;
 
 interface LinuxMaker {
   name: 'deb' | 'rpm';
@@ -61,6 +64,7 @@ describe('desktop release configuration', () => {
       manifestUrl: '',
       publicKey: '',
       signingIdentity: '',
+      windowsSignerPins: [],
     });
   });
 
@@ -72,11 +76,12 @@ describe('desktop release configuration', () => {
       PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'Example Publisher',
     };
     assert.throws(() => resolveTrustedUpdateBuildConfig(base), /CODE_SIGNED/);
-    assert.deepEqual(resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1' }), {
+    assert.deepEqual(resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1' }, 'darwin'), {
       enabled: true,
       manifestUrl: 'https://updates.example.test/stable/desktop-release.json',
       publicKey,
       signingIdentity: 'Example Publisher',
+      windowsSignerPins: [],
     });
     assert.throws(
       () => resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1', PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'http://example.test/update.json' }),
@@ -85,6 +90,33 @@ describe('desktop release configuration', () => {
     assert.throws(
       () => resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1', PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://example.test/update.json?channel=stable' }),
       /query/,
+    );
+  });
+
+  test('requires a canonical Windows certificate or SPKI SHA-256 pin allowlist', () => {
+    assert.deepEqual(parseWindowsSignerPins(`${certificatePin},${spkiPin}`), [certificatePin, spkiPin]);
+    for (const value of [
+      undefined,
+      '',
+      `certificate-sha256:${'A'.repeat(64)}`,
+      `certificate-sha256:${'1'.repeat(63)}`,
+      `${spkiPin},${certificatePin}`,
+      `${certificatePin},${certificatePin}`,
+      ` ${certificatePin}`,
+      `sha256:${'1'.repeat(64)}`,
+    ]) assert.throws(() => parseWindowsSignerPins(value), /required|sorted, unique/);
+
+    const base = {
+      PROPR_DESKTOP_ENABLE_UPDATES: '1',
+      PROPR_DESKTOP_CODE_SIGNED: '1',
+      PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
+      PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
+      PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'CN=Example Publisher',
+    };
+    assert.throws(() => resolveTrustedUpdateBuildConfig(base, 'win32'), /WINDOWS_SIGNER_PINS is required/);
+    assert.deepEqual(
+      resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_WINDOWS_SIGNER_PINS: certificatePin }, 'win32').windowsSignerPins,
+      [certificatePin],
     );
   });
 
@@ -103,25 +135,29 @@ describe('desktop release configuration', () => {
       PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
       PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
       PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'TEAM123456',
-    });
+    }, 'darwin');
+    const enabledWindowsUpdates = {
+      ...enabledUpdates,
+      windowsSignerPins: [certificatePin],
+    };
     const group = { configured: 'yes' };
     assert.throws(
       () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: enabledUpdates, macSigning: group }),
       /notarization/,
     );
     assert.throws(
-      () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: { enabled: false, manifestUrl: '', publicKey: '', signingIdentity: '' }, macSigning: group, macNotarization: group }),
+      () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: { enabled: false, manifestUrl: '', publicKey: '', signingIdentity: '', windowsSignerPins: [] }, macSigning: group, macNotarization: group }),
       /signed updates/,
     );
     assert.throws(
-      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: enabledUpdates }),
+      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: enabledWindowsUpdates }),
       /Authenticode/,
     );
     assert.doesNotThrow(
       () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: enabledUpdates, macSigning: group, macNotarization: group }),
     );
     assert.doesNotThrow(
-      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: enabledUpdates, windowsSigning: group }),
+      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: enabledWindowsUpdates, windowsSigning: group }),
     );
   });
 });

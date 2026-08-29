@@ -23,6 +23,9 @@ const kinds = {
 };
 
 const sourceName = kind => kind === 'setup' ? 'Desktop Setup.exe' : kind === 'nupkg' ? 'desktop-1.2.3-full.nupkg' : kind === 'releases' ? 'RELEASES' : `desktop.${kind}`;
+const certificateSha256 = '1'.repeat(64);
+const spkiSha256 = '2'.repeat(64);
+const windowsSignerPins = `certificate-sha256:${certificateSha256},spki-sha256:${spkiSha256}`;
 
 const architectureInspector = async ({ path, kind, platform, arch }) => {
   if (kind === 'releases') return { format: 'squirrel-releases', target: `${platform}-${arch}` };
@@ -43,6 +46,8 @@ const signerEnvironment = platform => platform === 'darwin'
     ? {
         PROPR_DESKTOP_ACTUAL_SIGNER_TYPE: 'authenticode-subject',
         PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY: 'CN=Example Publisher',
+        PROPR_DESKTOP_ACTUAL_WINDOWS_CERTIFICATE_SHA256: certificateSha256,
+        PROPR_DESKTOP_ACTUAL_WINDOWS_SPKI_SHA256: spkiSha256,
       }
     : {};
 
@@ -78,6 +83,7 @@ const signingEnvironment = keys => ({
   PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
   PROPR_DESKTOP_MAC_TEAM_ID: 'TEAM123456',
   PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY: 'CN=Example Publisher',
+  PROPR_DESKTOP_WINDOWS_SIGNER_PINS: windowsSignerPins,
   PROPR_DESKTOP_DARWIN_X64_FEED_URL: 'https://updates.example.test/darwin/x64/RELEASES.json',
   PROPR_DESKTOP_DARWIN_ARM64_FEED_URL: 'https://updates.example.test/darwin/arm64/RELEASES.json',
   PROPR_DESKTOP_WINDOWS_X64_FEED_URL: 'https://updates.example.test/win32/x64/',
@@ -296,6 +302,8 @@ describe('desktop release artifacts', () => {
     ]);
     assert.equal(manifest.feeds['darwin-arm64'].signer.identity, 'TEAM123456');
     assert.equal(manifest.feeds['win32-x64'].signer.identity, 'CN=Example Publisher');
+    assert.equal(manifest.feeds['win32-x64'].signer.certificateSha256, certificateSha256);
+    assert.equal(manifest.feeds['win32-x64'].signer.spkiSha256, spkiSha256);
     assert.equal(manifest.feeds['win32-x64'].artifact.version, undefined);
     assert.equal(manifest.feeds['win32-x64'].version, '1.2.3');
     const payload = await readFile(join(output, 'desktop-release.json'));
@@ -346,6 +354,61 @@ describe('desktop release artifacts', () => {
         env: { ...signingEnvironment(generateKeyPairSync('ed25519')), PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY: 'CN=Wrong Publisher' },
       }),
       /Actual native signer mismatch for win32-x64/,
+    );
+
+    await assert.rejects(
+      signReleaseMetadata({
+        inputDirectory: signedUnsigned,
+        outputDirectory: join(root, 'same-subject-different-key'),
+        version: '1.2.3',
+        env: {
+          ...signingEnvironment(generateKeyPairSync('ed25519')),
+          PROPR_DESKTOP_WINDOWS_SIGNER_PINS: `certificate-sha256:${'3'.repeat(64)}`,
+        },
+      }),
+      /Actual native signer mismatch for win32-x64/,
+    );
+    await assert.rejects(
+      signReleaseMetadata({
+        inputDirectory: signedUnsigned,
+        outputDirectory: join(root, 'malformed-pin'),
+        version: '1.2.3',
+        env: {
+          ...signingEnvironment(generateKeyPairSync('ed25519')),
+          PROPR_DESKTOP_WINDOWS_SIGNER_PINS: `certificate-sha256:${'A'.repeat(64)}`,
+        },
+      }),
+      /canonical SHA-256 fingerprint allowlist/,
+    );
+  });
+
+  test('rejects mixed Windows signers and tampered fingerprint evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-mixed-signers-'));
+    const fragments = await createFragments(root, { signed: true });
+    const fragmentPath = join(fragments, 'win32-arm64', 'release-fragment.json');
+    const fragment = JSON.parse(await readFile(fragmentPath, 'utf8'));
+    fragment.nativeSigner.certificateSha256 = '3'.repeat(64);
+    await writeFile(fragmentPath, `${JSON.stringify(fragment, null, 2)}\n`);
+    await assert.rejects(
+      finalizeArtifacts({
+        inputDirectory: fragments,
+        outputDirectory: join(root, 'final'),
+        version: '1.2.3',
+        inspectArchitecture: architectureInspector,
+      }),
+      /mixed native signer evidence/,
+    );
+
+    fragment.nativeSigner.certificateSha256 = 'not-a-sha256';
+    await writeFile(fragmentPath, `${JSON.stringify(fragment, null, 2)}\n`);
+    await assert.rejects(
+      finalizeArtifacts({
+        inputDirectory: fragments,
+        outputDirectory: join(root, 'tampered'),
+        version: '1.2.3',
+        inspectArchitecture: architectureInspector,
+      }),
+      /Native signer evidence is incomplete or invalid/,
     );
   });
 

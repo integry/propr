@@ -295,6 +295,7 @@ if (squirrelStartupHandled) {
           manifestUrl: __PROPR_DESKTOP_UPDATE_MANIFEST_URL__,
           publicKey: __PROPR_DESKTOP_UPDATE_PUBLIC_KEY__,
           signingIdentity: __PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY__,
+          windowsSignerPins: __PROPR_DESKTOP_WINDOWS_SIGNER_PINS__,
         }
       : undefined;
     if (app.isPackaged && updateConfig && process.env.PROPR_DESKTOP_SMOKE_TEST !== '1') {

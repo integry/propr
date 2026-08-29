@@ -135,14 +135,30 @@ describe('DEB and RPM executable layouts', () => {
 describe('DMG application layout', () => {
   const createDmgLayout = async root => {
     const macos = join(root, 'propr-desktop.app', 'Contents', 'MacOS');
+    const frameworks = join(root, 'propr-desktop.app', 'Contents', 'Frameworks');
     await mkdir(macos, { recursive: true });
     const executable = Buffer.alloc(32);
     executable.writeUInt32LE(0xfeedfacf, 0);
     executable.writeUInt32LE(0x0100000c, 4);
     await writeFile(join(macos, 'propr-desktop'), executable, { mode: 0o755 });
+    for (const name of [
+      'propr-desktop Helper',
+      'propr-desktop Helper (GPU)',
+      'propr-desktop Helper (Plugin)',
+      'propr-desktop Helper (Renderer)',
+    ]) {
+      const helperMacos = join(frameworks, `${name}.app`, 'Contents', 'MacOS');
+      await mkdir(helperMacos, { recursive: true });
+      await writeFile(join(helperMacos, name), executable, { mode: 0o755 });
+    }
+    const frameworkVersions = join(frameworks, 'Electron Framework.framework', 'Versions');
+    await mkdir(join(frameworkVersions, 'A', 'Resources'), { recursive: true });
+    await symlink('A', join(frameworkVersions, 'Current'));
+    await symlink('Versions/Current/Resources', join(frameworks, 'Electron Framework.framework', 'Resources'));
+    await symlink('/Applications', join(root, 'Applications'));
   };
 
-  test('accepts only the canonical ProPR bundle and Contents/MacOS executable', async context => {
+  test('accepts the real Forge tree with its install link and nested Electron helper bundles', async context => {
     const root = await mkdtemp(join(tmpdir(), 'propr-dmg-layout-'));
     context.after(() => rm(root, { recursive: true, force: true }));
     await createDmgLayout(root);
@@ -164,8 +180,9 @@ describe('DMG application layout', () => {
     const alternate = await mkdtemp(join(tmpdir(), 'propr-dmg-alternate-'));
     context.after(() => rm(alternate, { recursive: true, force: true }));
     await createDmgLayout(alternate);
-    await mkdir(join(alternate, 'tools'), { recursive: true });
-    await writeFile(join(alternate, 'tools', 'propr-desktop'), 'alternate');
+    const resources = join(alternate, 'propr-desktop.app', 'Contents', 'Resources');
+    await mkdir(resources, { recursive: true });
+    await writeFile(join(resources, 'propr-desktop'), 'alternate');
     await assert.rejects(
       inspectDmgLayout({ root: alternate, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
       /alternate same-name executable/,
@@ -175,10 +192,60 @@ describe('DMG application layout', () => {
     context.after(() => rm(escaped, { recursive: true, force: true }));
     await mkdir(join(escaped, 'propr-desktop.app', 'Contents', 'MacOS'), { recursive: true });
     await writeFile(join(escaped, 'outside'), 'outside');
+    await symlink('/Applications', join(escaped, 'Applications'));
     await symlink('../../../outside', join(escaped, 'propr-desktop.app', 'Contents', 'MacOS', 'propr-desktop'));
     await assert.rejects(
       inspectDmgLayout({ root: escaped, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
       /must be a real regular file.*symbolic link/,
     );
+  });
+
+  test('rejects alternate roots, unsafe links, special files, and non-helper nested apps', async context => {
+    const alternateRoot = await mkdtemp(join(tmpdir(), 'propr-dmg-extra-root-'));
+    context.after(() => rm(alternateRoot, { recursive: true, force: true }));
+    await createDmgLayout(alternateRoot);
+    await mkdir(join(alternateRoot, 'Other.app'));
+    await assert.rejects(
+      inspectDmgLayout({ root: alternateRoot, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /unclaimed or alternate top-level payload/,
+    );
+
+    const unsafeLink = await mkdtemp(join(tmpdir(), 'propr-dmg-unsafe-link-'));
+    context.after(() => rm(unsafeLink, { recursive: true, force: true }));
+    await createDmgLayout(unsafeLink);
+    await symlink('/tmp/escape', join(unsafeLink, 'propr-desktop.app', 'Contents', 'escape'));
+    await assert.rejects(
+      inspectDmgLayout({ root: unsafeLink, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /unsafe absolute symbolic link/,
+    );
+
+    const nestedApp = await mkdtemp(join(tmpdir(), 'propr-dmg-nested-app-'));
+    context.after(() => rm(nestedApp, { recursive: true, force: true }));
+    await createDmgLayout(nestedApp);
+    await mkdir(join(nestedApp, 'propr-desktop.app', 'Contents', 'Resources', 'Alternate.app'), { recursive: true });
+    await assert.rejects(
+      inspectDmgLayout({ root: nestedApp, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /alternate application bundle/,
+    );
+
+    const caseCollision = await mkdtemp(join(tmpdir(), 'propr-dmg-case-collision-'));
+    context.after(() => rm(caseCollision, { recursive: true, force: true }));
+    await createDmgLayout(caseCollision);
+    await symlink('/Applications', join(caseCollision, 'applications'));
+    await assert.rejects(
+      inspectDmgLayout({ root: caseCollision, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /duplicate or case-colliding top-level entry/,
+    );
+
+    if (process.platform !== 'win32') {
+      const special = await mkdtemp(join(tmpdir(), 'propr-dmg-special-'));
+      context.after(() => rm(special, { recursive: true, force: true }));
+      await createDmgLayout(special);
+      execFileSync('mkfifo', [join(special, 'propr-desktop.app', 'Contents', 'special')]);
+      await assert.rejects(
+        inspectDmgLayout({ root: special, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+        /special file/,
+      );
+    }
   });
 });

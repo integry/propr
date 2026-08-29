@@ -16,6 +16,8 @@ import {
 
 const keys = generateKeyPairSync('ed25519');
 const publicKey = keys.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+const certificateSha256 = '1'.repeat(64);
+const spkiSha256 = '2'.repeat(64);
 const artifact = Buffer.from('signed windows package bytes');
 const artifactUrl = 'https://updates.example.test/win32/x64/ProPR-Desktop-1.2.4-windows-x64-full.nupkg';
 const feed = Buffer.from(`0123456789abcdef0123456789abcdef01234567 ProPR-Desktop-1.2.4-windows-x64-full.nupkg ${artifact.length}\n`);
@@ -41,7 +43,12 @@ const manifest: SignedUpdateManifest = {
         fileName: 'ProPR-Desktop-1.2.4-windows-x64-full.nupkg',
         kind: 'nupkg',
       },
-      signer: { type: 'authenticode-subject', identity: 'CN=Example Publisher' },
+      signer: {
+        type: 'authenticode-subject',
+        identity: 'CN=Example Publisher',
+        certificateSha256,
+        spkiSha256,
+      },
     },
   },
 };
@@ -84,6 +91,7 @@ const config = {
   manifestUrl: 'https://updates.example.test/stable/desktop-release.json',
   publicKey,
   signingIdentity: 'CN=Example Publisher',
+  windowsSignerPins: [`certificate-sha256:${certificateSha256}`],
 };
 
 describe('signed desktop updates', () => {
@@ -119,7 +127,7 @@ describe('signed desktop updates', () => {
       verifyNativeSigner: async packagePath => {
         verifiedPath = packagePath;
         verifiedBytes = await readFile(packagePath);
-        return { type: 'authenticode-subject', identity: 'CN=Example Publisher' };
+        return { type: 'authenticode-subject', identity: 'CN=Example Publisher', certificateSha256, spkiSha256 };
       },
     });
     assert.equal(result, 'available');
@@ -173,12 +181,66 @@ describe('signed desktop updates', () => {
         request: fetcher(release.payload, release.signature),
         verifyNativeSigner: async packagePath => {
           inspectedPath = packagePath;
-          return { type: 'authenticode-subject', identity: 'CN=Attacker' };
+          return { type: 'authenticode-subject', identity: 'CN=Attacker', certificateSha256, spkiSha256 };
         },
       }),
       /artifact signer does not match/,
     );
     await assert.rejects(access(inspectedPath!));
+  });
+
+  test('rejects same-subject different-key signers and tampered or missing pin evidence', async () => {
+    const release = signed();
+    await assert.rejects(
+      checkForSignedUpdates({
+        config,
+        currentVersion: '1.2.3',
+        platform: 'win32',
+        arch: 'x64',
+        request: fetcher(release.payload, release.signature),
+        verifyNativeSigner: async () => ({
+          type: 'authenticode-subject',
+          identity: 'CN=Example Publisher',
+          certificateSha256: '3'.repeat(64),
+          spkiSha256: '4'.repeat(64),
+        }),
+      }),
+      /artifact signer does not match/,
+    );
+
+    const tamperedEvidence = structuredClone(manifest);
+    tamperedEvidence.feeds['win32-x64'].signer.certificateSha256 = '3'.repeat(64);
+    tamperedEvidence.feeds['win32-x64'].signer.spkiSha256 = '4'.repeat(64);
+    const tamperedRelease = signed(tamperedEvidence);
+    await assert.rejects(
+      checkForSignedUpdates({
+        config,
+        currentVersion: '1.2.3',
+        platform: 'win32',
+        arch: 'x64',
+        request: fetcher(tamperedRelease.payload, tamperedRelease.signature),
+      }),
+      /fingerprint is not in the embedded allowlist/,
+    );
+
+    await assert.rejects(
+      checkForSignedUpdates({
+        config: { ...config, windowsSignerPins: [] },
+        currentVersion: '1.2.3',
+        platform: 'win32',
+        arch: 'x64',
+        request: fetcher(release.payload, release.signature),
+      }),
+      /signer pin allowlist.*required/,
+    );
+
+    const malformedEvidence = structuredClone(manifest) as unknown as Record<string, any>;
+    malformedEvidence.feeds['win32-x64'].signer.spkiSha256 = 'not-a-fingerprint';
+    const malformedRelease = signed(malformedEvidence);
+    assert.throws(
+      () => verifySignedUpdateManifest(malformedRelease.payload, malformedRelease.signature, publicKey),
+      /fingerprint evidence is invalid/,
+    );
   });
 
   test('rejects wrong target, version, and architecture bindings', async () => {
