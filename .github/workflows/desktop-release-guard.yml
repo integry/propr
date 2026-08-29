@@ -7,6 +7,7 @@ on:
       - 'apps/desktop/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'packages/client/**'
       - 'packages/shared/**'
       - 'propr-ui/**'
   push:
@@ -48,14 +49,18 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Package desktop app from clean checkout
+        run: |
+          test ! -e packages/shared/dist
+          test ! -e packages/client/dist
+          test ! -e apps/desktop/out
+          npm run desktop:package
+
       - name: Typecheck desktop and renderer
         run: npm run desktop:typecheck
 
       - name: Test desktop runtime
         run: npm run desktop:test
-
-      - name: Package desktop app
-        run: npm run desktop:package
 
       - name: Configure Chromium sandbox helper
         run: |

@@ -16,7 +16,9 @@ describe('desktop URL security', () => {
     assert.equal(normalizeApiBaseUrl('https://propr.example.com/'), 'https://propr.example.com');
     assert.equal(normalizeApiBaseUrl('http://localhost:4000/'), 'http://localhost:4000');
     assert.equal(normalizeApiBaseUrl('http://127.0.0.1:4000'), 'http://127.0.0.1:4000');
+    assert.equal(normalizeApiBaseUrl('http://[::1]:4000/'), 'http://[::1]:4000');
     assert.equal(normalizeApiBaseUrl('http://propr.example.com'), null);
+    assert.equal(normalizeApiBaseUrl('http://[2001:db8::1]:4000'), null);
     assert.equal(normalizeApiBaseUrl('https://user:secret@propr.example.com'), null);
     assert.equal(normalizeApiBaseUrl('file:///tmp/propr'), null);
   });
@@ -24,15 +26,21 @@ describe('desktop URL security', () => {
   it('denies unsafe external browser schemes and credential-bearing URLs', () => {
     assert.equal(isSafeExternalUrl('https://github.com/integry/propr'), true);
     assert.equal(isSafeExternalUrl('http://localhost:4000/docs'), true);
+    assert.equal(isSafeExternalUrl('http://[::1]:4000/docs'), true);
     assert.equal(isSafeExternalUrl('http://example.com'), false);
+    assert.equal(isSafeExternalUrl('http://[2001:db8::1]:4000/docs'), false);
     assert.equal(isSafeExternalUrl('javascript:alert(1)'), false);
+    assert.equal(isSafeExternalUrl('file://[::1]/tmp/propr'), false);
     assert.equal(isSafeExternalUrl('https://token@example.com'), false);
   });
 
   it('requires an exact loopback development origin', () => {
     assert.equal(validatedDevServerUrl('http://localhost:5173/')?.origin, 'http://localhost:5173');
+    assert.equal(validatedDevServerUrl('http://[::1]:5173/')?.origin, 'http://[::1]:5173');
     assert.equal(validatedDevServerUrl('https://localhost:5173/'), null);
     assert.equal(validatedDevServerUrl('http://0.0.0.0:5173/'), null);
+    assert.equal(validatedDevServerUrl('http://[2001:db8::1]:5173/'), null);
+    assert.equal(validatedDevServerUrl('ws://[::1]:5173/'), null);
     assert.equal(validatedDevServerUrl('http://localhost:5173/path'), null);
     assert.equal(
       isTrustedRendererUrl('http://localhost:5173/renderer.html', 'http://localhost:5173/', '/unused'),
@@ -70,6 +78,8 @@ describe('desktop URL security', () => {
     assert.match(policy, /frame-src 'none'/);
     assert.doesNotMatch(policy, /unsafe-eval/);
     assert.match(policy, /script-src 'self'(?:;|$)/);
+    assert.match(policy, /http:\/\/\[::1\]:\*/);
+    assert.match(policy, /ws:\/\/\[::1\]:\*/);
   });
 
   it('relaxes inline scripts only while Vite serves the development renderer', () => {

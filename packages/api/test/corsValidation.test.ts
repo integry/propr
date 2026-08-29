@@ -51,21 +51,25 @@ test('CORS allows only the exact packaged desktop renderer custom origin', () =>
   assert.equal(isAllowed(validate, 'null'), false);
 });
 
-test('CORS allows localhost for development', () => {
+test('CORS allows HTTP(S) loopback origins for development', () => {
   const validate = createCorsOriginValidator('https://app.propr.dev', undefined);
 
   assert.equal(isAllowed(validate, 'http://localhost:5173'), true);
   assert.equal(isAllowed(validate, 'http://127.0.0.1:5173'), true);
+  assert.equal(isAllowed(validate, 'http://[::1]:5173'), true);
   assert.equal(isAllowed(validate, 'https://localhost:5173'), true);
+  assert.equal(isAllowed(validate, 'https://[::1]:5173'), true);
 });
 
-test('CORS rejects non-http(s) localhost schemes', () => {
-  // Only http/https localhost origins are trusted; an unusual scheme that still
-  // parses with a localhost hostname must not be allowed.
+test('CORS rejects unsafe schemes and non-loopback hosts', () => {
+  // Only http/https loopback origins are trusted; an unusual scheme that still
+  // parses with a loopback hostname must not be allowed.
   const validate = createCorsOriginValidator('https://app.propr.dev', undefined);
 
   assert.equal(isAllowed(validate, 'chrome-extension://localhost'), false);
   assert.equal(isAllowed(validate, 'file://localhost'), false);
+  assert.equal(isAllowed(validate, 'file://[::1]/tmp/propr'), false);
+  assert.equal(isAllowed(validate, 'http://[2001:db8::1]:5173'), false);
 });
 
 test('CORS allows COOKIE_DOMAIN subdomains for preview environments', () => {
@@ -144,6 +148,7 @@ for (const runtimeMode of ['development', 'production'] as const) {
         'https://app.propr.dev',
         'https://pr-17.preview.example.com',
         'http://localhost:5173',
+        'http://[::1]:5173',
       ]) {
         const response = await fetch(`${baseUrl}/api/protected`, { headers: { Origin: origin } });
         assert.equal(response.status, 401, `expected ${origin} to reach authentication`);
