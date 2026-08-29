@@ -1,89 +1,25 @@
 import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
-import knex, { type Knex } from 'knex';
+import type { Knex } from 'knex';
 import { closeConnection, NotificationService } from '@propr/core';
 import { DRAFT_UPDATE, INDEXING_UPDATE, TASK_UPDATE } from '@propr/shared';
-import { up as createNotificationSchema } from '../../core/src/db/migrations/20260802000000_create_notification_schema.js';
-import { up as addNotificationPreferenceApis } from '../../core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
-import { up as addAdvertisedActions } from '../../core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
-import { up as addSystemFailureState } from '../../core/src/db/migrations/20260829000000_add_notification_system_failure_state.js';
 import { NotificationProjectionService } from '../services/notificationProjectionService.js';
+import {
+  countNotificationEvents, countUndismissedNotificationReceipts,
+  createNotificationProjectionTestHarness, listActiveNotificationReceipts,
+} from './notificationProjectionTestHarness.js';
 
 let database: Knex;
 let clock: number;
 let projection: NotificationProjectionService;
 
-function iso(offsetMs = 0): string {
-  return new Date(clock + offsetMs).toISOString();
-}
-
-async function eventCount(): Promise<number> {
-  return database('notification_events')
-    .count('* as count')
-    .first()
-    .then(row => Number(row?.count ?? 0));
-}
-
-async function createProjectionTables(db: Knex): Promise<void> {
-  await db.schema.createTable('tasks', table => {
-    table.text('task_id').primary();
-    table.text('repository').notNullable();
-    table.integer('issue_number').nullable();
-    table.integer('pr_number').nullable();
-    table.text('task_type').notNullable();
-    table.text('initial_job_data').nullable();
-  });
-  await db.schema.createTable('task_history', table => {
-    table.increments('history_id').primary();
-    table.text('task_id').notNullable();
-    table.text('state').notNullable();
-    table.text('timestamp').notNullable();
-    table.text('metadata').nullable();
-  });
-  await db.schema.createTable('task_drafts', table => {
-    table.text('draft_id').primary();
-    table.text('user_id').notNullable();
-    table.text('repository').notNullable();
-  });
-  await db.schema.createTable('instance_members', table => {
-    table.text('github_user_id').primary();
-    table.text('role').notNullable();
-  });
-}
+const iso = (offsetMs = 0): string => new Date(clock + offsetMs).toISOString();
 
 beforeEach(async () => {
   clock = Date.now() - 60_000;
-  database = knex({
-    client: 'better-sqlite3',
-    connection: { filename: ':memory:' },
-    useNullAsDefault: true,
-    pool: {
-      afterCreate(connection: { pragma(statement: string): void }, done: (error: Error | null, connection: unknown) => void) {
-        connection.pragma('foreign_keys = ON');
-        connection.pragma('recursive_triggers = ON');
-        done(null, connection);
-      },
-    },
-  });
-  await createProjectionTables(database);
-  await createNotificationSchema(database);
-  await addNotificationPreferenceApis(database);
-  await addAdvertisedActions(database);
-  await addSystemFailureState(database);
-  const notificationService = new NotificationService({
-    database,
-    now: () => new Date(clock),
-  });
-  projection = new NotificationProjectionService({
-    database,
-    notificationService,
-    now: () => new Date(clock),
-    stalledAfterMs: 10_000,
-  });
-  await database('instance_members').insert([
-    { github_user_id: 'admin-user', role: 'admin' },
-    { github_user_id: 'member-user', role: 'member' },
-  ]);
+  ({ database, projection } = await createNotificationProjectionTestHarness(
+    () => new Date(clock),
+  ));
 });
 
 afterEach(async () => {
@@ -183,7 +119,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       'https://github.com/integry/propr/pull/42',
     );
     assert.doesNotMatch(JSON.stringify(events), /evil\.example|SECRET/);
-    assert.equal(await eventCount(), 4);
+    assert.equal(await countNotificationEvents(database), 4);
   });
 
   test('replaces an older PR-attention card while preserving both audit events', async () => {
@@ -218,11 +154,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       .where({ kind: 'pull_request' })
       .orderBy('occurred_at');
     assert.equal(attentionEvents.length, 2, 'immutable audit events are retained');
-    const visibleReceipts = await database('notification_user_states as receipt')
-      .join('notification_events as event', 'event.event_id', 'receipt.event_id')
-      .where({ 'event.kind': 'pull_request', 'receipt.inbox_enabled': true })
-      .whereNull('receipt.dismissed_at')
-      .select('receipt.user_id', 'event.occurred_at');
+    const visibleReceipts = await listActiveNotificationReceipts(database, 'pull_request');
     assert.deepEqual(visibleReceipts.map(row => row.user_id).sort(), [
       'admin-user', 'member-user',
     ]);
@@ -418,7 +350,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     await projection.projectIndexingUpdate(payload);
     await projection.projectIndexingUpdate(payload);
 
-    assert.equal(await eventCount(), 1);
+    assert.equal(await countNotificationEvents(database), 1);
     assert.deepEqual(
       await database('notification_user_states').pluck('user_id'),
       ['admin-user'],
@@ -453,11 +385,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     let events = await database('notification_events').where({ kind: 'system_failure' });
     assert.equal(events.length, 1);
     assert.equal(
-      await database('notification_user_states as receipt')
-        .join('notification_events as event', 'event.event_id', 'receipt.event_id')
-        .where({ 'event.kind': 'system_failure' })
-        .whereNull('receipt.dismissed_at')
-        .count('* as count').first().then(row => Number(row?.count)),
+      await countUndismissedNotificationReceipts(database, 'system_failure'),
       0,
       'healthy recovery closes the active card',
     );
@@ -473,11 +401,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       ['admin-user'],
     );
     assert.equal(
-      await database('notification_user_states as receipt')
-        .join('notification_events as event', 'event.event_id', 'receipt.event_id')
-        .where({ 'event.kind': 'system_failure' })
-        .whereNull('receipt.dismissed_at')
-        .count('* as count').first().then(row => Number(row?.count)),
+      await countUndismissedNotificationReceipts(database, 'system_failure'),
       1,
     );
     secondProjection.close();
