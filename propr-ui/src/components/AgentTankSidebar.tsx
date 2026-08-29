@@ -239,7 +239,11 @@ const AgentRow: React.FC<AgentRowProps> = ({ agent, expanded, onToggle }) => {
   );
 };
 
-const AgentTankSidebar: React.FC = () => {
+interface AgentTankSidebarProps {
+  allowManualRefresh?: boolean;
+}
+
+const AgentTankSidebar: React.FC<AgentTankSidebarProps> = ({ allowManualRefresh = true }) => {
   const [data, setData] = useState<AgentTankUsageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -297,14 +301,16 @@ const AgentTankSidebar: React.FC = () => {
         <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
           Usage
         </span>
-        <button
-          onClick={() => fetchUsage(true)}
-          disabled={refreshing}
-          className="text-gray-400 hover:text-primary-600 disabled:opacity-50"
-          title="Refresh usage"
-        >
-          <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
-        </button>
+        {allowManualRefresh && (
+          <button
+            onClick={() => fetchUsage(true)}
+            disabled={refreshing}
+            className="text-gray-400 hover:text-primary-600 disabled:opacity-50"
+            title="Refresh usage"
+          >
+            <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
+          </button>
+        )}
       </div>
       <div className="space-y-0">
         {agents.map(agent => (
