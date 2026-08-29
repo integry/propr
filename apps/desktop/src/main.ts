@@ -24,7 +24,8 @@ const PACKAGED_RENDERER_HOST = 'renderer';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${PACKAGED_RENDERER_SCHEME}://${PACKAGED_RENDERER_HOST}/renderer.html`;
 let mainWindow: BrowserWindow | null = null;
-let pendingDeepLink: string | null = deepLinkFromArguments(process.argv);
+const initialDeepLink = deepLinkFromArguments(process.argv);
+let pendingDeepLinks: string[] = initialDeepLink ? [initialDeepLink] : [];
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
 
@@ -55,10 +56,11 @@ const registerProtocolClient = (): void => {
 };
 
 const deliverDeepLink = (value: string): void => {
-  pendingDeepLink = value;
-  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) return;
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) {
+    pendingDeepLinks.push(value);
+    return;
+  }
   mainWindow.webContents.send(IPC_CHANNELS.deepLink, value);
-  pendingDeepLink = null;
 };
 
 const configureSessionSecurity = (): void => {
@@ -123,10 +125,9 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
     log('error', 'desktop.renderer.gone', { reason: details.reason, exitCode: details.exitCode });
   });
   window.webContents.on('did-finish-load', () => {
-    if (pendingDeepLink) {
-      window.webContents.send(IPC_CHANNELS.deepLink, pendingDeepLink);
-      pendingDeepLink = null;
-    }
+    const linksToDeliver = pendingDeepLinks;
+    pendingDeepLinks = [];
+    linksToDeliver.forEach(value => window.webContents.send(IPC_CHANNELS.deepLink, value));
   });
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
@@ -204,6 +205,7 @@ if (!hasSingleInstanceLock) {
       profiles,
       lifecycle,
       logger,
+      desktopSession: session.defaultSession,
       devServerUrl,
       packagedRendererUrl,
     });

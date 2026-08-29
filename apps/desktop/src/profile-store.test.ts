@@ -47,6 +47,31 @@ describe('desktop profile store', () => {
     assert.notEqual(onDisk, 'top-secret');
   });
 
+  it('serializes concurrent credential writes with last-write semantics', async () => {
+    const store = new ProfileStore(await createDirectory(), encryption());
+
+    const first = store.writeCredential('profile-1', 'first');
+    const second = store.writeCredential('profile-1', 'second');
+    assert.deepEqual(await Promise.all([first, second]), [{ stored: true }, { stored: true }]);
+    assert.deepEqual(await store.readCredential('profile-1'), { available: true, value: 'second' });
+  });
+
+  it('orders concurrent credential writes and removals by invocation', async () => {
+    const store = new ProfileStore(await createDirectory(), encryption());
+
+    await Promise.all([
+      store.writeCredential('profile-1', 'remove-me'),
+      store.removeCredential('profile-1'),
+    ]);
+    assert.deepEqual(await store.readCredential('profile-1'), { available: true, value: null });
+
+    await Promise.all([
+      store.removeCredential('profile-1'),
+      store.writeCredential('profile-1', 'keep-me'),
+    ]);
+    assert.deepEqual(await store.readCredential('profile-1'), { available: true, value: 'keep-me' });
+  });
+
   it('refuses plaintext fallback when encryption is unavailable or basic_text', async () => {
     for (const provider of [encryption(false, 'unavailable'), encryption(true, 'basic_text')]) {
       const directory = await createDirectory();

@@ -1,5 +1,6 @@
-import type { App, IpcMain, IpcMainInvokeEvent } from 'electron';
+import type { App, IpcMain, IpcMainInvokeEvent, Session } from 'electron';
 import { shell } from 'electron';
+import { logoutDesktopSession } from './desktop-session';
 import type { DesktopLogger } from './logger';
 import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
@@ -12,6 +13,7 @@ interface RegisterIpcOptions {
   profiles: ProfileStore;
   lifecycle: LocalLifecycleController;
   logger: DesktopLogger;
+  desktopSession: Session;
   devServerUrl: string | undefined;
   packagedRendererUrl: string;
 }
@@ -45,6 +47,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
     arch: process.arch,
     packaged: options.app.isPackaged,
   }));
+  handle(IPC_CHANNELS.authLogout, (_event, apiBaseUrl) => logoutDesktopSession(options.desktopSession, apiBaseUrl));
   handle(IPC_CHANNELS.openExternal, async (_event, value: unknown) => {
     if (typeof value !== 'string' || !isSafeExternalUrl(value)) throw new Error('External URL is not allowed');
     await shell.openExternal(value);

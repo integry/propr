@@ -11,14 +11,27 @@ const invoke = <T>(ipc: PreloadIpc, channel: string, ...args: unknown[]): Promis
   ipc.invoke(channel, ...args) as Promise<T>;
 
 export const createDesktopBridge = (ipc: PreloadIpc): DesktopBridge => {
+  const deepLinkListeners = new Set<(url: string) => void>();
+  const pendingDeepLinks: string[] = [];
+  ipc.on(IPC_CHANNELS.deepLink, (_event, value) => {
+    if (deepLinkListeners.size === 0) {
+      pendingDeepLinks.push(value);
+      return;
+    }
+    deepLinkListeners.forEach(listener => listener(value));
+  });
+
   const bridge: DesktopBridge = {
     app: {
       getMetadata: () => invoke(ipc, IPC_CHANNELS.appMetadata),
       onDeepLink: (listener) => {
-        const wrapped = (_event: unknown, value: string) => listener(value);
-        ipc.on(IPC_CHANNELS.deepLink, wrapped);
-        return () => ipc.removeListener(IPC_CHANNELS.deepLink, wrapped);
+        deepLinkListeners.add(listener);
+        pendingDeepLinks.splice(0).forEach(value => listener(value));
+        return () => deepLinkListeners.delete(listener);
       },
+    },
+    auth: {
+      logout: (apiBaseUrl) => invoke(ipc, IPC_CHANNELS.authLogout, apiBaseUrl),
     },
     external: {
       open: (url) => invoke(ipc, IPC_CHANNELS.openExternal, url),

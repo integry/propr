@@ -100,6 +100,7 @@ export class ProfileStore {
   readonly #credentialsDirectory: string;
   readonly #encryption: EncryptionProvider;
   #mutation = Promise.resolve();
+  readonly #credentialMutations = new Map<string, Promise<void>>();
 
   constructor(userDataPath: string, encryption: EncryptionProvider) {
     this.#directory = join(userDataPath, 'desktop');
@@ -139,12 +140,15 @@ export class ProfileStore {
 
   remove(profileId: string): Promise<void> {
     assertProfileId(profileId);
-    return this.#mutate(async () => {
+    const stateMutation = this.#mutate(async () => {
       const state = await this.#readState();
       state.profiles = state.profiles.filter(profile => profile.id !== profileId);
       if (state.activeProfileId === profileId) state.activeProfileId = null;
       await this.#writeState(state);
-      await this.removeCredential(profileId);
+    });
+    return this.#mutateCredential(profileId, async () => {
+      await stateMutation;
+      await this.#removeCredentialFile(profileId);
     });
   }
 
@@ -178,17 +182,23 @@ export class ProfileStore {
       throw new Error('Credential must contain 1 to 65536 characters');
     }
     if (!this.security().available) return { stored: false, reason: 'encryption-unavailable' };
-    await this.#ensureDirectories();
-    const target = this.#credentialPath(profileId);
-    const temporary = `${target}.${process.pid}.tmp`;
-    await writeFile(temporary, this.#encryption.encrypt(value), { mode: 0o600 });
-    await rename(temporary, target);
-    await chmod(target, 0o600).catch(() => undefined);
-    return { stored: true };
+    return this.#mutateCredential(profileId, async () => {
+      await this.#ensureDirectories();
+      const target = this.#credentialPath(profileId);
+      const temporary = `${target}.${process.pid}.tmp`;
+      await writeFile(temporary, this.#encryption.encrypt(value), { mode: 0o600 });
+      await rename(temporary, target);
+      await chmod(target, 0o600).catch(() => undefined);
+      return { stored: true };
+    });
   }
 
-  async removeCredential(profileId: string): Promise<void> {
+  removeCredential(profileId: string): Promise<void> {
     assertProfileId(profileId);
+    return this.#mutateCredential(profileId, () => this.#removeCredentialFile(profileId));
+  }
+
+  async #removeCredentialFile(profileId: string): Promise<void> {
     await unlink(this.#credentialPath(profileId)).catch(error => {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     });
@@ -224,6 +234,17 @@ export class ProfileStore {
   #mutate<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.#mutation.then(operation, operation);
     this.#mutation = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  #mutateCredential<T>(profileId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.#credentialMutations.get(profileId) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    const settled = result.then(() => undefined, () => undefined);
+    this.#credentialMutations.set(profileId, settled);
+    void settled.then(() => {
+      if (this.#credentialMutations.get(profileId) === settled) this.#credentialMutations.delete(profileId);
+    });
     return result;
   }
 }

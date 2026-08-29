@@ -2,6 +2,7 @@ export const DESKTOP_PROTOCOL = 'propr';
 
 export const IPC_CHANNELS = Object.freeze({
   appMetadata: 'desktop:app-metadata',
+  authLogout: 'desktop:auth-logout',
   openExternal: 'desktop:open-external',
   storageSecurity: 'desktop:storage-security',
   profilesList: 'desktop:profiles-list',
@@ -80,6 +81,9 @@ export interface DesktopBridge {
   app: {
     getMetadata(): Promise<DesktopAppMetadata>;
     onDeepLink(listener: (url: string) => void): () => void;
+  };
+  auth: {
+    logout(apiBaseUrl: string): Promise<void>;
   };
   external: {
     open(url: string): Promise<void>;

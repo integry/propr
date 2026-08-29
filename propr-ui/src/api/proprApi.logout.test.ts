@@ -28,6 +28,10 @@ interface TestWindow {
     search: string;
   };
   name: string;
+  proprDesktop?: {
+    auth: { logout: ReturnType<typeof vi.fn> };
+    external: { open: ReturnType<typeof vi.fn> };
+  };
   sessionStorage: MemoryStorage;
 }
 
@@ -174,5 +178,29 @@ describe('logout', () => {
 
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(testWindow.location.href).toBe('http://localhost:4000/api/auth/logout');
+  });
+
+  it('logs out the active Electron session and uses hash-aware login navigation', async () => {
+    const testWindow = stubTestWindow({
+      apiBaseUrl: 'http://localhost:4000',
+      hostname: 'renderer',
+      href: 'propr-app://renderer/renderer.html#/tasks',
+      pathname: '/renderer.html',
+    });
+    testWindow.location.hash = '#/tasks';
+    const sessionLogout = vi.fn().mockResolvedValue(undefined);
+    const openExternal = vi.fn();
+    testWindow.proprDesktop = {
+      auth: { logout: sessionLogout },
+      external: { open: openExternal },
+    };
+    const { logout } = await importProprApi();
+
+    await Promise.resolve(logout());
+
+    expect(sessionLogout).toHaveBeenCalledWith('http://localhost:4000');
+    expect(openExternal).not.toHaveBeenCalled();
+    expect(testWindow.location.href).toBe('propr-app://renderer/renderer.html#/tasks');
+    expect(testWindow.location.hash).toBe('/login?logged_out=true');
   });
 });
