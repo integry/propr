@@ -2,11 +2,11 @@
 // Build a standalone, publishable npm package for the CLI.
 //
 // The in-repo package is the scoped workspace package `@propr/cli`, which depends
-// on the workspace package `@propr/shared`. Neither scoped package is published to
-// npm, so we ship the CLI under the unscoped public name `propr-cli` with
-// `@propr/shared` *vendored* into `dist/vendor/shared/` (it is dependency-free) and
-// the two `@propr/shared` imports rewritten to a relative path. The result has no
-// scoped dependencies and installs cleanly from the public registry.
+// on the workspace packages `@propr/shared` and `@propr/local-setup`. These scoped
+// packages are not published to npm, so we ship the CLI under the unscoped public
+// name `propr-cli` with both packages vendored into `dist/vendor/` and their imports
+// rewritten to relative paths. The result has no scoped dependencies and installs
+// cleanly from the public registry.
 //
 // Usage:
 //   node scripts/build-publish.mjs            # build the staging package + npm pack --dry-run
@@ -35,6 +35,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const cliDir = resolve(here, "..");
 const repoRoot = resolve(cliDir, "..", "..");
 const sharedDir = join(repoRoot, "packages", "shared");
+const localSetupDir = join(repoRoot, "packages", "local-setup");
 const stageDir = join(repoRoot, "dist-publish", "propr-cli");
 const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2024.12.2";
 
@@ -75,6 +76,7 @@ const buildLauncherManifest = (version) => {
 
 // 1. Build the workspace packages we depend on.
 run("npm", ["run", "build", "-w", "@propr/shared"]);
+run("npm", ["run", "build", "-w", "@propr/local-setup"]);
 run("npm", ["run", "build", "-w", "@propr/cli"]);
 
 // 2. Stage the CLI dist + README.
@@ -103,12 +105,18 @@ for (const auditedFile of ["directory-operations.c", "README.md"]) {
   if (!existsSync(bundled)) throw new Error(`Audited native helper file is missing: ${bundled}`);
 }
 
-// 3. Vendor shared's compiled JS (dependency-free) into dist/vendor/shared.
-const vendorDir = join(stageDir, "dist", "vendor", "shared");
-mkdirSync(vendorDir, { recursive: true });
-for (const file of readdirSync(join(sharedDir, "dist"))) {
-  if (file.endsWith(".js")) {
-    cpSync(join(sharedDir, "dist", file), join(vendorDir, file));
+// 3. Vendor the compiled workspace packages into dist/vendor.
+const vendorRoot = join(stageDir, "dist", "vendor");
+const vendorPackages = [
+  { source: sharedDir, destination: join(vendorRoot, "shared") },
+  { source: localSetupDir, destination: join(vendorRoot, "local-setup") },
+];
+for (const { source, destination } of vendorPackages) {
+  mkdirSync(destination, { recursive: true });
+  for (const file of readdirSync(join(source, "dist"))) {
+    if (file.endsWith(".js")) {
+      cpSync(join(source, "dist", file), join(destination, file));
+    }
   }
 }
 
@@ -122,23 +130,29 @@ const stripMaps = (dir) => {
 };
 stripMaps(join(stageDir, "dist"));
 
-// 5. Rewrite the `@propr/shared` import specifier to the vendored relative path.
-const rewriteSharedImports = (dir) => {
+// 5. Rewrite private workspace imports to their vendored relative paths.
+const vendoredImports = new Map([
+  ["@propr/shared", join(vendorRoot, "shared", "index.js")],
+  ["@propr/local-setup", join(vendorRoot, "local-setup", "index.js")],
+]);
+const rewriteVendoredImports = (dir) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      rewriteSharedImports(full);
+      rewriteVendoredImports(full);
     } else if (entry.name.endsWith(".js")) {
-      const src = readFileSync(full, "utf8");
-      if (src.includes('"@propr/shared"')) {
-        let sharedPath = relative(dirname(full), join(vendorDir, "index.js")).split(sep).join("/");
-        if (!sharedPath.startsWith(".")) sharedPath = `./${sharedPath}`;
-        writeFileSync(full, src.replaceAll('"@propr/shared"', `"${sharedPath}"`));
+      let src = readFileSync(full, "utf8");
+      for (const [specifier, target] of vendoredImports) {
+        if (!src.includes(`"${specifier}"`)) continue;
+        let vendorPath = relative(dirname(full), target).split(sep).join("/");
+        if (!vendorPath.startsWith(".")) vendorPath = `./${vendorPath}`;
+        src = src.replaceAll(`"${specifier}"`, `"${vendorPath}"`);
       }
+      writeFileSync(full, src);
     }
   }
 };
-rewriteSharedImports(join(stageDir, "dist"));
+rewriteVendoredImports(join(stageDir, "dist"));
 
 // 6. Write the unscoped package.json (no scoped deps, no build scripts).
 const cliPkg = JSON.parse(readFileSync(join(cliDir, "package.json"), "utf8"));

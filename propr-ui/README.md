@@ -51,6 +51,26 @@ npm run dev
 
 The application will be available at `http://localhost:5173`
 
+### Desktop presentation fixtures
+
+Desktop mode is enabled explicitly by the typed `window.__PROPR_DESKTOP__`
+preload bridge. The normal hosted and self-hosted web UI never relies on user
+agent detection and continues to use the standard presentation.
+
+For browser-based development and deterministic screenshots, open one of these
+fixture URLs after starting Vite:
+
+- `/?desktop-fixture=first-run`
+- `/?desktop-fixture=recents`
+- `/?desktop-fixture=offline`
+- `/?desktop-fixture=incompatible`
+- `/?desktop-fixture=connected`
+
+The preload-facing adapter contract lives in `src/desktop/types.ts`. Browser
+fixtures implement the same profile persistence, discovery, authentication,
+external-browser, local-setup, and connection interfaces without exposing host
+commands to React.
+
 ### Building for Production
 
 ```bash
