@@ -3,10 +3,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
-const workflow = readFileSync(
+const normalizeWorkflowText = (contents: string): string => contents.replace(/\r\n?/g, '\n');
+const platformArchitecturePattern = /platform: (linux|darwin|win32)\n\s+arch: (x64|arm64)/g;
+const workflow = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../../../.github/workflows/desktop-release-guard.yml', import.meta.url)),
   'utf8',
-);
+));
 
 const job = (name: string, next?: string): string => {
   const start = workflow.indexOf(`\n  ${name}:`);
@@ -95,7 +97,7 @@ describe('desktop trusted release workflow', () => {
   });
 
   test('rechecks package architecture in staging and finalization and publishes only signed new releases', () => {
-    assert.equal(workflow.match(/platform: (linux|darwin|win32)\n\s+arch: (x64|arm64)/g)?.length, 12);
+    assert.equal(workflow.match(platformArchitecturePattern)?.length, 12);
     assert.equal(workflow.match(/release-artifacts\.mjs stage/g)?.length, 2);
     assert.equal(workflow.match(/release-artifacts\.mjs finalize/g)?.length, 2);
     assert.match(workflow, /p7zip-full rpm/);
@@ -107,5 +109,12 @@ describe('desktop trusted release workflow', () => {
     assert.ok(!publish.includes('desktop-release-final/*'));
     assert.ok(!publish.includes('--clobber'));
     assert.ok(!publish.includes('gh release upload'));
+  });
+
+  test('retains the exact native matrix when the workflow checkout uses CRLF', () => {
+    const crlfFixture = workflow.replaceAll('\n', '\r\n');
+    const normalizedFixture = normalizeWorkflowText(crlfFixture);
+    assert.equal(normalizedFixture.match(platformArchitecturePattern)?.length, 12);
+    assert.equal(normalizedFixture, workflow);
   });
 });

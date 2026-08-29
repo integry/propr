@@ -1,12 +1,17 @@
 import { execFile as execFileCallback, spawn } from 'node:child_process';
-import { open, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { lstat, open, mkdtemp, readdir, readFile, readlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { inflateRawSync } from 'node:zlib';
 
 const execFile = promisify(execFileCallback);
 const EXECUTABLE_NAME = 'propr-desktop';
+const LINUX_APP_DIRECTORY = join('usr', 'lib', EXECUTABLE_NAME);
+const LINUX_PAYLOAD = join(LINUX_APP_DIRECTORY, EXECUTABLE_NAME);
+const LINUX_LAUNCHER = join('usr', 'bin', EXECUTABLE_NAME);
+const LINUX_DOC_DIRECTORY = join('usr', 'share', 'doc', EXECUTABLE_NAME);
+const DEB_LINTIAN_OVERRIDE = join('usr', 'share', 'lintian', 'overrides', EXECUTABLE_NAME);
 const MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024;
 const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const EXPECTED_PACKAGE_ARCHITECTURE = {
@@ -130,6 +135,148 @@ const inspectExtractedExecutable = async (root, platform, arch, artifact) => {
   return inspection;
 };
 
+const pathInside = (root, path) => {
+  const child = relative(root, path);
+  return child === '' || (!isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`));
+};
+
+const displayPackagePath = (root, path) => relative(root, path).split(sep).join('/');
+
+const describeFileType = stats => {
+  if (stats.isFile()) return 'regular file';
+  if (stats.isDirectory()) return 'directory';
+  if (stats.isSymbolicLink()) return 'symbolic link';
+  return 'special file';
+};
+
+const readPackageEntry = async (path, description) => {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`Linux package is missing ${description}`);
+    throw error;
+  }
+};
+
+const collectSameNameEntries = async root => {
+  const entries = [];
+  const visit = async directory => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      const stats = await lstat(path);
+      if (entry.name.toLowerCase() === EXECUTABLE_NAME) entries.push({ path, stats });
+      if (stats.isDirectory()) await visit(path);
+    }
+  };
+  await visit(root);
+  return entries;
+};
+
+const resolvePackageSymlink = async (root, start) => {
+  const rootPath = resolve(root);
+  const startPath = resolve(start);
+  if (!pathInside(rootPath, startPath)) throw new Error('Linux package launcher escapes the extraction root');
+  let components = relative(rootPath, startPath).split(sep).filter(Boolean);
+  const visited = new Set();
+
+  while (components.length > 0) {
+    let current = rootPath;
+    let followedLink = false;
+    for (let index = 0; index < components.length; index += 1) {
+      current = join(current, components[index]);
+      const stats = await readPackageEntry(current, `launcher target ${displayPackagePath(rootPath, current)}`);
+      if (stats.isSymbolicLink()) {
+        if (visited.has(current)) throw new Error('Linux package launcher contains a symbolic-link cycle');
+        visited.add(current);
+        if (visited.size > 64) throw new Error('Linux package launcher has too many symbolic links');
+        const target = await readlink(current);
+        if (isAbsolute(target)) throw new Error('Linux package launcher uses an absolute symbolic link');
+        const resolvedTarget = resolve(dirname(current), target);
+        if (!pathInside(rootPath, resolvedTarget)) throw new Error('Linux package launcher escapes the extraction root');
+        components = [
+          ...relative(rootPath, resolvedTarget).split(sep).filter(Boolean),
+          ...components.slice(index + 1),
+        ];
+        followedLink = true;
+        break;
+      }
+      if (index < components.length - 1 && !stats.isDirectory()) {
+        throw new Error(`Linux package launcher traverses non-directory ${displayPackagePath(rootPath, current)}`);
+      }
+      if (index === components.length - 1) return { path: current, stats };
+    }
+    if (!followedLink) break;
+  }
+  throw new Error('Linux package launcher target is invalid');
+};
+
+export const inspectLinuxPackageLayout = async ({ root, packageFormat, platform, arch, artifact }) => {
+  if (platform !== 'linux') throw new Error(`${artifact} Linux package is only valid for Linux targets`);
+  if (!['deb', 'rpm'].includes(packageFormat)) throw new Error(`${artifact} Linux package format is invalid`);
+  const rootPath = resolve(root);
+  const appDirectory = join(rootPath, LINUX_APP_DIRECTORY);
+  const payload = join(rootPath, LINUX_PAYLOAD);
+  const launcher = join(rootPath, LINUX_LAUNCHER);
+
+  for (const [path, description] of [
+    [join(rootPath, 'usr'), 'usr directory'],
+    [join(rootPath, 'usr', 'lib'), 'usr/lib directory'],
+    [appDirectory, `${LINUX_APP_DIRECTORY.split(sep).join('/')} directory`],
+    [join(rootPath, 'usr', 'bin'), 'usr/bin directory'],
+  ]) {
+    const stats = await readPackageEntry(path, description);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error(`Linux package ${description} must be a real directory, found ${describeFileType(stats)}`);
+    }
+  }
+
+  const sameNameEntries = await collectSameNameEntries(rootPath);
+  const requiredEntries = new Map([
+    [appDirectory, 'directory'],
+    [payload, 'regular file'],
+    [launcher, 'symbolic link'],
+  ]);
+  const allowedEntries = new Map([
+    ...requiredEntries,
+    [join(rootPath, LINUX_DOC_DIRECTORY), 'directory'],
+    ...(packageFormat === 'deb' ? [[join(rootPath, DEB_LINTIAN_OVERRIDE), 'regular file']] : []),
+  ]);
+  const unexpected = sameNameEntries.filter(({ path, stats }) => {
+    const expectedType = allowedEntries.get(path);
+    return !expectedType || describeFileType(stats) !== expectedType;
+  });
+  const missing = [...requiredEntries].filter(([path, expectedType]) => (
+    !sameNameEntries.some(entry => entry.path === path && describeFileType(entry.stats) === expectedType)
+  ));
+  if (missing.length > 0 || unexpected.length > 0) {
+    const found = sameNameEntries
+      .map(({ path, stats }) => `${displayPackagePath(rootPath, path)} (${describeFileType(stats)})`)
+      .sort()
+      .join(', ') || 'none';
+    throw new Error(`Linux package must contain only the canonical payload and launcher layout; found ${found}`);
+  }
+
+  const payloadStats = await readPackageEntry(payload, `regular payload ${LINUX_PAYLOAD.split(sep).join('/')}`);
+  if (!payloadStats.isFile() || payloadStats.isSymbolicLink()) {
+    throw new Error(`Linux package payload must be a regular file, found ${describeFileType(payloadStats)}`);
+  }
+  const lintianOverride = sameNameEntries.find(entry => entry.path === join(rootPath, DEB_LINTIAN_OVERRIDE));
+  if (lintianOverride) {
+    const prefix = await readPrefix(lintianOverride.path, 4);
+    if (lintianOverride.stats.size > 64 * 1024
+      || prefix.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) {
+      throw new Error('DEB lintian override must not contain an extra ELF payload');
+    }
+  }
+  const resolvedLauncher = await resolvePackageSymlink(rootPath, launcher);
+  if (resolvedLauncher.path !== payload || !resolvedLauncher.stats.isFile()) {
+    throw new Error(`Linux package launcher must resolve to ${LINUX_PAYLOAD.split(sep).join('/')}`);
+  }
+  const inspection = inspectExecutableBytes(await readPrefix(payload));
+  assertExecutableArchitecture(inspection, platform, arch, artifact);
+  return inspection;
+};
+
 const readZipExecutable = async (path, platform) => {
   const handle = await open(path, 'r');
   try {
@@ -219,7 +366,7 @@ const inspectDeb = async (path, platform, arch) => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-deb-'));
   try {
     await execFile('dpkg-deb', ['--extract', path, directory]);
-    const executable = await inspectExtractedExecutable(directory, platform, arch, path);
+    const executable = await inspectLinuxPackageLayout({ root: directory, packageFormat: 'deb', platform, arch, artifact: path });
     return { format: 'deb', packageArchitecture, executable };
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -235,7 +382,7 @@ const inspectRpm = async (path, platform, arch) => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-rpm-'));
   try {
     await runPipeline('rpm2cpio', [path], 'cpio', ['-idm', '--quiet'], directory);
-    const executable = await inspectExtractedExecutable(directory, platform, arch, path);
+    const executable = await inspectLinuxPackageLayout({ root: directory, packageFormat: 'rpm', platform, arch, artifact: path });
     return { format: 'rpm', packageArchitecture, executable };
   } finally {
     await rm(directory, { recursive: true, force: true });

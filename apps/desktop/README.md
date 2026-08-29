@@ -73,8 +73,10 @@ The native GitHub Actions matrix produces these assets for both x64 and arm64:
 
 Every matrix job stages names in the form `ProPR-Desktop-<version>-<platform>-<arch>-<kind>`. The final job rejects
 missing targets or changed fragment checksums, emits `SHA256SUMS` and `desktop-release.json`, and attaches the complete
-set to the matching GitHub release. A workflow dispatch can test any stable semver without publishing; publishing a
-dispatch requires an existing matching tag. Normal local packages are unsigned and have updates disabled:
+set to the matching GitHub release. Production publication is triggered only by a new, non-forced
+`desktop-v<major>.<minor>.<patch>` tag push; there is no manual dispatch path. A secretless preflight must succeed before
+any job can request the protected release environment or receive release secrets. Normal local packages are unsigned
+and have updates disabled:
 
 ```sh
 npm ci
@@ -129,13 +131,19 @@ base64 < desktop-update-public.der  # variable: PROPR_DESKTOP_UPDATE_PUBLIC_KEY
 ```
 
 Do not commit either key file. The private key is available only to the approval-protected `desktop-release`
-environment. That environment must have required reviewers and a custom `desktop-v*` tag deployment rule. A new,
-non-forced tag push is accepted only when its exact commit is reachable from protected `main`, no release exists, and
-the tag remains unchanged through publication. Pull-request finalization produces unsigned validation metadata;
-trusted jobs check out the immutable preflight SHA and fail closed if any signing, notarization, or signed-update field
-is missing. A release operator must publish the exact signed manifest/signature, generated native feeds, and bound
-packages to their configured HTTPS URLs. The manifest URL must not contain a query, so its companion is always the
-documented pathname plus `.sig`.
+environment. Configure that environment with at least one required reviewer, custom deployment policies enabled,
+protected-branch policies disabled, and exactly one deployment policy: the tag pattern `desktop-v*`. The repository's
+default branch must be protected `main`. It must also have an active tag-targeting ruleset whose sole include is
+`refs/tags/desktop-v*`, whose exclude and bypass-actor lists are empty, and whose rules block both tag updates and tag
+deletions.
+
+For each tag push, the secretless preflight verifies those repository and environment prerequisites through the GitHub
+API, proves the exact tag commit is reachable from `main`, rejects an existing release, and rechecks the tag and
+immutability ruleset for changes. Pull-request finalization produces unsigned validation metadata; trusted jobs depend
+on preflight, check out its immutable SHA, revalidate the tag before publication, and fail closed if any signing,
+notarization, or signed-update field is missing. A release operator must publish the exact signed manifest/signature,
+generated native feeds, and bound packages to their configured HTTPS URLs. The manifest URL must not contain a query,
+so its companion is always the documented pathname plus `.sig`.
 
 Linux never checks for native updates. macOS and Windows operate as check-only channels: they verify the Ed25519
 manifest, exact target/version/feed bytes, package URL/size/SHA-256, and the actual Team ID/designated requirement or
