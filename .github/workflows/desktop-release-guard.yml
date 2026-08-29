@@ -1,0 +1,71 @@
+name: Desktop Release Guard
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-release-guard.yml'
+      - 'apps/desktop/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'packages/client/**'
+      - 'packages/shared/**'
+      - 'propr-ui/**'
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-guard-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Audit and package desktop app
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      # Audit the committed resolution before npm lifecycle or packaging code can run.
+      - name: Audit production runtime dependencies (low threshold)
+        run: npm run audit:runtime
+
+      - name: Audit desktop packaging toolchain (high threshold)
+        run: npm run desktop:audit:packaging
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Package desktop app from clean checkout
+        run: |
+          test ! -e packages/shared/dist
+          test ! -e packages/client/dist
+          test ! -e apps/desktop/out
+          npm run desktop:package
+
+      - name: Typecheck desktop and renderer
+        run: npm run desktop:typecheck
+
+      - name: Test desktop runtime
+        run: npm run desktop:test
+
+      - name: Configure Chromium sandbox helper
+        run: |
+          sudo chown root:root apps/desktop/out/propr-desktop-linux-x64/chrome-sandbox
+          sudo chmod 4755 apps/desktop/out/propr-desktop-linux-x64/chrome-sandbox
+
+      - name: Launch packaged desktop app with sandboxing
+        run: xvfb-run --auto-servernum npm run desktop:smoke

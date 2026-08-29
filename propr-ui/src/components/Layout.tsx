@@ -14,6 +14,7 @@ import { QueueStatsUpdatePayload, IndexingUpdatePayload, DraftUpdatePayload } fr
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
 import { ConnectCapacityBanner } from './ConnectPlusBanner';
 import { useNotificationCenter } from '../contexts/NotificationCenterContext';
+import { publicAssetUrl } from '../config/runtimeMode';
 import { DesktopTitleBar } from '../desktop/DesktopTitleBar';
 import { useDesktop } from '../desktop/DesktopContext';
 
@@ -187,7 +188,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       `}>
         <div className="flex items-center justify-between px-4 py-4 sm:py-6 h-12 sm:h-16">
           <Link to="/" className="flex items-center">
-            <img src="/media/logo-and-name.png" alt="ProPR" className="h-8 w-auto" />
+            <img src={publicAssetUrl('/media/logo-and-name.png')} alt="ProPR" className="h-8 w-auto" />
           </Link>
           <button
             onClick={() => setIsSidebarOpen(false)}

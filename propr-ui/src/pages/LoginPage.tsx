@@ -9,6 +9,7 @@ import {
   pathWithActiveHostedTunnelFlow,
 } from '../config/runtimeConfig';
 import { isProprProxyUrl } from '@propr/shared';
+import { publicAssetUrl } from '../config/runtimeMode';
 import { useDesktop } from '../desktop/DesktopContext';
 import { useRefreshCurrentUser } from '../contexts/AuthContext';
 
@@ -382,7 +383,7 @@ const LoginPage: React.FC = () => {
     <div className="min-h-screen bg-light-100 flex flex-col">
       <div className="flex flex-1 items-center justify-center p-4 sm:p-0">
         <div className="bg-white p-8 rounded-lg shadow-md max-w-md w-full text-center">
-          <img src="/media/logo-and-name.png" alt="ProPR" className="h-12 w-auto mx-auto mb-4" />
+          <img src={publicAssetUrl('/media/logo-and-name.png')} alt="ProPR" className="h-12 w-auto mx-auto mb-4" />
 
           {loggedOut && (
             <div className="mb-6 p-3 bg-green-50 text-green-700 rounded-md">

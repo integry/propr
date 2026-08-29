@@ -1,6 +1,7 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import { ProprClient } from '@propr/client';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
+import { currentUiPathname, navigateToUiPath } from '../config/runtimeMode';
 
 const createProprClient = (baseUrl: string): ProprClient => new ProprClient({
   baseUrl,
@@ -115,10 +116,10 @@ const throwUnauthorizedResponse = (data: ApiErrorBody | null): never => {
   if (data?.code === TOKEN_REFRESHED_CODE) {
     throw new TokenRefreshRetryRequiredError(getApiErrorMessage(data));
   }
-  if (window.location.pathname === '/login') throw new Error('Authentication required');
+  if (currentUiPathname() === '/login') throw new Error('Authentication required');
   // Preserve only the validated active flow so login/OAuth cannot be driven by
   // arbitrary raw URL input or copied sessionStorage.
-  window.location.href = pathWithActiveHostedTunnelFlow('/login');
+  navigateToUiPath(pathWithActiveHostedTunnelFlow('/login'));
   throw new Error('Authentication required');
 };
 

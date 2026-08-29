@@ -274,6 +274,11 @@ const hostedLogout = async (): Promise<void> => {
 };
 
 export const logout = (): void | Promise<void> => {
+  if (typeof window !== 'undefined' && window.proprDesktop) {
+    return window.proprDesktop.auth.logout(API_BASE_URL).then(() => {
+      window.location.hash = '/login?logged_out=true';
+    });
+  }
   if (typeof window !== 'undefined' && isHostedUiOrigin(window.location.hostname) && isProprProxyUrl(API_BASE_URL)) {
     hostedLogoutInFlight ??= hostedLogout();
     return hostedLogoutInFlight;
