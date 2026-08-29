@@ -31,6 +31,7 @@ import {
   type AgentSkillTarget,
 } from "../agentSkill.js";
 import { formatAgentSkillOperation } from "./agentSkillCommands.js";
+import { getLocalSetupCapability } from "@propr/local-setup";
 
 export interface SetupCommandOptions {
   root?: string;
@@ -216,6 +217,11 @@ cannot prompt and exits with guidance — scaffold non-interactively instead wit
 `)
     .action(async (options: SetupCommandOptions) => {
       try {
+        const capability = getLocalSetupCapability();
+        if (!capability.supported) {
+          console.error(capability.reason);
+          process.exit(1);
+        }
         let skillReadline: ReturnType<typeof createInterface> | undefined;
         const canPromptForSkill = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
         await offerSetupAgentSkill({
