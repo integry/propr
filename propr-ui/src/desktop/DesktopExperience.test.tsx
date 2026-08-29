@@ -11,17 +11,13 @@ vi.mock('../api/apiClient', () => ({ setApiBaseUrl: apiMock.setApiBaseUrl }));
 vi.mock('../config/runtimeConfig', () => ({ setDesktopApiBaseUrl: runtimeMock.setDesktopApiBaseUrl }));
 
 const localProfile: DesktopProfile = {
-  id: 'local',
-  name: 'This computer',
-  baseUrl: 'http://127.0.0.1:3000',
-  kind: 'local',
+  id: 'local', name: 'This computer',
+  baseUrl: 'http://127.0.0.1:3000', kind: 'local',
 };
 
 const remoteProfile: DesktopProfile = {
-  id: 'remote',
-  name: 'Team server',
-  baseUrl: 'https://propr.example.com',
-  kind: 'remote',
+  id: 'remote', name: 'Team server',
+  baseUrl: 'https://propr.example.com', kind: 'remote',
 };
 
 const adaptersFor = (
