@@ -28,11 +28,13 @@ describe('desktop profile store', () => {
   it('persists validated profiles and active selection', async () => {
     const directory = await createDirectory();
     const store = new ProfileStore(directory, encryption());
-    const profile = await store.save({ label: ' Local ', apiBaseUrl: 'http://localhost:4000/' });
+    const profile = await store.save({ label: ' Local ', apiBaseUrl: 'http://localhost:4000///' });
+    const ipv6Profile = await store.save({ label: 'IPv6', apiBaseUrl: 'http://[::1]:4000/' });
     await store.setActive(profile.id);
-    assert.deepEqual(await store.list(), { profiles: [profile], activeProfileId: profile.id });
+    assert.deepEqual(await store.list(), { profiles: [profile, ipv6Profile], activeProfileId: profile.id });
     assert.equal(profile.label, 'Local');
     assert.equal(profile.apiBaseUrl, 'http://localhost:4000');
+    assert.equal(ipv6Profile.apiBaseUrl, 'http://[::1]:4000');
   });
 
   it('encrypts credentials before writing app-owned storage', async () => {
@@ -86,11 +88,19 @@ describe('desktop profile store', () => {
   });
 
   it('rejects unsafe endpoints and path-like profile identifiers', async () => {
-    const store = new ProfileStore(await createDirectory(), encryption());
+    const directory = await createDirectory();
+    const store = new ProfileStore(directory, encryption());
+    const profile = await store.save({ label: 'Remote', apiBaseUrl: 'https://propr.example.com/' });
     await assert.rejects(
       store.save({ label: 'Remote HTTP', apiBaseUrl: 'http://example.com' }),
       /HTTPS/,
     );
+    await assert.rejects(
+      store.save({ id: profile.id, label: 'Path bearing', apiBaseUrl: 'https://propr.example.com/base' }),
+      /HTTPS/,
+    );
+    assert.deepEqual((await store.list()).profiles, [profile]);
+    assert.doesNotMatch(await readFile(join(directory, 'desktop', 'profiles.json'), 'utf8'), /\/base/);
     await assert.rejects(store.writeCredential('../escape', 'secret'), /Invalid desktop profile id/);
   });
 });

@@ -19,7 +19,8 @@ export const normalizeApiBaseUrl = (value: string): string | null => {
   if (!url || hasCredentials(url) || url.hash || url.search) return null;
   if (url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) return null;
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-  return url.href.replace(/\/+$/, '');
+  if (url.pathname.replace(/\//g, '') !== '') return null;
+  return url.origin;
 };
 
 export const isSafeExternalUrl = (value: string): boolean => {

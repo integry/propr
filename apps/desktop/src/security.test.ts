@@ -13,10 +13,12 @@ import {
 
 describe('desktop URL security', () => {
   it('only accepts HTTPS and loopback HTTP API endpoints', () => {
-    assert.equal(normalizeApiBaseUrl('https://propr.example.com/'), 'https://propr.example.com');
+    assert.equal(normalizeApiBaseUrl('https://propr.example.com///'), 'https://propr.example.com');
     assert.equal(normalizeApiBaseUrl('http://localhost:4000/'), 'http://localhost:4000');
     assert.equal(normalizeApiBaseUrl('http://127.0.0.1:4000'), 'http://127.0.0.1:4000');
     assert.equal(normalizeApiBaseUrl('http://[::1]:4000/'), 'http://[::1]:4000');
+    assert.equal(normalizeApiBaseUrl('https://propr.example.com/base'), null);
+    assert.equal(normalizeApiBaseUrl('http://[::1]:4000/api'), null);
     assert.equal(normalizeApiBaseUrl('http://propr.example.com'), null);
     assert.equal(normalizeApiBaseUrl('http://[2001:db8::1]:4000'), null);
     assert.equal(normalizeApiBaseUrl('https://user:secret@propr.example.com'), null);

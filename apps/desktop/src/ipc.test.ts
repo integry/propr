@@ -13,10 +13,10 @@ describe('desktop session IPC operations', () => {
       },
     };
 
-    await logoutDesktopSession(desktopSession, 'https://propr.example.com/base');
+    await logoutDesktopSession(desktopSession, 'https://propr.example.com');
 
     assert.deepEqual(requests, [{
-      url: 'https://propr.example.com/base/api/auth/logout',
+      url: 'https://propr.example.com/api/auth/logout',
       init: { credentials: 'include', redirect: 'manual' },
     }]);
   });
@@ -30,6 +30,7 @@ describe('desktop session IPC operations', () => {
       },
     };
 
+    await assert.rejects(logoutDesktopSession(desktopSession, 'https://propr.example.com/base'), /Invalid desktop API URL/);
     await assert.rejects(logoutDesktopSession(desktopSession, 'https://user:secret@example.com'), /Invalid desktop API URL/);
     assert.equal(requested, false);
   });
