@@ -121,7 +121,12 @@ export const hostedTunnelQueryApiBaseUrl = (
   const raw = new URLSearchParams(search).get('tunnel')?.trim();
   if (!raw) return null;
 
-  if (isProprProxyUrl(raw)) return raw.replace(/\/+$/, '');
+  // Connect links have historically tolerated redundant trailing slashes on a
+  // full proxy URL. Normalize only those slashes before applying the strict
+  // shared authority parser; paths, queries, fragments, ports, and userinfo
+  // remain invalid.
+  const normalizedUrl = raw.replace(/\/+$/, '');
+  if (isProprProxyUrl(normalizedUrl)) return normalizedUrl;
 
   const instanceUrl = proprInstanceProxyUrl(raw);
   if (instanceUrl) return instanceUrl;
