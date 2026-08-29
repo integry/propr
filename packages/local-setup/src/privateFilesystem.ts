@@ -4,6 +4,7 @@ import {
   closeSync,
   constants,
   fstatSync,
+  fchmodSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -20,6 +21,26 @@ import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 export const PRIVATE_DIRECTORY_MODE = 0o700;
 export const PRIVATE_FILE_MODE = 0o600;
 const O_CLOEXEC = (constants as unknown as Record<string, number>).O_CLOEXEC ?? (process.platform === 'linux' ? 0o2000000 : 0);
+
+interface DescriptorRoot {
+  descriptor: number;
+  root: string;
+  suffix: string[];
+}
+
+/** Recognize only this process's explicit Linux descriptor paths. */
+function descriptorRootFor(targetPath: string): DescriptorRoot | undefined {
+  if (process.platform !== "linux") return undefined;
+  const absolute = resolve(targetPath);
+  const prefix = `/proc/${process.pid}/fd/`;
+  if (!absolute.startsWith(prefix)) return undefined;
+  const [descriptorText, ...suffix] = absolute.slice(prefix.length).split("/").filter(Boolean);
+  if (!descriptorText || !/^(?:0|[1-9][0-9]*)$/.test(descriptorText)) return undefined;
+  const descriptor = Number(descriptorText);
+  const opened = fstatSync(descriptor);
+  if (!opened.isDirectory()) throw new Error("Descriptor-root path is not anchored to a directory");
+  return { descriptor, root: `${prefix}${descriptorText}`, suffix };
+}
 
 function lstatIfPresent(targetPath: string): Stats | undefined {
   try {
@@ -41,9 +62,11 @@ function assertOwned(stat: Stats, targetPath: string): void {
 function assertNoSymlinkComponents(targetPath: string): void {
   const absolute = resolve(targetPath);
   if (!isAbsolute(absolute) || absolute.includes("\0")) throw new Error("Invalid private filesystem path");
-  const root = parse(absolute).root;
+  const anchored = descriptorRootFor(absolute);
+  const root = anchored?.root ?? parse(absolute).root;
   let cursor = root;
-  for (const component of absolute.slice(root.length).split(/[\\/]+/).filter(Boolean)) {
+  const components = anchored?.suffix ?? absolute.slice(root.length).split(/[\\/]+/).filter(Boolean);
+  for (const component of components) {
     cursor = join(cursor, component);
     const stat = lstatIfPresent(cursor);
     if (!stat) break;
@@ -56,12 +79,21 @@ function assertNoSymlinkComponents(targetPath: string): void {
 
 export function secureExistingPrivateDirectory(directoryPath: string): boolean {
   assertNoSymlinkComponents(directoryPath);
+  const anchored = descriptorRootFor(directoryPath);
+  if (anchored?.suffix.length === 0) {
+    const stat = fstatSync(anchored.descriptor);
+    assertOwned(stat, directoryPath);
+    if (process.platform !== "win32" && (stat.mode & 0o777) !== PRIVATE_DIRECTORY_MODE) {
+      fchmodSync(anchored.descriptor, PRIVATE_DIRECTORY_MODE);
+    }
+    return true;
+  }
   const stat = lstatIfPresent(directoryPath);
   if (!stat) return false;
   if (stat.isSymbolicLink()) throw new Error(`Refusing to use symbolic-link directory ${directoryPath}`);
   if (!stat.isDirectory()) throw new Error(`Expected a directory at ${directoryPath}`);
   assertOwned(stat, directoryPath);
-  if (realpathSync(directoryPath) !== resolve(directoryPath)) throw new Error(`Refusing to use linked directory ${directoryPath}`);
+  if (!anchored && realpathSync(directoryPath) !== resolve(directoryPath)) throw new Error(`Refusing to use linked directory ${directoryPath}`);
   if (process.platform !== "win32" && (stat.mode & 0o777) !== PRIVATE_DIRECTORY_MODE) {
     chmodSync(directoryPath, PRIVATE_DIRECTORY_MODE);
   }

@@ -1453,7 +1453,7 @@ async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, si
 }
 
 /** Async mirror of startService. */
-export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff, signal, setupRunId } = {}) {
+export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff, signal, setupRunId, beforeLaunch, returnStatus = true } = {}) {
     const name = `${cfg.stack}-${service}`;
     await assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff, signal);
     if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, signal });
@@ -1466,9 +1466,11 @@ export async function startServiceAsync(cfg, service, { onLog, pull = true, fres
         await removeIfExistsAsync(cfg, name, onLog, signal);
     }
     const runArgs = [...spec.args, spec.image, ...(spec.command || [])];
+    signal?.throwIfAborted();
+    beforeLaunch?.();
     await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode, signal, setupRunId);
     onLog?.(`  [ok] started ${name}`);
-    return getServiceStateAsync(cfg, service, signal);
+    return returnStatus ? getServiceStateAsync(cfg, service, signal) : undefined;
 }
 
 /** Async mirror of stopService (used by startStackAsync's rollback). */
@@ -1493,7 +1495,7 @@ async function stopServiceAsync(cfg, service, { remove = true, onLog } = {}) {
  * without blocking the event loop, rolling back already-started services on a
  * mid-startup failure (best effort) before rethrowing.
  */
-export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, onLog, signal } = {}) {
+export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, onLog, signal, beforeLaunch } = {}) {
     const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
     const setupRunId = randomUUID();
     const journal = [];
@@ -1504,8 +1506,9 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
         if (preexisting) throw new Error(`Refusing to replace preexisting container ${name} during setup; it was left untouched.`);
     };
     try {
+        signal?.throwIfAborted();
         await recordBeforeLaunch(`${cfg.stack}-migrate`, 'migrate');
-        await runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal, setupRunId });
+        await runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal, setupRunId, beforeLaunch });
         for (const service of toStart) {
             await recordBeforeLaunch(`${cfg.stack}-${service}`, service);
             await startServiceAsync(cfg, service, {
@@ -1515,18 +1518,25 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
                 pull: !DATABASE_SERVICES.has(service),
                 signal,
                 setupRunId,
+                beforeLaunch,
+                returnStatus: false,
             });
         }
+        signal?.throwIfAborted();
+        beforeLaunch?.();
+        const status = await getStackStatusAsync(cfg, signal);
+        signal?.throwIfAborted();
+        beforeLaunch?.();
+        return status;
     } catch (err) {
         onLog?.(`  ! startup failed (${err.message}) — cleaning up run-owned containers`);
         await cleanupSetupRunContainers(cfg, setupRunId, journal, onLog);
         throw err;
     }
-    return getStackStatusAsync(cfg, signal);
 }
 
 /** Async mirror of runMigrationPhase for the interactive setup UI. */
-export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal, setupRunId } = {}) {
+export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal, setupRunId, beforeLaunch } = {}) {
     await assertMigrationCanStartAsync(cfg, signal);
     await ensureServiceImageAsync(cfg, 'daemon', onLog, { freshnessCache, signal });
     if (setupRunId) {
@@ -1538,6 +1548,8 @@ export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signa
         await prepareMigrationOwnerAsync(cfg, onLog, signal);
     }
     onLog?.('  · running database migrations');
+    signal?.throwIfAborted();
+    beforeLaunch?.();
     const res = await dockerAsync(migrationDockerArgs(cfg, setupRunId), { signal });
     if (res.status !== 0) throw migrationFailure(res);
     onLog?.('  [ok] database migrations completed');
@@ -1565,7 +1577,9 @@ async function cleanupSetupRunContainers(cfg, setupRunId, journal, onLog) {
             if (entry.preexisting) continue;
             try {
                 if (!(await inspectSetupRunOwnership(cfg, entry.name, entry.service, setupRunId, cleanup.signal))) continue;
-                await dockerAsync(['stop', '-t', '2', entry.name], { signal: cleanup.signal });
+                const stopped = await dockerAsync(['stop', '-t', '2', entry.name], { signal: cleanup.signal });
+                if (stopped.status !== 0) continue;
+                if (!(await inspectSetupRunOwnership(cfg, entry.name, entry.service, setupRunId, cleanup.signal))) continue;
                 const removed = await dockerAsync(['rm', '-f', entry.name], { signal: cleanup.signal });
                 if (removed.status === 0) onLog?.(`  [ok] removed run-owned ${entry.name}`);
             } catch (cleanupError) {
@@ -1579,7 +1593,13 @@ async function cleanupSetupRunContainers(cfg, setupRunId, journal, onLog) {
 
 /** Async mirror of getStackStatus. */
 export async function getStackStatusAsync(cfg, signal) {
+    signal?.throwIfAborted();
     const res = await dockerAsync(STACK_STATUS_PS_ARGS, { signal });
+    signal?.throwIfAborted();
+    if (res.error || res.status !== 0) {
+        const detail = firstLine(res.stderr || res.error?.message || `docker ps exited with status ${res.status}`);
+        throw new Error(`Failed to inspect stack status: ${detail}`);
+    }
     return parseStackStatus(cfg, res.stdout);
 }
 

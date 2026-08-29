@@ -9,13 +9,14 @@ import {
   realpathSync,
 } from 'node:fs';
 import { lstat, realpath, stat } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   ensurePrivateDirectory,
   secureExistingPrivateDirectory,
   writePrivateFileAtomic,
 } from '@propr/local-setup';
 import type { DesktopFilesystemSelection, DesktopSecretSelection } from './shared/contract';
+import type { SetupActions } from '@propr/local-setup';
 
 type SelectionKind = 'directory' | 'private-key';
 
@@ -60,6 +61,7 @@ export class RootDirectoryAuthority {
   readonly #descriptor: number;
   readonly #device: bigint;
   readonly #inode: bigint;
+  readonly #operationPath: string;
   #closed = false;
 
   private constructor(path: string, descriptor: number, device: bigint, inode: bigint) {
@@ -67,6 +69,7 @@ export class RootDirectoryAuthority {
     this.#descriptor = descriptor;
     this.#device = device;
     this.#inode = inode;
+    this.#operationPath = `/proc/${process.pid}/fd/${descriptor}`;
   }
 
   static open(path: string, create = false): RootDirectoryAuthority {
@@ -88,7 +91,10 @@ export class RootDirectoryAuthority {
   validate(): void {
     if (this.#closed) throw new SetupCapabilityError('The setup directory authority expired. Select it again.');
     const anchored = fstatSync(this.#descriptor, { bigint: true });
-    const current = lstatSync(this.path, { bigint: true });
+    let current;
+    try { current = lstatSync(this.path, { bigint: true }); } catch {
+      throw new SetupCapabilityError('The selected setup directory changed. Select it again.');
+    }
     if (!anchored.isDirectory() || !current.isDirectory() || current.isSymbolicLink()
       || anchored.dev !== this.#device || anchored.ino !== this.#inode
       || current.dev !== this.#device || current.ino !== this.#inode
@@ -97,7 +103,7 @@ export class RootDirectoryAuthority {
     }
     assertOwner(current.uid);
     for (const name of ['.env', 'data', 'logs', 'repos']) {
-      const child = join(this.path, name);
+      const child = join(this.#operationPath, name);
       let info;
       try { info = lstatSync(child); } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
@@ -107,7 +113,8 @@ export class RootDirectoryAuthority {
       if (name === '.env') {
         if (!info.isFile() || info.nlink !== 1) throw new SetupCapabilityError('The setup environment must be a non-linked regular file.');
       } else {
-        const childRelative = relative(this.path, realpathSync(child));
+        const anchoredRoot = realpathSync(this.#operationPath);
+        const childRelative = relative(anchoredRoot, realpathSync(child));
         if (!info.isDirectory() || childRelative.startsWith('..') || isAbsolute(childRelative)) {
           throw new SetupCapabilityError('The setup directory contains an unsafe managed path.');
         }
@@ -115,11 +122,67 @@ export class RootDirectoryAuthority {
     }
   }
 
+  /** Stable main-process-only path for descriptor-relative managed operations. */
+  operationPath(): string {
+    this.validate();
+    return this.#operationPath;
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
     closeSync(this.#descriptor);
   }
+}
+
+/**
+ * Bind setup host actions to the held Linux directory descriptor. Only display
+ * paths cross the setup engine; host I/O receives the descriptor-rooted path,
+ * and Docker gets a fresh authority assertion at each container handoff.
+ */
+export function bindRootOperations(
+  actions: SetupActions,
+  displayRoot: string,
+  authority: RootDirectoryAuthority,
+): SetupActions {
+  const guard = () => authority.validate();
+  const operationRoot = authority.operationPath();
+  const mapPath = (value: string, from: string, to: string): string => value === from || value.startsWith(`${from}${sep}`)
+    ? `${to}${value.slice(from.length)}`
+    : value;
+  const transform = (value: unknown, from: string, to: string): unknown => {
+    if (typeof value === 'string') return mapPath(value, from, to);
+    if (typeof value === 'function') {
+      return (...args: unknown[]) => Reflect.apply(value, undefined, args.map(argument => transform(argument, to, from)));
+    }
+    if (Array.isArray(value)) return value.map(item => transform(item, from, to));
+    if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, transform(item, from, to)]));
+    }
+    return value;
+  };
+  const toOperation = (value: unknown) => transform(value, displayRoot, operationRoot);
+  const toDisplay = (value: unknown) => transform(value, operationRoot, displayRoot);
+  return new Proxy(actions, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]) => {
+        guard();
+        const pathless = property === 'persistStackRoot' || property === 'getTunnelEnabled';
+        const operationArgs = pathless ? args : args.map(toOperation);
+        if (property === 'startStack' && operationArgs[0] && typeof operationArgs[0] === 'object') {
+          operationArgs[0] = { ...(operationArgs[0] as Record<string, unknown>), assertRootAuthority: guard };
+        }
+        const result = Reflect.apply(value, target, operationArgs);
+        if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+          return Promise.resolve(result).then(output => { guard(); return toDisplay(output); });
+        }
+        guard();
+        return toDisplay(result);
+      };
+    },
+  });
 }
 
 export class SetupSecretCapabilities {

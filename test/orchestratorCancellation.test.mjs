@@ -46,7 +46,7 @@ test('dockerAsync cancellation terminates the spawned process group before settl
   }
 });
 
-test('setup abort cleans daemon-created run-owned containers and leaves preexisting and foreign containers untouched', async () => {
+test('setup abort during launch and final status cleans run-owned containers and leaves preexisting and foreign containers untouched', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-docker-daemon-cancel-'));
   const executable = join(directory, 'docker');
   const statePath = join(directory, 'containers.json');
@@ -71,15 +71,27 @@ if (args[0] === 'network') process.exit(0);
 if (args[0] === 'ps') {
   const match = args.join(' ').match(/name=\\^([^$]+)\\$/);
   const name = match && match[1];
-  const entry = name && load()[name];
-  if (entry && (args.includes('-a') || entry.__running)) console.log(name);
-  process.exit(0);
+  const state = load();
+  const entry = name && state[name];
+  const allCoreLaunched = ['redis', 'daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']
+    .every(service => state['propr-' + service]?.['propr.setup-run'] && state['propr-' + service].__running);
+  if (!name && state.foreign?.statusError && allCoreLaunched) {
+    fs.writeSync(2, 'synthetic docker ps failure\\n');
+    process.exit(23);
+  } else if (!name && state.foreign?.abortFinal && allCoreLaunched) {
+    fs.writeFileSync(process.env.PROPR_FAKE_MARKER, 'final-status');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30_000);
+    process.exit(0);
+  } else {
+    if (entry && (args.includes('-a') || entry.__running)) fs.writeSync(1, name + '\\n');
+    process.exit(0);
+  }
 }
 if (args[0] === 'inspect') {
   const name = args[args.length - 1];
   const labels = load()[name];
   if (!labels) process.exit(1);
-  console.log(JSON.stringify(labels));
+  fs.writeSync(1, JSON.stringify(labels) + '\\n');
   process.exit(0);
 }
 if (args[0] === 'run') {
@@ -105,20 +117,62 @@ PROPR_FAKE_NODE
   const manifestPath = fileURLToPath(new URL('../docker/launcher/manifest.json', import.meta.url));
   const cfg = resolveConfig({}, { manifestPath, envFileLocal: '/stack/.env', envFileHost: '/stack/.env', hostData: '/stack/data', hostLogs: '/stack/logs', hostRepos: '/stack/repos' });
   try {
-    const controller = new AbortController();
-    const operation = startStackAsync(cfg, { ui: false, docs: false, tunnel: false, signal: controller.signal });
-    const rejected = assert.rejects(operation);
+    for (let iteration = 0; iteration < 5; iteration += 1) {
+      await writeFile(statePath, JSON.stringify(initial));
+      await writeFile(markerPath, '');
+      process.env.PROPR_FAKE_ABORT_TARGET = 'propr-redis';
+      const controller = new AbortController();
+      const operation = startStackAsync(cfg, { ui: false, docs: false, tunnel: false, signal: controller.signal });
+      const rejected = assert.rejects(operation);
+      await Promise.race([
+        eventually(async () => { assert.equal(await readFile(markerPath, 'utf8'), 'propr-redis'); }),
+        operation.then(() => { throw new Error('stack unexpectedly completed'); }, error => { throw error; }),
+      ]);
+      controller.abort();
+      await rejected;
+      const settled = JSON.parse(readFileSync(statePath, 'utf8'));
+      assert.deepEqual(Object.keys(settled).sort(), ['foreign', 'propr-api'], `iteration ${iteration + 1}`);
+      assert.equal(settled['propr-api'].foreign, 'preexisting');
+      assert.equal(settled.foreign.foreign, 'true');
+      assert.equal(Object.values(settled).some(labels => labels['propr.setup-run']), false);
+    }
+
+    const finalInitial = {
+      'propr-ui': { 'propr.stack': 'propr', 'propr.service': 'ui', foreign: 'preexisting', __running: false },
+      foreign: { foreign: 'true', abortFinal: true, __running: true },
+    };
+    await writeFile(statePath, JSON.stringify(finalInitial));
+    await writeFile(markerPath, '');
+    process.env.PROPR_FAKE_ABORT_TARGET = 'final-status';
+    const finalController = new AbortController();
+    const finalOperation = startStackAsync(cfg, { ui: false, docs: false, tunnel: false, signal: finalController.signal });
     await Promise.race([
-      eventually(async () => { assert.equal(await readFile(markerPath, 'utf8'), 'propr-redis'); }),
-      operation.then(() => { throw new Error('stack unexpectedly completed'); }, error => { throw error; }),
+      eventually(async () => { assert.equal(await readFile(markerPath, 'utf8'), 'final-status'); }, 5_000),
+      finalOperation.then(() => { throw new Error('stack unexpectedly completed'); }, error => { throw error; }),
     ]);
-    controller.abort();
-    await rejected;
-    const settled = JSON.parse(readFileSync(statePath, 'utf8'));
-    assert.deepEqual(Object.keys(settled).sort(), ['foreign', 'propr-api']);
-    assert.equal(settled['propr-api'].foreign, 'preexisting');
-    assert.equal(settled.foreign.foreign, 'true');
-    assert.equal(Object.values(settled).some(labels => labels['propr.setup-run']), false);
+    finalController.abort();
+    await assert.rejects(finalOperation);
+    const finalSettled = JSON.parse(readFileSync(statePath, 'utf8'));
+    assert.deepEqual(Object.keys(finalSettled).sort(), ['foreign', 'propr-ui']);
+    assert.equal(finalSettled['propr-ui'].foreign, 'preexisting');
+    assert.equal(finalSettled.foreign.foreign, 'true');
+    assert.equal(Object.values(finalSettled).some(labels => labels['propr.setup-run']), false);
+
+    const errorInitial = {
+      'propr-docs': { 'propr.stack': 'propr', 'propr.service': 'docs', foreign: 'preexisting', __running: false },
+      foreign: { foreign: 'true', statusError: true, __running: true },
+    };
+    await writeFile(statePath, JSON.stringify(errorInitial));
+    process.env.PROPR_FAKE_ABORT_TARGET = 'status-error';
+    await assert.rejects(
+      startStackAsync(cfg, { ui: false, docs: false, tunnel: false }),
+      /Failed to inspect stack status: synthetic docker ps failure/,
+    );
+    const errorSettled = JSON.parse(readFileSync(statePath, 'utf8'));
+    assert.deepEqual(Object.keys(errorSettled).sort(), ['foreign', 'propr-docs']);
+    assert.equal(errorSettled['propr-docs'].foreign, 'preexisting');
+    assert.equal(errorSettled.foreign.foreign, 'true');
+    assert.equal(Object.values(errorSettled).some(labels => labels['propr.setup-run']), false);
   } finally {
     process.env.PATH = previous.path;
     for (const [name, value] of [['PROPR_FAKE_STATE', previous.state], ['PROPR_FAKE_MARKER', previous.marker], ['PROPR_FAKE_ABORT_TARGET', previous.target], ['PROPR_SKIP_REMOTE_IMAGE_CHECK', previous.skip]]) {

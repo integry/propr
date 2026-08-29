@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import type { SetupActions } from '@propr/local-setup';
+import { writePrivateFileAtomic, type SetupActions } from '@propr/local-setup';
 import { DesktopSetupController } from './setup-controller';
 
 const fakeActions = (): SetupActions => {
@@ -418,6 +419,89 @@ describe('desktop local setup controller', () => {
     assert.notEqual(mountedPath, keyPath);
     assert.equal(await readFile(mountedPath, 'utf8'), original);
     assert.doesNotMatch(await readFile(mountedPath, 'utf8'), /REPLACEMENT/);
+  });
+
+  it('keeps an atomic env commit descriptor-relative when a selected root is renamed and replaced', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-root-commit-'));
+    const selectedRoot = join(directory, 'selected');
+    const originalRoot = join(directory, 'selected-original');
+    const sentinel = 'REPLACEMENT_SENTINEL_MUST_SURVIVE';
+    await mkdir(selectedRoot, { mode: 0o700 });
+    const emitted: unknown[] = [];
+    let swapped = false;
+    let operationRoot = '';
+    const actions = fakeActions();
+    actions.applyEnvSelection = (rootDir, values, _options, signal) => {
+      operationRoot = rootDir;
+      writePrivateFileAtomic(join(rootDir, '.env'), Object.entries(values).map(([key, value]) => `${key}=${value}`).join('\n'), {
+        signal,
+        beforeRename() {
+          if (swapped) return;
+          swapped = true;
+          renameSync(selectedRoot, originalRoot);
+          mkdirSync(selectedRoot, { mode: 0o700 });
+          writeFileSync(join(selectedRoot, '.env'), sentinel, { mode: 0o600 });
+        },
+      });
+      return { written: Object.keys(values), skipped: [] };
+    };
+    const controller = new DesktopSetupController({
+      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'default'),
+      selectDirectory: async () => selectedRoot, selectPrivateKey: async () => null,
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit: snapshot => emitted.push(snapshot),
+    });
+    const status = await controller.status();
+    const selected = await controller.selectDirectory();
+    assert.ok(selected);
+    const result = await controller.start({
+      sessionId: status.sessionId, root: { mode: 'selected', capability: selected.capability }, reinitialize: false, agents: [],
+      github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null,
+    });
+    assert.equal(result.phase, 'failed');
+    assert.match(operationRoot, new RegExp(`^/proc/${process.pid}/fd/[0-9]+$`));
+    assert.equal(readFileSync(join(selectedRoot, '.env'), 'utf8'), sentinel);
+    assert.match(readFileSync(join(originalRoot, '.env'), 'utf8'), /PROPR_DEMO_MODE=true/);
+    assert.doesNotMatch(JSON.stringify({ result, emitted }), new RegExp(`/proc/${process.pid}/fd/`));
+    assert.equal((await controller.retry()).phase, 'failed', 'retry starts only after the failed run settled');
+    await controller.shutdown();
+  });
+
+  it('fails before Docker handoff when a selected root is replaced and never supplies the replacement path', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-root-docker-'));
+    const selectedRoot = join(directory, 'selected');
+    const originalRoot = join(directory, 'selected-original');
+    const sentinel = 'DO_NOT_READ_OR_BIND_REPLACEMENT';
+    await mkdir(selectedRoot, { mode: 0o700 });
+    let launched = false;
+    let daemonRoot = '';
+    const actions = fakeActions();
+    actions.startStack = async params => {
+      daemonRoot = params.rootDir;
+      renameSync(selectedRoot, originalRoot);
+      mkdirSync(selectedRoot, { mode: 0o700 });
+      writeFileSync(join(selectedRoot, '.env'), sentinel, { mode: 0o600 });
+      params.assertRootAuthority?.();
+      launched = true;
+    };
+    const controller = new DesktopSetupController({
+      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'default'),
+      selectDirectory: async () => selectedRoot, selectPrivateKey: async () => null,
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
+    });
+    const status = await controller.status();
+    const selected = await controller.selectDirectory();
+    assert.ok(selected);
+    const result = await controller.start({
+      sessionId: status.sessionId, root: { mode: 'selected', capability: selected.capability }, reinitialize: false, agents: [],
+      github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null,
+    });
+    assert.equal(result.phase, 'failed');
+    assert.equal(launched, false);
+    assert.match(daemonRoot, new RegExp(`^/proc/${process.pid}/fd/[0-9]+$`));
+    assert.notEqual(daemonRoot, selectedRoot);
+    assert.equal(readFileSync(join(selectedRoot, '.env'), 'utf8'), sentinel);
+    assert.equal((await controller.retry()).phase, 'failed', 'retry starts only after the failed run settled');
+    await controller.shutdown();
   });
 
   it('keeps native webhook secret bytes out of snapshots, resume state, logs, errors, and diagnostics', async () => {

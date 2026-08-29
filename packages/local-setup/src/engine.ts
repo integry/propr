@@ -362,6 +362,8 @@ export interface StartStackParams {
   docs?: boolean;
   onLog?: (line: string) => void;
   signal?: AbortSignal;
+  /** Main-process authority check invoked at each Docker container handoff. */
+  assertRootAuthority?(): void;
 }
 
 export interface BackendHealthParams {

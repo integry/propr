@@ -12,7 +12,7 @@ import {
 } from '@propr/local-setup';
 import { DEFAULT_PROPR_GH_RELAY_URL } from '@propr/shared';
 import { redactDesktopValue, safeRendererError } from './secret-redaction';
-import { RootDirectoryAuthority, SetupFilesystemCapabilities, SetupSecretCapabilities } from './setup-capabilities';
+import { bindRootOperations, RootDirectoryAuthority, SetupFilesystemCapabilities, SetupSecretCapabilities } from './setup-capabilities';
 import { parseDesktopSetupRequest, SetupRequestError } from './setup-schema';
 import type {
   DesktopFilesystemSelection,
@@ -347,7 +347,9 @@ export class DesktopSetupController {
       signal.throwIfAborted();
       let profile: DesktopProfileView | undefined;
       if (result.completed) {
-        const apiBaseUrl = await this.#options.resolveApiBaseUrl(result.rootDir, signal);
+        resolved.rootAuthority.validate();
+        const apiBaseUrl = await this.#options.resolveApiBaseUrl(resolved.rootAuthority.operationPath(), signal);
+        resolved.rootAuthority.validate();
         signal.throwIfAborted();
         profile = await this.#options.registerProfile({ name: 'This computer', apiBaseUrl }, signal);
         signal.throwIfAborted();
@@ -393,22 +395,7 @@ export class DesktopSetupController {
   }
 
   #boundActions(resolved: ResolvedRequest): SetupActions {
-    const guard = () => resolved.rootAuthority.validate();
-    return new Proxy(this.#options.actions, {
-      get(target, property, receiver) {
-        const value = Reflect.get(target, property, receiver);
-        if (typeof value !== 'function') return value;
-        return (...args: unknown[]) => {
-          guard();
-          const result = Reflect.apply(value, target, args);
-          if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-            return Promise.resolve(result).then(output => { guard(); return output; });
-          }
-          guard();
-          return result;
-        };
-      },
-    });
+    return bindRootOperations(this.#options.actions, resolved.rootDir, resolved.rootAuthority);
   }
 
   #resumePlan(resolved: ResolvedRequest): ResumePlan {

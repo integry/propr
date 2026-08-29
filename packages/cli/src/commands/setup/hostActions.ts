@@ -15,6 +15,7 @@ import {
   rethrowCancellation,
 } from "@propr/local-setup";
 import type { ConfigManager } from "../../config/index.js";
+import type { OrchestratorModule } from "../../orchestrator/index.js";
 import type { RelayClientOptions } from "../../api/relay.js";
 import { localhostServiceUrl } from "../../utils/dockerPort.js";
 import { createDefaultAgentSetupActions } from "./agentHostActions.js";
@@ -24,6 +25,29 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 function assertSafeAgentCredentialDir(path: string, name = "Agent credential path"): void {
   if (!isAbsolute(path) || normalize(path) === "/" || path.includes(":") || /[\u0000-\u001f\u007f-\u009f]/.test(path)) {
     throw new Error(`${name} must be an absolute, non-root Linux path without ':' or control characters`);
+  }
+}
+
+async function assertLocalDescriptorDockerHandoff(
+  orch: OrchestratorModule,
+  rootDir: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!new RegExp(`^/proc/${process.pid}/fd/[0-9]+$`).test(rootDir)) {
+    throw new Error("Desktop setup lost its anchored root authority before Docker launch");
+  }
+  const context = await orch.dockerAsync(
+    ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"],
+    { signal },
+  );
+  signal?.throwIfAborted();
+  if (context.error || context.status !== 0) {
+    throw new Error("Could not verify that Docker can resolve the anchored setup root locally");
+  }
+  let endpoint: unknown;
+  try { endpoint = JSON.parse(context.stdout.trim()); } catch { endpoint = undefined; }
+  if (typeof endpoint !== "string" || !endpoint.startsWith("unix://")) {
+    throw new Error("Desktop local setup requires a local Unix-socket Docker context; select the directory again after switching Docker contexts");
   }
 }
 
@@ -54,7 +78,9 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
     inspectDatastoreAdministrators,
     async scaffoldStack(options) {
       const { scaffoldStack } = await import("../initStack.js");
-      return scaffoldStack(options);
+      // The setup engine persists the display root after scaffolding. Avoid an
+      // intermediate descriptor-root path escaping into CLI configuration.
+      return scaffoldStack(options, { persistStackRoot: async () => {} });
     },
     async persistStackRoot(rootDir, signal) {
       // Mirror scaffoldStack's `configManager.setStackRoot` so the reuse path
@@ -107,9 +133,13 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
       return orch.isStackRunningAsync(cfg, signal);
     },
-    async startStack({ rootDir, ui, docs, onLog, signal }) {
+    async startStack({ rootDir, ui, docs, onLog, signal, assertRootAuthority }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
+      if (assertRootAuthority) {
+        await assertLocalDescriptorDockerHandoff(orch, rootDir, signal);
+        assertRootAuthority();
+      }
       // Pre-create the host Vibe prompt-cache dir owned by this user so Docker
       // does not auto-create it as root on first bind-mount — a root-owned dir
       // would fail the writability check and block future `propr start` runs.
@@ -133,6 +163,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
         docs: docs ?? cfg.docsEnabled,
         onLog,
         signal,
+        beforeLaunch: assertRootAuthority,
       });
     },
     async checkBackendHealth({ rootDir, timeoutMs = 60_000, signal }) {

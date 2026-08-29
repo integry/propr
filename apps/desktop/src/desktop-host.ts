@@ -4,9 +4,10 @@ import { configureStackTemplatePath } from '@propr/cli/dist/commands/initStack.j
 import { createDefaultActions } from '@propr/cli/dist/commands/setup/hostActions.js';
 import { configureOrchestratorAssetPath, getHostConfig } from '@propr/cli/dist/orchestrator/index.js';
 import { localhostServiceUrl } from '@propr/cli/dist/utils/dockerPort.js';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { SetupActions } from '@propr/local-setup';
 import type { LocalLifecycleHost } from './lifecycle';
+import { bindRootOperations, RootDirectoryAuthority } from './setup-capabilities';
 
 export interface DesktopLocalHost {
   actions: SetupActions;
@@ -16,7 +17,7 @@ export interface DesktopLocalHost {
 }
 
 /** Bind the portable setup engine to the same launcher used by the CLI. */
-export async function createDesktopLocalHost(resourcesPath?: string): Promise<DesktopLocalHost> {
+export async function createDesktopLocalHost(resourcesPath?: string, defaultRootDir?: string): Promise<DesktopLocalHost> {
   if (resourcesPath) {
     configureOrchestratorAssetPath(join(resourcesPath, 'orchestrator', 'orchestrator.mjs'));
     configureStackTemplatePath(join(resourcesPath, 'assets', 'env.example.txt'));
@@ -39,7 +40,16 @@ export async function createDesktopLocalHost(resourcesPath?: string): Promise<De
   const root = (): string => {
     const value = config.getStackRoot();
     if (!value) throw new Error('No local ProPR stack has been configured');
-    return value;
+    if (!defaultRootDir || resolve(value) !== resolve(defaultRootDir)) {
+      throw new Error('A custom setup directory must be selected again in the setup wizard before local runtime operations.');
+    }
+    return resolve(defaultRootDir);
+  };
+
+  const withFixedRoot = async <T>(operation: (authority: RootDirectoryAuthority, displayRoot: string) => Promise<T>): Promise<T> => {
+    const displayRoot = root();
+    const authority = RootDirectoryAuthority.open(displayRoot, true);
+    try { return await operation(authority, displayRoot); } finally { authority.close(); }
   };
 
   return {
@@ -52,15 +62,20 @@ export async function createDesktopLocalHost(resourcesPath?: string): Promise<De
     lifecycle: {
       async running() {
         if (!config.getStackRoot()) return false;
-        return actions.isStackRunning(root());
+        return withFixedRoot((authority, displayRoot) => bindRootOperations(actions, displayRoot, authority).isStackRunning(displayRoot));
       },
       async start() {
-        await actions.startStack({ rootDir: root() });
+        await withFixedRoot((authority, displayRoot) => bindRootOperations(actions, displayRoot, authority).startStack({ rootDir: displayRoot }));
       },
       async stop() {
-        const { orch, cfg } = await getHostConfig({ configManager: config, root: root() });
-        const { failed } = orch.stopStack(cfg, { remove: false, removeNetwork: false });
-        if (failed.length) throw new Error(`Could not stop ${failed.join(', ')}`);
+        await withFixedRoot(async (authority) => {
+          authority.validate();
+          const { orch, cfg } = await getHostConfig({ configManager: config, root: authority.operationPath() });
+          authority.validate();
+          const { failed } = orch.stopStack(cfg, { remove: false, removeNetwork: false });
+          authority.validate();
+          if (failed.length) throw new Error(`Could not stop ${failed.join(', ')}`);
+        });
       },
     },
   };

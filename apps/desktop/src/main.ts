@@ -223,13 +223,14 @@ if (!hasSingleInstanceLock) {
       decrypt: value => safeStorage.decryptString(value),
     };
     const profiles = new ProfileStore(app.getPath('userData'), encryption);
-    const localHost = await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined);
+    const defaultRootDir = join(app.getPath('userData'), 'desktop', 'local-stack');
+    const localHost = await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined, defaultRootDir);
     const lifecycle = new LocalLifecycleController(process.platform === 'linux' ? localHost.lifecycle : undefined);
     setupController = new DesktopSetupController({
       actions: localHost.actions,
       platform: process.platform,
       statePath: join(app.getPath('userData'), 'desktop', 'setup-state.json'),
-      defaultRootDir: join(app.getPath('userData'), 'desktop', 'local-stack'),
+      defaultRootDir,
       keyStorageDir: join(app.getPath('userData'), 'desktop', 'setup-keys'),
       async selectDirectory() {
         const options = {

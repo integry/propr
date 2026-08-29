@@ -189,7 +189,7 @@ export interface OrchestratorModule {
   ): StackStatus;
   startStackAsync(
     cfg: OrchestratorConfig,
-    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void; signal?: AbortSignal }
+    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void; signal?: AbortSignal; beforeLaunch?: () => void }
   ): Promise<StackStatus>;
   stopStack(
     cfg: OrchestratorConfig,
