@@ -21,6 +21,7 @@ import RouteChunkErrorBoundary from './components/RouteChunkErrorBoundary'
 import { ConnectAccountProvider } from './contexts/ConnectAccountContext'
 import { BrowserPushProvider } from './hooks/useBrowserPush'
 import { NotificationCenterProvider } from './contexts/NotificationCenterContext'
+import { DesktopPresentationBoundary } from './desktop/DesktopPresentationBoundary'
 
 const AiAgentsPage = lazy(() => import('./pages/AiAgentsPage'))
 const AccessManagementPage = lazy(() => import('./pages/AccessManagementPage'))
@@ -360,7 +361,7 @@ const AppContent: React.FC = () => {
   );
 };
 
-const App: React.FC = () => {
+const WebApp: React.FC = () => {
   // The compatibility gate only applies to the hosted UI — a single static bundle
   // serving many per-instance proxies, where the UI and API are versioned
   // independently. On a local/self-hosted origin the UI and API ship together, so
@@ -451,5 +452,7 @@ const App: React.FC = () => {
     </DemoModeProvider>
   )
 }
+
+const App: React.FC = () => <DesktopPresentationBoundary fallback={<WebApp />} desktop={<DemoModeProvider><AppContent /></DemoModeProvider>} />;
 
 export default App

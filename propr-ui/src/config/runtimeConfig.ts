@@ -61,6 +61,7 @@ const WINDOW_NAME_CONTEXT_PREFIX = 'propr-hosted-flow-context:';
 const WINDOW_NAME_CONTEXT_SEPARATOR = '|';
 
 let activeHostedTunnelFlowId: string | null = null;
+let desktopApiBaseUrl: string | null = null;
 
 /**
  * Hostname of the managed hosted UI (e.g. `app.propr.dev`), derived from the
@@ -501,6 +502,8 @@ export const getApiBaseUrl = (): string => {
     return '';
   }
 
+  if (desktopApiBaseUrl !== null) return desktopApiBaseUrl;
+
   return resolveApiBaseUrl(
     typeof window !== 'undefined' ? window.location.hostname : '',
     typeof window !== 'undefined' ? window.location.search : '',
@@ -508,4 +511,15 @@ export const getApiBaseUrl = (): string => {
     import.meta.env.VITE_API_BASE_URL,
     storageForWindow()
   );
+};
+
+/** Set by the desktop presentation boundary after a profile has passed its probe. */
+export const setDesktopApiBaseUrl = (value: string | null): void => {
+  if (value === null) {
+    desktopApiBaseUrl = null;
+    return;
+  }
+  const normalized = value.trim().replace(/\/+$/, '');
+  if (normalized && !isValidHttpUrl(normalized)) throw new Error('Desktop API base URL must use http(s).');
+  desktopApiBaseUrl = normalized;
 };
