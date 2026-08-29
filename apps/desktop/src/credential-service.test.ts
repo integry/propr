@@ -331,6 +331,117 @@ describe('main-process desktop credential service', () => {
     assert.equal(await store.readCredential(profileB.id), null);
   });
 
+  it('preserves a replacement written while an old transient token revocation is pending', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
+    temporaryDirectories.push(directory);
+    let service!: DesktopCredentialService;
+    let cancelOldPairingOnWrite = true;
+    const cancellingEncryption: EncryptionProvider = {
+      ...encryption,
+      encrypt: value => {
+        const stored = JSON.parse(value) as StoredCredential;
+        if (cancelOldPairingOnWrite && stored.token === token('C')) {
+          cancelOldPairingOnWrite = false;
+          service.cancelPairing(stored.profileId);
+        }
+        return Buffer.from(value, 'utf8');
+      },
+    };
+    const store = new ProfileStore(directory, cancellingEncryption);
+    const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    const revocationStarted = deferred<void>();
+    const releaseRevocation = deferred<Response>();
+    let pairingNumber = 0;
+    let currentPairing = 0;
+    const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+    service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        if (url.endsWith('/api/desktop/pairings')) {
+          currentPairing = ++pairingNumber;
+          return json({
+            pairingId: `dpr_${String.fromCharCode(64 + currentPairing).repeat(22)}`,
+            deviceSecret: String.fromCharCode(66 + currentPairing).repeat(43),
+            approvalUrl: 'https://a.example.test/approve',
+            expiresAt: new Date(pairingNow + 10_000).toISOString(),
+            interval: 1,
+          }, 201);
+        }
+        if (url.endsWith('/poll')) {
+          const character = currentPairing === 1 ? 'C' : 'D';
+          return json({ status: 'complete', token: token(character), tokenType: 'Bearer', expiresAt: null });
+        }
+        if (url.endsWith('/api/desktop/tokens/current')) {
+          assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${token('C')}`);
+          revocationStarted.resolve();
+          return releaseRevocation.promise;
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+
+    const oldPairing = assert.rejects(
+      service.pair({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl }),
+      /cancelled/i,
+    );
+    await revocationStarted.promise;
+    await service.pair({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    releaseRevocation.resolve(new Response(null, { status: 204 }));
+    await oldPairing;
+
+    assert.deepEqual(await store.readCredential(profile.id), credential(profile.id, profile.apiBaseUrl, 'D'));
+  });
+
+  it('returns connection-changed and preserves a re-paired credential for an old ready invalidation', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    const oldCredential = credential(profile.id, profile.apiBaseUrl, 'A');
+    const replacement = credential(profile.id, profile.apiBaseUrl, 'B');
+    await store.writeCredential(oldCredential);
+    const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        if (url.endsWith('/api/desktop/discovery')) return json(discovery);
+        if (url.endsWith('/api/auth/user')) {
+          assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${oldCredential.token}`);
+          return json({ username: 'old-user' });
+        }
+        if (url.endsWith('/api/desktop/pairings')) return json({
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'C'.repeat(43),
+          approvalUrl: 'https://a.example.test/approve',
+          expiresAt: new Date(pairingNow + 10_000).toISOString(),
+          interval: 1,
+        }, 201);
+        if (url.endsWith('/poll')) {
+          return json({ status: 'complete', token: replacement.token, tokenType: 'Bearer', expiresAt: null });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+    const ready = await service.probe({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    assert.equal(ready.status, 'ready');
+    if (ready.status !== 'ready') return;
+
+    await service.pair({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    assert.deepEqual(await service.invalidate({
+      profileId: profile.id,
+      connectionGeneration: ready.connectionGeneration,
+      code: 'INVALID_INSTANCE_TOKEN',
+    }), { invalidated: false });
+
+    assert.deepEqual(await store.readCredential(profile.id), replacement);
+  });
+
   for (const race of ['delete', 'switch'] as const) {
     it(`revokes a transient completion instead of persisting when pairing races with ${race}`, async () => {
       const store = await createStore();
@@ -341,8 +452,31 @@ describe('main-process desktop credential service', () => {
       let raceOperation: Promise<void> = Promise.resolve();
       const revocations: string[] = [];
       const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+      let listCalls = 0;
+      const profiles = {
+        list: async () => {
+          const result = await store.list();
+          listCalls += 1;
+          if (listCalls === 2 && !raced) {
+            raced = true;
+            raceOperation = race === 'delete'
+              ? service.removeProfile(profileA.id)
+              : service.setActiveProfile(profileB.id);
+          }
+          return result;
+        },
+        save: (input: Parameters<ProfileStore['save']>[0]) => store.save(input),
+        remove: (profileId: string) => store.remove(profileId),
+        setActive: (profileId: string | null) => store.setActive(profileId),
+        security: () => store.security(),
+        readCredential: (profileId: string) => store.readCredential(profileId),
+        writeCredential: (value: StoredCredential) => store.writeCredential(value),
+        removeCredential: (profileId: string) => store.removeCredential(profileId),
+        removeCredentialIfCurrent: (...args: Parameters<ProfileStore['removeCredentialIfCurrent']>) =>
+          store.removeCredentialIfCurrent(...args),
+      };
       service = new DesktopCredentialService({
-        profiles: store,
+        profiles,
         clientName: 'Test desktop',
         pairingTiming: {
           now: () => pairingNow,
@@ -359,14 +493,6 @@ describe('main-process desktop credential service', () => {
             interval: 1,
           }, 201);
           if (url.endsWith('/poll')) {
-            if (!raced) {
-              raced = true;
-              queueMicrotask(() => {
-                raceOperation = race === 'delete'
-                  ? service.removeProfile(profileA.id)
-                  : service.setActiveProfile(profileB.id);
-              });
-            }
             return json({ status: 'complete', token: token('C'), tokenType: 'Bearer', expiresAt: null });
           }
           if (url.endsWith('/api/desktop/tokens/current')) {

@@ -31,34 +31,52 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       path: '/socket.io/',
     });
     const desktopScope = getDesktopConnectionScope();
+    let disposed = false;
+    const isCurrentScope = (): boolean => {
+      if (disposed) return false;
+      const current = getDesktopConnectionScope();
+      return current?.profileId === desktopScope?.profileId
+        && current?.connectionGeneration === desktopScope?.connectionGeneration;
+    };
     const handleAuthenticationCode = (code: string | undefined, reconnect = false): void => {
+      if (!isCurrentScope()) return;
       void handleDesktopAccessCode(code, desktopScope).then(classification => {
+        if (!isCurrentScope()) return;
         if (classification === 'authorization-changed' && reconnect) {
           newSocket.disconnect();
+          if (!isCurrentScope()) return;
           newSocket.connect();
         }
       });
     };
 
-    newSocket.on('connect', () => {
+    const connected = () => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Connected to WebSocket server');
       setIsConnected(true);
-    });
+    };
 
-    newSocket.on('disconnect', (reason) => {
+    const disconnected = (reason: string) => {
+      if (!isCurrentScope()) return;
       console.log('[SocketContext] Disconnected from WebSocket server:', reason);
       setIsConnected(false);
-    });
+    };
 
-    newSocket.on('connect_error', (error) => {
+    const connectionError = (error: Error) => {
+      if (!isCurrentScope()) return;
       console.error('[SocketContext] Connection error:', error.message);
       const code = (error as Error & { data?: { code?: string } }).data?.code;
       handleAuthenticationCode(code);
-    });
+    };
 
-    newSocket.on('authentication:error', (value: { code?: string } | undefined) => {
+    const authenticationError = (value: { code?: string } | undefined) => {
       handleAuthenticationCode(value?.code, true);
-    });
+    };
+
+    newSocket.on('connect', connected);
+    newSocket.on('disconnect', disconnected);
+    newSocket.on('connect_error', connectionError);
+    newSocket.on('authentication:error', authenticationError);
 
     // Set up global event listeners
     newSocket.on(TASK_UPDATE, (payload: TaskUpdatePayload) => {
@@ -90,6 +108,16 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
 
     return () => {
       console.log('[SocketContext] Cleaning up socket connection');
+      disposed = true;
+      newSocket.off('connect', connected);
+      newSocket.off('disconnect', disconnected);
+      newSocket.off('connect_error', connectionError);
+      newSocket.off('authentication:error', authenticationError);
+      newSocket.off(TASK_UPDATE);
+      newSocket.off(DRAFT_UPDATE);
+      newSocket.off(INDEXING_UPDATE);
+      newSocket.off(QUEUE_STATS_UPDATE);
+      newSocket.off(TASK_LIVE_UPDATE);
       newSocket.disconnect();
     };
   }, [disabled]);

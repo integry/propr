@@ -249,6 +249,45 @@ describe('desktop instance protocol', () => {
     assert.deepEqual(sleeps, [40]);
   });
 
+  for (const lateSettlement of ['microtask', 'next-task'] as const) {
+    it(`does not accept a token response that settles in the ${lateSettlement} after deadline abort`, async () => {
+      const { completeDesktopPairing } = await import('../src/index.js');
+      const expiresAt = new Date(Date.now() + 40).toISOString();
+      let lateResponseResolved = false;
+      const client = new ProprClient({
+        baseUrl: 'https://propr.example.test',
+        fetch: async (_input, init) => new Promise<Response>(resolve => {
+          init?.signal?.addEventListener('abort', () => {
+            const settle = () => {
+              lateResponseResolved = true;
+              resolve(json({
+                status: 'complete',
+                token: `propr_it_${'C'.repeat(43)}`,
+                tokenType: 'Bearer',
+                expiresAt: null,
+              }));
+            };
+            if (lateSettlement === 'microtask') queueMicrotask(settle);
+            else setImmediate(settle);
+          }, { once: true });
+        }),
+      });
+
+      const pairing = completeDesktopPairing(client, {
+        pairingId: `dpr_${'A'.repeat(22)}`,
+        deviceSecret: 'B'.repeat(43),
+        approvalUrl: 'https://propr.example.test/approve',
+        expiresAt,
+        interval: 1,
+      }, { sleep: async () => undefined });
+
+      await assert.rejects(bounded(pairing), (error: unknown) =>
+        error instanceof ProprClientError && error.code === 'PAIRING_EXPIRED');
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(lateResponseResolved, true);
+    });
+  }
+
   it('aborts an in-flight poll when the caller cancels', async () => {
     const controller = new AbortController();
     let pollStarted!: () => void;

@@ -27,6 +27,16 @@ const credential = (profileId: string, tokenCharacter = 'A') => ({
   token: `propr_it_${tokenCharacter.repeat(43)}`,
 });
 
+const bounded = <T>(promise: Promise<T>, milliseconds = 1_000): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('Profile store operation did not settle')), milliseconds);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+};
+
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
@@ -79,6 +89,29 @@ describe('desktop profile store', () => {
       store.writeCredential(credential('profile-1', 'B')),
     ]);
     assert.deepEqual(await store.readCredential('profile-1'), credential('profile-1', 'B'));
+  });
+
+  it('settles conditional credential removal and profile removal in the former lock-order interleaving', async () => {
+    const store = new ProfileStore(await createDirectory(), encryption());
+    const profile = await store.save({
+      id: 'profile-1', label: 'Remote', apiBaseUrl: 'https://propr.example.com',
+    });
+    const storedCredential = credential(profile.id);
+    await store.writeCredential(storedCredential);
+
+    // Both calls are deliberately made in one turn. Previously the conditional
+    // removal could own the state queue while remove() owned the credential
+    // queue and awaited the state operation queued behind it.
+    const conditional = store.removeCredentialIfCurrent(
+      storedCredential,
+      profile.apiBaseUrl,
+      () => true,
+    );
+    const removal = store.remove(profile.id);
+
+    assert.deepEqual(await bounded(Promise.all([conditional, removal])), [true, undefined]);
+    assert.deepEqual(await store.list(), { profiles: [], activeProfileId: null });
+    assert.equal(await store.readCredential(profile.id), null);
   });
 
   it('refuses plaintext fallback when encryption is unavailable or basic_text', async () => {

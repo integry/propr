@@ -100,11 +100,19 @@ export class DesktopCredentialService {
     const nextOrigin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!nextOrigin) throw new Error('Invalid desktop API URL');
     if (before && before.apiBaseUrl !== nextOrigin) {
+      const credentialGeneration = this.#generation(before.id);
       this.#invalidateProfileOperations(before.id);
+      const cleanupGeneration = this.#generation(before.id);
       const credential = await this.#profiles.readCredential(before.id);
-      if (credential) await this.#revoke(credential).catch(() => undefined);
-      await this.#profiles.removeCredential(before.id);
-      if (this.#active?.profileId === before.id) this.#active = null;
+      if (credential) {
+        await this.#revoke(credential).catch(() => undefined);
+        await this.#profiles.removeCredentialIfCurrent(
+          credential,
+          before.apiBaseUrl,
+          () => this.#generation(before.id) === cleanupGeneration,
+        );
+        if (this.#activeMatches(credential, credentialGeneration)) this.#active = null;
+      }
     }
     const saved = await this.#profiles.save(input);
     this.#profileGenerations.set(saved.id, this.#generation(saved.id));
@@ -171,7 +179,12 @@ export class DesktopCredentialService {
     } catch (error) {
       if (transient) {
         await this.#revoke(transient).catch(() => undefined);
-        await this.#profiles.removeCredential(profile.id).catch(() => undefined);
+        await this.#profiles.removeCredentialIfCurrent(
+          transient,
+          profile.apiBaseUrl,
+          () => this.#generation(profile.id) === profileGeneration
+            && this.#selectionGeneration === selectionGeneration,
+        ).catch(() => undefined);
       }
       if (error instanceof ProprClientError && error.kind === 'aborted') {
         throw new Error('Desktop pairing was cancelled.');
@@ -215,10 +228,17 @@ export class DesktopCredentialService {
 
     let credential = await this.#profiles.readCredential(input.id);
     if (credential && credential.origin !== origin) {
-      this.#bumpGeneration(input.id);
+      const persisted = (await this.#profiles.list()).profiles.find(profile => profile.id === input.id);
+      const cleanupGeneration = this.#bumpGeneration(input.id);
       await this.#revoke(credential).catch(() => undefined);
-      await this.#profiles.removeCredential(input.id);
-      if (this.#active?.profileId === input.id) this.#active = null;
+      if (persisted) {
+        await this.#profiles.removeCredentialIfCurrent(
+          credential,
+          persisted.apiBaseUrl,
+          () => this.#generation(input.id!) === cleanupGeneration,
+        );
+      }
+      if (this.#activeMatches(credential, operationGeneration)) this.#active = null;
       credential = null;
     }
     if (!credential) {
@@ -285,11 +305,16 @@ export class DesktopCredentialService {
     if (!DEFINITIVE_INVALID_CODES.has(value.code)) return { invalidated: false };
     const active = this.#active;
     if (!active || active.profileId !== value.profileId
-      || active.connectionGeneration !== value.connectionGeneration) return { invalidated: false };
+      || active.connectionGeneration !== value.connectionGeneration
+      || this.#generation(active.profileId) !== active.profileGeneration) return { invalidated: false };
     this.#active = null;
-    this.#bumpGeneration(active.profileId);
-    await this.#profiles.removeCredential(active.profileId);
-    return { invalidated: true };
+    const invalidationGeneration = this.#bumpGeneration(active.profileId);
+    const removed = await this.#profiles.removeCredentialIfCurrent(
+      active,
+      active.origin,
+      () => this.#generation(active.profileId) === invalidationGeneration,
+    );
+    return { invalidated: removed };
   }
 
   prepareRequest(url: string, originalHeaders: RequestHeaders): DesktopRequestDecision {
@@ -374,6 +399,13 @@ export class DesktopCredentialService {
 
   #generation(profileId: string): number {
     return this.#profileGenerations.get(profileId) ?? 0;
+  }
+
+  #activeMatches(credential: StoredCredential, profileGeneration: number): boolean {
+    return this.#active?.profileId === credential.profileId
+      && this.#active.profileGeneration === profileGeneration
+      && this.#active.origin === credential.origin
+      && this.#active.token === credential.token;
   }
 
   #bumpGeneration(profileId: string): number {

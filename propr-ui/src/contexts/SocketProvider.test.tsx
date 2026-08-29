@@ -8,6 +8,9 @@ const socketMock = vi.hoisted(() => ({
   disconnect: vi.fn(),
   emit: vi.fn(),
   on: vi.fn((event: string, handler: (value?: unknown) => void) => { socketHandlers.set(event, handler); }),
+  off: vi.fn((event: string, handler?: (value?: unknown) => void) => {
+    if (!handler || socketHandlers.get(event) === handler) socketHandlers.delete(event);
+  }),
 }));
 
 const connectSocketMock = vi.hoisted(() => vi.fn(() => socketMock));
@@ -16,11 +19,12 @@ const desktopScope = vi.hoisted(() => ({
   profileId: 'profile-a',
   connectionGeneration: 3,
 }));
+let currentDesktopScope: typeof desktopScope | { bridge: never; profileId: string; connectionGeneration: number } = desktopScope;
 const handleDesktopAccessCode = vi.hoisted(() => vi.fn(async () => 'retryable'));
 
 vi.mock('../api/apiClient', () => ({
   proprClient: { connectSocket: connectSocketMock },
-  getDesktopConnectionScope: () => desktopScope,
+  getDesktopConnectionScope: () => currentDesktopScope,
   handleDesktopAccessCode,
 }));
 
@@ -32,9 +36,11 @@ describe('SocketProvider', () => {
     socketMock.connect.mockClear();
     socketMock.emit.mockClear();
     socketMock.on.mockClear();
+    socketMock.off.mockClear();
     socketHandlers.clear();
     handleDesktopAccessCode.mockReset();
     handleDesktopAccessCode.mockResolvedValue('retryable');
+    currentDesktopScope = desktopScope;
   });
 
   it('does not connect when disabled for demo mode', () => {
@@ -90,5 +96,30 @@ describe('SocketProvider', () => {
     socketHandlers.get('authentication:error')?.({ code: 'AUTHORIZATION_CHANGED' });
     await vi.waitFor(() => expect(socketMock.connect).toHaveBeenCalledOnce());
     expect(socketMock.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it('detaches and never reconnects a stale same-origin socket after its authorization work resolves', async () => {
+    let resolveClassification!: (value: string) => void;
+    handleDesktopAccessCode.mockReturnValueOnce(new Promise(resolve => { resolveClassification = resolve; }));
+    const { unmount } = render(<SocketProvider><div>app</div></SocketProvider>);
+    const staleAuthenticationHandler = socketHandlers.get('authentication:error');
+
+    staleAuthenticationHandler?.({ code: 'AUTHORIZATION_CHANGED' });
+    await vi.waitFor(() => expect(handleDesktopAccessCode).toHaveBeenCalledWith(
+      'AUTHORIZATION_CHANGED', desktopScope,
+    ));
+    currentDesktopScope = {
+      bridge: {} as never,
+      profileId: 'profile-b',
+      connectionGeneration: 4,
+    };
+    unmount();
+    resolveClassification('authorization-changed');
+    await Promise.resolve();
+
+    expect(socketMock.connect).not.toHaveBeenCalled();
+    expect(socketMock.disconnect).toHaveBeenCalledOnce();
+    expect(socketMock.off).toHaveBeenCalledWith('authentication:error', staleAuthenticationHandler);
+    expect(socketHandlers.size).toBe(0);
   });
 });

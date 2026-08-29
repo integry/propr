@@ -212,17 +212,10 @@ export const completeDesktopPairing = async (
   };
   const raceLifetime = <T>(operation: PromiseLike<T>): Promise<T> => {
     let removeAbortListener: () => void = () => undefined;
-    let abortSettlement: ReturnType<typeof setTimeout> | undefined;
     const result = new Promise<T>((resolve, reject) => {
-      // Give an operation that already settled in this turn precedence. This
-      // lets callers securely dispose of a just-issued token while still
-      // bounding genuinely pending approval, sleep, and transport work.
-      const rejectForAbort = () => {
-        abortSettlement = setTimeout(() => reject(terminalError()), 0);
-      };
+      const rejectForAbort = () => reject(terminalError());
       removeAbortListener = () => {
         lifetimeController.signal.removeEventListener('abort', rejectForAbort);
-        if (abortSettlement) clearTimeout(abortSettlement);
       };
       if (lifetimeController.signal.aborted) rejectForAbort();
       else lifetimeController.signal.addEventListener('abort', rejectForAbort, { once: true });
@@ -241,6 +234,7 @@ export const completeDesktopPairing = async (
       const approval = Promise.resolve().then(() =>
         options.onApprovalRequired?.(start.approvalUrl, start.expiresAt));
       await raceLifetime(approval);
+      requireRemainingLifetime();
     }
 
     while (true) {
@@ -268,6 +262,7 @@ export const completeDesktopPairing = async (
         }
         throw error;
       }
+      requireRemainingLifetime();
       const body = record(value);
       if (body.status === 'pending' && validPollInterval(body.interval)) {
         intervalSeconds = body.interval;
@@ -276,6 +271,7 @@ export const completeDesktopPairing = async (
       if (body.status === 'complete' && string(body.token)
         && /^propr_it_[A-Za-z0-9_-]{43}$/.test(body.token) && body.tokenType === 'Bearer'
         && (body.expiresAt === null || (string(body.expiresAt) && Number.isFinite(Date.parse(body.expiresAt))))) {
+        requireRemainingLifetime();
         return { token: body.token, tokenType: 'Bearer', expiresAt: body.expiresAt as string | null };
       }
       throw new ProprClientError('The ProPR instance returned an invalid pairing status.', {

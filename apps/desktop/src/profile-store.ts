@@ -105,7 +105,6 @@ export class ProfileStore {
   readonly #credentialsDirectory: string;
   readonly #encryption: EncryptionProvider;
   #mutation = Promise.resolve();
-  readonly #credentialMutations = new Map<string, Promise<void>>();
 
   constructor(userDataPath: string, encryption: EncryptionProvider) {
     this.#directory = join(userDataPath, 'desktop');
@@ -145,14 +144,11 @@ export class ProfileStore {
 
   remove(profileId: string): Promise<void> {
     assertProfileId(profileId);
-    const stateMutation = this.#mutate(async () => {
+    return this.#mutate(async () => {
       const state = await this.#readState();
       state.profiles = state.profiles.filter(profile => profile.id !== profileId);
       if (state.activeProfileId === profileId) state.activeProfileId = null;
       await this.#writeState(state);
-    });
-    return this.#mutateCredential(profileId, async () => {
-      await stateMutation;
       await this.#removeCredentialFile(profileId);
     });
   }
@@ -203,7 +199,7 @@ export class ProfileStore {
       throw new Error('Credential must contain 1 to 65536 characters');
     }
     if (!this.security().available) return { stored: false, reason: 'encryption-unavailable' };
-    return this.#mutateCredential(profileId, async () => {
+    return this.#mutate(async () => {
       await this.#ensureDirectories();
       const target = this.#credentialPath(profileId);
       const temporary = `${target}.${process.pid}.tmp`;
@@ -216,7 +212,7 @@ export class ProfileStore {
 
   removeCredential(profileId: string): Promise<void> {
     assertProfileId(profileId);
-    return this.#mutateCredential(profileId, () => this.#removeCredentialFile(profileId));
+    return this.#mutate(() => this.#removeCredentialFile(profileId));
   }
 
   removeCredentialIfCurrent(
@@ -229,7 +225,7 @@ export class ProfileStore {
     if (normalizeApiBaseUrl(expectedProfileOrigin) !== expectedProfileOrigin) {
       throw new Error('Invalid desktop API URL');
     }
-    return this.#mutate(() => this.#mutateCredential(profileId, async () => {
+    return this.#mutate(async () => {
       const state = await this.#readState();
       const profile = state.profiles.find(item => item.id === profileId);
       const credential = await this.#readCredentialFile(profileId);
@@ -242,7 +238,7 @@ export class ProfileStore {
         || credential.token !== expected.token) return false;
       await this.#removeCredentialFile(profileId);
       return true;
-    }));
+    });
   }
 
   async #removeCredentialFile(profileId: string): Promise<void> {
@@ -284,14 +280,4 @@ export class ProfileStore {
     return result;
   }
 
-  #mutateCredential<T>(profileId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.#credentialMutations.get(profileId) ?? Promise.resolve();
-    const result = previous.then(operation, operation);
-    const settled = result.then(() => undefined, () => undefined);
-    this.#credentialMutations.set(profileId, settled);
-    void settled.then(() => {
-      if (this.#credentialMutations.get(profileId) === settled) this.#credentialMutations.delete(profileId);
-    });
-    return result;
-  }
 }
