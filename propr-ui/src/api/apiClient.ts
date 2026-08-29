@@ -1,7 +1,11 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 
-export const API_BASE_URL = getApiBaseUrl();
+export let API_BASE_URL = getApiBaseUrl();
+/** Update the live binding used by existing API modules when desktop profiles switch. */
+export const setApiBaseUrl = (value: string): void => {
+  API_BASE_URL = value.trim().replace(/\/+$/, '');
+};
 export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 const TOKEN_REFRESHED_CODE = 'TOKEN_REFRESHED';
 const SAFE_PUBLIC_ERROR_CODES = new Set(['AGENT_VERSION_LOOKUP_UNAVAILABLE']);

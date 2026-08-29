@@ -5,8 +5,6 @@ import {
 } from '@propr/shared';
 import { getApiBaseUrl } from '../config/runtimeConfig';
 
-const API_BASE_URL = getApiBaseUrl();
-
 // Bound the pre-render compatibility probe so a slow/unreachable API can't trap
 // the user on a spinner waiting out the browser's default fetch timeout. On
 // timeout we throw a check error, which App treats as transient and renders the
@@ -25,7 +23,7 @@ export async function checkProprApiCompatibility(): Promise<ProprApiCompatibilit
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), COMPATIBILITY_CHECK_TIMEOUT_MS);
   try {
-    response = await fetch(`${API_BASE_URL}/api/compatibility`, {
+    response = await fetch(`${getApiBaseUrl()}/api/compatibility`, {
       credentials: 'include',
       cache: 'no-store',
       signal: controller.signal,

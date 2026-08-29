@@ -9,11 +9,11 @@ import {
   pathWithActiveHostedTunnelFlow,
 } from '../config/runtimeConfig';
 import { isProprProxyUrl } from '@propr/shared';
+import { useDesktop } from '../desktop/DesktopContext';
 
-const API_BASE_URL = getApiBaseUrl();
 // For OAuth, use main API to avoid registering multiple callback URLs
 // Falls back to API_BASE_URL for main site
-const OAUTH_API_URL = import.meta.env.VITE_OAUTH_API_URL || API_BASE_URL;
+const getOAuthApiUrl = (): string => import.meta.env.VITE_OAUTH_API_URL || getApiBaseUrl();
 const HOSTED_OAUTH_COMPLETION_PATH = '/login?oauth_complete=true';
 const HOSTED_OAUTH_POLL_INTERVAL_MS = 1_000;
 const HOSTED_OAUTH_POPUP_CHECK_INTERVAL_MS = 500;
@@ -84,7 +84,7 @@ const validateOAuthApiBaseUrl = (
     throw new Error('OAuth API URL must be a bare http(s) origin.');
   }
   if (options.hostedPopupCompletion && isHostedUiOrigin(hostname)) {
-    const activeApiBaseUrl = (options.activeApiBaseUrl ?? API_BASE_URL).trim();
+    const activeApiBaseUrl = (options.activeApiBaseUrl ?? getApiBaseUrl()).trim();
     let activeApiUrl: URL;
     try {
       activeApiUrl = validatedHttpUrl(activeApiBaseUrl);
@@ -124,7 +124,7 @@ const resolveReturnPath = (state: unknown, redirectToParam: string | null): stri
 export const buildGithubOAuthUrl = (
   returnPath: string,
   origin = window.location.origin,
-  oauthApiUrl = OAUTH_API_URL,
+  oauthApiUrl = getOAuthApiUrl(),
   hostname = window.location.hostname,
   options: BuildGithubOAuthUrlOptions = {}
 ): string => {
@@ -163,6 +163,7 @@ const LoginPage: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { isDemoMode, isLoading: isDemoModeLoading } = useDemoMode();
+  const desktop = useDesktop();
   const loggedOut = searchParams.get('logged_out') === 'true';
   const isOAuthCompletion = searchParams.get('oauth_complete') === 'true';
   const hostedOAuthFlowRef = useRef<HostedOAuthFlow | null>(null);
@@ -314,6 +315,13 @@ const LoginPage: React.FC = () => {
   }, [failHostedOAuthFlow, navigate, returnPathWithActiveFlow, stopHostedOAuthFlow]);
 
   const handleLogin = useCallback(() => {
+    if (desktop) {
+      setHostedOAuthError(null);
+      void desktop.authenticate().catch(error => {
+        setHostedOAuthError(error instanceof Error ? error.message : 'GitHub sign-in could not be opened.');
+      });
+      return;
+    }
     // Local/self-hosted OAuth keeps using redirect_to for the final same-tab
     // navigation back to the page the user came from.
     // Hosted OAuth completes in a popup and the initiating tab polls its own
@@ -325,7 +333,7 @@ const LoginPage: React.FC = () => {
       oauthUrl = buildGithubOAuthUrl(
         returnPath,
         window.location.origin,
-        OAUTH_API_URL,
+        getOAuthApiUrl(),
         window.location.hostname,
         { hostedPopupCompletion: hostedLogin }
       );
@@ -342,7 +350,7 @@ const LoginPage: React.FC = () => {
       return;
     }
     window.location.href = oauthUrl;
-  }, [returnPath, startHostedOAuthFlow]);
+  }, [desktop, returnPath, startHostedOAuthFlow]);
 
   if (isRecovering) {
     return (
