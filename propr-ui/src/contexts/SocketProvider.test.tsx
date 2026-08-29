@@ -2,32 +2,25 @@ import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SocketProvider } from './SocketProvider';
 
-const runtimeConfigMock = vi.hoisted(() => ({
-  getApiBaseUrl: vi.fn(() => ''),
-}));
-
 const socketMock = vi.hoisted(() => ({
   disconnect: vi.fn(),
   emit: vi.fn(),
   on: vi.fn(),
 }));
 
-const ioMock = vi.hoisted(() => vi.fn(() => socketMock));
+const connectSocketMock = vi.hoisted(() => vi.fn(() => socketMock));
 
-vi.mock('../config/runtimeConfig', () => runtimeConfigMock);
-
-vi.mock('socket.io-client', () => ({
-  io: ioMock,
+vi.mock('../api/apiClient', () => ({
+  proprClient: { connectSocket: connectSocketMock },
 }));
 
 describe('SocketProvider', () => {
   afterEach(() => {
     cleanup();
-    ioMock.mockClear();
+    connectSocketMock.mockClear();
     socketMock.disconnect.mockClear();
     socketMock.emit.mockClear();
     socketMock.on.mockClear();
-    runtimeConfigMock.getApiBaseUrl.mockReturnValue('');
   });
 
   it('does not connect when disabled for demo mode', () => {
@@ -37,7 +30,7 @@ describe('SocketProvider', () => {
       </SocketProvider>
     );
 
-    expect(ioMock).not.toHaveBeenCalled();
+    expect(connectSocketMock).not.toHaveBeenCalled();
   });
 
   it('connects when real-time updates are enabled', () => {
@@ -47,20 +40,19 @@ describe('SocketProvider', () => {
       </SocketProvider>
     );
 
-    expect(ioMock).toHaveBeenCalledOnce();
+    expect(connectSocketMock).toHaveBeenCalledOnce();
     unmount();
     expect(socketMock.disconnect).toHaveBeenCalledOnce();
   });
 
-  it('connects Socket.IO to the same resolved hosted tunnel origin used by REST calls', () => {
-    runtimeConfigMock.getApiBaseUrl.mockReturnValue('https://t-active.propr.dev');
+  it('uses the shared client Socket.IO policy', () => {
     const { unmount } = render(
       <SocketProvider>
         <div>app</div>
       </SocketProvider>
     );
 
-    expect(ioMock).toHaveBeenCalledWith('https://t-active.propr.dev', expect.objectContaining({
+    expect(connectSocketMock).toHaveBeenCalledWith(expect.objectContaining({
       withCredentials: true,
     }));
     unmount();
