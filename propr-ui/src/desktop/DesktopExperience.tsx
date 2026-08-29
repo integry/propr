@@ -211,22 +211,26 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     setState({ phase: 'connecting', profile });
     let operation: 'probe' | 'persist' = 'probe';
     try {
-      const result = await adapters.connection.probe(profile);
+      const probeResult = await adapters.connection.probe(profile);
       if (!isCurrentAttempt()) return;
-      if (result.status !== 'ready') { setState({ phase: 'blocked', profile, result }); return; }
+      if (probeResult.status !== 'ready') { setState({ phase: 'blocked', profile, result: probeResult }); return; }
 
       operation = 'persist';
       const connectedProfile = { ...profile, lastConnectedAt: new Date().toISOString() };
+      let result = probeResult;
       await enqueueProfileMutation(async () => {
         if (!isCurrentAttempt()) return;
         await adapters.profiles.save(connectedProfile);
         if (!isCurrentAttempt()) return;
-        if (activeProfileId.current !== profile.id) await adapters.profiles.setActiveId(profile.id);
+        if (adapters.connection.activate) result = await adapters.connection.activate(connectedProfile, probeResult);
+        else if (activeProfileId.current !== profile.id) await adapters.profiles.setActiveId(profile.id);
         activeProfileId.current = profile.id;
       });
       if (!isCurrentAttempt()) return;
       setProfiles(current => mergeProfiles(current, [connectedProfile]));
-      runtimeConfig.setDesktopApiBaseUrl(connectedProfile.baseUrl); setApiBaseUrl(connectedProfile.baseUrl); adapters.connection.activate?.(connectedProfile, result);
+      runtimeConfig.setDesktopApiBaseUrl(connectedProfile.baseUrl);
+      if (adapters.connection.publishActivation) adapters.connection.publishActivation(connectedProfile, result);
+      else setApiBaseUrl(connectedProfile.baseUrl);
       setState({ phase: 'connected', profile: connectedProfile, result });
     } catch (error) {
       if (!isCurrentAttempt()) return;

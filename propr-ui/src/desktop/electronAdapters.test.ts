@@ -20,6 +20,11 @@ const bridgeFixture = () => {
   const probe = vi.fn(async () => ({
     status: 'ready' as const,
     version: '0.8.15',
+    activationTicket: 'ticket-7',
+  }));
+  const activate = vi.fn(async () => ({
+    status: 'ready' as const,
+    profileId: storedProfile.id,
     transportScope: 'scope-7',
   }));
   const bridge: DesktopBridge = {
@@ -43,7 +48,7 @@ const bridgeFixture = () => {
       setActive: async profileId => { activeProfileId = profileId; },
     },
     authentication: { pair, cancel: vi.fn(async () => undefined) },
-    connection: { probe, invalidate: vi.fn(async () => ({ invalidated: false })) },
+    connection: { probe, activate, invalidate: vi.fn(async () => ({ invalidated: false })) },
     lifecycle: {
       status: async () => ({ state: 'disconnected' }),
       start: async () => ({ ok: false, code: 'not-implemented', status: { state: 'disconnected' } }),
@@ -51,7 +56,7 @@ const bridgeFixture = () => {
       restart: async () => ({ ok: false, code: 'not-implemented', status: { state: 'disconnected' } }),
     },
   };
-  return { bridge, pair, probe, profiles: () => profiles };
+  return { bridge, pair, probe, activate, profiles: () => profiles };
 };
 
 describe('Electron remote instance adapters', () => {
@@ -67,15 +72,18 @@ describe('Electron remote instance adapters', () => {
       label: profile.name,
       apiBaseUrl: profile.baseUrl,
     });
-    expect(result).toEqual({ status: 'ready', version: '0.8.15', transportScope: 'scope-7' });
+    expect(result).toEqual({ status: 'ready', version: '0.8.15', activationTicket: 'ticket-7' });
     expect('credentials' in fixture.bridge).toBe(false);
 
-    if (result.status === 'ready') adapters.connection.activate?.(profile, result);
+    if (result.status !== 'ready') return;
+    const activated = await adapters.connection.activate?.(profile, result);
+    expect(fixture.activate).toHaveBeenCalledWith('ticket-7');
+    if (activated) adapters.connection.publishActivation?.(profile, activated);
     expect(setDesktopConnectionScope).toHaveBeenCalledWith({
       bridge: fixture.bridge,
       profileId: profile.id,
       transportScope: 'scope-7',
-    });
+    }, profile.baseUrl);
   });
 
   it('cancels pairing and removes profiles entirely through main-process IPC', async () => {

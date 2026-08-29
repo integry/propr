@@ -173,6 +173,8 @@ for (const runtimeMode of ['development', 'production'] as const) {
         },
       });
       assert.equal(allowedPreflight.status, 204);
+      // This is the browser's real preflight shape: the requested desktop
+      // marker is named here, but the marker value itself is not sent on OPTIONS.
       assert.equal(allowedPreflight.headers.get('access-control-allow-origin'), DESKTOP_RENDERER_ORIGIN);
       assert.equal(
         allowedPreflight.headers.get('access-control-allow-headers'),

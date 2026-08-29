@@ -4,6 +4,7 @@ import { DESKTOP_TRANSPORT_SCOPE_HEADER, DESKTOP_TRANSPORT_SCOPE_QUERY } from '@
 import {
   type DesktopProfileInput,
   type DesktopConnectionResult,
+  type DesktopActivatedConnection,
   type DesktopAccessInvalidation,
 } from './shared/contract';
 import { normalizeApiBaseUrl } from './security';
@@ -17,7 +18,7 @@ const DEFINITIVE_INVALID_CODES = new Set([
 
 export interface CredentialServiceDependencies {
   profiles: Pick<ProfileStore,
-    'list' | 'save' | 'detachProfile' | 'setActive' | 'security'
+    'list' | 'saveAndDetachCredential' | 'detachProfile' | 'setActive' | 'activateProfile' | 'security'
     | 'readCredential' | 'writeCredential' | 'removeCredential' | 'removeCredentialIfCurrent'>;
   fetch: typeof globalThis.fetch;
   openExternal(url: string): Promise<void>;
@@ -28,9 +29,19 @@ export interface CredentialServiceDependencies {
 
 interface ActiveCredential extends StoredCredential {
   profileGeneration: number;
-  probeTicket: number;
   selectionGeneration: number;
   transportScope: string;
+}
+
+interface PendingActivation {
+  ticket: string;
+  probeTicket: number;
+  profileId: string;
+  origin: string;
+  profileGeneration: number;
+  selectionGeneration: number;
+  activeProfileId: string | null;
+  credential: StoredCredential;
 }
 
 type RequestHeaders = Record<string, string | string[]>;
@@ -102,6 +113,7 @@ export class DesktopCredentialService {
   readonly #pairingControllers = new Map<string, AbortController>();
   #selectionGeneration = 0;
   #latestProbeTicket = 0;
+  #pendingActivation: PendingActivation | null = null;
   #active: ActiveCredential | null = null;
 
   constructor(dependencies: CredentialServiceDependencies) {
@@ -118,23 +130,21 @@ export class DesktopCredentialService {
       : undefined;
     const nextOrigin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!nextOrigin) throw new Error('Invalid desktop API URL');
+    let invalidatedBeforeSave = false;
     if (before && before.apiBaseUrl !== nextOrigin) {
       this.#invalidateProfileOperations(before.id);
-      const cleanupGeneration = this.#generation(before.id);
-      const credential = await this.#profiles.readCredential(before.id);
-      if (credential) {
-        await this.#revoke(credential).catch(() => undefined);
-        await this.#profiles.removeCredentialIfCurrent(
-          credential,
-          before.apiBaseUrl,
-          () => this.#generation(before.id) === cleanupGeneration,
-        );
-        this.#clearActiveIfCredential(credential);
-      }
+      invalidatedBeforeSave = true;
     }
-    const saved = await this.#profiles.save(input);
-    this.#profileGenerations.set(saved.id, this.#generation(saved.id));
-    return saved;
+    const transaction = await this.#profiles.saveAndDetachCredential(input);
+    if (transaction.originChanged && !invalidatedBeforeSave) {
+      this.#invalidateProfileOperations(transaction.profile.id);
+    }
+    if (transaction.detachedCredential) this.#clearActiveIfCredential(transaction.detachedCredential);
+    if (transaction.originChanged && this.#active?.profileId === transaction.profile.id) this.#active = null;
+    if (transaction.detachedCredential) {
+      await this.#revoke(transaction.detachedCredential).catch(() => undefined);
+    }
+    return transaction.profile;
   }
 
   async removeProfile(profileId: string): Promise<string | null> {
@@ -148,14 +158,11 @@ export class DesktopCredentialService {
 
   async setActiveProfile(profileId: string | null): Promise<void> {
     this.#selectionGeneration += 1;
+    this.#latestProbeTicket += 1;
+    this.#pendingActivation = null;
     for (const controller of this.#pairingControllers.values()) controller.abort();
     this.#pairingControllers.clear();
-    if (this.#active?.profileId === profileId) {
-      this.#active.selectionGeneration = this.#selectionGeneration;
-    } else {
-      this.#latestProbeTicket += 1;
-      this.#active = null;
-    }
+    this.#active = null;
     await this.#profiles.setActive(profileId);
   }
 
@@ -224,7 +231,7 @@ export class DesktopCredentialService {
     const origin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!origin || origin !== input.apiBaseUrl) throw new Error('Invalid desktop API URL');
     const probeTicket = ++this.#latestProbeTicket;
-    this.#active = null;
+    this.#pendingActivation = null;
     const operationGeneration = this.#generation(input.id);
     const operationSelection = this.#selectionGeneration;
     const discoveryClient = this.#client(origin);
@@ -252,21 +259,11 @@ export class DesktopCredentialService {
       };
     }
 
-    let credential = await this.#profiles.readCredential(input.id);
-    if (credential && credential.origin !== origin) {
-      const persisted = (await this.#profiles.list()).profiles.find(profile => profile.id === input.id);
-      const cleanupGeneration = this.#bumpGeneration(input.id);
-      await this.#revoke(credential).catch(() => undefined);
-      if (persisted) {
-        await this.#profiles.removeCredentialIfCurrent(
-          credential,
-          persisted.apiBaseUrl,
-          () => this.#generation(input.id!) === cleanupGeneration,
-        );
-      }
-      this.#clearActiveIfCredential(credential);
-      credential = null;
-    }
+    const initialState = await this.#profiles.list();
+    const initiallyPersisted = initialState.profiles.find(profile => profile.id === input.id);
+    const credential = initiallyPersisted?.apiBaseUrl === origin
+      ? await this.#profiles.readCredential(input.id)
+      : null;
     if (!credential) {
       return {
         status: 'authentication-required',
@@ -285,7 +282,8 @@ export class DesktopCredentialService {
       return { status: 'offline', message: 'The instance was discovered but authentication could not be checked.' };
     }
     if (response.ok) {
-      const persisted = (await this.#profiles.list()).profiles.find(profile => profile.id === input.id);
+      const persistedState = await this.#profiles.list();
+      const persisted = persistedState.profiles.find(profile => profile.id === input.id);
       if (this.#generation(input.id) !== operationGeneration
         || this.#selectionGeneration !== operationSelection
         || this.#latestProbeTicket !== probeTicket
@@ -301,15 +299,18 @@ export class DesktopCredentialService {
         || currentCredential.token !== credential.token) {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
       }
-      const transportScope = randomBytes(16).toString('base64url');
-      this.#active = {
-        ...credential,
-        profileGeneration: operationGeneration,
+      const activationTicket = randomBytes(32).toString('base64url');
+      this.#pendingActivation = {
+        ticket: activationTicket,
         probeTicket,
+        profileId: input.id,
+        origin,
+        profileGeneration: operationGeneration,
         selectionGeneration: operationSelection,
-        transportScope,
+        activeProfileId: persistedState.activeProfileId,
+        credential: { ...credential },
       };
-      return { status: 'ready', version: discovery.version, authentication, transportScope };
+      return { status: 'ready', version: discovery.version, authentication, activationTicket };
     }
 
     const code = await parseCode(response);
@@ -341,14 +342,49 @@ export class DesktopCredentialService {
     return { status: 'offline', message: `The instance returned HTTP ${response.status} while checking authentication.` };
   }
 
+  async activate(activationTicket: unknown): Promise<DesktopActivatedConnection> {
+    if (typeof activationTicket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(activationTicket)) {
+      throw new Error('Invalid desktop activation ticket');
+    }
+    const pending = this.#pendingActivation;
+    // Consume before awaiting so concurrent calls and replays can never share a
+    // credential-bearing activation decision.
+    this.#pendingActivation = null;
+    if (!pending || pending.ticket !== activationTicket || !this.#pendingIsCurrent(pending)) {
+      throw new Error('Desktop activation expired. Check the connection again.');
+    }
+
+    const activated = await this.#profiles.activateProfile(
+      pending.credential,
+      pending.origin,
+      pending.activeProfileId,
+      () => this.#pendingIsCurrent(pending),
+    );
+    if (!activated || !this.#pendingIsCurrent(pending)) {
+      this.#active = null;
+      throw new Error('Desktop activation expired. Check the connection again.');
+    }
+
+    const transportScope = randomBytes(16).toString('base64url');
+    this.#selectionGeneration += 1;
+    for (const controller of this.#pairingControllers.values()) controller.abort();
+    this.#pairingControllers.clear();
+    this.#active = {
+      ...pending.credential,
+      profileGeneration: pending.profileGeneration,
+      selectionGeneration: this.#selectionGeneration,
+      transportScope,
+    };
+    return { status: 'ready', profileId: pending.profileId, transportScope };
+  }
+
   async invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }> {
     if (!DEFINITIVE_INVALID_CODES.has(value.code)) return { invalidated: false };
     const active = this.#active;
     if (!active || active.profileId !== value.profileId
       || active.transportScope !== value.transportScope
       || this.#generation(active.profileId) !== active.profileGeneration
-      || this.#selectionGeneration !== active.selectionGeneration
-      || this.#latestProbeTicket !== active.probeTicket) return { invalidated: false };
+      || this.#selectionGeneration !== active.selectionGeneration) return { invalidated: false };
     this.#active = null;
     const invalidationGeneration = this.#bumpGeneration(active.profileId);
     const removed = await this.#profiles.removeCredentialIfCurrent(
@@ -393,8 +429,7 @@ export class DesktopCredentialService {
     const active = this.#active;
     const activeIsCurrent = active !== null
       && this.#generation(active.profileId) === active.profileGeneration
-      && this.#selectionGeneration === active.selectionGeneration
-      && this.#latestProbeTicket === active.probeTicket;
+      && this.#selectionGeneration === active.selectionGeneration;
     const isApiRequest = target?.pathname.startsWith('/api/') === true;
     const isSocketUpgrade = target?.pathname === '/socket.io/'
       && target.url.searchParams.get('transport') === 'websocket'
@@ -474,6 +509,12 @@ export class DesktopCredentialService {
     return this.#profileGenerations.get(profileId) ?? 0;
   }
 
+  #pendingIsCurrent(pending: PendingActivation): boolean {
+    return this.#latestProbeTicket === pending.probeTicket
+      && this.#generation(pending.profileId) === pending.profileGeneration
+      && this.#selectionGeneration === pending.selectionGeneration;
+  }
+
   #clearActiveIfCredential(credential: StoredCredential): void {
     if (this.#active?.profileId === credential.profileId
       && this.#active.origin === credential.origin
@@ -488,6 +529,7 @@ export class DesktopCredentialService {
 
   #invalidateProfileOperations(profileId: string): void {
     this.#bumpGeneration(profileId);
+    if (this.#pendingActivation?.profileId === profileId) this.#pendingActivation = null;
     if (this.#active?.profileId === profileId) this.#active = null;
     this.#pairingControllers.get(profileId)?.abort();
     this.#pairingControllers.delete(profileId);

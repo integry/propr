@@ -9,7 +9,7 @@ export interface DesktopProfile {
 }
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string; authentication?: string; transportScope?: string }
+  | { status: 'ready'; version?: string; authentication?: string; activationTicket?: string; transportScope?: string }
   | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };
@@ -59,7 +59,11 @@ export interface DesktopLocalSetupAdapter {
 
 export interface DesktopConnectionAdapter {
   probe(profile: DesktopProfile): Promise<DesktopConnectionResult>;
-  activate?(profile: DesktopProfile, result: Extract<DesktopConnectionResult, { status: 'ready' }>): void;
+  activate?(
+    profile: DesktopProfile,
+    result: Extract<DesktopConnectionResult, { status: 'ready' }>,
+  ): Promise<Extract<DesktopConnectionResult, { status: 'ready' }>>;
+  publishActivation?(profile: DesktopProfile, result: Extract<DesktopConnectionResult, { status: 'ready' }>): void;
   deactivate?(): void;
 }
 

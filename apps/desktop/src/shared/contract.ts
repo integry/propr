@@ -12,6 +12,7 @@ export const IPC_CHANNELS = Object.freeze({
   authenticationPair: 'desktop:authentication-pair',
   authenticationCancel: 'desktop:authentication-cancel',
   connectionProbe: 'desktop:connection-probe',
+  connectionActivate: 'desktop:connection-activate',
   connectionInvalidate: 'desktop:connection-invalidate',
   lifecycleStatus: 'desktop:lifecycle-status',
   lifecycleStart: 'desktop:lifecycle-start',
@@ -60,7 +61,7 @@ export type StorageSecurity = {
 };
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string; authentication?: string; transportScope: string }
+  | { status: 'ready'; version?: string; authentication?: string; activationTicket: string }
   | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };
@@ -68,6 +69,10 @@ export type DesktopConnectionResult =
 export interface DesktopConnectionScope {
   profileId: string;
   transportScope: string;
+}
+
+export interface DesktopActivatedConnection extends DesktopConnectionScope {
+  status: 'ready';
 }
 
 export interface DesktopAccessInvalidation extends DesktopConnectionScope {
@@ -111,6 +116,7 @@ export interface DesktopBridge {
   };
   connection: {
     probe(profile: DesktopProfileInput): Promise<DesktopConnectionResult>;
+    activate(activationTicket: string): Promise<DesktopActivatedConnection>;
     invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }>;
   };
   lifecycle: {

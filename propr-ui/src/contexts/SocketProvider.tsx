@@ -1,8 +1,15 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useSyncExternalStore } from 'react';
 import type { Socket } from '@propr/client';
 import { DESKTOP_TRANSPORT_SCOPE_QUERY, TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
-import { getDesktopConnectionScope, handleDesktopAccessCode, proprClient } from '../api/apiClient';
+import {
+  getDesktopConnectionScope,
+  getDesktopSocketConfigurationKey,
+  handleDesktopAccessCode,
+  proprClient,
+  subscribeDesktopConnectionScope,
+} from '../api/apiClient';
+import { isDesktopRuntime } from '../config/runtimeMode';
 
 interface SocketProviderProps {
   children: React.ReactNode;
@@ -17,6 +24,11 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
   const indexingUpdateCallbacksRef = useRef<Set<(payload: IndexingUpdatePayload) => void>>(new Set());
   const queueStatsUpdateCallbacksRef = useRef<Set<(payload: QueueStatsUpdatePayload) => void>>(new Set());
   const taskLiveUpdateCallbacksRef = useRef<Set<(payload: TaskLiveUpdatePayload) => void>>(new Set());
+  const socketConfigurationKey = useSyncExternalStore(
+    subscribeDesktopConnectionScope,
+    getDesktopSocketConfigurationKey,
+    getDesktopSocketConfigurationKey,
+  );
 
   useEffect(() => {
     if (disabled) {
@@ -26,6 +38,11 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     }
 
     const desktopScope = getDesktopConnectionScope();
+    if (isDesktopRuntime() && !desktopScope) {
+      setSocket(null);
+      setIsConnected(false);
+      return;
+    }
     const newSocket = proprClient.connectSocket({
       transports: ['websocket'],
       autoConnect: true,
@@ -122,7 +139,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       newSocket.off(TASK_LIVE_UPDATE);
       newSocket.disconnect();
     };
-  }, [disabled]);
+  }, [disabled, socketConfigurationKey]);
 
   const subscribeToTask = useCallback((taskId: string) => {
     if (socket && isConnected) {

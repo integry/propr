@@ -75,6 +75,17 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
   handle(IPC_CHANNELS.authenticationPair, (_event, profile) => options.credentials.pair(profile));
   handle(IPC_CHANNELS.authenticationCancel, (_event, profileId) => options.credentials.cancelPairing(profileId));
   handle(IPC_CHANNELS.connectionProbe, (_event, profile) => options.credentials.probe(profile));
+  handle(IPC_CHANNELS.connectionActivate, async (_event, activationTicket) => {
+    const before = await options.profiles.list();
+    const activated = await options.credentials.activate(activationTicket);
+    const after = await options.profiles.list();
+    const origins = [before.activeProfileId, after.activeProfileId]
+      .flatMap(profileId => after.profiles.find(profile => profile.id === profileId)?.apiBaseUrl
+        ?? before.profiles.find(profile => profile.id === profileId)?.apiBaseUrl
+        ?? []);
+    await clearDesktopInstanceCookies(options.desktopSession, origins).catch(() => undefined);
+    return activated;
+  });
   handle(IPC_CHANNELS.connectionInvalidate, (_event, value) => options.credentials.invalidate(value));
   handle(IPC_CHANNELS.lifecycleStatus, () => options.lifecycle.status());
   handle(IPC_CHANNELS.lifecycleStart, () => options.lifecycle.start());

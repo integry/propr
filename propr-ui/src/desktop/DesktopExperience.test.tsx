@@ -125,6 +125,32 @@ describe('DesktopExperience', () => {
     expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
   });
 
+  it('uses one activation commit instead of renderer setActive and never publishes a failed B selection', async () => {
+    const probe = vi.fn(async (profile: DesktopProfile): Promise<DesktopConnectionResult> => ({
+      status: 'ready',
+      version: '0.8.15',
+      activationTicket: `ticket-${profile.id}`,
+    }));
+    const adapters = adaptersFor([localProfile, remoteProfile], localProfile.id, probe);
+    adapters.connection.activate = vi.fn()
+      .mockResolvedValueOnce({ status: 'ready', transportScope: 'scope-a' })
+      .mockRejectedValueOnce(new Error('Profile selection could not be written.'));
+    adapters.connection.publishActivation = vi.fn();
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
+    expect(adapters.connection.publishActivation).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click((await screen.findByText('Team server')).closest('button')!);
+
+    expect(await screen.findByText(/could not save this connection/i)).toBeInTheDocument();
+    expect(screen.getByText(/selection could not be written/i)).toBeInTheDocument();
+    expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
+    expect(adapters.connection.publishActivation).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores a stale connection result after the adapters change', async () => {
     let resolveFirstProbe: ((result: DesktopConnectionResult) => void) | undefined;
     const firstProbe = vi.fn(() => new Promise<DesktopConnectionResult>(resolve => {

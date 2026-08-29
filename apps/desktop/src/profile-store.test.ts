@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
@@ -142,5 +142,67 @@ describe('desktop profile store', () => {
     assert.deepEqual((await store.list()).profiles, [profile]);
     assert.doesNotMatch(await readFile(join(directory, 'desktop', 'profiles.json'), 'utf8'), /\/base/);
     await assert.rejects(store.writeCredential(credential('../escape')), /Invalid desktop profile id/);
+  });
+
+  for (const failure of ['corrupt-json', 'decrypt'] as const) {
+    it(`removes an active profile despite a ${failure} credential failure`, async () => {
+      const directory = await createDirectory();
+      let rejectDecrypt = false;
+      const provider: EncryptionProvider = {
+        ...encryption(),
+        decrypt: value => {
+          if (rejectDecrypt) throw new Error('keychain decrypt failed');
+          return failure === 'corrupt-json' ? '{not-json' : Buffer.from(value.toString(), 'base64url').toString('utf8');
+        },
+      };
+      const store = new ProfileStore(directory, provider);
+      const profile = await store.save({ id: 'profile-1', label: 'Remote', apiBaseUrl: 'https://propr.example.com' });
+      await store.writeCredential(credential(profile.id));
+      await store.setActive(profile.id);
+      rejectDecrypt = failure === 'decrypt';
+
+      const detached = await store.detachProfile(profile.id);
+
+      assert.equal(detached?.profile.id, profile.id);
+      assert.equal(detached?.credential, null);
+      assert.deepEqual(await store.list(), { profiles: [], activeProfileId: null });
+      assert.equal(await store.readCredential(profile.id), null);
+    });
+  }
+
+  it('fails before state mutation when the controlled credential cannot be unlinked', async () => {
+    const directory = await createDirectory();
+    const store = new ProfileStore(directory, encryption());
+    const profile = await store.save({ id: 'profile-1', label: 'Remote', apiBaseUrl: 'https://propr.example.com' });
+    await store.setActive(profile.id);
+    await mkdir(join(directory, 'desktop', 'credentials', `${profile.id}.bin`));
+
+    await assert.rejects(store.detachProfile(profile.id), /(?:EISDIR|operation not permitted|is a directory)/i);
+    assert.deepEqual(await store.list(), { profiles: [profile], activeProfileId: profile.id });
+  });
+
+  it('leaves a visible profile safely unpaired when state publication fails after credential removal', async () => {
+    const directory = await createDirectory();
+    const store = new ProfileStore(directory, encryption());
+    const profile = await store.save({ id: 'profile-1', label: 'Remote', apiBaseUrl: 'https://propr.example.com' });
+    await store.writeCredential(credential(profile.id));
+    await store.setActive(profile.id);
+    await mkdir(join(directory, 'desktop', `profiles.json.${process.pid}.tmp`));
+
+    await assert.rejects(store.detachProfile(profile.id), /(?:EISDIR|operation not permitted|is a directory)/i);
+    assert.deepEqual(await store.list(), { profiles: [profile], activeProfileId: profile.id });
+    assert.equal(await store.readCredential(profile.id), null);
+  });
+
+  it('removes an orphan credential before allowing same-ID recreation', async () => {
+    const directory = await createDirectory();
+    const store = new ProfileStore(directory, encryption());
+    await store.writeCredential(credential('profile-1'));
+
+    assert.equal(await store.detachProfile('profile-1'), null);
+    const recreated = await store.save({ id: 'profile-1', label: 'Recreated', apiBaseUrl: 'https://propr.example.com' });
+
+    assert.equal(recreated.id, 'profile-1');
+    assert.equal(await store.readCredential('profile-1'), null);
   });
 });

@@ -24,6 +24,12 @@ export interface DetachedProfile {
   credential: StoredCredential | null;
 }
 
+export interface SavedProfileTransaction {
+  profile: DesktopProfile;
+  detachedCredential: StoredCredential | null;
+  originChanged: boolean;
+}
+
 interface PersistedState {
   version: 1;
   activeProfileId: string | null;
@@ -122,19 +128,34 @@ export class ProfileStore {
     return encryptionStatus(this.#encryption);
   }
 
-  async list(): Promise<DesktopProfileList> {
-    const state = await this.#readState();
-    return {
-      profiles: state.profiles.map(profile => ({ ...profile })),
-      activeProfileId: state.activeProfileId,
-    };
+  list(): Promise<DesktopProfileList> {
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      return {
+        profiles: state.profiles.map(profile => ({ ...profile })),
+        activeProfileId: state.activeProfileId,
+      };
+    });
   }
 
   save(input: DesktopProfileInput): Promise<DesktopProfile> {
+    return this.saveAndDetachCredential(input).then(result => result.profile);
+  }
+
+  saveAndDetachCredential(input: DesktopProfileInput): Promise<SavedProfileTransaction> {
     return this.#mutate(async () => {
       const normalized = normalizedProfileInput(input);
       const state = await this.#readState();
       const existing = state.profiles.find(profile => profile.id === normalized.id);
+      const originChanged = existing !== undefined && existing.apiBaseUrl !== normalized.apiBaseUrl;
+      let detachedCredential: StoredCredential | null = null;
+      if (!existing || originChanged) {
+        detachedCredential = await this.#captureCredentialFile(normalized.id);
+        // Credential deletion precedes state publication. A failed unlink leaves
+        // the old profile intact; a failed state write leaves it safely unpaired.
+        await this.#removeCredentialFile(normalized.id);
+        if (originChanged && state.activeProfileId === normalized.id) state.activeProfileId = null;
+      }
       const now = new Date().toISOString();
       const profile: DesktopProfile = {
         ...normalized,
@@ -143,7 +164,7 @@ export class ProfileStore {
       };
       state.profiles = [...state.profiles.filter(item => item.id !== profile.id), profile];
       await this.#writeState(state);
-      return { ...profile };
+      return { profile: { ...profile }, detachedCredential, originChanged };
     });
   }
 
@@ -156,13 +177,50 @@ export class ProfileStore {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const profile = state.profiles.find(item => item.id === profileId);
+      const credential = await this.#captureCredentialFile(profileId);
+      // Always remove an app-owned credential, even if profile state is absent,
+      // so a later same-ID profile cannot inherit an orphan. Unlink failures are
+      // reported before any visible state mutation.
+      await this.#removeCredentialFile(profileId);
       if (!profile) return null;
-      const credential = await this.#readCredentialFile(profileId);
       state.profiles = state.profiles.filter(profile => profile.id !== profileId);
       if (state.activeProfileId === profileId) state.activeProfileId = null;
       await this.#writeState(state);
-      await this.#removeCredentialFile(profileId);
       return { profile: { ...profile }, credential };
+    });
+  }
+
+  activateProfile(
+    expected: StoredCredential,
+    expectedProfileOrigin: string,
+    expectedActiveProfileId: string | null,
+    isCurrent: () => boolean,
+  ): Promise<boolean> {
+    const profileId = expected?.profileId;
+    assertProfileId(profileId);
+    if (normalizeApiBaseUrl(expectedProfileOrigin) !== expectedProfileOrigin) {
+      throw new Error('Invalid desktop API URL');
+    }
+    if (expectedActiveProfileId !== null) assertProfileId(expectedActiveProfileId);
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      const profile = state.profiles.find(item => item.id === profileId);
+      const credential = await this.#readCredentialFile(profileId);
+      if (!isCurrent()
+        || state.activeProfileId !== expectedActiveProfileId
+        || profile?.apiBaseUrl !== expectedProfileOrigin
+        || !this.#sameCredential(credential, expected)) return false;
+
+      const previousActiveProfileId = state.activeProfileId;
+      state.activeProfileId = profileId;
+      await this.#writeState(state);
+      if (isCurrent()) return true;
+
+      // A generation/selection change that occurred during the atomic file
+      // replacement must not leave the candidate selected.
+      state.activeProfileId = previousActiveProfileId;
+      await this.#writeState(state);
+      return false;
     });
   }
 
@@ -201,6 +259,24 @@ export class ProfileStore {
       if (error instanceof SyntaxError) return null;
       throw error;
     }
+  }
+
+  async #captureCredentialFile(profileId: string): Promise<StoredCredential | null> {
+    try {
+      return await this.#readCredentialFile(profileId);
+    } catch {
+      // Removal is the security boundary. Decrypt/keychain/read failures only
+      // prevent the optional remote revoke, never explicit local detachment.
+      return null;
+    }
+  }
+
+  #sameCredential(actual: StoredCredential | null, expected: StoredCredential): boolean {
+    return actual !== null
+      && actual.version === expected.version
+      && actual.profileId === expected.profileId
+      && actual.origin === expected.origin
+      && actual.token === expected.token;
   }
 
   async writeCredential(credential: StoredCredential): Promise<{ stored: true } | { stored: false; reason: 'encryption-unavailable' }> {

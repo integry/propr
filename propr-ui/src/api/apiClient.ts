@@ -41,11 +41,18 @@ export const setApiBaseUrl = (value: string): void => {
   const nextProprClient = createProprClient(nextApiBaseUrl);
   API_BASE_URL = nextApiBaseUrl;
   proprClient = nextProprClient;
+  desktopScopeListeners.forEach(listener => listener());
 };
 
-export const setDesktopConnectionScope = (scope: DesktopConnectionScope | null): void => {
+export const setDesktopConnectionScope = (
+  scope: DesktopConnectionScope | null,
+  apiBaseUrl?: string,
+): void => {
+  const nextApiBaseUrl = apiBaseUrl === undefined ? API_BASE_URL : apiBaseUrl.trim().replace(/\/+$/, '');
+  const nextProprClient = createProprClient(nextApiBaseUrl);
+  API_BASE_URL = nextApiBaseUrl;
   desktopConnectionScope = scope;
-  proprClient = createProprClient(API_BASE_URL);
+  proprClient = nextProprClient;
   desktopScopeListeners.forEach(listener => listener());
 };
 
@@ -53,6 +60,10 @@ export const getDesktopConnectionScope = (): DesktopConnectionScope | null => de
 export const subscribeDesktopConnectionScope = (listener: () => void): (() => void) => {
   desktopScopeListeners.add(listener);
   return () => desktopScopeListeners.delete(listener);
+};
+export const getDesktopSocketConfigurationKey = (): string => {
+  const scope = desktopConnectionScope;
+  return `${isDesktopRuntime() ? 'desktop' : 'browser'}\u0000${API_BASE_URL}\u0000${scope?.profileId ?? ''}\u0000${scope?.transportScope ?? ''}`;
 };
 export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 const TOKEN_REFRESHED_CODE = 'TOKEN_REFRESHED';

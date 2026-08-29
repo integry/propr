@@ -51,6 +51,7 @@ export const createDesktopBridge = (ipc: PreloadIpc): DesktopBridge => {
     },
     connection: {
       probe: (profile) => invoke(ipc, IPC_CHANNELS.connectionProbe, profile),
+      activate: (activationTicket) => invoke(ipc, IPC_CHANNELS.connectionActivate, activationTicket),
       invalidate: (value) => invoke(ipc, IPC_CHANNELS.connectionInvalidate, value),
     },
     lifecycle: {
