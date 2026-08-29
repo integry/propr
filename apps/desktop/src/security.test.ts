@@ -77,9 +77,28 @@ describe('desktop URL security', () => {
 
   it('accepts a normal internal dashboard route from an open deep link', () => {
     const link = 'propr://open?path=%2Ftasks';
+    const queryAndHashLink = 'propr://open?path=%2Ftasks%3Fstatus%3Dopen%23recent';
     assert.equal(dashboardPathFromDeepLink(link), '/tasks');
     assert.equal(normalizeDeepLink(link), link);
     assert.equal(normalizeDesktopDashboardPath('/tasks?status=open'), '/tasks?status=open');
+    assert.equal(dashboardPathFromDeepLink(queryAndHashLink), '/tasks?status=open#recent');
+    assert.equal(normalizeDesktopDashboardPath('/tasks?status=open#recent'), '/tasks?status=open#recent');
+  });
+
+  it('rejects encoded delimiters combined with encoded traversal', () => {
+    const rejectedPaths = [
+      '/tasks%23/%2e%2e/login',
+      '/tasks%23/%252e%252e/login',
+      '/tasks%3f/%2e%2e/login',
+      '/tasks%3f/%252e%252e/login',
+    ];
+
+    rejectedPaths.forEach(path => {
+      const link = `propr://open?path=${encodeURIComponent(path)}`;
+      assert.equal(normalizeDesktopDashboardPath(path), null, path);
+      assert.equal(dashboardPathFromDeepLink(link), null, link);
+      assert.equal(normalizeDeepLink(link), null, link);
+    });
   });
 
   it('rejects malformed and unsafe open deep-link paths', () => {
