@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, verify } from 'node:crypto';
+import { createHash, generateKeyPairSync, verify } from 'node:crypto';
 import { access, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { finalizeArtifacts, signReleaseMetadata, stageArtifacts } from './release-artifacts.mjs';
+import {
+  finalizeArtifacts,
+  parseSquirrelReleases,
+  signReleaseMetadata,
+  stageArtifacts,
+  validateSquirrelReleases,
+} from './release-artifacts.mjs';
 import { inspectArtifactArchitecture, inspectExecutableBytes } from './release-architecture.mjs';
 
 const kinds = {
@@ -49,7 +55,7 @@ const createFragments = async (root, { signed = false } = {}) => {
     const nupkgContents = `${target}-nupkg`;
     for (const kind of targetKinds) {
       const contents = kind === 'releases'
-        ? `0123456789abcdef0123456789abcdef01234567 desktop-1.2.3-full.nupkg ${Buffer.byteLength(nupkgContents)}\n`
+        ? `${createHash('sha1').update(nupkgContents).digest('hex')} desktop-1.2.3-full.nupkg ${Buffer.byteLength(nupkgContents)}\n`
         : kind === 'nupkg' ? nupkgContents : `${target}-${kind}`;
       await writeFile(join(makeDirectory, sourceName(kind)), contents);
     }
@@ -87,6 +93,17 @@ const peFixture = machine => {
   return bytes;
 };
 
+const crcTable = Array.from({ length: 256 }, (_, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  return crc >>> 0;
+});
+const crc32 = bytes => {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+};
+
 const storedZip = entries => {
   const localParts = [];
   const centralParts = [];
@@ -96,6 +113,7 @@ const storedZip = entries => {
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(crc32(contents), 14);
     local.writeUInt32LE(contents.length, 18);
     local.writeUInt32LE(contents.length, 22);
     local.writeUInt16LE(nameBytes.length, 26);
@@ -105,6 +123,7 @@ const storedZip = entries => {
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(20, 4);
     central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(crc32(contents), 16);
     central.writeUInt32LE(contents.length, 20);
     central.writeUInt32LE(contents.length, 24);
     central.writeUInt16LE(nameBytes.length, 28);
@@ -138,6 +157,88 @@ describe('desktop release artifacts', () => {
     assert.match(
       await readFile(join(output, 'ProPR-Desktop-1.2.3-windows-x64-RELEASES'), 'utf8'),
       /ProPR-Desktop-1\.2\.3-windows-x64-full\.nupkg/,
+    );
+  });
+
+  test('parses every exact Squirrel RELEASES record and verifies SHA-1 and decimal size', () => {
+    const bytes = Buffer.from('exact nupkg bytes');
+    const fileName = 'ProPR-Desktop-1.2.3-windows-x64-full.nupkg';
+    const hash = createHash('sha1').update(bytes).digest('hex');
+    for (const ending of ['\n', '\r\n']) {
+      const releases = Buffer.from(`${hash} ${fileName} ${bytes.length}${ending}`);
+      assert.deepEqual(validateSquirrelReleases(releases, [{ fileName, bytes }]).records, [
+        { sha1: hash, fileName, size: bytes.length },
+      ]);
+    }
+    assert.equal(parseSquirrelReleases(Buffer.from(`${hash.toUpperCase()} ${fileName} ${bytes.length}`)).records[0].sha1, hash);
+  });
+
+  test('rejects wrong Squirrel hash, size, duplicate, extra, missing, path, case, delta, and malformed lines', () => {
+    const bytes = Buffer.from('exact nupkg bytes');
+    const fileName = 'ProPR-Desktop-1.2.3-windows-x64-full.nupkg';
+    const hash = createHash('sha1').update(bytes).digest('hex');
+    const record = `${hash} ${fileName} ${bytes.length}`;
+    const invalid = [
+      `${'0'.repeat(40)} ${fileName} ${bytes.length}`,
+      `${hash} ${fileName} ${bytes.length + 1}`,
+      `${record}\n${record}`,
+      `${record}\n${hash} foreign-full.nupkg ${bytes.length}`,
+      '',
+      `${hash} path/${fileName} ${bytes.length}`,
+      `${hash} ${fileName.toUpperCase()} ${bytes.length}`,
+      `${hash} ProPR-Desktop-1.2.3-windows-x64-delta.nupkg ${bytes.length}`,
+      `${record}\n\n`,
+      `${hash}  ${fileName} ${bytes.length}`,
+    ];
+    for (const contents of invalid) {
+      assert.throws(
+        () => validateSquirrelReleases(Buffer.from(contents), [{ fileName, bytes }]),
+        /Squirrel RELEASES|Invalid Squirrel|does not contain|SHA-1 mismatch|size mismatch/,
+      );
+    }
+  });
+
+  test('revalidates exact Squirrel package bytes during staging and aggregate finalization', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-squirrel-binding-'));
+    const makeDirectory = join(root, 'make');
+    await mkdir(makeDirectory, { recursive: true });
+    await writeFile(join(makeDirectory, 'Desktop Setup.exe'), 'win32-x64-setup');
+    await writeFile(join(makeDirectory, 'desktop-1.2.3-full.nupkg'), 'win32-x64-nupkg');
+    await writeFile(
+      join(makeDirectory, 'RELEASES'),
+      `${'0'.repeat(40)} desktop-1.2.3-full.nupkg ${Buffer.byteLength('win32-x64-nupkg')}\n`,
+    );
+    await assert.rejects(
+      stageArtifacts({
+        makeDirectory,
+        outputDirectory: join(root, 'stage'),
+        platform: 'win32',
+        arch: 'x64',
+        version: '1.2.3',
+        inspectArchitecture: architectureInspector,
+      }),
+      /SHA-1 mismatch/,
+    );
+
+    const fragments = await createFragments(root);
+    const releasesPath = join(fragments, 'win32-x64', 'ProPR-Desktop-1.2.3-windows-x64-RELEASES');
+    const valid = await readFile(releasesPath, 'utf8');
+    const tamperedReleases = valid.replace(/^[a-f0-9]{40}/, 'f'.repeat(40));
+    await writeFile(releasesPath, tamperedReleases);
+    const fragmentPath = join(fragments, 'win32-x64', 'release-fragment.json');
+    const fragment = JSON.parse(await readFile(fragmentPath, 'utf8'));
+    const releasesArtifact = fragment.artifacts.find(artifact => artifact.kind === 'releases');
+    releasesArtifact.size = Buffer.byteLength(tamperedReleases);
+    releasesArtifact.sha256 = createHash('sha256').update(tamperedReleases).digest('hex');
+    await writeFile(fragmentPath, `${JSON.stringify(fragment, null, 2)}\n`);
+    await assert.rejects(
+      finalizeArtifacts({
+        inputDirectory: fragments,
+        outputDirectory: join(root, 'final'),
+        version: '1.2.3',
+        inspectArchitecture: architectureInspector,
+      }),
+      /invalid Squirrel RELEASES metadata.*SHA-1 mismatch/,
     );
   });
 
@@ -313,6 +414,50 @@ describe('desktop release artifacts', () => {
       inspectArtifactArchitecture({ path: setup, kind: 'setup', platform: 'win32', arch: 'arm64' }),
       /not a supported x86, x64, or arm64 Squirrel PE bootstrapper/,
     );
+  });
+
+  test('binds ZIP and NUPKG executables to exact maker-specific canonical paths', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-canonical-archives-'));
+    const fixtures = [
+      ['linux.zip', 'zip', 'linux', 'x64', 'propr-desktop-linux-x64/propr-desktop', Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1, ...Array(12).fill(0), 62, 0])],
+      ['darwin.zip', 'zip', 'darwin', 'arm64', 'propr-desktop.app/Contents/MacOS/propr-desktop', (() => {
+        const bytes = Buffer.alloc(32); bytes.writeUInt32LE(0xfeedfacf, 0); bytes.writeUInt32LE(0x0100000c, 4); return bytes;
+      })()],
+      ['windows.nupkg', 'nupkg', 'win32', 'x64', 'lib/net45/propr-desktop.exe', peFixture(0x8664)],
+    ];
+    for (const [name, kind, platform, arch, executablePath, bytes] of fixtures) {
+      const path = join(root, name);
+      await writeFile(path, storedZip([[executablePath, bytes]]));
+      const result = await inspectArtifactArchitecture({ path, kind, platform, arch });
+      assert.equal(result.executable.architectures[0], arch);
+    }
+  });
+
+  test('rejects unsafe, duplicate, shadowed, forged, alternate, and noncanonical archive layouts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-malicious-archives-'));
+    const executable = peFixture(0x8664);
+    const cases = [
+      ['traversal', storedZip([['../lib/net45/propr-desktop.exe', executable]]), /non-normalized|unsafe name/],
+      ['duplicate', storedZip([['lib/net45/propr-desktop.exe', executable], ['lib/net45/propr-desktop.exe', executable]]), /duplicate or case-colliding/],
+      ['case', storedZip([['lib/net45/propr-desktop.exe', executable], ['LIB/NET45/PROPR-DESKTOP.EXE', executable]]), /case-colliding/],
+      ['shadow', storedZip([['lib', Buffer.from('file')], ['lib/net45/propr-desktop.exe', executable]]), /conflicting file and directory prefix/],
+      ['alternate', storedZip([['lib/net45/propr-desktop.exe', executable], ['tools/propr-desktop.exe', executable]]), /executable outside/],
+      ['wrong-path', storedZip([['lib/net46/propr-desktop.exe', executable]]), /executable outside|missing canonical/],
+    ];
+    const valid = storedZip([['lib/net45/propr-desktop.exe', executable]]);
+    const forged = Buffer.from(valid);
+    const localNameOffset = 30;
+    Buffer.from('lib/net46/propr-desktop.exe').copy(forged, localNameOffset);
+    cases.push(['forged-local-header', forged, /central and local entry metadata disagree/]);
+    cases.push(['trailing-ambiguity', Buffer.concat([valid, Buffer.from('trailing')]), /end-of-central-directory.*ambiguous/]);
+    for (const [name, bytes, pattern] of cases) {
+      const path = join(root, `${name}.nupkg`);
+      await writeFile(path, bytes);
+      await assert.rejects(
+        inspectArtifactArchitecture({ path, kind: 'nupkg', platform: 'win32', arch: 'x64' }),
+        pattern,
+      );
+    }
   });
 
   test('rejects cross-labeled package architectures at staging and finalization', async () => {

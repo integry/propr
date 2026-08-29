@@ -6,6 +6,8 @@ import { inspectArtifactArchitecture } from './release-architecture.mjs';
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const SHA1_PATTERN = /^[a-fA-F0-9]{40}$/;
+const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true });
 const TARGETS = new Map([
   ['linux-x64', ['deb', 'rpm', 'zip']],
   ['linux-arm64', ['deb', 'rpm', 'zip']],
@@ -28,6 +30,70 @@ const recursiveFiles = async directory => {
 
 const checksumBytes = value => createHash('sha256').update(value).digest('hex');
 const checksum = async path => checksumBytes(await readFile(path));
+const squirrelChecksumBytes = value => createHash('sha1').update(value).digest('hex');
+
+export const parseSquirrelReleases = bytes => {
+  let text;
+  try { text = STRICT_UTF8.decode(bytes); } catch { throw new Error('Squirrel RELEASES metadata is not valid UTF-8'); }
+  if (!text || text.includes('\0') || /\r(?!\n)/.test(text)) {
+    throw new Error('Squirrel RELEASES metadata is empty or has invalid line endings');
+  }
+  const lineEnding = text.includes('\r\n') ? '\r\n' : '\n';
+  if (text.includes('\r\n') && text.replaceAll('\r\n', '').includes('\n')) {
+    throw new Error('Squirrel RELEASES metadata mixes line endings');
+  }
+  const lines = text.split(lineEnding);
+  const trailingNewline = lines.at(-1) === '';
+  if (trailingNewline) lines.pop();
+  if (lines.length === 0 || lines.some(line => !line)) {
+    throw new Error('Squirrel RELEASES metadata must contain only nonempty records');
+  }
+  const records = lines.map(line => {
+    const match = /^([a-fA-F0-9]{40}) ([^\s/\\]+) ((?:0|[1-9]\d*))$/.exec(line);
+    if (!match || !SHA1_PATTERN.test(match[1])) throw new Error(`Invalid Squirrel RELEASES record: ${line}`);
+    const size = Number(match[3]);
+    if (!Number.isSafeInteger(size) || size <= 0 || !/-full\.nupkg$/.test(match[2]) || /-delta\.nupkg$/i.test(match[2])) {
+      throw new Error(`Invalid Squirrel RELEASES package record: ${line}`);
+    }
+    return { sha1: match[1].toLowerCase(), fileName: match[2], size };
+  });
+  const names = new Set();
+  const caseNames = new Set();
+  for (const record of records) {
+    const caseName = record.fileName.toLocaleLowerCase('en-US');
+    if (names.has(record.fileName) || caseNames.has(caseName)) {
+      throw new Error(`Squirrel RELEASES contains duplicate or case-colliding package ${record.fileName}`);
+    }
+    names.add(record.fileName);
+    caseNames.add(caseName);
+  }
+  return { records, lineEnding, trailingNewline };
+};
+
+export const validateSquirrelReleases = (releasesBytes, packages) => {
+  if (!Array.isArray(packages) || packages.length === 0) throw new Error('Staged Squirrel package set is empty');
+  const parsed = parseSquirrelReleases(releasesBytes);
+  const expectedNames = new Set(packages.map(pkg => pkg.fileName));
+  if (expectedNames.size !== packages.length || parsed.records.length !== packages.length) {
+    throw new Error('Squirrel RELEASES record set does not exactly match the staged full NUPKG set');
+  }
+  for (const pkg of packages) {
+    if (basename(pkg.fileName) !== pkg.fileName || !/-full\.nupkg$/.test(pkg.fileName) || !Buffer.isBuffer(pkg.bytes)) {
+      throw new Error(`Invalid staged Squirrel package ${pkg.fileName}`);
+    }
+    const matches = parsed.records.filter(record => record.fileName === pkg.fileName);
+    if (matches.length !== 1) {
+      throw new Error(`Squirrel RELEASES does not contain exactly staged package ${pkg.fileName}`);
+    }
+    const record = matches[0];
+    if (record.size !== pkg.bytes.length) throw new Error(`Squirrel RELEASES size mismatch for ${pkg.fileName}`);
+    if (record.sha1 !== squirrelChecksumBytes(pkg.bytes)) throw new Error(`Squirrel RELEASES SHA-1 mismatch for ${pkg.fileName}`);
+  }
+  if (parsed.records.some(record => !expectedNames.has(record.fileName))) {
+    throw new Error('Squirrel RELEASES references a foreign or unstaged package');
+  }
+  return parsed;
+};
 
 const artifactKind = (path, platform) => {
   const name = basename(path);
@@ -98,11 +164,15 @@ export const stageArtifacts = async ({
     if (kind === 'releases') {
       const originalPackageName = basename(byKind.get('nupkg'));
       const renamedPackageName = releaseFileName(version, platform, arch, 'nupkg');
-      const releases = await readFile(byKind.get(kind), 'utf8');
-      if (!releases.includes(originalPackageName)) {
-        throw new Error(`Windows RELEASES metadata does not reference ${originalPackageName}`);
-      }
-      await writeFile(destination, releases.replaceAll(originalPackageName, renamedPackageName));
+      const packageBytes = await readFile(byKind.get('nupkg'));
+      const releasesBytes = await readFile(byKind.get(kind));
+      const parsed = validateSquirrelReleases(releasesBytes, [{ fileName: originalPackageName, bytes: packageBytes }]);
+      const rendered = parsed.records
+        .map(record => `${record.sha1} ${record.fileName === originalPackageName ? renamedPackageName : record.fileName} ${record.size}`)
+        .join(parsed.lineEnding) + (parsed.trailingNewline ? parsed.lineEnding : '');
+      const renderedBytes = Buffer.from(rendered);
+      validateSquirrelReleases(renderedBytes, [{ fileName: renamedPackageName, bytes: packageBytes }]);
+      await writeFile(destination, renderedBytes);
     } else {
       await copyFile(byKind.get(kind), destination);
     }
@@ -226,12 +296,13 @@ export const finalizeArtifacts = async ({
       const packageArtifact = value.artifacts.find(artifact => artifact.kind === 'nupkg');
       const releasesArtifact = value.artifacts.find(artifact => artifact.kind === 'releases');
       if (!packageArtifact || !releasesArtifact) throw new Error(`Release fragment ${value.target} lacks Squirrel metadata`);
-      const releases = await readFile(join(dirname(path), releasesArtifact.fileName), 'utf8');
-      const referencesPackage = releases.split(/\r?\n/).some(line => {
-        const match = /^[a-fA-F0-9]{40}\s+(\S+)\s+(\d+)$/.exec(line.trim());
-        return match?.[1] === packageArtifact.fileName && Number(match[2]) === packageArtifact.size;
-      });
-      if (!referencesPackage) throw new Error(`Release fragment ${value.target} has invalid Squirrel RELEASES metadata`);
+      const packageBytes = await readFile(join(dirname(path), packageArtifact.fileName));
+      const releasesBytes = await readFile(join(dirname(path), releasesArtifact.fileName));
+      try {
+        validateSquirrelReleases(releasesBytes, [{ fileName: packageArtifact.fileName, bytes: packageBytes }]);
+      } catch (error) {
+        throw new Error(`Release fragment ${value.target} has invalid Squirrel RELEASES metadata: ${error.message}`);
+      }
     }
   }
   for (const target of TARGETS.keys()) {
@@ -302,11 +373,12 @@ const createSignedFeeds = async (manifest, outputDirectory, env) => {
     } else {
       feedFileName = releaseFileName(manifest.version, 'win32', target.split('-')[1], 'releases');
       feedBytes = await readFile(join(outputDirectory, feedFileName));
-      const referenced = feedBytes.toString('utf8').split(/\r?\n/).some(line => {
-        const match = /^[a-fA-F0-9]{40}\s+(\S+)\s+(\d+)$/.exec(line.trim());
-        return match?.[1] === artifact.fileName && Number(match[2]) === artifact.size;
-      });
-      if (!referenced) throw new Error(`Windows feed bytes do not reference the exact package for ${target}`);
+      const packageBytes = await readFile(join(outputDirectory, artifact.fileName));
+      try {
+        validateSquirrelReleases(feedBytes, [{ fileName: artifact.fileName, bytes: packageBytes }]);
+      } catch (error) {
+        throw new Error(`Windows feed bytes do not reference only the exact package for ${target}: ${error.message}`);
+      }
     }
     feeds[target] = {
       target,

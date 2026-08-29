@@ -92,12 +92,29 @@ PROPR_DESKTOP_ENABLE_RPM=1 \
 npm run make -w @propr/desktop -- --arch="$(node -p process.arch)"
 ```
 
-### CI signing and notarization configuration
+### CI preflight, signing, and notarization configuration
 
-Signing material is read only from the approval-protected `desktop-release` GitHub environment and written to
-runner-temporary files/keychains. Every value below is mandatory for a production `desktop-v*` tag; unsigned and
-partially signed production releases fail before publication. Pull-request package validation receives none of these
-secrets and explicitly checks that release-secret environment variables are absent.
+Repository-ruleset inspection uses a dedicated GitHub App installed only on this repository. Configure the App with
+exactly repository **Administration: read** and **Contents: read** (GitHub adds Metadata: read implicitly), with no
+write permission and no Actions, Deployments, Environments, Releases, or other repository permission. Store its
+private key only in a separate approval-protected `desktop-release-preflight` environment:
+
+- Variable `PROPR_DESKTOP_PREFLIGHT_APP_ID`: the least-privilege preflight App ID.
+- Secret `PROPR_DESKTOP_PREFLIGHT_APP_PRIVATE_KEY`: that App's private key.
+
+Configure `desktop-release-preflight` with at least one required reviewer, custom deployment policies enabled,
+protected-branch policies disabled, and exactly one deployment policy: the tag pattern `desktop-v*`. The workflow
+uses a SHA-pinned token action to mint a short-lived installation token explicitly requesting only Administration read
+and Contents read; workflow regression tests pin those exact inputs and reject any write or Actions permission. The
+App installation itself must have the same exact least-privilege permission set. Preflight fails closed when the
+ruleset API does not return `bypass_actors`. Pull requests do not schedule this job, and a nonmatching or unreviewed tag
+cannot enter the environment or obtain the App credential. The preflight environment must contain no signing,
+notarization, update-signing, release-publication, or production deployment secret.
+
+Signing material is read only from the distinct approval-protected `desktop-release` GitHub environment and written
+to runner-temporary files/keychains. Every value below is mandatory for a production `desktop-v*` tag; unsigned and
+partially signed production releases fail before publication. Pull-request package validation and the preflight
+environment receive none of these secrets and explicitly check that release-secret environment variables are absent.
 
 GitHub Actions secrets:
 
@@ -137,13 +154,15 @@ default branch must be protected `main`. It must also have an active tag-targeti
 `refs/tags/desktop-v*`, whose exclude and bypass-actor lists are empty, and whose rules block both tag updates and tag
 deletions.
 
-For each tag push, the secretless preflight verifies those repository and environment prerequisites through the GitHub
-API, proves the exact tag commit is reachable from `main`, rejects an existing release, and rechecks the tag and
-immutability ruleset for changes. Pull-request finalization produces unsigned validation metadata; trusted jobs depend
-on preflight, check out its immutable SHA, revalidate the tag before publication, and fail closed if any signing,
-notarization, or signed-update field is missing. A release operator must publish the exact signed manifest/signature,
-generated native feeds, and bound packages to their configured HTTPS URLs. The manifest URL must not contain a query,
-so its companion is always the documented pathname plus `.sig`.
+For each new, non-forced `desktop-v<major>.<minor>.<patch>` tag push, the read-only preflight verifies both protected
+environments and the repository prerequisites through the GitHub API, proves the exact tag commit is reachable from
+`main`, rejects an existing release, and rechecks the tag and immutability ruleset for changes. The active tag ruleset
+must match exactly `refs/tags/desktop-v*`, have no exclusions or bypass actors, and block update and deletion. Pull-
+request finalization produces unsigned validation metadata; trusted signing jobs depend on preflight, check out its
+immutable SHA, revalidate the tag before publication, and fail closed if any signing, notarization, or signed-update
+field is missing. A release operator must publish the exact signed manifest/signature, generated native feeds, and
+bound packages to their configured HTTPS URLs. The manifest URL must not contain a query, so its companion is always
+the documented pathname plus `.sig`.
 
 Linux never checks for native updates. macOS and Windows operate as check-only channels: they verify the Ed25519
 manifest, exact target/version/feed bytes, package URL/size/SHA-256, and the actual Team ID/designated requirement or

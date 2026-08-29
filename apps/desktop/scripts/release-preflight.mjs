@@ -8,6 +8,7 @@ const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA_PATTERN = /^[a-f0-9]{40}$/;
 const ZERO_SHA = '0'.repeat(40);
 const RELEASE_ENVIRONMENT = 'desktop-release';
+const PREFLIGHT_ENVIRONMENT = 'desktop-release-preflight';
 const RELEASE_TAG_POLICY = 'desktop-v*';
 const RELEASE_TAG_RULESET_INCLUDE = `refs/tags/${RELEASE_TAG_POLICY}`;
 const API_PAGE_SIZE = 100;
@@ -38,8 +39,8 @@ const paginatedArray = async (request, path) => {
   }
 };
 
-const paginatedDeploymentPolicies = async request => {
-  const path = `/environments/${RELEASE_ENVIRONMENT}/deployment-branch-policies`;
+const paginatedDeploymentPolicies = async (request, environmentName) => {
+  const path = `/environments/${environmentName}/deployment-branch-policies`;
   const policies = [];
   let totalCount;
   for (let page = 1; ; page += 1) {
@@ -66,21 +67,21 @@ const assertNewTagPush = ({ event, tag }) => {
   }
 };
 
-const assertEnvironmentProtection = (environment, policies) => {
-  if (environment?.name !== RELEASE_ENVIRONMENT) {
-    throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} does not exist`);
+const assertEnvironmentProtection = (environment, policies, environmentName) => {
+  if (environment?.name !== environmentName) {
+    throw new Error(`GitHub environment ${environmentName} does not exist`);
   }
   const reviewerRule = environment.protection_rules?.find(rule => rule.type === 'required_reviewers');
   if (!reviewerRule || !Array.isArray(reviewerRule.reviewers) || reviewerRule.reviewers.length === 0) {
-    throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} must require reviewers`);
+    throw new Error(`GitHub environment ${environmentName} must require reviewers`);
   }
   if (environment.deployment_branch_policy?.custom_branch_policies !== true
     || environment.deployment_branch_policy?.protected_branches !== false) {
-    throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} must use custom deployment tag restrictions`);
+    throw new Error(`GitHub environment ${environmentName} must use custom deployment tag restrictions`);
   }
   if (!Array.isArray(policies) || policies.length !== 1
     || policies[0]?.type !== 'tag' || policies[0]?.name !== RELEASE_TAG_POLICY) {
-    throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} must have exactly the tag policy ${RELEASE_TAG_POLICY}`);
+    throw new Error(`GitHub environment ${environmentName} must have exactly the tag policy ${RELEASE_TAG_POLICY}`);
   }
 };
 
@@ -160,9 +161,11 @@ export const verifyDesktopReleasePreflight = async ({
   const existingRelease = await request(`/releases/tags/${encodedTag}`, { allowNotFound: true });
   if (existingRelease) throw new Error(`GitHub release ${tag} already exists`);
 
-  const environment = await request(`/environments/${RELEASE_ENVIRONMENT}`);
-  const policies = await paginatedDeploymentPolicies(request);
-  assertEnvironmentProtection(environment, policies);
+  for (const environmentName of [PREFLIGHT_ENVIRONMENT, RELEASE_ENVIRONMENT]) {
+    const environment = await request(`/environments/${environmentName}`);
+    const policies = await paginatedDeploymentPolicies(request, environmentName);
+    assertEnvironmentProtection(environment, policies, environmentName);
+  }
 
   await git(['fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main']);
   await git(['fetch', '--no-tags', 'origin', `refs/tags/${tag}:refs/tags/${tag}`]);

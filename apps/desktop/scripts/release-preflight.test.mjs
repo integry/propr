@@ -23,6 +23,12 @@ const immutableRuleset = (overrides = {}) => ({
   ...overrides,
 });
 
+const protectedEnvironment = name => ({
+  name,
+  protection_rules: [{ type: 'required_reviewers', reviewers: [{ type: 'Team' }] }, { type: 'branch_policy' }],
+  deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
+});
+
 const responses = ({ protectedMain = true, environment = true, release = false, tagSha = sha } = {}) => ({
   '': { default_branch: 'main' },
   '/branches/main': { protected: protectedMain },
@@ -31,11 +37,12 @@ const responses = ({ protectedMain = true, environment = true, release = false, 
   '/git/ref/tags/desktop-v1.2.3': { object: { sha } },
   '/commits/desktop-v1.2.3': { sha: tagSha },
   '/releases/tags/desktop-v1.2.3': release ? { id: 7 } : undefined,
-  '/environments/desktop-release': environment ? {
-    name: 'desktop-release',
-    protection_rules: [{ type: 'required_reviewers', reviewers: [{ type: 'Team' }] }, { type: 'branch_policy' }],
-    deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
+  '/environments/desktop-release-preflight': environment ? protectedEnvironment('desktop-release-preflight') : undefined,
+  '/environments/desktop-release-preflight/deployment-branch-policies': environment ? {
+    total_count: 1,
+    branch_policies: [{ name: 'desktop-v*', type: 'tag' }],
   } : undefined,
+  '/environments/desktop-release': environment ? protectedEnvironment('desktop-release') : undefined,
   '/environments/desktop-release/deployment-branch-policies': environment ? {
     total_count: 1,
     branch_policies: [{ name: 'desktop-v*', type: 'tag' }],
@@ -52,12 +59,13 @@ const harness = (values, {
   const requested = [];
   return {
     requested,
-    fetchImpl: async url => {
+    fetchImpl: async (url, request) => {
       const parsed = new URL(url);
       const path = parsed.pathname.replace('/repos/integry/propr', '');
       const count = (calls.get(path) ?? 0) + 1;
       calls.set(path, count);
       requested.push(`${path}${parsed.search}`);
+      assert.equal(request.headers.Authorization, 'Bearer token');
       if (failures[path]) return { status: failures[path], ok: false, json: async () => undefined };
       let value = values[path];
       if (typeof value === 'function') value = value({ count, page: Number(parsed.searchParams.get('page') ?? 1), url: parsed });
@@ -82,6 +90,21 @@ const verify = (values = responses(), options = {}) => verifyDesktopReleasePrefl
 describe('desktop release preflight', () => {
   test('accepts only a new immutable tag reachable from protected main and a protected environment', async () => {
     assert.deepEqual(await verify(), { version: '1.2.3', releaseSha: sha, tag: 'desktop-v1.2.3', tagObjectSha: sha });
+  });
+
+  test('accepts an authorization-visible bypass list and fails closed for hidden or denied ruleset details', async () => {
+    const authorized = responses();
+    authorized['/rulesets/9'] = immutableRuleset({ bypass_actors: [] });
+    await verify(authorized);
+
+    const hidden = responses();
+    hidden['/rulesets/9'] = immutableRuleset({ bypass_actors: undefined });
+    await assert.rejects(verify(hidden), /active, bypass-free/);
+
+    await assert.rejects(
+      verify(responses(), { failures: { '/rulesets/9': 403 } }),
+      /rulesets\/9.*403/,
+    );
   });
 
   test('paginates repository rulesets and reads every full rule definition', async () => {
@@ -158,6 +181,18 @@ describe('desktop release preflight', () => {
       custom_branch_policies: false,
     };
     await assert.rejects(verify(fallback), /custom deployment tag restrictions/);
+  });
+
+  test('requires the separately protected preflight credential environment', async () => {
+    const missing = responses();
+    missing['/environments/desktop-release-preflight'] = undefined;
+    await assert.rejects(verify(missing), /environments\/desktop-release-preflight.*404/);
+    const permissive = responses();
+    permissive['/environments/desktop-release-preflight/deployment-branch-policies'] = {
+      total_count: 1,
+      branch_policies: [{ name: '*', type: 'tag' }],
+    };
+    await assert.rejects(verify(permissive), /desktop-release-preflight must have exactly the tag policy desktop-v\*/);
   });
 
   test('paginates all environment policies and rejects a permissive policy on a later page', async () => {

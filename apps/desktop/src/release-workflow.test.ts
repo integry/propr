@@ -29,15 +29,32 @@ describe('desktop trusted release workflow', () => {
     assert.ok(!validation.includes('PROPR_DESKTOP_ENABLE_UPDATES=1'));
   });
 
-  test('allows production only from a new protected-main desktop tag after secretless preflight', () => {
+  test('allows production only from a new protected-main desktop tag after protected read-only preflight', () => {
     const preflight = job('preflight', 'release-package');
     const production = job('release-package', 'release-finalize');
     assert.ok(!workflow.includes('workflow_dispatch:'));
     assert.match(preflight, /github\.event_name == 'push'/);
     assert.match(preflight, /release-preflight\.mjs/);
     assert.match(preflight, /ref: \$\{\{ github\.sha \}\}/);
-    assert.ok(!preflight.includes('environment:'));
-    assert.ok(!preflight.includes('secrets.'));
+    assert.match(preflight, /environment:\s+name: desktop-release-preflight/);
+    assert.match(preflight, /actions\/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1/);
+    assert.match(preflight, /app-id: \$\{\{ vars\.PROPR_DESKTOP_PREFLIGHT_APP_ID \}\}/);
+    assert.match(preflight, /private-key: \$\{\{ secrets\.PROPR_DESKTOP_PREFLIGHT_APP_PRIVATE_KEY \}\}/);
+    assert.match(preflight, /permission-administration: read/);
+    assert.match(preflight, /permission-contents: read/);
+    assert.deepEqual(
+      [...preflight.matchAll(/^\s+permission-([a-z-]+): (read|write)$/gm)].map(match => `${match[1]}:${match[2]}`),
+      ['administration:read', 'contents:read'],
+    );
+    assert.match(preflight, /GITHUB_TOKEN: \$\{\{ steps\.preflight-app-token\.outputs\.token \}\}/);
+    assert.equal(workflow.match(/steps\.preflight-app-token\.outputs\.token/g)?.length, 1);
+    assert.equal(preflight.match(/secrets\./g)?.length, 1);
+    assert.ok(!preflight.includes('PROPR_DESKTOP_UPDATE_PRIVATE_KEY'));
+    assert.ok(!preflight.includes('PROPR_DESKTOP_MAC_CERTIFICATE'));
+    assert.ok(!preflight.includes('PROPR_DESKTOP_WINDOWS_CERTIFICATE'));
+    assert.ok(!preflight.includes('permission-administration: write'));
+    assert.ok(!preflight.includes('permission-contents: write'));
+    assert.ok(!preflight.includes('permission-actions:'));
     assert.match(production, /needs: preflight/);
     assert.match(production, /environment:\s+name: desktop-release/);
     assert.match(production, /ref: \$\{\{ needs\.preflight\.outputs\.release_sha \}\}/);
@@ -93,6 +110,11 @@ describe('desktop trusted release workflow', () => {
     assert.match(production, /spctl --assess/);
     assert.match(production, /stapler validate/);
     assert.match(production, /Authenticode signer does not match the configured build pin/);
+    assert.match(production, /release-architecture\.mjs inspect[\s\S]*--kind nupkg[\s\S]*lib\/net45\/propr-desktop\.exe/);
+    assert.ok(
+      production.indexOf('release-architecture.mjs inspect') < production.indexOf('Expand-Archive'),
+      'the complete NUPKG must be validated before any executable is extracted or inspected',
+    );
     assert.match(production, /PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS: '1'/);
   });
 

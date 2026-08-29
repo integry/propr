@@ -219,11 +219,12 @@ jobs:
           (cd desktop-release-final && sha256sum --check SHA256SUMS)
 
   preflight:
-    name: Secretless trusted release preflight
+    name: Protected read-only trusted release preflight
     if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'desktop-v')
     runs-on: ubuntu-latest
+    environment:
+      name: desktop-release-preflight
     permissions:
-      actions: read
       contents: read
     outputs:
       version: ${{ steps.preflight.outputs.version }}
@@ -236,11 +237,32 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Prove protected preflight has no production authority
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const forbidden = Object.keys(process.env).filter(name =>
+            /^PROPR_DESKTOP_(?:MAC_CERTIFICATE|WINDOWS_CERTIFICATE|APPLE_API_KEY|UPDATE_PRIVATE_KEY)/.test(name));
+          if (forbidden.length) throw new Error(`Production release secrets reached preflight: ${forbidden.join(', ')}`);
+          NODE
+
+      - name: Create short-lived read-only preflight App token
+        id: preflight-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.PROPR_DESKTOP_PREFLIGHT_APP_ID }}
+          private-key: ${{ secrets.PROPR_DESKTOP_PREFLIGHT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-administration: read
+          permission-contents: read
 
       - name: Verify protected-main provenance, immutable new tag, and environment policy
         id: preflight
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.preflight-app-token.outputs.token }}
         run: node apps/desktop/scripts/release-preflight.mjs
 
   release-package:
@@ -487,12 +509,17 @@ jobs:
           $package = Get-ChildItem apps/desktop/out/make -Recurse -Filter '*-full.nupkg' | Select-Object -First 1
           $appExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/propr-desktop.exe"
           if (!$installer -or !$package) { throw 'Windows release artifacts are missing' }
+          node apps/desktop/scripts/release-architecture.mjs inspect `
+            --path $package.FullName `
+            --kind nupkg `
+            --platform win32 `
+            --arch '${{ matrix.arch }}'
           $zip = Join-Path $env:RUNNER_TEMP 'propr-update-package.zip'
           $extracted = Join-Path $env:RUNNER_TEMP 'propr-update-package'
           Copy-Item -LiteralPath $package.FullName -Destination $zip
           Expand-Archive -LiteralPath $zip -DestinationPath $extracted
-          $packageExecutable = Get-ChildItem -LiteralPath $extracted -Recurse -Filter 'propr-desktop.exe' | Select-Object -First 1
-          if (!$packageExecutable) { throw 'Windows update package application is missing' }
+          $packageExecutable = Get-Item -LiteralPath (Join-Path $extracted 'lib/net45/propr-desktop.exe')
+          if (!$packageExecutable -or $packageExecutable.PSIsContainer) { throw 'Windows update package canonical application is missing' }
           $signatures = @(
             Get-AuthenticodeSignature $installer.FullName
             Get-AuthenticodeSignature $appExecutable

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { inspectLinuxPackageLayout } from './release-architecture.mjs';
+import { inspectDmgLayout, inspectLinuxPackageLayout } from './release-architecture.mjs';
 
 const elfFixture = machine => {
   const bytes = Buffer.alloc(64);
@@ -128,6 +128,57 @@ describe('DEB and RPM executable layouts', () => {
     await assert.rejects(
       inspectLinuxPackageLayout({ root, packageFormat: 'deb', platform: 'linux', arch: 'x64', artifact: 'DEB fixture' }),
       /var\/propr-desktop \(special file\)/,
+    );
+  });
+});
+
+describe('DMG application layout', () => {
+  const createDmgLayout = async root => {
+    const macos = join(root, 'propr-desktop.app', 'Contents', 'MacOS');
+    await mkdir(macos, { recursive: true });
+    const executable = Buffer.alloc(32);
+    executable.writeUInt32LE(0xfeedfacf, 0);
+    executable.writeUInt32LE(0x0100000c, 4);
+    await writeFile(join(macos, 'propr-desktop'), executable, { mode: 0o755 });
+  };
+
+  test('accepts only the canonical ProPR bundle and Contents/MacOS executable', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-dmg-layout-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    await createDmgLayout(root);
+    assert.deepEqual(
+      await inspectDmgLayout({ root, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      { format: 'mach-o', architectures: ['arm64'] },
+    );
+  });
+
+  test('rejects wrong bundles, alternate same-name executables, and canonical symlink escapes', async context => {
+    const wrongBundle = await mkdtemp(join(tmpdir(), 'propr-dmg-wrong-bundle-'));
+    context.after(() => rm(wrongBundle, { recursive: true, force: true }));
+    await mkdir(join(wrongBundle, 'Wrong.app', 'Contents', 'MacOS'), { recursive: true });
+    await assert.rejects(
+      inspectDmgLayout({ root: wrongBundle, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /missing canonical propr-desktop\.app/,
+    );
+
+    const alternate = await mkdtemp(join(tmpdir(), 'propr-dmg-alternate-'));
+    context.after(() => rm(alternate, { recursive: true, force: true }));
+    await createDmgLayout(alternate);
+    await mkdir(join(alternate, 'tools'), { recursive: true });
+    await writeFile(join(alternate, 'tools', 'propr-desktop'), 'alternate');
+    await assert.rejects(
+      inspectDmgLayout({ root: alternate, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /alternate same-name executable/,
+    );
+
+    const escaped = await mkdtemp(join(tmpdir(), 'propr-dmg-symlink-'));
+    context.after(() => rm(escaped, { recursive: true, force: true }));
+    await mkdir(join(escaped, 'propr-desktop.app', 'Contents', 'MacOS'), { recursive: true });
+    await writeFile(join(escaped, 'outside'), 'outside');
+    await symlink('../../../outside', join(escaped, 'propr-desktop.app', 'Contents', 'MacOS', 'propr-desktop'));
+    await assert.rejects(
+      inspectDmgLayout({ root: escaped, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /must be a real regular file.*symbolic link/,
     );
   });
 });
