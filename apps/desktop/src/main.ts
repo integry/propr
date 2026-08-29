@@ -1,6 +1,8 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
+import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
+import { DeepLinkDelivery } from './deep-link-delivery';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
@@ -9,6 +11,7 @@ import {
   deepLinkFromArguments,
   isSafeExternalUrl,
   isTrustedRendererUrl,
+  normalizeApiBaseUrl,
   normalizeDeepLink,
   rendererContentSecurityPolicy,
   validatedDevServerUrl,
@@ -22,10 +25,13 @@ const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
 const PACKAGED_RENDERER_SCHEME = 'propr-app';
 const PACKAGED_RENDERER_HOST = 'renderer';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
-const packagedRendererUrl = `${PACKAGED_RENDERER_SCHEME}://${PACKAGED_RENDERER_HOST}/renderer.html`;
+const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 let mainWindow: BrowserWindow | null = null;
 const initialDeepLink = deepLinkFromArguments(process.argv);
-let pendingDeepLinks: string[] = initialDeepLink ? [initialDeepLink] : [];
+const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
+  IPC_CHANNELS.deepLink,
+  initialDeepLink ? [initialDeepLink] : [],
+);
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
 
@@ -44,6 +50,7 @@ protocol.registerSchemesAsPrivileged([{
     standard: true,
     secure: true,
     supportFetchAPI: true,
+    corsEnabled: true,
   },
 }]);
 
@@ -56,11 +63,7 @@ const registerProtocolClient = (): void => {
 };
 
 const deliverDeepLink = (value: string): void => {
-  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) {
-    pendingDeepLinks.push(value);
-    return;
-  }
-  mainWindow.webContents.send(IPC_CHANNELS.deepLink, value);
+  deepLinkDelivery.deliver(value);
 };
 
 const configureSessionSecurity = (): void => {
@@ -71,7 +74,7 @@ const configureSessionSecurity = (): void => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy': [rendererContentSecurityPolicy()],
+        'Content-Security-Policy': [rendererContentSecurityPolicy(!app.isPackaged)],
       },
     });
   });
@@ -125,12 +128,13 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
     log('error', 'desktop.renderer.gone', { reason: details.reason, exitCode: details.exitCode });
   });
   window.webContents.on('did-finish-load', () => {
-    const linksToDeliver = pendingDeepLinks;
-    pendingDeepLinks = [];
-    linksToDeliver.forEach(value => window.webContents.send(IPC_CHANNELS.deepLink, value));
+    deepLinkDelivery.didFinishLoad(window);
   });
   window.on('closed', () => {
-    if (mainWindow === window) mainWindow = null;
+    if (mainWindow === window) {
+      mainWindow = null;
+      deepLinkDelivery.clearWindow(window);
+    }
   });
 
   const validatedDevUrl = validatedDevServerUrl(devServerUrl);
@@ -147,6 +151,22 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
   );
   if (preloadBridgeExposed !== true) {
     throw new Error('Desktop preload bridge was not exposed to the renderer');
+  }
+  const smokeProfileApiUrl = process.env.PROPR_DESKTOP_SMOKE_PROFILE_API_URL;
+  if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1' && smokeProfileApiUrl) {
+    const normalizedSmokeApiUrl = normalizeApiBaseUrl(smokeProfileApiUrl);
+    if (!normalizedSmokeApiUrl || normalizedSmokeApiUrl !== smokeProfileApiUrl) {
+      throw new Error('Packaged desktop smoke profile API URL is invalid');
+    }
+    const endpoint = `${normalizedSmokeApiUrl}/api/compatibility`;
+    const result = await window.webContents.executeJavaScript(`(async () => {
+      const response = await fetch(${JSON.stringify(endpoint)}, { credentials: 'include' });
+      return { ok: response.ok, status: response.status, body: await response.json() };
+    })()`);
+    if (result?.ok !== true || result?.body?.profileEndpoint !== true) {
+      throw new Error(`Packaged renderer profile API request failed with HTTP ${result?.status ?? 'unknown'}`);
+    }
+    log('info', 'desktop.renderer.profile_api.ready', { origin: DESKTOP_RENDERER_ORIGIN });
   }
   log('info', 'desktop.renderer.ready', { preloadBridgeExposed: true });
   if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1') {
@@ -210,10 +230,14 @@ if (!hasSingleInstanceLock) {
       packagedRendererUrl,
     });
     mainWindow = await createMainWindow();
+    deepLinkDelivery.setWindow(mainWindow);
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        void createMainWindow().then(window => { mainWindow = window; });
+        void createMainWindow().then(window => {
+          mainWindow = window;
+          deepLinkDelivery.setWindow(window);
+        });
       }
     });
 

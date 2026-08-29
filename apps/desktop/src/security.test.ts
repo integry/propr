@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   deepLinkFromArguments,
+  applyDevelopmentRendererCsp,
   isSafeExternalUrl,
   isTrustedRendererUrl,
   normalizeApiBaseUrl,
@@ -68,5 +69,16 @@ describe('desktop URL security', () => {
     assert.match(policy, /object-src 'none'/);
     assert.match(policy, /frame-src 'none'/);
     assert.doesNotMatch(policy, /unsafe-eval/);
+    assert.match(policy, /script-src 'self'(?:;|$)/);
+  });
+
+  it('relaxes inline scripts only while Vite serves the development renderer', () => {
+    const packagedPolicy = rendererContentSecurityPolicy();
+    const source = `<meta http-equiv="Content-Security-Policy" content="${packagedPolicy}">`;
+    const transformed = applyDevelopmentRendererCsp(source);
+
+    assert.match(transformed, /script-src 'self' 'unsafe-inline'/);
+    assert.equal(applyDevelopmentRendererCsp(source).includes(rendererContentSecurityPolicy(true)), true);
+    assert.match(packagedPolicy, /script-src 'self'(?:;|$)/);
   });
 });

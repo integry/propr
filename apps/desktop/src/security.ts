@@ -68,9 +68,9 @@ export const deepLinkFromArguments = (argv: readonly string[]): string | null =>
   return null;
 };
 
-export const rendererContentSecurityPolicy = (): string => [
+export const rendererContentSecurityPolicy = (development = false): string => [
   "default-src 'self'",
-  "script-src 'self'",
+  `script-src 'self'${development ? " 'unsafe-inline'" : ''}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
@@ -80,3 +80,11 @@ export const rendererContentSecurityPolicy = (): string => [
   "form-action 'none'",
   "frame-src 'none'",
 ].join('; ');
+
+export const applyDevelopmentRendererCsp = (html: string): string => {
+  const packagedPolicy = rendererContentSecurityPolicy();
+  if (!html.includes(packagedPolicy)) {
+    throw new Error('renderer.html is missing the packaged content security policy');
+  }
+  return html.replace(packagedPolicy, rendererContentSecurityPolicy(true));
+};

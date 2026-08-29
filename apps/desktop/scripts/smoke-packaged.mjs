@@ -1,7 +1,10 @@
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { access, mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import {
   FuseState,
   FuseV1Options,
@@ -11,6 +14,7 @@ import {
 
 const READY_EVENT = 'desktop.renderer.ready';
 const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
+const PROFILE_API_PROOF = 'desktop.renderer.profile_api.ready';
 const MAIN_PROCESS_ERROR_MARKERS = [
   'desktop.main_process.uncaught_exception',
   'A JavaScript error occurred in the main process',
@@ -57,10 +61,38 @@ if (launchArguments.some(argument => argument === '--no-sandbox' || argument ===
 }
 
 let output = '';
+let receivedProfileApiOrigin;
+const profileApiServer = createServer((request, response) => {
+  receivedProfileApiOrigin = request.headers.origin;
+  if (
+    request.method !== 'GET'
+    || request.url !== '/api/compatibility'
+    || receivedProfileApiOrigin !== DESKTOP_RENDERER_ORIGIN
+  ) {
+    response.writeHead(403, { 'Content-Type': 'application/json' });
+    response.end('{"error":"CORS origin rejected"}');
+    return;
+  }
+  response.writeHead(200, {
+    'Access-Control-Allow-Credentials': 'true',
+    'Access-Control-Allow-Origin': DESKTOP_RENDERER_ORIGIN,
+    'Content-Type': 'application/json',
+  });
+  response.end('{"profileEndpoint":true}');
+});
+profileApiServer.listen(0, '127.0.0.1');
+await once(profileApiServer, 'listening');
+const profileApiAddress = profileApiServer.address();
+if (!profileApiAddress || typeof profileApiAddress === 'string') {
+  throw new Error('Packaged desktop smoke profile API did not bind to a TCP port');
+}
+const profileApiUrl = `http://127.0.0.1:${profileApiAddress.port}`;
+
 try {
   const child = spawn(binaryPath, launchArguments, {
     env: {
       ...process.env,
+      PROPR_DESKTOP_SMOKE_PROFILE_API_URL: profileApiUrl,
       PROPR_DESKTOP_SMOKE_TEST: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -102,8 +134,13 @@ try {
   if (!output.includes(PRELOAD_BRIDGE_PROOF)) {
     throw new Error('Packaged desktop reported renderer-ready without proving window.proprDesktop is exposed');
   }
+  if (!output.includes(PROFILE_API_PROOF) || receivedProfileApiOrigin !== DESKTOP_RENDERER_ORIGIN) {
+    throw new Error('Packaged desktop did not complete a profile API request from its exact renderer origin');
+  }
 
-  console.log('Packaged Linux desktop exposed window.proprDesktop and reached renderer-ready with sandboxing enabled.');
+  console.log('Packaged Linux desktop reached renderer-ready and completed a profile API request with sandboxing enabled.');
 } finally {
+  profileApiServer.closeAllConnections();
+  await new Promise(resolveClose => profileApiServer.close(resolveClose));
   await rm(userDataPath, { recursive: true, force: true });
 }
