@@ -20,13 +20,10 @@ interface DesktopExperienceProps {
   children: React.ReactNode;
 }
 
-const profileId = (): string => {
-  try { return crypto.randomUUID(); } catch { return `profile-${Date.now()}`; }
-};
+const profileId = (): string => { try { return crypto.randomUUID(); } catch { return `profile-${Date.now()}`; } };
 
 const mergeProfiles = (current: DesktopProfile[], incoming: DesktopProfile[]): DesktopProfile[] => {
-  const profiles = new Map(current.map(profile => [profile.id, profile]));
-  incoming.forEach(profile => profiles.set(profile.id, profile));
+  const profiles = new Map(current.map(profile => [profile.id, profile])); incoming.forEach(profile => profiles.set(profile.id, profile));
   return [...profiles.values()].sort((a, b) => (b.lastConnectedAt || '').localeCompare(a.lastConnectedAt || ''));
 };
 
@@ -37,21 +34,16 @@ const connectionLabel = (result: DesktopConnectionResult): string => {
   return 'Connected';
 };
 
-const recoverableError = (message: string, error: unknown): string =>
-  `${message}${error instanceof Error && error.message ? ` ${error.message}` : ''} Try again.`;
+const recoverableError = (message: string, error: unknown): string => `${message}${error instanceof Error && error.message ? ` ${error.message}` : ''} Try again.`;
 
 const DesktopBrand: React.FC = () => (
-  <div className="desktop-brand" aria-label="ProPR Desktop">
-    <img src="/logo.png" alt="" />
-    <span>ProPR</span>
-  </div>
+  <div className="desktop-brand" aria-label="ProPR Desktop"><img src="/logo.png" alt="" /><span>ProPR</span></div>
 );
 
 interface ProfileEditorProps {
   initial?: DesktopProfile;
   operationError?: string | null;
-  onCancel(): void;
-  onSave(profile: DesktopProfile): void;
+  onCancel(): void; onSave(profile: DesktopProfile): void;
 }
 
 const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operationError, onCancel, onSave }) => {
@@ -99,8 +91,7 @@ const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operationError, 
 
 interface ProfileListProps {
   profiles: DesktopProfile[];
-  onConnect(profile: DesktopProfile): void;
-  onEdit(profile: DesktopProfile): void;
+  onConnect(profile: DesktopProfile): void; onEdit(profile: DesktopProfile): void;
   onRemove(profile: DesktopProfile): void;
 }
 
@@ -130,9 +121,7 @@ interface ChooserProps extends ProfileListProps {
   busy: boolean;
   error: string | null;
   localSetupSupported: boolean;
-  onLocalSetup(): void;
-  onConnectNew(): void;
-  onDiscover(): void;
+  onLocalSetup(): void; onConnectNew(): void; onDiscover(): void;
 }
 
 const InstanceChooser: React.FC<ChooserProps> = ({ profiles, busy, error, localSetupSupported, onLocalSetup, onConnectNew, onDiscover, ...listProps }) => (
@@ -170,10 +159,8 @@ const InstanceChooser: React.FC<ChooserProps> = ({ profiles, busy, error, localS
 const ConnectionPanel: React.FC<{
   profile: DesktopProfile;
   result?: Exclude<DesktopConnectionResult, { status: 'ready' }>;
-  onBack(): void;
-  onRetry(): void;
-  onAuthenticate(): void;
-  onHelp(): void;
+  onBack(): void; onRetry(): void;
+  onAuthenticate(): void; onHelp(): void;
 }> = ({ profile, result, onBack, onRetry, onAuthenticate, onHelp }) => (
   <main className="desktop-connection-card" aria-live="polite">
     <DesktopBrand />
@@ -283,12 +270,9 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
         return {
           phase: 'blocked',
           profile: current.profile,
-          result: {
-            status: 'authentication-required',
+          result: { status: 'authentication-required',
             message: 'Access to this instance was revoked or expired. Pair again to continue.',
-            version: current.result.version,
-            authentication: current.result.authentication,
-          },
+            version: current.result.version, authentication: current.result.authentication },
         };
       });
     };
@@ -297,13 +281,10 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   }, [adapters]);
 
   useEffect(() => {
-    const online = () => setNetworkOffline(false);
-    const offline = () => setNetworkOffline(true);
-    window.addEventListener('online', online);
-    window.addEventListener('offline', offline);
+    const online = () => setNetworkOffline(false); const offline = () => setNetworkOffline(true);
+    window.addEventListener('online', online); window.addEventListener('offline', offline);
     return () => {
-      window.removeEventListener('online', online);
-      window.removeEventListener('offline', offline);
+      window.removeEventListener('online', online); window.removeEventListener('offline', offline);
     };
   }, []);
 
@@ -361,11 +342,8 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     try {
       const profile = await adapters.localSetup.setup();
       await saveProfile(profile);
-    } catch (error) {
-      setOperationError(error instanceof Error ? error.message : 'Local setup could not be started.');
-    } finally {
-      setBusy(false);
-    }
+    } catch (error) { setOperationError(error instanceof Error ? error.message : 'Local setup could not be started.'); }
+    finally { setBusy(false); }
   };
 
   const discover = async () => {
@@ -427,9 +405,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   const displayedConnection: DesktopConnectionResult = networkOffline ? { status: 'offline', message: 'This computer is offline.' } : state.result;
   const contextValue = {
-    isDesktop: true as const,
-    platform: adapters.platform,
-    profile: state.profile,
+    isDesktop: true as const, platform: adapters.platform, profile: state.profile,
     connection: displayedConnection,
     openProfileManager: openManager,
     authenticate: () => adapters.authentication.authenticate(state.profile),
