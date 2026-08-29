@@ -34,6 +34,7 @@ jobs:
       - name: Build and test the CLI Agent Skill
         run: |
           npm run build -w @propr/shared
+          npm run build -w @propr/local-setup
           npm run typecheck -w @propr/cli
           npx tsx --experimental-test-module-mocks --test \
             packages/cli/src/agentSkill.test.ts \
@@ -82,6 +83,7 @@ jobs:
           runuser --user node -- env HOME=/home/node bash -euo pipefail <<'NON_ROOT'
           test "$(node -p 'process.geteuid()')" -ne 0
           npm run build -w @propr/shared
+          npm run build -w @propr/local-setup
           npx tsx --experimental-test-module-mocks --test \
             packages/cli/src/agentSkill.test.ts \
             packages/cli/src/agentSkill.forceRace.test.ts \
@@ -111,6 +113,7 @@ jobs:
           test "$(node -p process.platform)" = darwin
           test "$(node -p process.arch)" = arm64
           npm run build -w @propr/shared
+          npm run build -w @propr/local-setup
           npm run typecheck -w @propr/cli
           npx tsx --experimental-test-module-mocks --test \
             packages/cli/src/agentSkill.test.ts \
@@ -281,10 +284,11 @@ jobs:
             echo
             echo "--- Hosted tunnel regression tests ---"
             echo "Running hosted tunnel regression tests..."
-            # Build @propr/shared first: the tsx and UI tests below import from it,
-            # so a stale or missing dist in a clean checkout would fail or use old
-            # output. Build once, up front, before anything that depends on it.
+            # Build workspace dependencies first: the tsx and UI tests below import
+            # from them, so a stale or missing dist in a clean checkout would fail
+            # or use old output. Build once, up front, before their consumers.
             npm run build -w @propr/shared
+            npm run build -w @propr/local-setup
             PROPR_DEMO_MODE=true npx tsx --test \
               test/orchestratorConfig.test.mjs \
               packages/cli/src/commands/setup/engine.test.ts \
@@ -721,8 +725,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build shared package
-        run: npm run build --workspace=@propr/shared
+      - name: Build workspace dependencies
+        run: |
+          npm run build --workspace=@propr/shared
+          npm run build --workspace=@propr/local-setup
 
       - name: Parse init JSON output
         run: npx tsx --test packages/cli/src/commands/initCommands.test.ts

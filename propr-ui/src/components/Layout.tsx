@@ -15,6 +15,8 @@ import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
 import { ConnectCapacityBanner } from './ConnectPlusBanner';
 import { useNotificationCenter } from '../contexts/NotificationCenterContext';
 import { publicAssetUrl } from '../config/runtimeMode';
+import { DesktopTitleBar } from '../desktop/DesktopTitleBar';
+import { useDesktop } from '../desktop/DesktopContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -36,6 +38,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const user = useCurrentUser();
   const { unreadCount } = useNotificationCenter();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const desktop = useDesktop();
   // Track repository indexing statuses for toast notifications
   const repoStatusesRef = useRef<Map<string, string>>(new Map());
 
@@ -165,7 +168,9 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   return (
-    <div className="flex h-full overflow-hidden bg-light-100 relative">
+    <div className="desktop-shell flex h-full min-h-0 flex-col overflow-hidden bg-light-100 relative">
+      {desktop && <DesktopTitleBar />}
+      <div className="desktop-shell-content relative flex min-h-0 flex-1 overflow-hidden">
       {/* Mobile Overlay */}
       {isSidebarOpen && (
         <div
@@ -269,6 +274,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         <main className="mobile-content-clearance flex-1 overflow-y-auto md:pb-0">
           {children}
         </main>
+      </div>
       </div>
     </div>
   );

@@ -3,13 +3,23 @@ import { ProprClient } from '@propr/client';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import { currentUiPathname, navigateToUiPath } from '../config/runtimeMode';
 
-export const API_BASE_URL = getApiBaseUrl();
-export const proprClient = new ProprClient({
-  baseUrl: API_BASE_URL,
+const createProprClient = (baseUrl: string): ProprClient => new ProprClient({
+  baseUrl,
   // Domain modules already opt into cookies route-by-route. Preserve their
   // exact RequestInit behavior while sharing the session transport policy.
   authentication: { type: 'session', applyByDefault: false },
 });
+
+export let API_BASE_URL = getApiBaseUrl();
+export let proprClient = createProprClient(API_BASE_URL);
+
+/** Update the live bindings used by existing API modules when desktop profiles switch. */
+export const setApiBaseUrl = (value: string): void => {
+  const nextApiBaseUrl = value.trim().replace(/\/+$/, '');
+  const nextProprClient = createProprClient(nextApiBaseUrl);
+  API_BASE_URL = nextApiBaseUrl;
+  proprClient = nextProprClient;
+};
 export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 const TOKEN_REFRESHED_CODE = 'TOKEN_REFRESHED';
 const SAFE_PUBLIC_ERROR_CODES = new Set(['AGENT_VERSION_LOOKUP_UNAVAILABLE']);
