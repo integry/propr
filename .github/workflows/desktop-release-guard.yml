@@ -645,6 +645,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout exact approved publication helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight.outputs.release_sha }}
+          persist-credentials: false
+
       - name: Download signed release set
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
@@ -653,18 +659,12 @@ jobs:
 
       - name: Publish only the preflight-approved tag and signed bytes
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.preflight.outputs.release_sha }}
           RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
           TAG_OBJECT_SHA: ${{ needs.preflight.outputs.tag_object_sha }}
+          RELEASE_DIRECTORY: desktop-release-final
         run: |
           set -euo pipefail
           test -s desktop-release-final/desktop-release.json.sig
-          test "$(gh api "repos/${{ github.repository }}/git/ref/tags/$RELEASE_TAG" --jq .object.sha)" = "$TAG_OBJECT_SHA"
-          test "$(gh api "repos/${{ github.repository }}/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_SHA"
-          ! gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1
-          gh release create "$RELEASE_TAG" desktop-release-final/* \
-            --repo "${{ github.repository }}" \
-            --verify-tag \
-            --generate-notes \
-            --title "ProPR Desktop $RELEASE_TAG"
+          node apps/desktop/scripts/release-publish.mjs

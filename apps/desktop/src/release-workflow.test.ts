@@ -101,7 +101,10 @@ describe('desktop trusted release workflow', () => {
     assert.match(workflow, /p7zip-full rpm/);
     const publish = job('publish');
     assert.match(publish, /test -s desktop-release-final\/desktop-release\.json\.sig/);
-    assert.match(publish, /! gh release view/);
+    assert.match(publish, /ref: \$\{\{ needs\.preflight\.outputs\.release_sha \}\}/);
+    assert.match(publish, /release-publish\.mjs/);
+    assert.ok(!publish.includes('gh release create'));
+    assert.ok(!publish.includes('desktop-release-final/*'));
     assert.ok(!publish.includes('--clobber'));
     assert.ok(!publish.includes('gh release upload'));
   });

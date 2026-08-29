@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { finalizeArtifacts, signReleaseMetadata, stageArtifacts } from './release-artifacts.mjs';
-import { inspectExecutableBytes } from './release-architecture.mjs';
+import { inspectArtifactArchitecture, inspectExecutableBytes } from './release-architecture.mjs';
 
 const kinds = {
   'linux-x64': ['deb', 'rpm', 'zip'],
@@ -77,6 +77,50 @@ const signingEnvironment = keys => ({
   PROPR_DESKTOP_WINDOWS_X64_FEED_URL: 'https://updates.example.test/win32/x64/',
   PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL: 'https://updates.example.test/win32/arm64/',
 });
+
+const peFixture = machine => {
+  const bytes = Buffer.alloc(128);
+  bytes.write('MZ');
+  bytes.writeUInt32LE(64, 0x3c);
+  bytes.writeUInt32LE(0x00004550, 64);
+  bytes.writeUInt16LE(machine, 68);
+  return bytes;
+};
+
+const storedZip = entries => {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const [name, contents] of entries) {
+    const nameBytes = Buffer.from(name);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(contents.length, 18);
+    local.writeUInt32LE(contents.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    localParts.push(local, nameBytes, contents);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(contents.length, 20);
+    central.writeUInt32LE(contents.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, nameBytes);
+    offset += local.length + nameBytes.length + contents.length;
+  }
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localParts, centralDirectory, end]);
+};
 
 describe('desktop release artifacts', () => {
   test('stages named artifacts and finalizes unsigned validation metadata', async () => {
@@ -230,8 +274,45 @@ describe('desktop release artifacts', () => {
     assert.deepEqual(inspectExecutableBytes(elf(183)), { format: 'elf', architectures: ['arm64'] });
     assert.deepEqual(inspectExecutableBytes(pe(0x8664)), { format: 'pe', architectures: ['x64'] });
     assert.deepEqual(inspectExecutableBytes(pe(0xaa64)), { format: 'pe', architectures: ['arm64'] });
+    assert.deepEqual(inspectExecutableBytes(pe(0x014c)), { format: 'pe', architectures: ['x86'] });
     assert.deepEqual(inspectExecutableBytes(machO(0x01000007)), { format: 'mach-o', architectures: ['x64'] });
     assert.deepEqual(inspectExecutableBytes(machO(0x0100000c)), { format: 'mach-o', architectures: ['arm64'] });
+  });
+
+  test('derives Windows target architecture from the full NUPKG independently of its supported bootstrapper', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-squirrel-arch-'));
+    const setup = join(root, 'Setup.exe');
+    const arm64Package = join(root, 'desktop-arm64-full.nupkg');
+    await writeFile(setup, peFixture(0x014c));
+    await writeFile(arm64Package, storedZip([
+      ['lib/net45/propr-desktop.exe', peFixture(0xaa64)],
+    ]));
+
+    assert.deepEqual(
+      await inspectArtifactArchitecture({ path: setup, kind: 'setup', platform: 'win32', arch: 'arm64' }),
+      { format: 'squirrel-setup', executable: { format: 'pe', architectures: ['x86'] } },
+    );
+    assert.deepEqual(
+      await inspectArtifactArchitecture({ path: arm64Package, kind: 'nupkg', platform: 'win32', arch: 'arm64' }),
+      { format: 'nupkg', executable: { format: 'pe', architectures: ['arm64'] } },
+    );
+
+    await assert.rejects(
+      inspectArtifactArchitecture({ path: arm64Package, kind: 'nupkg', platform: 'win32', arch: 'x64' }),
+      /executable architecture mismatch.*pe\/x64.*pe\/arm64/,
+    );
+    await writeFile(arm64Package, storedZip([
+      ['lib/net45/propr-desktop.exe', Buffer.from('tampered payload')],
+    ]));
+    await assert.rejects(
+      inspectArtifactArchitecture({ path: arm64Package, kind: 'nupkg', platform: 'win32', arch: 'arm64' }),
+      /not a recognized.*binary/,
+    );
+    await writeFile(setup, peFixture(0x01c0));
+    await assert.rejects(
+      inspectArtifactArchitecture({ path: setup, kind: 'setup', platform: 'win32', arch: 'arm64' }),
+      /not a supported x86, x64, or arm64 Squirrel PE bootstrapper/,
+    );
   });
 
   test('rejects cross-labeled package architectures at staging and finalization', async () => {

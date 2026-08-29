@@ -46,7 +46,13 @@ export const inspectExecutableBytes = bytes => {
       throw new Error('PE executable header is missing or truncated');
     }
     const machine = bytes.readUInt16LE(peOffset + 4);
-    const architecture = machine === 0x8664 ? 'x64' : machine === 0xaa64 ? 'arm64' : `unknown-${machine.toString(16)}`;
+    const architecture = machine === 0x014c
+      ? 'x86'
+      : machine === 0x8664
+        ? 'x64'
+        : machine === 0xaa64
+          ? 'arm64'
+          : `unknown-${machine.toString(16)}`;
     return { format: 'pe', architectures: [architecture] };
   }
 
@@ -89,6 +95,14 @@ const assertExecutableArchitecture = (inspection, platform, arch, artifact) => {
     throw new Error(
       `${artifact} executable architecture mismatch: expected ${expectedFormat}/${arch}, found ${inspection.format}/${inspection.architectures.join(',')}`,
     );
+  }
+};
+
+const assertSupportedSquirrelBootstrap = (inspection, artifact) => {
+  const architecture = inspection.architectures[0];
+  if (inspection.format !== 'pe' || inspection.architectures.length !== 1
+    || !['x86', 'x64', 'arm64'].includes(architecture)) {
+    throw new Error(`${artifact} is not a supported x86, x64, or arm64 Squirrel PE bootstrapper`);
   }
 };
 
@@ -253,7 +267,8 @@ export const inspectArtifactArchitecture = async ({ path, kind, platform, arch }
   if (kind === 'dmg') return inspectDmg(path, platform, arch);
   if (kind === 'setup') {
     const executable = inspectExecutableBytes(await readPrefix(path));
-    assertExecutableArchitecture(executable, platform, arch, path);
+    if (platform !== 'win32') throw new Error(`${path} Squirrel bootstrapper is only valid for Windows targets`);
+    assertSupportedSquirrelBootstrap(executable, path);
     return { format: 'squirrel-setup', executable };
   }
   if (kind === 'zip' || kind === 'nupkg') {

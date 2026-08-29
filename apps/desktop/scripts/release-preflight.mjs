@@ -9,6 +9,8 @@ const SHA_PATTERN = /^[a-f0-9]{40}$/;
 const ZERO_SHA = '0'.repeat(40);
 const RELEASE_ENVIRONMENT = 'desktop-release';
 const RELEASE_TAG_POLICY = 'desktop-v*';
+const RELEASE_TAG_RULESET_INCLUDE = `refs/tags/${RELEASE_TAG_POLICY}`;
+const API_PAGE_SIZE = 100;
 
 const defaultGit = async args => (await execFile('git', args)).stdout.trim();
 
@@ -23,6 +25,38 @@ const apiRequest = async ({ fetchImpl, apiUrl, repository, token, path, allowNot
   if (allowNotFound && response.status === 404) return undefined;
   if (!response.ok) throw new Error(`GitHub API ${path} failed with HTTP ${response.status}`);
   return response.json();
+};
+
+const paginatedArray = async (request, path) => {
+  const values = [];
+  for (let page = 1; ; page += 1) {
+    const separator = path.includes('?') ? '&' : '?';
+    const result = await request(`${path}${separator}per_page=${API_PAGE_SIZE}&page=${page}`);
+    if (!Array.isArray(result)) throw new Error(`GitHub API ${path} returned an ambiguous paginated response`);
+    values.push(...result);
+    if (result.length < API_PAGE_SIZE) return values;
+  }
+};
+
+const paginatedDeploymentPolicies = async request => {
+  const path = `/environments/${RELEASE_ENVIRONMENT}/deployment-branch-policies`;
+  const policies = [];
+  let totalCount;
+  for (let page = 1; ; page += 1) {
+    const result = await request(`${path}?per_page=${API_PAGE_SIZE}&page=${page}`);
+    if (!Number.isSafeInteger(result?.total_count) || result.total_count < 0 || !Array.isArray(result.branch_policies)) {
+      throw new Error(`GitHub API ${path} returned an ambiguous paginated response`);
+    }
+    if (totalCount === undefined) totalCount = result.total_count;
+    if (result.total_count !== totalCount || policies.length + result.branch_policies.length > totalCount) {
+      throw new Error(`GitHub API ${path} changed or returned inconsistent pagination`);
+    }
+    policies.push(...result.branch_policies);
+    if (policies.length === totalCount) return policies;
+    if (result.branch_policies.length !== API_PAGE_SIZE) {
+      throw new Error(`GitHub API ${path} omitted deployment policies during pagination`);
+    }
+  }
 };
 
 const assertNewTagPush = ({ event, tag }) => {
@@ -44,10 +78,53 @@ const assertEnvironmentProtection = (environment, policies) => {
     || environment.deployment_branch_policy?.protected_branches !== false) {
     throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} must use custom deployment tag restrictions`);
   }
-  if (!Array.isArray(policies?.branch_policies)
-    || !policies.branch_policies.some(policy => policy.type === 'tag' && policy.name === RELEASE_TAG_POLICY)) {
-    throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} must restrict tags with ${RELEASE_TAG_POLICY}`);
+  if (!Array.isArray(policies) || policies.length !== 1
+    || policies[0]?.type !== 'tag' || policies[0]?.name !== RELEASE_TAG_POLICY) {
+    throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} must have exactly the tag policy ${RELEASE_TAG_POLICY}`);
   }
+};
+
+const rulesetSecurityState = ruleset => JSON.stringify({
+  id: ruleset.id,
+  target: ruleset.target,
+  enforcement: ruleset.enforcement,
+  bypassActors: ruleset.bypass_actors,
+  refName: ruleset.conditions?.ref_name,
+  ruleTypes: Array.isArray(ruleset.rules) ? ruleset.rules.map(rule => rule?.type).sort() : ruleset.rules,
+});
+
+const isExactImmutableTagRuleset = ruleset => {
+  const refName = ruleset?.conditions?.ref_name;
+  const ruleTypes = Array.isArray(ruleset?.rules) ? ruleset.rules.map(rule => rule?.type) : [];
+  return Number.isSafeInteger(ruleset?.id)
+    && ruleset.target === 'tag'
+    && ruleset.enforcement === 'active'
+    && Array.isArray(ruleset.bypass_actors)
+    && ruleset.bypass_actors.length === 0
+    && Array.isArray(refName?.include)
+    && refName.include.length === 1
+    && refName.include[0] === RELEASE_TAG_RULESET_INCLUDE
+    && Array.isArray(refName.exclude)
+    && refName.exclude.length === 0
+    && ruleTypes.includes('update')
+    && ruleTypes.includes('deletion');
+};
+
+const readImmutableTagRuleset = async request => {
+  const summaries = await paginatedArray(request, '/rulesets?includes_parents=true&targets=tag');
+  const ids = summaries.map(summary => summary?.id);
+  if (ids.some(id => !Number.isSafeInteger(id)) || new Set(ids).size !== ids.length) {
+    throw new Error('GitHub repository rulesets response is ambiguous');
+  }
+  const rulesets = [];
+  for (const id of ids) {
+    rulesets.push(await request(`/rulesets/${id}?includes_parents=true`));
+  }
+  const matching = rulesets.filter(isExactImmutableTagRuleset);
+  if (matching.length === 0) {
+    throw new Error(`Repository must have an active, bypass-free ${RELEASE_TAG_RULESET_INCLUDE} tag ruleset blocking update and deletion`);
+  }
+  return matching[0];
 };
 
 export const verifyDesktopReleasePreflight = async ({
@@ -72,6 +149,9 @@ export const verifyDesktopReleasePreflight = async ({
   const mainBranch = await request('/branches/main');
   if (mainBranch.protected !== true) throw new Error('Repository main branch is not protected');
 
+  const immutableTagRuleset = await readImmutableTagRuleset(request);
+  const immutableTagRulesetState = rulesetSecurityState(immutableTagRuleset);
+
   const encodedTag = encodeURIComponent(tag);
   const currentRef = await request(`/git/ref/tags/${encodedTag}`);
   if (currentRef.object?.sha !== event.after) throw new Error('Desktop release tag ref moved from the new-tag push');
@@ -81,7 +161,7 @@ export const verifyDesktopReleasePreflight = async ({
   if (existingRelease) throw new Error(`GitHub release ${tag} already exists`);
 
   const environment = await request(`/environments/${RELEASE_ENVIRONMENT}`);
-  const policies = await request(`/environments/${RELEASE_ENVIRONMENT}/deployment-branch-policies`);
+  const policies = await paginatedDeploymentPolicies(request);
   assertEnvironmentProtection(environment, policies);
 
   await git(['fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main']);
@@ -96,6 +176,11 @@ export const verifyDesktopReleasePreflight = async ({
   if (stableRef.object?.sha !== event.after) throw new Error('Desktop release tag ref moved during preflight');
   const racedRelease = await request(`/releases/tags/${encodedTag}`, { allowNotFound: true });
   if (racedRelease) throw new Error(`GitHub release ${tag} appeared during preflight`);
+  const stableRuleset = await request(`/rulesets/${immutableTagRuleset.id}?includes_parents=true`);
+  if (!isExactImmutableTagRuleset(stableRuleset)
+    || rulesetSecurityState(stableRuleset) !== immutableTagRulesetState) {
+    throw new Error('Desktop tag immutability ruleset changed during preflight');
+  }
   return { version, releaseSha, tag, tagObjectSha: event.after };
 };
 

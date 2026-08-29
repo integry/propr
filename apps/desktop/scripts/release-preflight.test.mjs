@@ -12,9 +12,22 @@ const event = {
   after: sha,
 };
 
+const immutableRuleset = (overrides = {}) => ({
+  id: 9,
+  name: 'immutable desktop release tags',
+  target: 'tag',
+  enforcement: 'active',
+  bypass_actors: [],
+  conditions: { ref_name: { include: ['refs/tags/desktop-v*'], exclude: [] } },
+  rules: [{ type: 'update' }, { type: 'deletion' }],
+  ...overrides,
+});
+
 const responses = ({ protectedMain = true, environment = true, release = false, tagSha = sha } = {}) => ({
   '': { default_branch: 'main' },
   '/branches/main': { protected: protectedMain },
+  '/rulesets': [{ id: 9 }],
+  '/rulesets/9': immutableRuleset(),
   '/git/ref/tags/desktop-v1.2.3': { object: { sha } },
   '/commits/desktop-v1.2.3': { sha: tagSha },
   '/releases/tags/desktop-v1.2.3': release ? { id: 7 } : undefined,
@@ -24,20 +37,33 @@ const responses = ({ protectedMain = true, environment = true, release = false, 
     deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
   } : undefined,
   '/environments/desktop-release/deployment-branch-policies': environment ? {
+    total_count: 1,
     branch_policies: [{ name: 'desktop-v*', type: 'tag' }],
   } : undefined,
 });
 
-const harness = (values, { secondTagSha, secondRefSha } = {}) => {
+const harness = (values, {
+  secondTagSha,
+  secondRefSha,
+  secondRuleset,
+  failures = {},
+} = {}) => {
   const calls = new Map();
+  const requested = [];
   return {
+    requested,
     fetchImpl: async url => {
-      const path = new URL(url).pathname.replace('/repos/integry/propr', '');
+      const parsed = new URL(url);
+      const path = parsed.pathname.replace('/repos/integry/propr', '');
       const count = (calls.get(path) ?? 0) + 1;
       calls.set(path, count);
+      requested.push(`${path}${parsed.search}`);
+      if (failures[path]) return { status: failures[path], ok: false, json: async () => undefined };
       let value = values[path];
+      if (typeof value === 'function') value = value({ count, page: Number(parsed.searchParams.get('page') ?? 1), url: parsed });
       if (path === '/commits/desktop-v1.2.3' && count === 2 && secondTagSha) value = { sha: secondTagSha };
       if (path === '/git/ref/tags/desktop-v1.2.3' && count === 2 && secondRefSha) value = { object: { sha: secondRefSha } };
+      if (path === '/rulesets/9' && count === 2 && secondRuleset !== undefined) value = secondRuleset;
       return { status: value === undefined ? 404 : 200, ok: value !== undefined, json: async () => value };
     },
     git: async args => args[0] === 'rev-parse' ? sha : '',
@@ -58,15 +84,109 @@ describe('desktop release preflight', () => {
     assert.deepEqual(await verify(), { version: '1.2.3', releaseSha: sha, tag: 'desktop-v1.2.3', tagObjectSha: sha });
   });
 
-  test('rejects missing environment protection and unprotected main', async () => {
+  test('paginates repository rulesets and reads every full rule definition', async () => {
+    const values = responses();
+    const summaries = Array.from({ length: 101 }, (_, index) => ({ id: index + 1 }));
+    values['/rulesets'] = ({ page }) => page === 1 ? summaries.slice(0, 100) : summaries.slice(100);
+    for (let id = 1; id <= 101; id += 1) {
+      values[`/rulesets/${id}`] = id === 101
+        ? immutableRuleset({ id })
+        : immutableRuleset({ id, enforcement: 'disabled' });
+    }
+    const configured = harness(values);
+    await verifyDesktopReleasePreflight({
+      repository: 'integry/propr', tag: 'desktop-v1.2.3', releaseSha: sha, token: 'token', event, ...configured,
+    });
+    assert(configured.requested.includes('/rulesets?includes_parents=true&targets=tag&per_page=100&page=2'));
+    assert(configured.requested.includes('/rulesets/101?includes_parents=true'));
+  });
+
+  test('requires an exact active bypass-free update and deletion tag ruleset', async () => {
+    const invalidRulesets = [
+      immutableRuleset({ enforcement: 'disabled' }),
+      immutableRuleset({ enforcement: 'evaluate' }),
+      immutableRuleset({ target: 'branch' }),
+      immutableRuleset({ bypass_actors: [{ actor_type: 'Integration', actor_id: 15368, bypass_mode: 'always' }] }),
+      immutableRuleset({ bypass_actors: undefined }),
+      immutableRuleset({ conditions: { ref_name: { include: ['refs/tags/desktop-v**'], exclude: [] } } }),
+      immutableRuleset({ conditions: { ref_name: { include: ['refs/tags/desktop-v*', '~ALL'], exclude: [] } } }),
+      immutableRuleset({ conditions: { ref_name: { include: ['refs/tags/desktop-v*'], exclude: ['refs/tags/desktop-v1.*'] } } }),
+      immutableRuleset({ rules: [{ type: 'update' }] }),
+      immutableRuleset({ rules: [{ type: 'deletion' }] }),
+    ];
+    for (const ruleset of invalidRulesets) {
+      const values = responses();
+      values['/rulesets/9'] = ruleset;
+      await assert.rejects(verify(values), /active, bypass-free.*blocking update and deletion/);
+    }
+  });
+
+  test('rejects ruleset mutation or deletion during preflight', async () => {
+    await assert.rejects(
+      verify(responses(), { secondRuleset: immutableRuleset({ rules: [{ type: 'update' }] }) }),
+      /ruleset changed during preflight/,
+    );
+    await assert.rejects(
+      verify(responses(), { failures: { '/rulesets/9': 404 } }),
+      /rulesets\/9.*404/,
+    );
+    const values = responses();
+    values['/rulesets/9'] = ({ count }) => count === 1 ? immutableRuleset() : undefined;
+    await assert.rejects(verify(values), /rulesets\/9.*404/);
+  });
+
+  test('requires the complete effective environment policy set to be exactly desktop-v* tags', async () => {
+    const invalidPolicies = [
+      [],
+      [{ name: '*', type: 'tag' }],
+      [{ name: 'desktop-v**', type: 'tag' }],
+      [{ name: 'desktop-v*', type: 'branch' }],
+      [{ name: 'desktop-v*', type: 'tag' }, { name: '*', type: 'tag' }],
+      [{ name: 'desktop-v*', type: 'tag' }, { name: 'main', type: 'branch' }],
+    ];
+    for (const policies of invalidPolicies) {
+      const values = responses();
+      values['/environments/desktop-release/deployment-branch-policies'] = {
+        total_count: policies.length,
+        branch_policies: policies,
+      };
+      await assert.rejects(verify(values), /exactly the tag policy desktop-v\*/);
+    }
+    const fallback = responses();
+    fallback['/environments/desktop-release'].deployment_branch_policy = {
+      protected_branches: true,
+      custom_branch_policies: false,
+    };
+    await assert.rejects(verify(fallback), /custom deployment tag restrictions/);
+  });
+
+  test('paginates all environment policies and rejects a permissive policy on a later page', async () => {
+    const values = responses();
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({ name: `desktop-v${index}.*`, type: 'tag' }));
+    values['/environments/desktop-release/deployment-branch-policies'] = ({ page }) => ({
+      total_count: 101,
+      branch_policies: page === 1 ? firstPage : [{ name: '*', type: 'tag' }],
+    });
+    const configured = harness(values);
+    await assert.rejects(
+      verifyDesktopReleasePreflight({
+        repository: 'integry/propr', tag: 'desktop-v1.2.3', releaseSha: sha, token: 'token', event, ...configured,
+      }),
+      /exactly the tag policy desktop-v\*/,
+    );
+    assert(configured.requested.includes('/environments/desktop-release/deployment-branch-policies?per_page=100&page=2'));
+  });
+
+  test('rejects missing or ambiguous environment protection and explicit API denial', async () => {
     await assert.rejects(verify(responses({ protectedMain: false })), /main branch is not protected/);
     await assert.rejects(verify(responses({ environment: false })), /environments\/desktop-release.*404/);
+    await assert.rejects(verify(responses(), { failures: { '/environments/desktop-release': 403 } }), /environments\/desktop-release.*403/);
     const missingReviewers = responses();
     missingReviewers['/environments/desktop-release'].protection_rules = [{ type: 'branch_policy' }];
     await assert.rejects(verify(missingReviewers), /require reviewers/);
-    const unrestrictedTags = responses();
-    unrestrictedTags['/environments/desktop-release/deployment-branch-policies'].branch_policies = [];
-    await assert.rejects(verify(unrestrictedTags), /restrict tags/);
+    const ambiguous = responses();
+    ambiguous['/environments/desktop-release/deployment-branch-policies'] = { branch_policies: [] };
+    await assert.rejects(verify(ambiguous), /ambiguous paginated response/);
   });
 
   test('rejects tags not created by this push, tags off main, and moved or existing releases', async () => {

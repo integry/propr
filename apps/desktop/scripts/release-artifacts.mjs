@@ -393,16 +393,16 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
   const { feeds, feedFiles } = await createSignedFeeds(unsignedManifest, outputDirectory, env);
   const signedManifest = { ...unsignedManifest, manifestUrl, feeds };
   const manifestPayload = Buffer.from(`${JSON.stringify(signedManifest, null, 2)}\n`);
+  const signaturePayload = Buffer.from(`${sign(null, manifestPayload, privateKey).toString('base64')}\n`);
   await writeFile(join(outputDirectory, 'desktop-release.json'), manifestPayload);
-  await writeFile(
-    join(outputDirectory, 'desktop-release.json.sig'),
-    `${sign(null, manifestPayload, privateKey).toString('base64')}\n`,
-  );
+  await writeFile(join(outputDirectory, 'desktop-release.json.sig'), signaturePayload);
   await writeFile(
     join(outputDirectory, 'SHA256SUMS'),
     `${[
       ...unsignedManifest.artifacts,
       ...feedFiles,
+      { fileName: 'desktop-release.json', size: manifestPayload.length, sha256: checksumBytes(manifestPayload) },
+      { fileName: 'desktop-release.json.sig', size: signaturePayload.length, sha256: checksumBytes(signaturePayload) },
     ].sort((left, right) => left.fileName.localeCompare(right.fileName))
       .map(file => `${file.sha256}  ${file.fileName}`)
       .join('\n')}\n`,
