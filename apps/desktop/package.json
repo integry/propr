@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
     "package": "electron-forge package",
+    "smoke:package": "node scripts/smoke-packaged.mjs",
     "make": "electron-forge make",
     "make:deb": "PROPR_DESKTOP_ENABLE_DEB=1 electron-forge make --targets @electron-forge/maker-deb",
     "make:rpm": "PROPR_DESKTOP_ENABLE_RPM=1 electron-forge make --targets @electron-forge/maker-rpm"

@@ -88,7 +88,14 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
       pendingDeepLink = null;
     }
   });
-  window.once('ready-to-show', () => window.show());
+  window.once('ready-to-show', () => {
+    log('info', 'desktop.renderer.ready');
+    if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1') {
+      app.quit();
+      return;
+    }
+    window.show();
+  });
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
   });

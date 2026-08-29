@@ -55,3 +55,11 @@ jobs:
 
       - name: Package desktop app
         run: npm run desktop:package
+
+      - name: Configure Chromium sandbox helper
+        run: |
+          sudo chown root:root 'apps/desktop/out/ProPR Desktop-linux-x64/chrome-sandbox'
+          sudo chmod 4755 'apps/desktop/out/ProPR Desktop-linux-x64/chrome-sandbox'
+
+      - name: Launch packaged desktop app with sandboxing
+        run: xvfb-run --auto-servernum npm run desktop:smoke

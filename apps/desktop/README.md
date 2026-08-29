@@ -12,6 +12,7 @@ npm run desktop:dev
 npm run desktop:typecheck
 npm run desktop:test
 npm run desktop:package
+npm run desktop:smoke # Run under xvfb-run on a headless Linux host.
 npm run desktop:make
 npm run desktop:audit
 # On Linux hosts with the corresponding native packaging tools installed:
@@ -21,6 +22,9 @@ npm run make:rpm -w @propr/desktop
 
 Development renderer URLs are accepted only when Electron Forge supplies an HTTP loopback URL. Packaged builds load
 the generated renderer file from the application ASAR.
+
+The packaged-binary smoke test verifies the hardened fuse states, launches the Linux artifact without a
+sandbox-disabling flag, and waits for Electron's renderer `ready-to-show` event before accepting a clean exit.
 
 `desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
 the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release
