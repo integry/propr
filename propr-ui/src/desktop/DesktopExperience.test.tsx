@@ -40,7 +40,28 @@ const adaptersFor = (
   discovery: { discover: vi.fn(async () => []) },
   authentication: { authenticate: vi.fn(async () => undefined) },
   externalBrowser: { open: vi.fn(async () => undefined) },
-  localSetup: { setup: vi.fn(async () => localProfile) },
+  localSetup: {
+    status: vi.fn(async () => ({
+      phase: 'idle' as const,
+      capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const },
+      rootDir: '/tmp/propr',
+      logs: [],
+    })),
+    start: vi.fn(async () => ({
+      phase: 'completed' as const,
+      capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const },
+      rootDir: '/tmp/propr',
+      logs: [],
+      profile: localProfile,
+    })),
+    retry: vi.fn(async () => { throw new Error('not used'); }),
+    cancel: vi.fn(async () => ({
+      phase: 'cancelled' as const,
+      capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const },
+      logs: [],
+    })),
+    onProgress: vi.fn(() => () => undefined),
+  },
   connection: { probe: vi.fn(probe) },
 });
 
@@ -69,8 +90,15 @@ describe('DesktopExperience', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Set up this computer/i }));
 
+    expect(await screen.findByRole('heading', { name: 'Check the essentials' })).toBeInTheDocument();
+    for (let step = 0; step < 4; step += 1) {
+      fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
+    }
+    fireEvent.click(screen.getByRole('button', { name: /Install ProPR/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Open dashboard/i }));
+
     expect(await screen.findByText('Shared route tree')).toBeInTheDocument();
-    expect(adapters.localSetup.setup).toHaveBeenCalledOnce();
+    expect(adapters.localSetup.start).toHaveBeenCalledOnce();
     expect(adapters.connection.probe).toHaveBeenCalledWith(localProfile);
     expect(adapters.profiles.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'local' }));
     expect(adapters.profiles.setActiveId).toHaveBeenCalledWith('local');

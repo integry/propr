@@ -1,26 +1,50 @@
 import type { LocalLifecycleOperationResult, LocalLifecycleStatus } from './shared/contract';
 
-/**
- * Stable renderer-facing lifecycle boundary. Runtime installation and process
- * control are deliberately absent until the user-approved setup work lands.
- */
+export interface LocalLifecycleHost {
+  running(): Promise<boolean>;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
 export class LocalLifecycleController {
   #status: LocalLifecycleStatus = { state: 'disconnected' };
+  readonly #host?: LocalLifecycleHost;
 
-  status(): LocalLifecycleStatus {
+  constructor(host?: LocalLifecycleHost) {
+    this.#host = host;
+  }
+
+  async status(): Promise<LocalLifecycleStatus> {
+    if (!this.#host) return { ...this.#status };
+    try {
+      this.#status = { state: await this.#host.running() ? 'connected' : 'disconnected' };
+    } catch (error) {
+      this.#status = { state: 'error', detail: (error as Error).message };
+    }
     return { ...this.#status };
   }
 
-  start(): LocalLifecycleOperationResult {
-    return this.#unsupported();
+  async start(): Promise<LocalLifecycleOperationResult> {
+    return this.#operate('starting', 'connected', () => this.#host?.start());
   }
 
-  stop(): LocalLifecycleOperationResult {
-    return this.#unsupported();
+  async stop(): Promise<LocalLifecycleOperationResult> {
+    return this.#operate('stopping', 'disconnected', () => this.#host?.stop());
   }
 
-  restart(): LocalLifecycleOperationResult {
-    return this.#unsupported();
+  async restart(): Promise<LocalLifecycleOperationResult> {
+    if (!this.#host) return this.#unsupported();
+    this.#status = { state: 'stopping' };
+    try {
+      await this.#host.stop();
+      this.#status = { state: 'starting' };
+      await this.#host.start();
+      this.#status = { state: 'connected' };
+      return { ok: true, status: { ...this.#status } };
+    } catch (error) {
+      this.#status = { state: 'error', detail: (error as Error).message };
+      throw error;
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -36,5 +60,22 @@ export class LocalLifecycleController {
         detail: 'Local runtime management is not available in this desktop scaffold.',
       },
     };
+  }
+
+  async #operate(
+    transitional: 'starting' | 'stopping',
+    completed: 'connected' | 'disconnected',
+    operation: () => Promise<void> | undefined,
+  ): Promise<LocalLifecycleOperationResult> {
+    if (!this.#host) return this.#unsupported();
+    this.#status = { state: transitional };
+    try {
+      await operation();
+      this.#status = { state: completed };
+      return { ok: true, status: { ...this.#status } };
+    } catch (error) {
+      this.#status = { state: 'error', detail: (error as Error).message };
+      throw error;
+    }
   }
 }

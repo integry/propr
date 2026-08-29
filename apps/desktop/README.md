@@ -21,7 +21,7 @@ npm run make:rpm -w @propr/desktop
 ```
 
 Desktop development, typecheck, package, and make commands build required renderer workspace dependencies through
-`desktop:prepare`, in dependency order (`@propr/shared` then `@propr/client`). They do not depend on previously
+`desktop:prepare`, in dependency order (`@propr/shared`, `@propr/client`, `@propr/local-setup`, then `@propr/cli`). They do not depend on previously
 generated workspace `dist` directories.
 
 Development renderer URLs are accepted only when Electron Forge supplies an HTTP loopback URL. Packaged builds load
@@ -37,8 +37,8 @@ CI runs both checks directly from the committed lockfile before installing or ex
 
 ## Security boundary
 
-The renderer has no Node.js integration and receives only the typed `window.proprDesktop` bridge. It exposes metadata,
-validated external-browser opening, profiles, encrypted credentials, lifecycle placeholders, and validated deep-link
+The renderer has no Node.js integration and receives only the typed `window.proprDesktop` and
+`window.__PROPR_DESKTOP__` bridges. They expose metadata, validated external-browser opening, profiles, encrypted credentials, lifecycle control, guided setup, and validated deep-link
 events. It never exposes a shell, command runner, arbitrary IPC call, or filesystem path/API.
 
 Profile metadata is stored in an app-owned, permission-restricted JSON file. Credential values are encrypted with
@@ -47,5 +47,14 @@ Electron `safeStorage` before they are written separately. If OS encryption is u
 fallback. Profiles remain usable because they contain only a display label and validated API endpoint.
 
 `propr://connect` and `propr://open` are the only accepted deep-link actions. A single-instance lock routes later
-activations to the existing window. Local lifecycle methods intentionally return `not-implemented`; this scaffold does
-not download, install, start, or execute ProPR runtime components.
+activations to the existing window. Desktop pairing and active-profile request authentication remain in Electron main;
+the renderer never receives the device secret or instance bearer token.
+
+## Local setup
+
+Linux presents the guided setup wizard and binds it to the shared `@propr/local-setup` engine. Progress and recovery
+state are redacted before crossing IPC and persisted without prompt secrets, allowing a safely re-runnable setup to
+resume after restart. The packaged app carries the same launcher manifest, orchestrator, and stack template as the CLI.
+
+macOS and Windows present remote connections as the supported path and explain that the local installer is Linux-only.
+They do not show Docker Desktop installation or lifecycle actions.

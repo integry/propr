@@ -6,11 +6,13 @@ import { DesktopContext } from './DesktopContext';
 import { normalizeBaseUrl } from './browserAdapters';
 import { useDesktopModal, useSerializedMutationQueue } from './desktopExperienceHooks';
 import type { DesktopAdapters, DesktopConnectionResult, DesktopProfile } from './types';
+import { LocalSetupWizard } from './LocalSetupWizard';
 import './desktop.css';
 
 type ExperienceState =
   | { phase: 'loading' }
   | { phase: 'choose' }
+  | { phase: 'local-setup' }
   | { phase: 'connecting'; profile: DesktopProfile }
   | { phase: 'blocked'; profile: DesktopProfile; result: Exclude<DesktopConnectionResult, { status: 'ready' }> }
   | { phase: 'connected'; profile: DesktopProfile; result: Extract<DesktopConnectionResult, { status: 'ready' }> };
@@ -330,16 +332,8 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   };
 
   const setupLocal = async () => {
-    setBusy(true);
     setOperationError(null);
-    try {
-      const profile = await adapters.localSetup.setup();
-      await saveProfile(profile);
-    } catch (error) {
-      setOperationError(error instanceof Error ? error.message : 'Local setup could not be started.');
-    } finally {
-      setBusy(false);
-    }
+    setState({ phase: 'local-setup' });
   };
 
   const discover = async () => {
@@ -391,6 +385,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     if (state.phase === 'loading') return <div className="desktop-loading"><LoaderCircle className="desktop-spin" /><span>Opening ProPR…</span></div>;
     if (state.phase === 'connecting') return <ConnectionPanel profile={state.profile} onBack={choose} onRetry={retry} onAuthenticate={() => undefined} onHelp={() => undefined} />;
     if (state.phase === 'blocked') return <ConnectionPanel profile={state.profile} result={state.result} onBack={choose} onRetry={retry} onAuthenticate={() => void runBlockedAction(state.profile, () => adapters.authentication.authenticate(state.profile), 'ProPR Desktop could not open sign in.', () => connect(state.profile))} onHelp={() => void runBlockedAction(state.profile, () => adapters.externalBrowser.open('https://propr.dev'), 'ProPR Desktop could not open connection help.')} />;
+    if (state.phase === 'local-setup') return <LocalSetupWizard adapter={adapters.localSetup} onBack={() => setState({ phase: 'choose' })} onComplete={profile => void saveProfile(profile)} />;
     if (editing) return <main className="desktop-welcome-card"><DesktopBrand /><ProfileEditor initial={editing === 'new' ? undefined : editing} operationError={operationError} onCancel={() => setEditing(null)} onSave={profile => void saveProfile(profile)} /></main>;
     return <InstanceChooser profiles={profiles} busy={busy} error={operationError} localSetupSupported={adapters.platform === 'linux'} onLocalSetup={() => void setupLocal()} onConnectNew={() => openEditor('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />;
   };

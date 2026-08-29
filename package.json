@@ -72,7 +72,7 @@
     "deploy:hosted-ui": "npm run build -w propr-ui && npx wrangler deploy --config wrangler.hosted-ui.toml",
     "desktop": "npm run dev -w @propr/desktop",
     "desktop:dev": "npm run dev -w @propr/desktop",
-    "desktop:prepare": "npm run build -w @propr/shared && npm run build -w @propr/client",
+    "desktop:prepare": "npm run build -w @propr/shared && npm run build -w @propr/client && npm run build -w @propr/local-setup && npm run build -w @propr/cli",
     "desktop:typecheck": "npm run typecheck -w @propr/desktop && npm run typecheck -w propr-ui",
     "desktop:test": "npm run test -w @propr/desktop",
     "desktop:package": "npm run package -w @propr/desktop",

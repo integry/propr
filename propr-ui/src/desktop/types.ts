@@ -46,7 +46,11 @@ export interface DesktopExternalBrowserAdapter {
 }
 
 export interface DesktopLocalSetupAdapter {
-  setup(): Promise<DesktopProfile>;
+  status(): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
+  start(request: import('../../../apps/desktop/src/shared/contract').DesktopSetupRequest): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
+  retry(request?: import('../../../apps/desktop/src/shared/contract').DesktopSetupRequest): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
+  cancel(): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
+  onProgress(listener: (snapshot: import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot) => void): () => void;
 }
 
 export interface DesktopConnectionAdapter {
@@ -67,12 +71,4 @@ export interface DesktopAdapters {
  * Small preload-facing contract. Electron can expose this object through
  * contextBridge without exposing Node or command execution to React.
  */
-export interface ProprDesktopBridge extends DesktopAdapters {
-  isDesktop: true;
-}
-
-declare global {
-  interface Window {
-    __PROPR_DESKTOP__?: ProprDesktopBridge;
-  }
-}
+export type ProprDesktopBridge = import('../../../apps/desktop/src/shared/contract').DesktopRendererBridge;

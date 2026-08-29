@@ -4,6 +4,8 @@ import { logoutDesktopSession } from './desktop-session';
 import type { DesktopLogger } from './logger';
 import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
+import type { DesktopConnectionController } from './desktop-connections';
+import type { DesktopSetupController } from './setup-controller';
 import { isSafeExternalUrl, isTrustedRendererUrl } from './security';
 import { IPC_CHANNELS } from './shared/contract';
 
@@ -12,6 +14,8 @@ interface RegisterIpcOptions {
   ipcMain: IpcMain;
   profiles: ProfileStore;
   lifecycle: LocalLifecycleController;
+  setup: DesktopSetupController;
+  connections: DesktopConnectionController;
   logger: DesktopLogger;
   desktopSession: Session;
   devServerUrl: string | undefined;
@@ -64,4 +68,14 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
   handle(IPC_CHANNELS.lifecycleStart, () => options.lifecycle.start());
   handle(IPC_CHANNELS.lifecycleStop, () => options.lifecycle.stop());
   handle(IPC_CHANNELS.lifecycleRestart, () => options.lifecycle.restart());
+  handle(IPC_CHANNELS.connectionProbe, (_event, profile) => options.connections.probe(profile));
+  handle(IPC_CHANNELS.connectionAuthenticate, async (_event, profile) => {
+    await options.profiles.save({ id: profile.id, label: profile.name, apiBaseUrl: profile.baseUrl });
+    await options.connections.authenticate(profile);
+  });
+  handle(IPC_CHANNELS.discovery, () => []);
+  handle(IPC_CHANNELS.setupStatus, () => options.setup.status());
+  handle(IPC_CHANNELS.setupStart, (_event, request) => options.setup.start(request));
+  handle(IPC_CHANNELS.setupRetry, (_event, request) => options.setup.retry(request));
+  handle(IPC_CHANNELS.setupCancel, () => options.setup.cancel());
 };

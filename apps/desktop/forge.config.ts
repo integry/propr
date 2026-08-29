@@ -6,12 +6,19 @@ import { MakerZIP } from '@electron-forge/maker-zip';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { flipFuses, FuseV1Options, FuseVersion } from '@electron/fuses';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const cliAsset = (path: string): string => fileURLToPath(new URL(`../../packages/cli/dist/${path}`, import.meta.url));
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     name: 'propr-desktop',
     executableName: 'propr-desktop',
+    extraResource: [
+      cliAsset('orchestrator'),
+      cliAsset('assets'),
+    ],
   },
   rebuildConfig: {},
   hooks: {

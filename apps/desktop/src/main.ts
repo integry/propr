@@ -3,10 +3,14 @@ import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import { DeepLinkDelivery } from './deep-link-delivery';
+import { DesktopConnectionController } from './desktop-connections';
+import { configureDesktopRequestAuthentication } from './desktop-request-auth';
+import { createDesktopLocalHost } from './desktop-host';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
+import { DesktopSetupController } from './setup-controller';
 import {
   deepLinkFromArguments,
   isSafeExternalUrl,
@@ -34,6 +38,7 @@ const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
 );
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
+let setupController: DesktopSetupController | null = null;
 
 const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>
   logger
@@ -147,7 +152,7 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
 
   await readyToShow;
   const preloadBridgeExposed = await window.webContents.executeJavaScript(
-    "typeof window.proprDesktop === 'object' && window.proprDesktop !== null",
+    "typeof window.proprDesktop === 'object' && window.proprDesktop !== null && typeof window.__PROPR_DESKTOP__ === 'object'",
   );
   if (preloadBridgeExposed !== true) {
     throw new Error('Desktop preload bridge was not exposed to the renderer');
@@ -218,12 +223,48 @@ if (!hasSingleInstanceLock) {
       decrypt: value => safeStorage.decryptString(value),
     };
     const profiles = new ProfileStore(app.getPath('userData'), encryption);
-    const lifecycle = new LocalLifecycleController();
+    configureDesktopRequestAuthentication(session.defaultSession, {
+      profiles,
+      devServerUrl,
+      packagedRendererUrl,
+      rendererWebContentsId: () => mainWindow?.webContents.id,
+    });
+    const localHost = await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined);
+    const lifecycle = new LocalLifecycleController(process.platform === 'linux' ? localHost.lifecycle : undefined);
+    const connections = new DesktopConnectionController({
+      session: session.defaultSession,
+      profiles,
+      openExternal: openAllowedExternalUrl,
+    });
+    setupController = new DesktopSetupController({
+      actions: localHost.actions,
+      platform: process.platform,
+      statePath: join(app.getPath('userData'), 'desktop', 'setup-state.json'),
+      defaultRootDir: localHost.config.getStackRoot() ?? join(app.getPath('documents'), 'ProPR'),
+      resolveApiBaseUrl: localHost.resolveApiBaseUrl,
+      async registerProfile({ name, apiBaseUrl }) {
+        const existing = (await profiles.list()).profiles.find(profile => profile.apiBaseUrl === apiBaseUrl);
+        const saved = await profiles.save({ id: existing?.id, label: name, apiBaseUrl });
+        return {
+          id: saved.id,
+          name: saved.label,
+          baseUrl: saved.apiBaseUrl,
+          kind: 'local',
+          lastConnectedAt: saved.updatedAt,
+        };
+      },
+      emit(snapshot) {
+        const target = mainWindow;
+        if (target && !target.isDestroyed()) target.webContents.send(IPC_CHANNELS.setupProgress, snapshot);
+      },
+    });
     registerIpcHandlers({
       app,
       ipcMain,
       profiles,
       lifecycle,
+      setup: setupController,
+      connections,
       logger,
       desktopSession: session.defaultSession,
       devServerUrl,
@@ -245,7 +286,7 @@ if (!hasSingleInstanceLock) {
       if (shutdownStarted) return;
       event.preventDefault();
       shutdownStarted = true;
-      void lifecycle.shutdown().finally(() => {
+      void Promise.all([lifecycle.shutdown(), setupController?.shutdown()]).finally(() => {
         log('info', 'desktop.app.shutdown');
         app.quit();
       });

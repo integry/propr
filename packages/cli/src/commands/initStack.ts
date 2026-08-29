@@ -53,6 +53,14 @@ export interface DetectedCred {
   path: string;
 }
 
+let configuredStackTemplatePath: string | undefined;
+
+/** Configure an application-packaged stack template before scaffolding. */
+export function configureStackTemplatePath(path: string): void {
+  if (!isAbsolute(path) || !existsSync(path)) throw new Error("The configured stack template path is invalid");
+  configuredStackTemplatePath = path;
+}
+
 // Mirrors the launcher's HOST_VIBE_PROMPT_CACHE_DIR default in
 // docker/launcher/orchestrator.mjs. Keep it per-user and private because prompt
 // files can contain task/repository context.
@@ -84,6 +92,7 @@ export function ensureVibePromptCacheDir(cacheDir: string | undefined): string |
 
 /** Resolve the bundled .env.example, falling back to a repo checkout. */
 function resolveEnvExample(): string | undefined {
+  if (configuredStackTemplatePath) return configuredStackTemplatePath;
   const here = dirname(fileURLToPath(import.meta.url));
   // Bundled copy is renamed to avoid npm's .env* exclusion from tarballs.
   const bundled = join(here, "..", "assets", "env.example.txt");

@@ -16,6 +16,14 @@ export const IPC_CHANNELS = Object.freeze({
   lifecycleStart: 'desktop:lifecycle-start',
   lifecycleStop: 'desktop:lifecycle-stop',
   lifecycleRestart: 'desktop:lifecycle-restart',
+  connectionProbe: 'desktop:connection-probe',
+  connectionAuthenticate: 'desktop:connection-authenticate',
+  discovery: 'desktop:discovery',
+  setupStatus: 'desktop:setup-status',
+  setupStart: 'desktop:setup-start',
+  setupRetry: 'desktop:setup-retry',
+  setupCancel: 'desktop:setup-cancel',
+  setupProgress: 'desktop:setup-progress',
   deepLink: 'desktop:deep-link',
 } as const);
 
@@ -108,4 +116,83 @@ export interface DesktopBridge {
     stop(): Promise<LocalLifecycleOperationResult>;
     restart(): Promise<LocalLifecycleOperationResult>;
   };
+}
+
+export type DesktopPlatformView = 'macos' | 'windows' | 'linux';
+
+/** Renderer profile shape used by the shared desktop presentation layer. */
+export interface DesktopProfileView {
+  id: string;
+  name: string;
+  baseUrl: string;
+  kind: 'local' | 'remote';
+  lastConnectedAt?: string;
+}
+
+export type DesktopConnectionResult =
+  | { status: 'ready'; version?: string }
+  | { status: 'authentication-required'; message?: string }
+  | { status: 'incompatible'; message: string; version?: string }
+  | { status: 'offline'; message: string };
+
+export interface DesktopSetupRequest {
+  rootDir: string;
+  reinitialize: boolean;
+  agents: string[];
+  loginAgents: string[];
+  github:
+    | { mode: 'keep' }
+    | { mode: 'demo' }
+    | { mode: 'relay'; relayUrl?: string }
+    | { mode: 'app'; appId: string; privateKeyPath: string; installationId: string };
+  intake:
+    | { mode: 'keep' }
+    | { mode: 'routing_websocket' | 'polling' }
+    | { mode: 'direct_webhook'; webhookSecret: string };
+  whitelist: string[] | null;
+  repository: { fullName: string; alias?: string; baseBranch?: string } | null;
+}
+
+export type DesktopSetupPhase =
+  | 'idle'
+  | 'running'
+  | 'interrupted'
+  | 'cancelled'
+  | 'failed'
+  | 'completed'
+  | 'unsupported';
+
+export interface DesktopSetupSnapshot {
+  phase: DesktopSetupPhase;
+  capability: import('@propr/local-setup').LocalSetupCapability;
+  rootDir?: string;
+  state?: import('@propr/local-setup').SetupState;
+  logs: string[];
+  errors?: import('@propr/local-setup').SetupStructuredError[];
+  error?: string;
+  profile?: DesktopProfileView;
+}
+
+/** Narrow bridge consumed by `propr-ui/src/desktop`. */
+export interface DesktopRendererBridge {
+  isDesktop: true;
+  platform: DesktopPlatformView;
+  profiles: {
+    list(): Promise<DesktopProfileView[]>;
+    save(profile: DesktopProfileView): Promise<void>;
+    remove(profileId: string): Promise<void>;
+    getActiveId(): Promise<string | null>;
+    setActiveId(profileId: string | null): Promise<void>;
+  };
+  discovery: { discover(): Promise<DesktopProfileView[]> };
+  authentication: { authenticate(profile: DesktopProfileView): Promise<void> };
+  externalBrowser: { open(url: string): Promise<void> };
+  localSetup: {
+    status(): Promise<DesktopSetupSnapshot>;
+    start(request: DesktopSetupRequest): Promise<DesktopSetupSnapshot>;
+    retry(request?: DesktopSetupRequest): Promise<DesktopSetupSnapshot>;
+    cancel(): Promise<DesktopSetupSnapshot>;
+    onProgress(listener: (snapshot: DesktopSetupSnapshot) => void): () => void;
+  };
+  connection: { probe(profile: DesktopProfileView): Promise<DesktopConnectionResult> };
 }

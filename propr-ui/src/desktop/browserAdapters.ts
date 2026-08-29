@@ -164,10 +164,13 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
     authenticate: authenticateBrowserFixture,
   },
   localSetup: {
-    async setup() {
-      if (fixture) return fixtureProfile;
-      throw new Error('Local setup will be available when the desktop host adapter is connected.');
+    async status() {
+      return { phase: 'idle', capability: { supported: true, kind: 'local', platform: 'linux' }, logs: [] };
     },
+    async start() { throw new Error('Local setup requires the Electron desktop host.'); },
+    async retry() { throw new Error('Local setup requires the Electron desktop host.'); },
+    async cancel() { return { phase: 'cancelled', capability: { supported: true, kind: 'local', platform: 'linux' }, logs: [] }; },
+    onProgress() { return () => undefined; },
   },
   connection: {
     async probe(profile) {

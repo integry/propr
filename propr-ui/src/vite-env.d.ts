@@ -7,4 +7,5 @@ declare const __PROPR_DESKTOP__: boolean;
 
 interface Window {
   proprDesktop?: import('../../apps/desktop/src/shared/contract').DesktopBridge;
+  __PROPR_DESKTOP__?: import('../../apps/desktop/src/shared/contract').DesktopRendererBridge;
 }

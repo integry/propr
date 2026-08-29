@@ -9,7 +9,7 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { OrchestratorConfig, OrchestratorModule } from "./types.js";
 import type { ConfigManager } from "../config/index.js";
 
@@ -24,6 +24,14 @@ export type {
 
 let cached: OrchestratorModule | undefined;
 let cachedPath: string | undefined;
+let configuredAssetPath: string | undefined;
+
+/** Configure an application-packaged launcher asset before the first load. */
+export function configureOrchestratorAssetPath(path: string): void {
+  if (!isAbsolute(path) || !existsSync(path)) throw new Error("The configured orchestrator asset path is invalid");
+  if (cached && cachedPath !== path) throw new Error("The orchestrator is already loaded from another path");
+  configuredAssetPath = path;
+}
 
 /**
  * Candidate locations for orchestrator.mjs, in priority order:
@@ -31,6 +39,7 @@ let cachedPath: string | undefined;
  *   2. Bundled next to this module in dist.
  */
 function resolveOrchestratorPath(): string {
+  if (configuredAssetPath) return configuredAssetPath;
   const here = dirname(fileURLToPath(import.meta.url));
   const bundled = join(here, "orchestrator.mjs");
 

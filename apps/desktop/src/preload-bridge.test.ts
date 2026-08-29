@@ -1,22 +1,22 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createDesktopBridge, type PreloadIpc } from './preload-bridge';
+import { createDesktopBridge, createDesktopRendererBridge, type PreloadIpc } from './preload-bridge';
 import { IPC_CHANNELS } from './shared/contract';
 
 class FakeIpc implements PreloadIpc {
   readonly invocations: Array<{ channel: string; args: unknown[] }> = [];
-  readonly listeners = new Map<string, (event: unknown, value: string) => void>();
+  readonly listeners = new Map<string, (event: unknown, value: any) => void>();
 
   async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
     this.invocations.push({ channel, args });
     return undefined;
   }
 
-  on(channel: string, listener: (event: unknown, value: string) => void): void {
+  on(channel: string, listener: (event: unknown, value: any) => void): void {
     this.listeners.set(channel, listener);
   }
 
-  removeListener(channel: string, listener: (event: unknown, value: string) => void): void {
+  removeListener(channel: string, listener: (event: unknown, value: any) => void): void {
     if (this.listeners.get(channel) === listener) this.listeners.delete(channel);
   }
 }
@@ -47,6 +47,26 @@ describe('desktop preload bridge', () => {
       { channel: IPC_CHANNELS.credentialsWrite, args: ['profile-1', 'secret'] },
       { channel: IPC_CHANNELS.lifecycleStart, args: [] },
     ]);
+  });
+
+  it('exposes setup through fixed invocations and strips Electron events from progress', async () => {
+    const ipc = new FakeIpc();
+    const bridge = createDesktopRendererBridge(ipc, 'linux');
+    const received: unknown[] = [];
+    bridge.localSetup.onProgress(snapshot => received.push(snapshot));
+    const request = {
+      rootDir: '/srv/propr', reinitialize: false, agents: [], loginAgents: [],
+      github: { mode: 'demo' as const }, intake: { mode: 'keep' as const }, whitelist: null, repository: null,
+    };
+    await bridge.localSetup.start(request);
+    ipc.listeners.get(IPC_CHANNELS.setupProgress)?.(
+      { sender: 'must-not-leak' },
+      { phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, logs: [] },
+    );
+
+    assert.deepEqual(ipc.invocations, [{ channel: IPC_CHANNELS.setupStart, args: [request] }]);
+    assert.deepEqual(received, [{ phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, logs: [] }]);
+    assert.equal('invoke' in bridge, false);
   });
 
   it('does not expose Electron event objects to deep-link listeners', () => {

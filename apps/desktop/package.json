@@ -10,7 +10,7 @@
   "type": "module",
   "main": ".vite/build/main.cjs",
   "scripts": {
-    "prepare:renderer": "npm run build -w @propr/shared && npm run build -w @propr/client",
+    "prepare:renderer": "npm run build -w @propr/shared && npm run build -w @propr/client && npm run build -w @propr/local-setup && npm run build -w @propr/cli",
     "predev": "npm run prepare:renderer",
     "dev": "electron-forge start",
     "pretypecheck": "npm run prepare:renderer",
@@ -25,6 +25,12 @@
     "make:deb": "PROPR_DESKTOP_ENABLE_DEB=1 electron-forge make --targets @electron-forge/maker-deb",
     "premake:rpm": "npm run prepare:renderer",
     "make:rpm": "PROPR_DESKTOP_ENABLE_RPM=1 electron-forge make --targets @electron-forge/maker-rpm"
+  },
+  "dependencies": {
+    "@propr/cli": "*",
+    "@propr/client": "*",
+    "@propr/local-setup": "*",
+    "@propr/shared": "*"
   },
   "devDependencies": {
     "@electron-forge/cli": "8.0.0-alpha.10",
