@@ -1,6 +1,6 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
+import { app, autoUpdater, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import { DeepLinkDelivery } from './deep-link-delivery';
 import { registerIpcHandlers } from './ipc';
@@ -17,6 +17,8 @@ import {
   validatedDevServerUrl,
 } from './security';
 import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
+import { checkForSignedUpdates } from './signed-updates';
+import { handleSquirrelStartupEvent } from './squirrel-events';
 import { createBrowserWindowOptions } from './window-options';
 
 const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
@@ -34,6 +36,12 @@ const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
 );
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
+const squirrelStartupHandled = process.platform === 'win32'
+  && handleSquirrelStartupEvent({ quit: () => app.quit() });
+
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.squirrel.propr_desktop.propr_desktop');
+}
 
 const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>
   logger
@@ -183,8 +191,10 @@ app.on('open-url', (event, url) => {
   if (normalized) deliverDeepLink(normalized);
 });
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
-if (!hasSingleInstanceLock) {
+const hasSingleInstanceLock = !squirrelStartupHandled && app.requestSingleInstanceLock();
+if (squirrelStartupHandled) {
+  // The Squirrel event handler owns shortcut maintenance and process exit.
+} else if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
@@ -231,6 +241,42 @@ if (!hasSingleInstanceLock) {
     });
     mainWindow = await createMainWindow();
     deepLinkDelivery.setWindow(mainWindow);
+
+    const updateConfig = __PROPR_DESKTOP_UPDATE_MANIFEST_URL__
+      ? {
+          manifestUrl: __PROPR_DESKTOP_UPDATE_MANIFEST_URL__,
+          publicKey: __PROPR_DESKTOP_UPDATE_PUBLIC_KEY__,
+          signingIdentity: __PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY__,
+        }
+      : undefined;
+    if (app.isPackaged && updateConfig && process.env.PROPR_DESKTOP_SMOKE_TEST !== '1') {
+      autoUpdater.on('error', error => log('error', 'desktop.update.native_error', { error }));
+      autoUpdater.on('checking-for-update', () => log('info', 'desktop.update.checking'));
+      autoUpdater.on('update-available', () => log('info', 'desktop.update.available'));
+      autoUpdater.on('update-not-available', () => log('info', 'desktop.update.not_available'));
+      autoUpdater.on('update-downloaded', () => log('info', 'desktop.update.downloaded'));
+      const runUpdateCheck = () => {
+        void checkForSignedUpdates({
+          config: updateConfig,
+          currentVersion: app.getVersion(),
+          platform: process.platform,
+          arch: process.arch,
+          fetchBytes: async url => {
+            const response = await net.fetch(url, { cache: 'no-store' });
+            if (!response.ok) throw new Error(`Update metadata request failed with HTTP ${response.status}`);
+            return Buffer.from(await response.arrayBuffer());
+          },
+          updater: autoUpdater,
+        }).then(result => log('info', 'desktop.update.check_complete', { result }))
+          .catch(error => log('error', 'desktop.update.check_failed', { error }));
+      };
+      // Squirrel holds an installer lock briefly on Windows first run.
+      if (process.platform === 'win32' && process.argv.includes('--squirrel-firstrun')) {
+        setTimeout(runUpdateCheck, 10_000);
+      } else {
+        runUpdateCheck();
+      }
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

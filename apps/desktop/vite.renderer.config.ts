@@ -3,10 +3,12 @@ import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 import { applyDevelopmentRendererCsp } from './src/security';
+import { resolveDesktopVersion } from './src/release-config';
 
 const rootPackage = JSON.parse(
   readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8'),
 ) as { version: string };
+const desktopVersion = resolveDesktopVersion(rootPackage.version);
 const rendererEntrySource = '../../propr-ui/src/desktop.tsx';
 const rendererEntryDevelopmentUrl = `/@fs${fileURLToPath(new URL(rendererEntrySource, import.meta.url))}`;
 
@@ -29,7 +31,7 @@ const developmentCspPlugin: Plugin = {
 export default defineConfig({
   base: './',
   define: {
-    __APP_VERSION__: JSON.stringify(rootPackage.version),
+    __APP_VERSION__: JSON.stringify(desktopVersion),
     __PROPR_DESKTOP__: 'true',
   },
   plugins: [developmentCspPlugin, react()],

@@ -21,11 +21,14 @@ const MAIN_PROCESS_ERROR_MARKERS = [
   'Uncaught Exception:',
 ];
 const TIMEOUT_MS = 30_000;
-const binaryPath = resolve('out', `propr-desktop-linux-${process.arch}`, 'propr-desktop');
-
-if (process.platform !== 'linux') {
-  throw new Error('The packaged-binary smoke test currently targets the Linux artifact');
-}
+const binaryPath = process.platform === 'darwin'
+  ? resolve('out', `propr-desktop-darwin-${process.arch}`, 'propr-desktop.app', 'Contents', 'MacOS', 'propr-desktop')
+  : resolve(
+      'out',
+      `propr-desktop-${process.platform}-${process.arch}`,
+      `propr-desktop${process.platform === 'win32' ? '.exe' : ''}`,
+    );
+const inspectOnly = process.argv.includes('--inspect-only');
 
 await access(binaryPath);
 
@@ -52,6 +55,11 @@ for (const [fuse, expectedState] of expectedFuses) {
       `Unexpected ${FuseV1Options[fuse]} fuse state: expected ${FuseState[expectedState]}, received ${FuseState[actualState] ?? actualState}`,
     );
   }
+}
+
+if (inspectOnly) {
+  console.log(`Packaged ${process.platform}-${process.arch} desktop artifact passed executable and fuse inspection.`);
+  process.exit(0);
 }
 
 const userDataPath = await mkdtemp(resolve(tmpdir(), 'propr-desktop-smoke-'));
@@ -138,7 +146,7 @@ try {
     throw new Error('Packaged desktop did not complete a profile API request from its exact renderer origin');
   }
 
-  console.log('Packaged Linux desktop reached renderer-ready and completed a profile API request with sandboxing enabled.');
+    console.log(`Packaged ${process.platform}-${process.arch} desktop reached renderer-ready and completed a profile API request.`);
 } finally {
   profileApiServer.closeAllConnections();
   await new Promise(resolveClose => profileApiServer.close(resolveClose));

@@ -1,4 +1,4 @@
-name: Desktop Release Guard
+name: Desktop Package and Release
 
 on:
   pull_request:
@@ -11,25 +11,97 @@ on:
       - 'propr-ui/**'
   push:
     tags:
-      - 'v*'
+      - 'desktop-v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: Desktop stable semver to package
+        required: true
+        type: string
+      publish:
+        description: Publish to the existing desktop-v<version> tag
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-release-guard-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: desktop-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
-  verify:
-    name: Audit and package desktop app
+  version:
+    name: Validate desktop release version
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve independently tagged desktop version
+        id: version
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+          DISPATCH_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#desktop-v}"
+            test "$GITHUB_REF_NAME" = "desktop-v$version"
+            publish=true
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            version="$DISPATCH_VERSION"
+            publish="$DISPATCH_PUBLISH"
+          else
+            version="$(node -p "require('./apps/desktop/package.json').version")"
+            publish=false
+          fi
+          node -e 'if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(process.argv[1])) process.exit(1)' "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: Package ${{ matrix.platform }}-${{ matrix.arch }} natively
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            arch: x64
+            runner: ubuntu-24.04
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - platform: darwin
+            arch: x64
+            runner: macos-15-intel
+          - platform: darwin
+            arch: arm64
+            runner: macos-15
+          - platform: win32
+            arch: x64
+            runner: windows-2025
+          - platform: win32
+            arch: arm64
+            runner: windows-11-arm
+    env:
+      PROPR_DESKTOP_VERSION: ${{ needs.version.outputs.version }}
+      UPDATE_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_UPDATE_PUBLIC_KEY }}
+      UPDATE_MANIFEST_URL: ${{ vars.PROPR_DESKTOP_UPDATE_MANIFEST_URL }}
+      UPDATE_MAC_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_MAC_SIGNING_IDENTITY }}
+      UPDATE_WINDOWS_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.version.outputs.publish == 'true' && format('desktop-v{0}', needs.version.outputs.version) || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -38,29 +110,288 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
-      # Audit the committed resolution before npm lifecycle or packaging code can run.
-      - name: Audit production runtime dependencies (low threshold)
-        run: npm run audit:runtime
+      - name: Verify native runner architecture
+        shell: bash
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node -e 'if(process.platform!==process.env.EXPECTED_PLATFORM||process.arch!==process.env.EXPECTED_ARCH) throw new Error(`Expected ${process.env.EXPECTED_PLATFORM}-${process.env.EXPECTED_ARCH}, got ${process.platform}-${process.arch}`)'
 
-      - name: Audit desktop packaging toolchain (high threshold)
-        run: npm run desktop:audit:packaging
+      - name: Audit committed dependency resolution
+        shell: bash
+        run: |
+          npm run audit:runtime
+          npm run desktop:audit:packaging
 
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Typecheck desktop and renderer
-        run: npm run desktop:typecheck
-
-      - name: Test desktop runtime
-        run: npm run desktop:test
-
-      - name: Package desktop app
-        run: npm run desktop:package
-
-      - name: Configure Chromium sandbox helper
+      - name: Install native Linux package tools
+        if: matrix.platform == 'linux'
         run: |
-          sudo chown root:root apps/desktop/out/propr-desktop-linux-x64/chrome-sandbox
-          sudo chmod 4755 apps/desktop/out/propr-desktop-linux-x64/chrome-sandbox
+          sudo apt-get update
+          sudo apt-get install --yes fakeroot rpm zip
 
-      - name: Launch packaged desktop app with sandboxing
-        run: xvfb-run --auto-servernum npm run desktop:smoke
+      - name: Configure macOS signing and notarization
+        if: matrix.platform == 'darwin' && needs.version.outputs.publish == 'true'
+        shell: bash
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.PROPR_DESKTOP_MAC_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.PROPR_DESKTOP_MAC_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8_BASE64: ${{ secrets.PROPR_DESKTOP_APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.PROPR_DESKTOP_APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.PROPR_DESKTOP_APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          signing_values=("$CERTIFICATE_P12_BASE64" "$CERTIFICATE_PASSWORD" "$UPDATE_MAC_SIGNING_IDENTITY")
+          signing_present=0
+          for value in "${signing_values[@]}"; do [ -n "$value" ] && signing_present=$((signing_present + 1)); done
+          if [ "$signing_present" -ne 0 ] && [ "$signing_present" -ne 3 ]; then
+            echo "macOS signing secrets/identity are incomplete" >&2
+            exit 1
+          fi
+          notarization_values=("$APPLE_API_KEY_P8_BASE64" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER_ID")
+          notarization_present=0
+          for value in "${notarization_values[@]}"; do [ -n "$value" ] && notarization_present=$((notarization_present + 1)); done
+          if [ "$notarization_present" -ne 0 ] && [ "$notarization_present" -ne 3 ]; then
+            echo "macOS notarization secrets are incomplete" >&2
+            exit 1
+          fi
+          if [ "$notarization_present" -eq 3 ] && [ "$signing_present" -ne 3 ]; then
+            echo "macOS notarization requires signing" >&2
+            exit 1
+          fi
+          if [ "$signing_present" -eq 3 ]; then
+            certificate="$RUNNER_TEMP/propr-desktop-signing.p12"
+            keychain="$RUNNER_TEMP/propr-desktop-signing.keychain-db"
+            keychain_password="$(uuidgen)"
+            printf '%s' "$CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate"
+            security create-keychain -p "$keychain_password" "$keychain"
+            security set-keychain-settings -lut 21600 "$keychain"
+            security unlock-keychain -p "$keychain_password" "$keychain"
+            security import "$certificate" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+            security list-keychains -d user -s "$keychain" login.keychain-db
+            echo "PROPR_DESKTOP_MAC_SIGNING_IDENTITY=$UPDATE_MAC_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+            echo "DESKTOP_PLATFORM_CODE_SIGNED=1" >> "$GITHUB_ENV"
+          fi
+          if [ "$notarization_present" -eq 3 ]; then
+            api_key="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY_ID.p8"
+            printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$api_key"
+            echo "PROPR_DESKTOP_APPLE_API_KEY_FILE=$api_key" >> "$GITHUB_ENV"
+            echo "PROPR_DESKTOP_APPLE_API_KEY_ID=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
+            echo "PROPR_DESKTOP_APPLE_API_ISSUER_ID=$APPLE_API_ISSUER_ID" >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure Windows signing
+        if: matrix.platform == 'win32' && needs.version.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          CERTIFICATE_PFX_BASE64: ${{ secrets.PROPR_DESKTOP_WINDOWS_CERTIFICATE_PFX_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $values = @($env:CERTIFICATE_PFX_BASE64, $env:CERTIFICATE_PASSWORD, $env:UPDATE_WINDOWS_SIGNING_IDENTITY)
+          $present = @($values | Where-Object { $_ }).Count
+          if ($present -ne 0 -and $present -ne 3) { throw 'Windows signing secrets/identity are incomplete' }
+          if ($present -eq 3) {
+            $certificate = Join-Path $env:RUNNER_TEMP 'propr-desktop-signing.pfx'
+            [IO.File]::WriteAllBytes($certificate, [Convert]::FromBase64String($env:CERTIFICATE_PFX_BASE64))
+            "PROPR_DESKTOP_WINDOWS_CERTIFICATE_FILE=$certificate" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD=$env:CERTIFICATE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Append
+            'DESKTOP_PLATFORM_CODE_SIGNED=1' | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+
+      - name: Enable trusted signed updates only with complete publishing configuration
+        if: matrix.platform != 'linux' && needs.version.outputs.publish == 'true'
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          update_values=("$UPDATE_PUBLIC_KEY" "$UPDATE_MANIFEST_URL")
+          present=0
+          for value in "${update_values[@]}"; do [ -n "$value" ] && present=$((present + 1)); done
+          if [ "$present" -ne 0 ] && [ "$present" -ne 2 ]; then
+            echo "Trusted update publishing configuration is incomplete" >&2
+            exit 1
+          fi
+          if [ "$present" -eq 2 ]; then
+            if [ "${DESKTOP_PLATFORM_CODE_SIGNED:-}" != 1 ]; then
+              echo "Trusted updates cannot be enabled for an unsigned package" >&2
+              exit 1
+            fi
+            if [ "$PLATFORM" = darwin ]; then identity="$UPDATE_MAC_SIGNING_IDENTITY"; else identity="$UPDATE_WINDOWS_SIGNING_IDENTITY"; fi
+            test -n "$identity"
+            echo "PROPR_DESKTOP_ENABLE_UPDATES=1" >> "$GITHUB_ENV"
+            echo "PROPR_DESKTOP_CODE_SIGNED=1" >> "$GITHUB_ENV"
+            echo "PROPR_DESKTOP_UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL" >> "$GITHUB_ENV"
+            echo "PROPR_DESKTOP_UPDATE_PUBLIC_KEY=$UPDATE_PUBLIC_KEY" >> "$GITHUB_ENV"
+            echo "PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+          fi
+
+      - name: Typecheck and test desktop runtime
+        shell: bash
+        run: |
+          npm run desktop:typecheck
+          npm run desktop:test
+
+      - name: Make Linux packages
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: PROPR_DESKTOP_ENABLE_DEB=1 PROPR_DESKTOP_ENABLE_RPM=1 npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+
+      - name: Make macOS packages
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+          npm run make:dmg -w @propr/desktop -- --arch=${{ matrix.arch }}
+          if [ -n "${PROPR_DESKTOP_APPLE_API_KEY_FILE:-}" ]; then
+            dmg="$(find apps/desktop/out/make -type f -name '*.dmg' -print -quit)"
+            xcrun notarytool submit "$dmg" \
+              --key "$PROPR_DESKTOP_APPLE_API_KEY_FILE" \
+              --key-id "$PROPR_DESKTOP_APPLE_API_KEY_ID" \
+              --issuer "$PROPR_DESKTOP_APPLE_API_ISSUER_ID" \
+              --wait
+            xcrun stapler staple "$dmg"
+          fi
+
+      - name: Make Windows installer
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
+
+      - name: Launch packaged Linux application
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo chown root:root "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
+          xvfb-run --auto-servernum npm run desktop:smoke
+
+      - name: Inspect packaged macOS application and artifacts
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          npm run desktop:smoke:inspect
+          hdiutil verify "$(find apps/desktop/out/make -type f -name '*.dmg' -print -quit)"
+          unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
+          if [ "${DESKTOP_PLATFORM_CODE_SIGNED:-}" = 1 ]; then
+            codesign --verify --deep --strict --verbose=2 "apps/desktop/out/propr-desktop-darwin-${{ matrix.arch }}/propr-desktop.app"
+          fi
+
+      - name: Inspect packaged Windows application and artifacts
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          npm run desktop:smoke:inspect
+          $installer = Get-ChildItem apps/desktop/out/make -Recurse -Filter '*.exe' | Select-Object -First 1
+          $package = Get-ChildItem apps/desktop/out/make -Recurse -Filter '*-full.nupkg' | Select-Object -First 1
+          $appExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/propr-desktop.exe"
+          if (!$installer -or !$package) { throw 'Windows release artifacts are missing' }
+          tar -tf $package.FullName | Select-Object -First 5
+          if ($env:DESKTOP_PLATFORM_CODE_SIGNED -eq '1') {
+            if ((Get-AuthenticodeSignature $installer.FullName).Status -ne 'Valid') { throw 'Windows installer signature is invalid' }
+            if ((Get-AuthenticodeSignature $appExecutable).Status -ne 'Valid') { throw 'Windows application signature is invalid' }
+          }
+
+      - name: Inspect native Linux packages
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          dpkg-deb --info "$(find apps/desktop/out/make -type f -name '*.deb' -print -quit)" >/dev/null
+          rpm -qip "$(find apps/desktop/out/make -type f -name '*.rpm' -print -quit)" >/dev/null
+          unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
+
+      - name: Stage named release artifacts
+        shell: bash
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs stage \
+            --version "$PROPR_DESKTOP_VERSION" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}" \
+            --make-directory apps/desktop/out/make \
+            --output "desktop-release-${{ matrix.platform }}-${{ matrix.arch }}"
+
+      - name: Upload packaged target
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: desktop-release-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+
+  finalize:
+    name: Finalize checksums and release metadata
+    needs: [version, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.version.outputs.publish == 'true' && format('desktop-v{0}', needs.version.outputs.version) || github.ref }}
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: propr-desktop-*-${{ github.run_id }}
+          path: desktop-release-fragments
+
+      - name: Verify matrix completeness and generate metadata
+        env:
+          PROPR_DESKTOP_UPDATE_PRIVATE_KEY: ${{ secrets.PROPR_DESKTOP_UPDATE_PRIVATE_KEY }}
+          PROPR_DESKTOP_UPDATE_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_UPDATE_PUBLIC_KEY }}
+          PROPR_DESKTOP_DARWIN_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_X64_FEED_URL }}
+          PROPR_DESKTOP_DARWIN_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_ARM64_FEED_URL }}
+          PROPR_DESKTOP_WINDOWS_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_WINDOWS_X64_FEED_URL }}
+          PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL }}
+          PROPR_DESKTOP_UPDATE_MAC_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_MAC_SIGNING_IDENTITY }}
+          PROPR_DESKTOP_UPDATE_WINDOWS_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY }}
+          PROPR_DESKTOP_PUBLISH_RELEASE: ${{ needs.version.outputs.publish }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs finalize \
+            --version "$RELEASE_VERSION" \
+            --input desktop-release-fragments \
+            --output desktop-release-final
+          (cd desktop-release-final && sha256sum --check SHA256SUMS)
+
+      - name: Upload complete release set
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-release-${{ needs.version.outputs.version }}-${{ github.run_id }}
+          path: desktop-release-final
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish independently tagged desktop release
+    if: needs.version.outputs.publish == 'true'
+    needs: [version, finalize]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download complete release set
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-release-${{ needs.version.outputs.version }}-${{ github.run_id }}
+          path: desktop-release-final
+
+      - name: Create or update GitHub desktop release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: desktop-v${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" desktop-release-final/* --clobber --repo "${{ github.repository }}"
+          else
+            gh release create "$RELEASE_TAG" desktop-release-final/* \
+              --repo "${{ github.repository }}" \
+              --verify-tag \
+              --generate-notes \
+              --title "ProPR Desktop $RELEASE_TAG"
+          fi
