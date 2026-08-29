@@ -4,11 +4,42 @@ import * as configManager from '@propr/core';
 import { AgentRegistry } from '@propr/core';
 import type { AgentConfig } from '@propr/core';
 import type { Knex } from 'knex';
+import {
+  findSyntheticReferencesToDirectAgent,
+  validateSyntheticAgentReferences,
+  type SyntheticAgentConfig,
+} from '@propr/shared';
 import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
 import type { AgentConfigStore, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
 import { DEFAULT_PREPARATION_DEPS, loadProcessedAgents, prepareAgentsUpdate, resolveDefaultAgentAlias } from './configRoutesAgentsPreparation.js';
 function buildAgentPreparationError(error: string, code?: string): { code?: string; error: string } {
   return code ? { code, error } : { error };
+}
+function validateDirectAgentUpdateIntegrity(
+  previousAgents: AgentConfig[],
+  processedAgents: AgentConfig[],
+  syntheticAgents: SyntheticAgentConfig[],
+): ApplyAgentsUpdateResult | undefined {
+  const proposedAliases = new Set(processedAgents.map(agent => agent.alias));
+  const removalConflicts = previousAgents.flatMap(agent => {
+    if (proposedAliases.has(agent.alias)) return [];
+    const references = findSyntheticReferencesToDirectAgent(syntheticAgents, agent.alias);
+    return references.length > 0 ? [{ alias: agent.alias, references }] : [];
+  });
+  if (removalConflicts.length > 0) {
+    const details = removalConflicts
+      .map(conflict => `Direct agent '${conflict.alias}' is referenced by ${conflict.references.join(', ')}`)
+      .join('; ');
+    return {
+      status: 409,
+      body: { error: `${details}. Remove those synthetic pool members before deleting the direct agent.` },
+    };
+  }
+
+  const referenceValidation = validateSyntheticAgentReferences(syntheticAgents, processedAgents);
+  return referenceValidation.errors.length > 0
+    ? { status: 400, body: { error: referenceValidation.errors.join('; ') } }
+    : undefined;
 }
 async function rollbackAgentConfigState({
   configStore,
@@ -157,6 +188,21 @@ async function publishAgentUpdates({
     console.error('Failed to log agents configuration update activity:', error);
   }
 }
+async function loadReasoningLevelWarnings(
+  configStore: AgentConfigStore,
+  agents: AgentConfig[],
+): Promise<string[]> {
+  if (!configStore.loadModelReasoningLevel) return [];
+  try {
+    return configManager.findReasoningLevelCliVersionWarnings(
+      agents,
+      await configStore.loadModelReasoningLevel(),
+    );
+  } catch (warningError) {
+    console.warn('Could not evaluate reasoning-level CLI compatibility after agents save:', warningError);
+    return [];
+  }
+}
 export async function applyAgentsUpdate({
   agents,
   processedAgents: providedProcessedAgents,
@@ -183,6 +229,11 @@ export async function applyAgentsUpdate({
   }
 
   const previousAgents = await configStore.loadAgents();
+  const syntheticAgents = configStore.loadSyntheticAgents
+    ? await configStore.loadSyntheticAgents()
+    : [];
+  const integrityError = validateDirectAgentUpdateIntegrity(previousAgents, processedAgents, syntheticAgents);
+  if (integrityError) return integrityError;
   const settings = await configStore.loadSettings();
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
   const newDefault = resolveDefaultAgentAlias(processedAgents, currentDefault);
@@ -244,17 +295,7 @@ export async function applyAgentsUpdate({
     return publishResult;
   }
 
-  let warnings: string[] = [];
-  if (configStore.loadModelReasoningLevel) {
-    try {
-      warnings = configManager.findReasoningLevelCliVersionWarnings(
-        processedAgents,
-        await configStore.loadModelReasoningLevel()
-      );
-    } catch (warningError) {
-      console.warn('Could not evaluate reasoning-level CLI compatibility after agents save:', warningError);
-    }
-  }
+  const warnings = await loadReasoningLevelWarnings(configStore, processedAgents);
 
   return {
     status: 200,
