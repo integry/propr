@@ -151,9 +151,8 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
 export const resolveDesktopAdapters = (): DesktopAdapters | null => {
   const bridge: ProprDesktopBridge | undefined = window.__PROPR_DESKTOP__;
   if (bridge?.isDesktop) return bridge;
-  const fixture = fixtureFromLocation();
+  const fixture = import.meta.env.DEV ? fixtureFromLocation() : null;
   return fixture ? createBrowserAdapters(fixture) : null;
 };
 
 export { normalizeBaseUrl };
-

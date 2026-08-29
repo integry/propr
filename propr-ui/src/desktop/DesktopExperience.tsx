@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, ChevronRight, Cloud, Computer, LoaderCircle, Pencil, Plus, RefreshCw, Search, Server, Trash2, X } from 'lucide-react';
 import { setApiBaseUrl } from '../api/apiClient';
 import * as runtimeConfig from '../config/runtimeConfig';
@@ -197,22 +197,40 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   const [operationError, setOperationError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [networkOffline, setNetworkOffline] = useState(!navigator.onLine);
+  const connectionAttempt = useRef(0);
 
   const connect = useCallback(async (profile: DesktopProfile) => {
+    const attempt = ++connectionAttempt.current;
+    const isCurrentAttempt = () => connectionAttempt.current === attempt;
     setOperationError(null);
     setState({ phase: 'connecting', profile });
-    const result = await adapters.connection.probe(profile);
-    if (result.status !== 'ready') {
-      setState({ phase: 'blocked', profile, result });
-      return;
+    let operation: 'probe' | 'persist' = 'probe';
+    try {
+      const result = await adapters.connection.probe(profile);
+      if (!isCurrentAttempt()) return;
+      if (result.status !== 'ready') {
+        setState({ phase: 'blocked', profile, result });
+        return;
+      }
+
+      operation = 'persist';
+      const connectedProfile = { ...profile, lastConnectedAt: new Date().toISOString() };
+      await adapters.profiles.save(connectedProfile);
+      if (!isCurrentAttempt()) return;
+      await adapters.profiles.setActiveId(profile.id);
+      if (!isCurrentAttempt()) return;
+      setProfiles(current => mergeProfiles(current, [connectedProfile]));
+      runtimeConfig.setDesktopApiBaseUrl(connectedProfile.baseUrl);
+      setApiBaseUrl(connectedProfile.baseUrl);
+      setState({ phase: 'connected', profile: connectedProfile, result });
+    } catch (error) {
+      if (!isCurrentAttempt()) return;
+      const detail = error instanceof Error && error.message ? ` ${error.message}` : '';
+      const message = operation === 'persist'
+        ? `The instance is reachable, but ProPR Desktop could not save this connection.${detail} Try again.`
+        : `ProPR Desktop could not check this instance.${detail} Try again.`;
+      setState({ phase: 'blocked', profile, result: { status: 'offline', message } });
     }
-    const connectedProfile = { ...profile, lastConnectedAt: new Date().toISOString() };
-    await adapters.profiles.save(connectedProfile);
-    await adapters.profiles.setActiveId(profile.id);
-    setProfiles(current => mergeProfiles(current, [connectedProfile]));
-    runtimeConfig.setDesktopApiBaseUrl(connectedProfile.baseUrl);
-    setApiBaseUrl(connectedProfile.baseUrl);
-    setState({ phase: 'connected', profile: connectedProfile, result });
   }, [adapters]);
 
   useEffect(() => {
@@ -229,7 +247,10 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
         setState({ phase: 'choose' });
       }
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      connectionAttempt.current += 1;
+    };
   }, [adapters, connect]);
 
   useEffect(() => {
@@ -303,6 +324,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   };
 
   const choose = () => {
+    connectionAttempt.current += 1;
     void adapters.profiles.setActiveId(null);
     setManagerOpen(false);
     setEditing(null);

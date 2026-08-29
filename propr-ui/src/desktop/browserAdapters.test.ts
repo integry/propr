@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { normalizeBaseUrl, resolveDesktopAdapters } from './browserAdapters';
 
 describe('desktop browser fixtures', () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     window.history.replaceState(null, '', '/');
     delete window.__PROPR_DESKTOP__;
   });
@@ -18,10 +19,16 @@ describe('desktop browser fixtures', () => {
     await expect(adapters?.profiles.list()).resolves.toHaveLength(2);
   });
 
+  it('does not enable query-driven fixtures in production mode', () => {
+    vi.stubEnv('DEV', false);
+    window.history.replaceState(null, '', '/?desktop-fixture=connected');
+
+    expect(resolveDesktopAdapters()).toBeNull();
+  });
+
   it('normalizes safe instance origins and rejects non-http protocols', () => {
     expect(normalizeBaseUrl(' https://propr.example.com/// ')).toBe('https://propr.example.com');
     expect(() => normalizeBaseUrl('file:///tmp/propr')).toThrow(/http/);
     expect(() => normalizeBaseUrl('https://user:secret@example.com')).toThrow(/credentials/);
   });
 });
-

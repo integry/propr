@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesktopExperience } from './DesktopExperience';
 import { DesktopTitleBar } from './DesktopTitleBar';
@@ -80,6 +80,67 @@ describe('DesktopExperience', () => {
     expect(probe).toHaveBeenCalledTimes(2);
   });
 
+  it('shows a retryable failure when the connection adapter rejects', async () => {
+    const probe = vi.fn()
+      .mockRejectedValueOnce(new Error('The desktop host did not respond.'))
+      .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' });
+    const adapters = adaptersFor([localProfile], localProfile.id, probe);
+    render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
+
+    expect(await screen.findByText(/could not check this instance/i)).toBeInTheDocument();
+    expect(screen.getByText(/desktop host did not respond/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Try again/i }));
+
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument();
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports persistence failures distinctly and allows retrying', async () => {
+    const adapters = adaptersFor([localProfile], localProfile.id);
+    vi.mocked(adapters.profiles.save)
+      .mockRejectedValueOnce(new Error('Profile storage is unavailable.'))
+      .mockResolvedValueOnce(undefined);
+    render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
+
+    expect(await screen.findByText(/could not save this connection/i)).toBeInTheDocument();
+    expect(screen.getByText(/profile storage is unavailable/i)).toBeInTheDocument();
+    expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /Try again/i }));
+
+    expect(await screen.findByText('Dashboard content')).toBeInTheDocument();
+    expect(adapters.profiles.save).toHaveBeenCalledTimes(2);
+    expect(adapters.profiles.setActiveId).toHaveBeenCalledWith(localProfile.id);
+  });
+
+  it('ignores a stale connection result after the adapters change', async () => {
+    let resolveFirstProbe: ((result: DesktopConnectionResult) => void) | undefined;
+    const firstProbe = vi.fn(() => new Promise<DesktopConnectionResult>(resolve => {
+      resolveFirstProbe = resolve;
+    }));
+    const firstAdapters = adaptersFor([localProfile], localProfile.id, firstProbe);
+    const replacementProfile = { ...localProfile, id: 'replacement', name: 'Replacement instance' };
+    const replacementAdapters = adaptersFor(
+      [replacementProfile],
+      replacementProfile.id,
+      async () => ({ status: 'offline', message: 'The replacement instance is unavailable.' })
+    );
+    const { rerender } = render(
+      <DesktopExperience adapters={firstAdapters}><div>Stale dashboard</div></DesktopExperience>
+    );
+
+    await waitFor(() => expect(firstProbe).toHaveBeenCalledOnce());
+    rerender(<DesktopExperience adapters={replacementAdapters}><div>Replacement dashboard</div></DesktopExperience>);
+    expect(await screen.findByText('The replacement instance is unavailable.')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveFirstProbe?.({ status: 'ready', version: '0.8.15' });
+    });
+
+    expect(screen.getByText('The replacement instance is unavailable.')).toBeInTheDocument();
+    expect(screen.queryByText('Stale dashboard')).not.toBeInTheDocument();
+    expect(firstAdapters.profiles.save).not.toHaveBeenCalled();
+  });
+
   it('supports editing a recent profile and connecting to the updated URL', async () => {
     const adapters = adaptersFor([localProfile]);
     render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
@@ -113,4 +174,3 @@ describe('DesktopExperience', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });
-
