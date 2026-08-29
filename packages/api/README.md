@@ -59,12 +59,19 @@ To run the API in development mode:
 
 ## API Endpoints
 
-All API endpoints are protected by authentication:
+All operational API endpoints are protected by authentication. Compatibility,
+desktop discovery, and the bounded pairing bootstrap/poll routes are the
+documented pre-authentication exceptions:
 
 - `GET /api/auth/github` - Initiate GitHub OAuth flow
 - `GET /api/auth/github/callback` - OAuth callback
 - `GET /api/auth/logout` - Logout user
 - `GET /api/auth/user` - Get sanitized current user info, instance role, and permissions
+- `GET /api/desktop/discovery` - Public product/API compatibility and desktop-auth capabilities only
+- `POST /api/desktop/pairings` - Start a short-lived browser pairing request
+- `POST /api/desktop/pairings/:pairingId/poll` - Poll with the device secret in the JSON body
+- `GET /api/desktop/tokens` - List the current user's safe instance-token metadata
+- `DELETE /api/desktop/tokens/:tokenId` - Revoke one of the current user's instance tokens
 - `GET /api/catalog` - Get the sanitized enabled repository/agent catalog needed by member workflows
 - `GET /api/repositories/indexing-status` - Get indexing status projected to enabled catalog repository/branch entries
 - `GET /api/admin/members` - List explicit role assignments (administrator)

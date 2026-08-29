@@ -8,6 +8,7 @@ import { io as createSocketClient, type Socket as ClientSocket } from 'socket.io
 import { closeConnection } from '@propr/core';
 import { INDEXING_UPDATE, type IndexingUpdatePayload } from '@propr/shared';
 import type { GitHubUser } from '../authTypes.js';
+import { INSTANCE_TOKEN_PREFIX } from '../desktopAuthService.js';
 import {
   authenticateSocketRequest,
   SocketAuthenticationError,
@@ -115,6 +116,18 @@ describe('Socket.IO authentication', () => {
 
     assert.equal(result.user.id, '99');
     assert.equal(result.authorization.role, 'admin');
+  });
+
+  test('accepts an instance token without enabling optional GitHub bearer auth', async () => {
+    process.env.ENABLE_BEARER_AUTH = 'false';
+    const result = await authenticateSocketRequest(
+      request({ headers: { authorization: `Bearer ${INSTANCE_TOKEN_PREFIX}${'A'.repeat(43)}` } }),
+      dependencies({
+        validateInstanceToken: async () => ({ tokenId: 'token-1', user: user({ id: '77' }) }),
+      }),
+    );
+
+    assert.equal(result.user.id, '77');
   });
 
   test('rejects a session user removed from the whitelist', async () => {
