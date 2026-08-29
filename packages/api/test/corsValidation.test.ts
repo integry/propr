@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
+import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import cors from 'cors';
 import express from 'express';
+import { Server as SocketIOServer } from 'socket.io';
 import { corsRejectionHandler, createCorsOriginValidator } from '../corsValidation.js';
 
 // Helper that runs the validator synchronously and reports whether the origin
@@ -37,6 +40,15 @@ test('CORS allows requests with no origin', () => {
   const validate = createCorsOriginValidator('https://app.propr.dev', undefined);
 
   assert.equal(isAllowed(validate, undefined), true);
+});
+
+test('CORS allows only the exact packaged desktop renderer custom origin', () => {
+  const validate = createCorsOriginValidator('https://app.propr.dev', undefined);
+
+  assert.equal(isAllowed(validate, DESKTOP_RENDERER_ORIGIN), true);
+  assert.equal(isAllowed(validate, `${DESKTOP_RENDERER_ORIGIN}.evil.example`), false);
+  assert.equal(isAllowed(validate, 'propr-app://other-renderer'), false);
+  assert.equal(isAllowed(validate, 'null'), false);
 });
 
 test('CORS allows localhost for development', () => {
@@ -142,9 +154,10 @@ for (const runtimeMode of ['development', 'production'] as const) {
       assert.equal(noOrigin.status, 401);
 
       const compatibility = await fetch(`${baseUrl}/api/compatibility`, {
-        headers: { Origin: 'https://app.propr.dev' },
+        headers: { Origin: DESKTOP_RENDERER_ORIGIN },
       });
       assert.equal(compatibility.status, 200);
+      assert.equal(compatibility.headers.get('access-control-allow-origin'), DESKTOP_RENDERER_ORIGIN);
 
       const allowedPreflight = await fetch(`${baseUrl}/api/protected`, {
         method: 'OPTIONS',
@@ -158,3 +171,28 @@ for (const runtimeMode of ['development', 'production'] as const) {
     });
   });
 }
+
+test('Socket.IO applies the shared CORS validator to the packaged desktop renderer', async () => {
+  const server = createServer();
+  const io = new SocketIOServer(server, {
+    cors: {
+      origin: createCorsOriginValidator('https://app.propr.dev', undefined),
+      credentials: true,
+    },
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address() as AddressInfo;
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/socket.io/?EIO=4&transport=polling`, {
+      headers: { Origin: DESKTOP_RENDERER_ORIGIN },
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('access-control-allow-origin'), DESKTOP_RENDERER_ORIGIN);
+    assert.equal(response.headers.get('access-control-allow-credentials'), 'true');
+  } finally {
+    await new Promise<void>(resolve => io.close(() => resolve()));
+  }
+});

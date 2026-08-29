@@ -7,6 +7,7 @@
 // for local development.
 
 import type { ErrorRequestHandler } from 'express';
+import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 
 export type CorsOriginCallback = (err: Error | null, allow?: boolean) => void;
 export type CorsOriginValidator = (origin: string | undefined, callback: CorsOriginCallback) => void;
@@ -42,6 +43,13 @@ export function createCorsOriginValidator(frontendUrl: string, cookieDomain: str
   return function validateCorsOrigin(origin: string | undefined, callback: CorsOriginCallback): void {
     // Allow requests with no origin (e.g., mobile apps, curl, etc.)
     if (!origin) {
+      callback(null, true);
+      return;
+    }
+    // Electron registers this as a standard, secure scheme, which gives the
+    // packaged renderer a stable serialized origin. Match that origin exactly;
+    // never accept the generic `null` value used by arbitrary opaque origins.
+    if (origin === DESKTOP_RENDERER_ORIGIN) {
       callback(null, true);
       return;
     }

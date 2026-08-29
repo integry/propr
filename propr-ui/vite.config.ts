@@ -35,6 +35,7 @@ function pwaShellAssetManifest(): Plugin {
 export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(rootPkg.version),
+    __PROPR_DESKTOP__: 'false',
   },
   plugins: [react(), pwaShellAssetManifest()],
   test: {
