@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { ProprClient, ProprClientError } from '@propr/client';
+import { ProprClient, ProprClientError, type ProprDesktopPairingOptions } from '@propr/client';
 import type { DesktopProfileInput, DesktopConnectionResult, DesktopAccessInvalidation } from './shared/contract';
 import { normalizeApiBaseUrl } from './security';
 import type { ProfileStore, StoredCredential } from './profile-store';
@@ -17,6 +17,8 @@ export interface CredentialServiceDependencies {
   fetch: typeof globalThis.fetch;
   openExternal(url: string): Promise<void>;
   clientName: string;
+  /** Deterministic pairing timing for protocol tests. Production uses the client defaults. */
+  pairingTiming?: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
 }
 
 interface ActiveCredential extends StoredCredential {
@@ -34,8 +36,9 @@ const headerName = (headers: RequestHeaders, name: string): string | undefined =
   Object.keys(headers).find(key => key.toLowerCase() === name.toLowerCase());
 
 const removeHeader = (headers: RequestHeaders, name: string): void => {
-  const existing = headerName(headers, name);
-  if (existing) delete headers[existing];
+  for (const existing of Object.keys(headers)) {
+    if (existing.toLowerCase() === name.toLowerCase()) delete headers[existing];
+  }
 };
 
 const requestOrigin = (value: string): { origin: string; pathname: string } | null => {
@@ -74,6 +77,7 @@ export class DesktopCredentialService {
   readonly #fetch: typeof globalThis.fetch;
   readonly #openExternal: (url: string) => Promise<void>;
   readonly #clientName: string;
+  readonly #pairingTiming: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
   readonly #internalRequestKey = randomBytes(32).toString('base64url');
   readonly #profileGenerations = new Map<string, number>();
   readonly #pairingControllers = new Map<string, AbortController>();
@@ -86,6 +90,7 @@ export class DesktopCredentialService {
     this.#fetch = dependencies.fetch;
     this.#openExternal = dependencies.openExternal;
     this.#clientName = dependencies.clientName;
+    this.#pairingTiming = dependencies.pairingTiming ?? {};
   }
 
   async saveProfile(input: DesktopProfileInput) {
@@ -140,6 +145,7 @@ export class DesktopCredentialService {
 
     try {
       const completed = await client.pairDesktop(this.#clientName, {
+        ...this.#pairingTiming,
         signal: controller.signal,
         onApprovalRequired: async approvalUrl => {
           this.#assertPairingCurrent(profile.id, profile.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal);
@@ -281,21 +287,24 @@ export class DesktopCredentialService {
     const trustedMainRequest = internalHeader !== undefined
       && headers[internalHeader] === this.#internalRequestKey;
     if (internalHeader) delete headers[internalHeader];
+
+    // The packaged renderer has no cookie identity on any remote HTTP(S) or
+    // WS(S) origin. It also cannot supply its own bearer. Main-process bearer
+    // requests are distinguished by the per-process secret marker above.
+    removeHeader(headers, 'cookie');
+    if (!trustedMainRequest) removeHeader(headers, 'authorization');
+
     const target = requestOrigin(url);
     if (!trustedMainRequest && target
       && (target.pathname.startsWith('/api/desktop/pairings')
         || target.pathname.startsWith('/api/desktop/tokens'))) return { cancel: true };
 
-    // Renderer JavaScript never controls desktop bearer or cookie identity.
-    if (!trustedMainRequest) removeHeader(headers, 'authorization');
     const active = this.#active;
     if (!target || !active || this.#generation(active.profileId) !== active.profileGeneration
       || target.origin !== active.origin
       || (!target.pathname.startsWith('/api/') && !target.pathname.startsWith('/socket.io/'))) {
-      if (trustedMainRequest) removeHeader(headers, 'cookie');
       return { requestHeaders: headers };
     }
-    removeHeader(headers, 'cookie');
     if (!trustedMainRequest) headers.Authorization = `Bearer ${active.token}`;
     return { requestHeaders: headers };
   }
@@ -307,7 +316,7 @@ export class DesktopCredentialService {
   sanitizeResponseHeaders(url: string, originalHeaders: RequestHeaders): RequestHeaders {
     const headers = { ...originalHeaders };
     const target = requestOrigin(url);
-    if (target && this.#active?.origin === target.origin) removeHeader(headers, 'set-cookie');
+    if (target) removeHeader(headers, 'set-cookie');
     return headers;
   }
 

@@ -48,10 +48,12 @@ Electron `safeStorage` before they are written separately. If OS encryption is u
 fallback. Profiles remain usable because they contain only a display label and validated API endpoint.
 
 Opaque instance tokens are bound to profile ID plus normalized origin in encrypted main-process storage. Electron's
-session request boundary strips renderer-supplied Authorization and cookie identity, then injects the active bearer only
-for matching REST and Socket.IO requests. Tokens never enter renderer JavaScript, URLs, logs, localStorage,
-sessionStorage, or profile metadata. Switching named profiles clears renderer and instance-origin state. Removing or
-changing a paired profile first attempts current-token revocation at the old bound origin, then removes the credential.
+session request boundary strips renderer-supplied Authorization and Cookie headers from every HTTP(S) and WS(S)
+request, including inactive or mismatched profile origins, then injects the active bearer only for matching REST and
+Socket.IO requests. Set-Cookie is stripped from remote responses, so the packaged renderer has no parallel cookie
+identity. Tokens never enter renderer JavaScript, URLs, logs, localStorage, sessionStorage, or profile metadata.
+Switching named profiles clears renderer and instance-origin state. Removing or changing a paired profile first
+attempts current-token revocation at the old bound origin, then removes the credential.
 
 `propr://connect` and `propr://open` are the only accepted deep-link actions. A single-instance lock routes later
 activations to the existing window. Local lifecycle methods intentionally return `not-implemented`; this scaffold does

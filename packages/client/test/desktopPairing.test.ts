@@ -20,6 +20,8 @@ const discovery = {
     socketIoBearerAuthentication: true,
   },
 };
+const protocolNow = Date.parse('2026-01-01T00:00:00.000Z');
+const protocolDeadline = new Date(protocolNow + 10 * 60 * 1000).toISOString();
 
 describe('desktop instance protocol', () => {
   it('discovers capabilities, opens approval, and polls to a single opaque token', async () => {
@@ -36,7 +38,7 @@ describe('desktop instance protocol', () => {
           pairingId: `dpr_${'A'.repeat(22)}`,
           deviceSecret: 'B'.repeat(43),
           approvalUrl: `https://propr.example.test/api/desktop/pairings/dpr_${'A'.repeat(22)}/browser`,
-          expiresAt: '2030-01-01T00:00:00.000Z',
+          expiresAt: protocolDeadline,
           interval: 2,
         }, 201);
         polls += 1;
@@ -53,7 +55,7 @@ describe('desktop instance protocol', () => {
     const opened: string[] = [];
     const sleeps: number[] = [];
     const complete = await client.pairDesktop('Test desktop', {
-      now: () => Date.parse('2029-01-01T00:00:00.000Z'),
+      now: () => protocolNow,
       sleep: async milliseconds => { sleeps.push(milliseconds); },
       onApprovalRequired: url => { opened.push(url); },
     });
@@ -89,7 +91,7 @@ describe('desktop instance protocol', () => {
     await assert.rejects(
       import('../src/index.js').then(({ completeDesktopPairing }) => completeDesktopPairing(client, {
         ...start,
-        expiresAt: '2030-01-01T00:00:00.000Z',
+        expiresAt: protocolDeadline,
       }, { signal: controller.signal })),
       (error: unknown) => error instanceof ProprClientError && error.kind === 'aborted',
     );
@@ -101,11 +103,11 @@ describe('desktop instance protocol', () => {
         pairingId: `dpr_${'A'.repeat(22)}`,
         deviceSecret: 'B'.repeat(43),
         approvalUrl: 'http://remote.example.test/approve',
-        expiresAt: '2030-01-01T00:00:00.000Z',
+        expiresAt: protocolDeadline,
         interval: 2,
       }, 201),
     });
-    await assert.rejects(client.startDesktopPairing('Desktop'), (error: unknown) =>
+    await assert.rejects(client.startDesktopPairing('Desktop', { now: () => protocolNow }), (error: unknown) =>
       error instanceof ProprClientError && error.kind === 'invalid_response');
   });
 
@@ -122,12 +124,12 @@ describe('desktop instance protocol', () => {
           pairingId: `dpr_${'A'.repeat(22)}`,
           deviceSecret: 'B'.repeat(43),
           approvalUrl: 'https://propr.example.test/approve',
-          expiresAt: '2030-01-01T00:00:00.000Z',
+          expiresAt: protocolDeadline,
           interval: 2,
           ...override,
         }, 201),
       });
-      await assert.rejects(client.startDesktopPairing('Desktop'), (error: unknown) =>
+      await assert.rejects(client.startDesktopPairing('Desktop', { now: () => protocolNow }), (error: unknown) =>
         error instanceof ProprClientError && error.kind === 'invalid_response');
     }
   });
@@ -152,7 +154,8 @@ describe('desktop instance protocol', () => {
   });
 
   it('aborts a hung poll at the advertised deadline and reports expiry', async () => {
-    const expiresAt = new Date(Date.now() + 40).toISOString();
+    const expiresAt = new Date(protocolNow + 40).toISOString();
+    const sleeps: number[] = [];
     const client = new ProprClient({
       baseUrl: 'https://propr.example.test',
       fetch: async (input, init) => {
@@ -161,7 +164,7 @@ describe('desktop instance protocol', () => {
           deviceSecret: 'B'.repeat(43),
           approvalUrl: 'https://propr.example.test/approve',
           expiresAt,
-          interval: 0.0001,
+          interval: 1,
         }, 201);
         return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener('abort', () => reject(new DOMException('expired', 'AbortError')), { once: true });
@@ -169,34 +172,119 @@ describe('desktop instance protocol', () => {
       },
     });
 
-    await assert.rejects(client.pairDesktop('Desktop'), (error: unknown) =>
+    await assert.rejects(client.pairDesktop('Desktop', {
+      now: () => protocolNow,
+      sleep: async milliseconds => { sleeps.push(milliseconds); },
+    }), (error: unknown) =>
       error instanceof ProprClientError && error.code === 'PAIRING_EXPIRED');
+    assert.deepEqual(sleeps, [40]);
   });
 
-  it('clamps fractional and huge polling intervals to safe integer deadline-bounded sleeps', async () => {
+  it('aborts an in-flight poll when the caller cancels', async () => {
+    const controller = new AbortController();
+    let pollStarted!: () => void;
+    const polling = new Promise<void>(resolve => { pollStarted = resolve; });
+    const client = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      fetch: async (input, init) => {
+        if (input.toString().endsWith('/api/desktop/pairings')) return json({
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'B'.repeat(43),
+          approvalUrl: 'https://propr.example.test/approve',
+          expiresAt: protocolDeadline,
+          interval: 1,
+        }, 201);
+        pollStarted();
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('cancelled', 'AbortError')),
+            { once: true },
+          );
+        });
+      },
+    });
+
+    const pairing = client.pairDesktop('Desktop', {
+      signal: controller.signal,
+      now: () => protocolNow,
+      sleep: async () => undefined,
+    });
+    await polling;
+    controller.abort();
+    await assert.rejects(pairing, (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'aborted');
+  });
+
+  it('rejects invalid start intervals and deadlines instead of scheduling them', async () => {
+    const invalidOverrides: Array<Record<string, unknown>> = [
+      { interval: 0 },
+      { interval: 0.5 },
+      { interval: 61 },
+      { interval: Number.MAX_VALUE },
+      { interval: Number.NaN },
+      { interval: Number.POSITIVE_INFINITY },
+      { expiresAt: 'not a deadline' },
+      { expiresAt: new Date(protocolNow).toISOString() },
+      { expiresAt: new Date(protocolNow + 30 * 60 * 1000 + 1).toISOString() },
+    ];
+    for (const override of invalidOverrides) {
+      const client = new ProprClient({
+        baseUrl: 'https://propr.example.test',
+        fetch: async () => json({
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'B'.repeat(43),
+          approvalUrl: 'https://propr.example.test/approve',
+          expiresAt: protocolDeadline,
+          interval: 2,
+          ...override,
+        }, 201),
+      });
+      await assert.rejects(
+        client.startDesktopPairing('Desktop', { now: () => protocolNow }),
+        (error: unknown) => error instanceof ProprClientError && error.kind === 'invalid_response',
+      );
+    }
+  });
+
+  it('rejects invalid intervals returned by every pending response', async () => {
     const { completeDesktopPairing } = await import('../src/index.js');
-    const client = new ProprClient({ fetch: async () => { throw new Error('must not poll after deadline'); } });
-    const base = {
+    const start = {
       pairingId: `dpr_${'A'.repeat(22)}`,
       deviceSecret: 'B'.repeat(43),
       approvalUrl: 'https://propr.example.test/approve',
-      expiresAt: '2026-01-01T00:00:05.000Z',
-      interval: 0.0001,
+      expiresAt: protocolDeadline,
+      interval: 1,
     };
-    let now = Date.parse('2026-01-01T00:00:00.000Z');
-    const fractionalSleeps: number[] = [];
-    await assert.rejects(completeDesktopPairing(client, base, {
-      now: () => now,
-      sleep: async milliseconds => { fractionalSleeps.push(milliseconds); now = Date.parse(base.expiresAt); },
-    }), (error: unknown) => error instanceof ProprClientError && error.code === 'PAIRING_EXPIRED');
-    assert.deepEqual(fractionalSleeps, [1]);
+    for (const interval of [0, 0.5, 61, Number.MAX_VALUE, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const client = new ProprClient({
+        fetch: async () => json({ status: 'pending', interval }, 202),
+      });
+      await assert.rejects(completeDesktopPairing(client, start, {
+        now: () => protocolNow,
+        sleep: async () => undefined,
+      }), (error: unknown) => error instanceof ProprClientError && error.kind === 'invalid_response');
+    }
+  });
 
-    now = Date.parse('2026-01-01T00:00:00.000Z');
-    const hugeSleeps: number[] = [];
-    await assert.rejects(completeDesktopPairing(client, { ...base, interval: Number.MAX_VALUE }, {
+  it('clamps a valid polling interval to the remaining advertised deadline', async () => {
+    const { completeDesktopPairing } = await import('../src/index.js');
+    let now = protocolNow;
+    const sleeps: number[] = [];
+    const client = new ProprClient({ fetch: async () => { throw new Error('must not poll after deadline'); } });
+    await assert.rejects(completeDesktopPairing(client, {
+      pairingId: `dpr_${'A'.repeat(22)}`,
+      deviceSecret: 'B'.repeat(43),
+      approvalUrl: 'https://propr.example.test/approve',
+      expiresAt: new Date(protocolNow + 500).toISOString(),
+      interval: 60,
+    }, {
       now: () => now,
-      sleep: async milliseconds => { hugeSleeps.push(milliseconds); now = Date.parse(base.expiresAt); },
+      sleep: async milliseconds => {
+        sleeps.push(milliseconds);
+        now += milliseconds;
+      },
     }), (error: unknown) => error instanceof ProprClientError && error.code === 'PAIRING_EXPIRED');
-    assert.deepEqual(hugeSleeps, [5000]);
+    assert.deepEqual(sleeps, [500]);
   });
 });

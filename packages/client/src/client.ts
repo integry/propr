@@ -236,14 +236,14 @@ export class ProprClient {
 
   async startDesktopPairing(
     clientName: string,
-    options: Pick<ProprDesktopPairingOptions, 'signal'> = {},
+    options: Pick<ProprDesktopPairingOptions, 'signal' | 'now'> = {},
   ): Promise<ProprDesktopPairingStart> {
     return parseDesktopPairingStart(await this.request<unknown>('/api/desktop/pairings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientName }),
       signal: options.signal,
-    }, { timeoutMs: 8000 }), this.baseUrl || undefined);
+    }, { timeoutMs: 8000 }), this.baseUrl || undefined, options.now);
   }
 
   async pairDesktop(

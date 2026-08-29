@@ -63,6 +63,9 @@ describe('main-process desktop credential service', () => {
         const url = input.toString();
         const requestHeaders: Record<string, string> = {};
         new Headers(init?.headers).forEach((value, key) => { requestHeaders[key] = value; });
+        // Simulate a session cookie Electron might otherwise append after the
+        // main-process fetch has applied its unforgeable request marker.
+        requestHeaders.Cookie = 'main-process=session';
         const decision = service.prepareRequest(url, requestHeaders);
         assert.equal(decision.cancel, undefined);
         wireRequests.push({ url, headers: decision.requestHeaders ?? {} });
@@ -79,8 +82,19 @@ describe('main-process desktop credential service', () => {
       Authorization: `Bearer ${token('A')}`,
     });
     assert.deepEqual(service.authorizeRequest('https://attacker.example.test/api/tasks', {
-      Authorization: 'Bearer renderer-controlled',
+      Cookie: 'inactive=session', Authorization: 'Bearer renderer-controlled',
     }), {});
+    assert.deepEqual(service.authorizeRequest('https://a.example.test/assets/app.js', {
+      Cookie: 'active=session', Authorization: 'Bearer renderer-controlled',
+    }), {});
+    assert.deepEqual(service.authorizeRequest('wss://a.example.test/socket.io/?transport=websocket', {
+      Cookie: 'socket=session', Authorization: 'Bearer renderer-controlled',
+    }), { Authorization: `Bearer ${token('A')}` });
+    assert.deepEqual(service.authorizeRequest('https://a.example.test/api/tasks', {
+      Cookie: 'legacy=session',
+      Authorization: 'Bearer renderer-controlled',
+      'X-ProPR-Desktop-Main-Request': 'renderer-forgery',
+    }), { Authorization: `Bearer ${token('A')}` });
     assert.deepEqual(service.prepareRequest('https://a.example.test/api/desktop/pairings', {}), {
       cancel: true,
     });
@@ -91,6 +105,42 @@ describe('main-process desktop credential service', () => {
       url: 'https://a.example.test/api/auth/user',
       headers: { authorization: `Bearer ${token('A')}` },
     });
+    assert.deepEqual(service.sanitizeResponseHeaders('https://a.example.test/api/tasks', {
+      'Set-Cookie': ['active=session'], 'X-Test': ['preserved'],
+    }), { 'X-Test': ['preserved'] });
+    assert.deepEqual(service.sanitizeResponseHeaders('https://inactive.example.test/api/tasks', {
+      'set-cookie': ['inactive=session'],
+    }), {});
+    assert.deepEqual(service.sanitizeResponseHeaders('wss://inactive.example.test/socket.io/', {
+      'SET-COOKIE': ['socket=session'],
+    }), {});
+  });
+
+  it('uses only the active bearer when profiles share an origin and never a cookie identity', async () => {
+    const store = await createStore();
+    const profileA = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://same.example.test' });
+    const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://same.example.test' });
+    await store.writeCredential(credential(profileA.id, profileA.apiBaseUrl, 'A'));
+    await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async input => input.toString().endsWith('/api/desktop/discovery')
+        ? json(discovery)
+        : json({ username: 'octocat' }),
+    });
+
+    assert.equal((await service.probe({
+      id: profileA.id, label: profileA.label, apiBaseUrl: profileA.apiBaseUrl,
+    })).status, 'ready');
+    assert.equal((await service.probe({
+      id: profileB.id, label: profileB.label, apiBaseUrl: profileB.apiBaseUrl,
+    })).status, 'ready');
+
+    assert.deepEqual(service.authorizeRequest('https://same.example.test/api/tasks', {
+      Cookie: 'profile-a=session', Authorization: `Bearer ${token('A')}`,
+    }), { Authorization: `Bearer ${token('B')}` });
   });
 
   it('never sends an A-origin bearer after the profile URL is edited to an attacker origin', async () => {
@@ -180,9 +230,14 @@ describe('main-process desktop credential service', () => {
       let raced = false;
       let raceOperation: Promise<void> = Promise.resolve();
       const revocations: string[] = [];
+      const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
       service = new DesktopCredentialService({
         profiles: store,
         clientName: 'Test desktop',
+        pairingTiming: {
+          now: () => pairingNow,
+          sleep: async () => undefined,
+        },
         openExternal: async () => undefined,
         fetch: async (input, init) => {
           const url = input.toString();
@@ -190,8 +245,8 @@ describe('main-process desktop credential service', () => {
             pairingId: `dpr_${'A'.repeat(22)}`,
             deviceSecret: 'B'.repeat(43),
             approvalUrl: 'https://a.example.test/approve',
-            expiresAt: new Date(Date.now() + 10_000).toISOString(),
-            interval: 0.0001,
+            expiresAt: new Date(pairingNow + 10_000).toISOString(),
+            interval: 1,
           }, 201);
           if (url.endsWith('/poll')) {
             if (!raced) {

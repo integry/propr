@@ -37,7 +37,9 @@ export interface ProprDesktopPairingOptions {
   now?: () => number;
 }
 
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const MIN_POLL_INTERVAL_SECONDS = 1;
+const MAX_POLL_INTERVAL_SECONDS = 60;
+const MAX_PAIRING_LIFETIME_MS = 30 * 60 * 1000;
 const PAIRING_REQUEST_TIMEOUT_MS = 8_000;
 
 const record = (value: unknown): Record<string, unknown> => {
@@ -50,6 +52,20 @@ const record = (value: unknown): Record<string, unknown> => {
 };
 
 const string = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+const validPollInterval = (value: unknown): value is number => typeof value === 'number'
+  && Number.isInteger(value)
+  && value >= MIN_POLL_INTERVAL_SECONDS
+  && value <= MAX_POLL_INTERVAL_SECONDS;
+
+const validPairingDeadline = (value: unknown, now: number): value is string => {
+  if (!string(value)) return false;
+  const deadline = Date.parse(value);
+  return Number.isFinite(deadline)
+    && Number.isFinite(now)
+    && deadline > now
+    && deadline - now <= MAX_PAIRING_LIFETIME_MS;
+};
+
 const validCapabilities = (value: unknown): value is ProprDesktopAuthenticationCapabilities => {
   if (!value || typeof value !== 'object') return false;
   const capabilities = value as Record<string, unknown>;
@@ -83,13 +99,14 @@ export const parseDesktopDiscovery = (
 export const parseDesktopPairingStart = (
   value: unknown,
   expectedOrigin?: string,
+  now: () => number = Date.now,
 ): ProprDesktopPairingStart => {
   const body = record(value);
   if (!string(body.pairingId) || !/^dpr_[A-Za-z0-9_-]{22}$/.test(body.pairingId)
     || !string(body.deviceSecret) || !/^[A-Za-z0-9_-]{43}$/.test(body.deviceSecret)
     || !string(body.approvalUrl)
-    || !string(body.expiresAt) || !Number.isFinite(body.interval) || Number(body.interval) <= 0
-    || !Number.isFinite(Date.parse(body.expiresAt))) {
+    || !validPollInterval(body.interval)
+    || !validPairingDeadline(body.expiresAt, now())) {
     throw new ProprClientError('The ProPR instance returned an invalid pairing request.', {
       kind: 'invalid_response',
     });
@@ -112,7 +129,7 @@ export const parseDesktopPairingStart = (
     deviceSecret: body.deviceSecret,
     approvalUrl: body.approvalUrl,
     expiresAt: body.expiresAt,
-    interval: Number(body.interval),
+    interval: body.interval,
   };
 };
 
@@ -124,8 +141,7 @@ const expired = (cause?: unknown): ProprClientError =>
     kind: 'authentication', code: 'PAIRING_EXPIRED', cause,
   });
 
-const safeDelay = (milliseconds: number): number =>
-  Math.max(1, Math.min(MAX_TIMER_DELAY_MS, Math.ceil(milliseconds)));
+const safeDelay = (milliseconds: number): number => Math.max(1, Math.ceil(milliseconds));
 
 const defaultSleep = (milliseconds: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
   const aborted = () => {
@@ -147,12 +163,18 @@ export const completeDesktopPairing = async (
 ): Promise<ProprDesktopPairingComplete> => {
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
+  if (options.signal?.aborted) throw cancelled(options.signal.reason);
   const deadline = Date.parse(start.expiresAt);
-  if (!Number.isFinite(deadline)) {
+  const startedAt = now();
+  if (!validPollInterval(start.interval)
+    || !Number.isFinite(deadline)
+    || !Number.isFinite(startedAt)
+    || deadline - startedAt > MAX_PAIRING_LIFETIME_MS) {
     throw new ProprClientError('The ProPR instance returned an invalid pairing deadline.', {
       kind: 'invalid_response',
     });
   }
+  if (deadline <= startedAt) throw expired();
   let intervalSeconds = start.interval;
   await options.onApprovalRequired?.(start.approvalUrl, start.expiresAt);
 
@@ -200,8 +222,8 @@ export const completeDesktopPairing = async (
       deadlineController.signal.removeEventListener('abort', forwardDeadlineAbort);
     }
     const body = record(value);
-    if (body.status === 'pending' && Number.isFinite(body.interval) && Number(body.interval) > 0) {
-      intervalSeconds = Number(body.interval);
+    if (body.status === 'pending' && validPollInterval(body.interval)) {
+      intervalSeconds = body.interval;
       continue;
     }
     if (body.status === 'complete' && string(body.token)
