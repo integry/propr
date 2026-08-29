@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Check, ChevronRight, CircleAlert, Folder, KeyRound, LoaderCircle, RotateCcw, X } from 'lucide-react';
+import { ArrowLeft, Check, ChevronRight, CircleAlert, KeyRound, LoaderCircle, RotateCcw, X } from 'lucide-react';
 import type { DesktopFilesystemSelection, DesktopProfileView, DesktopSecretSelection, DesktopSetupRequest, DesktopSetupSnapshot } from '../../../apps/desktop/src/shared/contract';
 import type { DesktopLocalSetupAdapter } from './types';
 
 type FormStage = 'prerequisites' | 'directory' | 'github' | 'intake' | 'agents' | 'summary';
 type GithubMode = DesktopSetupRequest['github']['mode'];
 type IntakeMode = DesktopSetupRequest['intake']['mode'];
-type RootChoice = { mode: 'default' | 'resume'; label: string } | ({ mode: 'selected' } & DesktopFilesystemSelection);
+type RootChoice = { mode: 'default' | 'resume'; label: string };
 const agents = ['codex', 'claude', 'antigravity', 'opencode', 'vibe'];
 const stages: FormStage[] = ['prerequisites', 'directory', 'github', 'intake', 'agents', 'summary'];
 
@@ -26,7 +26,7 @@ interface SetupDraft {
 
 const buildSetupRequest = (sessionId: string, draft: SetupDraft): DesktopSetupRequest => ({
   sessionId,
-  root: draft.root.mode === 'selected' ? { mode: 'selected', capability: draft.root.capability } : { mode: draft.root.mode },
+  root: { mode: draft.root.mode },
   reinitialize: draft.reinitialize,
   agents: draft.selectedAgents,
   github: draft.githubMode === 'app'
@@ -79,7 +79,6 @@ interface FormProps extends Omit<SetupDraft, 'whitelist'> {
   setSelectedAgents(value: React.SetStateAction<string[]>): void;
   setWhitelist(value: string): void;
   whitelist: string;
-  onChooseDirectory(): void;
   onChoosePrivateKey(): void;
   onAcquireWebhookSecret(): void;
   onBack(): void;
@@ -91,7 +90,7 @@ const GithubStage: React.FC<FormProps> = props => <><h1>Connect GitHub</h1><p>Cr
 const FormContent: React.FC<FormProps> = props => {
   switch (props.stage) {
     case 'prerequisites': return <><h1>Check the essentials</h1><p>ProPR requires a running Docker Engine on Linux. The installer verifies it before changing the stack.</p></>;
-    case 'directory': return <><h1>Choose where ProPR keeps data</h1><p>The default is owned by the desktop process. To use another existing directory, choose it in the native picker.</p><button type="button" className="desktop-secondary-button" onClick={props.onChooseDirectory}><Folder /> Choose directory</button><div className="desktop-setup-note">{props.root.label}</div></>;
+    case 'directory': return <><h1>Private local storage</h1><p>ProPR keeps its environment, data, logs, repositories, and Docker mounts in one fixed owner-only directory managed by the desktop app.</p><div className="desktop-setup-note">{props.root.label}</div></>;
     case 'github': return <GithubStage {...props} />;
     case 'intake': {
       const allowed: IntakeMode[] = props.githubMode === 'relay' ? ['keep', 'routing_websocket', 'polling'] : props.githubMode === 'app' ? ['keep', 'polling', 'direct_webhook'] : props.githubMode === 'demo' ? ['keep'] : ['keep', 'routing_websocket', 'polling', 'direct_webhook'];
@@ -166,11 +165,6 @@ export const LocalSetupWizard: React.FC<{ adapter: DesktopLocalSetupAdapter; onB
     finally { setBusy(false); }
   };
 
-  const chooseDirectory = async () => {
-    setError(null); setBusy(true);
-    try { const selection = await adapter.selectDirectory(); if (selection) setRoot({ mode: 'selected', ...selection }); }
-    catch { setError('The directory could not be approved.'); } finally { setBusy(false); }
-  };
   const choosePrivateKey = async () => {
     setError(null); setBusy(true);
     try { const selection = await adapter.selectPrivateKey(); if (selection) setPrivateKey(selection); }
@@ -205,5 +199,5 @@ export const LocalSetupWizard: React.FC<{ adapter: DesktopLocalSetupAdapter; onB
     setWhitelistText(value);
     setWhitelistChoice(value.split(',').map(item => item.trim()).filter(Boolean));
   };
-  return <SetupForm {...draft} whitelist={whitelistText} stage={stage} busy={busy} error={error} setStage={setStage} setGithubMode={chooseGithubMode} setAppId={setAppId} setInstallationId={setInstallationId} setIntakeMode={setIntakeMode} setSelectedAgents={setSelectedAgents} setWhitelist={setWhitelist} onChooseDirectory={() => void chooseDirectory()} onChoosePrivateKey={() => void choosePrivateKey()} onAcquireWebhookSecret={() => void acquireWebhookSecret()} onBack={onBack} onContinue={continueForm} />;
+  return <SetupForm {...draft} whitelist={whitelistText} stage={stage} busy={busy} error={error} setStage={setStage} setGithubMode={chooseGithubMode} setAppId={setAppId} setInstallationId={setInstallationId} setIntakeMode={setIntakeMode} setSelectedAgents={setSelectedAgents} setWhitelist={setWhitelist} onChoosePrivateKey={() => void choosePrivateKey()} onAcquireWebhookSecret={() => void acquireWebhookSecret()} onBack={onBack} onContinue={continueForm} />;
 };

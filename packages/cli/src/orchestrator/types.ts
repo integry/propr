@@ -128,6 +128,7 @@ export interface DockerCommandResult {
 
 export interface ResolveHostConfigOptions {
   rootDir?: string;
+  readRootDir?: string;
   env?: NodeJS.ProcessEnv;
   manifestPath?: string;
   cliOverrides?: Record<string, unknown>;

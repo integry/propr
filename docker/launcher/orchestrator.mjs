@@ -247,14 +247,15 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const network = overrides.network ?? env.PROPR_NETWORK ?? `${stack}-net`;
     const envFileLocal = overrides.envFileLocal ?? env.PROPR_LAUNCHER_ENV_FILE ?? '/app/.env';
     const envFileHost = overrides.envFileHost ?? env.PROPR_ENV_FILE;
+    const envFileRead = overrides.envFileRead ?? envFileLocal;
     // NODE_ENV is special: Docker receives it from the stack's --env-file, not
     // from the CLI/launcher process environment. Inspect that exact source so a
     // developer's shell NODE_ENV cannot accidentally describe (or alter) the
     // packaged container runtime.
-    const nodeEnv = readEnvFile(envFileLocal).NODE_ENV || undefined;
+    const nodeEnv = readEnvFile(envFileRead).NODE_ENV || undefined;
 
     // value precedence: explicit override → process env → .env file
-    const get = (name) => env[name] !== undefined ? env[name] : envFileValueFrom(envFileLocal, name) || undefined;
+    const get = (name) => env[name] !== undefined ? env[name] : envFileValueFrom(envFileRead, name) || undefined;
 
     const hostData = overrides.hostData ?? env.PROPR_DATA_DIR;
     const hostLogs = overrides.hostLogs ?? env.PROPR_LOGS_DIR;
@@ -386,10 +387,11 @@ export function resolveConfig(env = process.env, overrides = {}) {
  * `cliOverrides` lets the CLI pass in persisted config (e.g. docsEnabled from
  * ConfigManager) that should take precedence over env/defaults.
  */
-export function resolveHostConfig({ rootDir = process.cwd(), env = process.env, manifestPath, cliOverrides = {} } = {}) {
+export function resolveHostConfig({ rootDir = process.cwd(), readRootDir = rootDir, env = process.env, manifestPath, cliOverrides = {} } = {}) {
     return resolveConfig(env, {
         envFileLocal: join(rootDir, '.env'),
         envFileHost: join(rootDir, '.env'),
+        envFileRead: join(readRootDir, '.env'),
         hostData: join(rootDir, 'data'),
         hostLogs: join(rootDir, 'logs'),
         hostRepos: join(rootDir, 'repos'),
@@ -1578,7 +1580,10 @@ async function cleanupSetupRunContainers(cfg, setupRunId, journal, onLog) {
             try {
                 if (!(await inspectSetupRunOwnership(cfg, entry.name, entry.service, setupRunId, cleanup.signal))) continue;
                 const stopped = await dockerAsync(['stop', '-t', '2', entry.name], { signal: cleanup.signal });
-                if (stopped.status !== 0) continue;
+                // A nonzero stop can mean the owned container exited between
+                // inspect and stop while its stopped record still exists. The
+                // second exact-label inspection, not the stop status, decides
+                // whether it remains safe to force-remove that same record.
                 if (!(await inspectSetupRunOwnership(cfg, entry.name, entry.service, setupRunId, cleanup.signal))) continue;
                 const removed = await dockerAsync(['rm', '-f', entry.name], { signal: cleanup.signal });
                 if (removed.status === 0) onLog?.(`  [ok] removed run-owned ${entry.name}`);

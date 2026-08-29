@@ -56,7 +56,7 @@ const adaptersFor = (
       capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const }, sessionId: '00000000-0000-4000-8000-000000000000',
       logs: [],
     })),
-    selectDirectory: vi.fn(async () => null), selectPrivateKey: vi.fn(async () => null), acquireWebhookSecret: vi.fn(async () => null), onProgress: vi.fn(() => () => undefined),
+    selectPrivateKey: vi.fn(async () => null), acquireWebhookSecret: vi.fn(async () => null), onProgress: vi.fn(() => () => undefined),
   },
   connection: { probe: vi.fn(probe) },
 });

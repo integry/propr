@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import {
   readPrivateFile,
   writePrivateFileAtomic,
@@ -23,12 +23,10 @@ import type {
   DesktopSecretSelection,
 } from './shared/contract';
 
-interface ResumePlan extends DesktopSetupResumeView {
-  root: { mode: 'default' | 'selected'; path: string };
-}
+type ResumePlan = DesktopSetupResumeView;
 
 interface PersistedSetupState {
-  version: 2;
+  version: 3;
   phase: Exclude<DesktopSetupSnapshot['phase'], 'unsupported'>;
   rootDir: string;
   lastStepId?: string;
@@ -38,7 +36,6 @@ interface PersistedSetupState {
 interface ResolvedRequest {
   publicRequest: DesktopSetupRequest;
   rootDir: string;
-  rootMode: 'default' | 'selected';
   privateKeyPath?: string;
   webhookSecret?: string;
   rootAuthority: RootDirectoryAuthority;
@@ -48,9 +45,9 @@ export interface DesktopSetupControllerOptions {
   actions: SetupActions;
   platform?: NodeJS.Platform;
   statePath: string;
+  appDataDir?: string;
   defaultRootDir: string;
   keyStorageDir?: string;
-  selectDirectory(): Promise<string | null>;
   selectPrivateKey(): Promise<string | null>;
   promptWebhookSecret?(): Promise<string | null>;
   resolveApiBaseUrl(rootDir: string, signal?: AbortSignal): Promise<string>;
@@ -70,9 +67,7 @@ const assertPath = (value: unknown): value is string => typeof value === 'string
 const parseResumePlan = (value: unknown): ResumePlan => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid resume plan');
   const plan = value as Record<string, unknown>;
-  if (Object.keys(plan).some(key => !['root', 'reinitialize', 'agents', 'github', 'intake', 'whitelist', 'repository', 'reconfigurationStage'].includes(key))) throw new Error('Invalid resume plan');
-  const root = plan.root as Record<string, unknown> | undefined;
-  if (!root || Object.keys(root).some(key => !['mode', 'path'].includes(key)) || Object.keys(root).length !== 2 || !['default', 'selected'].includes(String(root.mode)) || !assertPath(root.path)) throw new Error('Invalid resume root');
+  if (Object.keys(plan).some(key => !['reinitialize', 'agents', 'github', 'intake', 'whitelist', 'repository', 'reconfigurationStage'].includes(key))) throw new Error('Invalid resume plan');
   const github = plan.github as Record<string, unknown> | undefined;
   const intake = plan.intake as Record<string, unknown> | undefined;
   if (!github || !intake) throw new Error('Invalid resume plan');
@@ -94,10 +89,9 @@ const parseResumePlan = (value: unknown): ResumePlan => {
   });
   if (github?.mode === 'app' && github.reconfigurationRequired !== true) throw new Error('Invalid resume plan');
   if (intake?.mode === 'direct_webhook' && intake.reconfigurationRequired !== true) throw new Error('Invalid resume plan');
-  const expectedStage = root.mode === 'selected' ? 'directory' : github?.mode === 'app' ? 'github' : intake?.mode === 'direct_webhook' ? 'intake' : undefined;
+  const expectedStage = github?.mode === 'app' ? 'github' : intake?.mode === 'direct_webhook' ? 'intake' : undefined;
   if (plan.reconfigurationStage !== expectedStage) throw new Error('Invalid resume plan');
   return {
-    root: { mode: root.mode as 'default' | 'selected', path: resolve(root.path as string) },
     reinitialize: synthetic.reinitialize,
     agents: synthetic.agents,
     github: github as unknown as ResumePlan['github'],
@@ -111,11 +105,11 @@ const parseResumePlan = (value: unknown): ResumePlan => {
 const parsePersisted = (contents: string): PersistedSetupState => {
   if (contents.length > 1024 * 1024) throw new Error('Setup state is too large');
   const value = JSON.parse(contents) as Record<string, unknown>;
-  if (!value || value.version !== 2 || !PHASES.has(String(value.phase)) || !assertPath(value.rootDir)) throw new Error('Invalid setup state');
+  if (!value || value.version !== 3 || !PHASES.has(String(value.phase)) || !assertPath(value.rootDir)) throw new Error('Invalid setup state');
   if (value.lastStepId !== undefined && (typeof value.lastStepId !== 'string' || !STEPS.has(value.lastStepId))) throw new Error('Invalid setup state');
   if (Object.keys(value).some(key => !['version', 'phase', 'rootDir', 'lastStepId', 'resume'].includes(key))) throw new Error('Invalid setup state');
   return {
-    version: 2,
+    version: 3,
     phase: value.phase as PersistedSetupState['phase'],
     rootDir: resolve(value.rootDir as string),
     ...(value.lastStepId ? { lastStepId: value.lastStepId as string } : {}),
@@ -171,19 +165,6 @@ export class DesktopSetupController {
     return this.#copy();
   }
 
-  async selectDirectory(): Promise<DesktopFilesystemSelection | null> {
-    await this.#load();
-    this.#enforceCapability(true);
-    try {
-      const selected = await this.#options.selectDirectory();
-      return selected ? await this.#filesystem.issue('directory', this.#sessionId, selected) : null;
-    } catch (error) {
-      if (error instanceof SetupRequestError) throw error;
-      this.#diagnose('desktop.setup.directory_selection_failed', { error });
-      throw new Error(safeRendererError);
-    }
-  }
-
   async selectPrivateKey(): Promise<DesktopFilesystemSelection | null> {
     await this.#load();
     this.#enforceCapability(true);
@@ -220,7 +201,10 @@ export class DesktopSetupController {
     if (this.#resume?.reconfigurationStage === 'github' || this.#resume?.reconfigurationStage === 'intake') {
       throw new SetupRequestError(`Re-enter the ${this.#resume.reconfigurationStage} configuration before retrying.`);
     }
-    if (this.#runtimeRetry) return this.#beginResolved(this.#runtimeRetry, true);
+    if (this.#runtimeRetry) {
+      const rootAuthority = RootDirectoryAuthority.open(this.#options.defaultRootDir, true, this.#appDataDir());
+      return this.#beginResolved({ ...this.#runtimeRetry, rootDir: resolve(this.#options.defaultRootDir), rootAuthority }, true);
+    }
     if (!this.#resume) throw new SetupRequestError('There is no local setup to resume');
     if (this.#resume.reconfigurationStage) throw new SetupRequestError(`Re-enter the ${this.#resume.reconfigurationStage} configuration before retrying.`);
     const request = parseDesktopSetupRequest({
@@ -258,27 +242,11 @@ export class DesktopSetupController {
     this.#busy = true;
     try {
       if (request.sessionId !== this.#sessionId) throw new SetupRequestError('The setup session expired. Start again.');
-      if (request.root.mode === 'selected') await this.#filesystem.validate(request.root.capability, 'directory', this.#sessionId);
       if (request.github.mode === 'app') await this.#filesystem.validate(request.github.privateKeyCapability, 'private-key', this.#sessionId);
       if (request.intake.mode === 'direct_webhook') this.#secrets.validate(request.intake.secretCapability, this.#sessionId);
-      let rootDir: string;
-      let rootMode: 'default' | 'selected';
-      let rootAuthority: RootDirectoryAuthority;
-      if (request.root.mode === 'default') {
-        rootDir = resolve(this.#options.defaultRootDir);
-        rootMode = 'default';
-        rootAuthority = RootDirectoryAuthority.open(rootDir, true);
-      } else if (request.root.mode === 'resume') {
-        if (!this.#resume) throw new SetupRequestError('The resumed setup directory is unavailable.');
-        rootAuthority = this.#validatedResumeRoot(this.#resume.root);
-        rootDir = rootAuthority.path;
-        rootMode = this.#resume.root.mode;
-      } else {
-        const selectedRoot = request.root as { mode: 'selected'; capability: string };
-        rootAuthority = await this.#filesystem.consumeDirectory(selectedRoot.capability, this.#sessionId);
-        rootDir = rootAuthority.path;
-        rootMode = 'selected';
-      }
+      if (request.root.mode === 'resume' && !this.#resume) throw new SetupRequestError('There is no local setup to resume.');
+      const rootDir = resolve(this.#options.defaultRootDir);
+      const rootAuthority = RootDirectoryAuthority.open(rootDir, true, this.#appDataDir());
       let privateKeyPath: string | undefined;
       if (request.github.mode === 'app') {
         privateKeyPath = await this.#filesystem.consumePrivateKey(
@@ -290,7 +258,7 @@ export class DesktopSetupController {
       const webhookSecret = request.intake.mode === 'direct_webhook'
         ? this.#secrets.consume(request.intake.secretCapability, this.#sessionId)
         : undefined;
-      return await this.#beginResolved({ publicRequest: request, rootDir, rootMode, rootAuthority, privateKeyPath, webhookSecret }, retry);
+      return await this.#beginResolved({ publicRequest: request, rootDir, rootAuthority, privateKeyPath, webhookSecret }, retry);
     } finally {
       if (!this.#currentRun) this.#busy = false;
     }
@@ -348,7 +316,7 @@ export class DesktopSetupController {
       let profile: DesktopProfileView | undefined;
       if (result.completed) {
         resolved.rootAuthority.validate();
-        const apiBaseUrl = await this.#options.resolveApiBaseUrl(resolved.rootAuthority.operationPath(), signal);
+        const apiBaseUrl = await this.#options.resolveApiBaseUrl(resolved.rootDir, signal);
         resolved.rootAuthority.validate();
         signal.throwIfAborted();
         profile = await this.#options.registerProfile({ name: 'This computer', apiBaseUrl }, signal);
@@ -407,24 +375,18 @@ export class DesktopSetupController {
       ? { mode: 'direct_webhook', reconfigurationRequired: true }
       : structuredClone(request.intake);
     return {
-      root: { mode: resolved.rootMode, path: resolved.rootDir },
       reinitialize: request.reinitialize,
       agents: [...request.agents],
       github,
       intake,
       whitelist: request.whitelist ? [...request.whitelist] : null,
       repository: request.repository ? { ...request.repository } : null,
-      ...(resolved.rootMode === 'selected' ? { reconfigurationStage: 'directory' as const } : request.github.mode === 'app' ? { reconfigurationStage: 'github' as const } : request.intake.mode === 'direct_webhook' ? { reconfigurationStage: 'intake' as const } : {}),
+      ...(request.github.mode === 'app' ? { reconfigurationStage: 'github' as const } : request.intake.mode === 'direct_webhook' ? { reconfigurationStage: 'intake' as const } : {}),
     };
   }
 
-  #validatedResumeRoot(root: ResumePlan['root']): RootDirectoryAuthority {
-    if (root.mode === 'default') {
-      const expected = resolve(this.#options.defaultRootDir);
-      if (root.path !== expected) throw new SetupRequestError('The resumed setup directory is invalid.');
-      return RootDirectoryAuthority.open(expected, true);
-    }
-    throw new SetupRequestError('Select the setup directory again. Saved paths are display metadata, not directory authority.');
+  #appDataDir(): string {
+    return resolve(this.#options.appDataDir ?? dirname(this.#options.defaultRootDir));
   }
 
   #platform(): NodeJS.Platform {
@@ -451,6 +413,7 @@ export class DesktopSetupController {
       const contents = readPrivateFile(this.#options.statePath);
       if (!contents) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
       const parsed = parsePersisted(contents.toString('utf8'));
+      if (parsed.rootDir !== resolve(this.#options.defaultRootDir)) throw new Error('Saved setup root is not the fixed desktop runtime root');
       this.#resume = parsed.resume;
       const interrupted = parsed.phase === 'running';
       this.#snapshot = {
@@ -476,9 +439,9 @@ export class DesktopSetupController {
     this.#options.emit(this.#copy());
     if (!this.#resume || this.#persistFailed) return;
     const persisted: PersistedSetupState = {
-      version: 2,
+      version: 3,
       phase: this.#snapshot.phase === 'unsupported' ? 'idle' : this.#snapshot.phase,
-      rootDir: this.#resume.root.path,
+      rootDir: resolve(this.#options.defaultRootDir),
       lastStepId: this.#snapshot.state?.steps.find(step => step.status === 'active')?.id,
       resume: this.#resume,
     };

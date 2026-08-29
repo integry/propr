@@ -67,7 +67,6 @@ describe('desktop local setup controller', () => {
       platform: 'linux',
       statePath,
       defaultRootDir: join(directory, 'stack'),
-      selectDirectory: async () => directory,
       selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000',
       registerProfile: async ({ name, apiBaseUrl }) => ({ id: 'local', name, baseUrl: apiBaseUrl, kind: 'local' }),
@@ -103,7 +102,6 @@ describe('desktop local setup controller', () => {
       platform: 'darwin',
       statePath: join(directory, 'setup.json'),
       defaultRootDir: join(directory, 'stack'),
-      selectDirectory: async () => directory,
       selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => { throw new Error('not called'); },
       registerProfile: async () => { throw new Error('not called'); },
@@ -132,7 +130,7 @@ describe('desktop local setup controller', () => {
     });
     const controller = new DesktopSetupController({
       actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'stack'),
-      selectDirectory: async () => directory, selectPrivateKey: async () => null,
+      selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000',
       registerProfile: async () => { registered = true; throw new Error('must not run'); }, emit() {},
     });
@@ -162,7 +160,7 @@ describe('desktop local setup controller', () => {
     };
     const controller = new DesktopSetupController({
       actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'stack'),
-      selectDirectory: async () => directory, selectPrivateKey: async () => null,
+      selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
     });
     const { sessionId } = await controller.status();
@@ -186,7 +184,7 @@ describe('desktop local setup controller', () => {
     });
     const controller = new DesktopSetupController({
       actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'stack'),
-      selectDirectory: async () => directory, selectPrivateKey: async () => null,
+      selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
     });
     const status = await controller.status();
@@ -204,7 +202,7 @@ describe('desktop local setup controller', () => {
     let registered = false;
     const controller = new DesktopSetupController({
       actions: fakeActions(), platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'stack'),
-      selectDirectory: async () => directory, selectPrivateKey: async () => null,
+      selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000',
       registerProfile: async (_profile, signal) => {
         entered();
@@ -231,7 +229,7 @@ describe('desktop local setup controller', () => {
     const statePath = join(directory, 'state.json');
     const options = {
       actions: fakeActions(), platform: 'linux' as const, statePath, defaultRootDir: join(directory, 'stack'),
-      selectDirectory: async () => directory, selectPrivateKey: async () => keyPath,
+      selectPrivateKey: async () => keyPath,
       promptWebhookSecret: async () => 'arbitrary-webhook-value',
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' as const }), emit() {},
     };
@@ -264,7 +262,7 @@ describe('desktop local setup controller', () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-hydration-'));
     const statePath = join(directory, 'state.json');
     const linux = new DesktopSetupController({
-      actions: fakeActions(), platform: 'linux', statePath, defaultRootDir: join(directory, 'stack'), selectDirectory: async () => directory, selectPrivateKey: async () => null,
+      actions: fakeActions(), platform: 'linux', statePath, defaultRootDir: join(directory, 'stack'), selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
     });
     const current = await linux.status();
@@ -272,7 +270,7 @@ describe('desktop local setup controller', () => {
 
     const concurrentSession = '33333333-3333-4333-8333-333333333333';
     const rehydrated = new DesktopSetupController({
-      actions: fakeActions(), platform: 'linux', statePath, defaultRootDir: join(directory, 'stack'), sessionId: concurrentSession, selectDirectory: async () => directory, selectPrivateKey: async () => null,
+      actions: fakeActions(), platform: 'linux', statePath, defaultRootDir: join(directory, 'stack'), sessionId: concurrentSession, selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
     });
     const [hydratedStatus, hydratedStart] = await Promise.all([
@@ -284,7 +282,7 @@ describe('desktop local setup controller', () => {
 
     const sessionId = '22222222-2222-4222-8222-222222222222';
     const darwin = new DesktopSetupController({
-      actions: {} as SetupActions, platform: 'darwin', statePath, defaultRootDir: join(directory, 'stack'), sessionId, selectDirectory: async () => directory, selectPrivateKey: async () => null,
+      actions: {} as SetupActions, platform: 'darwin', statePath, defaultRootDir: join(directory, 'stack'), sessionId, selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => { throw new Error('not called'); }, registerProfile: async () => { throw new Error('not called'); }, emit() {},
     });
     const [one, two] = await Promise.all([darwin.status(), darwin.status()]);
@@ -299,7 +297,7 @@ describe('desktop local setup controller', () => {
     await writeFile(blocker, 'block');
     const controller = new DesktopSetupController({
       actions: fakeActions(), platform: 'linux', statePath: join(blocker, 'state.json'), defaultRootDir: join(directory, 'stack'),
-      selectDirectory: async () => directory, selectPrivateKey: async () => null,
+      selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
     });
     const status = await controller.status();
@@ -308,20 +306,18 @@ describe('desktop local setup controller', () => {
     assert.match(result.error ?? '', /Resume after restart is unavailable/);
   });
 
-  it('rejects managed paths that escape a selected directory capability', async () => {
+  it('rejects managed paths that escape the fixed app-owned root', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-contained-root-'));
-    const root = join(directory, 'root');
+    const root = join(directory, 'default');
     const outside = join(directory, 'outside');
     await mkdir(root); await mkdir(outside); await symlink(outside, join(root, 'data'));
     const controller = new DesktopSetupController({
       actions: fakeActions(), platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'default'),
-      selectDirectory: async () => root, selectPrivateKey: async () => null,
+      selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
     });
     const status = await controller.status();
-    const selection = await controller.selectDirectory();
-    assert.ok(selection);
-    const result = await controller.start({ sessionId: status.sessionId, root: { mode: 'selected', capability: selection.capability }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    const result = await controller.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
     assert.equal(result.phase, 'failed');
     assert.doesNotMatch(result.error ?? '', new RegExp(outside));
   });
@@ -332,7 +328,7 @@ describe('desktop local setup controller', () => {
     const diagnostics: unknown[] = [];
     const controller = new DesktopSetupController({
       actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'stack'),
-      selectDirectory: async () => directory, selectPrivateKey: async () => null,
+      selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('profile failure included ghp_1234567890abcdef and Authorization: Bearer relay-auth-value'); }, emit() {},
       diagnose: (_event, fields) => diagnostics.push(fields),
     });
@@ -344,36 +340,56 @@ describe('desktop local setup controller', () => {
     assert.match(serialized, /REDACTED/);
   });
 
-  it('requires fresh chooser authority after restart even when a replacement appears at the saved path', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-root-reselect-'));
-    const root = join(directory, 'chosen');
-    await mkdir(root, { mode: 0o700 });
+  it('quit and reopen resumes against the fixed root without any directory reselection', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-fixed-resume-'));
+    const root = join(directory, 'default');
     const statePath = join(directory, 'state.json');
     const first = new DesktopSetupController({
       actions: fakeActions(), platform: 'linux', statePath, defaultRootDir: join(directory, 'default'),
-      selectDirectory: async () => root, selectPrivateKey: async () => null,
+      selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
     });
     const status = await first.status();
-    const selected = await first.selectDirectory();
-    assert.ok(selected);
-    await first.start({ sessionId: status.sessionId, root: { mode: 'selected', capability: selected.capability }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    await first.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
     await first.shutdown();
-    await rename(root, `${root}-original`);
-    await mkdir(root, { mode: 0o700 });
 
     let actions = 0;
     const replacementActions = fakeActions();
     replacementActions.runChecks = async ({ root: checked }) => { actions += 1; return { rootDir: checked!, anyFail: false, results: [] }; };
     const restarted = new DesktopSetupController({
       actions: replacementActions, platform: 'linux', statePath, defaultRootDir: join(directory, 'default'),
-      selectDirectory: async () => root, selectPrivateKey: async () => null,
-      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
+      selectPrivateKey: async () => null,
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
     });
     const resumed = await restarted.status();
-    assert.equal(resumed.resume?.reconfigurationStage, 'directory');
-    await assert.rejects(restarted.retry(), /Re-enter the directory/);
-    assert.equal(actions, 0);
+    assert.equal(resumed.rootDir, root);
+    assert.equal(resumed.resume?.reconfigurationStage, undefined);
+    assert.equal((await restarted.retry()).phase, 'completed');
+    assert.ok(actions > 0);
+  });
+
+  it('never reads or mounts a formerly chosen replacement directory', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-no-custom-root-'));
+    const fixedRoot = join(directory, 'fixed');
+    const chosenRoot = join(directory, 'chosen');
+    const sentinel = 'CHOSEN_REPLACEMENT_SENTINEL_UNCHANGED';
+    await mkdir(chosenRoot, { mode: 0o700 });
+    await writeFile(join(chosenRoot, '.env'), sentinel, { mode: 0o600 });
+    const observedRoots: string[] = [];
+    const actions = fakeActions();
+    actions.runChecks = async ({ root }) => { observedRoots.push(root!); return { rootDir: root!, anyFail: false, results: [] }; };
+    actions.startStack = async ({ rootDir, assertRootAuthority }) => { observedRoots.push(rootDir); assertRootAuthority?.(); };
+    const controller = new DesktopSetupController({
+      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: fixedRoot,
+      selectPrivateKey: async () => null,
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
+    });
+    const status = await controller.status();
+    const result = await controller.start({ sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [], github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null });
+    assert.equal(result.phase, 'completed');
+    assert.equal(await readFile(join(chosenRoot, '.env'), 'utf8'), sentinel);
+    assert.equal(observedRoots.some(value => value.startsWith(chosenRoot)), false);
+    assert.ok(observedRoots.includes(fixedRoot));
   });
 
   it('copies a consumed private key once and never reopens a swapped chooser pathname', async () => {
@@ -399,7 +415,7 @@ describe('desktop local setup controller', () => {
     };
     const controller = new DesktopSetupController({
       actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'stack'), keyStorageDir: join(directory, 'owned-keys'),
-      selectDirectory: async () => directory, selectPrivateKey: async () => keyPath,
+      selectPrivateKey: async () => keyPath,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
     });
     const status = await controller.status();
@@ -421,10 +437,10 @@ describe('desktop local setup controller', () => {
     assert.doesNotMatch(await readFile(mountedPath, 'utf8'), /REPLACEMENT/);
   });
 
-  it('keeps an atomic env commit descriptor-relative when a selected root is renamed and replaced', async () => {
+  it('keeps an atomic env commit descriptor-relative when the fixed root is renamed and replaced', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-root-commit-'));
-    const selectedRoot = join(directory, 'selected');
-    const originalRoot = join(directory, 'selected-original');
+    const selectedRoot = join(directory, 'fixed');
+    const originalRoot = join(directory, 'fixed-original');
     const sentinel = 'REPLACEMENT_SENTINEL_MUST_SURVIVE';
     await mkdir(selectedRoot, { mode: 0o700 });
     const emitted: unknown[] = [];
@@ -446,15 +462,13 @@ describe('desktop local setup controller', () => {
       return { written: Object.keys(values), skipped: [] };
     };
     const controller = new DesktopSetupController({
-      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'default'),
-      selectDirectory: async () => selectedRoot, selectPrivateKey: async () => null,
+      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: selectedRoot,
+      selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit: snapshot => emitted.push(snapshot),
     });
     const status = await controller.status();
-    const selected = await controller.selectDirectory();
-    assert.ok(selected);
     const result = await controller.start({
-      sessionId: status.sessionId, root: { mode: 'selected', capability: selected.capability }, reinitialize: false, agents: [],
+      sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [],
       github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null,
     });
     assert.equal(result.phase, 'failed');
@@ -466,17 +480,19 @@ describe('desktop local setup controller', () => {
     await controller.shutdown();
   });
 
-  it('fails before Docker handoff when a selected root is replaced and never supplies the replacement path', async () => {
+  it('hands Docker only the stable fixed root and fails if that identity is replaced', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-root-docker-'));
-    const selectedRoot = join(directory, 'selected');
-    const originalRoot = join(directory, 'selected-original');
+    const selectedRoot = join(directory, 'fixed');
+    const originalRoot = join(directory, 'fixed-original');
     const sentinel = 'DO_NOT_READ_OR_BIND_REPLACEMENT';
     await mkdir(selectedRoot, { mode: 0o700 });
     let launched = false;
     let daemonRoot = '';
+    let operationsRoot = '';
     const actions = fakeActions();
     actions.startStack = async params => {
       daemonRoot = params.rootDir;
+      operationsRoot = params.rootOperationsDir ?? '';
       renameSync(selectedRoot, originalRoot);
       mkdirSync(selectedRoot, { mode: 0o700 });
       writeFileSync(join(selectedRoot, '.env'), sentinel, { mode: 0o600 });
@@ -484,21 +500,20 @@ describe('desktop local setup controller', () => {
       launched = true;
     };
     const controller = new DesktopSetupController({
-      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'default'),
-      selectDirectory: async () => selectedRoot, selectPrivateKey: async () => null,
+      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: selectedRoot,
+      selectPrivateKey: async () => null,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
     });
     const status = await controller.status();
-    const selected = await controller.selectDirectory();
-    assert.ok(selected);
     const result = await controller.start({
-      sessionId: status.sessionId, root: { mode: 'selected', capability: selected.capability }, reinitialize: false, agents: [],
+      sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [],
       github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null,
     });
     assert.equal(result.phase, 'failed');
     assert.equal(launched, false);
-    assert.match(daemonRoot, new RegExp(`^/proc/${process.pid}/fd/[0-9]+$`));
-    assert.notEqual(daemonRoot, selectedRoot);
+    assert.equal(daemonRoot, selectedRoot);
+    assert.doesNotMatch(daemonRoot, /(?:^|\/)proc\/|(?:^|\/)dev\/fd/);
+    assert.match(operationsRoot, new RegExp(`^/proc/${process.pid}/fd/[0-9]+$`));
     assert.equal(readFileSync(join(selectedRoot, '.env'), 'utf8'), sentinel);
     assert.equal((await controller.retry()).phase, 'failed', 'retry starts only after the failed run settled');
     await controller.shutdown();
@@ -520,7 +535,7 @@ describe('desktop local setup controller', () => {
     const statePath = join(directory, 'state.json');
     const controller = new DesktopSetupController({
       actions, platform: 'linux', statePath, defaultRootDir: join(directory, 'stack'),
-      selectDirectory: async () => directory, selectPrivateKey: async () => null, promptWebhookSecret: async () => sentinel,
+      selectPrivateKey: async () => null, promptWebhookSecret: async () => sentinel,
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit: snapshot => emitted.push(snapshot),
       diagnose: (_event, fields) => diagnostics.push(fields),
     });

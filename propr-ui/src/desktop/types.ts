@@ -50,7 +50,6 @@ export interface DesktopLocalSetupAdapter {
   start(request: import('../../../apps/desktop/src/shared/contract').DesktopSetupRequest): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
   retry(request?: import('../../../apps/desktop/src/shared/contract').DesktopSetupRequest): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
   cancel(): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot>;
-  selectDirectory(): Promise<import('../../../apps/desktop/src/shared/contract').DesktopFilesystemSelection | null>;
   selectPrivateKey(): Promise<import('../../../apps/desktop/src/shared/contract').DesktopFilesystemSelection | null>;
   acquireWebhookSecret(): Promise<import('../../../apps/desktop/src/shared/contract').DesktopSecretSelection | null>;
   onProgress(listener: (snapshot: import('../../../apps/desktop/src/shared/contract').DesktopSetupSnapshot) => void): () => void;

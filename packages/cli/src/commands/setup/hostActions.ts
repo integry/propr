@@ -15,7 +15,6 @@ import {
   rethrowCancellation,
 } from "@propr/local-setup";
 import type { ConfigManager } from "../../config/index.js";
-import type { OrchestratorModule } from "../../orchestrator/index.js";
 import type { RelayClientOptions } from "../../api/relay.js";
 import { localhostServiceUrl } from "../../utils/dockerPort.js";
 import { createDefaultAgentSetupActions } from "./agentHostActions.js";
@@ -28,26 +27,11 @@ function assertSafeAgentCredentialDir(path: string, name = "Agent credential pat
   }
 }
 
-async function assertLocalDescriptorDockerHandoff(
-  orch: OrchestratorModule,
+function assertStableDockerHandoff(
   rootDir: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  if (!new RegExp(`^/proc/${process.pid}/fd/[0-9]+$`).test(rootDir)) {
-    throw new Error("Desktop setup lost its anchored root authority before Docker launch");
-  }
-  const context = await orch.dockerAsync(
-    ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"],
-    { signal },
-  );
-  signal?.throwIfAborted();
-  if (context.error || context.status !== 0) {
-    throw new Error("Could not verify that Docker can resolve the anchored setup root locally");
-  }
-  let endpoint: unknown;
-  try { endpoint = JSON.parse(context.stdout.trim()); } catch { endpoint = undefined; }
-  if (typeof endpoint !== "string" || !endpoint.startsWith("unix://")) {
-    throw new Error("Desktop local setup requires a local Unix-socket Docker context; select the directory again after switching Docker contexts");
+): void {
+  if (!isAbsolute(rootDir) || /(?:^|\/)(?:proc\/[0-9]+\/fd|dev\/fd)(?:\/|$)/.test(rootDir)) {
+    throw new Error("Desktop Docker lifecycle requires the stable app-owned runtime root");
   }
 }
 
@@ -133,11 +117,11 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
       return orch.isStackRunningAsync(cfg, signal);
     },
-    async startStack({ rootDir, ui, docs, onLog, signal, assertRootAuthority }) {
+    async startStack({ rootDir, rootOperationsDir, ui, docs, onLog, signal, assertRootAuthority }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
-      const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
+      const { orch, cfg } = await getHostConfig({ configManager, root: rootDir, readRoot: rootOperationsDir });
       if (assertRootAuthority) {
-        await assertLocalDescriptorDockerHandoff(orch, rootDir, signal);
+        assertStableDockerHandoff(rootDir);
         assertRootAuthority();
       }
       // Pre-create the host Vibe prompt-cache dir owned by this user so Docker

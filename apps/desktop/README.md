@@ -56,5 +56,10 @@ Linux presents the guided setup wizard and binds it to the shared `@propr/local-
 state are redacted before crossing IPC and persisted without prompt secrets, allowing a safely re-runnable setup to
 resume after restart. The packaged app carries the same launcher manifest, orchestrator, and stack template as the CLI.
 
+The desktop runtime root has one stable pathname: `<Electron userData>/desktop/local-stack`. Its `.env`, `data`,
+`logs`, and `repos` children are the only desktop-managed stack locations and the only app-data paths handed to
+Docker. The app validates owner-only, link-free ancestry before setup and every lifecycle start or restart. Native
+directory selection is not a runtime-root feature; import/export will require a separate one-shot workflow if added.
+
 macOS and Windows present remote connections as the supported path and explain that the local installer is Linux-only.
 They do not show Docker Desktop installation or lifecycle actions.

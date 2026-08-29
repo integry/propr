@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, rename, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -34,30 +34,32 @@ describe('desktop setup request schema', () => {
 });
 
 describe('desktop setup filesystem capabilities', () => {
-  it('binds an exact canonical directory to one session and rejects replay or path switching', async () => {
+  it('binds an exact canonical private key to one session and rejects replay or path switching', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'propr-capability-'));
-    const selected = join(parent, 'selected');
-    await mkdir(selected);
+    const selected = join(parent, 'selected.pem');
+    await writeFile(selected, 'private key', { mode: 0o600 });
     const capabilities = new SetupFilesystemCapabilities();
-    const issued = await capabilities.issue('directory', sessionId, selected);
-    await assert.rejects(capabilities.validate(issued.capability, 'directory', '11111111-1111-4111-8111-111111111111'));
-    assert.equal(await capabilities.validate(issued.capability, 'directory', sessionId), selected);
+    const issued = await capabilities.issue('private-key', sessionId, selected);
+    await assert.rejects(capabilities.validate(issued.capability, 'private-key', '11111111-1111-4111-8111-111111111111'));
+    assert.equal(await capabilities.validate(issued.capability, 'private-key', sessionId), selected);
     capabilities.consume([issued.capability]);
-    await assert.rejects(capabilities.validate(issued.capability, 'directory', sessionId));
+    await assert.rejects(capabilities.validate(issued.capability, 'private-key', sessionId));
 
-    const switched = await capabilities.issue('directory', sessionId, selected);
+    const switched = await capabilities.issue('private-key', sessionId, selected);
     await rename(selected, `${selected}-old`);
-    await mkdir(selected);
-    await assert.rejects(capabilities.validate(switched.capability, 'directory', sessionId));
+    await writeFile(selected, 'replacement key', { mode: 0o600 });
+    await assert.rejects(capabilities.validate(switched.capability, 'private-key', sessionId));
   });
 
   it('expires unused capabilities after a short bounded lifetime', async () => {
-    const selected = await mkdtemp(join(tmpdir(), 'propr-expired-capability-'));
+    const parent = await mkdtemp(join(tmpdir(), 'propr-expired-capability-'));
+    const selected = join(parent, 'selected.pem');
+    await writeFile(selected, 'private key', { mode: 0o600 });
     let now = 1_000;
     const capabilities = new SetupFilesystemCapabilities(() => now);
-    const issued = await capabilities.issue('directory', sessionId, selected);
+    const issued = await capabilities.issue('private-key', sessionId, selected);
     now += 5 * 60_000 + 1;
-    await assert.rejects(capabilities.validate(issued.capability, 'directory', sessionId));
+    await assert.rejects(capabilities.validate(issued.capability, 'private-key', sessionId));
   });
 
   it('rejects symlinks, non-regular key files, and unsafe private-key permissions', async () => {

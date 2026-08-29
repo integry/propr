@@ -358,6 +358,8 @@ export interface PullImagesResult {
 
 export interface StartStackParams {
   rootDir: string;
+  /** Main-process-only anchored path used to read setup files, never mounted. */
+  rootOperationsDir?: string;
   ui?: boolean;
   docs?: boolean;
   onLog?: (line: string) => void;

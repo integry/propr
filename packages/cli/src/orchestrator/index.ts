@@ -115,6 +115,7 @@ export function resolveStackRoot(
 export async function getHostConfig(opts: {
   configManager?: ConfigManager;
   root?: string;
+  readRoot?: string;
 }): Promise<{ orch: OrchestratorModule; cfg: OrchestratorConfig; rootDir: string }> {
   const orch = await loadOrchestrator();
   const rootDir = resolveStackRoot(opts.configManager, opts.root);
@@ -136,6 +137,6 @@ export async function getHostConfig(opts: {
       cliOverrides.uiTunnelEnabled = tunnelExplicit;
     }
   }
-  const cfg = orch.resolveHostConfig({ rootDir, env: process.env, manifestPath, cliOverrides });
+  const cfg = orch.resolveHostConfig({ rootDir, readRootDir: opts.readRoot, env: process.env, manifestPath, cliOverrides });
   return { orch, cfg, rootDir };
 }

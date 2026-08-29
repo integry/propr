@@ -80,10 +80,6 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
     if (args.length) throw new Error('Invalid local setup cancellation request');
     return options.setup.cancel();
   });
-  handle(IPC_CHANNELS.setupSelectDirectory, (_event, ...args) => {
-    if (args.length) throw new Error('Invalid directory selection request');
-    return options.setup.selectDirectory();
-  });
   handle(IPC_CHANNELS.setupSelectPrivateKey, (_event, ...args) => {
     if (args.length) throw new Error('Invalid private-key selection request');
     return options.setup.selectPrivateKey();

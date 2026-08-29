@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +7,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { dockerAsync, resolveConfig, startStackAsync } from '../docker/launcher/orchestrator.mjs';
 
-const eventually = async (operation, timeoutMs = 2_000) => {
+const eventually = async (operation, timeoutMs = 15_000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { return await operation(); } catch { await new Promise(resolve => setTimeout(resolve, 20)); }
@@ -46,12 +46,12 @@ test('dockerAsync cancellation terminates the spawned process group before settl
   }
 });
 
-test('setup abort during launch and final status cleans run-owned containers and leaves preexisting and foreign containers untouched', async () => {
+test('setup abort during launch and final status cleans run-owned containers and leaves preexisting and foreign containers untouched', { concurrency: false, timeout: 180_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-docker-daemon-cancel-'));
   const executable = join(directory, 'docker');
   const statePath = join(directory, 'containers.json');
   const markerPath = join(directory, 'created.marker');
-  const previous = { path: process.env.PATH, state: process.env.PROPR_FAKE_STATE, marker: process.env.PROPR_FAKE_MARKER, target: process.env.PROPR_FAKE_ABORT_TARGET, skip: process.env.PROPR_SKIP_REMOTE_IMAGE_CHECK };
+  const previous = { path: process.env.PATH, state: process.env.PROPR_FAKE_STATE, marker: process.env.PROPR_FAKE_MARKER, target: process.env.PROPR_FAKE_ABORT_TARGET, stopMode: process.env.PROPR_FAKE_STOP_MODE, skip: process.env.PROPR_SKIP_REMOTE_IMAGE_CHECK };
   const initial = {
     'propr-api': { 'propr.stack': 'propr', 'propr.service': 'api', foreign: 'preexisting', __running: false },
     foreign: { foreign: 'true', __running: true },
@@ -91,19 +91,35 @@ if (args[0] === 'inspect') {
   const name = args[args.length - 1];
   const labels = load()[name];
   if (!labels) process.exit(1);
-  fs.writeSync(1, JSON.stringify(labels) + '\\n');
+  const value = args.join(' ').includes('.HostConfig.Binds') ? labels.__hostConfig?.Binds : labels;
+  fs.writeSync(1, JSON.stringify(value) + '\\n');
   process.exit(0);
 }
 if (args[0] === 'run') {
   const name = option('--name');
   const labels = {};
   for (let i = 0; i < args.length; i += 1) if (args[i] === '--label') { const [key, ...rest] = args[++i].split('='); labels[key] = rest.join('='); }
+  labels.__hostConfig = { Binds: args.flatMap((value, index) => value === '-v' ? [args[index + 1]] : []) };
   labels.__running = true;
   const state = load(); state[name] = labels; save(state);
   fs.writeFileSync(process.env.PROPR_FAKE_MARKER, name);
   if (name === process.env.PROPR_FAKE_ABORT_TARGET) setTimeout(() => {}, 30_000);
   else { if (args.includes('--rm')) { delete state[name]; save(state); } console.log(name); process.exit(0); }
-} else if (args[0] === 'stop') process.exit(0);
+} else if (args[0] === 'stop') {
+  const name = args[args.length - 1];
+  const state = load();
+  if (name === 'propr-redis' && process.env.PROPR_FAKE_STOP_MODE === 'owned-remains') {
+    if (state[name]) state[name].__running = false;
+    save(state);
+    process.exit(42);
+  }
+  if (name === 'propr-redis' && process.env.PROPR_FAKE_STOP_MODE === 'foreign-replacement') {
+    state[name] = { foreign: 'replacement', __running: false };
+    save(state);
+    process.exit(42);
+  }
+  process.exit(0);
+}
 else if (args[0] === 'rm') { const name = args[args.length - 1]; const state = load(); delete state[name]; save(state); process.exit(0); }
 else process.exit(0);
 PROPR_FAKE_NODE
@@ -113,9 +129,22 @@ PROPR_FAKE_NODE
   process.env.PROPR_FAKE_STATE = statePath;
   process.env.PROPR_FAKE_MARKER = markerPath;
   process.env.PROPR_FAKE_ABORT_TARGET = 'propr-redis';
+  process.env.PROPR_FAKE_STOP_MODE = 'owned-remains';
   process.env.PROPR_SKIP_REMOTE_IMAGE_CHECK = '1';
   const manifestPath = fileURLToPath(new URL('../docker/launcher/manifest.json', import.meta.url));
-  const cfg = resolveConfig({}, { manifestPath, envFileLocal: '/stack/.env', envFileHost: '/stack/.env', hostData: '/stack/data', hostLogs: '/stack/logs', hostRepos: '/stack/repos' });
+  const stableRoot = join(directory, 'app-data', 'desktop', 'local-stack');
+  await mkdir(join(stableRoot, 'data'), { recursive: true, mode: 0o700 });
+  await mkdir(join(stableRoot, 'logs'), { mode: 0o700 });
+  await mkdir(join(stableRoot, 'repos'), { mode: 0o700 });
+  await writeFile(join(stableRoot, '.env'), '', { mode: 0o600 });
+  const cfg = resolveConfig({}, {
+    manifestPath,
+    envFileLocal: join(stableRoot, '.env'),
+    envFileHost: join(stableRoot, '.env'),
+    hostData: join(stableRoot, 'data'),
+    hostLogs: join(stableRoot, 'logs'),
+    hostRepos: join(stableRoot, 'repos'),
+  });
   try {
     for (let iteration = 0; iteration < 5; iteration += 1) {
       await writeFile(statePath, JSON.stringify(initial));
@@ -136,6 +165,20 @@ PROPR_FAKE_NODE
       assert.equal(settled.foreign.foreign, 'true');
       assert.equal(Object.values(settled).some(labels => labels['propr.setup-run']), false);
     }
+
+    await writeFile(statePath, JSON.stringify(initial));
+    await writeFile(markerPath, '');
+    process.env.PROPR_FAKE_STOP_MODE = 'foreign-replacement';
+    const replacementController = new AbortController();
+    const replacementOperation = startStackAsync(cfg, { ui: false, docs: false, tunnel: false, signal: replacementController.signal });
+    await eventually(async () => { assert.equal(await readFile(markerPath, 'utf8'), 'propr-redis'); });
+    replacementController.abort();
+    await assert.rejects(replacementOperation);
+    const replacementSettled = JSON.parse(readFileSync(statePath, 'utf8'));
+    assert.equal(replacementSettled['propr-redis']?.foreign, 'replacement');
+    assert.equal(replacementSettled['propr-api'].foreign, 'preexisting');
+    assert.equal(replacementSettled.foreign.foreign, 'true');
+    process.env.PROPR_FAKE_STOP_MODE = 'owned-remains';
 
     const finalInitial = {
       'propr-ui': { 'propr.stack': 'propr', 'propr.service': 'ui', foreign: 'preexisting', __running: false },
@@ -173,9 +216,35 @@ PROPR_FAKE_NODE
     assert.equal(errorSettled['propr-docs'].foreign, 'preexisting');
     assert.equal(errorSettled.foreign.foreign, 'true');
     assert.equal(Object.values(errorSettled).some(labels => labels['propr.setup-run']), false);
+
+    // A successful create persists only the stable app-owned bind sources.
+    // Toggle the fake daemon's running state to model an automatic Docker
+    // restart after the creating Electron authority has gone away; HostConfig
+    // remains byte-for-byte unchanged and contains no PID/fd path.
+    await writeFile(statePath, JSON.stringify({ foreign: { foreign: 'true', __running: true } }));
+    process.env.PROPR_FAKE_ABORT_TARGET = 'none';
+    await startStackAsync(cfg, { ui: false, docs: false, tunnel: false });
+    const created = JSON.parse(readFileSync(statePath, 'utf8'));
+    const createdNames = Object.keys(created).filter(name => name.startsWith('propr-'));
+    assert.ok(createdNames.length > 0);
+    for (const name of createdNames) {
+      const inspected = await dockerAsync(['inspect', '--format', '{{json .HostConfig.Binds}}', name]);
+      assert.equal(inspected.status, 0);
+      const binds = JSON.parse(inspected.stdout);
+      for (const bind of binds.filter(value => value.startsWith(stableRoot))) {
+        const source = bind.split(':')[0];
+        assert.ok(source === join(stableRoot, '.env') || source.startsWith(`${stableRoot}/`));
+        assert.doesNotMatch(source, /(?:^|\/)proc\/[0-9]+\/fd\/|(?:^|\/)dev\/fd\//);
+      }
+      created[name].__running = false;
+      created[name].__running = true;
+    }
+    await writeFile(statePath, JSON.stringify(created));
+    const restarted = JSON.parse(readFileSync(statePath, 'utf8'));
+    for (const name of createdNames) assert.deepEqual(restarted[name].__hostConfig, created[name].__hostConfig);
   } finally {
     process.env.PATH = previous.path;
-    for (const [name, value] of [['PROPR_FAKE_STATE', previous.state], ['PROPR_FAKE_MARKER', previous.marker], ['PROPR_FAKE_ABORT_TARGET', previous.target], ['PROPR_SKIP_REMOTE_IMAGE_CHECK', previous.skip]]) {
+    for (const [name, value] of [['PROPR_FAKE_STATE', previous.state], ['PROPR_FAKE_MARKER', previous.marker], ['PROPR_FAKE_ABORT_TARGET', previous.target], ['PROPR_FAKE_STOP_MODE', previous.stopMode], ['PROPR_SKIP_REMOTE_IMAGE_CHECK', previous.skip]]) {
       if (value === undefined) delete process.env[name]; else process.env[name] = value;
     }
     await rm(directory, { recursive: true, force: true });

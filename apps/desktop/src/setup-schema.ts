@@ -35,10 +35,7 @@ export const parseDesktopSetupRequest = (input: unknown): DesktopSetupRequest =>
   if (typeof value.reinitialize !== 'boolean') throw new SetupRequestError();
 
   const root = record(value.root);
-  if (root.mode === 'selected') {
-    exact(root, ['mode', 'capability']);
-    if (typeof root.capability !== 'string' || !CAPABILITY.test(root.capability)) throw new SetupRequestError();
-  } else if (root.mode === 'default' || root.mode === 'resume') exact(root, ['mode']);
+  if (root.mode === 'default' || root.mode === 'resume') exact(root, ['mode']);
   else throw new SetupRequestError();
 
   const agents = value.agents;

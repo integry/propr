@@ -18,7 +18,6 @@ export const IPC_CHANNELS = Object.freeze({
   setupStart: 'desktop:setup-start',
   setupRetry: 'desktop:setup-retry',
   setupCancel: 'desktop:setup-cancel',
-  setupSelectDirectory: 'desktop:setup-select-directory',
   setupSelectPrivateKey: 'desktop:setup-select-private-key',
   setupAcquireWebhookSecret: 'desktop:setup-acquire-webhook-secret',
   setupProgress: 'desktop:setup-progress',
@@ -122,7 +121,7 @@ export type DesktopConnectionResult =
 
 export interface DesktopSetupRequest {
   sessionId: string;
-  root: { mode: 'default' | 'resume' } | { mode: 'selected'; capability: string };
+  root: { mode: 'default' | 'resume' };
   reinitialize: boolean;
   agents: string[];
   github:
@@ -155,7 +154,7 @@ export interface DesktopSetupResumeView {
   intake: { mode: 'keep' | 'routing_websocket' | 'polling' } | { mode: 'direct_webhook'; reconfigurationRequired: true };
   whitelist: string[] | null;
   repository: { fullName: string; alias?: string; baseBranch?: string } | null;
-  reconfigurationStage?: 'directory' | 'github' | 'intake';
+  reconfigurationStage?: 'github' | 'intake';
 }
 
 export type DesktopSetupPhase =
@@ -201,7 +200,6 @@ export interface DesktopRendererBridge {
     start(request: DesktopSetupRequest): Promise<DesktopSetupSnapshot>;
     retry(request?: DesktopSetupRequest): Promise<DesktopSetupSnapshot>;
     cancel(): Promise<DesktopSetupSnapshot>;
-    selectDirectory(): Promise<DesktopFilesystemSelection | null>;
     selectPrivateKey(): Promise<DesktopFilesystemSelection | null>;
     acquireWebhookSecret(): Promise<DesktopSecretSelection | null>;
     onProgress(listener: (snapshot: DesktopSetupSnapshot) => void): () => void;

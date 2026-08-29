@@ -121,7 +121,6 @@ export const createDesktopRendererBridge = (
       start: (request) => invoke(ipc, IPC_CHANNELS.setupStart, request),
       retry: (request) => invoke(ipc, IPC_CHANNELS.setupRetry, request),
       cancel: () => invoke(ipc, IPC_CHANNELS.setupCancel),
-      selectDirectory: () => invoke(ipc, IPC_CHANNELS.setupSelectDirectory),
       selectPrivateKey: () => invoke(ipc, IPC_CHANNELS.setupSelectPrivateKey),
       acquireWebhookSecret: () => invoke(ipc, IPC_CHANNELS.setupAcquireWebhookSecret),
       onProgress: (listener) => {

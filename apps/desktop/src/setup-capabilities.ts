@@ -2,23 +2,25 @@ import { randomBytes } from 'node:crypto';
 import {
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
   lstatSync,
+  mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
+  type BigIntStats,
 } from 'node:fs';
 import { lstat, realpath, stat } from 'node:fs/promises';
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   ensurePrivateDirectory,
-  secureExistingPrivateDirectory,
   writePrivateFileAtomic,
 } from '@propr/local-setup';
 import type { DesktopFilesystemSelection, DesktopSecretSelection } from './shared/contract';
 import type { SetupActions } from '@propr/local-setup';
 
-type SelectionKind = 'directory' | 'private-key';
+type SelectionKind = 'private-key';
 
 interface SelectionRecord {
   kind: SelectionKind;
@@ -58,30 +60,32 @@ const assertOwner = (uid: bigint): void => {
 
 export class RootDirectoryAuthority {
   readonly path: string;
+  readonly #privateBoundary: string;
   readonly #descriptor: number;
   readonly #device: bigint;
   readonly #inode: bigint;
   readonly #operationPath: string;
   #closed = false;
 
-  private constructor(path: string, descriptor: number, device: bigint, inode: bigint) {
+  private constructor(path: string, privateBoundary: string, descriptor: number, device: bigint, inode: bigint) {
     this.path = path;
+    this.#privateBoundary = privateBoundary;
     this.#descriptor = descriptor;
     this.#device = device;
     this.#inode = inode;
     this.#operationPath = `/proc/${process.pid}/fd/${descriptor}`;
   }
 
-  static open(path: string, create = false): RootDirectoryAuthority {
+  static open(path: string, create = false, privateBoundary = dirname(path)): RootDirectoryAuthority {
     const canonical = safePath(path);
-    if (create) ensurePrivateDirectory(canonical);
-    else secureExistingPrivateDirectory(canonical);
+    const boundary = safePath(privateBoundary);
+    ensurePrivateAncestry(boundary, canonical, create);
     const descriptor = openSync(canonical, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | O_CLOEXEC);
     try {
       const info = fstatSync(descriptor, { bigint: true });
       if (!info.isDirectory()) throw new SetupCapabilityError('The approved setup root is not a directory.');
       assertOwner(info.uid);
-      return new RootDirectoryAuthority(canonical, descriptor, info.dev, info.ino);
+      return new RootDirectoryAuthority(canonical, boundary, descriptor, info.dev, info.ino);
     } catch (error) {
       closeSync(descriptor);
       throw error;
@@ -90,6 +94,7 @@ export class RootDirectoryAuthority {
 
   validate(): void {
     if (this.#closed) throw new SetupCapabilityError('The setup directory authority expired. Select it again.');
+    ensurePrivateAncestry(this.#privateBoundary, this.path, false);
     const anchored = fstatSync(this.#descriptor, { bigint: true });
     let current;
     try { current = lstatSync(this.path, { bigint: true }); } catch {
@@ -105,19 +110,22 @@ export class RootDirectoryAuthority {
     for (const name of ['.env', 'data', 'logs', 'repos']) {
       const child = join(this.#operationPath, name);
       let info;
-      try { info = lstatSync(child); } catch (error) {
+      try { info = lstatSync(child, { bigint: true }); } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
         throw error;
       }
       if (info.isSymbolicLink()) throw new SetupCapabilityError('The setup directory contains an unsafe managed path.');
+      assertOwner(info.uid);
       if (name === '.env') {
-        if (!info.isFile() || info.nlink !== 1) throw new SetupCapabilityError('The setup environment must be a non-linked regular file.');
+        if (!info.isFile() || info.nlink !== 1n) throw new SetupCapabilityError('The setup environment must be a non-linked regular file.');
+        enforceModeNoFollow(child, info, 0o600, false);
       } else {
         const anchoredRoot = realpathSync(this.#operationPath);
         const childRelative = relative(anchoredRoot, realpathSync(child));
         if (!info.isDirectory() || childRelative.startsWith('..') || isAbsolute(childRelative)) {
           throw new SetupCapabilityError('The setup directory contains an unsafe managed path.');
         }
+        enforceModeNoFollow(child, info, 0o700, true);
       }
     }
   }
@@ -132,6 +140,57 @@ export class RootDirectoryAuthority {
     if (this.#closed) return;
     this.#closed = true;
     closeSync(this.#descriptor);
+  }
+}
+
+/**
+ * Establish and revalidate the fixed runtime root beneath Electron's app-data
+ * boundary. Every app-owned component is an owner-only real directory; links
+ * and path replacement are rejected before a Docker lifecycle handoff.
+ */
+function ensurePrivateAncestry(boundaryPath: string, rootPath: string, create: boolean): void {
+  const boundary = resolve(boundaryPath);
+  const root = resolve(rootPath);
+  const suffix = relative(boundary, root);
+  if (!suffix || suffix.startsWith('..') || isAbsolute(suffix)) throw new SetupCapabilityError('The fixed setup root is outside the app-data boundary.');
+  const components = suffix ? suffix.split(sep).filter(Boolean) : [];
+  let cursor = boundary;
+  const paths = [boundary, ...components.map(component => (cursor = join(cursor, component)))];
+  for (let index = 0; index < paths.length; index += 1) {
+    const current = paths[index];
+    let info;
+    try {
+      info = lstatSync(current, { bigint: true });
+    } catch (error) {
+      if (!create || (error as NodeJS.ErrnoException).code !== 'ENOENT' || index === 0) throw error;
+      mkdirSync(current, { mode: 0o700 });
+      info = lstatSync(current, { bigint: true });
+    }
+    if (!info.isDirectory() || info.isSymbolicLink() || realpathSync(current) !== current) {
+      throw new SetupCapabilityError('The fixed setup root ancestry must contain only real directories.');
+    }
+    assertOwner(info.uid);
+    enforceModeNoFollow(current, info, 0o700, true);
+  }
+}
+
+function enforceModeNoFollow(
+  path: string,
+  expected: BigIntStats,
+  mode: number,
+  directory: boolean,
+): void {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | O_CLOEXEC | (directory ? constants.O_DIRECTORY : 0));
+  try {
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (opened.dev !== expected.dev || opened.ino !== expected.ino
+      || (directory ? !opened.isDirectory() : !opened.isFile())) {
+      throw new SetupCapabilityError('The fixed setup root identity changed during validation.');
+    }
+    assertOwner(opened.uid);
+    if ((opened.mode & 0o777n) !== BigInt(mode)) fchmodSync(descriptor, mode);
+  } finally {
+    closeSync(descriptor);
   }
 }
 
@@ -161,6 +220,17 @@ export function bindRootOperations(
     }
     return value;
   };
+  const descriptorActions = new Set([
+    'runChecks',
+    'inspectStackInit',
+    'inspectDatastoreAdministrators',
+    'scaffoldStack',
+    'readEnvVars',
+    'applyEnvSelection',
+    'clearEnvKeys',
+    'detectGithubAuthMode',
+    'prepareAgentCredentialDir',
+  ]);
   const toOperation = (value: unknown) => transform(value, displayRoot, operationRoot);
   const toDisplay = (value: unknown) => transform(value, operationRoot, displayRoot);
   return new Proxy(actions, {
@@ -169,10 +239,10 @@ export function bindRootOperations(
       if (typeof value !== 'function') return value;
       return (...args: unknown[]) => {
         guard();
-        const pathless = property === 'persistStackRoot' || property === 'getTunnelEnabled';
-        const operationArgs = pathless ? args : args.map(toOperation);
+        const descriptorRelative = typeof property === 'string' && descriptorActions.has(property);
+        const operationArgs = descriptorRelative ? args.map(toOperation) : args;
         if (property === 'startStack' && operationArgs[0] && typeof operationArgs[0] === 'object') {
-          operationArgs[0] = { ...(operationArgs[0] as Record<string, unknown>), assertRootAuthority: guard };
+          operationArgs[0] = { ...(operationArgs[0] as Record<string, unknown>), rootOperationsDir: operationRoot, assertRootAuthority: guard };
         }
         const result = Reflect.apply(value, target, operationArgs);
         if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
@@ -223,20 +293,17 @@ export class SetupFilesystemCapabilities {
     const originalPath = safePath(selectedPath);
     const before = await lstat(originalPath, { bigint: true });
     if (before.isSymbolicLink()) throw new SetupCapabilityError('Symbolic-link selections are not allowed.');
-    if (kind === 'directory' ? !before.isDirectory() : !before.isFile()) throw new SetupCapabilityError();
+    if (!before.isFile()) throw new SetupCapabilityError();
     assertOwner(before.uid);
-    if (kind === 'directory') secureExistingPrivateDirectory(originalPath);
-    if (kind === 'private-key') {
-      if ((before.mode & 0o077n) !== 0n) throw new SetupCapabilityError('The private-key file must not be accessible by group or other users.');
-      if (before.nlink !== 1n || before.size <= 0n || before.size > BigInt(MAX_KEY_BYTES)) throw new SetupCapabilityError('The private-key file size or link count is invalid.');
-    }
+    if ((before.mode & 0o077n) !== 0n) throw new SetupCapabilityError('The private-key file must not be accessible by group or other users.');
+    if (before.nlink !== 1n || before.size <= 0n || before.size > BigInt(MAX_KEY_BYTES)) throw new SetupCapabilityError('The private-key file size or link count is invalid.');
     const canonicalPath = await realpath(originalPath);
     if (canonicalPath !== originalPath) throw new SetupCapabilityError('Selections containing symbolic links are not allowed.');
     const canonical = await stat(canonicalPath, { bigint: true });
     if (canonical.dev !== before.dev || canonical.ino !== before.ino) throw new SetupCapabilityError();
     const capability = randomBytes(32).toString('base64url');
     this.#records.set(capability, { kind, sessionId, originalPath, canonicalPath, device: before.dev, inode: before.ino, expiresAt: this.#now() + TTL_MS });
-    return { capability, label: kind === 'directory' ? canonicalPath : basename(canonicalPath) };
+    return { capability, label: basename(canonicalPath) };
   }
 
   #take(capability: string, kind: SelectionKind, sessionId: string): SelectionRecord {
@@ -251,16 +318,10 @@ export class SetupFilesystemCapabilities {
     if (!record || record.kind !== kind || record.sessionId !== sessionId || record.expiresAt < this.#now()) throw new SetupCapabilityError();
     const current = await lstat(record.originalPath, { bigint: true }).catch(() => null);
     if (!current || current.isSymbolicLink() || current.dev !== record.device || current.ino !== record.inode
-      || (kind === 'directory' ? !current.isDirectory() : !current.isFile())) throw new SetupCapabilityError();
+      || !current.isFile()) throw new SetupCapabilityError();
     if (await realpath(record.originalPath) !== record.canonicalPath) throw new SetupCapabilityError();
-    if (kind === 'private-key' && ((current.mode & 0o077n) !== 0n || current.nlink !== 1n || current.size <= 0n || current.size > BigInt(MAX_KEY_BYTES))) throw new SetupCapabilityError();
+    if ((current.mode & 0o077n) !== 0n || current.nlink !== 1n || current.size <= 0n || current.size > BigInt(MAX_KEY_BYTES)) throw new SetupCapabilityError();
     return record.canonicalPath;
-  }
-
-  async consumeDirectory(capability: string, sessionId: string): Promise<RootDirectoryAuthority> {
-    await this.validate(capability, 'directory', sessionId);
-    const record = this.#take(capability, 'directory', sessionId);
-    return RootDirectoryAuthority.open(record.canonicalPath);
   }
 
   async consumePrivateKey(capability: string, sessionId: string, keyStorageDir: string): Promise<string> {

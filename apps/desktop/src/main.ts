@@ -224,22 +224,15 @@ if (!hasSingleInstanceLock) {
     };
     const profiles = new ProfileStore(app.getPath('userData'), encryption);
     const defaultRootDir = join(app.getPath('userData'), 'desktop', 'local-stack');
-    const localHost = await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined, defaultRootDir);
+    const localHost = await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined, defaultRootDir, app.getPath('userData'));
     const lifecycle = new LocalLifecycleController(process.platform === 'linux' ? localHost.lifecycle : undefined);
     setupController = new DesktopSetupController({
       actions: localHost.actions,
       platform: process.platform,
+      appDataDir: app.getPath('userData'),
       statePath: join(app.getPath('userData'), 'desktop', 'setup-state.json'),
       defaultRootDir,
       keyStorageDir: join(app.getPath('userData'), 'desktop', 'setup-keys'),
-      async selectDirectory() {
-        const options = {
-          title: 'Choose the ProPR setup directory',
-          properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
-        };
-        const selected = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
-        return selected.canceled ? null : selected.filePaths[0] ?? null;
-      },
       async selectPrivateKey() {
         const options = {
           title: 'Choose the GitHub App private key',
