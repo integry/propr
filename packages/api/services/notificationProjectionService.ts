@@ -28,7 +28,7 @@ interface ProjectionLogger {
 
 type NotificationEventWriter = Pick<NotificationService,
   'createNotificationEvent' | 'createPullRequestNotificationEvent'
-  | 'dismissSupersededPullRequestAttentionNotifications'
+  | 'createPullRequestAttentionNotificationEvent'
   | 'reconcileSystemFailureTransition'>;
 
 export interface NotificationProjectionOptions {
@@ -341,7 +341,7 @@ export class NotificationProjectionService {
     }
 
     if (context.prNumber !== undefined) {
-      const attentionEvent = await this.notifications.createPullRequestNotificationEvent(
+      await this.notifications.createPullRequestAttentionNotificationEvent(
         context.repository,
         context.prNumber,
         {
@@ -363,11 +363,6 @@ export class NotificationProjectionService {
           occurredAt,
         },
         recipients,
-      );
-      if (attentionEvent === null) return;
-      await this.notifications.dismissSupersededPullRequestAttentionNotifications(
-        context.repository,
-        context.prNumber,
       );
     }
   }

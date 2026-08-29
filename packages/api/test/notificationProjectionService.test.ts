@@ -376,7 +376,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         createNotificationEvent: async () => {
           throw new Error('database unavailable');
         },
-        dismissSupersededPullRequestAttentionNotifications: async () => 0,
+        createPullRequestAttentionNotificationEvent: async () => null,
         createPullRequestNotificationEvent: async () => null,
         reconcileSystemFailureTransition: async () => ({ accepted: true, event: null }),
       },

@@ -410,6 +410,131 @@ describe('notification service', { concurrency: false }, () => {
         );
     });
 
+    test('rolls back PR-attention creation when atomic supersession fails', async () => {
+        await service.createPullRequestAttentionNotificationEvent(
+            'integry/propr',
+            42,
+            {
+                eventId: 'first-attention-event',
+                deduplicationKey: 'first-attention-key',
+                kind: 'pull_request',
+                target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+                title: 'Pull request needs attention',
+                body: 'First attention card.',
+                occurredAt: '2026-08-02T08:00:00.000Z'
+            },
+            ['user-a']
+        );
+        await database.raw(`
+            CREATE TRIGGER reject_attention_supersession
+            BEFORE UPDATE OF dismissed_at ON notification_user_states
+            BEGIN
+                SELECT RAISE(ABORT, 'forced supersession failure');
+            END
+        `);
+
+        await assert.rejects(
+            service.createPullRequestAttentionNotificationEvent(
+                'integry/propr',
+                42,
+                {
+                    eventId: 'second-attention-event',
+                    deduplicationKey: 'second-attention-key',
+                    kind: 'pull_request',
+                    target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+                    title: 'Pull request needs attention',
+                    body: 'Second attention card.',
+                    occurredAt: '2026-08-02T09:00:00.000Z'
+                },
+                ['user-a']
+            ),
+            /forced supersession failure/
+        );
+
+        assert.deepEqual(
+            await database('notification_events')
+                .where({ kind: 'pull_request' })
+                .pluck('event_id'),
+            ['first-attention-event'],
+            'the new audit event and receipt roll back with supersession'
+        );
+        assert.deepEqual(
+            (await service.listNotifications('user-a')).notifications.map(item => item.id),
+            ['first-attention-event']
+        );
+    });
+
+    test('reconciles pre-state system cards during healthy and unhealthy bootstrap', async () => {
+        for (const component of ['redis', 'worker']) {
+            await service.createNotificationEvent({
+                eventId: `legacy-${component}-failure`,
+                deduplicationKey: `legacy-${component}-failure-key`,
+                kind: 'system_failure',
+                severity: 'error',
+                target: { type: 'system_failure', component },
+                title: 'System component unhealthy',
+                body: `${component} is not reporting a healthy status.`,
+                occurredAt: '2026-08-02T08:00:00.000Z'
+            }, ['user-a']);
+        }
+        assert.equal(
+            await database('notification_system_failure_state').count('* as count').first()
+                .then(row => Number(row?.count)),
+            0,
+            'simulates receipts created before the durable state migration was populated'
+        );
+
+        await service.reconcileSystemFailureTransition({
+            component: 'redis',
+            status: 'connected',
+            healthy: true,
+            snapshotAt: '2026-08-02T09:00:00.000Z',
+            eventFor: () => {
+                throw new Error('healthy initialization must not create an event');
+            }
+        }, ['user-a']);
+        await service.reconcileSystemFailureTransition({
+            component: 'worker',
+            status: 'stopped',
+            healthy: false,
+            snapshotAt: '2026-08-02T09:00:00.000Z',
+            eventFor: (status, failureStartedAt) => ({
+                eventId: 'current-worker-failure',
+                deduplicationKey: `current-worker:${status}:${failureStartedAt}`,
+                kind: 'system_failure',
+                severity: 'error',
+                target: { type: 'system_failure', component: 'worker' },
+                title: 'System component unhealthy',
+                body: 'worker is not reporting a healthy status.',
+                occurredAt: failureStartedAt
+            })
+        }, ['user-a']);
+
+        const active = await database('notification_user_states as receipt')
+            .join('notification_events as event', 'event.event_id', 'receipt.event_id')
+            .whereNull('receipt.dismissed_at')
+            .select('event.event_id');
+        assert.deepEqual(active, [{ event_id: 'current-worker-failure' }]);
+        assert.equal(
+            await database('notification_events')
+                .where({ kind: 'system_failure' })
+                .count('* as count')
+                .first()
+                .then(row => Number(row?.count)),
+            3,
+            'legacy audit events are preserved'
+        );
+        assert.deepEqual(
+            await database('notification_system_failure_state')
+                .select('component', 'failure_status')
+                .orderBy('component'),
+            [
+                { component: 'redis', failure_status: null },
+                { component: 'worker', failure_status: 'stopped' }
+            ]
+        );
+    });
+
     test('serializes system transitions so an older writer cannot dismiss the current failure', async () => {
         const temporaryDirectory = fs.mkdtempSync(
             path.join(os.tmpdir(), 'propr-system-transition-race-')
