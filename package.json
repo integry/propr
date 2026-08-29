@@ -10,6 +10,8 @@
     "propr-ui"
   ],
   "overrides": {
+    "@electron/packager": "20.3.0",
+    "@electron/rebuild": "4.2.0",
     "react": "19.2.7"
   },
   "scripts": {
@@ -74,6 +76,9 @@
     "desktop:test": "npm run test -w @propr/desktop",
     "desktop:package": "npm run package -w @propr/desktop",
     "desktop:make": "npm run make -w @propr/desktop",
+    "audit:runtime": "npm audit --package-lock-only --omit=dev --audit-level=low",
+    "desktop:audit:packaging": "npm audit --package-lock-only --workspace=@propr/desktop --include=dev --audit-level=high",
+    "desktop:audit": "npm run audit:runtime && npm run desktop:audit:packaging",
     "start:prod": "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $PWD/.env:/app/.env:ro -v $PWD/data:/app/data -v $PWD/logs:/app/logs -v $PWD/repos:/app/repos propr/launcher:latest"
   },
   "keywords": [],

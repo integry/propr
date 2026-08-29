@@ -13,6 +13,7 @@ npm run desktop:typecheck
 npm run desktop:test
 npm run desktop:package
 npm run desktop:make
+npm run desktop:audit
 # On Linux hosts with the corresponding native packaging tools installed:
 npm run make:deb -w @propr/desktop
 npm run make:rpm -w @propr/desktop
@@ -20,6 +21,10 @@ npm run make:rpm -w @propr/desktop
 
 Development renderer URLs are accepted only when Electron Forge supplies an HTTP loopback URL. Packaged builds load
 the generated renderer file from the application ASAR.
+
+`desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
+the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release
+CI runs both checks directly from the committed lockfile before installing or executing the packaging toolchain.
 
 ## Security boundary
 
