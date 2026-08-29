@@ -1,6 +1,6 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, autoUpdater, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import { DeepLinkDelivery } from './deep-link-delivery';
 import { registerIpcHandlers } from './ipc';
@@ -250,11 +250,6 @@ if (squirrelStartupHandled) {
         }
       : undefined;
     if (app.isPackaged && updateConfig && process.env.PROPR_DESKTOP_SMOKE_TEST !== '1') {
-      autoUpdater.on('error', error => log('error', 'desktop.update.native_error', { error }));
-      autoUpdater.on('checking-for-update', () => log('info', 'desktop.update.checking'));
-      autoUpdater.on('update-available', () => log('info', 'desktop.update.available'));
-      autoUpdater.on('update-not-available', () => log('info', 'desktop.update.not_available'));
-      autoUpdater.on('update-downloaded', () => log('info', 'desktop.update.downloaded'));
       const runUpdateCheck = () => {
         void checkForSignedUpdates({
           config: updateConfig,
@@ -266,7 +261,6 @@ if (squirrelStartupHandled) {
             if (!response.ok) throw new Error(`Update metadata request failed with HTTP ${response.status}`);
             return Buffer.from(await response.arrayBuffer());
           },
-          updater: autoUpdater,
         }).then(result => log('info', 'desktop.update.check_complete', { result }))
           .catch(error => log('error', 'desktop.update.check_failed', { error }));
       };

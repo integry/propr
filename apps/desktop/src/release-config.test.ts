@@ -79,6 +79,10 @@ describe('desktop release configuration', () => {
       () => resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1', PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'http://example.test/update.json' }),
       /HTTPS/,
     );
+    assert.throws(
+      () => resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1', PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://example.test/update.json?channel=stable' }),
+      /query/,
+    );
   });
 
   test('rejects partially configured signing groups', () => {

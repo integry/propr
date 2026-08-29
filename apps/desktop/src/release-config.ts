@@ -26,8 +26,8 @@ const validateHttpsUrl = (value: string, label: string): string => {
   } catch {
     throw new Error(`${label} must be an absolute HTTPS URL`);
   }
-  if (url.protocol !== 'https:' || url.username || url.password || url.hash) {
-    throw new Error(`${label} must be an HTTPS URL without credentials or a fragment`);
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) {
+    throw new Error(`${label} must be an HTTPS URL without credentials, a fragment, or a query`);
   }
   return url.toString();
 };

@@ -39,6 +39,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       publish: ${{ steps.version.outputs.publish }}
+      release_sha: ${{ steps.version.outputs.release_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -62,8 +63,16 @@ jobs:
             publish=false
           fi
           node -e 'if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(process.argv[1])) process.exit(1)' "$version"
+          if [ "$publish" = true ]; then
+            release_tag="desktop-v$version"
+            git fetch --force --no-tags origin "refs/tags/$release_tag:refs/tags/$release_tag"
+            release_sha="$(git rev-parse "$release_tag^{commit}")"
+          else
+            release_sha="$GITHUB_SHA"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
 
   package:
     name: Package ${{ matrix.platform }}-${{ matrix.arch }} natively
@@ -97,12 +106,13 @@ jobs:
       UPDATE_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_UPDATE_PUBLIC_KEY }}
       UPDATE_MANIFEST_URL: ${{ vars.PROPR_DESKTOP_UPDATE_MANIFEST_URL }}
       UPDATE_MAC_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_MAC_SIGNING_IDENTITY }}
+      UPDATE_MAC_TEAM_ID: ${{ vars.PROPR_DESKTOP_MAC_TEAM_ID }}
       UPDATE_WINDOWS_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.version.outputs.publish == 'true' && format('desktop-v{0}', needs.version.outputs.version) || github.ref }}
+          ref: ${{ needs.version.outputs.publish == 'true' && needs.version.outputs.release_sha || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -152,11 +162,11 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.PROPR_DESKTOP_APPLE_API_ISSUER_ID }}
         run: |
           set -euo pipefail
-          signing_values=("$CERTIFICATE_P12_BASE64" "$CERTIFICATE_PASSWORD" "$UPDATE_MAC_SIGNING_IDENTITY")
+          signing_values=("$CERTIFICATE_P12_BASE64" "$CERTIFICATE_PASSWORD" "$UPDATE_MAC_SIGNING_IDENTITY" "$UPDATE_MAC_TEAM_ID")
           signing_present=0
           for value in "${signing_values[@]}"; do [ -n "$value" ] && signing_present=$((signing_present + 1)); done
-          if [ "$signing_present" -ne 0 ] && [ "$signing_present" -ne 3 ]; then
-            echo "macOS signing secrets/identity are incomplete" >&2
+          if [ "$signing_present" -ne 0 ] && [ "$signing_present" -ne 4 ]; then
+            echo "macOS signing secrets, designated identity, or Team ID are incomplete" >&2
             exit 1
           fi
           notarization_values=("$APPLE_API_KEY_P8_BASE64" "$APPLE_API_KEY_ID" "$APPLE_API_ISSUER_ID")
@@ -166,11 +176,11 @@ jobs:
             echo "macOS notarization secrets are incomplete" >&2
             exit 1
           fi
-          if [ "$notarization_present" -eq 3 ] && [ "$signing_present" -ne 3 ]; then
+          if [ "$notarization_present" -eq 3 ] && [ "$signing_present" -ne 4 ]; then
             echo "macOS notarization requires signing" >&2
             exit 1
           fi
-          if [ "$signing_present" -eq 3 ]; then
+          if [ "$signing_present" -eq 4 ]; then
             certificate="$RUNNER_TEMP/propr-desktop-signing.p12"
             keychain="$RUNNER_TEMP/propr-desktop-signing.keychain-db"
             keychain_password="$(uuidgen)"
@@ -229,7 +239,7 @@ jobs:
               echo "Trusted updates cannot be enabled for an unsigned package" >&2
               exit 1
             fi
-            if [ "$PLATFORM" = darwin ]; then identity="$UPDATE_MAC_SIGNING_IDENTITY"; else identity="$UPDATE_WINDOWS_SIGNING_IDENTITY"; fi
+            if [ "$PLATFORM" = darwin ]; then identity="$UPDATE_MAC_TEAM_ID"; else identity="$UPDATE_WINDOWS_SIGNING_IDENTITY"; fi
             test -n "$identity"
             echo "PROPR_DESKTOP_ENABLE_UPDATES=1" >> "$GITHUB_ENV"
             echo "PROPR_DESKTOP_CODE_SIGNED=1" >> "$GITHUB_ENV"
@@ -286,7 +296,22 @@ jobs:
           hdiutil verify "$(find apps/desktop/out/make -type f -name '*.dmg' -print -quit)"
           unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
           if [ "${DESKTOP_PLATFORM_CODE_SIGNED:-}" = 1 ]; then
-            codesign --verify --deep --strict --verbose=2 "apps/desktop/out/propr-desktop-darwin-${{ matrix.arch }}/propr-desktop.app"
+            application="apps/desktop/out/propr-desktop-darwin-${{ matrix.arch }}/propr-desktop.app"
+            codesign --verify --deep --strict --verbose=2 "$application"
+            signature_details="$(codesign -dv --verbose=4 "$application" 2>&1)"
+            actual_authority="$(printf '%s\n' "$signature_details" | sed -n 's/^Authority=//p' | head -1)"
+            actual_team_id="$(printf '%s\n' "$signature_details" | sed -n 's/^TeamIdentifier=//p' | head -1)"
+            designated_requirement="$(codesign -d -r- "$application" 2>&1 | sed -n 's/^designated =>/designated =>/p')"
+            test "$actual_authority" = "$UPDATE_MAC_SIGNING_IDENTITY"
+            test "$actual_team_id" = "$UPDATE_MAC_TEAM_ID"
+            test -n "$designated_requirement"
+            echo "PROPR_DESKTOP_ACTUAL_SIGNER_TYPE=apple-team-id" >> "$GITHUB_ENV"
+            echo "PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY=$actual_team_id" >> "$GITHUB_ENV"
+            {
+              echo 'PROPR_DESKTOP_ACTUAL_MAC_DESIGNATED_REQUIREMENT<<PROPR_EOF'
+              echo "$designated_requirement"
+              echo 'PROPR_EOF'
+            } >> "$GITHUB_ENV"
           fi
 
       - name: Inspect packaged Windows application and artifacts
@@ -300,8 +325,23 @@ jobs:
           if (!$installer -or !$package) { throw 'Windows release artifacts are missing' }
           tar -tf $package.FullName | Select-Object -First 5
           if ($env:DESKTOP_PLATFORM_CODE_SIGNED -eq '1') {
-            if ((Get-AuthenticodeSignature $installer.FullName).Status -ne 'Valid') { throw 'Windows installer signature is invalid' }
-            if ((Get-AuthenticodeSignature $appExecutable).Status -ne 'Valid') { throw 'Windows application signature is invalid' }
+            $zip = Join-Path $env:RUNNER_TEMP 'propr-update-package.zip'
+            $extracted = Join-Path $env:RUNNER_TEMP 'propr-update-package'
+            Copy-Item -LiteralPath $package.FullName -Destination $zip
+            Expand-Archive -LiteralPath $zip -DestinationPath $extracted
+            $packageExecutable = Get-ChildItem -LiteralPath $extracted -Recurse -Filter 'propr-desktop.exe' | Select-Object -First 1
+            if (!$packageExecutable) { throw 'Windows update package application is missing' }
+            $signatures = @(
+              Get-AuthenticodeSignature $installer.FullName
+              Get-AuthenticodeSignature $appExecutable
+              Get-AuthenticodeSignature $packageExecutable.FullName
+            )
+            foreach ($signature in $signatures) {
+              if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate) { throw 'Windows Authenticode signature is invalid' }
+              if ($signature.SignerCertificate.Subject -ne $env:UPDATE_WINDOWS_SIGNING_IDENTITY) { throw 'Windows Authenticode signer does not match the configured build pin' }
+            }
+            "PROPR_DESKTOP_ACTUAL_SIGNER_TYPE=authenticode-subject" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "PROPR_DESKTOP_ACTUAL_SIGNER_IDENTITY=$($signatures[0].SignerCertificate.Subject)" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
 
       - name: Inspect native Linux packages
@@ -349,15 +389,6 @@ jobs:
 
       - name: Verify matrix completeness and generate metadata
         env:
-          PROPR_DESKTOP_UPDATE_PRIVATE_KEY: ${{ secrets.PROPR_DESKTOP_UPDATE_PRIVATE_KEY }}
-          PROPR_DESKTOP_UPDATE_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_UPDATE_PUBLIC_KEY }}
-          PROPR_DESKTOP_DARWIN_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_X64_FEED_URL }}
-          PROPR_DESKTOP_DARWIN_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_ARM64_FEED_URL }}
-          PROPR_DESKTOP_WINDOWS_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_WINDOWS_X64_FEED_URL }}
-          PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL }}
-          PROPR_DESKTOP_UPDATE_MAC_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_MAC_SIGNING_IDENTITY }}
-          PROPR_DESKTOP_UPDATE_WINDOWS_SIGNING_IDENTITY: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY }}
-          PROPR_DESKTOP_PUBLISH_RELEASE: ${{ needs.version.outputs.publish }}
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           node apps/desktop/scripts/release-artifacts.mjs finalize \
@@ -374,10 +405,68 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  sign:
+    name: Sign trusted update metadata
+    if: >-
+      needs.version.outputs.publish == 'true' &&
+      ((github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name == format('desktop-v{0}', needs.version.outputs.version)) ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    needs: [version, finalize]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: desktop-release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable desktop release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: desktop-v${{ needs.version.outputs.version }}
+
+      - name: Verify checked out release tag
+        env:
+          RELEASE_TAG: desktop-v${{ needs.version.outputs.version }}
+          RELEASE_SHA: ${{ needs.version.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
+
+      - name: Download unsigned validated release set
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: propr-desktop-release-${{ needs.version.outputs.version }}-${{ github.run_id }}
+          path: desktop-release-unsigned
+
+      - name: Sign cryptographically bound update metadata
+        env:
+          PROPR_DESKTOP_UPDATE_PRIVATE_KEY: ${{ secrets.PROPR_DESKTOP_UPDATE_PRIVATE_KEY }}
+          PROPR_DESKTOP_UPDATE_PUBLIC_KEY: ${{ vars.PROPR_DESKTOP_UPDATE_PUBLIC_KEY }}
+          PROPR_DESKTOP_UPDATE_MANIFEST_URL: ${{ vars.PROPR_DESKTOP_UPDATE_MANIFEST_URL }}
+          PROPR_DESKTOP_DARWIN_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_X64_FEED_URL }}
+          PROPR_DESKTOP_DARWIN_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_ARM64_FEED_URL }}
+          PROPR_DESKTOP_WINDOWS_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_WINDOWS_X64_FEED_URL }}
+          PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          node apps/desktop/scripts/release-artifacts.mjs sign \
+            --version "$RELEASE_VERSION" \
+            --input desktop-release-unsigned \
+            --output desktop-release-signed
+          (cd desktop-release-signed && sha256sum --check SHA256SUMS)
+
+      - name: Upload trusted release set
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: propr-desktop-signed-release-${{ needs.version.outputs.version }}-${{ github.run_id }}
+          path: desktop-release-signed
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
     name: Publish independently tagged desktop release
     if: needs.version.outputs.publish == 'true'
-    needs: [version, finalize]
+    needs: [version, sign]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -386,7 +475,7 @@ jobs:
       - name: Download complete release set
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
-          name: propr-desktop-release-${{ needs.version.outputs.version }}-${{ github.run_id }}
+          name: propr-desktop-signed-release-${{ needs.version.outputs.version }}-${{ github.run_id }}
           path: desktop-release-final
 
       - name: Create or update GitHub desktop release

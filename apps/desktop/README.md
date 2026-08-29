@@ -107,6 +107,7 @@ GitHub Actions secrets:
 GitHub Actions variables (public configuration, not secrets):
 
 - `PROPR_DESKTOP_MAC_SIGNING_IDENTITY`: exact Developer ID Application identity.
+- `PROPR_DESKTOP_MAC_TEAM_ID`: exact Team ID embedded in signed macOS update builds and verified from produced apps.
 - `PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY`: exact Authenticode certificate subject expected by installed builds.
 - `PROPR_DESKTOP_UPDATE_PUBLIC_KEY`: base64 Ed25519 SPKI DER public key matching the update private key.
 - `PROPR_DESKTOP_UPDATE_MANIFEST_URL`: stable HTTPS URL from which clients fetch `desktop-release.json`; the detached
@@ -123,10 +124,14 @@ base64 < desktop-update-private.der # secret: PROPR_DESKTOP_UPDATE_PRIVATE_KEY
 base64 < desktop-update-public.der  # variable: PROPR_DESKTOP_UPDATE_PUBLIC_KEY
 ```
 
-Do not commit either key file. The private key should be held separately for recovery and rotation. A release operator
-must publish the exact signed manifest/signature and the referenced native feed files to the configured HTTPS
-locations. Merely setting a feed URL cannot enable updates: the build also requires a complete update key pair,
-platform signing credentials, and the explicit CI-only signed-build gate. At runtime, Linux never initializes Electron's
-native updater; macOS and Windows verify the detached Ed25519 manifest, target architecture, and embedded signing
-identity before giving a feed URL to `autoUpdater`. macOS additionally requires the native application signature, while
-Windows releases are Authenticode-signed at both package and installer stages.
+Do not commit either key file. The private key is available only to the approval-protected `desktop-release`
+environment. Pull-request finalization produces unsigned validation metadata; trusted signing checks out the exact
+`desktop-v<version>` tag and fails closed if any signed-update setting is incomplete. A release operator must publish
+the exact signed manifest/signature, generated native feeds, and bound packages to their configured HTTPS URLs. The
+manifest URL must not contain a query, so its companion is always the documented pathname plus `.sig`.
+
+Linux never checks for native updates. macOS and Windows operate as check-only channels: they verify the Ed25519
+manifest, exact target/version/feed bytes, package URL/size/SHA-256, and the actual Team ID/designated requirement or
+Authenticode certificate subject extracted from the downloaded package. Electron's `autoUpdater` is not initialized,
+because it would re-fetch mutable URLs instead of installing the already verified bytes. Unsigned developer packages
+remain update-disabled.
