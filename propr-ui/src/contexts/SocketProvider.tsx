@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from '@propr/client';
 import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
-import { getApiBaseUrl } from '../config/runtimeConfig';
+import { proprClient } from '../api/apiClient';
 
 interface SocketProviderProps {
   children: React.ReactNode;
@@ -25,16 +25,10 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       return;
     }
 
-    // Connect to the backend WebSocket server using the same runtime-configured
-    // API base URL as REST calls, so REST and Socket.IO always share an origin.
-    // When empty, socket.io-client connects to the same origin.
-    const socketUrl = getApiBaseUrl() || undefined;
-
-    const newSocket = io(socketUrl, {
+    const newSocket = proprClient.connectSocket({
       transports: ['websocket'],
       withCredentials: true,
       autoConnect: true,
-      // Use path for socket.io which is the standard /socket.io/
       path: '/socket.io/',
     });
 

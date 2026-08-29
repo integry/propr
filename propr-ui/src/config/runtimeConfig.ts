@@ -31,6 +31,7 @@
 //     authority, even if sessionStorage was copied from an existing tab.
 
 import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl, proprInstanceProxyUrl } from '@propr/shared';
+import { normalizeApiBaseUrl } from '@propr/client';
 
 export interface ProprRuntimeConfig {
   /** Base URL for REST and Socket.IO. Empty string means same-origin. */
@@ -98,8 +99,7 @@ export const isHostedOAuthCompletionRoute = (
  */
 export const isValidHttpUrl = (value: string): boolean => {
   try {
-    const url = new URL(value);
-    return url.protocol === 'http:' || url.protocol === 'https:';
+    return normalizeApiBaseUrl(value, { allowInsecureHttp: true }) !== '';
   } catch {
     return false;
   }
@@ -422,13 +422,14 @@ export const resolveApiBaseUrl = (
   const storedApiBaseUrl = readStoredHostedTunnelApiBaseUrl(hostname, flowId, storage, contextId);
   if (!queryApiBaseUrl && storedApiBaseUrl) activeHostedTunnelFlowId = flowId;
 
-  return (
+  const selectedApiBaseUrl = (
     queryApiBaseUrl ||
     storedApiBaseUrl ||
     config?.apiBaseUrl?.trim() ||
     buildTimeApiBaseUrl?.trim() ||
     ''
-  ).replace(/\/+$/, '');
+  );
+  return normalizeApiBaseUrl(selectedApiBaseUrl);
 };
 /* eslint-enable max-params */
 

@@ -1,10 +1,23 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+import { ProprClient } from '@propr/client';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 
+const createProprClient = (baseUrl: string): ProprClient => new ProprClient({
+  baseUrl,
+  // Domain modules already opt into cookies route-by-route. Preserve their
+  // exact RequestInit behavior while sharing the session transport policy.
+  authentication: { type: 'session', applyByDefault: false },
+});
+
 export let API_BASE_URL = getApiBaseUrl();
-/** Update the live binding used by existing API modules when desktop profiles switch. */
+export let proprClient = createProprClient(API_BASE_URL);
+
+/** Update the live bindings used by existing API modules when desktop profiles switch. */
 export const setApiBaseUrl = (value: string): void => {
-  API_BASE_URL = value.trim().replace(/\/+$/, '');
+  const nextApiBaseUrl = value.trim().replace(/\/+$/, '');
+  const nextProprClient = createProprClient(nextApiBaseUrl);
+  API_BASE_URL = nextApiBaseUrl;
+  proprClient = nextProprClient;
 };
 export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 const TOKEN_REFRESHED_CODE = 'TOKEN_REFRESHED';
@@ -134,8 +147,10 @@ export const apiFetch = async (
   init?: RequestInit,
   options: ApiFetchOptions = {}
 ): Promise<Response> => {
-  const response = await fetch(input, init);
-  if (isReplayableApiRequest(input, init, options) && await shouldRetryAfterTokenRefresh(response)) return fetch(input, init);
+  const response = await proprClient.fetch(input, init);
+  if (isReplayableApiRequest(input, init, options) && await shouldRetryAfterTokenRefresh(response)) {
+    return proprClient.fetch(input, init);
+  }
   return response;
 };
 
