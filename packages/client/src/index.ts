@@ -18,6 +18,15 @@ export {
   type ProprClientErrorOptions,
 } from './errors.js';
 export {
+  completeDesktopPairing,
+  parseDesktopDiscovery,
+  parseDesktopPairingStart,
+  type ProprDesktopDiscovery,
+  type ProprDesktopPairingComplete,
+  type ProprDesktopPairingOptions,
+  type ProprDesktopPairingStart,
+} from './desktopPairing.js';
+export {
   normalizeInstanceProfile,
   type NormalizedProprInstanceProfile,
   type ProprInstanceAuthentication,

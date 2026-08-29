@@ -52,10 +52,11 @@ describe('ProprClient REST transport', () => {
       },
     });
 
-    await client.request('/api/status');
+    await client.request('/api/status', { credentials: 'include' });
 
     assert.equal(calls[0][0], 'https://propr.example.com/api/status');
     assert.equal(new Headers(calls[0][1]?.headers).get('Authorization'), 'Bearer secret-token');
+    assert.equal(calls[0][1]?.credentials, 'omit');
     assert.doesNotMatch(String(calls[0][0]), /secret-token/);
   });
 

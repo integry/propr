@@ -52,8 +52,8 @@ describe('SocketProvider', () => {
       </SocketProvider>
     );
 
-    expect(connectSocketMock).toHaveBeenCalledWith(expect.objectContaining({
-      withCredentials: true,
+    expect(connectSocketMock).toHaveBeenCalledWith(expect.not.objectContaining({
+      withCredentials: expect.anything(),
     }));
     unmount();
   });

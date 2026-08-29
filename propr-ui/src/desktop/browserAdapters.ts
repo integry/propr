@@ -1,4 +1,6 @@
 import { evaluateProprApiCompatibility } from '@propr/shared';
+import { normalizeApiBaseUrl } from '@propr/client';
+import { createElectronDesktopAdapters } from './electronAdapters';
 import type {
   DesktopAdapters,
   DesktopAuthenticationCompleteEventDetail,
@@ -25,15 +27,7 @@ const fixtureProfile: DesktopProfile = {
 };
 
 const normalizeBaseUrl = (value: string): string => {
-  const url = new URL(value.trim());
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('Instance URLs must use http:// or https://.');
-  }
-  if (url.username || url.password) throw new Error('Instance URLs cannot contain credentials.');
-  url.pathname = url.pathname.replace(/\/+$/, '');
-  url.search = '';
-  url.hash = '';
-  return url.toString().replace(/\/+$/, '');
+  return normalizeApiBaseUrl(value);
 };
 
 const readProfiles = (): DesktopProfile[] => {
@@ -182,6 +176,7 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
 export const resolveDesktopAdapters = (): DesktopAdapters | null => {
   const bridge: ProprDesktopBridge | undefined = window.__PROPR_DESKTOP__;
   if (bridge?.isDesktop) return bridge;
+  if (window.proprDesktop) return createElectronDesktopAdapters(window.proprDesktop);
   const fixture = import.meta.env.DEV ? fixtureFromLocation() : null;
   return fixture ? createBrowserAdapters(fixture) : null;
 };

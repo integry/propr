@@ -266,6 +266,7 @@ function setupRoutes(): void {
   app.get('/api/desktop/pairings/:pairingId/approval', desktopAuthRoutes.browserSessionGuard, desktopAuthRoutes.getPairingApproval);
   app.post('/api/desktop/pairings/:pairingId/approve', desktopAuthRoutes.browserSessionGuard, desktopAuthRoutes.approvalOriginGuard, desktopAuthRoutes.approvePairing);
   app.get('/api/desktop/tokens', desktopAuthRoutes.listTokens);
+  app.delete('/api/desktop/tokens/current', desktopAuthRoutes.revokeCurrentToken);
   app.delete('/api/desktop/tokens/:tokenId', desktopAuthRoutes.revokeToken);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });

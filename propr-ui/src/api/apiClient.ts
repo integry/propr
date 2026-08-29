@@ -1,13 +1,16 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import { ProprClient } from '@propr/client';
+import { ProprClient, type AccessTokenProvider } from '@propr/client';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
-import { currentUiPathname, navigateToUiPath } from '../config/runtimeMode';
+import { currentUiPathname, isDesktopRuntime, navigateToUiPath } from '../config/runtimeMode';
+import { DESKTOP_ACCESS_INVALID_EVENT } from '../desktop/types';
+
+let desktopAccessTokenProvider: AccessTokenProvider | null = null;
 
 const createProprClient = (baseUrl: string): ProprClient => new ProprClient({
   baseUrl,
-  // Domain modules already opt into cookies route-by-route. Preserve their
-  // exact RequestInit behavior while sharing the session transport policy.
-  authentication: { type: 'session', applyByDefault: false },
+  authentication: desktopAccessTokenProvider
+    ? { type: 'bearer', getAccessToken: desktopAccessTokenProvider }
+    : { type: 'session', applyByDefault: false },
 });
 
 export let API_BASE_URL = getApiBaseUrl();
@@ -19,6 +22,12 @@ export const setApiBaseUrl = (value: string): void => {
   const nextProprClient = createProprClient(nextApiBaseUrl);
   API_BASE_URL = nextApiBaseUrl;
   proprClient = nextProprClient;
+};
+
+/** Install a transient secure-storage reader; token values are never retained here. */
+export const setDesktopAccessTokenProvider = (provider: AccessTokenProvider | null): void => {
+  desktopAccessTokenProvider = provider;
+  proprClient = createProprClient(API_BASE_URL);
 };
 export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 const TOKEN_REFRESHED_CODE = 'TOKEN_REFRESHED';
@@ -115,6 +124,14 @@ const getApiErrorMessage = (data: ApiErrorBody | null): string | undefined =>
 const throwUnauthorizedResponse = (data: ApiErrorBody | null): never => {
   if (data?.code === TOKEN_REFRESHED_CODE) {
     throw new TokenRefreshRetryRequiredError(getApiErrorMessage(data));
+  }
+  if (isDesktopRuntime()) {
+    window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, {
+      detail: { code: data?.code },
+    }));
+    throw new Error(data?.code === 'INVALID_INSTANCE_TOKEN'
+      ? 'This desktop connection was revoked or expired.'
+      : 'Desktop authentication is required.');
   }
   if (currentUiPathname() === '/login') throw new Error('Authentication required');
   // Preserve only the validated active flow so login/OAuth cannot be driven by

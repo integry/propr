@@ -16,3 +16,21 @@ export const logoutDesktopSession = async (
     throw new Error(`Desktop logout failed with HTTP ${response.status}`);
   }
 };
+
+/** Remove legacy/browser cookies so named bearer profiles cannot inherit them. */
+export const clearDesktopInstanceCookies = async (
+  desktopSession: Pick<Session, 'clearStorageData'>,
+  apiBaseUrls: readonly unknown[],
+): Promise<void> => {
+  const origins = new Set<string>();
+  for (const value of apiBaseUrls) {
+    if (typeof value !== 'string') throw new Error('Invalid desktop API URL');
+    const normalized = normalizeApiBaseUrl(value);
+    if (!normalized || normalized !== value) throw new Error('Invalid desktop API URL');
+    origins.add(normalized);
+  }
+  await Promise.all([...origins].map(origin => desktopSession.clearStorageData({
+    origin,
+    storages: ['cookies'],
+  })));
+};

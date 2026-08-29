@@ -172,7 +172,7 @@ describe('Socket.IO authentication', () => {
     );
   });
 
-  test('runs Engine.IO middleware before the mandatory identity gate', async () => {
+  test('runs Engine.IO middleware and maps browser Socket.IO auth into the shared bearer gate', async () => {
     const httpServer = createServer();
     const io = new SocketIOServer(httpServer, { transports: ['websocket'] });
     const markerMiddleware: RequestHandler = (req, _res, next) => {
@@ -196,7 +196,7 @@ describe('Socket.IO authentication', () => {
     const port = (httpServer.address() as AddressInfo).port;
     const client = createSocketClient(`http://127.0.0.1:${port}`, {
       transports: ['websocket'],
-      extraHeaders: { Authorization: 'Bearer test-token' },
+      auth: { token: 'test-token' },
       reconnection: false,
     });
 

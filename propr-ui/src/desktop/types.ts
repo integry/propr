@@ -9,8 +9,8 @@ export interface DesktopProfile {
 }
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string }
-  | { status: 'authentication-required'; message?: string }
+  | { status: 'ready'; version?: string; authentication?: string }
+  | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };
 
@@ -33,9 +33,11 @@ export interface DesktopAuthenticationAdapter {
    * Opening the system browser alone is not successful authentication.
    */
   authenticate(profile: DesktopProfile): Promise<void>;
+  cancel?(profileId: string): void;
 }
 
 export const DESKTOP_AUTHENTICATION_COMPLETE_EVENT = 'propr:desktop-authentication-complete';
+export const DESKTOP_ACCESS_INVALID_EVENT = 'propr:desktop-access-invalid';
 
 export interface DesktopAuthenticationCompleteEventDetail {
   profileId: string;
@@ -51,6 +53,8 @@ export interface DesktopLocalSetupAdapter {
 
 export interface DesktopConnectionAdapter {
   probe(profile: DesktopProfile): Promise<DesktopConnectionResult>;
+  deactivate?(): void;
+  clearCredentials?(profile: DesktopProfile): Promise<void>;
 }
 
 export interface DesktopAdapters {

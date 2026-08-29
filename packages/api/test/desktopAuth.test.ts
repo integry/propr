@@ -10,6 +10,7 @@ import {
   INSTANCE_TOKEN_PREFIX,
 } from '../desktopAuthService.js';
 import {
+  createDesktopAuthRoutes,
   isTrustedPairingApprovalOrigin,
   requireBrowserPairingSession,
 } from '../routes/desktopAuthRoutes.js';
@@ -195,6 +196,28 @@ describe('instance token ownership and revocation', () => {
     });
     const { token } = await issueToken();
     now = new Date(now.getTime() + 1_001);
+    assert.equal(await service.validateToken(token), null);
+  });
+
+  test('lets a desktop revoke only the instance token authenticating its request', async () => {
+    const { token, tokenId } = await issueToken();
+    const routes = createDesktopAuthRoutes({ service, frontendUrl: 'https://app.example.test' });
+    let statusCode = 200;
+    let ended = false;
+    const response = {
+      status(value: number) { statusCode = value; return response; },
+      json() { return response; },
+      end() { ended = true; return response; },
+    } as unknown as Response;
+
+    await routes.revokeCurrentToken({
+      user: owner,
+      authenticationMethod: 'instance_token',
+      instanceTokenId: tokenId,
+    } as unknown as Request, response);
+
+    assert.equal(statusCode, 204);
+    assert.equal(ended, true);
     assert.equal(await service.validateToken(token), null);
   });
 

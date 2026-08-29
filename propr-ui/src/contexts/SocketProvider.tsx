@@ -3,6 +3,7 @@ import type { Socket } from '@propr/client';
 import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
 import { proprClient } from '../api/apiClient';
+import { DESKTOP_ACCESS_INVALID_EVENT } from '../desktop/types';
 
 interface SocketProviderProps {
   children: React.ReactNode;
@@ -27,7 +28,6 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
 
     const newSocket = proprClient.connectSocket({
       transports: ['websocket'],
-      withCredentials: true,
       autoConnect: true,
       path: '/socket.io/',
     });
@@ -44,6 +44,16 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
 
     newSocket.on('connect_error', (error) => {
       console.error('[SocketContext] Connection error:', error.message);
+      const code = (error as Error & { data?: { code?: string } }).data?.code;
+      if (code === 'INVALID_INSTANCE_TOKEN' || code === 'AUTHENTICATION_REQUIRED') {
+        window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, { detail: { code } }));
+      }
+    });
+
+    newSocket.on('authentication:error', (value: { code?: string } | undefined) => {
+      window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, {
+        detail: { code: value?.code },
+      }));
     });
 
     // Set up global event listeners

@@ -5,7 +5,7 @@ import * as runtimeConfig from '../config/runtimeConfig';
 import { DesktopContext } from './DesktopContext';
 import { normalizeBaseUrl } from './browserAdapters';
 import { useDesktopModal, useSerializedMutationQueue } from './desktopExperienceHooks';
-import type { DesktopAdapters, DesktopConnectionResult, DesktopProfile } from './types';
+import { DESKTOP_ACCESS_INVALID_EVENT, type DesktopAdapters, type DesktopConnectionResult, type DesktopProfile } from './types';
 import './desktop.css';
 
 type ExperienceState =
@@ -190,7 +190,8 @@ const ConnectionPanel: React.FC<{
         <span className="desktop-eyebrow">{connectionLabel(result)}</span>
         <h1>{profile.name}</h1>
         <p>{result.message || 'This instance needs authentication before ProPR Desktop can connect.'}</p>
-        {result.status === 'incompatible' && result.version && <div className="desktop-version-note">Instance version {result.version} · Desktop {__APP_VERSION__}</div>}
+        {'version' in result && result.version && <div className="desktop-version-note">Instance version {result.version} · Desktop {__APP_VERSION__}</div>}
+        {'authentication' in result && result.authentication && <div className="desktop-version-note">{result.authentication}</div>}
         <div className="desktop-connection-actions">
           {result.status === 'authentication-required' && <button type="button" className="desktop-primary-button" onClick={onAuthenticate}>Sign in in browser</button>}
           <button type="button" className={result.status === 'authentication-required' ? 'desktop-secondary-button' : 'desktop-primary-button'} onClick={onRetry}><RefreshCw /> Try again</button>
@@ -274,6 +275,28 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   }, [adapters, connect]);
 
   useEffect(() => {
+    const accessInvalid = () => {
+      setState(current => {
+        if (current.phase !== 'connected') return current;
+        void adapters.connection.clearCredentials?.(current.profile).catch(() => undefined);
+        adapters.connection.deactivate?.();
+        return {
+          phase: 'blocked',
+          profile: current.profile,
+          result: {
+            status: 'authentication-required',
+            message: 'Access to this instance was revoked or expired. Pair again to continue.',
+            version: current.result.version,
+            authentication: current.result.authentication,
+          },
+        };
+      });
+    };
+    window.addEventListener(DESKTOP_ACCESS_INVALID_EVENT, accessInvalid);
+    return () => window.removeEventListener(DESKTOP_ACCESS_INVALID_EVENT, accessInvalid);
+  }, [adapters]);
+
+  useEffect(() => {
     const online = () => setNetworkOffline(false);
     const offline = () => setNetworkOffline(true);
     window.addEventListener('online', online);
@@ -306,7 +329,10 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       await enqueueProfileMutation(() => adapters.profiles.remove(profile.id));
       setProfiles(current => current.filter(item => item.id !== profile.id));
       if (activeProfileId.current === profile.id) activeProfileId.current = null;
-      if (state.phase === 'connected' && state.profile.id === profile.id) setState({ phase: 'choose' });
+      if (state.phase === 'connected' && state.profile.id === profile.id) {
+        adapters.connection.deactivate?.();
+        setState({ phase: 'choose' });
+      }
     } catch (error) {
       setOperationError(recoverableError('ProPR Desktop could not remove this instance.', error));
     }
@@ -357,6 +383,8 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   };
 
   const choose = () => {
+    if ('profile' in state) adapters.authentication.cancel?.(state.profile.id);
+    adapters.connection.deactivate?.();
     const attempt = ++connectionAttempt.current;
     void enqueueProfileMutation(async () => {
       if (connectionAttempt.current !== attempt) return;

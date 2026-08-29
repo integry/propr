@@ -17,6 +17,15 @@ import {
   type ProprSocketOptions,
   type Socket,
 } from './socket.js';
+import {
+  completeDesktopPairing,
+  parseDesktopDiscovery,
+  parseDesktopPairingStart,
+  type ProprDesktopDiscovery,
+  type ProprDesktopPairingComplete,
+  type ProprDesktopPairingOptions,
+  type ProprDesktopPairingStart,
+} from './desktopPairing.js';
 
 export interface ProprClientOptions extends NormalizeApiBaseUrlOptions {
   baseUrl?: string | null;
@@ -213,6 +222,34 @@ export class ProprClient {
     return result;
   }
 
+  async discoverDesktop(timeoutMs = 8000): Promise<ProprDesktopDiscovery> {
+    const metadata = await this.request<unknown>('/api/desktop/discovery', {
+      cache: 'no-store',
+    }, { timeoutMs });
+    const compatibility = evaluateProprApiCompatibility(
+      metadata && typeof metadata === 'object'
+        ? metadata as Partial<ProprCompatibilityMetadata>
+        : {},
+    );
+    return parseDesktopDiscovery(metadata, compatibility);
+  }
+
+  async startDesktopPairing(clientName: string): Promise<ProprDesktopPairingStart> {
+    return parseDesktopPairingStart(await this.request<unknown>('/api/desktop/pairings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientName }),
+    }));
+  }
+
+  async pairDesktop(
+    clientName: string,
+    options: ProprDesktopPairingOptions = {},
+  ): Promise<ProprDesktopPairingComplete> {
+    const start = await this.startDesktopPairing(clientName);
+    return completeDesktopPairing(this, start, options);
+  }
+
   connectSocket(options: ProprSocketOptions = {}): Socket {
     return connectProprSocket(buildSocketConnection(this.baseUrl, this.authentication, options));
   }
@@ -276,6 +313,8 @@ export class ProprClient {
       }
       headers.set('Authorization', `Bearer ${token}`);
     }
-    return { ...init, headers };
+    // Bearer profiles must never accidentally inherit a browser/Electron cookie
+    // identity from another named profile on the same origin.
+    return { ...init, credentials: 'omit', headers };
   }
 }

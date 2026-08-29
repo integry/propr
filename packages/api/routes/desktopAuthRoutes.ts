@@ -148,6 +148,22 @@ export function createDesktopAuthRoutes(options: DesktopAuthRoutesOptions = {}) 
     }
   }
 
+  async function revokeCurrentToken(req: Request, res: Response): Promise<void> {
+    if (!req.user || req.authenticationMethod !== 'instance_token' || !req.instanceTokenId) {
+      res.status(403).json({
+        code: 'INSTANCE_TOKEN_REQUIRED',
+        error: 'The current desktop token is required',
+      });
+      return;
+    }
+    try {
+      await service.revokeToken(req.instanceTokenId, req.user);
+      res.status(204).end();
+    } catch (error) {
+      sendDesktopAuthError(error, res);
+    }
+  }
+
   return {
     browserSessionGuard,
     approvalOriginGuard,
@@ -157,6 +173,7 @@ export function createDesktopAuthRoutes(options: DesktopAuthRoutesOptions = {}) 
     openPairingApproval,
     approvePairing,
     listTokens,
+    revokeCurrentToken,
     revokeToken,
   };
 }

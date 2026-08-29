@@ -1,6 +1,6 @@
 import type { App, IpcMain, IpcMainInvokeEvent, Session } from 'electron';
 import { shell } from 'electron';
-import { logoutDesktopSession } from './desktop-session';
+import { clearDesktopInstanceCookies, logoutDesktopSession } from './desktop-session';
 import type { DesktopLogger } from './logger';
 import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
@@ -55,8 +55,23 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
   handle(IPC_CHANNELS.storageSecurity, () => options.profiles.security());
   handle(IPC_CHANNELS.profilesList, () => options.profiles.list());
   handle(IPC_CHANNELS.profilesSave, (_event, input) => options.profiles.save(input));
-  handle(IPC_CHANNELS.profilesRemove, (_event, profileId) => options.profiles.remove(profileId));
-  handle(IPC_CHANNELS.profilesSetActive, (_event, profileId) => options.profiles.setActive(profileId));
+  handle(IPC_CHANNELS.profilesRemove, async (_event, profileId) => {
+    const current = await options.profiles.list();
+    const removed = current.profiles.find(profile => profile.id === profileId);
+    if (removed) await clearDesktopInstanceCookies(options.desktopSession, [removed.apiBaseUrl]);
+    await options.profiles.remove(profileId);
+  });
+  handle(IPC_CHANNELS.profilesSetActive, async (_event, profileId) => {
+    const current = await options.profiles.list();
+    const previous = current.profiles.find(profile => profile.id === current.activeProfileId);
+    const next = current.profiles.find(profile => profile.id === profileId);
+    if (profileId !== null && !next) throw new Error('Desktop profile does not exist');
+    await clearDesktopInstanceCookies(options.desktopSession, [
+      ...(previous ? [previous.apiBaseUrl] : []),
+      ...(next ? [next.apiBaseUrl] : []),
+    ]);
+    await options.profiles.setActive(profileId);
+  });
   handle(IPC_CHANNELS.credentialsRead, (_event, profileId) => options.profiles.readCredential(profileId));
   handle(IPC_CHANNELS.credentialsWrite, (_event, profileId, value) => options.profiles.writeCredential(profileId, value));
   handle(IPC_CHANNELS.credentialsRemove, (_event, profileId) => options.profiles.removeCredential(profileId));
