@@ -83,6 +83,36 @@ describe('desktop browser pairing', () => {
     );
   });
 
+  test('does not place a Connect selector in hosted approval URLs for lookalike API hosts', async () => {
+    const lookalike = new DesktopAuthService({
+      database,
+      now: () => new Date(now),
+      approvalBaseUrl: 'https://app.propr.dev',
+      publicApiUrl: 'https://t-instance123.foo.propr.dev',
+    });
+    const pairing = await lookalike.startPairing('Lookalike test');
+
+    assert.equal(
+      lookalike.getFrontendApprovalUrl(pairing.pairingId).toString(),
+      `https://app.propr.dev/desktop/pairing?pairing_id=${pairing.pairingId}`,
+    );
+  });
+
+  test('does not treat an explicit-port spelling as a hosted Connect selector', async () => {
+    const explicitPort = new DesktopAuthService({
+      database,
+      now: () => new Date(now),
+      approvalBaseUrl: 'https://app.propr.dev',
+      publicApiUrl: 'https://t-instance123.propr.dev:443',
+    });
+    const pairing = await explicitPort.startPairing('Port test');
+
+    assert.equal(
+      explicitPort.getFrontendApprovalUrl(pairing.pairingId).toString(),
+      `https://app.propr.dev/desktop/pairing?pairing_id=${pairing.pairingId}`,
+    );
+  });
+
   test('issues an opaque token once, resolves its owner, and never stores plaintext credentials', async () => {
     const pairing = await service.startPairing('MacBook Pro');
     assert.deepEqual(await service.pollPairing(pairing.pairingId, pairing.deviceSecret), {

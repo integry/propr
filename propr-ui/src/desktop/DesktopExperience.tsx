@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { parseProprConnectEndpoint } from '@propr/shared';
 import { AlertTriangle, ArrowLeft, ChevronRight, Cloud, Computer, LoaderCircle, Pencil, Plus, RefreshCw, Search, Server, Trash2, X } from 'lucide-react';
 import { setApiBaseUrl } from '../api/apiClient';
 import * as runtimeConfig from '../config/runtimeConfig';
@@ -58,6 +59,7 @@ const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operationError, 
   const [name, setName] = useState(initial?.name || 'My ProPR');
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl || 'http://127.0.0.1:3000');
   const [validationError, setValidationError] = useState<string | null>(null);
+  const connectEndpoint = parseProprConnectEndpoint(baseUrl);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -91,6 +93,11 @@ const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operationError, 
         Instance URL
         <input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} inputMode="url" placeholder="https://propr.example.com" aria-describedby={error ? 'profile-url-error' : undefined} />
       </label>
+      {connectEndpoint && (
+        <div className="desktop-connect-verified" role="status">
+          <Cloud aria-hidden="true" /> Verified ProPR Connect endpoint
+        </div>
+      )}
       {error && <div id="profile-url-error" className="desktop-inline-error" role="alert">{error}</div>}
       <button type="submit" className="desktop-primary-button">{initial ? 'Save changes' : 'Connect'}</button>
     </form>

@@ -78,6 +78,21 @@ describe('DesktopExperience', () => {
     expect(apiMock.setApiBaseUrl).toHaveBeenCalledWith(localProfile.baseUrl);
   });
 
+  it('identifies only a verified ProPR Connect endpoint while adding a profile', async () => {
+    const adapters = adaptersFor();
+    render(<DesktopExperience adapters={adapters}><div>Shared route tree</div></DesktopExperience>);
+    fireEvent.click(await screen.findByRole('button', { name: /Connect to an existing instance/i }));
+
+    const input = screen.getByLabelText('Instance URL');
+    fireEvent.change(input, { target: { value: 'https://t-instance123.propr.dev' } });
+    expect(screen.getByRole('status')).toHaveTextContent('Verified ProPR Connect endpoint');
+
+    fireEvent.change(input, { target: { value: 'https://t-instance123.propr.dev:8443' } });
+    expect(screen.queryByText('Verified ProPR Connect endpoint')).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'https://t-instance123.foo.propr.dev' } });
+    expect(screen.queryByText('Verified ProPR Connect endpoint')).not.toBeInTheDocument();
+  });
+
   it('shows a retryable offline state and recovers without reloading', async () => {
     const probe = vi.fn()
       .mockResolvedValueOnce({ status: 'offline', message: 'The instance is offline.' })

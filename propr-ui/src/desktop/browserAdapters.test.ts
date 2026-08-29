@@ -28,10 +28,12 @@ describe('desktop browser fixtures', () => {
     expect(resolveDesktopAdapters()).toBeNull();
   });
 
-  it('normalizes safe instance origins and rejects non-http protocols', () => {
+  it('normalizes safe instance origins and rejects unsafe URL components', () => {
     expect(normalizeBaseUrl(' https://propr.example.com/// ')).toBe('https://propr.example.com');
-    expect(() => normalizeBaseUrl('file:///tmp/propr')).toThrow(/http/);
+    expect(() => normalizeBaseUrl('file:///tmp/propr')).toThrow(/http/i);
     expect(() => normalizeBaseUrl('https://user:secret@example.com')).toThrow(/credentials/);
+    expect(() => normalizeBaseUrl('https://propr.example.com/api')).toThrow(/without a path/);
+    expect(() => normalizeBaseUrl('https://propr.example.com?token=secret')).toThrow(/query string/);
   });
 
   it('resolves fixture authentication only after the matching desktop completion signal', async () => {

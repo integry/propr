@@ -2,6 +2,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
+import { parseProprConnectEndpoint } from '@propr/shared';
 import type { GitHubUser } from './authTypes.js';
 
 const DEFAULT_PAIRING_TTL_MS = 10 * 60_000;
@@ -240,9 +241,11 @@ export class DesktopAuthService {
     approvalUrl.search = '';
     approvalUrl.hash = '';
     approvalUrl.searchParams.set('pairing_id', pairingId);
-    const apiUrl = publicApiBase(this.publicApiUrl);
-    if (approvalUrl.hostname === 'app.propr.dev' && apiUrl?.hostname.startsWith('t-') && apiUrl.hostname.endsWith('.propr.dev')) {
-      approvalUrl.searchParams.set('tunnel', apiUrl.hostname);
+    const connectEndpoint = parseProprConnectEndpoint(
+      this.publicApiUrl ?? process.env.API_PUBLIC_URL,
+    );
+    if (approvalUrl.origin === 'https://app.propr.dev' && connectEndpoint) {
+      approvalUrl.searchParams.set('tunnel', connectEndpoint.hostname);
     }
     return approvalUrl;
   }

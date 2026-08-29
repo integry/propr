@@ -69,10 +69,16 @@ export function proprInstanceProxyUrl(instanceId) {
 // proprTunnelEndpoints does not double up the /api prefix). Mirrors
 // isProprProxyUrl() in the shared pkg.
 export function isProprProxyUrl(url) {
-    if (!url) return false;
+    const candidate = url?.trim();
+    if (!candidate) return false;
     try {
-        const { protocol, hostname, pathname, search, hash } = new URL(url);
-        if (protocol !== 'https:') return false;
+        const parsed = new URL(candidate);
+        const { protocol, hostname, pathname, search, hash } = parsed;
+        if (protocol !== 'https:' || parsed.username || parsed.password || parsed.port) return false;
+        // Reject authority spellings that WHATWG URL parsing would silently
+        // canonicalize into a trusted Connect hostname.
+        const authorityMatch = /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i.exec(candidate);
+        if (!authorityMatch || authorityMatch[1].toLowerCase() !== hostname.toLowerCase()) return false;
         // Trailing slashes are tolerated; any real path segment/query/fragment
         // is rejected so a base path can't double up the appended /api prefix.
         if (/[^/]/.test(pathname) || search || hash) return false;
@@ -82,7 +88,8 @@ export function isProprProxyUrl(url) {
         if (label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) {
             return false;
         }
-        return isValidProprInstanceId(label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length));
+        return label.length <= 63
+            && isValidProprInstanceId(label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length));
     } catch {
         return false;
     }

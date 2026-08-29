@@ -1,5 +1,6 @@
 import { StrictMode, type ComponentType, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { parseProprConnectEndpoint } from '@propr/shared';
 import type {
   DesktopAppMetadata,
   DesktopProfile,
@@ -53,6 +54,7 @@ export const ConnectionPlaceholder = ({
   const [apiBaseUrl, setApiBaseUrl] = useState(initialApiUrl);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const connectEndpoint = parseProprConnectEndpoint(apiBaseUrl);
 
   useEffect(() => setApiBaseUrl(initialApiUrl), [initialApiUrl]);
 
@@ -111,6 +113,11 @@ export const ConnectionPlaceholder = ({
             <span className="mt-2 block text-xs font-normal text-slate-500">
               HTTPS is required except for localhost connections.
             </span>
+            {connectEndpoint && (
+              <span className="mt-2 block text-xs font-semibold text-teal-700" role="status">
+                Verified ProPR Connect endpoint
+              </span>
+            )}
           </label>
           {security && !security.available && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">

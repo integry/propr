@@ -37,4 +37,16 @@ describe('Socket.IO connection configuration', () => {
     token = 'refreshed-token';
     assert.deepEqual(await resolveAuth(), { token: 'refreshed-token' });
   });
+
+  it('routes Connect Socket.IO to the same origin and fixed proxy path', () => {
+    const connection = buildSocketConnection(
+      normalizeApiBaseUrl('https://t-instance123.propr.dev'),
+      { type: 'none' }
+    );
+
+    assert.equal(connection.url, 'https://t-instance123.propr.dev');
+    assert.equal(connection.options.path, '/socket.io/');
+    assert.equal(connection.options.reconnection, true);
+    assert.equal(connection.options.reconnectionAttempts, Infinity);
+  });
 });

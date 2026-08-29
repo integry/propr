@@ -1,3 +1,4 @@
+import { normalizeApiBaseUrl, ProprClientError } from '@propr/client';
 import { evaluateProprApiCompatibility } from '@propr/shared';
 import type {
   DesktopAdapters,
@@ -25,15 +26,14 @@ const fixtureProfile: DesktopProfile = {
 };
 
 const normalizeBaseUrl = (value: string): string => {
-  const url = new URL(value.trim());
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('Instance URLs must use http:// or https://.');
+  try {
+    const normalized = normalizeApiBaseUrl(value);
+    if (!normalized) throw new Error('Enter an instance URL.');
+    return normalized;
+  } catch (error) {
+    if (error instanceof ProprClientError) throw new Error(error.message);
+    throw error;
   }
-  if (url.username || url.password) throw new Error('Instance URLs cannot contain credentials.');
-  url.pathname = url.pathname.replace(/\/+$/, '');
-  url.search = '';
-  url.hash = '';
-  return url.toString().replace(/\/+$/, '');
 };
 
 const readProfiles = (): DesktopProfile[] => {

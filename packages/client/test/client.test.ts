@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { PROPR_API_COMPATIBILITY } from '@propr/shared';
 import {
+  classifyApiBaseUrl,
   ProprClient,
   ProprClientError,
   normalizeApiBaseUrl,
@@ -34,13 +35,55 @@ describe('Propr API base URLs and instance profiles', () => {
       'https://propr.example.com/api',
       'https://propr.example.com?token=secret',
       'http://propr.example.com',
+      'https://t-instance123.propr.dev:443',
+      'https://t-instance123.propr.dev:8443',
+      'https://t-%69nstance123.propr.dev',
+      'https://t-instance123.propr%2edev',
     ]) {
       assert.throws(() => normalizeApiBaseUrl(value), ProprClientError);
+    }
+  });
+
+  it('classifies only the canonical hosted ProPR Connect origin as verified', () => {
+    assert.deepEqual(classifyApiBaseUrl(' https://T-instance-123.propr.dev/ '), {
+      baseUrl: 'https://t-instance-123.propr.dev',
+      kind: 'propr-connect',
+      connectInstanceId: 'instance-123',
+    });
+    assert.equal(classifyApiBaseUrl('http://127.0.0.1:4000').kind, 'loopback');
+    assert.equal(classifyApiBaseUrl('https://propr.example.com').kind, 'remote');
+
+    for (const lookalike of [
+      'https://t-instance-123.propr.dev.example.com',
+      'https://t-instance-123.foo.propr.dev',
+      'https://t-\u0430bc.propr.dev',
+      'https://t-abc.pr\u03bfpr.dev',
+    ]) {
+      assert.notEqual(classifyApiBaseUrl(lookalike).kind, 'propr-connect', lookalike);
     }
   });
 });
 
 describe('ProprClient REST transport', () => {
+  it('routes Connect status and REST calls directly to the verified origin', async () => {
+    const calls: string[] = [];
+    const client = new ProprClient({
+      baseUrl: 'https://t-instance123.propr.dev',
+      authentication: { type: 'none' },
+      fetch: async input => {
+        calls.push(input.toString());
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+
+    await client.request('/api/status');
+    await client.request('/api/tasks');
+    assert.deepEqual(calls, [
+      'https://t-instance123.propr.dev/api/status',
+      'https://t-instance123.propr.dev/api/tasks',
+    ]);
+  });
+
   it('adds a fresh bearer token without exposing it in the endpoint', async () => {
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
     const client = new ProprClient({

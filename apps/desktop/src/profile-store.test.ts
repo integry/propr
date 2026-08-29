@@ -99,6 +99,14 @@ describe('desktop profile store', () => {
       store.save({ id: profile.id, label: 'Path bearing', apiBaseUrl: 'https://propr.example.com/base' }),
       /HTTPS/,
     );
+    await assert.rejects(
+      store.save({ label: 'Encoded Connect', apiBaseUrl: 'https://t-%69nstance123.propr.dev' }),
+      /HTTPS/,
+    );
+    await assert.rejects(
+      store.save({ label: 'Port Connect', apiBaseUrl: 'https://t-instance123.propr.dev:443' }),
+      /HTTPS/,
+    );
     assert.deepEqual((await store.list()).profiles, [profile]);
     assert.doesNotMatch(await readFile(join(directory, 'desktop', 'profiles.json'), 'utf8'), /\/base/);
     await assert.rejects(store.writeCredential('../escape', 'secret'), /Invalid desktop profile id/);

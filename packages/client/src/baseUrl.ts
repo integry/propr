@@ -1,3 +1,4 @@
+import { parseProprConnectEndpoint } from '@propr/shared';
 import { ProprClientError } from './errors.js';
 
 declare const normalizedApiBaseUrl: unique symbol;
@@ -8,6 +9,15 @@ export type ProprApiBaseUrl = string & { readonly [normalizedApiBaseUrl]: true }
 export interface NormalizeApiBaseUrlOptions {
   /** Permit plain HTTP for a non-loopback host. Disabled by default. */
   allowInsecureHttp?: boolean;
+}
+
+export type ProprApiEndpointKind = 'same-origin' | 'loopback' | 'remote' | 'propr-connect';
+
+export interface ProprApiEndpointClassification {
+  baseUrl: ProprApiBaseUrl;
+  kind: ProprApiEndpointKind;
+  /** Present only after exact ProPR Connect hostname verification. */
+  connectInstanceId?: string;
 }
 
 const isLoopbackHostname = (hostname: string): boolean => {
@@ -58,7 +68,33 @@ export const normalizeApiBaseUrl = (
     return configurationError('Plain HTTP is only allowed for loopback ProPR API URLs.');
   }
 
+  const connectHostname = parseProprConnectEndpoint(`https://${parsed.hostname}`);
+  if (connectHostname && !parseProprConnectEndpoint(candidate)) {
+    return configurationError('ProPR Connect URLs must use the canonical HTTPS origin without credentials, a port, path, query, fragment, or encoded host.');
+  }
+
   return parsed.origin as ProprApiBaseUrl;
+};
+
+/** Normalize an API origin and identify only the exact ProPR Connect shape. */
+export const classifyApiBaseUrl = (
+  value?: string | null,
+  options: NormalizeApiBaseUrlOptions = {}
+): ProprApiEndpointClassification => {
+  const baseUrl = normalizeApiBaseUrl(value, options);
+  if (!baseUrl) return { baseUrl, kind: 'same-origin' };
+
+  // Classify the original spelling, not the normalized origin. Otherwise an
+  // encoded or Unicode authority could acquire the trusted Connect label only
+  // after WHATWG URL canonicalization.
+  const connect = parseProprConnectEndpoint(value);
+  if (connect) {
+    return { baseUrl, kind: 'propr-connect', connectInstanceId: connect.instanceId };
+  }
+  return {
+    baseUrl,
+    kind: isLoopbackHostname(new URL(baseUrl).hostname) ? 'loopback' : 'remote',
+  };
 };
 
 export const apiUrl = (baseUrl: ProprApiBaseUrl, path: string): string => {

@@ -98,9 +98,16 @@ export {
   DEFAULT_CLOUDFLARED_IMAGE,
   proprInstanceProxyUrl,
   isValidProprInstanceId,
+  parseProprConnectEndpoint,
+  type ProprConnectEndpoint,
   isProprProxyUrl,
   proprTunnelEndpoints,
 } from './proprServiceUrls.js';
+
+export {
+  normalizeDesktopPairingApprovalUrl,
+  type DesktopPairingApprovalUrlInput,
+} from './desktopPairing.js';
 
 // Export routing URL validation (shared by intake prerequisites and the daemon
 // routing service so the boot/CLI checks and the dialer agree on one policy)

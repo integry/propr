@@ -50,6 +50,14 @@ export const DESKTOP_RENDERER_ORIGIN = 'propr-app://renderer';
 export const PROPR_UI_PROXY_SUFFIX = 'propr.dev';
 export const PROPR_UI_PROXY_LABEL_PREFIX = 't-';
 
+/** A verified, canonical ProPR Connect API origin. */
+export interface ProprConnectEndpoint {
+  kind: 'propr-connect';
+  origin: string;
+  hostname: string;
+  instanceId: string;
+}
+
 /**
  * Default Cloudflare Tunnel image used to expose the local stack's UI/API to
  * the hosted control plane when a UI tunnel is enabled. This is only a fallback:
@@ -99,26 +107,56 @@ export function proprInstanceProxyUrl(instanceId: string | undefined | null): st
  * {@link proprTunnelEndpoints} appends `/api/...` itself and a base path would
  * double it up (`.../api/api/status`). Returns false for a malformed URL.
  */
-export function isProprProxyUrl(url: string | undefined | null): boolean {
-  if (!url) return false;
+export function parseProprConnectEndpoint(url: string | undefined | null): ProprConnectEndpoint | null {
+  const candidate = url?.trim();
+  if (!candidate) return null;
   try {
-    const { protocol, hostname, pathname, search, hash } = new URL(url);
-    if (protocol !== 'https:') return false;
+    const parsed = new URL(candidate);
+    const { protocol, hostname, pathname, search, hash } = parsed;
+    if (protocol !== 'https:' || parsed.username || parsed.password || parsed.port) return null;
+
+    // Compare the authority before WHATWG URL normalization. This rejects an
+    // explicit default/alternate port, Unicode/IDNA input, percent-encoded host
+    // bytes, credentials, and other spellings that could otherwise normalize
+    // into a trusted-looking Connect hostname after validation.
+    const authorityMatch = /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i.exec(candidate);
+    if (!authorityMatch || authorityMatch[1].toLowerCase() !== hostname.toLowerCase()) return null;
+
     // Must be a bare origin — the tunnel endpoint helpers own the path suffix.
     // Trailing slashes (`/`, `//`) are tolerated (callers trim them); any real
     // path segment, query, or fragment is rejected so a base path can't double
     // up the appended `/api/...`.
-    if (/[^/]/.test(pathname) || search || hash) return false;
+    if (/[^/]/.test(pathname) || search || hash) return null;
     const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
-    if (!hostname.endsWith(suffix)) return false;
+    if (!hostname.endsWith(suffix)) return null;
     const label = hostname.slice(0, -suffix.length);
     if (label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) {
-      return false;
+      return null;
     }
-    return isValidProprInstanceId(label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length));
+    const instanceId = label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length);
+    // The complete `t-<id>` value is one DNS label and therefore cannot exceed
+    // 63 characters, even though an instance id used elsewhere may be longer.
+    if (label.length > 63 || !isValidProprInstanceId(instanceId)) return null;
+    return {
+      kind: 'propr-connect',
+      origin: parsed.origin,
+      hostname,
+      instanceId,
+    };
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * Whether a URL is the exact hosted endpoint shape used by ProPR Connect.
+ *
+ * The legacy function name remains part of the tunnel configuration contract;
+ * new desktop-facing code should prefer {@link parseProprConnectEndpoint} so
+ * user-visible copy can consistently use the ProPR Connect name.
+ */
+export function isProprProxyUrl(url: string | undefined | null): boolean {
+  return parseProprConnectEndpoint(url) !== null;
 }
 
 function normalizeProprInstanceId(instanceId: string | undefined | null): string {

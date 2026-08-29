@@ -22,6 +22,11 @@ describe('desktop URL security', () => {
     assert.equal(normalizeApiBaseUrl('http://propr.example.com'), null);
     assert.equal(normalizeApiBaseUrl('http://[2001:db8::1]:4000'), null);
     assert.equal(normalizeApiBaseUrl('https://user:secret@propr.example.com'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev'), 'https://t-instance123.propr.dev');
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev:443'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr.dev:8443'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-%69nstance123.propr.dev'), null);
+    assert.equal(normalizeApiBaseUrl('https://t-instance123.propr%2edev'), null);
     assert.equal(normalizeApiBaseUrl('file:///tmp/propr'), null);
   });
 
