@@ -540,6 +540,73 @@ export class NotificationService {
         return this.updateInboxTimestamp(userId, eventId, 'dismissed_at');
     }
 
+    /** Dismiss every Inbox receipt for one immutable audit event. */
+    async dismissNotificationReceipts(eventId: string): Promise<number> {
+        assertIdentifier(eventId, 'notification eventId');
+        return this.dismissReceiptQuery(
+            this.database('notification_events').select('event_id').where({ event_id: eventId })
+        );
+    }
+
+    /**
+     * Close every Inbox card whose target is the given pull request. Audit
+     * events and push-delivery history remain untouched.
+     */
+    async dismissNotificationsForPullRequest(
+        repository: string,
+        prNumber: number
+    ): Promise<number> {
+        assertIdentifier(repository, 'notification repository');
+        if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+            throw new TypeError('notification prNumber must be a positive safe integer');
+        }
+        return this.dismissReceiptQuery(
+            this.matchingTargetEvents(['task', 'review', 'pull_request'])
+                .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
+                .whereRaw("json_extract(event.target_json, '$.prNumber') = ?", [prNumber])
+        );
+    }
+
+    /** Keep only the newest PR-attention event visible for a repository/PR. */
+    async dismissSupersededPullRequestAttentionNotifications(
+        repository: string,
+        prNumber: number
+    ): Promise<number> {
+        assertIdentifier(repository, 'notification repository');
+        if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+            throw new TypeError('notification prNumber must be a positive safe integer');
+        }
+
+        return this.database.transaction(async (transaction) => {
+            const matching = () => transaction('notification_events as event')
+                .where({ 'event.kind': 'pull_request' })
+                .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
+                .whereRaw("json_extract(event.target_json, '$.prNumber') = ?", [prNumber]);
+            const newest = await matching()
+                .select('event.event_id')
+                .orderBy('event.occurred_at', 'desc')
+                .orderBy('event.event_id', 'desc')
+                .first() as { event_id: string } | undefined;
+            if (!newest) return 0;
+
+            return this.dismissReceiptQuery(
+                matching().select('event.event_id').whereNot({
+                    'event.event_id': newest.event_id
+                }),
+                transaction
+            );
+        });
+    }
+
+    /** Dismiss active failure cards for one system-health component. */
+    async dismissSystemFailureNotifications(component: string): Promise<number> {
+        assertIdentifier(component, 'notification system component');
+        return this.dismissReceiptQuery(
+            this.matchingTargetEvents(['system_failure'])
+                .whereRaw("json_extract(event.target_json, '$.component') = ?", [component])
+        );
+    }
+
     private async readPreferenceSnapshot(
         database: Database,
         userId: string
@@ -727,6 +794,30 @@ export class NotificationService {
         }
     }
 
+    private matchingTargetEvents(kinds: readonly NotificationKind[]): Knex.QueryBuilder {
+        return this.database('notification_events as event')
+            .select('event.event_id')
+            .whereIn('event.kind', kinds);
+    }
+
+    private async dismissReceiptQuery(
+        eventIds: Knex.QueryBuilder,
+        database: Database = this.database
+    ): Promise<number> {
+        const timestamp = normalizeISO8601Timestamp(this.now());
+        const changed = await database('notification_user_states')
+            .where({ inbox_enabled: true })
+            .whereNull('dismissed_at')
+            .whereIn('event_id', eventIds)
+            .update({
+                dismissed_at: database.raw(
+                    'CASE WHEN created_at > ? THEN created_at ELSE ? END',
+                    [timestamp, timestamp]
+                )
+            });
+        return Number(changed);
+    }
+
     private async updateInboxTimestamp(
         userId: string,
         eventId: string,
@@ -799,6 +890,17 @@ export const markNotificationRead = notificationService.markNotificationRead
     .bind(notificationService) as NotificationService['markNotificationRead'];
 export const dismissNotification = notificationService.dismissNotification
     .bind(notificationService) as NotificationService['dismissNotification'];
+export const dismissNotificationReceipts = notificationService.dismissNotificationReceipts
+    .bind(notificationService) as NotificationService['dismissNotificationReceipts'];
+export const dismissNotificationsForPullRequest = notificationService
+    .dismissNotificationsForPullRequest
+    .bind(notificationService) as NotificationService['dismissNotificationsForPullRequest'];
+export const dismissSupersededPullRequestAttentionNotifications = notificationService
+    .dismissSupersededPullRequestAttentionNotifications
+    .bind(notificationService) as NotificationService['dismissSupersededPullRequestAttentionNotifications'];
+export const dismissSystemFailureNotifications = notificationService
+    .dismissSystemFailureNotifications
+    .bind(notificationService) as NotificationService['dismissSystemFailureNotifications'];
 export const getNotificationPreferences = notificationService.getNotificationPreferences
     .bind(notificationService) as NotificationService['getNotificationPreferences'];
 export const updateNotificationPreferences = notificationService.updateNotificationPreferences

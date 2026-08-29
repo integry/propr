@@ -6,6 +6,7 @@ import { DRAFT_UPDATE, INDEXING_UPDATE, TASK_UPDATE } from '@propr/shared';
 import { up as createNotificationSchema } from '../../core/src/db/migrations/20260802000000_create_notification_schema.js';
 import { up as addNotificationPreferenceApis } from '../../core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
 import { up as addAdvertisedActions } from '../../core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
+import { up as addSystemFailureState } from '../../core/src/db/migrations/20260829000000_add_notification_system_failure_state.js';
 import { NotificationProjectionService } from '../services/notificationProjectionService.js';
 
 let database: Knex;
@@ -68,6 +69,7 @@ beforeEach(async () => {
   await createNotificationSchema(database);
   await addNotificationPreferenceApis(database);
   await addAdvertisedActions(database);
+  await addSystemFailureState(database);
   const notificationService = new NotificationService({
     database,
     now: () => new Date(clock),
@@ -182,6 +184,49 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     );
     assert.doesNotMatch(JSON.stringify(events), /evil\.example|SECRET/);
     assert.equal(await eventCount(), 4);
+  });
+
+  test('replaces an older PR-attention card while preserving both audit events', async () => {
+    const firstAt = iso();
+    const secondAt = iso(1_000);
+    await database('tasks').insert([
+      {
+        task_id: 'pr-work-first', repository: 'integry/propr', issue_number: 42,
+        pr_number: 42, task_type: 'pr-comment', initial_job_data: '{}',
+      },
+      {
+        task_id: 'pr-work-second', repository: 'integry/propr', issue_number: 42,
+        pr_number: 42, task_type: 'pr-comment', initial_job_data: '{}',
+      },
+    ]);
+    await database('task_history').insert([
+      { task_id: 'pr-work-first', state: 'completed', timestamp: firstAt, metadata: '{}' },
+      { task_id: 'pr-work-second', state: 'completed', timestamp: secondAt, metadata: '{}' },
+    ]);
+
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'pr-work-first', state: 'completed',
+      repository: 'integry/propr', timestamp: firstAt,
+    });
+    clock += 1_000;
+    await projection.projectTaskUpdate({
+      eventType: TASK_UPDATE, taskId: 'pr-work-second', state: 'completed',
+      repository: 'integry/propr', timestamp: secondAt,
+    });
+
+    const attentionEvents = await database('notification_events')
+      .where({ kind: 'pull_request' })
+      .orderBy('occurred_at');
+    assert.equal(attentionEvents.length, 2, 'immutable audit events are retained');
+    const visibleReceipts = await database('notification_user_states as receipt')
+      .join('notification_events as event', 'event.event_id', 'receipt.event_id')
+      .where({ 'event.kind': 'pull_request', 'receipt.inbox_enabled': true })
+      .whereNull('receipt.dismissed_at')
+      .select('receipt.user_id', 'event.occurred_at');
+    assert.deepEqual(visibleReceipts.map(row => row.user_id).sort(), [
+      'admin-user', 'member-user',
+    ]);
+    assert.ok(visibleReceipts.every(row => row.occurred_at === secondAt));
   });
 
   test('ignores stale task transitions and emits one stalled event per unchanged activity', async () => {
@@ -380,7 +425,7 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     );
   });
 
-  test('deduplicates one unhealthy period and allows a later failure after recovery', async () => {
+  test('deduplicates system failures across instances and dismisses them on recovery', async () => {
     const unhealthy = {
       timestamp: iso(), api: 'healthy', redis: 'disconnected', daemon: 'running',
       worker: 'running', githubAuth: 'connected', githubEventIntakeStatus: 'active',
@@ -388,25 +433,54 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
       warnings: [{ message: 'SECRET SYSTEM ERROR' }],
     };
     await projection.projectSystemSnapshot(unhealthy);
+    const secondProjection = new NotificationProjectionService({
+      database,
+      notificationService: new NotificationService({ database, now: () => new Date(clock) }),
+      now: () => new Date(clock),
+    });
     clock += 1_000;
-    await projection.projectSystemSnapshot({ ...unhealthy, timestamp: iso() });
+    await secondProjection.projectSystemSnapshot({ ...unhealthy, timestamp: iso() });
     await projection.projectSystemSnapshot({
       ...unhealthy,
       timestamp: new Date(clock - 2_000).toISOString(),
       redis: 'connected',
     });
     clock += 1_000;
-    await projection.projectSystemSnapshot({ ...unhealthy, timestamp: iso(), redis: 'connected' });
+    await secondProjection.projectSystemSnapshot({
+      ...unhealthy, timestamp: iso(), redis: 'connected',
+    });
+
+    let events = await database('notification_events').where({ kind: 'system_failure' });
+    assert.equal(events.length, 1);
+    assert.equal(
+      await database('notification_user_states as receipt')
+        .join('notification_events as event', 'event.event_id', 'receipt.event_id')
+        .where({ 'event.kind': 'system_failure' })
+        .whereNull('receipt.dismissed_at')
+        .count('* as count').first().then(row => Number(row?.count)),
+      0,
+      'healthy recovery closes the active card',
+    );
+
     clock += 1_000;
     await projection.projectSystemSnapshot({ ...unhealthy, timestamp: iso() });
 
-    const events = await database('notification_events').where({ kind: 'system_failure' });
+    events = await database('notification_events').where({ kind: 'system_failure' });
     assert.equal(events.length, 2);
     assert.doesNotMatch(JSON.stringify(events), /SECRET SYSTEM ERROR/);
     assert.deepEqual(
       await database('notification_user_states').distinct('user_id').pluck('user_id'),
       ['admin-user'],
     );
+    assert.equal(
+      await database('notification_user_states as receipt')
+        .join('notification_events as event', 'event.event_id', 'receipt.event_id')
+        .where({ 'event.kind': 'system_failure' })
+        .whereNull('receipt.dismissed_at')
+        .count('* as count').first().then(row => Number(row?.count)),
+      1,
+    );
+    secondProjection.close();
   });
 
   test('logs and isolates projection persistence failures', async () => {
@@ -417,6 +491,9 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         createNotificationEvent: async () => {
           throw new Error('database unavailable');
         },
+        dismissNotificationReceipts: async () => 0,
+        dismissSupersededPullRequestAttentionNotifications: async () => 0,
+        dismissSystemFailureNotifications: async () => 0,
       },
       logger: { warn: message => warnings.push(message) },
     });

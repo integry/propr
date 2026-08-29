@@ -14,6 +14,7 @@ import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
 import { loadPrLabel } from '../config/configManager.js';
 import { checkAndMigrateRepositoryFromWebhook } from './planIssueTrackingHelpers.js';
 import { handleMergedPRNextIssueTrigger } from './planIssueTrigger.js';
+import { notificationService } from '../services/notificationService.js';
 import type {
     IssuesEvent,
     IssueCommentEvent,
@@ -242,6 +243,19 @@ export async function handlePlanPRUpdate(
     const action = payload.action;
 
     try {
+        if (action === 'closed' && payload.pull_request.merged === true) {
+            try {
+                await notificationService.dismissNotificationsForPullRequest(
+                    repository,
+                    prNumber
+                );
+            } catch (error) {
+                // Inbox lifecycle is best effort and must not prevent the plan
+                // issue or chained-plan merge handling below.
+                log.warn({ error, repository, prNumber }, 'Failed to dismiss merged PR notifications');
+            }
+        }
+
         await checkRenamesFromPRBody(payload, repository, prNumber, log);
 
         const prTitle = payload.pull_request.title || '';

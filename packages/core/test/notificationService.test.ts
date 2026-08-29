@@ -352,6 +352,60 @@ describe('notification service', { concurrency: false }, () => {
         assert.equal(await service.dismissNotification('user-b', 'event-a'), null);
     });
 
+    test('dismisses all PR-related receipts without deleting audit events', async () => {
+        const recipients = ['user-a', 'user-b'];
+        await service.createNotificationEvent({
+            eventId: 'pr-task-event',
+            deduplicationKey: 'pr-task-event-key',
+            kind: 'task',
+            target: {
+                type: 'task', repository: 'integry/propr', taskId: 'pr-task', prNumber: 42
+            },
+            title: 'Implementation completed', body: 'Implementation completed.', recipients
+        });
+        await service.createNotificationEvent({
+            eventId: 'pr-review-event',
+            deduplicationKey: 'pr-review-event-key',
+            kind: 'review',
+            target: {
+                type: 'review', repository: 'integry/propr', taskId: 'review-task', prNumber: 42
+            },
+            title: 'Review completed', body: 'Review completed.', recipients
+        });
+        await service.createNotificationEvent({
+            eventId: 'pr-attention-event',
+            deduplicationKey: 'pr-attention-event-key',
+            kind: 'pull_request',
+            target: { type: 'pull_request', repository: 'integry/propr', prNumber: 42 },
+            title: 'Pull request needs attention', body: 'PR needs attention.', recipients
+        });
+        await service.createNotificationEvent({
+            eventId: 'other-pr-event',
+            deduplicationKey: 'other-pr-event-key',
+            kind: 'pull_request',
+            target: { type: 'pull_request', repository: 'integry/propr', prNumber: 43 },
+            title: 'Other pull request', body: 'Another PR.', recipients
+        });
+
+        assert.equal(await service.dismissNotificationsForPullRequest('integry/propr', 42), 6);
+        assert.equal(await service.dismissNotificationsForPullRequest('integry/propr', 42), 0);
+        assert.equal(
+            await database('notification_events').count('* as count').first()
+                .then(row => Number(row?.count)),
+            4,
+            'immutable event audit rows remain',
+        );
+        assert.deepEqual(
+            (await service.listNotifications('user-a')).notifications.map(item => item.id),
+            ['other-pr-event']
+        );
+        assert.equal(
+            (await service.listNotifications('user-a', { includeDismissed: true }))
+                .notifications.length,
+            4
+        );
+    });
+
     test('rejects malformed pagination inputs and clamps large valid limits', async () => {
         assert.equal(parseNotificationListLimit(10_000), MAX_NOTIFICATION_LIST_LIMIT);
         await assert.rejects(

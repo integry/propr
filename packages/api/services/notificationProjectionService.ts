@@ -31,7 +31,13 @@ interface NotificationEventWriter {
   createNotificationEvent<K extends NotificationKind>(
     input: CreateNotificationEventInput<K>,
     recipients?: readonly NotificationRecipient[],
-  ): Promise<unknown>;
+  ): Promise<{ id: string }>;
+  dismissNotificationReceipts(eventId: string): Promise<number>;
+  dismissSupersededPullRequestAttentionNotifications(
+    repository: string,
+    prNumber: number,
+  ): Promise<number>;
+  dismissSystemFailureNotifications(component: string): Promise<number>;
 }
 
 export interface NotificationProjectionOptions {
@@ -67,9 +73,18 @@ interface SourceActivityRow {
   metadata_json: string | null;
 }
 
+interface SystemFailureStateRow {
+  component: string;
+  failure_status: string | null;
+  failure_started_at: string | null;
+  last_snapshot_at: string;
+}
+
 interface SystemFailureTransition {
-  status: string;
-  occurredAt: string;
+  accepted: boolean;
+  changed: boolean;
+  status?: string;
+  occurredAt?: string;
 }
 
 const SYSTEM_HEALTH_RULES: Readonly<Record<string, ReadonlySet<string>>> = {
@@ -202,8 +217,6 @@ export class NotificationProjectionService {
   private readonly stalledAfterMs: number;
   private readonly stalledCheckIntervalMs: number;
   private readonly logger: ProjectionLogger;
-  private readonly systemFailures = new Map<string, SystemFailureTransition>();
-  private readonly latestSystemSnapshotAt = new Map<string, string>();
   private stalledTimer: NodeJS.Timeout | undefined;
 
   constructor(options: NotificationProjectionOptions) {
@@ -367,6 +380,10 @@ export class NotificationProjectionService {
         ...pullRequestAction(pullRequestUrl),
         occurredAt,
       }, recipients);
+      await this.notifications.dismissSupersededPullRequestAttentionNotifications(
+        context.repository,
+        context.prNumber,
+      );
     }
   }
 
@@ -461,20 +478,23 @@ export class NotificationProjectionService {
     for (const [component, healthyValues] of Object.entries(SYSTEM_HEALTH_RULES)) {
       const rawStatus = snapshot[component];
       if (typeof rawStatus !== 'string') continue;
-      const latestSnapshotAt = this.latestSystemSnapshotAt.get(component);
-      if (latestSnapshotAt !== undefined && snapshotAt < latestSnapshotAt) continue;
-      this.latestSystemSnapshotAt.set(component, snapshotAt);
-      if (healthyValues.has(rawStatus)) {
-        this.systemFailures.delete(component);
+      const healthy = healthyValues.has(rawStatus);
+      const transition = await this.persistSystemFailureTransition(
+        component,
+        rawStatus,
+        healthy,
+        snapshotAt,
+      );
+      if (!transition.accepted) continue;
+      if (healthy) {
+        await this.notifications.dismissSystemFailureNotifications(component);
         continue;
       }
 
-      let transition = this.systemFailures.get(component);
-      if (!transition || transition.status !== rawStatus) {
-        transition = { status: rawStatus, occurredAt: snapshotAt };
-        this.systemFailures.set(component, transition);
+      if (transition.changed) {
+        await this.notifications.dismissSystemFailureNotifications(component);
       }
-      await this.notifications.createNotificationEvent({
+      const event = await this.notifications.createNotificationEvent({
         deduplicationKey: stableKey(
           'system-failure', component, transition.status, transition.occurredAt,
         ),
@@ -486,6 +506,20 @@ export class NotificationProjectionService {
         actions: ['dismiss'],
         occurredAt: transition.occurredAt,
       }, recipients);
+
+      // A newer snapshot may have committed while this event was being
+      // assigned. Re-check the durable transition so a late writer cannot
+      // resurrect a recovered or superseded failure card.
+      const current = await this.database<SystemFailureStateRow>(
+        'notification_system_failure_state',
+      ).where({ component }).first();
+      if (
+        !current
+        || current.failure_status !== transition.status
+        || current.failure_started_at !== transition.occurredAt
+      ) {
+        await this.notifications.dismissNotificationReceipts(event.id);
+      }
     }
   }
 
@@ -596,6 +630,49 @@ export class NotificationProjectionService {
         .where({ activity_type: input.type, activity_key: input.key })
         .first() as { status?: unknown; last_activity_at?: unknown } | undefined;
       return stored?.status === input.status && stored.last_activity_at === input.occurredAt;
+    });
+  }
+
+  private async persistSystemFailureTransition(
+    component: string,
+    status: string,
+    healthy: boolean,
+    snapshotAt: string,
+  ): Promise<SystemFailureTransition> {
+    return this.database.transaction(async transaction => {
+      const existing = await transaction<SystemFailureStateRow>(
+        'notification_system_failure_state',
+      ).where({ component }).first();
+      if (existing && snapshotAt < existing.last_snapshot_at) {
+        return { accepted: false, changed: false };
+      }
+
+      const continuingFailure = !healthy
+        && existing?.failure_status === status
+        && typeof existing.failure_started_at === 'string';
+      const failureStartedAt = healthy
+        ? null
+        : continuingFailure ? existing.failure_started_at : snapshotAt;
+      const failureStatus = healthy ? null : status;
+      await transaction('notification_system_failure_state')
+        .insert({
+          component,
+          failure_status: failureStatus,
+          failure_started_at: failureStartedAt,
+          last_snapshot_at: snapshotAt,
+        })
+        .onConflict('component')
+        .merge({
+          failure_status: failureStatus,
+          failure_started_at: failureStartedAt,
+          last_snapshot_at: snapshotAt,
+        });
+
+      return {
+        accepted: true,
+        changed: !healthy && !continuingFailure,
+        ...(healthy ? {} : { status, occurredAt: failureStartedAt ?? snapshotAt }),
+      };
     });
   }
 
