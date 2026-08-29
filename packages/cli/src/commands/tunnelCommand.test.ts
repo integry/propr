@@ -212,6 +212,15 @@ test("tunnel setup canonicalizes a mixed-case instance id", () => {
   );
 });
 
+test("tunnel setup removes a mixed-case existing t- prefix exactly once", () => {
+  const env = buildTunnelSetupEnv({
+    token: "secret-token",
+    instanceId: "T-AbC123",
+  });
+  assert.equal(env.PROPR_INSTANCE_ID, "abc123");
+  assert.equal(env.PROPR_UI_PUBLIC_API_URL, "https://t-abc123.propr.dev");
+});
+
 test("tunnel setup --start starts a stopped stack with tunnel settings", async () => {
   const calls: Array<{ fn: string; uiTunnelEnabled?: boolean }> = [];
   const { configManager, value } = fakeConfigManager(undefined);

@@ -30,7 +30,7 @@
 //   - A new tab opened to app.propr.dev (no tunnel/flow in URL) never has URL
 //     authority, even if sessionStorage was copied from an existing tab.
 
-import { DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl, proprInstanceProxyUrl } from '@propr/shared';
+import { canonicalProprProxySelector, DEFAULT_PROPR_UI_ORIGIN, isProprProxyUrl } from '@propr/shared';
 import { normalizeApiBaseUrl } from '@propr/client';
 
 export interface ProprRuntimeConfig {
@@ -118,27 +118,17 @@ export const hostedTunnelQueryApiBaseUrl = (
 ): string | null => {
   if (!isHostedUiOrigin(hostname)) return null;
 
-  const raw = new URLSearchParams(search).get('tunnel')?.trim();
-  if (!raw) return null;
+  // Inspect the literal query serialization before URLSearchParams can decode
+  // `%2f`, `%40`, Unicode, or another alternate spelling into something that a
+  // URL parser might reinterpret. Connect emits one literal scheme-less host.
+  const fields = search.replace(/^\?/, '').split('&');
+  const selectors = fields
+    .filter(field => field === 'tunnel' || field.startsWith('tunnel='))
+    .map(field => field.slice('tunnel='.length));
+  if (selectors.length !== 1 || !selectors[0] || /[%+]/.test(selectors[0])) return null;
 
-  // Connect links have historically tolerated redundant trailing slashes on a
-  // full proxy URL. Normalize only those slashes before applying the strict
-  // shared authority parser; paths, queries, fragments, ports, and userinfo
-  // remain invalid.
-  const normalizedUrl = raw.replace(/\/+$/, '');
-  if (isProprProxyUrl(normalizedUrl)) return normalizedUrl;
-
-  const instanceUrl = proprInstanceProxyUrl(raw);
-  if (instanceUrl) return instanceUrl;
-
-  try {
-    const url = new URL(`https://${raw}`);
-    if (/[^/]/.test(url.pathname) || url.search || url.hash) return null;
-    const normalized = `https://${url.hostname}`;
-    return isProprProxyUrl(normalized) ? normalized : null;
-  } catch {
-    return null;
-  }
+  const selector = canonicalProprProxySelector(selectors[0]);
+  return selector ? `https://${selector}` : null;
 };
 
 type HostedTunnelStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;

@@ -2,6 +2,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
+import { canonicalProprProxyUrl } from '@propr/shared';
 import type { GitHubUser } from './authTypes.js';
 
 const DEFAULT_PAIRING_TTL_MS = 10 * 60_000;
@@ -148,7 +149,12 @@ function frontendApprovalBase(configured?: string): URL {
   return url;
 }
 
-function publicApiBase(configured?: string): URL | null {
+interface PublicApiBase {
+  url: URL;
+  managedSelector: string | null;
+}
+
+function publicApiBase(configured?: string): PublicApiBase | null {
   const raw = configured ?? process.env.API_PUBLIC_URL;
   if (!raw) return null;
   const url = new URL(raw);
@@ -158,7 +164,23 @@ function publicApiBase(configured?: string): URL | null {
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
     throw new Error('API_PUBLIC_URL must be an origin without credentials, a path, query, or fragment');
   }
-  return url;
+  const canonicalManagedUrl = canonicalProprProxyUrl(raw);
+  const normalizedHostname = url.hostname.toLowerCase().replace(/\.$/, '');
+  const managedLabelInProprNamespace = normalizedHostname.endsWith('.propr.dev')
+    && normalizedHostname.split('.').slice(0, -2).some(label => label.startsWith('t-'));
+  const rawAuthority = raw.slice(raw.indexOf('://') + 3).split(/[/?#]/, 1)[0]?.split('@').pop()?.toLowerCase() ?? '';
+  const claimsManagedNamespace = (
+    managedLabelInProprNamespace
+  ) || (
+    rawAuthority.startsWith('t-') && rawAuthority.includes('.propr.dev')
+  );
+  if (claimsManagedNamespace && !canonicalManagedUrl) {
+    throw new Error('API_PUBLIC_URL uses a noncanonical reserved ProPR tunnel host');
+  }
+  return {
+    url,
+    managedSelector: canonicalManagedUrl ? canonicalManagedUrl.slice('https://'.length) : null,
+  };
 }
 
 function tokenSummary(row: TokenRow): DesktopTokenSummary {
@@ -206,9 +228,9 @@ export class DesktopAuthService {
     const deviceSecret = opaqueValue();
     const createdAt = this.now();
     const expiresAt = new Date(createdAt.getTime() + this.pairingTtlMs);
-    const apiApprovalUrl = publicApiBase(this.publicApiUrl);
-    const approvalUrl = apiApprovalUrl ?? this.getFrontendApprovalUrl(pairingId);
-    if (apiApprovalUrl) {
+    const apiApprovalBase = publicApiBase(this.publicApiUrl);
+    const approvalUrl = apiApprovalBase?.url ?? this.getFrontendApprovalUrl(pairingId);
+    if (apiApprovalBase) {
       approvalUrl.pathname = `${approvalUrl.pathname.replace(/\/$/, '')}/api/desktop/pairings/${pairingId}/browser`;
       approvalUrl.search = '';
       approvalUrl.hash = '';
@@ -240,9 +262,9 @@ export class DesktopAuthService {
     approvalUrl.search = '';
     approvalUrl.hash = '';
     approvalUrl.searchParams.set('pairing_id', pairingId);
-    const apiUrl = publicApiBase(this.publicApiUrl);
-    if (approvalUrl.hostname === 'app.propr.dev' && apiUrl?.hostname.startsWith('t-') && apiUrl.hostname.endsWith('.propr.dev')) {
-      approvalUrl.searchParams.set('tunnel', apiUrl.hostname);
+    const apiBase = publicApiBase(this.publicApiUrl);
+    if (approvalUrl.hostname === 'app.propr.dev' && apiBase?.managedSelector) {
+      approvalUrl.searchParams.set('tunnel', apiBase.managedSelector);
     }
     return approvalUrl;
   }

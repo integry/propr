@@ -119,6 +119,8 @@ export type ImageFreshnessResult =
 export interface DockerCommandOptions {
   capture?: boolean;
   timeout?: number;
+  env?: NodeJS.ProcessEnv;
+  maxBuffer?: number;
 }
 
 export interface DockerCommandResult {
@@ -127,6 +129,11 @@ export interface DockerCommandResult {
   stderr: string;
   error?: Error & { code?: string };
   signal?: NodeJS.Signals | null;
+}
+
+export interface StackStatusInspection {
+  result: DockerCommandResult;
+  status?: StackStatus;
 }
 
 export interface ResolveHostConfigOptions {
@@ -204,6 +211,10 @@ export interface OrchestratorModule {
   ): { failed: string[] };
 
   getStackStatus(cfg: OrchestratorConfig, opts?: { timeout?: number }): StackStatus;
+  inspectStackStatus(
+    cfg: OrchestratorConfig,
+    opts?: { timeout?: number; env?: NodeJS.ProcessEnv }
+  ): StackStatusInspection;
   getStackStatusAsync(cfg: OrchestratorConfig): Promise<StackStatus>;
   /** Pure parse of `docker ps` tab-separated output into per-service state. */
   parseStackStatus(cfg: OrchestratorConfig, stdout: string): StackStatus;

@@ -103,9 +103,38 @@ export type {
   FormatOutputOptions,
 } from "./utils/index.js";
 
+/** Parse the discovery shape without depending on option order or spelling. */
+export function isExplicitConnectStatusInvocation(argv: readonly string[]): boolean {
+  const args = argv.slice(2);
+  const positionals: string[] = [];
+  let hasRoot = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--root") {
+      const value = args[index + 1];
+      if (value !== undefined && value !== "" && !value.startsWith("-")) {
+        hasRoot = true;
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--root=")) {
+      if (arg.slice("--root=".length) !== "") hasRoot = true;
+      continue;
+    }
+    if (arg === "--project" || arg === "-p") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--project=") || arg === "--json" || arg === "-j") continue;
+    if (!arg.startsWith("-")) positionals.push(arg);
+  }
+  return hasRoot && positionals[0] === "connect" && positionals[1] === "status";
+}
+
 // Connect discovery authorizes and reads only its explicit root. In particular,
 // do not let dotenv pre-read a replaceable cwd/.env before root acquisition.
-const connectStatusInvocation = process.argv[2] === "connect" && process.argv[3] === "status";
+const connectStatusInvocation = isExplicitConnectStatusInvocation(process.argv);
 if (!connectStatusInvocation) config();
 
 const packageJson = JSON.parse(

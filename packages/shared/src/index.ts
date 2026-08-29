@@ -97,6 +97,7 @@ export {
   PROPR_UI_PROXY_LABEL_PREFIX,
   DEFAULT_CLOUDFLARED_IMAGE,
   proprInstanceProxyUrl,
+  canonicalProprProxySelector,
   canonicalProprProxyUrl,
   isValidProprInstanceId,
   isProprProxyUrl,

@@ -83,6 +83,42 @@ describe('desktop browser pairing', () => {
     );
   });
 
+  test('pairing rejects noncanonical spellings in the reserved managed tunnel namespace', () => {
+    const pairingId = 'dpr_' + 'A'.repeat(22);
+    for (const publicApiUrl of [
+      'https://user@t-instance123.propr.dev',
+      'https://t-instance123.propr.dev:443',
+      'https://t-instance123.propr.dev/path',
+      'https://t-instance123.propr.dev?query=1',
+      'https://t-instance123.propr.dev#fragment',
+      'https://t-instance123.propr.dev.',
+      'https://t-instance123.extra.propr.dev',
+      'https://extra.t-instance123.propr.dev',
+      'https://t-аbc.propr.dev',
+    ]) {
+      const hosted = new DesktopAuthService({
+        database,
+        now: () => new Date(now),
+        approvalBaseUrl: 'https://app.propr.dev',
+        publicApiUrl,
+      });
+      assert.throws(() => hosted.getFrontendApprovalUrl(pairingId), /API_PUBLIC_URL|noncanonical reserved/);
+    }
+  });
+
+  test('pairing normalizes canonical managed tunnel DNS case', () => {
+    const pairingId = 'dpr_' + 'A'.repeat(22);
+    const hosted = new DesktopAuthService({
+      database,
+      approvalBaseUrl: 'https://app.propr.dev',
+      publicApiUrl: 'https://T-Instance123.ProPR.dev',
+    });
+    assert.equal(
+      hosted.getFrontendApprovalUrl(pairingId).toString(),
+      `https://app.propr.dev/desktop/pairing?pairing_id=${pairingId}&tunnel=t-instance123.propr.dev`,
+    );
+  });
+
   test('issues an opaque token once, resolves its owner, and never stores plaintext credentials', async () => {
     const pairing = await service.startPairing('MacBook Pro');
     assert.deepEqual(await service.pollPairing(pairing.pairingId, pairing.deviceSecret), {

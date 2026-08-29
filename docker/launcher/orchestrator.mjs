@@ -93,7 +93,7 @@ export function isProprProxyUrl(url) {
 
 function normalizeProprInstanceId(instanceId) {
     const id = (instanceId ?? '').trim();
-    return id.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+    return id.toLowerCase().startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
         ? id.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)
         : id;
 }
@@ -525,11 +525,13 @@ export function validateDockerBindPath(name, value, { containerPath = false } = 
 
 const REMOTE_IMAGE_CHECK_TIMEOUT_MS = 5000;
 
-export function docker(args, { capture = false, timeout } = {}) {
+export function docker(args, { capture = false, timeout, env, maxBuffer } = {}) {
     const res = spawnSync('docker', args, {
         stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
         encoding: 'utf8',
         timeout,
+        env,
+        maxBuffer,
     });
     if (res.status !== 0 && !capture) {
         const detail = res.error?.message || (res.signal ? `signal ${res.signal}` : `code ${res.status}`);
@@ -1584,6 +1586,43 @@ export function parseStackStatus(cfg, stdout) {
 }
 
 const STACK_STATUS_PS_ARGS = ['ps', '-a', '--format', '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'];
+const STACK_STATUS_MAX_BYTES = 64 * 1024;
+
+/**
+ * Run and strictly validate one bounded Docker status inspection. The command
+ * result is retained so callers can distinguish an absent service (a successful
+ * empty inspection) from a missing binary, daemon error, timeout, signal, or
+ * truncated/malformed output.
+ */
+export function inspectStackStatus(cfg, { timeout, env } = {}) {
+    const result = docker(STACK_STATUS_PS_ARGS, {
+        capture: true,
+        timeout,
+        env,
+        maxBuffer: STACK_STATUS_MAX_BYTES,
+    });
+    if (result.status !== 0 || result.error || result.signal || typeof result.stdout !== 'string') {
+        return { result };
+    }
+
+    const expectedNames = new Set(SERVICES.map((service) => `${cfg.stack}-${service}`));
+    const seenExpectedNames = new Set();
+    const validStates = new Set(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead']);
+    for (const line of result.stdout.split('\n')) {
+        if (line === '') continue;
+        const fields = line.endsWith('\r') ? line.slice(0, -1).split('\t') : line.split('\t');
+        if (fields.length !== 4) return { result };
+        const [name, state, status] = fields;
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) || !validStates.has(state) || status.length === 0) {
+            return { result };
+        }
+        if (expectedNames.has(name)) {
+            if (seenExpectedNames.has(name)) return { result };
+            seenExpectedNames.add(name);
+        }
+    }
+    return { result, status: parseStackStatus(cfg, result.stdout) };
+}
 
 /** Per-service state for the whole stack, discovered by canonical container name. */
 export function getStackStatus(cfg, { timeout } = {}) {

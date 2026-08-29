@@ -89,6 +89,29 @@ export function proprInstanceProxyUrl(instanceId: string | undefined | null): st
 }
 
 /**
+ * Normalize one scheme-less Connect tunnel selector. Connect deep links carry
+ * only the DNS hostname (`t-<id>.propr.dev`), never a URL or a bare instance
+ * id. DNS case is normalized, but every other spelling must already be exact:
+ * no whitespace, percent encoding, userinfo, port, path, query, fragment,
+ * trailing dot, extra label, or non-ASCII character is accepted.
+ */
+export function canonicalProprProxySelector(selector: string | undefined | null): string | undefined {
+  if (!selector || selector !== selector.trim() || /[^\x20-\x7e]/.test(selector)) return undefined;
+  const normalized = selector.toLowerCase();
+  const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+  if (!normalized.startsWith(PROPR_UI_PROXY_LABEL_PREFIX) || !normalized.endsWith(suffix)) {
+    return undefined;
+  }
+  const label = normalized.slice(0, -suffix.length);
+  if (label.length > 63 || label.includes('.')) return undefined;
+  const id = label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length);
+  return isValidProprInstanceId(id)
+    && /^[A-Za-z0-9.-]+$/.test(selector)
+    ? normalized
+    : undefined;
+}
+
+/**
  * Return the one canonical Connect proxy origin, or undefined for anything
  * else. The raw value must be ASCII and carry no userinfo, port, path, query,
  * fragment, IDNA spelling, or alternate DNS representation. This is the
@@ -147,7 +170,7 @@ export function isProprProxyUrl(url: string | undefined | null): boolean {
 
 function normalizeProprInstanceId(instanceId: string | undefined | null): string {
   const id = (instanceId ?? '').trim();
-  return id.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+  return id.toLowerCase().startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
     ? id.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)
     : id;
 }

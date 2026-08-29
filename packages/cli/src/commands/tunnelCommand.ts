@@ -442,7 +442,7 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
   // mixed-case --instance-id would otherwise diverge from the launcher's value.
   const publicUrl = canonicalUrl;
   const derivedInstanceId = instanceIdFromProxyUrl(publicUrl);
-  const normalizedExplicitInstanceId = explicitInstanceId?.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
+  const normalizedExplicitInstanceId = explicitInstanceId?.toLowerCase().startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
     ? explicitInstanceId.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)
     : explicitInstanceId;
   const instanceId = (normalizedExplicitInstanceId ?? derivedInstanceId)?.toLowerCase();
@@ -662,7 +662,7 @@ async function runTunnelSetup(options: {
   console.log(`  hosted UI: ${vars.FRONTEND_URL}`);
   console.log(`  OAuth callback: ${vars.GH_OAUTH_CALLBACK_URL}`);
   console.log("  GitHub OAuth: register the callback URL above in your GitHub OAuth App");
-  console.log(`  Hosted UI link: ${vars.FRONTEND_URL}?tunnel=${encodeURIComponent(vars.PROPR_UI_PUBLIC_API_URL)}`);
+  console.log(`  Hosted UI link: ${vars.FRONTEND_URL}?tunnel=${new URL(vars.PROPR_UI_PUBLIC_API_URL).hostname}`);
   console.log("");
 
   if (options.start) {

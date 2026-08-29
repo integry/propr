@@ -141,10 +141,35 @@ export interface ConnectHostConfigSnapshotInput {
  * returned resolver is synchronous so authorized root bytes never cross an
  * await boundary.
  */
-export async function prepareConnectHostConfig(configManager: ConfigManager): Promise<{
+const CONNECT_EXECUTION_ENV_ALLOWLIST = [
+  "PATH",
+  "PATHEXT",
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+] as const;
+
+/**
+ * Discovery needs only executable lookup and OS process-bootstrap variables.
+ * Docker/configuration variables are intentionally absent: the explicit root
+ * snapshot is the sole authority for all ProPR stack and path configuration.
+ */
+function connectExecutionEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const allowed: NodeJS.ProcessEnv = {};
+  for (const name of CONNECT_EXECUTION_ENV_ALLOWLIST) {
+    if (source[name] !== undefined) allowed[name] = source[name];
+  }
+  return allowed;
+}
+
+export async function prepareConnectHostConfig(): Promise<{
   orch: OrchestratorModule;
   parseEnvFile(contents: string): Record<string, string>;
   resolveSnapshot(input: ConnectHostConfigSnapshotInput): OrchestratorConfig;
+  inspectTunnel(cfg: OrchestratorConfig): { kind: "ok"; running: boolean } | { kind: "internalFailure" };
 }> {
   const orch = await loadOrchestrator();
   const orchPath = cachedPath ?? resolveOrchestratorPath();
@@ -152,26 +177,33 @@ export async function prepareConnectHostConfig(configManager: ConfigManager): Pr
   if (!manifestPath) {
     throw new Error("Connect host configuration manifest is unavailable");
   }
+  const executionEnv = connectExecutionEnvironment(process.env);
   return {
     orch,
     parseEnvFile: (contents) => orch.parseEnvFileContents(contents),
     resolveSnapshot: ({ requestedRoot, envFileValues }) => {
-      const cliOverrides: Record<string, unknown> = {};
-      const docsExplicit = configManager.get("docsEnabled");
-      if (docsExplicit !== undefined) cliOverrides.docsEnabled = docsExplicit;
-      const tunnelExplicit = configManager.getTunnelEnabled(requestedRoot);
-      if (tunnelExplicit !== undefined) cliOverrides.uiTunnelEnabled = tunnelExplicit;
-      return orch.resolveConfig(process.env, {
+      return orch.resolveConfig(executionEnv, {
         envFileValues,
+        stack: envFileValues.PROPR_STACK || "propr",
+        network: envFileValues.PROPR_NETWORK
+          || `${envFileValues.PROPR_STACK || "propr"}-net`,
         envFileLocal: join(requestedRoot, ".env"),
         envFileHost: join(requestedRoot, ".env"),
         hostData: join(requestedRoot, "data"),
         hostLogs: join(requestedRoot, "logs"),
         hostRepos: join(requestedRoot, "repos"),
+        managedCredentialsDir: join(requestedRoot, "data", "agent-credentials"),
         validateHostPaths: true,
         manifestPath,
-        ...cliOverrides,
       });
+    },
+    inspectTunnel: (cfg) => {
+      const inspection = orch.inspectStackStatus(cfg, { timeout: 3000, env: executionEnv });
+      if (!inspection.status) return { kind: "internalFailure" };
+      return {
+        kind: "ok",
+        running: Boolean(inspection.status.services.find((service) => service.service === "tunnel")?.running),
+      };
     },
   };
 }

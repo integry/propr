@@ -270,7 +270,7 @@ test('/api/desktop/discovery returns the bounded public identity and runtime ori
 test('/api/desktop/discovery redacts identity persistence failures', async () => {
   configureStatusEnv();
   process.env.API_PUBLIC_URL = 'https://t-abc123.propr.dev';
-  const { response, status, body } = createJsonResponse();
+  const { response, status, body, headers } = createJsonResponse();
   const routes = await createRoutes({
     redisClient: createRedisClient() as never,
     getPublicInstanceIdentity: () => {
@@ -282,6 +282,8 @@ test('/api/desktop/discovery redacts identity persistence failures', async () =>
 
   assert.equal(status(), 503);
   assert.deepEqual(body(), { schemaVersion: 1, code: 'IDENTITY_UNAVAILABLE' });
+  assert.equal(headers()['Cache-Control'], 'no-store, max-age=0');
+  assert.equal(headers().Pragma, 'no-cache');
   assert.equal(JSON.stringify(body()).includes('SENTINEL'), false);
 });
 

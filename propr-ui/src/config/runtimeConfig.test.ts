@@ -232,16 +232,20 @@ describe('hosted tunnel query API base', () => {
     ).toBe('https://t-abc123.propr.dev');
   });
 
-  it('accepts a full hosted proxy URL and strips trailing slashes', async () => {
+  it('rejects full URLs and alternate selector serialization', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
-    expect(
-      hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=https%3A%2F%2Ft-abc123.propr.dev%2F%2F')
-    ).toBe('https://t-abc123.propr.dev');
+    for (const bad of [
+      '?tunnel=https%3A%2F%2Ft-abc123.propr.dev',
+      '?tunnel=t-abc123.propr.dev%2F',
+      '?tunnel=abc123',
+      '?tunnel=t-abc123.propr.dev.',
+      '?tunnel=t-abc123.propr.dev&tunnel=t-other.propr.dev',
+    ]) expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', bad)).toBeNull();
   });
 
-  it('accepts an instance id for manually built hosted UI links', async () => {
+  it('normalizes DNS case without accepting another selector form', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
-    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=abc123')).toBe(
+    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=T-AbC123.ProPR.dev')).toBe(
       'https://t-abc123.propr.dev'
     );
   });
@@ -262,6 +266,11 @@ describe('hosted tunnel query API base', () => {
       '?tunnel=t-abc123.propr.dev%2Fapi',
       '?tunnel=t-abc123.propr.dev%3Ffrom%3Dconnect',
       '?tunnel=t-abc123.propr.dev%23fragment',
+      '?tunnel=user%40t-abc123.propr.dev',
+      '?tunnel=t-abc123.propr.dev%3A443',
+      '?tunnel=t-%D0%B0bc.propr.dev',
+      '?tunnel=t-abc123%2Epropr.dev',
+      '?tunnel=%20t-abc123.propr.dev',
       '?tunnel=%2Fapi'
     ]) {
       expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', bad)).toBeNull();

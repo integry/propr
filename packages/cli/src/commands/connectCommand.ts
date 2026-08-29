@@ -7,7 +7,6 @@ import {
   parseProprDesktopDiscovery,
   type ProprDesktopDiscovery,
 } from "@propr/shared";
-import { createConfigManager } from "../config/index.js";
 import { prepareConnectHostConfig } from "../orchestrator/index.js";
 import type { OrchestratorConfig } from "../orchestrator/types.js";
 import {
@@ -318,14 +317,11 @@ export async function resolveConnectStatus({
 
 export async function getLocalConnectStatus(root: string | undefined): Promise<ConnectStatusDocument> {
   try {
-    const configManager = await createConfigManager(undefined, { warn: () => undefined });
-    const prepared = await prepareConnectHostConfig(configManager);
+    const prepared = await prepareConnectHostConfig();
     const local = withOwnedConnectRootSnapshot(root, (snapshot) => {
       const cfg = prepared.resolveSnapshot(snapshot);
       const publicInstanceIdentity = getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory);
-      const sidecarRunning = Boolean(
-        prepared.orch.getServiceState(cfg, "tunnel", { timeout: 3000 })?.running,
-      );
+      const sidecarInspection = prepared.inspectTunnel(cfg);
       return {
         cfg: {
           uiPublicApiUrl: cfg.uiPublicApiUrl,
@@ -333,12 +329,15 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
           uiTunnelEnabled: cfg.uiTunnelEnabled,
         },
         publicInstanceIdentity,
-        sidecarRunning,
+        sidecarInspection,
       };
     }, { parseEnvFile: prepared.parseEnvFile });
+    if (local.sidecarInspection.kind === "internalFailure") {
+      return baseDocument("internalFailure", { reasonCodes: ["INTERNAL_FAILURE"] });
+    }
     return await resolveConnectStatus({
       cfg: local.cfg,
-      sidecarRunning: local.sidecarRunning,
+      sidecarRunning: local.sidecarInspection.running,
       publicInstanceIdentity: local.publicInstanceIdentity,
     });
   } catch (error) {
