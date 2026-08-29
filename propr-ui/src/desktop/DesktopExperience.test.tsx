@@ -296,10 +296,15 @@ describe('DesktopExperience', () => {
       .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' })
       .mockImplementationOnce(() => pendingProbe.promise);
     const adapters = adaptersFor([localProfile], localProfile.id, probe);
-    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+    render(
+      <DesktopExperience adapters={adapters}>
+        <DesktopTitleBar />
+        <div>Connected app</div>
+      </DesktopExperience>
+    );
 
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
-    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Connected: This computer' }));
     if (profileKind === 'new') {
       fireEvent.click(await screen.findByRole('button', { name: /Add instance/i }));
       fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'New server' } });

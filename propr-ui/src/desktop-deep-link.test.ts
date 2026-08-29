@@ -30,8 +30,8 @@ describe('desktop open deep-link navigation', () => {
     const navigation = new DesktopDeepLinkNavigation(navigate);
     navigation.setDashboardReady();
 
-    expect(navigation.receive('propr://open?path=%2Ftasks%3Fstatus%3Dopen')).toBe(true);
-    expect(navigate).toHaveBeenCalledWith('/tasks?status=open');
+    expect(navigation.receive('propr://open?path=%2Ftasks%3Fstatus%3Dopen%23recent')).toBe(true);
+    expect(navigate).toHaveBeenCalledWith('/tasks?status=open#recent');
   });
 
   it('does not route malformed or unsafe links before or after dashboard load', () => {
@@ -42,6 +42,10 @@ describe('desktop open deep-link navigation', () => {
       'propr://open?path=https%3A%2F%2Fevil.example',
       'propr://open?path=%2F%2Fevil.example',
       'propr://open?path=%2Ftasks%252F..%252Flogin',
+      'propr://open?path=%2Ftasks%2523%2F%252e%252e%2Flogin',
+      'propr://open?path=%2Ftasks%2523%2F%25252e%25252e%2Flogin',
+      'propr://open?path=%2Ftasks%253F%2F%252e%252e%2Flogin',
+      'propr://open?path=%2Ftasks%253F%2F%25252e%25252e%2Flogin',
       'propr://open?path=%2Ftasks%250Anext',
       'propr://open?path=%2Flogin%3Foauth_complete%3Dtrue',
       'propr://open?path=%2Ftasks%3Fflow%3Dattacker',
