@@ -3,9 +3,11 @@ import { describe, it } from 'node:test';
 import {
   deepLinkFromArguments,
   applyDevelopmentRendererCsp,
+  dashboardPathFromDeepLink,
   isSafeExternalUrl,
   isTrustedRendererUrl,
   normalizeApiBaseUrl,
+  normalizeDesktopDashboardPath,
   normalizeDeepLink,
   rendererContentSecurityPolicy,
   validatedDevServerUrl,
@@ -71,6 +73,36 @@ describe('desktop URL security', () => {
     assert.equal(normalizeDeepLink('propr://delete-everything'), null);
     assert.equal(normalizeDeepLink('https://propr.example.com'), null);
     assert.equal(normalizeDeepLink('propr://user:secret@connect'), null);
+  });
+
+  it('accepts a normal internal dashboard route from an open deep link', () => {
+    const link = 'propr://open?path=%2Ftasks';
+    assert.equal(dashboardPathFromDeepLink(link), '/tasks');
+    assert.equal(normalizeDeepLink(link), link);
+    assert.equal(normalizeDesktopDashboardPath('/tasks?status=open'), '/tasks?status=open');
+  });
+
+  it('rejects malformed and unsafe open deep-link paths', () => {
+    const rejected = [
+      'propr://open',
+      'propr://open?path=',
+      'propr://open?path=%2Ftasks&path=%2Fplans',
+      'propr://open?path=%2Ftasks&extra=true',
+      'propr://open?path=https%3A%2F%2Fevil.example%2Ftasks',
+      'propr://open?path=%2F%2Fevil.example%2Ftasks',
+      'propr://open?path=%2Ftasks%252F..%252Flogin',
+      'propr://open?path=%2Ftasks%252F%252e%252e%252Flogin',
+      'propr://open?path=%2Ftasks%250Anext',
+      'propr://open?path=%2Ftasks%255Cnext',
+      'propr://open?path=%2Flogin%3Fredirect_to%3D%252Ftasks',
+      'propr://open?path=%2Fdesktop%2Fpairing%3Fpairing_id%3Dattacker',
+      'propr://open?path=%2Ftasks%3Ftunnel%3Dt-attacker.propr.dev',
+      'propr://open?path=%2Ftasks%3Fflow%3Dattacker',
+    ];
+    rejected.forEach(link => {
+      assert.equal(dashboardPathFromDeepLink(link), null, link);
+      assert.equal(normalizeDeepLink(link), null, link);
+    });
   });
 
   it('publishes a restrictive production policy', () => {
