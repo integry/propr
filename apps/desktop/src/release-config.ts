@@ -86,4 +86,3 @@ export const readCompleteEnvironmentGroup = (
   }
   return Object.fromEntries(names.map(name => [name, env[name]!.trim()]));
 };
-

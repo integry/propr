@@ -154,4 +154,3 @@ export const checkForSignedUpdates = async ({
   updater.checkForUpdates();
   return 'checked';
 };
-

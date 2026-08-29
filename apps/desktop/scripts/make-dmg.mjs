@@ -29,4 +29,3 @@ await execFileAsync('hdiutil', [
   outputPath,
 ]);
 console.log(outputPath);
-

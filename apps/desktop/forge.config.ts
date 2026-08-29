@@ -116,10 +116,24 @@ const config: ForgeConfig = {
     }),
     new MakerZIP({}, ['darwin', 'linux']),
     ...(process.env.PROPR_DESKTOP_ENABLE_DEB === '1'
-      ? [new MakerDeb({ options: { name: 'propr-desktop', productName: 'ProPR Desktop', version: releaseVersion } })]
+      ? [new MakerDeb({
+        options: {
+          name: 'propr-desktop',
+          productName: 'ProPR Desktop',
+          version: releaseVersion,
+          bin: 'propr-desktop',
+        },
+      })]
       : []),
     ...(process.env.PROPR_DESKTOP_ENABLE_RPM === '1'
-      ? [new MakerRpm({ options: { name: 'propr-desktop', productName: 'ProPR Desktop', version: releaseVersion } })]
+      ? [new MakerRpm({
+        options: {
+          name: 'propr-desktop',
+          productName: 'ProPR Desktop',
+          version: releaseVersion,
+          bin: 'propr-desktop',
+        },
+      })]
       : []),
   ],
   plugins: [

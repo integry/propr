@@ -9,7 +9,43 @@ import {
 
 const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
 
+interface LinuxMaker {
+  name: 'deb' | 'rpm';
+  config: { options?: { bin?: string } };
+  prepareConfig: (targetArch: 'x64') => Promise<void>;
+}
+
+const isLinuxMaker = (maker: unknown): maker is LinuxMaker => {
+  if (typeof maker !== 'object' || maker === null || !('name' in maker)) return false;
+  return maker.name === 'deb' || maker.name === 'rpm';
+};
+
 describe('desktop release configuration', () => {
+  test('keeps Linux maker executables aligned with the packaged executable', async () => {
+    const previousDeb = process.env.PROPR_DESKTOP_ENABLE_DEB;
+    const previousRpm = process.env.PROPR_DESKTOP_ENABLE_RPM;
+    process.env.PROPR_DESKTOP_ENABLE_DEB = '1';
+    process.env.PROPR_DESKTOP_ENABLE_RPM = '1';
+    try {
+      const { default: forgeConfig } = await import('../forge.config');
+      const executableName = forgeConfig.packagerConfig?.executableName;
+      assert.equal(executableName, 'propr-desktop');
+
+      const linuxMakers = forgeConfig.makers?.filter(isLinuxMaker) ?? [];
+      assert.deepEqual(linuxMakers.map(maker => maker.name).sort(), ['deb', 'rpm']);
+      for (const maker of linuxMakers) {
+        await maker.prepareConfig('x64');
+        assert.equal(maker.config.options?.bin, executableName);
+        assert.notEqual(maker.config.options?.bin, '@propr/desktop');
+      }
+    } finally {
+      if (previousDeb === undefined) delete process.env.PROPR_DESKTOP_ENABLE_DEB;
+      else process.env.PROPR_DESKTOP_ENABLE_DEB = previousDeb;
+      if (previousRpm === undefined) delete process.env.PROPR_DESKTOP_ENABLE_RPM;
+      else process.env.PROPR_DESKTOP_ENABLE_RPM = previousRpm;
+    }
+  });
+
   test('propagates an explicit independent desktop version', () => {
     assert.equal(resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: '2.3.4' }), '2.3.4');
     assert.throws(() => resolveDesktopVersion('0.8.15', { PROPR_DESKTOP_VERSION: 'v2.3.4' }), /stable semver/);
@@ -53,4 +89,3 @@ describe('desktop release configuration', () => {
     );
   });
 });
-
