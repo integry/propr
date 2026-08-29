@@ -92,8 +92,10 @@ npm run make -w @propr/desktop -- --arch="$(node -p process.arch)"
 
 ### CI signing and notarization configuration
 
-Signing material is read only from GitHub Actions secrets and written to runner-temporary files/keychains. Configure
-all values in a group or none; partial groups fail the release.
+Signing material is read only from the approval-protected `desktop-release` GitHub environment and written to
+runner-temporary files/keychains. Every value below is mandatory for a production `desktop-v*` tag; unsigned and
+partially signed production releases fail before publication. Pull-request package validation receives none of these
+secrets and explicitly checks that release-secret environment variables are absent.
 
 GitHub Actions secrets:
 
@@ -127,10 +129,13 @@ base64 < desktop-update-public.der  # variable: PROPR_DESKTOP_UPDATE_PUBLIC_KEY
 ```
 
 Do not commit either key file. The private key is available only to the approval-protected `desktop-release`
-environment. Pull-request finalization produces unsigned validation metadata; trusted signing checks out the exact
-`desktop-v<version>` tag and fails closed if any signed-update setting is incomplete. A release operator must publish
-the exact signed manifest/signature, generated native feeds, and bound packages to their configured HTTPS URLs. The
-manifest URL must not contain a query, so its companion is always the documented pathname plus `.sig`.
+environment. That environment must have required reviewers and a custom `desktop-v*` tag deployment rule. A new,
+non-forced tag push is accepted only when its exact commit is reachable from protected `main`, no release exists, and
+the tag remains unchanged through publication. Pull-request finalization produces unsigned validation metadata;
+trusted jobs check out the immutable preflight SHA and fail closed if any signing, notarization, or signed-update field
+is missing. A release operator must publish the exact signed manifest/signature, generated native feeds, and bound
+packages to their configured HTTPS URLs. The manifest URL must not contain a query, so its companion is always the
+documented pathname plus `.sig`.
 
 Linux never checks for native updates. macOS and Windows operate as check-only channels: they verify the Ed25519
 manifest, exact target/version/feed bytes, package URL/size/SHA-256, and the actual Team ID/designated requirement or

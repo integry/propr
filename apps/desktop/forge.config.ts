@@ -10,9 +10,11 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   readCompleteEnvironmentGroup,
+  requireProductionReleaseConfiguration,
   resolveDesktopVersion,
   resolveTrustedUpdateBuildConfig,
 } from './src/release-config';
+import { DESKTOP_EXECUTABLE_NAME, SQUIRREL_PACKAGE_NAME } from './src/squirrel-events';
 
 const desktopPackage = JSON.parse(
   readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8'),
@@ -50,6 +52,15 @@ if (updateConfig.enabled) {
     throw new Error('The Windows signed-update build must have a Windows signing certificate');
   }
 }
+if (process.env.PROPR_DESKTOP_PRODUCTION_RELEASE === '1') {
+  requireProductionReleaseConfiguration({
+    platform: process.platform,
+    updateConfig,
+    macSigning,
+    macNotarization,
+    windowsSigning,
+  });
+}
 
 const windowsSign = windowsSigning ? {
   certificateFile: windowsSigning.PROPR_DESKTOP_WINDOWS_CERTIFICATE_FILE,
@@ -64,8 +75,8 @@ const config: ForgeConfig = {
     appCategoryType: 'public.app-category.developer-tools',
     appVersion: releaseVersion,
     buildVersion: releaseVersion,
-    name: 'propr-desktop',
-    executableName: 'propr-desktop',
+    name: DESKTOP_EXECUTABLE_NAME,
+    executableName: DESKTOP_EXECUTABLE_NAME,
     protocols: [{ name: 'ProPR Desktop', schemes: ['propr'] }],
     ...(macSigning ? {
       osxSign: {
@@ -109,7 +120,7 @@ const config: ForgeConfig = {
   },
   makers: [
     new MakerSquirrel({
-      name: 'propr_desktop',
+      name: SQUIRREL_PACKAGE_NAME,
       setupExe: `ProPR-Desktop-${releaseVersion}-Setup.exe`,
       version: releaseVersion,
       ...(windowsSign ? { windowsSign } : {}),
@@ -118,20 +129,20 @@ const config: ForgeConfig = {
     ...(process.env.PROPR_DESKTOP_ENABLE_DEB === '1'
       ? [new MakerDeb({
         options: {
-          name: 'propr-desktop',
+          name: DESKTOP_EXECUTABLE_NAME,
           productName: 'ProPR Desktop',
           version: releaseVersion,
-          bin: 'propr-desktop',
+          bin: DESKTOP_EXECUTABLE_NAME,
         },
       })]
       : []),
     ...(process.env.PROPR_DESKTOP_ENABLE_RPM === '1'
       ? [new MakerRpm({
         options: {
-          name: 'propr-desktop',
+          name: DESKTOP_EXECUTABLE_NAME,
           productName: 'ProPR Desktop',
           version: releaseVersion,
-          bin: 'propr-desktop',
+          bin: DESKTOP_EXECUTABLE_NAME,
         },
       })]
       : []),

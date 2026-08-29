@@ -3,6 +3,13 @@ import { basename, dirname, resolve } from 'node:path';
 
 type SpawnUpdate = (command: string, args: string[]) => void;
 
+export const DESKTOP_EXECUTABLE_NAME = 'propr-desktop';
+export const SQUIRREL_PACKAGE_NAME = 'propr_desktop';
+
+export const squirrelAppUserModelId = (
+  executableName = DESKTOP_EXECUTABLE_NAME,
+): string => `com.squirrel.${SQUIRREL_PACKAGE_NAME}.${executableName}`;
+
 const defaultSpawnUpdate: SpawnUpdate = (command, args) => {
   const child = spawn(command, args, { detached: true, stdio: 'ignore' });
   child.unref();

@@ -18,7 +18,7 @@ import {
 } from './security';
 import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
-import { handleSquirrelStartupEvent } from './squirrel-events';
+import { handleSquirrelStartupEvent, squirrelAppUserModelId } from './squirrel-events';
 import { createBrowserWindowOptions } from './window-options';
 
 const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
@@ -41,7 +41,7 @@ const squirrelStartupHandled = process.platform === 'win32'
   && handleSquirrelStartupEvent({ quit: () => app.quit() });
 
 if (process.platform === 'win32') {
-  app.setAppUserModelId('com.squirrel.propr_desktop.propr_desktop');
+  app.setAppUserModelId(squirrelAppUserModelId());
 }
 
 const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>

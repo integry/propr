@@ -8,28 +8,101 @@ const workflow = readFileSync(
   'utf8',
 );
 
+const job = (name: string, next?: string): string => {
+  const start = workflow.indexOf(`\n  ${name}:`);
+  const end = next ? workflow.indexOf(`\n  ${next}:`, start + 1) : workflow.length;
+  assert.notEqual(start, -1, `missing ${name} job`);
+  assert.notEqual(end, -1, `missing ${next} job`);
+  return workflow.slice(start, end);
+};
+
 describe('desktop trusted release workflow', () => {
-  test('never exposes the update private key to pull-request finalization', () => {
-    const finalize = workflow.slice(workflow.indexOf('\n  finalize:'), workflow.indexOf('\n  sign:'));
-    assert.ok(finalize.includes('Verify matrix completeness and generate metadata'));
-    assert.ok(!finalize.includes('PROPR_DESKTOP_UPDATE_PRIVATE_KEY'));
-    assert.equal(
-      workflow.match(/secrets\.PROPR_DESKTOP_UPDATE_PRIVATE_KEY/g)?.length,
-      1,
-      'the private key must appear only in the trusted signing job',
-    );
+  test('keeps pull-request packaging unsigned and completely secretless', () => {
+    const validation = `${job('validation-version', 'package')}\n${job('package', 'finalize')}\n${job('finalize', 'preflight')}`;
+    assert.match(validation, /github\.event_name == 'pull_request'/);
+    assert.match(validation, /Prove pull-request validation is secretless/);
+    assert.ok(!validation.includes('secrets.'), 'PR jobs must not reference any GitHub secret');
+    assert.ok(!validation.includes('PROPR_DESKTOP_UPDATE_PRIVATE_KEY'));
+    assert.ok(!validation.includes('environment:\n'));
+    assert.ok(!validation.includes('PROPR_DESKTOP_ENABLE_UPDATES=1'));
   });
 
-  test('signs only behind the release environment from the immutable desktop tag', () => {
-    const signing = workflow.slice(workflow.indexOf('\n  sign:'), workflow.indexOf('\n  publish:'));
-    assert.match(signing, /github\.event_name == 'push'/);
-    assert.match(signing, /github\.event_name == 'workflow_dispatch'/);
-    assert.ok(!signing.includes("github.event_name == 'pull_request'"));
-    assert.match(signing, /environment: desktop-release/);
-    assert.match(signing, /ref: desktop-v\$\{\{ needs\.version\.outputs\.version \}\}/);
-    assert.match(signing, /RELEASE_SHA: \$\{\{ needs\.version\.outputs\.release_sha \}\}/);
-    assert.match(signing, /git rev-parse HEAD.*RELEASE_SHA/);
-    assert.match(signing, /release-artifacts\.mjs sign/);
-    assert.match(signing, /PROPR_DESKTOP_UPDATE_PRIVATE_KEY: \$\{\{ secrets\.PROPR_DESKTOP_UPDATE_PRIVATE_KEY \}\}/);
+  test('allows production only from a new protected-main desktop tag after secretless preflight', () => {
+    const preflight = job('preflight', 'release-package');
+    const production = job('release-package', 'release-finalize');
+    assert.ok(!workflow.includes('workflow_dispatch:'));
+    assert.match(preflight, /github\.event_name == 'push'/);
+    assert.match(preflight, /release-preflight\.mjs/);
+    assert.match(preflight, /ref: \$\{\{ github\.sha \}\}/);
+    assert.ok(!preflight.includes('environment:'));
+    assert.ok(!preflight.includes('secrets.'));
+    assert.match(production, /needs: preflight/);
+    assert.match(production, /environment:\s+name: desktop-release/);
+    assert.match(production, /ref: \$\{\{ needs\.preflight\.outputs\.release_sha \}\}/);
+    assert.match(production, /gh api .*commits\/\$RELEASE_TAG/);
+    assert.match(production, /! gh release view/);
+  });
+
+  test('keeps every certificate and the update private key inside preflight-dependent environment jobs', () => {
+    const packageJob = job('release-package', 'release-finalize');
+    const signing = job('sign', 'publish');
+    for (const secret of [
+      'PROPR_DESKTOP_MAC_CERTIFICATE_P12_BASE64',
+      'PROPR_DESKTOP_MAC_CERTIFICATE_PASSWORD',
+      'PROPR_DESKTOP_APPLE_API_KEY_P8_BASE64',
+      'PROPR_DESKTOP_APPLE_API_KEY_ID',
+      'PROPR_DESKTOP_APPLE_API_ISSUER_ID',
+      'PROPR_DESKTOP_WINDOWS_CERTIFICATE_PFX_BASE64',
+      'PROPR_DESKTOP_WINDOWS_CERTIFICATE_PASSWORD',
+    ]) {
+      assert.equal(workflow.match(new RegExp(`secrets\\.${secret}`, 'g'))?.length, 1);
+      assert.ok(packageJob.includes(`secrets.${secret}`));
+    }
+    assert.equal(workflow.match(/secrets\.PROPR_DESKTOP_UPDATE_PRIVATE_KEY/g)?.length, 1);
+    assert.ok(signing.includes('secrets.PROPR_DESKTOP_UPDATE_PRIVATE_KEY'));
+    assert.match(signing, /needs: \[preflight, release-finalize\]/);
+    assert.match(signing, /environment:\s+name: desktop-release/);
+  });
+
+  test('fails closed for every production signing, notarization, update, and signer condition', () => {
+    const production = job('release-package', 'release-finalize');
+    for (const field of [
+      'CERTIFICATE_P12_BASE64',
+      'CERTIFICATE_PASSWORD',
+      'APPLE_API_KEY_P8_BASE64',
+      'APPLE_API_KEY_ID',
+      'APPLE_API_ISSUER_ID',
+      'UPDATE_MAC_SIGNING_IDENTITY',
+      'UPDATE_MAC_TEAM_ID',
+      'CERTIFICATE_PFX_BASE64',
+      'UPDATE_WINDOWS_SIGNING_IDENTITY',
+      'UPDATE_PUBLIC_KEY',
+      'UPDATE_MANIFEST_URL',
+    ]) assert.ok(production.includes(field), `missing fail-closed production field ${field}`);
+    assert.match(
+      production,
+      /for name in CERTIFICATE_P12_BASE64 CERTIFICATE_PASSWORD APPLE_API_KEY_P8_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER_ID UPDATE_MAC_SIGNING_IDENTITY UPDATE_MAC_TEAM_ID; do\s+test -n "\$\{!name\}"/,
+    );
+    assert.match(production, /foreach \(\$entry in \$values\.GetEnumerator\(\)\) \{ if \(!\$entry\.Value\) \{ throw/);
+    assert.ok(!production.includes('signing_present'));
+    assert.ok(!production.includes('notarization_present'));
+    assert.match(production, /Production updates require a code-signed build/);
+    assert.match(production, /codesign --verify --deep --strict/);
+    assert.match(production, /spctl --assess/);
+    assert.match(production, /stapler validate/);
+    assert.match(production, /Authenticode signer does not match the configured build pin/);
+    assert.match(production, /PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS: '1'/);
+  });
+
+  test('rechecks package architecture in staging and finalization and publishes only signed new releases', () => {
+    assert.equal(workflow.match(/platform: (linux|darwin|win32)\n\s+arch: (x64|arm64)/g)?.length, 12);
+    assert.equal(workflow.match(/release-artifacts\.mjs stage/g)?.length, 2);
+    assert.equal(workflow.match(/release-artifacts\.mjs finalize/g)?.length, 2);
+    assert.match(workflow, /p7zip-full rpm/);
+    const publish = job('publish');
+    assert.match(publish, /test -s desktop-release-final\/desktop-release\.json\.sig/);
+    assert.match(publish, /! gh release view/);
+    assert.ok(!publish.includes('--clobber'));
+    assert.ok(!publish.includes('gh release upload'));
   });
 });

@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { handleSquirrelStartupEvent } from './squirrel-events';
+import { handleSquirrelStartupEvent, squirrelAppUserModelId } from './squirrel-events';
 
 describe('Squirrel.Windows startup events', () => {
+  test('binds the package AUMID to the hyphenated executable name', () => {
+    assert.equal(squirrelAppUserModelId('propr-desktop'), 'com.squirrel.propr_desktop.propr-desktop');
+  });
+
   test('creates shortcuts and schedules a clean exit after install', () => {
     const calls: unknown[] = [];
     const handled = handleSquirrelStartupEvent({

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, ChevronRight, Cloud, Computer, LoaderCircle, Pencil, Plus, RefreshCw, Search, Server, Trash2, X } from 'lucide-react';
 import { setApiBaseUrl } from '../api/apiClient';
 import * as runtimeConfig from '../config/runtimeConfig';
@@ -284,7 +284,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     };
   }, []);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
       if (state.phase !== 'connected') return;
       if ((event.metaKey || event.ctrlKey) && event.key === ',') {

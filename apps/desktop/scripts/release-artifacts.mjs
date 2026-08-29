@@ -2,6 +2,7 @@ import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto
 import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { inspectArtifactArchitecture } from './release-architecture.mjs';
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -70,6 +71,7 @@ export const stageArtifacts = async ({
   arch,
   version,
   env = process.env,
+  inspectArchitecture = inspectArtifactArchitecture,
 }) => {
   if (!VERSION_PATTERN.test(version)) throw new Error(`Invalid desktop release version: ${version}`);
   const target = `${platform}-${arch}`;
@@ -104,6 +106,12 @@ export const stageArtifacts = async ({
     } else {
       await copyFile(byKind.get(kind), destination);
     }
+    const architectureEvidence = await inspectArchitecture({
+      path: destination,
+      kind,
+      platform,
+      arch,
+    });
     const details = await stat(destination);
     artifacts.push({
       platform,
@@ -112,7 +120,12 @@ export const stageArtifacts = async ({
       fileName,
       size: details.size,
       sha256: await checksum(destination),
+      architectureEvidence,
     });
+  }
+  const nativeSigner = readNativeSigner(platform, env);
+  if (env.PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS === '1' && platform !== 'linux' && !nativeSigner) {
+    throw new Error(`Production ${platform} artifacts require verified native signer evidence`);
   }
   const fragment = {
     schemaVersion: 2,
@@ -120,7 +133,7 @@ export const stageArtifacts = async ({
     tag: `desktop-v${version}`,
     target,
     artifacts,
-    nativeSigner: readNativeSigner(platform, env),
+    nativeSigner,
   };
   await writeFile(join(outputDirectory, 'release-fragment.json'), `${JSON.stringify(fragment, null, 2)}\n`);
   return fragment;
@@ -140,7 +153,12 @@ const parseHttpsUrl = (value, name, { allowQuery = true } = {}) => {
   return url.toString();
 };
 
-export const finalizeArtifacts = async ({ inputDirectory, outputDirectory, version }) => {
+export const finalizeArtifacts = async ({
+  inputDirectory,
+  outputDirectory,
+  version,
+  inspectArchitecture = inspectArtifactArchitecture,
+}) => {
   if (!VERSION_PATTERN.test(version)) throw new Error(`Invalid desktop release version: ${version}`);
   const fragments = await readFragments(inputDirectory);
   if (fragments.length !== TARGETS.size) {
@@ -181,6 +199,8 @@ export const finalizeArtifacts = async ({ inputDirectory, outputDirectory, versi
         || !Number.isSafeInteger(artifact.size)
         || artifact.size <= 0
         || !SHA256_PATTERN.test(artifact.sha256)
+        || typeof artifact.architectureEvidence !== 'object'
+        || artifact.architectureEvidence === null
         || seenNames.has(artifact.fileName)
       ) {
         throw new Error(`Release fragment ${value.target} has an invalid or duplicate artifact`);
@@ -189,9 +209,29 @@ export const finalizeArtifacts = async ({ inputDirectory, outputDirectory, versi
       if (await checksum(source) !== artifact.sha256 || (await stat(source)).size !== artifact.size) {
         throw new Error(`Release artifact integrity does not match its fragment: ${artifact.fileName}`);
       }
+      const architectureEvidence = await inspectArchitecture({
+        path: source,
+        kind: artifact.kind,
+        platform: targetPlatform,
+        arch: targetArch,
+      });
+      if (JSON.stringify(architectureEvidence) !== JSON.stringify(artifact.architectureEvidence)) {
+        throw new Error(`Release artifact architecture evidence does not match its fragment: ${artifact.fileName}`);
+      }
       seenNames.add(artifact.fileName);
       await copyFile(source, join(outputDirectory, artifact.fileName));
       artifacts.push(artifact);
+    }
+    if (targetPlatform === 'win32') {
+      const packageArtifact = value.artifacts.find(artifact => artifact.kind === 'nupkg');
+      const releasesArtifact = value.artifacts.find(artifact => artifact.kind === 'releases');
+      if (!packageArtifact || !releasesArtifact) throw new Error(`Release fragment ${value.target} lacks Squirrel metadata`);
+      const releases = await readFile(join(dirname(path), releasesArtifact.fileName), 'utf8');
+      const referencesPackage = releases.split(/\r?\n/).some(line => {
+        const match = /^[a-fA-F0-9]{40}\s+(\S+)\s+(\d+)$/.exec(line.trim());
+        return match?.[1] === packageArtifact.fileName && Number(match[2]) === packageArtifact.size;
+      });
+      if (!referencesPackage) throw new Error(`Release fragment ${value.target} has invalid Squirrel RELEASES metadata`);
     }
   }
   for (const target of TARGETS.keys()) {
@@ -306,19 +346,30 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
     }
   }
 
-  await rm(outputDirectory, { recursive: true, force: true });
-  await cp(inputDirectory, outputDirectory, { recursive: true });
   const configurationNames = [
     'PROPR_DESKTOP_UPDATE_PRIVATE_KEY',
     'PROPR_DESKTOP_UPDATE_PUBLIC_KEY',
     'PROPR_DESKTOP_UPDATE_MANIFEST_URL',
+    'PROPR_DESKTOP_MAC_TEAM_ID',
+    'PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY',
     ...configuredFeedDefinitions.map(([, name]) => name),
   ];
   const present = configurationNames.filter(name => env[name]?.trim());
-  const signingConfigured = present.length > 0 || env.PROPR_DESKTOP_REQUIRE_UPDATE_SIGNATURE === '1';
-  if (!signingConfigured) return unsignedManifest;
   if (present.length !== configurationNames.length) {
     throw new Error(`Trusted update signing configuration is incomplete; missing ${configurationNames.filter(name => !env[name]?.trim()).join(', ')}`);
+  }
+
+  for (const target of ['darwin-x64', 'darwin-arm64']) {
+    if (unsignedManifest.nativeSigners?.[target]?.type !== 'apple-team-id'
+      || unsignedManifest.nativeSigners[target].identity !== env.PROPR_DESKTOP_MAC_TEAM_ID.trim()) {
+      throw new Error(`Actual native signer mismatch for ${target}`);
+    }
+  }
+  for (const target of ['win32-x64', 'win32-arm64']) {
+    if (unsignedManifest.nativeSigners?.[target]?.type !== 'authenticode-subject'
+      || unsignedManifest.nativeSigners[target].identity !== env.PROPR_DESKTOP_WINDOWS_SIGNING_IDENTITY.trim()) {
+      throw new Error(`Actual native signer mismatch for ${target}`);
+    }
   }
 
   const manifestUrl = parseHttpsUrl(
@@ -337,6 +388,8 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
     throw new Error('Update signing private and public keys do not match');
   }
 
+  await rm(outputDirectory, { recursive: true, force: true });
+  await cp(inputDirectory, outputDirectory, { recursive: true });
   const { feeds, feedFiles } = await createSignedFeeds(unsignedManifest, outputDirectory, env);
   const signedManifest = { ...unsignedManifest, manifestUrl, feeds };
   const manifestPayload = Buffer.from(`${JSON.stringify(signedManifest, null, 2)}\n`);

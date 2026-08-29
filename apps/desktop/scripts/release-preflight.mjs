@@ -1,0 +1,116 @@
+import { execFile as execFileCallback } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
+import { pathToFileURL } from 'node:url';
+
+const execFile = promisify(execFileCallback);
+const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const SHA_PATTERN = /^[a-f0-9]{40}$/;
+const ZERO_SHA = '0'.repeat(40);
+const RELEASE_ENVIRONMENT = 'desktop-release';
+const RELEASE_TAG_POLICY = 'desktop-v*';
+
+const defaultGit = async args => (await execFile('git', args)).stdout.trim();
+
+const apiRequest = async ({ fetchImpl, apiUrl, repository, token, path, allowNotFound = false }) => {
+  const response = await fetchImpl(`${apiUrl}/repos/${repository}${path}`, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  if (allowNotFound && response.status === 404) return undefined;
+  if (!response.ok) throw new Error(`GitHub API ${path} failed with HTTP ${response.status}`);
+  return response.json();
+};
+
+const assertNewTagPush = ({ event, tag }) => {
+  if (event.ref !== `refs/tags/${tag}` || event.created !== true || event.deleted === true || event.forced === true
+    || event.before !== ZERO_SHA || !SHA_PATTERN.test(event.after)) {
+    throw new Error('Production release must be a new, non-forced desktop tag push at the exact event SHA');
+  }
+};
+
+const assertEnvironmentProtection = (environment, policies) => {
+  if (environment?.name !== RELEASE_ENVIRONMENT) {
+    throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} does not exist`);
+  }
+  const reviewerRule = environment.protection_rules?.find(rule => rule.type === 'required_reviewers');
+  if (!reviewerRule || !Array.isArray(reviewerRule.reviewers) || reviewerRule.reviewers.length === 0) {
+    throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} must require reviewers`);
+  }
+  if (environment.deployment_branch_policy?.custom_branch_policies !== true
+    || environment.deployment_branch_policy?.protected_branches !== false) {
+    throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} must use custom deployment tag restrictions`);
+  }
+  if (!Array.isArray(policies?.branch_policies)
+    || !policies.branch_policies.some(policy => policy.type === 'tag' && policy.name === RELEASE_TAG_POLICY)) {
+    throw new Error(`GitHub environment ${RELEASE_ENVIRONMENT} must restrict tags with ${RELEASE_TAG_POLICY}`);
+  }
+};
+
+export const verifyDesktopReleasePreflight = async ({
+  repository,
+  tag,
+  releaseSha,
+  token,
+  event,
+  apiUrl = 'https://api.github.com',
+  fetchImpl = fetch,
+  git = defaultGit,
+}) => {
+  const version = tag.startsWith('desktop-v') ? tag.slice('desktop-v'.length) : '';
+  if (!VERSION_PATTERN.test(version) || !SHA_PATTERN.test(releaseSha) || !repository.includes('/') || !token) {
+    throw new Error('Desktop release preflight inputs are invalid');
+  }
+  assertNewTagPush({ event, tag });
+
+  const request = (path, options) => apiRequest({ fetchImpl, apiUrl, repository, token, path, ...options });
+  const repositoryDetails = await request('');
+  if (repositoryDetails.default_branch !== 'main') throw new Error('The protected release branch must be main');
+  const mainBranch = await request('/branches/main');
+  if (mainBranch.protected !== true) throw new Error('Repository main branch is not protected');
+
+  const encodedTag = encodeURIComponent(tag);
+  const currentRef = await request(`/git/ref/tags/${encodedTag}`);
+  if (currentRef.object?.sha !== event.after) throw new Error('Desktop release tag ref moved from the new-tag push');
+  const currentCommit = await request(`/commits/${encodedTag}`);
+  if (currentCommit.sha !== releaseSha) throw new Error('Desktop release tag moved or does not resolve to the event SHA');
+  const existingRelease = await request(`/releases/tags/${encodedTag}`, { allowNotFound: true });
+  if (existingRelease) throw new Error(`GitHub release ${tag} already exists`);
+
+  const environment = await request(`/environments/${RELEASE_ENVIRONMENT}`);
+  const policies = await request(`/environments/${RELEASE_ENVIRONMENT}/deployment-branch-policies`);
+  assertEnvironmentProtection(environment, policies);
+
+  await git(['fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main']);
+  await git(['fetch', '--no-tags', 'origin', `refs/tags/${tag}:refs/tags/${tag}`]);
+  const localTagSha = await git(['rev-parse', `${tag}^{commit}`]);
+  if (localTagSha !== releaseSha) throw new Error('Fetched desktop release tag does not match the event SHA');
+  await git(['merge-base', '--is-ancestor', releaseSha, 'refs/remotes/origin/main']);
+
+  const stableCommit = await request(`/commits/${encodedTag}`);
+  if (stableCommit.sha !== releaseSha) throw new Error('Desktop release tag moved during preflight');
+  const stableRef = await request(`/git/ref/tags/${encodedTag}`);
+  if (stableRef.object?.sha !== event.after) throw new Error('Desktop release tag ref moved during preflight');
+  const racedRelease = await request(`/releases/tags/${encodedTag}`, { allowNotFound: true });
+  if (racedRelease) throw new Error(`GitHub release ${tag} appeared during preflight`);
+  return { version, releaseSha, tag, tagObjectSha: event.after };
+};
+
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, 'utf8'));
+  const result = await verifyDesktopReleasePreflight({
+    repository: process.env.GITHUB_REPOSITORY,
+    tag: process.env.GITHUB_REF_NAME,
+    releaseSha: process.env.GITHUB_SHA,
+    token: process.env.GITHUB_TOKEN,
+    event,
+    apiUrl: process.env.GITHUB_API_URL,
+  });
+  if (process.env.GITHUB_OUTPUT) {
+    const { appendFile } = await import('node:fs/promises');
+    await appendFile(process.env.GITHUB_OUTPUT, `version=${result.version}\nrelease_sha=${result.releaseSha}\ntag=${result.tag}\ntag_object_sha=${result.tagObjectSha}\n`);
+  }
+}

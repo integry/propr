@@ -3,9 +3,11 @@ import { generateKeyPairSync } from 'node:crypto';
 import { describe, test } from 'node:test';
 import {
   readCompleteEnvironmentGroup,
+  requireProductionReleaseConfiguration,
   resolveDesktopVersion,
   resolveTrustedUpdateBuildConfig,
 } from './release-config';
+import { squirrelAppUserModelId } from './squirrel-events';
 
 const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
 
@@ -30,6 +32,7 @@ describe('desktop release configuration', () => {
       const { default: forgeConfig } = await import('../forge.config');
       const executableName = forgeConfig.packagerConfig?.executableName;
       assert.equal(executableName, 'propr-desktop');
+      assert.equal(squirrelAppUserModelId(executableName), 'com.squirrel.propr_desktop.propr-desktop');
 
       const linuxMakers = forgeConfig.makers?.filter(isLinuxMaker) ?? [];
       assert.deepEqual(linuxMakers.map(maker => maker.name).sort(), ['deb', 'rpm']);
@@ -90,6 +93,35 @@ describe('desktop release configuration', () => {
     assert.throws(
       () => readCompleteEnvironmentGroup({ CERT: '/tmp/cert.pfx' }, ['CERT', 'PASSWORD'], 'Windows signing'),
       /missing PASSWORD/,
+    );
+  });
+
+  test('fails closed when a production signing or notarization condition is absent', () => {
+    const enabledUpdates = resolveTrustedUpdateBuildConfig({
+      PROPR_DESKTOP_ENABLE_UPDATES: '1',
+      PROPR_DESKTOP_CODE_SIGNED: '1',
+      PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
+      PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
+      PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'TEAM123456',
+    });
+    const group = { configured: 'yes' };
+    assert.throws(
+      () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: enabledUpdates, macSigning: group }),
+      /notarization/,
+    );
+    assert.throws(
+      () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: { enabled: false, manifestUrl: '', publicKey: '', signingIdentity: '' }, macSigning: group, macNotarization: group }),
+      /signed updates/,
+    );
+    assert.throws(
+      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: enabledUpdates }),
+      /Authenticode/,
+    );
+    assert.doesNotThrow(
+      () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: enabledUpdates, macSigning: group, macNotarization: group }),
+    );
+    assert.doesNotThrow(
+      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: enabledUpdates, windowsSigning: group }),
     );
   });
 });

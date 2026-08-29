@@ -86,3 +86,24 @@ export const readCompleteEnvironmentGroup = (
   }
   return Object.fromEntries(names.map(name => [name, env[name]!.trim()]));
 };
+
+export const requireProductionReleaseConfiguration = ({
+  platform,
+  updateConfig,
+  macSigning,
+  macNotarization,
+  windowsSigning,
+}: {
+  platform: NodeJS.Platform;
+  updateConfig: TrustedUpdateBuildConfig;
+  macSigning?: CompleteEnvironmentGroup;
+  macNotarization?: CompleteEnvironmentGroup;
+  windowsSigning?: CompleteEnvironmentGroup;
+}): void => {
+  if (platform === 'darwin' && (!macSigning || !macNotarization || !updateConfig.enabled)) {
+    throw new Error('Production macOS releases require signing, notarization, and signed updates');
+  }
+  if (platform === 'win32' && (!windowsSigning || !updateConfig.enabled)) {
+    throw new Error('Production Windows releases require Authenticode signing and signed updates');
+  }
+};
