@@ -20,6 +20,9 @@ npm run make:deb -w @propr/desktop
 npm run make:rpm -w @propr/desktop
 ```
 
+The desktop typecheck and package commands build required renderer workspace dependencies through
+`desktop:prepare`, so they do not depend on a previously generated `packages/shared/dist` directory.
+
 Development renderer URLs are accepted only when Electron Forge supplies an HTTP loopback URL. Packaged builds load
 the generated renderer file from the application ASAR.
 
