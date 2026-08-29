@@ -20,7 +20,7 @@ const bridgeFixture = () => {
   const probe = vi.fn(async () => ({
     status: 'ready' as const,
     version: '0.8.15',
-    connectionGeneration: 7,
+    transportScope: 'scope-7',
   }));
   const bridge: DesktopBridge = {
     app: {
@@ -67,14 +67,14 @@ describe('Electron remote instance adapters', () => {
       label: profile.name,
       apiBaseUrl: profile.baseUrl,
     });
-    expect(result).toEqual({ status: 'ready', version: '0.8.15', connectionGeneration: 7 });
+    expect(result).toEqual({ status: 'ready', version: '0.8.15', transportScope: 'scope-7' });
     expect('credentials' in fixture.bridge).toBe(false);
 
     if (result.status === 'ready') adapters.connection.activate?.(profile, result);
     expect(setDesktopConnectionScope).toHaveBeenCalledWith({
       bridge: fixture.bridge,
       profileId: profile.id,
-      connectionGeneration: 7,
+      transportScope: 'scope-7',
     });
   });
 

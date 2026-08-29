@@ -2,6 +2,8 @@ import React, { useRef, useState, useEffect } from 'react';
 import { PlannerAttachment, getAttachmentUrl } from '../../api/proprApi';
 import { X, FileText, Loader2, Paperclip } from 'lucide-react';
 import { resizeImage } from './imageUtils';
+import { apiFetch, getDesktopConnectionScope, subscribeDesktopConnectionScope } from '../../api/apiClient';
+import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
 
 interface AttachmentPreviewProps {
   file: PlannerAttachment;
@@ -16,34 +18,46 @@ const AttachmentPreview: React.FC<AttachmentPreviewProps> = ({ file, draftId, on
     /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(file.originalName);
 
   useEffect(() => {
-    if (!isImage && !textPreview && !isLoadingPreview) {
-      setIsLoadingPreview(true);
-      fetch(getAttachmentUrl(draftId, file.id), { credentials: 'include' })
-        .then(res => res.text())
-        .then(text => {
-          const preview = text.length > 100 ? text.slice(0, 100) + '...' : text;
-          setTextPreview(preview);
-        })
-        .catch(() => setTextPreview('Unable to load preview'))
-        .finally(() => setIsLoadingPreview(false));
-    }
-  }, [file.id, draftId, isImage, textPreview, isLoadingPreview]);
+    if (isImage) return;
+    const controller = new AbortController();
+    const capturedScope = getDesktopConnectionScope()?.transportScope ?? null;
+    setTextPreview(null);
+    setIsLoadingPreview(true);
+    const unsubscribe = subscribeDesktopConnectionScope(() => {
+      if ((getDesktopConnectionScope()?.transportScope ?? null) !== capturedScope) controller.abort();
+    });
+    void apiFetch(getAttachmentUrl(draftId, file.id), { credentials: 'include', signal: controller.signal })
+      .then(res => res.text())
+      .then(text => {
+        if (controller.signal.aborted) return;
+        const preview = text.length > 100 ? text.slice(0, 100) + '...' : text;
+        setTextPreview(preview);
+      })
+      .catch(() => { if (!controller.signal.aborted) setTextPreview('Unable to load preview'); })
+      .finally(() => { if (!controller.signal.aborted) setIsLoadingPreview(false); });
+    return () => {
+      unsubscribe();
+      controller.abort();
+    };
+  }, [file.id, draftId, isImage]);
 
   return (
     <div className="inline-flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm group relative">
       {isImage ? (
         <div className="w-10 h-10 rounded overflow-hidden flex-shrink-0 bg-gray-200 border border-gray-300">
-          <img
+          <AuthenticatedAttachmentImage
             src={getAttachmentUrl(draftId, file.id)}
             alt={file.originalName}
             className="w-full h-full object-cover"
-            crossOrigin="use-credentials"
           />
         </div>
       ) : (
         <FileText className="w-4 h-4 text-gray-500 flex-shrink-0" />
       )}
-      <span className="text-gray-700 max-w-[150px] truncate" title={file.originalName}>
+      <span
+        className="text-gray-700 max-w-[150px] truncate"
+        title={isImage ? file.originalName : isLoadingPreview ? 'Loading preview…' : textPreview ?? file.originalName}
+      >
         {file.originalName}
       </span>
       <span className="text-xs text-gray-400">{file.tokenEstimate}t</span>

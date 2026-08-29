@@ -167,12 +167,17 @@ for (const runtimeMode of ['development', 'production'] as const) {
       const allowedPreflight = await fetch(`${baseUrl}/api/protected`, {
         method: 'OPTIONS',
         headers: {
-          Origin: 'https://app.propr.dev',
+          Origin: DESKTOP_RENDERER_ORIGIN,
           'Access-Control-Request-Method': 'GET',
+          'Access-Control-Request-Headers': 'X-ProPR-Desktop-Transport-Scope, Content-Type',
         },
       });
       assert.equal(allowedPreflight.status, 204);
-      assert.equal(allowedPreflight.headers.get('access-control-allow-origin'), 'https://app.propr.dev');
+      assert.equal(allowedPreflight.headers.get('access-control-allow-origin'), DESKTOP_RENDERER_ORIGIN);
+      assert.equal(
+        allowedPreflight.headers.get('access-control-allow-headers'),
+        'X-ProPR-Desktop-Transport-Scope, Content-Type',
+      );
     });
   });
 }

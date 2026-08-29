@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import type { Socket } from '@propr/client';
-import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
+import { DESKTOP_TRANSPORT_SCOPE_QUERY, TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
 import { getDesktopConnectionScope, handleDesktopAccessCode, proprClient } from '../api/apiClient';
 
@@ -25,18 +25,20 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       return;
     }
 
+    const desktopScope = getDesktopConnectionScope();
     const newSocket = proprClient.connectSocket({
       transports: ['websocket'],
       autoConnect: true,
       path: '/socket.io/',
+      forceNew: true,
+      ...(desktopScope ? { query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: desktopScope.transportScope } } : {}),
     });
-    const desktopScope = getDesktopConnectionScope();
     let disposed = false;
     const isCurrentScope = (): boolean => {
       if (disposed) return false;
       const current = getDesktopConnectionScope();
       return current?.profileId === desktopScope?.profileId
-        && current?.connectionGeneration === desktopScope?.connectionGeneration;
+        && current?.transportScope === desktopScope?.transportScope;
     };
     const handleAuthenticationCode = (code: string | undefined, reconnect = false): void => {
       if (!isCurrentScope()) return;

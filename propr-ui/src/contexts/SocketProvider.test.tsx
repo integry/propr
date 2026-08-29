@@ -17,9 +17,9 @@ const connectSocketMock = vi.hoisted(() => vi.fn(() => socketMock));
 const desktopScope = vi.hoisted(() => ({
   bridge: {} as never,
   profileId: 'profile-a',
-  connectionGeneration: 3,
+  transportScope: 'AAAAAAAAAAAAAAAAAAAAAA',
 }));
-let currentDesktopScope: typeof desktopScope | { bridge: never; profileId: string; connectionGeneration: number } = desktopScope;
+let currentDesktopScope: typeof desktopScope | { bridge: never; profileId: string; transportScope: string } = desktopScope;
 const handleDesktopAccessCode = vi.hoisted(() => vi.fn(async () => 'retryable'));
 
 vi.mock('../api/apiClient', () => ({
@@ -65,16 +65,18 @@ describe('SocketProvider', () => {
     expect(socketMock.disconnect).toHaveBeenCalledOnce();
   });
 
-  it('uses the shared client Socket.IO policy', () => {
+  it('captures the activation scope in a force-new Socket.IO Manager', () => {
     const { unmount } = render(
       <SocketProvider>
         <div>app</div>
       </SocketProvider>
     );
 
-    expect(connectSocketMock).toHaveBeenCalledWith(expect.not.objectContaining({
-      withCredentials: expect.anything(),
+    expect(connectSocketMock).toHaveBeenCalledWith(expect.objectContaining({
+      forceNew: true,
+      query: { proprDesktopTransportScope: desktopScope.transportScope },
     }));
+    expect(connectSocketMock).toHaveBeenCalledWith(expect.not.objectContaining({ withCredentials: expect.anything() }));
     unmount();
   });
 
@@ -111,7 +113,7 @@ describe('SocketProvider', () => {
     currentDesktopScope = {
       bridge: {} as never,
       profileId: 'profile-b',
-      connectionGeneration: 4,
+      transportScope: 'BBBBBBBBBBBBBBBBBBBBBB',
     };
     unmount();
     resolveClassification('authorization-changed');

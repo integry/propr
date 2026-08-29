@@ -96,11 +96,11 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
       return bridge.connection.probe(toStoredProfile(profile));
     },
     activate(profile, result) {
-      if (result.connectionGeneration === undefined) throw new Error('Desktop connection generation is missing.');
+      if (result.transportScope === undefined) throw new Error('Desktop transport scope is missing.');
       setDesktopConnectionScope({
         bridge,
         profileId: profile.id,
-        connectionGeneration: result.connectionGeneration,
+        transportScope: result.transportScope,
       });
     },
     deactivate() {

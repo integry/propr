@@ -9,7 +9,7 @@ export interface DesktopProfile {
 }
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string; authentication?: string; connectionGeneration?: number }
+  | { status: 'ready'; version?: string; authentication?: string; transportScope?: string }
   | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };
@@ -45,7 +45,7 @@ export interface DesktopAuthenticationCompleteEventDetail {
 
 export interface DesktopAccessInvalidEventDetail {
   profileId: string;
-  connectionGeneration: number;
+  transportScope: string;
   code: string;
 }
 

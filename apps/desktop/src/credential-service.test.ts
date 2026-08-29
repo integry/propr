@@ -42,6 +42,10 @@ const deferred = <T>() => {
   const promise = new Promise<T>(settle => { resolve = settle; });
   return { promise, resolve };
 };
+const transportHeaders = (transportScope: string, headers: Record<string, string | string[]> = {}) => ({
+  ...headers,
+  'X-ProPR-Desktop-Transport-Scope': transportScope,
+});
 
 const createStore = async (): Promise<ProfileStore> => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
@@ -80,26 +84,27 @@ describe('main-process desktop credential service', () => {
 
     const result = await service.probe({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
     assert.equal(result.status, 'ready');
-    assert.deepEqual(service.authorizeRequest('https://a.example.test/api/tasks', {
+    if (result.status !== 'ready') return;
+    assert.deepEqual(service.prepareRequest('https://a.example.test/api/tasks', transportHeaders(result.transportScope, {
       Cookie: 'legacy=session', Authorization: 'Bearer renderer-controlled', Accept: 'application/json',
-    }), {
-      Accept: 'application/json',
-      Authorization: `Bearer ${token('A')}`,
+    })).requestHeaders, {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token('A')}`,
     });
-    assert.deepEqual(service.authorizeRequest('https://attacker.example.test/api/tasks', {
+    assert.deepEqual(service.prepareRequest('https://attacker.example.test/api/tasks', transportHeaders(result.transportScope, {
       Cookie: 'inactive=session', Authorization: 'Bearer renderer-controlled',
-    }), {});
-    assert.deepEqual(service.authorizeRequest('https://a.example.test/assets/app.js', {
+    })), { cancel: true });
+    assert.deepEqual(service.prepareRequest('https://a.example.test/assets/app.js', transportHeaders(result.transportScope, {
       Cookie: 'active=session', Authorization: 'Bearer renderer-controlled',
-    }), {});
-    assert.deepEqual(service.authorizeRequest('wss://a.example.test/socket.io/?transport=websocket', {
+    })), { cancel: true });
+    assert.deepEqual(service.prepareRequest(`wss://a.example.test/socket.io/?transport=websocket&proprDesktopTransportScope=${result.transportScope}`, {
       Cookie: 'socket=session', Authorization: 'Bearer renderer-controlled',
-    }), { Authorization: `Bearer ${token('A')}` });
-    assert.deepEqual(service.authorizeRequest('https://a.example.test/api/tasks', {
+    }, { resourceType: 'webSocket' }).requestHeaders, { Authorization: `Bearer ${token('A')}` });
+    assert.deepEqual(service.prepareRequest('https://a.example.test/api/tasks', transportHeaders(result.transportScope, {
       Cookie: 'legacy=session',
       Authorization: 'Bearer renderer-controlled',
       'X-ProPR-Desktop-Main-Request': 'renderer-forgery',
-    }), { Authorization: `Bearer ${token('A')}` });
+    })).requestHeaders, { Authorization: `Bearer ${token('A')}` });
     assert.deepEqual(service.prepareRequest('https://a.example.test/api/desktop/pairings', {}), {
       cancel: true,
     });
@@ -139,13 +144,152 @@ describe('main-process desktop credential service', () => {
     assert.equal((await service.probe({
       id: profileA.id, label: profileA.label, apiBaseUrl: profileA.apiBaseUrl,
     })).status, 'ready');
-    assert.equal((await service.probe({
+    const readyB = await service.probe({
       id: profileB.id, label: profileB.label, apiBaseUrl: profileB.apiBaseUrl,
-    })).status, 'ready');
+    });
+    assert.equal(readyB.status, 'ready');
+    if (readyB.status !== 'ready') return;
 
-    assert.deepEqual(service.authorizeRequest('https://same.example.test/api/tasks', {
+    assert.deepEqual(service.prepareRequest('https://same.example.test/api/tasks', transportHeaders(readyB.transportScope, {
       Cookie: 'profile-a=session', Authorization: `Bearer ${token('A')}`,
-    }), { Authorization: `Bearer ${token('B')}` });
+    })).requestHeaders, { Authorization: `Bearer ${token('B')}` });
+  });
+
+  it('keeps a slow successful same-origin A probe status-only after fast B activates', async () => {
+    const store = await createStore();
+    const profileA = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://same.example.test' });
+    const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://same.example.test' });
+    await store.writeCredential(credential(profileA.id, profileA.apiBaseUrl, 'A'));
+    await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
+    const releaseA = deferred<Response>();
+    const startedA = deferred<void>();
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        if (url.endsWith('/api/desktop/discovery')) return json(discovery);
+        const authorization = new Headers(init?.headers).get('Authorization');
+        if (authorization === `Bearer ${token('A')}`) {
+          startedA.resolve();
+          return releaseA.promise;
+        }
+        assert.equal(authorization, `Bearer ${token('B')}`);
+        return json({ username: 'b' });
+      },
+    });
+
+    const slowA = service.probe({ id: profileA.id, label: profileA.label, apiBaseUrl: profileA.apiBaseUrl });
+    await startedA.promise;
+    const readyB = await service.probe({ id: profileB.id, label: profileB.label, apiBaseUrl: profileB.apiBaseUrl });
+    assert.equal(readyB.status, 'ready');
+    if (readyB.status !== 'ready') return;
+    releaseA.resolve(json({ username: 'a' }));
+    const staleA = await slowA;
+
+    assert.equal(staleA.status, 'offline');
+    assert.match(staleA.message, /connection changed/i);
+    assert.deepEqual(service.prepareRequest(
+      'https://same.example.test/api/tasks',
+      transportHeaders(readyB.transportScope),
+    ).requestHeaders, { Authorization: `Bearer ${token('B')}` });
+  });
+
+  it('binds REST and Socket.IO work to one fresh scope and rejects stale or malformed markers', async () => {
+    const store = await createStore();
+    const profileA = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://same.example.test' });
+    const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://same.example.test' });
+    await store.writeCredential(credential(profileA.id, profileA.apiBaseUrl, 'A'));
+    await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async input => input.toString().endsWith('/api/desktop/discovery')
+        ? json(discovery)
+        : json({ username: 'octocat' }),
+    });
+    const readyA = await service.probe({ id: profileA.id, label: profileA.label, apiBaseUrl: profileA.apiBaseUrl });
+    assert.equal(readyA.status, 'ready');
+    if (readyA.status !== 'ready') return;
+    const capturedRestA = transportHeaders(readyA.transportScope, {
+      Cookie: 'renderer=session',
+      Authorization: 'Bearer renderer',
+    });
+    const capturedSocketA = `wss://same.example.test/socket.io/?EIO=4&transport=websocket&proprDesktopTransportScope=${readyA.transportScope}`;
+
+    const readyB = await service.probe({ id: profileB.id, label: profileB.label, apiBaseUrl: profileB.apiBaseUrl });
+    assert.equal(readyB.status, 'ready');
+    if (readyB.status !== 'ready') return;
+
+    assert.deepEqual(service.prepareRequest('https://same.example.test/api/side-effect', capturedRestA), { cancel: true });
+    assert.deepEqual(service.prepareRequest(
+      'https://same.example.test/api/planner/drafts/draft-a/attachments/image-a', capturedRestA,
+    ), { cancel: true });
+    assert.deepEqual(service.prepareRequest(capturedSocketA, { Cookie: 'socket=a' }, { resourceType: 'webSocket' }), { cancel: true });
+    assert.deepEqual(service.prepareRequest(
+      'https://same.example.test/api/side-effect',
+      transportHeaders(readyB.transportScope),
+    ).requestHeaders, { Authorization: `Bearer ${token('B')}` });
+    const currentSocket = `wss://same.example.test/socket.io/?EIO=4&transport=websocket&proprDesktopTransportScope=${readyB.transportScope}`;
+    assert.equal(service.prepareRequest(currentSocket, {}, { resourceType: 'webSocket' }).cancel, undefined);
+    assert.equal(service.prepareRequest(currentSocket, {}, { resourceType: 'webSocket' }).cancel, undefined);
+    assert.deepEqual(service.prepareRequest('wss://same.example.test/socket.io/?transport=websocket', {}, {
+      resourceType: 'webSocket',
+    }), { cancel: true });
+    assert.deepEqual(service.prepareRequest(`${currentSocket}&proprDesktopTransportScope=${readyB.transportScope}`, {}, {
+      resourceType: 'webSocket',
+    }), { cancel: true });
+    assert.deepEqual(service.prepareRequest(
+      'https://same.example.test/api/tasks',
+      { 'X-ProPR-Desktop-Transport-Scope': ['bad', readyB.transportScope], Cookie: 'x', Authorization: 'Bearer x' },
+    ), { cancel: true });
+    assert.deepEqual(service.prepareRequest(
+      'https://same.example.test/api/tasks',
+      { 'X-ProPR-Desktop-Transport-Scope': 'not-a-scope', Cookie: 'x', Authorization: 'Bearer x' },
+    ), { cancel: true });
+    assert.deepEqual(service.prepareRequest('https://same.example.test/api/tasks', {
+      Cookie: 'x', Authorization: 'Bearer x', Accept: 'application/json',
+    }).requestHeaders, { Accept: 'application/json' });
+    assert.deepEqual(service.prepareRequest('https://same.example.test/api/tasks', transportHeaders(readyB.transportScope, {
+      Cookie: 'x', Authorization: 'Bearer x',
+      'Access-Control-Request-Headers': 'x-propr-desktop-transport-scope,content-type',
+    }), { method: 'OPTIONS' }).requestHeaders, {
+      'Access-Control-Request-Headers': 'x-propr-desktop-transport-scope,content-type',
+    });
+  });
+
+  it('rotates scope on every same-profile reprobe and rejects a cold reconnect from the old activation', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'http://localhost:3000' });
+    await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async input => input.toString().endsWith('/api/desktop/discovery')
+        ? json(discovery)
+        : json({ username: 'octocat' }),
+    });
+    const first = await service.probe({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    const second = await service.probe({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
+    assert.equal(first.status, 'ready');
+    assert.equal(second.status, 'ready');
+    if (first.status !== 'ready' || second.status !== 'ready') return;
+    assert.notEqual(first.transportScope, second.transportScope);
+    assert.match(first.transportScope, /^[A-Za-z0-9_-]{22}$/);
+    assert.deepEqual(service.prepareRequest(
+      'http://localhost:3000/api/tasks', transportHeaders(first.transportScope),
+    ), { cancel: true });
+    assert.deepEqual(service.prepareRequest(
+      `ws://localhost:3000/socket.io/?transport=websocket&proprDesktopTransportScope=${first.transportScope}`,
+      {}, { resourceType: 'webSocket' },
+    ), { cancel: true });
+    assert.equal(service.prepareRequest(
+      `ws://localhost:3000/socket.io/?transport=websocket&proprDesktopTransportScope=${second.transportScope}`,
+      {}, { resourceType: 'webSocket' },
+    ).requestHeaders?.Authorization, `Bearer ${token('A')}`);
   });
 
   it('never sends an A-origin bearer after the profile URL is edited to an attacker origin', async () => {
@@ -230,7 +374,8 @@ describe('main-process desktop credential service', () => {
     assert.equal(staleResult.status, 'offline');
     assert.match(staleResult.message, /connection changed.*try again/i);
     assert.deepEqual(await store.readCredential(profile.id), replacement);
-    assert.deepEqual(service.authorizeRequest('https://a.example.test/api/tasks', {}), {
+    if (current.status !== 'ready') return;
+    assert.deepEqual(service.prepareRequest('https://a.example.test/api/tasks', transportHeaders(current.transportScope, {})).requestHeaders, {
       Authorization: `Bearer ${replacement.token}`,
     });
   });
@@ -279,7 +424,8 @@ describe('main-process desktop credential service', () => {
     assert.equal(staleResult.status, 'offline');
     assert.match(staleResult.message, /connection changed.*try again/i);
     assert.deepEqual(await store.readCredential(profile.id), replacement);
-    assert.deepEqual(service.authorizeRequest('https://b.example.test/api/tasks', {}), {
+    if (current.status !== 'ready') return;
+    assert.deepEqual(service.prepareRequest('https://b.example.test/api/tasks', transportHeaders(current.transportScope, {})).requestHeaders, {
       Authorization: `Bearer ${replacement.token}`,
     });
   });
@@ -306,17 +452,17 @@ describe('main-process desktop credential service', () => {
 
     assert.deepEqual(await service.invalidate({
       profileId: profileA.id,
-      connectionGeneration: readyA.connectionGeneration,
+      transportScope: readyA.transportScope,
       code: 'INVALID_INSTANCE_TOKEN',
     }), { invalidated: false });
     assert.deepEqual(await service.invalidate({
       profileId: profileB.id,
-      connectionGeneration: readyB.connectionGeneration,
+      transportScope: readyB.transportScope,
       code: 'AUTHORIZATION_CHANGED',
     }), { invalidated: false });
     assert.deepEqual(await service.invalidate({
       profileId: profileB.id,
-      connectionGeneration: readyB.connectionGeneration,
+      transportScope: readyB.transportScope,
       code: 'AUTHENTICATION_FAILED',
     }), { invalidated: false });
     assert.ok(await store.readCredential(profileA.id));
@@ -324,7 +470,7 @@ describe('main-process desktop credential service', () => {
 
     assert.deepEqual(await service.invalidate({
       profileId: profileB.id,
-      connectionGeneration: readyB.connectionGeneration,
+      transportScope: readyB.transportScope,
       code: 'INVALID_INSTANCE_TOKEN',
     }), { invalidated: true });
     assert.ok(await store.readCredential(profileA.id));
@@ -396,6 +542,90 @@ describe('main-process desktop credential service', () => {
     assert.deepEqual(await store.readCredential(profile.id), credential(profile.id, profile.apiBaseUrl, 'D'));
   });
 
+  it('deletes an exactly persisted cancelled pairing token even when revocation fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
+    temporaryDirectories.push(directory);
+    let service!: DesktopCredentialService;
+    const cancellingEncryption: EncryptionProvider = {
+      ...encryption,
+      encrypt: value => {
+        const stored = JSON.parse(value) as StoredCredential;
+        if (stored.token === token('C')) service.cancelPairing(stored.profileId);
+        return Buffer.from(value, 'utf8');
+      },
+    };
+    const store = new ProfileStore(directory, cancellingEncryption);
+    const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+    service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
+      openExternal: async () => undefined,
+      fetch: async input => {
+        const url = input.toString();
+        if (url.endsWith('/api/desktop/pairings')) return json({
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'B'.repeat(43),
+          approvalUrl: 'https://a.example.test/approve',
+          expiresAt: new Date(pairingNow + 10_000).toISOString(),
+          interval: 1,
+        }, 201);
+        if (url.endsWith('/poll')) {
+          return json({ status: 'complete', token: token('C'), tokenType: 'Bearer', expiresAt: null });
+        }
+        if (url.endsWith('/api/desktop/tokens/current')) return json({ error: 'unavailable' }, 500);
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+
+    await assert.rejects(
+      service.pair({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl }),
+      /cancelled/i,
+    );
+    assert.equal(await store.readCredential(profile.id), null);
+  });
+
+  it('detaches a removed profile locally before deferred revoke and preserves a later replacement', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+    const revocationStarted = deferred<void>();
+    const releaseRevocation = deferred<Response>();
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        if (url.endsWith('/api/desktop/tokens/current')) {
+          assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${token('A')}`);
+          revocationStarted.resolve();
+          return releaseRevocation.promise;
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+
+    const removal = service.removeProfile(profile.id);
+    await revocationStarted.promise;
+    assert.equal((await store.list()).profiles.some(item => item.id === profile.id), false);
+    assert.equal(await store.readCredential(profile.id), null);
+
+    const replacementProfile = await service.saveProfile({
+      id: profile.id,
+      label: 'Replacement',
+      apiBaseUrl: profile.apiBaseUrl,
+    });
+    const replacementCredential = credential(profile.id, profile.apiBaseUrl, 'B');
+    await store.writeCredential(replacementCredential);
+    releaseRevocation.resolve(new Response(null, { status: 204 }));
+    await removal;
+
+    assert.equal((await store.list()).profiles.find(item => item.id === profile.id)?.label, replacementProfile.label);
+    assert.deepEqual(await store.readCredential(profile.id), replacementCredential);
+  });
+
   it('returns connection-changed and preserves a re-paired credential for an old ready invalidation', async () => {
     const store = await createStore();
     const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
@@ -435,7 +665,7 @@ describe('main-process desktop credential service', () => {
     await service.pair({ id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl });
     assert.deepEqual(await service.invalidate({
       profileId: profile.id,
-      connectionGeneration: ready.connectionGeneration,
+      transportScope: ready.transportScope,
       code: 'INVALID_INSTANCE_TOKEN',
     }), { invalidated: false });
 
@@ -449,7 +679,7 @@ describe('main-process desktop credential service', () => {
       const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://b.example.test' });
       let service!: DesktopCredentialService;
       let raced = false;
-      let raceOperation: Promise<void> = Promise.resolve();
+      let raceOperation: Promise<unknown> = Promise.resolve();
       const revocations: string[] = [];
       const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
       let listCalls = 0;
@@ -466,7 +696,7 @@ describe('main-process desktop credential service', () => {
           return result;
         },
         save: (input: Parameters<ProfileStore['save']>[0]) => store.save(input),
-        remove: (profileId: string) => store.remove(profileId),
+        detachProfile: (profileId: string) => store.detachProfile(profileId),
         setActive: (profileId: string | null) => store.setActive(profileId),
         security: () => store.security(),
         readCredential: (profileId: string) => store.readCredential(profileId),

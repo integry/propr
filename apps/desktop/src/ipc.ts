@@ -58,10 +58,8 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
   handle(IPC_CHANNELS.profilesList, () => options.profiles.list());
   handle(IPC_CHANNELS.profilesSave, (_event, input) => options.credentials.saveProfile(input));
   handle(IPC_CHANNELS.profilesRemove, async (_event, profileId) => {
-    const current = await options.profiles.list();
-    const removed = current.profiles.find(profile => profile.id === profileId);
-    if (removed) await clearDesktopInstanceCookies(options.desktopSession, [removed.apiBaseUrl]);
-    await options.credentials.removeProfile(profileId);
+    const removedOrigin = await options.credentials.removeProfile(profileId);
+    if (removedOrigin) await clearDesktopInstanceCookies(options.desktopSession, [removedOrigin]);
   });
   handle(IPC_CHANNELS.profilesSetActive, async (_event, profileId) => {
     const current = await options.profiles.list();

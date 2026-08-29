@@ -72,7 +72,10 @@ const configureSessionSecurity = (credentials: DesktopCredentialService): void =
   desktopSession.setPermissionCheckHandler(() => false);
   desktopSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    callback(credentials.prepareRequest(details.url, details.requestHeaders));
+    callback(credentials.prepareRequest(details.url, details.requestHeaders, {
+      method: details.method,
+      resourceType: details.resourceType,
+    }));
   });
   desktopSession.webRequest.onHeadersReceived((details, callback) => {
     callback({

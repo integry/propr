@@ -206,7 +206,7 @@ describe('DesktopExperience', () => {
     const probe = vi.fn(async (profile: DesktopProfile): Promise<DesktopConnectionResult> => ({
       status: 'ready',
       version: '0.8.15',
-      connectionGeneration: profile.id === localProfile.id ? 11 : 12,
+      transportScope: profile.id === localProfile.id ? 'scope-11' : 'scope-12',
     }));
     const adapters = adaptersFor([localProfile, remoteProfile], localProfile.id, probe);
     adapters.connection.deactivate = vi.fn();
@@ -219,7 +219,7 @@ describe('DesktopExperience', () => {
     expect(await screen.findByText('Connected app')).toBeInTheDocument();
 
     window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, {
-      detail: { profileId: localProfile.id, connectionGeneration: 11, code: 'INVALID_INSTANCE_TOKEN' },
+      detail: { profileId: localProfile.id, transportScope: 'scope-11', code: 'INVALID_INSTANCE_TOKEN' },
     }));
 
     expect(screen.getByText('Connected app')).toBeInTheDocument();

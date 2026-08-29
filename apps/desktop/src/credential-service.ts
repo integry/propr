@@ -1,6 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { ProprClient, ProprClientError, type ProprDesktopPairingOptions } from '@propr/client';
-import type { DesktopProfileInput, DesktopConnectionResult, DesktopAccessInvalidation } from './shared/contract';
+import { DESKTOP_TRANSPORT_SCOPE_HEADER, DESKTOP_TRANSPORT_SCOPE_QUERY } from '@propr/shared';
+import {
+  type DesktopProfileInput,
+  type DesktopConnectionResult,
+  type DesktopAccessInvalidation,
+} from './shared/contract';
 import { normalizeApiBaseUrl } from './security';
 import type { ProfileStore, StoredCredential } from './profile-store';
 
@@ -12,7 +17,7 @@ const DEFINITIVE_INVALID_CODES = new Set([
 
 export interface CredentialServiceDependencies {
   profiles: Pick<ProfileStore,
-    'list' | 'save' | 'remove' | 'setActive' | 'security'
+    'list' | 'save' | 'detachProfile' | 'setActive' | 'security'
     | 'readCredential' | 'writeCredential' | 'removeCredential' | 'removeCredentialIfCurrent'>;
   fetch: typeof globalThis.fetch;
   openExternal(url: string): Promise<void>;
@@ -22,8 +27,10 @@ export interface CredentialServiceDependencies {
 }
 
 interface ActiveCredential extends StoredCredential {
-  connectionGeneration: number;
   profileGeneration: number;
+  probeTicket: number;
+  selectionGeneration: number;
+  transportScope: string;
 }
 
 type RequestHeaders = Record<string, string | string[]>;
@@ -41,13 +48,25 @@ const removeHeader = (headers: RequestHeaders, name: string): void => {
   }
 };
 
-const requestOrigin = (value: string): { origin: string; pathname: string } | null => {
+const headerValues = (headers: RequestHeaders, name: string): string[] => {
+  const values: string[] = [];
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== name.toLowerCase()) continue;
+    if (Array.isArray(value)) values.push(...value);
+    else values.push(value);
+  }
+  return values;
+};
+
+const TRANSPORT_SCOPE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+
+const requestOrigin = (value: string): { origin: string; pathname: string; url: URL } | null => {
   try {
     const url = new URL(value);
     if (url.protocol === 'ws:') url.protocol = 'http:';
     if (url.protocol === 'wss:') url.protocol = 'https:';
     if (url.username || url.password || !['http:', 'https:'].includes(url.protocol)) return null;
-    return { origin: url.origin, pathname: url.pathname };
+    return { origin: url.origin, pathname: url.pathname, url };
   } catch {
     return null;
   }
@@ -82,7 +101,7 @@ export class DesktopCredentialService {
   readonly #profileGenerations = new Map<string, number>();
   readonly #pairingControllers = new Map<string, AbortController>();
   #selectionGeneration = 0;
-  #nextConnectionGeneration = 0;
+  #latestProbeTicket = 0;
   #active: ActiveCredential | null = null;
 
   constructor(dependencies: CredentialServiceDependencies) {
@@ -100,7 +119,6 @@ export class DesktopCredentialService {
     const nextOrigin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!nextOrigin) throw new Error('Invalid desktop API URL');
     if (before && before.apiBaseUrl !== nextOrigin) {
-      const credentialGeneration = this.#generation(before.id);
       this.#invalidateProfileOperations(before.id);
       const cleanupGeneration = this.#generation(before.id);
       const credential = await this.#profiles.readCredential(before.id);
@@ -111,7 +129,7 @@ export class DesktopCredentialService {
           before.apiBaseUrl,
           () => this.#generation(before.id) === cleanupGeneration,
         );
-        if (this.#activeMatches(credential, credentialGeneration)) this.#active = null;
+        this.#clearActiveIfCredential(credential);
       }
     }
     const saved = await this.#profiles.save(input);
@@ -119,19 +137,25 @@ export class DesktopCredentialService {
     return saved;
   }
 
-  async removeProfile(profileId: string): Promise<void> {
+  async removeProfile(profileId: string): Promise<string | null> {
     this.#invalidateProfileOperations(profileId);
-    const credential = await this.#profiles.readCredential(profileId);
-    if (credential) await this.#revoke(credential).catch(() => undefined);
-    if (this.#active?.profileId === profileId) this.#active = null;
-    await this.#profiles.remove(profileId);
+    const detached = await this.#profiles.detachProfile(profileId);
+    if (!detached) return null;
+    if (detached.credential) this.#clearActiveIfCredential(detached.credential);
+    if (detached.credential) await this.#revoke(detached.credential).catch(() => undefined);
+    return detached.profile.apiBaseUrl;
   }
 
   async setActiveProfile(profileId: string | null): Promise<void> {
     this.#selectionGeneration += 1;
     for (const controller of this.#pairingControllers.values()) controller.abort();
     this.#pairingControllers.clear();
-    if (this.#active?.profileId !== profileId) this.#active = null;
+    if (this.#active?.profileId === profileId) {
+      this.#active.selectionGeneration = this.#selectionGeneration;
+    } else {
+      this.#latestProbeTicket += 1;
+      this.#active = null;
+    }
     await this.#profiles.setActive(profileId);
   }
 
@@ -178,13 +202,13 @@ export class DesktopCredentialService {
       return { paired: true };
     } catch (error) {
       if (transient) {
-        await this.#revoke(transient).catch(() => undefined);
         await this.#profiles.removeCredentialIfCurrent(
           transient,
           profile.apiBaseUrl,
-          () => this.#generation(profile.id) === profileGeneration
-            && this.#selectionGeneration === selectionGeneration,
+          () => true,
         ).catch(() => undefined);
+        this.#clearActiveIfCredential(transient);
+        await this.#revoke(transient).catch(() => undefined);
       }
       if (error instanceof ProprClientError && error.kind === 'aborted') {
         throw new Error('Desktop pairing was cancelled.');
@@ -199,6 +223,8 @@ export class DesktopCredentialService {
     if (!input.id) throw new Error('Desktop profile id is required');
     const origin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!origin || origin !== input.apiBaseUrl) throw new Error('Invalid desktop API URL');
+    const probeTicket = ++this.#latestProbeTicket;
+    this.#active = null;
     const operationGeneration = this.#generation(input.id);
     const operationSelection = this.#selectionGeneration;
     const discoveryClient = this.#client(origin);
@@ -238,7 +264,7 @@ export class DesktopCredentialService {
           () => this.#generation(input.id!) === cleanupGeneration,
         );
       }
-      if (this.#activeMatches(credential, operationGeneration)) this.#active = null;
+      this.#clearActiveIfCredential(credential);
       credential = null;
     }
     if (!credential) {
@@ -262,12 +288,28 @@ export class DesktopCredentialService {
       const persisted = (await this.#profiles.list()).profiles.find(profile => profile.id === input.id);
       if (this.#generation(input.id) !== operationGeneration
         || this.#selectionGeneration !== operationSelection
+        || this.#latestProbeTicket !== probeTicket
         || !persisted || persisted.apiBaseUrl !== origin) {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
       }
-      const connectionGeneration = ++this.#nextConnectionGeneration;
-      this.#active = { ...credential, profileGeneration: operationGeneration, connectionGeneration };
-      return { status: 'ready', version: discovery.version, authentication, connectionGeneration };
+      const currentCredential = await this.#profiles.readCredential(input.id);
+      if (this.#generation(input.id) !== operationGeneration
+        || this.#selectionGeneration !== operationSelection
+        || this.#latestProbeTicket !== probeTicket
+        || !currentCredential
+        || currentCredential.origin !== credential.origin
+        || currentCredential.token !== credential.token) {
+        return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
+      }
+      const transportScope = randomBytes(16).toString('base64url');
+      this.#active = {
+        ...credential,
+        profileGeneration: operationGeneration,
+        probeTicket,
+        selectionGeneration: operationSelection,
+        transportScope,
+      };
+      return { status: 'ready', version: discovery.version, authentication, transportScope };
     }
 
     const code = await parseCode(response);
@@ -276,15 +318,13 @@ export class DesktopCredentialService {
         credential,
         origin,
         () => this.#generation(input.id!) === operationGeneration
-          && this.#selectionGeneration === operationSelection,
+          && this.#selectionGeneration === operationSelection
+          && this.#latestProbeTicket === probeTicket,
       );
       if (!removed) {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
       }
-      if (this.#active?.profileId === input.id
-        && this.#active.profileGeneration === operationGeneration
-        && this.#active.origin === credential.origin
-        && this.#active.token === credential.token) this.#active = null;
+      this.#clearActiveIfCredential(credential);
       return {
         status: 'authentication-required',
         message: 'Access to this instance was revoked or expired. Pair again to continue.',
@@ -305,8 +345,10 @@ export class DesktopCredentialService {
     if (!DEFINITIVE_INVALID_CODES.has(value.code)) return { invalidated: false };
     const active = this.#active;
     if (!active || active.profileId !== value.profileId
-      || active.connectionGeneration !== value.connectionGeneration
-      || this.#generation(active.profileId) !== active.profileGeneration) return { invalidated: false };
+      || active.transportScope !== value.transportScope
+      || this.#generation(active.profileId) !== active.profileGeneration
+      || this.#selectionGeneration !== active.selectionGeneration
+      || this.#latestProbeTicket !== active.probeTicket) return { invalidated: false };
     this.#active = null;
     const invalidationGeneration = this.#bumpGeneration(active.profileId);
     const removed = await this.#profiles.removeCredentialIfCurrent(
@@ -317,12 +359,19 @@ export class DesktopCredentialService {
     return { invalidated: removed };
   }
 
-  prepareRequest(url: string, originalHeaders: RequestHeaders): DesktopRequestDecision {
+  prepareRequest(
+    url: string,
+    originalHeaders: RequestHeaders,
+    details: { method?: string; resourceType?: string } = {},
+  ): DesktopRequestDecision {
     const headers = { ...originalHeaders };
     const internalHeader = headerName(headers, 'x-propr-desktop-main-request');
     const trustedMainRequest = internalHeader !== undefined
       && headers[internalHeader] === this.#internalRequestKey;
     if (internalHeader) delete headers[internalHeader];
+
+    const scopeValues = headerValues(headers, DESKTOP_TRANSPORT_SCOPE_HEADER);
+    removeHeader(headers, DESKTOP_TRANSPORT_SCOPE_HEADER);
 
     // The packaged renderer has no cookie identity on any remote HTTP(S) or
     // WS(S) origin. It also cannot supply its own bearer. Main-process bearer
@@ -331,17 +380,41 @@ export class DesktopCredentialService {
     if (!trustedMainRequest) removeHeader(headers, 'authorization');
 
     const target = requestOrigin(url);
+    if (trustedMainRequest) return { requestHeaders: headers };
+
+    const markedRestRequest = scopeValues.length > 0;
+    if (markedRestRequest && (scopeValues.length !== 1 || !TRANSPORT_SCOPE_PATTERN.test(scopeValues[0]))) {
+      return { cancel: true };
+    }
     if (!trustedMainRequest && target
       && (target.pathname.startsWith('/api/desktop/pairings')
         || target.pathname.startsWith('/api/desktop/tokens'))) return { cancel: true };
 
     const active = this.#active;
-    if (!target || !active || this.#generation(active.profileId) !== active.profileGeneration
-      || target.origin !== active.origin
-      || (!target.pathname.startsWith('/api/') && !target.pathname.startsWith('/socket.io/'))) {
+    const activeIsCurrent = active !== null
+      && this.#generation(active.profileId) === active.profileGeneration
+      && this.#selectionGeneration === active.selectionGeneration
+      && this.#latestProbeTicket === active.probeTicket;
+    const isApiRequest = target?.pathname.startsWith('/api/') === true;
+    const isSocketUpgrade = target?.pathname === '/socket.io/'
+      && target.url.searchParams.get('transport') === 'websocket'
+      && (details.resourceType === 'webSocket'
+        || headerValues(originalHeaders, 'upgrade').some(value => value.toLowerCase() === 'websocket'));
+
+    if (isSocketUpgrade && target) {
+      const queryScopes = target.url.searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
+      if (queryScopes.length !== 1 || !TRANSPORT_SCOPE_PATTERN.test(queryScopes[0])
+        || !activeIsCurrent || target.origin !== active.origin
+        || queryScopes[0] !== active.transportScope) return { cancel: true };
+      headers.Authorization = `Bearer ${active.token}`;
       return { requestHeaders: headers };
     }
-    if (!trustedMainRequest) headers.Authorization = `Bearer ${active.token}`;
+
+    if (!markedRestRequest) return { requestHeaders: headers };
+    if (!target || !isApiRequest || !activeIsCurrent || target.origin !== active.origin
+      || scopeValues[0] !== active.transportScope) return { cancel: true };
+    if (details.method?.toUpperCase() === 'OPTIONS') return { requestHeaders: headers };
+    headers.Authorization = `Bearer ${active.token}`;
     return { requestHeaders: headers };
   }
 
@@ -401,11 +474,10 @@ export class DesktopCredentialService {
     return this.#profileGenerations.get(profileId) ?? 0;
   }
 
-  #activeMatches(credential: StoredCredential, profileGeneration: number): boolean {
-    return this.#active?.profileId === credential.profileId
-      && this.#active.profileGeneration === profileGeneration
+  #clearActiveIfCredential(credential: StoredCredential): void {
+    if (this.#active?.profileId === credential.profileId
       && this.#active.origin === credential.origin
-      && this.#active.token === credential.token;
+      && this.#active.token === credential.token) this.#active = null;
   }
 
   #bumpGeneration(profileId: string): number {
@@ -416,6 +488,7 @@ export class DesktopCredentialService {
 
   #invalidateProfileOperations(profileId: string): void {
     this.#bumpGeneration(profileId);
+    if (this.#active?.profileId === profileId) this.#active = null;
     this.#pairingControllers.get(profileId)?.abort();
     this.#pairingControllers.delete(profileId);
   }

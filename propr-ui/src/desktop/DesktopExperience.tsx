@@ -265,7 +265,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       const detail = (event as CustomEvent<DesktopAccessInvalidEventDetail>).detail;
       setState(current => {
         if (current.phase !== 'connected') return current;
-        if (!detail || detail.profileId !== current.profile.id || detail.connectionGeneration !== current.result.connectionGeneration) return current;
+        if (!detail || detail.profileId !== current.profile.id || detail.transportScope !== current.result.transportScope) return current;
         adapters.connection.deactivate?.();
         return {
           phase: 'blocked',

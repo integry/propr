@@ -19,6 +19,11 @@ export interface StoredCredential {
   token: string;
 }
 
+export interface DetachedProfile {
+  profile: DesktopProfile;
+  credential: StoredCredential | null;
+}
+
 interface PersistedState {
   version: 1;
   activeProfileId: string | null;
@@ -143,13 +148,21 @@ export class ProfileStore {
   }
 
   remove(profileId: string): Promise<void> {
+    return this.detachProfile(profileId).then(() => undefined);
+  }
+
+  detachProfile(profileId: string): Promise<DetachedProfile | null> {
     assertProfileId(profileId);
     return this.#mutate(async () => {
       const state = await this.#readState();
+      const profile = state.profiles.find(item => item.id === profileId);
+      if (!profile) return null;
+      const credential = await this.#readCredentialFile(profileId);
       state.profiles = state.profiles.filter(profile => profile.id !== profileId);
       if (state.activeProfileId === profileId) state.activeProfileId = null;
       await this.#writeState(state);
       await this.#removeCredentialFile(profileId);
+      return { profile: { ...profile }, credential };
     });
   }
 

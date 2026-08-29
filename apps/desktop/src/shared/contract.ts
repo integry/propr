@@ -60,14 +60,14 @@ export type StorageSecurity = {
 };
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string; authentication?: string; connectionGeneration: number }
+  | { status: 'ready'; version?: string; authentication?: string; transportScope: string }
   | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };
 
 export interface DesktopConnectionScope {
   profileId: string;
-  connectionGeneration: number;
+  transportScope: string;
 }
 
 export interface DesktopAccessInvalidation extends DesktopConnectionScope {

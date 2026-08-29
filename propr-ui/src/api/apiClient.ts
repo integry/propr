@@ -1,4 +1,4 @@
-import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+import { DEMO_MODE_READ_ONLY_CODE, DESKTOP_TRANSPORT_SCOPE_HEADER } from '@propr/shared';
 import { ProprClient } from '@propr/client';
 import type { DesktopBridge } from '../../../apps/desktop/src/shared/contract';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
@@ -8,10 +8,11 @@ import { DESKTOP_ACCESS_INVALID_EVENT } from '../desktop/types';
 export interface DesktopConnectionScope {
   bridge: DesktopBridge;
   profileId: string;
-  connectionGeneration: number;
+  transportScope: string;
 }
 
 let desktopConnectionScope: DesktopConnectionScope | null = null;
+const desktopScopeListeners = new Set<() => void>();
 const responseScopes = new WeakMap<Response, DesktopConnectionScope | null>();
 const DEFINITIVE_INSTANCE_TOKEN_CODES = new Set([
   'INVALID_INSTANCE_TOKEN',
@@ -45,9 +46,14 @@ export const setApiBaseUrl = (value: string): void => {
 export const setDesktopConnectionScope = (scope: DesktopConnectionScope | null): void => {
   desktopConnectionScope = scope;
   proprClient = createProprClient(API_BASE_URL);
+  desktopScopeListeners.forEach(listener => listener());
 };
 
 export const getDesktopConnectionScope = (): DesktopConnectionScope | null => desktopConnectionScope;
+export const subscribeDesktopConnectionScope = (listener: () => void): (() => void) => {
+  desktopScopeListeners.add(listener);
+  return () => desktopScopeListeners.delete(listener);
+};
 export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 const TOKEN_REFRESHED_CODE = 'TOKEN_REFRESHED';
 const SAFE_PUBLIC_ERROR_CODES = new Set(['AGENT_VERSION_LOOKUP_UNAVAILABLE']);
@@ -143,7 +149,7 @@ const getApiErrorMessage = (data: ApiErrorBody | null): string | undefined =>
 const isCurrentDesktopScope = (scope: DesktopConnectionScope | null): boolean => {
   if (!scope) return !isDesktopRuntime();
   return desktopConnectionScope?.profileId === scope.profileId
-    && desktopConnectionScope.connectionGeneration === scope.connectionGeneration;
+    && desktopConnectionScope.transportScope === scope.transportScope;
 };
 
 const scopeForResponse = (response: Response): DesktopConnectionScope | null =>
@@ -163,14 +169,14 @@ export const handleDesktopAccessCode = async (
   if (DEFINITIVE_INSTANCE_TOKEN_CODES.has(code)) {
     const result = await scope.bridge.connection.invalidate({
       profileId: scope.profileId,
-      connectionGeneration: scope.connectionGeneration,
+      transportScope: scope.transportScope,
       code,
     });
     if (result.invalidated && isCurrentDesktopScope(scope)) {
       window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, {
         detail: {
           profileId: scope.profileId,
-          connectionGeneration: scope.connectionGeneration,
+          transportScope: scope.transportScope,
           code,
         },
       }));
@@ -218,6 +224,20 @@ const isReplayableApiRequest = (
     && (init?.body == null || typeof init.body === 'string');
 };
 
+const scopedRequestInit = (
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  scope: DesktopConnectionScope | null,
+): RequestInit | undefined => {
+  if (!scope) return init;
+  const headers = new Headers(typeof Request !== 'undefined' && input instanceof Request
+    ? input.headers
+    : undefined);
+  new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+  headers.set(DESKTOP_TRANSPORT_SCOPE_HEADER, scope.transportScope);
+  return { ...init, headers };
+};
+
 export const apiFetch = async (
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -225,12 +245,13 @@ export const apiFetch = async (
 ): Promise<Response> => {
   const requestScope = desktopConnectionScope;
   const requestClient = proprClient;
-  const response = await requestClient.fetch(input, init);
+  const requestInit = scopedRequestInit(input, init, requestScope);
+  const response = await requestClient.fetch(input, requestInit);
   responseScopes.set(response, requestScope);
   if (isReplayableApiRequest(input, init, options)
     && await shouldRetryAfterTokenRefresh(response)
     && isCurrentDesktopScope(requestScope)) {
-    const retried = await requestClient.fetch(input, init);
+    const retried = await requestClient.fetch(input, requestInit);
     responseScopes.set(retried, requestScope);
     return retried;
   }

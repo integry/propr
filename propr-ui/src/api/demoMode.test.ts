@@ -118,7 +118,7 @@ describe('demo mode API helpers', () => {
     setDesktopConnectionScope({
       bridge: {} as never,
       profileId: 'profile-a',
-      connectionGeneration: 1,
+      transportScope: 'AAAAAAAAAAAAAAAAAAAAAA',
     });
 
     const pending = apiFetch('/api/tasks');
@@ -126,7 +126,7 @@ describe('demo mode API helpers', () => {
     setDesktopConnectionScope({
       bridge: {} as never,
       profileId: 'profile-b',
-      connectionGeneration: 2,
+      transportScope: 'BBBBBBBBBBBBBBBBBBBBBB',
     });
     releaseParsing();
 
@@ -170,6 +170,39 @@ describe('demo mode API helpers', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenNthCalledWith(1, request, undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(2, request, undefined);
+  });
+
+  it('preserves Request and init headers plus the captured scope on retry', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: 'TOKEN_REFRESHED' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    setDesktopConnectionScope({
+      bridge: {} as never,
+      profileId: 'profile-a',
+      transportScope: 'SSSSSSSSSSSSSSSSSSSSSS',
+    });
+    const request = new Request(new URL('/api/tasks', window.location.origin), {
+      headers: { 'X-From-Request': 'request', Authorization: 'Bearer renderer' },
+    });
+
+    await apiFetch(request, {
+      credentials: 'include',
+      headers: { 'X-From-Init': 'init', Cookie: 'renderer=session' },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [input, init] of fetchMock.mock.calls) {
+      expect(input).toBe(request);
+      const headers = new Headers(init?.headers);
+      expect(headers.get('X-From-Request')).toBe('request');
+      expect(headers.get('X-From-Init')).toBe('init');
+      expect(headers.get('X-ProPR-Desktop-Transport-Scope')).toBe('SSSSSSSSSSSSSSSSSSSSSS');
+      expect(headers.get('Authorization')).toBe('Bearer renderer');
+      expect(headers.get('Cookie')).toBe('renderer=session');
+    }
   });
 
   it('does not retry GitHub re-authentication failures', async () => {
@@ -225,12 +258,12 @@ describe('demo mode API helpers', () => {
     const scopeA = {
       bridge: { connection: { invalidate: vi.fn() } } as never,
       profileId: 'profile-a',
-      connectionGeneration: 4,
+      transportScope: 'DDDDDDDDDDDDDDDDDDDDDD',
     };
     const scopeB = {
       bridge: { connection: { invalidate: vi.fn() } } as never,
       profileId: 'profile-b',
-      connectionGeneration: 5,
+      transportScope: 'EEEEEEEEEEEEEEEEEEEEEE',
     };
     setDesktopConnectionScope(scopeA);
     window.addEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
@@ -257,7 +290,7 @@ describe('demo mode API helpers', () => {
     const scope = {
       bridge: { connection: { invalidate } } as never,
       profileId: 'profile-a',
-      connectionGeneration: 9,
+      transportScope: 'IIIIIIIIIIIIIIIIIIIIII',
     };
     const listener = vi.fn();
     window.addEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
