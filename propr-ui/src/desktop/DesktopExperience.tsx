@@ -315,7 +315,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   const saveProfile = async (profile: DesktopProfile, shouldConnect = true) => {
     setOperationError(null);
     if (shouldConnect) {
-      setEditing(null);
+      closeManager();
       await connect(profile);
       return;
     }

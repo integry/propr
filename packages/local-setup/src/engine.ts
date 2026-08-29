@@ -467,7 +467,7 @@ export interface RunSetupOptions {
   /** All host I/O is supplied explicitly; the engine has no Docker or login dependency. */
   actions: SetupActions;
   skipRemoteImageCheck?: boolean;
-  /** Defaults to the current Node platform. Override only for capability probing/tests. */
+  /** Defaults to the current Node platform and is reported for capability presentation. */
   platform?: NodeJS.Platform;
   /** Cooperative cancellation, observed before every setup step. */
   signal?: AbortSignal;
@@ -477,6 +477,7 @@ export type LocalSetupCapability =
   | { supported: true; kind: "local"; platform: "linux" }
   | { supported: false; kind: "remote-only"; platform: NodeJS.Platform; reason: string };
 
+/** Desktop-facing capability metadata; the platform-neutral engine does not use it as an execution gate. */
 export function getLocalSetupCapability(platform: NodeJS.Platform = process.platform): LocalSetupCapability {
   if (platform === "linux") return { supported: true, kind: "local", platform };
   return {
@@ -510,6 +511,7 @@ export class SetupCancellation extends Error {
 export interface SetupRunResult {
   rootDir: string;
   state: SetupState;
+  /** Capability metadata for adapters that present local-versus-remote setup choices. */
   capability: LocalSetupCapability;
   /** Environment-check outcome, when the check step ran. */
   checks?: ChecksOutcome;
@@ -600,19 +602,6 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
         nextAction: step.nextAction ? redact(step.nextAction) : undefined,
       })),
   });
-
-  if (!capability.supported) {
-    state = updateStep(state, "check", {
-      status: "failed",
-      detail: capability.reason,
-      nextAction: "Configure the CLI or desktop app to use a remote ProPR deployment.",
-    });
-    emit();
-    return {
-      ...finish(),
-      errors: [{ code: "local-unsupported", message: capability.reason, stepId: "check", retryable: false }],
-    };
-  }
 
   if (options.signal?.aborted) {
     emit();

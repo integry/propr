@@ -24,17 +24,27 @@ test("platform capabilities support Linux and make macOS/Windows explicitly remo
   }
 });
 
-test("unsupported hosts return a structured result without invoking host operations", async () => {
-  let called = false;
-  const actions = new Proxy({}, { get: () => () => { called = true; } }) as SetupActions;
-  const result = await runSetup({ root: "/stack", platform: "darwin", actions });
+for (const platform of ["darwin", "win32"] as const) {
+  test(`the setup engine remains platform-neutral on ${platform}`, async () => {
+    let checksRun = false;
+    const actions = {
+      runChecks: async () => {
+        checksRun = true;
+        return {
+          rootDir: "/stack",
+          anyFail: true,
+          results: [{ name: "Docker daemon", group: "Docker", status: "fail", detail: "not running" }],
+        };
+      },
+    } as unknown as SetupActions;
+    const result = await runSetup({ root: "/stack", platform, actions });
 
-  assert.equal(called, false);
-  assert.equal(result.completed, false);
-  assert.equal(result.capability.kind, "remote-only");
-  assert.equal(result.errors[0]?.code, "local-unsupported");
-  assert.equal(result.state.steps[0]?.status, "failed");
-});
+    assert.equal(checksRun, true);
+    assert.equal(result.completed, false);
+    assert.equal(result.capability.kind, "remote-only");
+    assert.notEqual(result.errors[0]?.code, "local-unsupported");
+  });
+}
 
 test("an already-aborted run is cancelled before invoking host operations", async () => {
   const controller = new AbortController();

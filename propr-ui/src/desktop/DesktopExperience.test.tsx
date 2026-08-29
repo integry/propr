@@ -290,6 +290,36 @@ describe('DesktopExperience', () => {
     expect(apiMock.setApiBaseUrl).toHaveBeenLastCalledWith('https://new.example.com');
   });
 
+  it.each(['new', 'active'] as const)('closes the instance manager after a %s profile starts connecting', async profileKind => {
+    const pendingProbe = deferred<DesktopConnectionResult>();
+    const probe = vi.fn()
+      .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' })
+      .mockImplementationOnce(() => pendingProbe.promise);
+    const adapters = adaptersFor([localProfile], localProfile.id, probe);
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    if (profileKind === 'new') {
+      fireEvent.click(await screen.findByRole('button', { name: /Add instance/i }));
+      fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'New server' } });
+      fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://new.example.com/' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    } else {
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit This computer' }));
+      fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://active.example.com/' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    }
+
+    expect(await screen.findByRole('heading', { name: new RegExp(`Connecting to ${profileKind === 'new' ? 'New server' : 'This computer'}`) })).toBeInTheDocument();
+    await act(async () => { pendingProbe.resolve({ status: 'ready', version: '0.8.15' }); });
+
+    const app = await screen.findByText('Connected app');
+    expect(screen.queryByRole('dialog', { name: 'Manage instances' })).not.toBeInTheDocument();
+    expect(app.closest('.desktop-app')).not.toHaveAttribute('inert');
+    expect(app.closest('.desktop-app')).not.toHaveAttribute('aria-hidden');
+  });
+
   it('reconnects an edited active instance but saves an inactive edit without connecting', async () => {
     const adapters = adaptersFor([localProfile, remoteProfile], localProfile.id);
     render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
