@@ -1,8 +1,15 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+import { ProprClient } from '@propr/client';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import { currentUiPathname, navigateToUiPath } from '../config/runtimeMode';
 
 export const API_BASE_URL = getApiBaseUrl();
+export const proprClient = new ProprClient({
+  baseUrl: API_BASE_URL,
+  // Domain modules already opt into cookies route-by-route. Preserve their
+  // exact RequestInit behavior while sharing the session transport policy.
+  authentication: { type: 'session', applyByDefault: false },
+});
 export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 const TOKEN_REFRESHED_CODE = 'TOKEN_REFRESHED';
 const SAFE_PUBLIC_ERROR_CODES = new Set(['AGENT_VERSION_LOOKUP_UNAVAILABLE']);
@@ -131,8 +138,10 @@ export const apiFetch = async (
   init?: RequestInit,
   options: ApiFetchOptions = {}
 ): Promise<Response> => {
-  const response = await fetch(input, init);
-  if (isReplayableApiRequest(input, init, options) && await shouldRetryAfterTokenRefresh(response)) return fetch(input, init);
+  const response = await proprClient.fetch(input, init);
+  if (isReplayableApiRequest(input, init, options) && await shouldRetryAfterTokenRefresh(response)) {
+    return proprClient.fetch(input, init);
+  }
   return response;
 };
 

@@ -4,13 +4,16 @@ import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 import { applyDevelopmentRendererCsp } from './src/security';
 import { resolveDesktopVersion } from './src/release-config';
+import { viteFileSystemUrl } from './src/vite-file-system-url';
 
 const rootPackage = JSON.parse(
   readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8'),
 ) as { version: string };
 const desktopVersion = resolveDesktopVersion(rootPackage.version);
 const rendererEntrySource = '../../propr-ui/src/desktop.tsx';
-const rendererEntryDevelopmentUrl = `/@fs${fileURLToPath(new URL(rendererEntrySource, import.meta.url))}`;
+const rendererEntryDevelopmentUrl = viteFileSystemUrl(
+  fileURLToPath(new URL(rendererEntrySource, import.meta.url)),
+);
 
 const transformDevelopmentRendererHtml = (html: string): string => {
   if (!html.includes(rendererEntrySource)) {

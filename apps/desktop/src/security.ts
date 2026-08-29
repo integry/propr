@@ -1,6 +1,7 @@
 import { DESKTOP_PROTOCOL } from './shared/contract';
 
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+// WHATWG URL.hostname retains brackets around IPv6 literals.
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 const DEEP_LINK_ACTIONS = new Set(['connect', 'open']);
 
 const parseUrl = (value: string): URL | null => {
@@ -74,7 +75,7 @@ export const rendererContentSecurityPolicy = (development = false): string => [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* wss:",
+  "connect-src 'self' https: http://127.0.0.1:* http://[::1]:* http://localhost:* ws://127.0.0.1:* ws://[::1]:* ws://localhost:* wss:",
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",

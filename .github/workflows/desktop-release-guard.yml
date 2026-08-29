@@ -7,6 +7,7 @@ on:
       - 'apps/desktop/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'packages/client/**'
       - 'packages/shared/**'
       - 'propr-ui/**'
   push:
@@ -125,6 +126,14 @@ jobs:
 
       - name: Install locked dependencies
         run: npm ci
+
+      - name: Package desktop app from clean checkout
+        shell: bash
+        run: |
+          test ! -e packages/shared/dist
+          test ! -e packages/client/dist
+          test ! -e apps/desktop/out
+          npm run desktop:package
 
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'

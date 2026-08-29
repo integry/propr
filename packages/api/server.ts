@@ -32,6 +32,7 @@ import {
   createAgentRuntimeRoutes, createNotificationRoutes,
   createAdminRoutes,
   createInstanceCatalogRoutes,
+  createDesktopAuthRoutes,
   attachmentUpload
 } from './routes/index.js';
 import { agentLoginSessionManager } from './services/agentLoginSessionManager.js';
@@ -62,7 +63,15 @@ import { NotificationProjectionService } from './services/notificationProjection
 import { WebPushDispatcher } from './services/webPushDispatcher.js';
 import { assertInstanceAdministratorConfigured, resolveAuthorization } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
-import { configureApiProxyTrust, createApiRequestRateLimiter, createWebhookRequestRateLimiter } from './requestRateLimits.js';
+import {
+  configureApiProxyTrust,
+  createApiRequestRateLimiter,
+  createDiscoveryRequestRateLimiter,
+  createPairingPollRateLimiter,
+  createPairingStartRateLimiter,
+  createWebhookRequestRateLimiter,
+} from './requestRateLimits.js';
+import { desktopAuthService } from './desktopAuthService.js';
 import { startConfigReloadSubscription, type ConfigReloadSubscription } from './services/configReloadSubscription.js';
 import {
   assertNoDuplicateRoutes,
@@ -190,6 +199,7 @@ let configReloadSubscription: ConfigReloadSubscription | undefined;
 let notificationProjection: NotificationProjectionService | undefined;
 let webPushDispatcher: WebPushDispatcher | undefined;
 let webPushDispatcherConfigured = false;
+let desktopPairingCleanupTimer: NodeJS.Timeout | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -242,15 +252,21 @@ function setupRoutes(): void {
       ) => notificationProjection!.projectSystemSnapshot(snapshot, additionalAdministratorIds),
     }),
   });
-  // INTENTIONALLY UNAUTHENTICATED: /api/compatibility is registered BEFORE the
-  // `ensureAuthenticated` guard below so the hosted UI can run its pre-auth
-  // version-gate before the user logs in. This is the one deliberate exception to
-  // "everything under /api/* requires auth" — do not move it after the guard, and
-  // keep its handler returning only non-sensitive build metadata (version +
-  // compatibility dates). All other /api routes registered after this line are
-  // authenticated.
-  app.get('/api/compatibility', statusRoutes.getCompatibility);
+  const desktopAuthRoutes = createDesktopAuthRoutes();
+  // INTENTIONALLY UNAUTHENTICATED: compatibility/discovery and the bounded
+  // pairing bootstrap, poll, and browser entry are registered before the guard.
+  // They return only compatibility/capability metadata or pairing state gated by
+  // a high-entropy secret; all operational routes below remain authenticated.
+  app.get('/api/compatibility', createDiscoveryRequestRateLimiter(), statusRoutes.getCompatibility);
+  app.get('/api/desktop/discovery', createDiscoveryRequestRateLimiter(), statusRoutes.getDesktopDiscovery);
+  app.post('/api/desktop/pairings', createPairingStartRateLimiter(), desktopAuthRoutes.startPairing);
+  app.post('/api/desktop/pairings/:pairingId/poll', createPairingPollRateLimiter(), desktopAuthRoutes.pollPairing);
+  app.get('/api/desktop/pairings/:pairingId/browser', createPairingStartRateLimiter(), desktopAuthRoutes.openPairingApproval);
   app.use('/api', ensureAuthenticated, resolveAuthorization);
+  app.get('/api/desktop/pairings/:pairingId/approval', desktopAuthRoutes.browserSessionGuard, desktopAuthRoutes.getPairingApproval);
+  app.post('/api/desktop/pairings/:pairingId/approve', desktopAuthRoutes.browserSessionGuard, desktopAuthRoutes.approvalOriginGuard, desktopAuthRoutes.approvePairing);
+  app.get('/api/desktop/tokens', desktopAuthRoutes.listTokens);
+  app.delete('/api/desktop/tokens/:tokenId', desktopAuthRoutes.revokeToken);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });
   const liveDetailsRoutes = createLiveDetailsRoutes({ redisClient, db });
@@ -438,6 +454,15 @@ async function start(): Promise<void> {
     }
     setupRoutes();
     if (!demoMode) {
+      await desktopAuthService.cleanupPairings();
+      desktopPairingCleanupTimer = setInterval(() => {
+        void desktopAuthService.cleanupPairings().catch(error => {
+          console.warn('[desktop-auth] Pairing cleanup failed:', error);
+        });
+      }, 60 * 60_000);
+      desktopPairingCleanupTimer.unref();
+    }
+    if (!demoMode) {
       const socketService = initSocketService(httpServer, validateCorsOrigin, {
         engineMiddleware: socketAuthMiddleware.engineMiddleware,
         authenticate: authenticateSocketRequest,
@@ -485,6 +510,7 @@ async function start(): Promise<void> {
         { name: 'agent login sessions', close: () => agentLoginSessionManager.close() },
         { name: 'redis client', close: () => redisClient.quit() }
       ];
+      if (desktopPairingCleanupTimer) clearInterval(desktopPairingCleanupTimer);
       if (!demoMode) {
         shutdownTasks.push(
           { name: 'Web Push dispatcher', close: () => webPushDispatcher?.close() ?? Promise.resolve() },
