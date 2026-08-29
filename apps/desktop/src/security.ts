@@ -138,8 +138,16 @@ export const normalizeDeepLink = (value: string): string | null => {
   const url = parseUrl(value);
   if (!url || url.protocol !== `${DESKTOP_PROTOCOL}:` || hasCredentials(url)) return null;
   if (!DEEP_LINK_ACTIONS.has(url.hostname) || url.port || url.hash) return null;
-  if (url.hostname === 'open' && !dashboardPathFromDeepLink(value)) return null;
-  return url.href;
+  const dashboardPath = url.hostname === 'open' ? dashboardPathFromDeepLink(value) : null;
+  if (url.hostname === 'open' && dashboardPath === null) return null;
+
+  const canonicalCandidate = url.href;
+  if (canonicalCandidate.length > 2_048 || /[\u0000-\u001F\u007F]/.test(canonicalCandidate)) return null;
+  if (
+    url.hostname === 'open'
+    && dashboardPathFromDeepLink(canonicalCandidate) !== dashboardPath
+  ) return null;
+  return canonicalCandidate;
 };
 
 export const deepLinkFromArguments = (argv: readonly string[]): string | null => {
