@@ -44,6 +44,12 @@ const adaptersFor = (
   connection: { probe: vi.fn(probe) },
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(complete => { resolve = complete; });
+  return { promise, resolve };
+}
+
 describe('DesktopExperience', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -148,6 +154,54 @@ describe('DesktopExperience', () => {
     expect(firstAdapters.profiles.save).not.toHaveBeenCalled();
   });
 
+  it('serializes deferred persistence so the latest connection owns the stored profile and active ID', async () => {
+    const firstSave = deferred<void>();
+    let storedProfile: DesktopProfile | null = null;
+    let storedActiveId: string | null = null;
+    const adapters = adaptersFor([localProfile, remoteProfile]);
+    vi.mocked(adapters.profiles.save).mockImplementation(async profile => {
+      if (vi.mocked(adapters.profiles.save).mock.calls.length === 1) {
+        await firstSave.promise;
+      }
+      storedProfile = profile;
+    });
+    vi.mocked(adapters.profiles.setActiveId).mockImplementation(async id => { storedActiveId = id; });
+    render(<DesktopExperience adapters={adapters}><div>Latest dashboard</div></DesktopExperience>);
+
+    expect(await screen.findByText('Recent instances')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('This computer').closest('button')!);
+    await waitFor(() => expect(adapters.profiles.save).toHaveBeenCalledOnce());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click((await screen.findByText('Team server')).closest('button')!);
+    await waitFor(() => expect(adapters.connection.probe).toHaveBeenCalledWith(remoteProfile));
+    expect(adapters.profiles.save).toHaveBeenCalledOnce();
+
+    await act(async () => { firstSave.resolve(); });
+
+    expect(await screen.findByText('Latest dashboard')).toBeInTheDocument();
+    expect(storedProfile).toMatchObject({ id: remoteProfile.id, baseUrl: remoteProfile.baseUrl });
+    expect(storedActiveId).toBe(remoteProfile.id);
+    expect(adapters.profiles.setActiveId).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers Back while probing and prevents a cancelled probe from committing', async () => {
+    const pendingProbe = deferred<DesktopConnectionResult>();
+    const adapters = adaptersFor([localProfile], null, () => pendingProbe.promise);
+    render(<DesktopExperience adapters={adapters}><div>Cancelled dashboard</div></DesktopExperience>);
+
+    fireEvent.click((await screen.findByText('This computer')).closest('button')!);
+    expect(await screen.findByRole('heading', { name: 'Connecting to This computer' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(await screen.findByText('Recent instances')).toBeInTheDocument();
+
+    await act(async () => { pendingProbe.resolve({ status: 'ready', version: '0.8.15' }); });
+
+    expect(screen.queryByText('Cancelled dashboard')).not.toBeInTheDocument();
+    expect(adapters.profiles.save).not.toHaveBeenCalled();
+    expect(adapters.profiles.setActiveId).toHaveBeenCalledWith(null);
+  });
+
   it('supports editing a recent profile and connecting to the updated URL', async () => {
     const adapters = adaptersFor([localProfile]);
     render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
@@ -179,6 +233,39 @@ describe('DesktopExperience', () => {
     expect(await screen.findByRole('dialog', { name: 'Manage instances' })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('traps modal focus, makes the app inert, and restores focus to the opener', async () => {
+    const adapters = adaptersFor([localProfile], localProfile.id);
+    render(
+      <DesktopExperience adapters={adapters}>
+        <DesktopTitleBar />
+      </DesktopExperience>
+    );
+
+    const opener = await screen.findByRole('button', { name: 'Connected: This computer' });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Manage instances' });
+    const app = opener.closest('.desktop-app');
+    const close = screen.getByRole('button', { name: 'Close instance manager' });
+    const last = screen.getByRole('button', { name: /Add instance/i });
+    expect(app).toHaveAttribute('inert');
+    expect(app).toHaveAttribute('aria-hidden', 'true');
+    expect(dialog).toContainElement(close);
+    expect(close).toHaveFocus();
+
+    close.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(last).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(close).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(app).not.toHaveAttribute('inert');
+    expect(opener).toHaveFocus();
   });
 
   it('connects a new instance added from the manager', async () => {

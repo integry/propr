@@ -13,11 +13,6 @@ import { NotificationService } from '../../core/src/services/notificationService
 import { WebPushDispatcher } from '../services/webPushDispatcher.js';
 
 const success: SendResult = { statusCode: 201, body: '', headers: {} };
-const HISTORICAL_FIXTURE_TIME = Date.parse('2020-01-01T00:00:00.000Z');
-
-function historicalFixtureTime(): Date {
-  return new Date(HISTORICAL_FIXTURE_TIME);
-}
 
 function createDatabase(): Knex {
   return knex({
@@ -66,7 +61,7 @@ beforeEach(async () => {
   await addAdvertisedActions(database);
   notifications = new NotificationService({
     database,
-    now: historicalFixtureTime,
+    now: () => new Date(Date.now() - 5_000),
   });
 });
 
@@ -404,7 +399,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
       assert.ok(address !== null && typeof address !== 'string');
       const localNotifications = new NotificationService({
         database,
-        now: historicalFixtureTime,
+        now: () => new Date(Date.now() - 5_000),
         allowInsecureLocalhost: true,
       });
       await queuedEvent({
@@ -443,7 +438,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     process.env.API_PUBLIC_URL = 'http://localhost:4000';
     const localNotifications = new NotificationService({
       database,
-      now: historicalFixtureTime,
+      now: () => new Date(Date.now() - 5_000),
       allowInsecureLocalhost: true,
     });
     await queuedEvent({
@@ -494,7 +489,7 @@ describe('Web Push dispatcher', { concurrency: false }, () => {
     await createNotificationSchema(database);
     await addPreferenceApis(database);
     await addAdvertisedActions(database);
-    notifications = new NotificationService({ database, now: historicalFixtureTime });
+    notifications = new NotificationService({ database, now: () => new Date(Date.now() - 5_000) });
     await queuedEvent();
     const exhausted = dispatcher({
       sendNotification: async () => Promise.reject({ statusCode: 503, body: 'SECRET' }),

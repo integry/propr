@@ -230,9 +230,15 @@
 .desktop-app .desktop-shell-content > aside nav a.bg-red-50 { border-left-color: #1d8a8a; background: #edf7f6; }
 .desktop-app .desktop-shell-content header { box-shadow: none; }
 
-button:focus-visible,
-a:focus-visible,
-input:focus-visible {
+.desktop-entry button:focus-visible,
+.desktop-entry a:focus-visible,
+.desktop-entry input:focus-visible,
+.desktop-app button:focus-visible,
+.desktop-app a:focus-visible,
+.desktop-app input:focus-visible,
+.desktop-modal-backdrop button:focus-visible,
+.desktop-modal-backdrop a:focus-visible,
+.desktop-modal-backdrop input:focus-visible {
   outline: 2px solid var(--desktop-focus);
   outline-offset: 2px;
 }
@@ -250,4 +256,3 @@ input:focus-visible {
   .desktop-connection-card { border-radius: .9rem; padding: 1.25rem; }
   .desktop-welcome-copy { padding: 1.8rem 0 1.25rem; }
 }
-
