@@ -42,6 +42,8 @@ The browser origin (`app.propr.dev`) and the API host (`t-<id>.propr.dev`) diffe
 
 The browser uses the **same API base** for both REST calls and the Socket.IO connection, so they always target one origin — the proxy host when the tunnel is on, or same-origin localhost otherwise.
 
+The hosted PWA's manifest, service worker, installation, notification permission, and browser Push subscription all belong to the **UI origin** (`app.propr.dev`), not the per-instance API origin. The selected backend stores that subscription for the authenticated user. Disable Push before selecting another stack, then enable it again on the destination so the subscription is created for that stack's VAPID identity. See [PWA, Web Push, and Badges](./pwa-web-push.md#ui-and-api-origins).
+
 ### Compatibility check
 
 Before the hosted UI starts its normal auth/session checks, it calls the public `/api/compatibility` endpoint on the selected API origin. The endpoint returns the local stack version plus the API/UI compatibility contract. If the hosted UI cannot support that contract, it stops at a clear version-mismatch screen instead of running against incompatible endpoints or Socket.IO events. `/api/status` includes the same metadata for authenticated diagnostics.

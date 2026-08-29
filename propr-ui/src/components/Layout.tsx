@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { ScrollText, ListTodo, BookMarked, Bot, Cpu, ShieldCheck } from 'lucide-react';
+import { ScrollText, ListTodo, BookMarked, Bot, Cpu, ShieldCheck, Inbox } from 'lucide-react';
 import { logout } from '../api/proprApi';
 import { useDynamicFavicon } from '../hooks/useDynamicFavicon';
 import { useSystemReadiness } from '../hooks/useSystemReadiness';
@@ -13,6 +13,7 @@ import { useDemoMode } from '../contexts/DemoModeContext';
 import { QueueStatsUpdatePayload, IndexingUpdatePayload, DraftUpdatePayload } from '@propr/shared';
 import { useCurrentUser, userHasPermission } from '../contexts/AuthContext';
 import { ConnectCapacityBanner } from './ConnectPlusBanner';
+import { useNotificationCenter } from '../contexts/NotificationCenterContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -32,6 +33,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [activeTaskCount, setActiveTaskCount] = useState<number>(0);
   const [generatingPlansCount, setGeneratingPlansCount] = useState<number>(0);
   const user = useCurrentUser();
+  const { unreadCount } = useNotificationCenter();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   // Track repository indexing statuses for toast notifications
   const repoStatusesRef = useRef<Map<string, string>>(new Map());
@@ -49,6 +51,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   const navigation: NavItem[] = [
     { name: 'Dashboard', href: '/', icon: HomeIcon },
+    { name: 'Inbox', href: '/inbox', icon: Inbox },
     { name: 'Plans', href: '/plans', icon: ScrollText },
     { name: 'Tasks', href: '/tasks', icon: ListTodo },
     { name: 'Repositories', href: '/repositories', icon: BookMarked },
@@ -56,9 +59,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       ? [{ name: 'Coding Agents', href: '/ai-agents', icon: Bot }]
       : []),
     { name: 'LLM Log', href: '/llm-logs', icon: Cpu },
-    ...(userHasPermission(user, 'instance.manage_settings')
-      ? [{ name: 'Settings', href: '/settings', icon: SettingsIcon }]
-      : []),
+    { name: 'Settings', href: '/settings', icon: SettingsIcon },
     ...(userHasPermission(user, 'instance.manage_members')
       ? [{ name: 'Access', href: '/admin/members', icon: ShieldCheck }]
       : []),
@@ -210,6 +211,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                     {displayTaskCount}
                   </span>
                 )}
+                {item.name === 'Inbox' && unreadCount !== null && unreadCount > 0 && (
+                  <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-primary-500 px-1.5 text-xs font-semibold leading-5 text-white">
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                )}
                 {item.name === 'Tasks' && displayTaskCount === 0 && !hasTasks && hasAgents && hasRepos && (
                   <span className="ml-auto w-2 h-2 rounded-full bg-amber-500" title="No tasks created yet" />
                 )}
@@ -256,11 +262,12 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           onMenuToggle={handleMenuToggle}
           MenuIcon={MenuIcon}
           isDemoMode={isDemoMode}
+          inboxUnreadCount={unreadCount}
         />
 
         {!isDemoMode && <ConnectCapacityBanner />}
 
-        <main className="flex-1 overflow-y-auto">
+        <main className="mobile-content-clearance flex-1 overflow-y-auto md:pb-0">
           {children}
         </main>
       </div>

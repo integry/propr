@@ -7,7 +7,7 @@ import { Knex } from 'knex';
 interface JobData {
     repoOwner?: string; repoName?: string; number?: number;
     pullRequestNumber?: number; title?: string; subtitle?: string;
-    comments?: unknown[]; modelName?: string;
+    comments?: unknown[]; modelName?: string; agentAlias?: string;
 }
 
 interface JobReturnValue {
@@ -66,7 +66,7 @@ function buildTaskInfoFromDb(
   jobData: ReturnType<typeof parseJobData>
 ): Record<string, unknown> {
   const [repoOwner, repoName] = (task.repository as string).split('/');
-  const { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta } = jobData;
+  const { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta, agentAlias } = jobData;
   const isPr = task.task_type === 'pr-comment' || taskId.startsWith('pr-comments-batch-') || !!pullRequestNumber;
 
   const taskInfo: Record<string, unknown> = {
@@ -77,7 +77,8 @@ function buildTaskInfoFromDb(
     correlationId: task.correlation_id,
     title,
     subtitle,
-    modelName: task.model_name
+    modelName: task.model_name,
+    agentAlias
   };
 
   if (isPr && issueNumber) taskInfo.issueNumber = issueNumber;
@@ -153,24 +154,30 @@ function extractIssueNumberFromTitle(title: string | null | undefined): number |
   return issueMatch ? parseInt(issueMatch[1], 10) : null;
 }
 
-function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null; issueNumber: number | null; commandMode: string | null; hasUltrafixMeta: boolean } {
+function resolveAgentAlias(jobData: Record<string, unknown>, ref: Record<string, unknown> | undefined): string | null {
+  return (jobData.agentAlias as string | undefined) ?? (ref?.agentAlias as string | undefined) ?? null;
+}
+
+function parseJobData(initialJobData: unknown): { title: string | null; subtitle: string | null; pullRequestNumber: number | null; issueNumber: number | null; commandMode: string | null; hasUltrafixMeta: boolean; agentAlias: string | null } {
   let title = null, subtitle = null, pullRequestNumber = null, issueNumber = null, commandMode = null;
+  let agentAlias = null;
   let hasUltrafixMeta = false;
   if (initialJobData) {
     try {
       const jobData = typeof initialJobData === 'string' ? JSON.parse(initialJobData) : initialJobData;
-      const ref = jobData.issueRef;
+      const ref = jobData.issueRef as Record<string, unknown> | undefined;
       title = jobData.title || ref?.title || null;
       subtitle = jobData.subtitle || null;
       pullRequestNumber = jobData.pullRequestNumber || ref?.pullRequestNumber || null;
       issueNumber = jobData.issueNumber || ref?.issueNumber || null;
       commandMode = jobData.commandMode || null;
+      agentAlias = resolveAgentAlias(jobData, ref);
       hasUltrafixMeta = !!jobData.ultrafixMeta;
       if (!title && ref) title = ref.title;
       if (!issueNumber && title) issueNumber = extractIssueNumberFromTitle(title);
     } catch (e) { console.error('Failed to parse initial_job_data', e); }
   }
-  return { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta };
+  return { title, subtitle, pullRequestNumber, issueNumber, commandMode, hasUltrafixMeta, agentAlias };
 }
 
 function mapDbHistoryRecord(
@@ -279,7 +286,8 @@ function buildTaskInfoFromState(
   const taskInfo: Record<string, unknown> = {
     repoOwner: ref.repoOwner, repoName: ref.repoName, number,
     type, comments: ref.comments,
-    title: ref.title || null, subtitle: ref.subtitle || null, modelName: ref.modelName
+    title: ref.title || null, subtitle: ref.subtitle || null,
+    modelName: ref.modelName, agentAlias: ref.agentAlias
   };
   if (issueNumber) taskInfo.issueNumber = issueNumber;
   applyMetadataFlags(taskInfo, historyEntries);
@@ -340,7 +348,8 @@ function buildTaskInfoFromJob(job: Job<JobData, JobReturnValue>, taskId: string)
     repoOwner: job.data.repoOwner, repoName: job.data.repoName,
     number: job.data.pullRequestNumber || job.data.number,
     type: isPr ? 'pr-comment' : 'issue', comments: job.data.comments,
-    title: job.data.title || null, subtitle: job.data.subtitle || null, modelName: job.data?.modelName
+    title: job.data.title || null, subtitle: job.data.subtitle || null,
+    modelName: job.data?.modelName, agentAlias: job.data?.agentAlias
   };
   if (isPr) {
     const issueNumber = (job.data as Record<string, unknown>).issueNumber as number | null | undefined

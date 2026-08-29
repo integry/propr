@@ -149,6 +149,8 @@ propr runtime packages list
 propr runtime packages add chromium ffmpeg --wait
 propr runtime packages remove ffmpeg --wait
 propr runtime packages apply --wait
+propr runtime packages verify
+propr runtime packages verify --json
 propr runtime status --json
 ```
 
@@ -157,6 +159,8 @@ Use runtime packages for Debian system tools needed across repositories or by a 
 The Settings package field searches the configured runtime catalogs and validates availability across every agent image before a build is queued. The first search after an API restart may take a few seconds while package indexes are refreshed.
 
 Package search and validation inspect the unified agent image with the local Docker daemon, so the image must be present locally (pulled by the launcher/worker or built with `scripts/build-images.sh`) before the package UI or these CLI commands can be used. A remote-only registry reference is not enough.
+
+Run `propr runtime packages verify` after replacing or pulling an agent base image, after applying runtime-package changes, or when local Docker images may have been pruned. Verification is read-only: it compares desired and active profiles, checks the current base-image lineage and derived-image labels/final user, and queries installed Debian packages in a short-lived container with networking disabled. It does not install packages or rebuild images. An unhealthy result exits nonzero and identifies missing images or packages, pinned-version mismatches, stale lineage, and profile drift; repair these with `propr runtime packages apply --wait` and verify again. An empty profile reports `DISABLED` successfully.
 
 ## Plans
 
@@ -203,6 +207,9 @@ The issue ID format is `<draft-id>/<issue-number>` (or `<draft-id>:<issue-number
 propr task list                            # All tasks
 propr task list -s processing              # Filter by status
 propr task list --search "auth" -l 100     # Search with a result limit
+propr task inspect                         # Active tasks, including queued work
+propr task inspect --state queued          # One exact server lifecycle state
+propr task inspect <task-id>               # Current details and full run history
 propr task get <task-id>                   # Details with run history
 propr task stop <task-id>                  # Stop a running task
 propr task delete <task-id> --force        # Force-delete an active task
@@ -210,6 +217,32 @@ propr task revert owner/repo <pr> <sha> <issue>   # Revert a commit from a PR
 ```
 
 Status values for `-s`: `pending`, `queued`, `processing`, `completed`, `failed`, `cancelled`, `all`. These are queue-level filters; task details additionally display the finer-grained worker states `claude_execution` ("Executing", agent run for any agent type) and `post_processing` (see [Worker Runtime](../architecture/worker-runtime.md)).
+
+### Inspect active tasks
+
+`propr task inspect` is the read-only view for operators and automation. With
+no ID, it sends explicit server-side filters for every canonical active state:
+`pending`, `queued`, `processing`, `claude_execution`, and `post_processing`.
+Use `--state <state>` to request one exact lifecycle state, `--project
+owner/repo` to restrict the repository, and `--limit` to cap the combined
+result. The human table separates Queued, Processing, Executing, and
+Post-processing work and includes repository, title, agent/model, elapsed time,
+and last update.
+
+With a task ID, the same command uses the existing task details/history endpoint:
+
+```bash
+propr task inspect <task-id>
+propr task inspect <task-id> --json
+```
+
+`--json` has a deterministic, versioned contract. Lists use `version`,
+`kind: "task-list"`, `states`, `tasks`, and `total`; each task always has `id`,
+`repository`, `title`, `state`, `agent`, `model`, `elapsedMs`, and `updatedAt`.
+Details use `kind: "task-detail"` and a `task` object containing those identity
+and timing fields plus status flags, failure/PR data, `details`, and the full
+`history`. Missing scalar values are `null`, timestamps are ISO 8601, and
+durations are integer milliseconds.
 
 ## Repositories
 

@@ -121,7 +121,8 @@ const isReplayableApiRequest = (
   const method = (init?.method ?? (typeof Request !== 'undefined' && input instanceof Request ? input.method : 'GET')).toUpperCase();
   if (typeof Request !== 'undefined' && input instanceof Request && (input.body || input.bodyUsed)) return false;
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return true;
-  return options.replayMutationAfterTokenRefresh === true && typeof init?.body === 'string';
+  return options.replayMutationAfterTokenRefresh === true
+    && (init?.body == null || typeof init.body === 'string');
 };
 
 export const apiFetch = async (

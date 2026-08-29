@@ -180,6 +180,7 @@ function mapDbTaskToResponse(row: Record<string, unknown>): Record<string, unkno
     repositoryOwner, repositoryName, issueNumber: row.issue_number,
     prNumber, linkedIssueNumber, title, subtitle, status: row.state,
     createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.state_timestamp as string).toISOString(),
     completedAt: row.completion_timestamp ? new Date(row.completion_timestamp as string).toISOString() : null,
     processedAt: row.processing_start_timestamp ? new Date(row.processing_start_timestamp as string).toISOString() : null,
     failedReason: row.state === 'failed' ? row.failedReason : null,

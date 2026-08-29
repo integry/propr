@@ -8,9 +8,15 @@ import SequentialWarningDialog from './SequentialWarningDialog';
 import { usePlanIssuesManager } from './usePlanIssuesManager';
 import { IssueCreationProgressIndicator } from './IssueCreationProgressIndicator';
 import { ExecutionOptionsToolbar, TasksBeingCreated } from './PlanIssuesManagerToolbar';
+import PlanIntentConfirmationDialog from './PlanIntentConfirmationDialog';
+import {
+  describePlanPrBehavior,
+  type PlanNotificationIntent,
+} from '../../utils/notificationIntents';
 
 interface PlanIssuesManagerProps {
   draftId: string;
+  repository: string;
   tasks: PlanTask[];
   onRefresh?: () => void;
   onViewPlanClick?: () => void;
@@ -30,10 +36,59 @@ interface PlanIssuesManagerProps {
   onCreationComplete?: (createdCount: number, failedCount: number) => void;
   isSavingExecutionSettings?: boolean;
   isReadOnly?: boolean;
+  notificationIntent?: PlanNotificationIntent | null;
+  onNotificationIntentConsumed?: () => void;
+}
+
+interface ExecutionIntentDetails {
+  issue: PlanIssue | null;
+  models?: AgentModelPair[];
+  hasSelection: boolean;
+  canExecute: boolean;
+  selectionSummary: string;
+  unavailableReason: string | null;
+}
+
+function buildExecutionIntentDetails(options: {
+  issue: PlanIssue | null;
+  multiMode: boolean;
+  selectedModels: AgentModelPair[];
+  settingsSaving: boolean;
+  readOnly: boolean;
+}): ExecutionIntentDetails {
+  const models = options.multiMode && options.selectedModels.length > 0
+    ? options.selectedModels
+    : undefined;
+  const hasSelection = Boolean(models?.length || options.issue?.agent_alias);
+  let selectionSummary = 'No agent/model selected';
+  if (models) {
+    selectionSummary = models.map(model => `${model.agent_alias} / ${model.model_name}`).join(', ');
+  } else if (options.issue?.agent_alias) {
+    selectionSummary = `${options.issue.agent_alias} / ${options.issue.model_name || 'default model'}`;
+  }
+
+  let unavailableReason: string | null = null;
+  if (!options.issue) {
+    unavailableReason = 'There is no eligible pending issue to start. Resolve active or out-of-sequence work first.';
+  } else if (!hasSelection) {
+    unavailableReason = 'Select an agent/model for the next issue before starting agent work.';
+  } else if (options.settingsSaving) {
+    unavailableReason = 'Wait for the execution settings to finish saving.';
+  }
+
+  return {
+    issue: options.issue,
+    models,
+    hasSelection,
+    canExecute: Boolean(options.issue) && hasSelection && !options.settingsSaving && !options.readOnly,
+    selectionSummary,
+    unavailableReason,
+  };
 }
 
 export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftId,
+  repository,
   tasks,
   onRefresh,
   onViewPlanClick,
@@ -52,12 +107,15 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   draftStatus,
   onCreationComplete,
   isSavingExecutionSettings = false,
-  isReadOnly = false
+  isReadOnly = false,
+  notificationIntent = null,
+  onNotificationIntentConsumed,
 }) => {
   const [showMerged, setShowMerged] = useState(false);
   const [showSequenceWarning, setShowSequenceWarning] = useState(false);
   const [pendingImplementIssue, setPendingImplementIssue] = useState<number | null>(null);
   const [pendingImplementModels, setPendingImplementModels] = useState<AgentModelPair[] | undefined>(undefined);
+  const [showExecutionIntentDialog, setShowExecutionIntentDialog] = useState(false);
   const hasInitializedMergedView = useRef(false);
 
   const {
@@ -130,6 +188,47 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
     [issues]
   );
 
+  const intentIssue = useMemo(
+    () => activeIssues.find(issue => issue.status === 'pending' && issue.issue_number === firstPendingIssueNumber) ?? null,
+    [activeIssues, firstPendingIssueNumber],
+  );
+  const executionIntent = useMemo(() => buildExecutionIntentDetails({
+    issue: intentIssue,
+    multiMode: intentIssue ? Boolean(issueMultiModeMap[intentIssue.issue_number]) : false,
+    selectedModels: intentIssue ? issueSelectedModelsMap[intentIssue.issue_number] ?? [] : [],
+    settingsSaving: isSavingExecutionSettings,
+    readOnly: isReadOnly,
+  }), [intentIssue, isReadOnly, isSavingExecutionSettings, issueMultiModeMap, issueSelectedModelsMap]);
+
+  useEffect(() => {
+    if (loading || notificationIntent !== 'approve_execute') return;
+    setShowExecutionIntentDialog(true);
+    onNotificationIntentConsumed?.();
+  }, [loading, notificationIntent, onNotificationIntentConsumed]);
+
+  const handleConfirmExecutionIntent = useCallback(() => {
+    if (!executionIntent.canExecute || !executionIntent.issue) return;
+    setShowExecutionIntentDialog(false);
+    void handleImplementIssue(executionIntent.issue.issue_number, executionIntent.models);
+  }, [executionIntent, handleImplementIssue]);
+
+  const executionIntentDialog = (
+    <PlanIntentConfirmationDialog
+      isOpen={showExecutionIntentDialog}
+      mode="execute"
+      repository={repository}
+      issueCount={issues.length}
+      agentModelSelection={executionIntent.selectionSummary}
+      prBehavior={describePlanPrBehavior(useEpic, autoMerge)}
+      isLoading={implementingIssue !== null}
+      confirmDisabled={!executionIntent.canExecute || implementingIssue !== null}
+      readOnly={isReadOnly}
+      unavailableReason={executionIntent.unavailableReason}
+      onClose={() => { if (implementingIssue === null) setShowExecutionIntentDialog(false); }}
+      onConfirm={handleConfirmExecutionIntent}
+    />
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8 text-gray-500">
@@ -142,19 +241,22 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
   // Show empty state only if no issues AND not currently creating
   if (issues.length === 0 && issueCreationProgress.status === 'idle') {
     return (
-      <div className="text-center py-8 text-gray-500">
-        <AlertCircle className="mx-auto mb-2 text-gray-400" size={24} />
-        <p>No issues found for this plan.</p>
-        {onViewPlanClick && (
-          <button
-            onClick={onViewPlanClick}
-            className="inline-flex items-center gap-1.5 mt-4 px-3 py-1.5 text-sm font-medium rounded-md bg-white text-gray-900 shadow-sm border border-gray-200 hover:bg-gray-50 transition-colors"
-          >
-            <CheckCircle size={14} />
-            View Plan
-          </button>
-        )}
-      </div>
+      <>
+        <div className="text-center py-8 text-gray-500">
+          <AlertCircle className="mx-auto mb-2 text-gray-400" size={24} />
+          <p>No issues found for this plan.</p>
+          {onViewPlanClick && (
+            <button
+              onClick={onViewPlanClick}
+              className="inline-flex items-center gap-1.5 mt-4 px-3 py-1.5 text-sm font-medium rounded-md bg-white text-gray-900 shadow-sm border border-gray-200 hover:bg-gray-50 transition-colors"
+            >
+              <CheckCircle size={14} />
+              View Plan
+            </button>
+          )}
+        </div>
+        {executionIntentDialog}
+      </>
     );
   }
 
@@ -277,6 +379,7 @@ export const PlanIssuesManager: React.FC<PlanIssuesManagerProps> = ({
         onProceed={handleProceedAnyway}
         unmergedIssues={warningUnmergedIssues}
       />
+      {executionIntentDialog}
     </div>
   );
 };

@@ -196,6 +196,13 @@ ProPR 0.8.15 is the first public release.
 
 ### Changed
 
+- **Notification API contract (0.8.6)**: Push eligibility is opt-in at both the
+  user-preference and producer-assignment layers; object-form recipients now
+  require an explicit `pushEnabled` boolean. Synthesized preference entries use
+  `updatedAt: null`, while persisted entries retain an ISO-8601 timestamp.
+  Downstream `@propr/shared` consumers should handle the nullable timestamp when
+  adopting the new notification API. No notification UI or production event
+  producer existed in this repository to migrate.
 - **Focused AI reviews**: reviews now evaluate the stated PR scope, keep
   suggestions separate from `/fix`, assign durable incremental finding IDs,
   explain blockers and suggestions in human-readable sections, and acknowledge

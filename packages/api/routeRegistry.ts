@@ -81,6 +81,7 @@ export function createManagementRouteEntries({
     ['post', '/api/agent-runtime/packages/validate', requireManageRuntime, agentRuntimeRoutes.validateRuntimePackages],
     ['put', '/api/agent-runtime/packages', requireManageRuntime, agentRuntimeRoutes.putRuntimePackages],
     ['post', '/api/agent-runtime/packages/apply', requireManageRuntime, agentRuntimeRoutes.applyRuntimePackages],
+    ['post', '/api/agent-runtime/packages/verify', requireManageRuntime, agentRuntimeRoutes.verifyRuntimePackages],
 
     ['post', '/api/agents/:agentId/login-sessions', requireManageAgents, agentLoginRoutes.startLogin],
     ['get', '/api/agents/:agentId/login-sessions/:sessionId', requireManageAgents, agentLoginRoutes.getLogin],

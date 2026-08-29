@@ -302,4 +302,57 @@ describe('agent runtime package routes', () => {
         assert.equal(record.status, 500);
         assert.equal((record.body as { error: string }).error, 'state unavailable');
     });
+
+    test('verifies the current effective images through the runtime-management boundary', async () => {
+        let receivedImages: string[] | undefined;
+        const verification = {
+            status: 'disabled' as const,
+            healthy: true,
+            disabled: true,
+            checkedAt: '2026-08-25T00:00:00.000Z',
+            desiredPackages: [],
+            activePackages: [],
+            desiredActiveDrift: false,
+            configurationValid: true,
+            configurationErrors: [],
+            issues: [],
+            images: []
+        };
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: {} as never,
+            services: {
+                loadState: async () => initialState(),
+                loadBaseImages: async () => ['propr/agent:bundle-test', 'propr/agent:bundle-test'],
+                verify: async (_state, images) => {
+                    receivedImages = images;
+                    return verification;
+                }
+            }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.verifyRuntimePackages({
+            user: { username: 'admin' }, authorization: adminAuthorization
+        } as unknown as Request, response);
+
+        assert.equal(record.status, 200);
+        assert.deepEqual(receivedImages, ['propr/agent:bundle-test']);
+        assert.deepEqual(record.body, verification);
+    });
+
+    test('rejects runtime verification without runtime-management permission', async () => {
+        let called = false;
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: {} as never,
+            services: { verify: async () => { called = true; throw new Error('must not run'); } }
+        });
+        const { response, record } = responseRecorder();
+
+        await routes.verifyRuntimePackages({
+            user: { username: 'member' }, authorization: memberAuthorization
+        } as unknown as Request, response);
+
+        assert.equal(record.status, 403);
+        assert.equal(called, false);
+    });
 });

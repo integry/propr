@@ -81,6 +81,7 @@ const managementRequests = [
   ['GET', '/api/config/agent-tank/usage'],
   ['GET', '/api/admin/members'],
   ['GET', '/api/agent-runtime/packages'],
+  ['POST', '/api/agent-runtime/packages/verify'],
   ['GET', '/api/agents/codex/images'],
   ['POST', '/api/agents/codex/login-sessions'],
 ] as const;

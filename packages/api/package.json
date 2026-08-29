@@ -33,7 +33,8 @@
     "passport": "^0.7.0",
     "passport-github2": "^0.1.12",
     "redis": "^5.0.0",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.1",
@@ -44,6 +45,7 @@
     "@types/node": "^22.10.0",
     "@types/passport": "^1.0.16",
     "@types/passport-github2": "^1.2.9",
+    "@types/web-push": "^3.6.4",
     "eslint": "^9.39.1",
     "globals": "^16.3.0",
     "nodemon": "^3.1.14",

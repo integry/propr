@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- status snapshot assembly is intentionally centralized */
 import { Request, Response } from 'express';
 import { RedisClientType } from 'redis';
 import { isDemoMode } from '../demoMode.js';
@@ -29,6 +30,10 @@ interface StatusRoutesDeps {
   agentHealthTimeoutMs?: number;
   now?: () => number;
   loadSummarizationRuntimeState?: typeof loadSummarizationRuntimeState;
+  projectSystemSnapshot?: (
+    snapshot: Record<string, unknown> & { timestamp: string },
+    additionalAdministratorIds: readonly string[],
+  ) => Promise<void>;
 }
 
 interface IndexingStatusQueue {
@@ -58,7 +63,8 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     agentStatusCacheTtlMs = 5000,
     agentHealthTimeoutMs = 1500,
     now = Date.now,
-    loadSummarizationRuntimeState: loadSummarizationRuntimeStateDep = loadSummarizationRuntimeState
+    loadSummarizationRuntimeState: loadSummarizationRuntimeStateDep = loadSummarizationRuntimeState,
+    projectSystemSnapshot
   } = deps;
   let agentStatusCache: { expiresAt: number; statuses: AgentStatus[] } | undefined;
 
@@ -171,6 +177,18 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
       status.warnings = warnings;
 
       res.json(status);
+      if (projectSystemSnapshot) {
+        const additionalAdministratorIds = req.user
+          && req.authorization?.permissions.includes('instance.manage_settings')
+          ? [req.user.id]
+          : [];
+        void projectSystemSnapshot(
+          status as Record<string, unknown> & { timestamp: string },
+          additionalAdministratorIds,
+        ).catch(error => {
+          console.warn('[notifications] Failed to project system health snapshot:', error);
+        });
+      }
     } catch (error) {
       console.error('Error in /api/status:', error);
       res.status(500).json({ error: 'Internal server error' });
