@@ -30,6 +30,8 @@ import {
     down as removeBadgePreference,
     up as addBadgePreference
 } from '../src/db/migrations/20260824010000_add_notification_badge_preference.js';
+import { up as addSystemFailureState } from '../src/db/migrations/20260829000000_add_notification_system_failure_state.js';
+import { up as addPullRequestState } from '../src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 
 let database: Knex;
 let service: NotificationService;
@@ -96,6 +98,8 @@ beforeEach(async () => {
     await addPreferenceApis(database);
     await addBadgePreference(database);
     await addAdvertisedActions(database);
+    await addSystemFailureState(database);
+    await addPullRequestState(database);
     service = new NotificationService({
         database,
         now: () => new Date(clock += 1000),
@@ -404,6 +408,85 @@ describe('notification service', { concurrency: false }, () => {
                 .notifications.length,
             4
         );
+    });
+
+    test('serializes system transitions so an older writer cannot dismiss the current failure', async () => {
+        const temporaryDirectory = fs.mkdtempSync(
+            path.join(os.tmpdir(), 'propr-system-transition-race-')
+        );
+        const databasePath = path.join(temporaryDirectory, 'notifications.db');
+        const olderDatabase = createDatabase(databasePath);
+        try {
+            await up(olderDatabase);
+            await addPreferenceApis(olderDatabase);
+            await addBadgePreference(olderDatabase);
+            await addAdvertisedActions(olderDatabase);
+            await addSystemFailureState(olderDatabase);
+            const olderService = new NotificationService({
+                database: olderDatabase,
+                now: () => new Date('2026-08-02T10:00:00.000Z'),
+                generateId: () => 'older-failure-event'
+            });
+            const newerService = new NotificationService({
+                database: olderDatabase,
+                now: () => new Date('2026-08-02T10:00:01.000Z'),
+                generateId: () => 'newer-failure-event'
+            });
+            let releaseOlder: (() => void) | undefined;
+            const olderPaused = new Promise<void>(resolve => {
+                releaseOlder = resolve;
+            });
+            let signalOlderEvent: (() => void) | undefined;
+            const olderReachedEvent = new Promise<void>(resolve => {
+                signalOlderEvent = resolve;
+            });
+            const eventFor = (status: string, occurredAt: string) => ({
+                deduplicationKey: `system:${status}:${occurredAt}`,
+                kind: 'system_failure' as const,
+                severity: 'error' as const,
+                target: { type: 'system_failure' as const, component: 'redis' },
+                title: 'System component unhealthy',
+                body: 'redis is not reporting a healthy status.',
+                actions: ['dismiss' as const],
+                occurredAt
+            });
+            const olderProjection = olderService.reconcileSystemFailureTransition({
+                component: 'redis',
+                status: 'disconnected',
+                healthy: false,
+                snapshotAt: '2026-08-02T09:00:00.000Z',
+                eventFor: async (status, occurredAt) => {
+                    signalOlderEvent?.();
+                    await olderPaused;
+                    return eventFor(status, occurredAt);
+                }
+            }, ['user-a']);
+            await olderReachedEvent;
+
+            const newerProjection = newerService.reconcileSystemFailureTransition({
+                component: 'redis',
+                status: 'connection-error',
+                healthy: false,
+                snapshotAt: '2026-08-02T09:00:01.000Z',
+                eventFor
+            }, ['user-a']);
+            // The newer instance is now in flight while the older instance is
+            // paused inside its transaction. Releasing the older callback lets
+            // SQLite serialize both writes without a post-commit stale window.
+            releaseOlder?.();
+            await Promise.all([olderProjection, newerProjection]);
+
+            const active = await olderDatabase('notification_user_states as receipt')
+                .join('notification_events as event', 'event.event_id', 'receipt.event_id')
+                .whereNull('receipt.dismissed_at')
+                .select('event.deduplication_key');
+            assert.deepEqual(active, [{
+                deduplication_key: 'system:connection-error:2026-08-02T09:00:01.000Z'
+            }]);
+        } finally {
+            await olderDatabase.destroy();
+            fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+        }
     });
 
     test('rejects malformed pagination inputs and clamps large valid limits', async () => {

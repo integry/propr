@@ -6,7 +6,7 @@ import { DRAFT_UPDATE, INDEXING_UPDATE, TASK_UPDATE } from '@propr/shared';
 import { NotificationProjectionService } from '../services/notificationProjectionService.js';
 import {
   countNotificationEvents, countUndismissedNotificationReceipts,
-  createNotificationProjectionTestHarness, listActiveNotificationReceipts,
+  createNotificationProjectionTestHarness,
 } from './notificationProjectionTestHarness.js';
 
 let database: Knex;
@@ -120,45 +120,6 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
     );
     assert.doesNotMatch(JSON.stringify(events), /evil\.example|SECRET/);
     assert.equal(await countNotificationEvents(database), 4);
-  });
-
-  test('replaces an older PR-attention card while preserving both audit events', async () => {
-    const firstAt = iso();
-    const secondAt = iso(1_000);
-    await database('tasks').insert([
-      {
-        task_id: 'pr-work-first', repository: 'integry/propr', issue_number: 42,
-        pr_number: 42, task_type: 'pr-comment', initial_job_data: '{}',
-      },
-      {
-        task_id: 'pr-work-second', repository: 'integry/propr', issue_number: 42,
-        pr_number: 42, task_type: 'pr-comment', initial_job_data: '{}',
-      },
-    ]);
-    await database('task_history').insert([
-      { task_id: 'pr-work-first', state: 'completed', timestamp: firstAt, metadata: '{}' },
-      { task_id: 'pr-work-second', state: 'completed', timestamp: secondAt, metadata: '{}' },
-    ]);
-
-    await projection.projectTaskUpdate({
-      eventType: TASK_UPDATE, taskId: 'pr-work-first', state: 'completed',
-      repository: 'integry/propr', timestamp: firstAt,
-    });
-    clock += 1_000;
-    await projection.projectTaskUpdate({
-      eventType: TASK_UPDATE, taskId: 'pr-work-second', state: 'completed',
-      repository: 'integry/propr', timestamp: secondAt,
-    });
-
-    const attentionEvents = await database('notification_events')
-      .where({ kind: 'pull_request' })
-      .orderBy('occurred_at');
-    assert.equal(attentionEvents.length, 2, 'immutable audit events are retained');
-    const visibleReceipts = await listActiveNotificationReceipts(database, 'pull_request');
-    assert.deepEqual(visibleReceipts.map(row => row.user_id).sort(), [
-      'admin-user', 'member-user',
-    ]);
-    assert.ok(visibleReceipts.every(row => row.occurred_at === secondAt));
   });
 
   test('ignores stale task transitions and emits one stalled event per unchanged activity', async () => {
@@ -415,9 +376,9 @@ describe('notification lifecycle projection', { concurrency: false }, () => {
         createNotificationEvent: async () => {
           throw new Error('database unavailable');
         },
-        dismissNotificationReceipts: async () => 0,
         dismissSupersededPullRequestAttentionNotifications: async () => 0,
-        dismissSystemFailureNotifications: async () => 0,
+        createPullRequestNotificationEvent: async () => null,
+        reconcileSystemFailureTransition: async () => ({ accepted: true, event: null }),
       },
       logger: { warn: message => warnings.push(message) },
     });

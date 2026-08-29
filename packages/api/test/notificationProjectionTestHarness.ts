@@ -4,6 +4,7 @@ import { up as createNotificationSchema } from '../../core/src/db/migrations/202
 import { up as addNotificationPreferenceApis } from '../../core/src/db/migrations/20260802010000_add_notification_preference_apis.js';
 import { up as addAdvertisedActions } from '../../core/src/db/migrations/20260824020000_add_notification_advertised_actions.js';
 import { up as addSystemFailureState } from '../../core/src/db/migrations/20260829000000_add_notification_system_failure_state.js';
+import { up as addPullRequestState } from '../../core/src/db/migrations/20260829010000_add_notification_pull_request_state.js';
 import { NotificationProjectionService } from '../services/notificationProjectionService.js';
 
 export interface NotificationProjectionTestHarness {
@@ -63,6 +64,7 @@ export async function createNotificationProjectionTestHarness(
   await addNotificationPreferenceApis(database);
   await addAdvertisedActions(database);
   await addSystemFailureState(database);
+  await addPullRequestState(database);
   const projection = new NotificationProjectionService({
     database,
     notificationService: new NotificationService({ database, now }),

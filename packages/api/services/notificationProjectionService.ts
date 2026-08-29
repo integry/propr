@@ -12,7 +12,6 @@ import {
   type IndexingUpdatePayload,
   type JsonObject,
   type NotificationEventAction,
-  type NotificationKind,
   type TaskUpdatePayload,
 } from '@propr/shared';
 
@@ -27,18 +26,10 @@ interface ProjectionLogger {
   warn(message: string, error?: unknown): void;
 }
 
-interface NotificationEventWriter {
-  createNotificationEvent<K extends NotificationKind>(
-    input: CreateNotificationEventInput<K>,
-    recipients?: readonly NotificationRecipient[],
-  ): Promise<{ id: string }>;
-  dismissNotificationReceipts(eventId: string): Promise<number>;
-  dismissSupersededPullRequestAttentionNotifications(
-    repository: string,
-    prNumber: number,
-  ): Promise<number>;
-  dismissSystemFailureNotifications(component: string): Promise<number>;
-}
+type NotificationEventWriter = Pick<NotificationService,
+  'createNotificationEvent' | 'createPullRequestNotificationEvent'
+  | 'dismissSupersededPullRequestAttentionNotifications'
+  | 'reconcileSystemFailureTransition'>;
 
 export interface NotificationProjectionOptions {
   database: Knex;
@@ -71,20 +62,6 @@ interface SourceActivityRow {
   status: SourceActivityStatus;
   last_activity_at: string;
   metadata_json: string | null;
-}
-
-interface SystemFailureStateRow {
-  component: string;
-  failure_status: string | null;
-  failure_started_at: string | null;
-  last_snapshot_at: string;
-}
-
-interface SystemFailureTransition {
-  accepted: boolean;
-  changed: boolean;
-  status?: string;
-  occurredAt?: string;
 }
 
 const SYSTEM_HEALTH_RULES: Readonly<Record<string, ReadonlySet<string>>> = {
@@ -302,7 +279,7 @@ export class NotificationProjectionService {
       ? undefined
       : safeGithubPullRequestUrl(context.repository, context.prNumber);
     if (payload.state === 'failed') {
-      await this.notifications.createNotificationEvent({
+      await this.createPullRequestAwareEvent({
         deduplicationKey: stableKey('task-failed', payload.taskId, payload.state, occurredAt),
         kind: 'task',
         severity: 'error',
@@ -319,13 +296,13 @@ export class NotificationProjectionService {
         }),
         ...pullRequestAction(pullRequestUrl),
         occurredAt,
-      }, recipients);
+      }, recipients, context.repository, context.prNumber);
       return;
     }
     if (payload.state !== 'completed') return;
 
     if (context.isReview && context.prNumber !== undefined) {
-      await this.notifications.createNotificationEvent({
+      await this.createPullRequestAwareEvent({
         deduplicationKey: stableKey('review-completed', payload.taskId, payload.state, occurredAt),
         kind: 'review',
         severity: 'success',
@@ -341,9 +318,9 @@ export class NotificationProjectionService {
         }),
         ...pullRequestAction(pullRequestUrl),
         occurredAt,
-      }, recipients);
+      }, recipients, context.repository, context.prNumber);
     } else {
-      await this.notifications.createNotificationEvent({
+      await this.createPullRequestAwareEvent({
         deduplicationKey: stableKey('implementation-completed', payload.taskId, payload.state, occurredAt),
         kind: 'task',
         severity: 'success',
@@ -360,26 +337,34 @@ export class NotificationProjectionService {
         }),
         ...pullRequestAction(pullRequestUrl),
         occurredAt,
-      }, recipients);
+      }, recipients, context.repository, context.prNumber);
     }
 
     if (context.prNumber !== undefined) {
-      await this.notifications.createNotificationEvent({
-        deduplicationKey: stableKey('pr-attention', payload.taskId, context.prNumber, occurredAt),
-        kind: 'pull_request',
-        severity: 'info',
-        target: {
-          type: 'pull_request', repository: context.repository, prNumber: context.prNumber,
+      const attentionEvent = await this.notifications.createPullRequestNotificationEvent(
+        context.repository,
+        context.prNumber,
+        {
+          deduplicationKey: stableKey(
+            'pr-attention', payload.taskId, context.prNumber, occurredAt,
+          ),
+          kind: 'pull_request',
+          severity: 'info',
+          target: {
+            type: 'pull_request', repository: context.repository, prNumber: context.prNumber,
+          },
+          title: 'Pull request needs attention',
+          body: `PR #${context.prNumber} is ready for attention.`,
+          actions: [
+            ...(pullRequestUrl === undefined ? [] : ['open_pr' as const]),
+            'dismiss',
+          ],
+          ...pullRequestAction(pullRequestUrl),
+          occurredAt,
         },
-        title: 'Pull request needs attention',
-        body: `PR #${context.prNumber} is ready for attention.`,
-        actions: [
-          ...(pullRequestUrl === undefined ? [] : ['open_pr' as const]),
-          'dismiss',
-        ],
-        ...pullRequestAction(pullRequestUrl),
-        occurredAt,
-      }, recipients);
+        recipients,
+      );
+      if (attentionEvent === null) return;
       await this.notifications.dismissSupersededPullRequestAttentionNotifications(
         context.repository,
         context.prNumber,
@@ -432,7 +417,7 @@ export class NotificationProjectionService {
       if (row.activity_type === 'task') {
         const issueNumber = positiveInteger(metadata.issueNumber);
         const prNumber = positiveInteger(metadata.prNumber);
-        await this.notifications.createNotificationEvent({
+        await this.createPullRequestAwareEvent({
           deduplicationKey: stableKey(
             'task-stalled', row.activity_key, row.status, row.last_activity_at,
           ),
@@ -447,7 +432,7 @@ export class NotificationProjectionService {
           body: `Active work for ${row.repository} has not reported progress.`,
           actions: taskActions({ active: true }),
           occurredAt: row.last_activity_at,
-        }, await this.loadInstanceMemberRecipients());
+        }, await this.loadInstanceMemberRecipients(), row.repository, prNumber);
       } else {
         await this.notifications.createNotificationEvent({
           deduplicationKey: stableKey(
@@ -479,48 +464,42 @@ export class NotificationProjectionService {
       const rawStatus = snapshot[component];
       if (typeof rawStatus !== 'string') continue;
       const healthy = healthyValues.has(rawStatus);
-      const transition = await this.persistSystemFailureTransition(
+      await this.notifications.reconcileSystemFailureTransition({
         component,
-        rawStatus,
+        status: rawStatus,
         healthy,
         snapshotAt,
-      );
-      if (!transition.accepted) continue;
-      if (healthy) {
-        await this.notifications.dismissSystemFailureNotifications(component);
-        continue;
-      }
-
-      if (transition.changed) {
-        await this.notifications.dismissSystemFailureNotifications(component);
-      }
-      const event = await this.notifications.createNotificationEvent({
-        deduplicationKey: stableKey(
-          'system-failure', component, transition.status, transition.occurredAt,
-        ),
-        kind: 'system_failure',
-        severity: 'error',
-        target: { type: 'system_failure', component },
-        title: 'System component unhealthy',
-        body: `${component} is not reporting a healthy status.`,
-        actions: ['dismiss'],
-        occurredAt: transition.occurredAt,
+        eventFor: (status, failureStartedAt) => ({
+          deduplicationKey: stableKey(
+            'system-failure', component, status, failureStartedAt,
+          ),
+          kind: 'system_failure',
+          severity: 'error',
+          target: { type: 'system_failure', component },
+          title: 'System component unhealthy',
+          body: `${component} is not reporting a healthy status.`,
+          actions: ['dismiss'],
+          occurredAt: failureStartedAt,
+        }),
       }, recipients);
-
-      // A newer snapshot may have committed while this event was being
-      // assigned. Re-check the durable transition so a late writer cannot
-      // resurrect a recovered or superseded failure card.
-      const current = await this.database<SystemFailureStateRow>(
-        'notification_system_failure_state',
-      ).where({ component }).first();
-      if (
-        !current
-        || current.failure_status !== transition.status
-        || current.failure_started_at !== transition.occurredAt
-      ) {
-        await this.notifications.dismissNotificationReceipts(event.id);
-      }
     }
+  }
+
+  private createPullRequestAwareEvent<K extends 'task' | 'review'>(
+    input: CreateNotificationEventInput<K>,
+    recipients: readonly NotificationRecipient[],
+    repository: string,
+    prNumber: number | undefined,
+  ): Promise<{ id: string } | null> {
+    if (prNumber === undefined) {
+      return this.notifications.createNotificationEvent(input, recipients);
+    }
+    return this.notifications.createPullRequestNotificationEvent(
+      repository,
+      prNumber,
+      input,
+      recipients,
+    );
   }
 
   private async loadTaskContext(payload: TaskUpdatePayload): Promise<TaskContext | undefined> {
@@ -630,49 +609,6 @@ export class NotificationProjectionService {
         .where({ activity_type: input.type, activity_key: input.key })
         .first() as { status?: unknown; last_activity_at?: unknown } | undefined;
       return stored?.status === input.status && stored.last_activity_at === input.occurredAt;
-    });
-  }
-
-  private async persistSystemFailureTransition(
-    component: string,
-    status: string,
-    healthy: boolean,
-    snapshotAt: string,
-  ): Promise<SystemFailureTransition> {
-    return this.database.transaction(async transaction => {
-      const existing = await transaction<SystemFailureStateRow>(
-        'notification_system_failure_state',
-      ).where({ component }).first();
-      if (existing && snapshotAt < existing.last_snapshot_at) {
-        return { accepted: false, changed: false };
-      }
-
-      const continuingFailure = !healthy
-        && existing?.failure_status === status
-        && typeof existing.failure_started_at === 'string';
-      const failureStartedAt = healthy
-        ? null
-        : continuingFailure ? existing.failure_started_at : snapshotAt;
-      const failureStatus = healthy ? null : status;
-      await transaction('notification_system_failure_state')
-        .insert({
-          component,
-          failure_status: failureStatus,
-          failure_started_at: failureStartedAt,
-          last_snapshot_at: snapshotAt,
-        })
-        .onConflict('component')
-        .merge({
-          failure_status: failureStatus,
-          failure_started_at: failureStartedAt,
-          last_snapshot_at: snapshotAt,
-        });
-
-      return {
-        accepted: true,
-        changed: !healthy && !continuingFailure,
-        ...(healthy ? {} : { status, occurredAt: failureStartedAt ?? snapshotAt }),
-      };
     });
   }
 

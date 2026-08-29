@@ -98,6 +98,23 @@ export interface NotificationServiceOptions extends PushSubscriptionPolicyOption
     generateId?: () => string;
 }
 
+export interface SystemFailureTransitionInput {
+    component: string;
+    status: string;
+    healthy: boolean;
+    snapshotAt: TimestampInput;
+    eventFor: (
+        status: string,
+        failureStartedAt: ISO8601Timestamp
+    ) => CreateNotificationEventInput<'system_failure'>
+        | Promise<CreateNotificationEventInput<'system_failure'>>;
+}
+
+export interface SystemFailureTransitionResult {
+    accepted: boolean;
+    event: NotificationEvent<'system_failure'> | null;
+}
+
 interface NotificationEventRow {
     event_id: string;
     deduplication_key: string;
@@ -310,12 +327,152 @@ export class NotificationService {
         input: CreateNotificationEventInput<K>,
         recipients: readonly NotificationRecipient[] = input.recipients ?? []
     ): Promise<NotificationEvent<K>> {
+        const event = this.prepareNotificationEvent(input);
+        const normalizedRecipients = normalizeRecipients(recipients);
+
+        return this.database.transaction(transaction =>
+            this.persistNotificationEvent(transaction, event, normalizedRecipients));
+    }
+
+    /**
+     * Create a PR-related event only while the durable PR lifecycle says the
+     * pull request is still open. This check shares the event transaction with
+     * merge marking, so either creation commits first and merge dismisses it,
+     * or the merge marker commits first and creation is skipped.
+     */
+    async createPullRequestNotificationEvent<K extends 'task' | 'review' | 'pull_request'>(
+        repository: string,
+        prNumber: number,
+        input: CreateNotificationEventInput<K>,
+        recipients: readonly NotificationRecipient[] = input.recipients ?? []
+    ): Promise<NotificationEvent<K> | null> {
+        this.assertPullRequestIdentity(repository, prNumber);
+        const event = this.prepareNotificationEvent(input);
+        const normalizedRecipients = normalizeRecipients(recipients);
+
+        return this.database.transaction(async transaction => {
+            // The insert is also the per-database write barrier. It prevents a
+            // merge transaction from committing between this guard and event
+            // persistence on SQLite's otherwise deferred transactions.
+            await transaction('notification_pull_request_state')
+                .insert({ repository, pr_number: prNumber, merged_at: null })
+                .onConflict(['repository', 'pr_number'])
+                .ignore();
+            const merged = await transaction('notification_pull_request_state')
+                .select('merged_at')
+                .where({ repository, pr_number: prNumber })
+                .first() as { merged_at?: unknown } | undefined;
+            if (typeof merged?.merged_at === 'string') return null;
+            return this.persistNotificationEvent(transaction, event, normalizedRecipients);
+        });
+    }
+
+    /**
+     * Commit one system-health transition together with receipt supersession
+     * and current-event creation. Only the event belonging to the transition
+     * being replaced is dismissed; stale instances never run a component-wide
+     * receipt update.
+     */
+    async reconcileSystemFailureTransition(
+        input: SystemFailureTransitionInput,
+        recipients: readonly NotificationRecipient[] = []
+    ): Promise<SystemFailureTransitionResult> {
+        assertIdentifier(input.component, 'notification system component');
+        assertIdentifier(input.status, 'notification system status');
+        const snapshotAt = normalizeISO8601Timestamp(input.snapshotAt);
+        const normalizedRecipients = normalizeRecipients(recipients);
+
+        return this.database.transaction(async transaction => {
+            // Acquire SQLite's write reservation before reading. Concurrent
+            // instances therefore observe transitions in commit order instead
+            // of both reading the same pre-transition snapshot.
+            await transaction('notification_system_failure_state')
+                .insert({
+                    component: input.component,
+                    failure_status: input.healthy ? null : input.status,
+                    failure_started_at: input.healthy ? null : snapshotAt,
+                    last_snapshot_at: snapshotAt
+                })
+                .onConflict('component')
+                .ignore();
+            const existing = await transaction<{
+                component: string;
+                failure_status: string | null;
+                failure_started_at: string | null;
+                last_snapshot_at: string;
+            }>('notification_system_failure_state')
+                .where({ component: input.component })
+                .first();
+            if (existing && snapshotAt < existing.last_snapshot_at) {
+                return { accepted: false, event: null };
+            }
+
+            const continuingFailure = !input.healthy
+                && existing?.failure_status === input.status
+                && typeof existing.failure_started_at === 'string';
+            const failureStartedAt = input.healthy
+                ? null
+                : continuingFailure ? existing.failure_started_at : snapshotAt;
+            await transaction('notification_system_failure_state')
+                .insert({
+                    component: input.component,
+                    failure_status: input.healthy ? null : input.status,
+                    failure_started_at: failureStartedAt,
+                    last_snapshot_at: snapshotAt
+                })
+                .onConflict('component')
+                .merge({
+                    failure_status: input.healthy ? null : input.status,
+                    failure_started_at: failureStartedAt,
+                    last_snapshot_at: snapshotAt
+                });
+
+            if (
+                !continuingFailure
+                && existing?.failure_status !== null
+                && typeof existing?.failure_status === 'string'
+                && typeof existing.failure_started_at === 'string'
+            ) {
+                const superseded = await input.eventFor(
+                    existing.failure_status,
+                    existing.failure_started_at as ISO8601Timestamp
+                );
+                await this.dismissReceiptQuery(
+                    transaction('notification_events')
+                        .select('event_id')
+                        .where({ deduplication_key: superseded.deduplicationKey }),
+                    transaction
+                );
+            }
+
+            if (input.healthy || failureStartedAt === null) {
+                return { accepted: true, event: null };
+            }
+            const eventInput = await input.eventFor(
+                input.status,
+                failureStartedAt as ISO8601Timestamp
+            );
+            const event = this.prepareNotificationEvent(eventInput);
+            return {
+                accepted: true,
+                event: await this.persistNotificationEvent(
+                    transaction,
+                    event,
+                    normalizedRecipients
+                )
+            };
+        });
+    }
+
+    private prepareNotificationEvent<K extends NotificationKind>(
+        input: CreateNotificationEventInput<K>
+    ): NotificationEvent<K> {
         if (input.id !== undefined && input.eventId !== undefined && input.id !== input.eventId) {
             throw new TypeError('notification id and eventId must match when both are supplied');
         }
 
         const createdAt = normalizeISO8601Timestamp(this.now());
-        const event = parseNotificationEvent({
+        return parseNotificationEvent({
             id: input.eventId ?? input.id ?? this.generateId(),
             deduplicationKey: input.deduplicationKey,
             kind: input.kind,
@@ -331,39 +488,40 @@ export class NotificationService {
                 : normalizeISO8601Timestamp(input.occurredAt),
             createdAt
         }) as NotificationEvent<K>;
-        const normalizedRecipients = normalizeRecipients(recipients);
+    }
 
-        return this.database.transaction(async (transaction) => {
-            await transaction('notification_events')
-                .insert({
-                    event_id: event.id,
-                    deduplication_key: event.deduplicationKey,
-                    kind: event.kind,
-                    severity: event.severity,
-                    target_json: JSON.stringify(event.target),
-                    title: event.title,
-                    body: event.body,
-                    action_json: event.action === undefined ? null : JSON.stringify(event.action),
-                    advertised_actions_json: JSON.stringify(event.actions),
-                    metadata_json: event.metadata === undefined
-                        ? null
-                        : JSON.stringify(event.metadata),
-                    occurred_at: event.occurredAt,
-                    created_at: event.createdAt
-                })
-                .onConflict('deduplication_key')
-                .ignore();
+    private async persistNotificationEvent<K extends NotificationKind>(
+        transaction: Knex.Transaction,
+        event: NotificationEvent<K>,
+        normalizedRecipients: NormalizedRecipient[]
+    ): Promise<NotificationEvent<K>> {
+        await transaction('notification_events')
+            .insert({
+                event_id: event.id,
+                deduplication_key: event.deduplicationKey,
+                kind: event.kind,
+                severity: event.severity,
+                target_json: JSON.stringify(event.target),
+                title: event.title,
+                body: event.body,
+                action_json: event.action === undefined ? null : JSON.stringify(event.action),
+                advertised_actions_json: JSON.stringify(event.actions),
+                metadata_json: event.metadata === undefined
+                    ? null
+                    : JSON.stringify(event.metadata),
+                occurred_at: event.occurredAt,
+                created_at: event.createdAt
+            })
+            .onConflict('deduplication_key')
+            .ignore();
 
-            const storedRow = await transaction<NotificationEventRow>('notification_events')
-                .where({ deduplication_key: event.deduplicationKey })
-                .first();
-            if (!storedRow) {
-                throw new Error('Notification event was not persisted');
-            }
-            const storedEvent = toNotificationEvent(storedRow) as NotificationEvent<K>;
-            await this.assignRecipients(transaction, storedEvent, normalizedRecipients);
-            return storedEvent;
-        });
+        const storedRow = await transaction<NotificationEventRow>('notification_events')
+            .where({ deduplication_key: event.deduplicationKey })
+            .first();
+        if (!storedRow) throw new Error('Notification event was not persisted');
+        const storedEvent = toNotificationEvent(storedRow) as NotificationEvent<K>;
+        await this.assignRecipients(transaction, storedEvent, normalizedRecipients);
+        return storedEvent;
     }
 
     async assignNotificationRecipients(
@@ -556,10 +714,7 @@ export class NotificationService {
         repository: string,
         prNumber: number
     ): Promise<number> {
-        assertIdentifier(repository, 'notification repository');
-        if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
-            throw new TypeError('notification prNumber must be a positive safe integer');
-        }
+        this.assertPullRequestIdentity(repository, prNumber);
         return this.dismissReceiptQuery(
             this.matchingTargetEvents(['task', 'review', 'pull_request'])
                 .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
@@ -567,15 +722,42 @@ export class NotificationService {
         );
     }
 
+    /** Persist a merged marker and close all existing PR receipts atomically. */
+    async markPullRequestMergedAndDismissNotifications(
+        repository: string,
+        prNumber: number,
+        mergedAt: TimestampInput = this.now()
+    ): Promise<number> {
+        this.assertPullRequestIdentity(repository, prNumber);
+        const normalizedMergedAt = normalizeISO8601Timestamp(mergedAt);
+
+        return this.database.transaction(async transaction => {
+            await transaction('notification_pull_request_state')
+                .insert({
+                    repository,
+                    pr_number: prNumber,
+                    merged_at: normalizedMergedAt
+                })
+                .onConflict(['repository', 'pr_number'])
+                .merge({ merged_at: normalizedMergedAt });
+            return this.dismissReceiptQuery(
+                this.matchingTargetEvents(
+                    ['task', 'review', 'pull_request'],
+                    transaction
+                )
+                    .whereRaw("json_extract(event.target_json, '$.repository') = ?", [repository])
+                    .whereRaw("json_extract(event.target_json, '$.prNumber') = ?", [prNumber]),
+                transaction
+            );
+        });
+    }
+
     /** Keep only the newest PR-attention event visible for a repository/PR. */
     async dismissSupersededPullRequestAttentionNotifications(
         repository: string,
         prNumber: number
     ): Promise<number> {
-        assertIdentifier(repository, 'notification repository');
-        if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
-            throw new TypeError('notification prNumber must be a positive safe integer');
-        }
+        this.assertPullRequestIdentity(repository, prNumber);
 
         return this.database.transaction(async (transaction) => {
             const matching = () => transaction('notification_events as event')
@@ -794,8 +976,18 @@ export class NotificationService {
         }
     }
 
-    private matchingTargetEvents(kinds: readonly NotificationKind[]): Knex.QueryBuilder {
-        return this.database('notification_events as event')
+    private assertPullRequestIdentity(repository: string, prNumber: number): void {
+        assertIdentifier(repository, 'notification repository');
+        if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+            throw new TypeError('notification prNumber must be a positive safe integer');
+        }
+    }
+
+    private matchingTargetEvents(
+        kinds: readonly NotificationKind[],
+        database: Database = this.database
+    ): Knex.QueryBuilder {
+        return database('notification_events as event')
             .select('event.event_id')
             .whereIn('event.kind', kinds);
     }

@@ -245,9 +245,10 @@ export async function handlePlanPRUpdate(
     try {
         if (action === 'closed' && payload.pull_request.merged === true) {
             try {
-                await notificationService.dismissNotificationsForPullRequest(
+                await notificationService.markPullRequestMergedAndDismissNotifications(
                     repository,
-                    prNumber
+                    prNumber,
+                    payload.pull_request.merged_at ?? undefined
                 );
             } catch (error) {
                 // Inbox lifecycle is best effort and must not prevent the plan
