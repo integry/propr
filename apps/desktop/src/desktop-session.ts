@@ -17,7 +17,7 @@ export const logoutDesktopSession = async (
   }
 };
 
-/** Remove legacy/browser cookies so named bearer profiles cannot inherit them. */
+/** Remove legacy browser identity/state so named bearer profiles cannot inherit it. */
 export const clearDesktopInstanceCookies = async (
   desktopSession: Pick<Session, 'clearStorageData'>,
   apiBaseUrls: readonly unknown[],
@@ -31,6 +31,6 @@ export const clearDesktopInstanceCookies = async (
   }
   await Promise.all([...origins].map(origin => desktopSession.clearStorageData({
     origin,
-    storages: ['cookies'],
+    storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'],
   })));
 };

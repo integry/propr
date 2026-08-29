@@ -20,6 +20,13 @@ const encryption = (available = true, backend = 'keychain'): EncryptionProvider 
   decrypt: value => Buffer.from(value.toString(), 'base64url').toString('utf8'),
 });
 
+const credential = (profileId: string, tokenCharacter = 'A') => ({
+  version: 1 as const,
+  profileId,
+  origin: 'https://propr.example.com',
+  token: `propr_it_${tokenCharacter.repeat(43)}`,
+});
+
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
@@ -41,37 +48,37 @@ describe('desktop profile store', () => {
     const directory = await createDirectory();
     const store = new ProfileStore(directory, encryption());
     const profile = await store.save({ label: 'Secure', apiBaseUrl: 'https://propr.example.com' });
-    assert.deepEqual(await store.writeCredential(profile.id, 'top-secret'), { stored: true });
-    assert.deepEqual(await store.readCredential(profile.id), { available: true, value: 'top-secret' });
+    const storedCredential = credential(profile.id);
+    assert.deepEqual(await store.writeCredential(storedCredential), { stored: true });
+    assert.deepEqual(await store.readCredential(profile.id), storedCredential);
     const onDisk = await readFile(join(directory, 'desktop', 'credentials', `${profile.id}.bin`), 'utf8');
-    assert.equal(onDisk, Buffer.from('top-secret', 'utf8').toString('base64url'));
-    assert.equal(onDisk.includes('top-secret'), false);
-    assert.notEqual(onDisk, 'top-secret');
+    assert.equal(onDisk.includes(storedCredential.token), false);
   });
 
   it('serializes concurrent credential writes with last-write semantics', async () => {
     const store = new ProfileStore(await createDirectory(), encryption());
 
-    const first = store.writeCredential('profile-1', 'first');
-    const second = store.writeCredential('profile-1', 'second');
+    const first = store.writeCredential(credential('profile-1', 'A'));
+    const secondCredential = credential('profile-1', 'B');
+    const second = store.writeCredential(secondCredential);
     assert.deepEqual(await Promise.all([first, second]), [{ stored: true }, { stored: true }]);
-    assert.deepEqual(await store.readCredential('profile-1'), { available: true, value: 'second' });
+    assert.deepEqual(await store.readCredential('profile-1'), secondCredential);
   });
 
   it('orders concurrent credential writes and removals by invocation', async () => {
     const store = new ProfileStore(await createDirectory(), encryption());
 
     await Promise.all([
-      store.writeCredential('profile-1', 'remove-me'),
+      store.writeCredential(credential('profile-1')),
       store.removeCredential('profile-1'),
     ]);
-    assert.deepEqual(await store.readCredential('profile-1'), { available: true, value: null });
+    assert.equal(await store.readCredential('profile-1'), null);
 
     await Promise.all([
       store.removeCredential('profile-1'),
-      store.writeCredential('profile-1', 'keep-me'),
+      store.writeCredential(credential('profile-1', 'B')),
     ]);
-    assert.deepEqual(await store.readCredential('profile-1'), { available: true, value: 'keep-me' });
+    assert.deepEqual(await store.readCredential('profile-1'), credential('profile-1', 'B'));
   });
 
   it('refuses plaintext fallback when encryption is unavailable or basic_text', async () => {
@@ -79,11 +86,11 @@ describe('desktop profile store', () => {
       const directory = await createDirectory();
       const store = new ProfileStore(directory, provider);
       assert.equal(store.security().available, false);
-      assert.deepEqual(await store.writeCredential('profile-1', 'secret'), {
+      assert.deepEqual(await store.writeCredential(credential('profile-1')), {
         stored: false,
         reason: 'encryption-unavailable',
       });
-      assert.deepEqual(await store.readCredential('profile-1'), { available: false, value: null });
+      assert.equal(await store.readCredential('profile-1'), null);
     }
   });
 
@@ -101,6 +108,6 @@ describe('desktop profile store', () => {
     );
     assert.deepEqual((await store.list()).profiles, [profile]);
     assert.doesNotMatch(await readFile(join(directory, 'desktop', 'profiles.json'), 'utf8'), /\/base/);
-    await assert.rejects(store.writeCredential('../escape', 'secret'), /Invalid desktop profile id/);
+    await assert.rejects(store.writeCredential(credential('../escape')), /Invalid desktop profile id/);
   });
 });

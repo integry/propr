@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesktopExperience } from './DesktopExperience';
 import { DesktopTitleBar } from './DesktopTitleBar';
-import type { DesktopAdapters, DesktopConnectionResult, DesktopProfile } from './types';
+import { DESKTOP_ACCESS_INVALID_EVENT, type DesktopAdapters, type DesktopConnectionResult, type DesktopProfile } from './types';
 
 const apiMock = vi.hoisted(() => ({ setApiBaseUrl: vi.fn() }));
 const runtimeMock = vi.hoisted(() => ({ setDesktopApiBaseUrl: vi.fn() }));
@@ -200,6 +200,30 @@ describe('DesktopExperience', () => {
     expect(screen.queryByText('Cancelled dashboard')).not.toBeInTheDocument();
     expect(adapters.profiles.save).not.toHaveBeenCalled();
     expect(adapters.profiles.setActiveId).toHaveBeenCalledWith(null);
+  });
+
+  it('ignores a delayed access-invalid event from A after B has connected', async () => {
+    const probe = vi.fn(async (profile: DesktopProfile): Promise<DesktopConnectionResult> => ({
+      status: 'ready',
+      version: '0.8.15',
+      connectionGeneration: profile.id === localProfile.id ? 11 : 12,
+    }));
+    const adapters = adaptersFor([localProfile, remoteProfile], localProfile.id, probe);
+    adapters.connection.deactivate = vi.fn();
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click((await screen.findByText('Team server')).closest('button')!);
+    await waitFor(() => expect(probe).toHaveBeenCalledWith(remoteProfile));
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+
+    window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, {
+      detail: { profileId: localProfile.id, connectionGeneration: 11, code: 'INVALID_INSTANCE_TOKEN' },
+    }));
+
+    expect(screen.getByText('Connected app')).toBeInTheDocument();
+    expect(adapters.connection.deactivate).not.toHaveBeenCalled();
   });
 
   it('supports editing a recent profile and connecting to the updated URL', async () => {

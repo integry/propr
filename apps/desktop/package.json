@@ -6,6 +6,9 @@
   "description": "Secure ProPR desktop application",
   "author": "Unchained Development OÜ / Rinalds Uzkalns",
   "license": "Apache-2.0",
+  "dependencies": {
+    "@propr/client": "*"
+  },
   "homepage": "https://github.com/integry/propr",
   "type": "module",
   "main": ".vite/build/main.cjs",

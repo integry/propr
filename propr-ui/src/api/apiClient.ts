@@ -1,15 +1,33 @@
 import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
-import { ProprClient, type AccessTokenProvider } from '@propr/client';
+import { ProprClient } from '@propr/client';
+import type { DesktopBridge } from '../../../apps/desktop/src/shared/contract';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import { currentUiPathname, isDesktopRuntime, navigateToUiPath } from '../config/runtimeMode';
 import { DESKTOP_ACCESS_INVALID_EVENT } from '../desktop/types';
 
-let desktopAccessTokenProvider: AccessTokenProvider | null = null;
+export interface DesktopConnectionScope {
+  bridge: DesktopBridge;
+  profileId: string;
+  connectionGeneration: number;
+}
+
+let desktopConnectionScope: DesktopConnectionScope | null = null;
+const responseScopes = new WeakMap<Response, DesktopConnectionScope>();
+const DEFINITIVE_INSTANCE_TOKEN_CODES = new Set([
+  'INVALID_INSTANCE_TOKEN',
+  'INSTANCE_TOKEN_EXPIRED',
+  'INSTANCE_TOKEN_REVOKED',
+]);
+const AUTHORIZATION_CHANGE_CODES = new Set([
+  'AUTHORIZATION_CHANGED',
+  'USER_NOT_WHITELISTED',
+  'INSUFFICIENT_INSTANCE_PERMISSION',
+]);
 
 const createProprClient = (baseUrl: string): ProprClient => new ProprClient({
   baseUrl,
-  authentication: desktopAccessTokenProvider
-    ? { type: 'bearer', getAccessToken: desktopAccessTokenProvider }
+  authentication: isDesktopRuntime()
+    ? { type: 'none' }
     : { type: 'session', applyByDefault: false },
 });
 
@@ -24,11 +42,12 @@ export const setApiBaseUrl = (value: string): void => {
   proprClient = nextProprClient;
 };
 
-/** Install a transient secure-storage reader; token values are never retained here. */
-export const setDesktopAccessTokenProvider = (provider: AccessTokenProvider | null): void => {
-  desktopAccessTokenProvider = provider;
+export const setDesktopConnectionScope = (scope: DesktopConnectionScope | null): void => {
+  desktopConnectionScope = scope;
   proprClient = createProprClient(API_BASE_URL);
 };
+
+export const getDesktopConnectionScope = (): DesktopConnectionScope | null => desktopConnectionScope;
 export const INSTANCE_AUTHORIZATION_CHANGED_EVENT = 'propr:instance-authorization-changed';
 const TOKEN_REFRESHED_CODE = 'TOKEN_REFRESHED';
 const SAFE_PUBLIC_ERROR_CODES = new Set(['AGENT_VERSION_LOOKUP_UNAVAILABLE']);
@@ -121,14 +140,43 @@ const parseApiErrorBody = async (response: Response): Promise<ApiErrorBody | nul
 const getApiErrorMessage = (data: ApiErrorBody | null): string | undefined =>
   data?.message || data?.error;
 
-const throwUnauthorizedResponse = (data: ApiErrorBody | null): never => {
+export const handleDesktopAccessCode = async (
+  code: string | undefined,
+  scope: DesktopConnectionScope | null,
+): Promise<'invalidated' | 'authorization-changed' | 'retryable'> => {
+  if (!code) return 'retryable';
+  if (AUTHORIZATION_CHANGE_CODES.has(code)) {
+    window.dispatchEvent(new Event(INSTANCE_AUTHORIZATION_CHANGED_EVENT));
+    return 'authorization-changed';
+  }
+  if (!scope) return 'retryable';
+  if (DEFINITIVE_INSTANCE_TOKEN_CODES.has(code)) {
+    const result = await scope.bridge.connection.invalidate({
+      profileId: scope.profileId,
+      connectionGeneration: scope.connectionGeneration,
+      code,
+    });
+    if (result.invalidated) {
+      window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, {
+        detail: {
+          profileId: scope.profileId,
+          connectionGeneration: scope.connectionGeneration,
+          code,
+        },
+      }));
+      return 'invalidated';
+    }
+    return 'retryable';
+  }
+  return 'retryable';
+};
+
+const throwUnauthorizedResponse = async (data: ApiErrorBody | null, response: Response): Promise<never> => {
   if (data?.code === TOKEN_REFRESHED_CODE) {
     throw new TokenRefreshRetryRequiredError(getApiErrorMessage(data));
   }
   if (isDesktopRuntime()) {
-    window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, {
-      detail: { code: data?.code },
-    }));
+    await handleDesktopAccessCode(data?.code, responseScopes.get(response) ?? desktopConnectionScope);
     throw new Error(data?.code === 'INVALID_INSTANCE_TOKEN'
       ? 'This desktop connection was revoked or expired.'
       : 'Desktop authentication is required.');
@@ -165,9 +213,13 @@ export const apiFetch = async (
   init?: RequestInit,
   options: ApiFetchOptions = {}
 ): Promise<Response> => {
+  const requestScope = desktopConnectionScope;
   const response = await proprClient.fetch(input, init);
+  if (requestScope) responseScopes.set(response, requestScope);
   if (isReplayableApiRequest(input, init, options) && await shouldRetryAfterTokenRefresh(response)) {
-    return proprClient.fetch(input, init);
+    const retried = await proprClient.fetch(input, init);
+    if (requestScope) responseScopes.set(retried, requestScope);
+    return retried;
   }
   return response;
 };
@@ -176,7 +228,7 @@ export const handleApiResponse = async (response: Response): Promise<Response> =
   if (response.ok) return response;
 
   const data = await parseApiErrorBody(response);
-  if (response.status === 401) throwUnauthorizedResponse(data);
+  if (response.status === 401) return await throwUnauthorizedResponse(data, response);
   const errorMessage = getApiErrorMessage(data);
 
   if (data?.code === DEMO_MODE_READ_ONLY_CODE) {

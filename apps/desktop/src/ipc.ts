@@ -1,6 +1,7 @@
 import type { App, IpcMain, IpcMainInvokeEvent, Session } from 'electron';
 import { shell } from 'electron';
 import { clearDesktopInstanceCookies, logoutDesktopSession } from './desktop-session';
+import type { DesktopCredentialService } from './credential-service';
 import type { DesktopLogger } from './logger';
 import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
@@ -11,6 +12,7 @@ interface RegisterIpcOptions {
   app: App;
   ipcMain: IpcMain;
   profiles: ProfileStore;
+  credentials: DesktopCredentialService;
   lifecycle: LocalLifecycleController;
   logger: DesktopLogger;
   desktopSession: Session;
@@ -54,12 +56,12 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
   });
   handle(IPC_CHANNELS.storageSecurity, () => options.profiles.security());
   handle(IPC_CHANNELS.profilesList, () => options.profiles.list());
-  handle(IPC_CHANNELS.profilesSave, (_event, input) => options.profiles.save(input));
+  handle(IPC_CHANNELS.profilesSave, (_event, input) => options.credentials.saveProfile(input));
   handle(IPC_CHANNELS.profilesRemove, async (_event, profileId) => {
     const current = await options.profiles.list();
     const removed = current.profiles.find(profile => profile.id === profileId);
     if (removed) await clearDesktopInstanceCookies(options.desktopSession, [removed.apiBaseUrl]);
-    await options.profiles.remove(profileId);
+    await options.credentials.removeProfile(profileId);
   });
   handle(IPC_CHANNELS.profilesSetActive, async (_event, profileId) => {
     const current = await options.profiles.list();
@@ -70,11 +72,12 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
       ...(previous ? [previous.apiBaseUrl] : []),
       ...(next ? [next.apiBaseUrl] : []),
     ]);
-    await options.profiles.setActive(profileId);
+    await options.credentials.setActiveProfile(profileId);
   });
-  handle(IPC_CHANNELS.credentialsRead, (_event, profileId) => options.profiles.readCredential(profileId));
-  handle(IPC_CHANNELS.credentialsWrite, (_event, profileId, value) => options.profiles.writeCredential(profileId, value));
-  handle(IPC_CHANNELS.credentialsRemove, (_event, profileId) => options.profiles.removeCredential(profileId));
+  handle(IPC_CHANNELS.authenticationPair, (_event, profile) => options.credentials.pair(profile));
+  handle(IPC_CHANNELS.authenticationCancel, (_event, profileId) => options.credentials.cancelPairing(profileId));
+  handle(IPC_CHANNELS.connectionProbe, (_event, profile) => options.credentials.probe(profile));
+  handle(IPC_CHANNELS.connectionInvalidate, (_event, value) => options.credentials.invalidate(value));
   handle(IPC_CHANNELS.lifecycleStatus, () => options.lifecycle.status());
   handle(IPC_CHANNELS.lifecycleStart, () => options.lifecycle.start());
   handle(IPC_CHANNELS.lifecycleStop, () => options.lifecycle.stop());

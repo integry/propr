@@ -108,4 +108,95 @@ describe('desktop instance protocol', () => {
     await assert.rejects(client.startDesktopPairing('Desktop'), (error: unknown) =>
       error instanceof ProprClientError && error.kind === 'invalid_response');
   });
+
+  it('rejects cross-origin, credentialed, malformed, and invalid-deadline approval responses', async () => {
+    for (const override of [
+      { approvalUrl: 'https://attacker.example.test/approve' },
+      { approvalUrl: 'https://user:secret@propr.example.test/approve' },
+      { approvalUrl: 'not a URL' },
+      { expiresAt: 'not a deadline' },
+    ]) {
+      const client = new ProprClient({
+        baseUrl: 'https://propr.example.test',
+        fetch: async () => json({
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'B'.repeat(43),
+          approvalUrl: 'https://propr.example.test/approve',
+          expiresAt: '2030-01-01T00:00:00.000Z',
+          interval: 2,
+          ...override,
+        }, 201),
+      });
+      await assert.rejects(client.startDesktopPairing('Desktop'), (error: unknown) =>
+        error instanceof ProprClientError && error.kind === 'invalid_response');
+    }
+  });
+
+  it('cancels while the pairing start request is in flight', async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const requestStarted = new Promise<void>(resolve => { started = resolve; });
+    const client = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      fetch: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+        started();
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true });
+      }),
+    });
+
+    const pairing = client.pairDesktop('Desktop', { signal: controller.signal });
+    await requestStarted;
+    controller.abort();
+    await assert.rejects(pairing, (error: unknown) =>
+      error instanceof ProprClientError && error.kind === 'aborted');
+  });
+
+  it('aborts a hung poll at the advertised deadline and reports expiry', async () => {
+    const expiresAt = new Date(Date.now() + 40).toISOString();
+    const client = new ProprClient({
+      baseUrl: 'https://propr.example.test',
+      fetch: async (input, init) => {
+        if (input.toString().endsWith('/api/desktop/pairings')) return json({
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'B'.repeat(43),
+          approvalUrl: 'https://propr.example.test/approve',
+          expiresAt,
+          interval: 0.0001,
+        }, 201);
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('expired', 'AbortError')), { once: true });
+        });
+      },
+    });
+
+    await assert.rejects(client.pairDesktop('Desktop'), (error: unknown) =>
+      error instanceof ProprClientError && error.code === 'PAIRING_EXPIRED');
+  });
+
+  it('clamps fractional and huge polling intervals to safe integer deadline-bounded sleeps', async () => {
+    const { completeDesktopPairing } = await import('../src/index.js');
+    const client = new ProprClient({ fetch: async () => { throw new Error('must not poll after deadline'); } });
+    const base = {
+      pairingId: `dpr_${'A'.repeat(22)}`,
+      deviceSecret: 'B'.repeat(43),
+      approvalUrl: 'https://propr.example.test/approve',
+      expiresAt: '2026-01-01T00:00:05.000Z',
+      interval: 0.0001,
+    };
+    let now = Date.parse('2026-01-01T00:00:00.000Z');
+    const fractionalSleeps: number[] = [];
+    await assert.rejects(completeDesktopPairing(client, base, {
+      now: () => now,
+      sleep: async milliseconds => { fractionalSleeps.push(milliseconds); now = Date.parse(base.expiresAt); },
+    }), (error: unknown) => error instanceof ProprClientError && error.code === 'PAIRING_EXPIRED');
+    assert.deepEqual(fractionalSleeps, [1]);
+
+    now = Date.parse('2026-01-01T00:00:00.000Z');
+    const hugeSleeps: number[] = [];
+    await assert.rejects(completeDesktopPairing(client, { ...base, interval: Number.MAX_VALUE }, {
+      now: () => now,
+      sleep: async milliseconds => { hugeSleeps.push(milliseconds); now = Date.parse(base.expiresAt); },
+    }), (error: unknown) => error instanceof ProprClientError && error.code === 'PAIRING_EXPIRED');
+    assert.deepEqual(hugeSleeps, [5000]);
+  });
 });

@@ -2,8 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import type { Socket } from '@propr/client';
 import { TASK_UPDATE, DRAFT_UPDATE, INDEXING_UPDATE, QUEUE_STATS_UPDATE, TASK_LIVE_UPDATE, TaskUpdatePayload, DraftUpdatePayload, IndexingUpdatePayload, QueueStatsUpdatePayload, TaskLiveUpdatePayload } from '@propr/shared';
 import { SocketContext, SocketContextValue } from './SocketContext';
-import { proprClient } from '../api/apiClient';
-import { DESKTOP_ACCESS_INVALID_EVENT } from '../desktop/types';
+import { getDesktopConnectionScope, handleDesktopAccessCode, proprClient } from '../api/apiClient';
 
 interface SocketProviderProps {
   children: React.ReactNode;
@@ -31,6 +30,15 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
       autoConnect: true,
       path: '/socket.io/',
     });
+    const desktopScope = getDesktopConnectionScope();
+    const handleAuthenticationCode = (code: string | undefined, reconnect = false): void => {
+      void handleDesktopAccessCode(code, desktopScope).then(classification => {
+        if (classification === 'authorization-changed' && reconnect) {
+          newSocket.disconnect();
+          newSocket.connect();
+        }
+      });
+    };
 
     newSocket.on('connect', () => {
       console.log('[SocketContext] Connected to WebSocket server');
@@ -45,15 +53,11 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children, disabl
     newSocket.on('connect_error', (error) => {
       console.error('[SocketContext] Connection error:', error.message);
       const code = (error as Error & { data?: { code?: string } }).data?.code;
-      if (code === 'INVALID_INSTANCE_TOKEN' || code === 'AUTHENTICATION_REQUIRED') {
-        window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, { detail: { code } }));
-      }
+      handleAuthenticationCode(code);
     });
 
     newSocket.on('authentication:error', (value: { code?: string } | undefined) => {
-      window.dispatchEvent(new CustomEvent(DESKTOP_ACCESS_INVALID_EVENT, {
-        detail: { code: value?.code },
-      }));
+      handleAuthenticationCode(value?.code, true);
     });
 
     // Set up global event listeners

@@ -5,6 +5,7 @@ import {
   CommittedConfigWriteError,
   getDemoModeStatus,
   handleApiResponse,
+  handleDesktopAccessCode,
   INSTANCE_AUTHORIZATION_CHANGED_EVENT,
   TokenRefreshRetryRequiredError,
 } from './proprApi';
@@ -178,6 +179,24 @@ describe('demo mode API helpers', () => {
     );
 
     expect(listener).toHaveBeenCalledOnce();
+    window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
+  });
+
+  it('preserves desktop credentials for authorization changes and transient authentication failures', async () => {
+    const invalidate = vi.fn(async () => ({ invalidated: false }));
+    const scope = {
+      bridge: { connection: { invalidate } } as never,
+      profileId: 'profile-a',
+      connectionGeneration: 9,
+    };
+    const listener = vi.fn();
+    window.addEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
+
+    await expect(handleDesktopAccessCode('AUTHORIZATION_CHANGED', scope)).resolves.toBe('authorization-changed');
+    await expect(handleDesktopAccessCode('AUTHENTICATION_FAILED', scope)).resolves.toBe('retryable');
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(invalidate).not.toHaveBeenCalled();
     window.removeEventListener(INSTANCE_AUTHORIZATION_CHANGED_EVENT, listener);
   });
 

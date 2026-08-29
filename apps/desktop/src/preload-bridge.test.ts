@@ -24,19 +24,19 @@ class FakeIpc implements PreloadIpc {
 describe('desktop preload bridge', () => {
   it('exposes only the narrow frozen namespaces', () => {
     const bridge = createDesktopBridge(new FakeIpc());
-    assert.deepEqual(Object.keys(bridge).sort(), ['app', 'auth', 'credentials', 'external', 'lifecycle', 'profiles', 'storage']);
+    assert.deepEqual(Object.keys(bridge).sort(), ['app', 'auth', 'authentication', 'connection', 'external', 'lifecycle', 'profiles', 'storage']);
     assert.equal(Object.isFrozen(bridge), true);
     assert.equal(Object.values(bridge).every(Object.isFrozen), true);
     assert.equal('fs' in bridge, false);
     assert.equal('exec' in bridge, false);
   });
 
-  it('maps profile and credential operations to fixed channels', async () => {
+  it('maps profile and main-process authentication operations to fixed channels', async () => {
     const ipc = new FakeIpc();
     const bridge = createDesktopBridge(ipc);
     await bridge.auth.logout('http://localhost:4000');
     await bridge.profiles.save({ label: 'Local', apiBaseUrl: 'http://localhost:4000' });
-    await bridge.credentials.write('profile-1', 'secret');
+    await bridge.authentication.pair({ id: 'profile-1', label: 'Local', apiBaseUrl: 'http://localhost:4000' });
     await bridge.lifecycle.start();
     assert.deepEqual(ipc.invocations, [
       { channel: IPC_CHANNELS.authLogout, args: ['http://localhost:4000'] },
@@ -44,7 +44,10 @@ describe('desktop preload bridge', () => {
         channel: IPC_CHANNELS.profilesSave,
         args: [{ label: 'Local', apiBaseUrl: 'http://localhost:4000' }],
       },
-      { channel: IPC_CHANNELS.credentialsWrite, args: ['profile-1', 'secret'] },
+      {
+        channel: IPC_CHANNELS.authenticationPair,
+        args: [{ id: 'profile-1', label: 'Local', apiBaseUrl: 'http://localhost:4000' }],
+      },
       { channel: IPC_CHANNELS.lifecycleStart, args: [] },
     ]);
   });

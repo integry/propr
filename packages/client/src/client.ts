@@ -234,19 +234,23 @@ export class ProprClient {
     return parseDesktopDiscovery(metadata, compatibility);
   }
 
-  async startDesktopPairing(clientName: string): Promise<ProprDesktopPairingStart> {
+  async startDesktopPairing(
+    clientName: string,
+    options: Pick<ProprDesktopPairingOptions, 'signal'> = {},
+  ): Promise<ProprDesktopPairingStart> {
     return parseDesktopPairingStart(await this.request<unknown>('/api/desktop/pairings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientName }),
-    }));
+      signal: options.signal,
+    }, { timeoutMs: 8000 }), this.baseUrl || undefined);
   }
 
   async pairDesktop(
     clientName: string,
     options: ProprDesktopPairingOptions = {},
   ): Promise<ProprDesktopPairingComplete> {
-    const start = await this.startDesktopPairing(clientName);
+    const start = await this.startDesktopPairing(clientName, options);
     return completeDesktopPairing(this, start, options);
   }
 

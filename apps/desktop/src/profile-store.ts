@@ -2,8 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
-  CredentialReadResult,
-  CredentialWriteResult,
   DesktopProfile,
   DesktopProfileInput,
   DesktopProfileList,
@@ -13,6 +11,13 @@ import { normalizeApiBaseUrl } from './security';
 
 const PROFILE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 const MAX_CREDENTIAL_LENGTH = 65_536;
+
+export interface StoredCredential {
+  version: 1;
+  profileId: string;
+  origin: string;
+  token: string;
+}
 
 interface PersistedState {
   version: 1;
@@ -164,21 +169,33 @@ export class ProfileStore {
     });
   }
 
-  async readCredential(profileId: string): Promise<CredentialReadResult> {
+  async readCredential(profileId: string): Promise<StoredCredential | null> {
     assertProfileId(profileId);
-    if (!this.security().available) return { available: false, value: null };
+    if (!this.security().available) return null;
     try {
       const encrypted = await readFile(this.#credentialPath(profileId));
-      return { available: true, value: this.#encryption.decrypt(encrypted) };
+      const value = JSON.parse(this.#encryption.decrypt(encrypted)) as unknown;
+      if (!value || typeof value !== 'object') return null;
+      const credential = value as Record<string, unknown>;
+      if (credential.version !== 1 || credential.profileId !== profileId
+        || typeof credential.origin !== 'string'
+        || normalizeApiBaseUrl(credential.origin) !== credential.origin
+        || typeof credential.token !== 'string'
+        || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token)) return null;
+      return credential as unknown as StoredCredential;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { available: true, value: null };
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      if (error instanceof SyntaxError) return null;
       throw error;
     }
   }
 
-  async writeCredential(profileId: string, value: string): Promise<CredentialWriteResult> {
+  async writeCredential(credential: StoredCredential): Promise<{ stored: true } | { stored: false; reason: 'encryption-unavailable' }> {
+    const profileId = credential?.profileId;
     assertProfileId(profileId);
-    if (typeof value !== 'string' || value.length === 0 || value.length > MAX_CREDENTIAL_LENGTH) {
+    if (credential.version !== 1 || normalizeApiBaseUrl(credential.origin) !== credential.origin
+      || typeof credential.token !== 'string' || credential.token.length > MAX_CREDENTIAL_LENGTH
+      || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token)) {
       throw new Error('Credential must contain 1 to 65536 characters');
     }
     if (!this.security().available) return { stored: false, reason: 'encryption-unavailable' };
@@ -186,7 +203,7 @@ export class ProfileStore {
       await this.#ensureDirectories();
       const target = this.#credentialPath(profileId);
       const temporary = `${target}.${process.pid}.tmp`;
-      await writeFile(temporary, this.#encryption.encrypt(value), { mode: 0o600 });
+      await writeFile(temporary, this.#encryption.encrypt(JSON.stringify(credential)), { mode: 0o600 });
       await rename(temporary, target);
       await chmod(target, 0o600).catch(() => undefined);
       return { stored: true };

@@ -9,7 +9,7 @@ export interface DesktopProfile {
 }
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string; authentication?: string }
+  | { status: 'ready'; version?: string; authentication?: string; connectionGeneration?: number }
   | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };
@@ -43,6 +43,12 @@ export interface DesktopAuthenticationCompleteEventDetail {
   profileId: string;
 }
 
+export interface DesktopAccessInvalidEventDetail {
+  profileId: string;
+  connectionGeneration: number;
+  code: string;
+}
+
 export interface DesktopExternalBrowserAdapter {
   open(url: string): Promise<void>;
 }
@@ -53,8 +59,8 @@ export interface DesktopLocalSetupAdapter {
 
 export interface DesktopConnectionAdapter {
   probe(profile: DesktopProfile): Promise<DesktopConnectionResult>;
+  activate?(profile: DesktopProfile, result: Extract<DesktopConnectionResult, { status: 'ready' }>): void;
   deactivate?(): void;
-  clearCredentials?(profile: DesktopProfile): Promise<void>;
 }
 
 export interface DesktopAdapters {

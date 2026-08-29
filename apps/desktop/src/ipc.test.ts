@@ -35,7 +35,7 @@ describe('desktop session IPC operations', () => {
     assert.equal(requested, false);
   });
 
-  it('clears only cookies for normalized profile origins when profiles switch', async () => {
+  it('clears browser identity and origin storage for normalized profile origins when profiles switch', async () => {
     const calls: Array<Parameters<Session['clearStorageData']>[0]> = [];
     const desktopSession: Pick<Session, 'clearStorageData'> = {
       clearStorageData: async options => { calls.push(options ?? {}); },
@@ -48,8 +48,8 @@ describe('desktop session IPC operations', () => {
     ]);
 
     assert.deepEqual(calls, [
-      { origin: 'https://first.example.test', storages: ['cookies'] },
-      { origin: 'https://second.example.test', storages: ['cookies'] },
+      { origin: 'https://first.example.test', storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'] },
+      { origin: 'https://second.example.test', storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'] },
     ]);
     await assert.rejects(
       clearDesktopInstanceCookies(desktopSession, ['http://remote.example.test']),

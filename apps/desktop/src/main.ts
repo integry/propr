@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import { DeepLinkDelivery } from './deep-link-delivery';
+import { DesktopCredentialService } from './credential-service';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
@@ -66,14 +67,17 @@ const deliverDeepLink = (value: string): void => {
   deepLinkDelivery.deliver(value);
 };
 
-const configureSessionSecurity = (): void => {
+const configureSessionSecurity = (credentials: DesktopCredentialService): void => {
   const desktopSession = session.defaultSession;
   desktopSession.setPermissionCheckHandler(() => false);
   desktopSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  desktopSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    callback(credentials.prepareRequest(details.url, details.requestHeaders));
+  });
   desktopSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
-        ...details.responseHeaders,
+        ...credentials.sanitizeResponseHeaders(details.url, details.responseHeaders ?? {}),
         'Content-Security-Policy': [rendererContentSecurityPolicy(!app.isPackaged)],
       },
     });
@@ -201,7 +205,6 @@ if (!hasSingleInstanceLock) {
   void app.whenReady().then(async () => {
     logger = createDesktopLogger(join(app.getPath('logs'), 'desktop.jsonl'));
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
-    configureSessionSecurity();
     configurePackagedRendererProtocol();
 
     const encryption: EncryptionProvider = {
@@ -218,11 +221,19 @@ if (!hasSingleInstanceLock) {
       decrypt: value => safeStorage.decryptString(value),
     };
     const profiles = new ProfileStore(app.getPath('userData'), encryption);
+    const credentials = new DesktopCredentialService({
+      profiles,
+      fetch: session.defaultSession.fetch.bind(session.defaultSession) as typeof globalThis.fetch,
+      openExternal: async url => { await shell.openExternal(url); },
+      clientName: `ProPR Desktop (${process.platform})`,
+    });
+    configureSessionSecurity(credentials);
     const lifecycle = new LocalLifecycleController();
     registerIpcHandlers({
       app,
       ipcMain,
       profiles,
+      credentials,
       lifecycle,
       logger,
       desktopSession: session.defaultSession,

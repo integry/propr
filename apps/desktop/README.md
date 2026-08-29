@@ -38,20 +38,20 @@ CI runs both checks directly from the committed lockfile before installing or ex
 ## Security boundary
 
 The renderer has no Node.js integration and receives only the typed `window.proprDesktop` bridge. It exposes metadata,
-validated external-browser opening, profiles, encrypted credentials, lifecycle placeholders, and validated deep-link
-events. The renderer adapter discovers an instance's public compatibility and desktop-authentication capabilities before
-launching browser approval. It never exposes a shell, command runner, arbitrary IPC call, or filesystem path/API.
+validated profiles, status-only pairing/probe/invalidation operations, lifecycle placeholders, and validated deep-link
+events. Pairing, browser approval, credential persistence, authenticated probes, and revocation run in Electron main.
+The bridge never exposes a credential value, shell, command runner, arbitrary IPC call, or filesystem path/API.
 
 Profile metadata is stored in an app-owned, permission-restricted JSON file. Credential values are encrypted with
 Electron `safeStorage` before they are written separately. If OS encryption is unavailable—or Linux selects the
-`basic_text` backend—the app reports that state and refuses to persist or return credentials; there is no plaintext
+`basic_text` backend—the app reports that state and refuses to persist credentials; there is no plaintext
 fallback. Profiles remain usable because they contain only a display label and validated API endpoint.
 
-Opaque instance tokens are requested by the shared client device flow and written immediately through the encrypted
-credential bridge. They are resolved afresh for REST and Socket.IO connection attempts, are never placed in URLs,
-logs, localStorage, sessionStorage, or profile metadata, and bearer requests explicitly omit cookies. Switching named
-profiles clears renderer-scoped state and cookies for both instance origins. Removing a paired profile first attempts
-to revoke only its current instance token, then removes its encrypted local credential even if the instance is offline.
+Opaque instance tokens are bound to profile ID plus normalized origin in encrypted main-process storage. Electron's
+session request boundary strips renderer-supplied Authorization and cookie identity, then injects the active bearer only
+for matching REST and Socket.IO requests. Tokens never enter renderer JavaScript, URLs, logs, localStorage,
+sessionStorage, or profile metadata. Switching named profiles clears renderer and instance-origin state. Removing or
+changing a paired profile first attempts current-token revocation at the old bound origin, then removes the credential.
 
 `propr://connect` and `propr://open` are the only accepted deep-link actions. A single-instance lock routes later
 activations to the existing window. Local lifecycle methods intentionally return `not-implemented`; this scaffold does

@@ -37,6 +37,9 @@ export interface ProprDesktopPairingOptions {
   now?: () => number;
 }
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const PAIRING_REQUEST_TIMEOUT_MS = 8_000;
+
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new ProprClientError('The ProPR desktop protocol returned an invalid response.', {
@@ -77,13 +80,16 @@ export const parseDesktopDiscovery = (
   };
 };
 
-export const parseDesktopPairingStart = (value: unknown): ProprDesktopPairingStart => {
+export const parseDesktopPairingStart = (
+  value: unknown,
+  expectedOrigin?: string,
+): ProprDesktopPairingStart => {
   const body = record(value);
   if (!string(body.pairingId) || !/^dpr_[A-Za-z0-9_-]{22}$/.test(body.pairingId)
     || !string(body.deviceSecret) || !/^[A-Za-z0-9_-]{43}$/.test(body.deviceSecret)
     || !string(body.approvalUrl)
     || !string(body.expiresAt) || !Number.isFinite(body.interval) || Number(body.interval) <= 0
-    || Number.isNaN(Date.parse(body.expiresAt))) {
+    || !Number.isFinite(Date.parse(body.expiresAt))) {
     throw new ProprClientError('The ProPR instance returned an invalid pairing request.', {
       kind: 'invalid_response',
     });
@@ -93,6 +99,9 @@ export const parseDesktopPairingStart = (value: unknown): ProprDesktopPairingSta
     if (approvalUrl.protocol !== 'https:' && !(approvalUrl.protocol === 'http:'
       && ['localhost', '127.0.0.1', '[::1]'].includes(approvalUrl.hostname))) throw new Error();
     if (approvalUrl.username || approvalUrl.password) throw new Error();
+    // Device approval is intentionally same-origin. A future hosted approval
+    // service must define and validate a narrow trust contract here first.
+    if (expectedOrigin && approvalUrl.origin !== expectedOrigin) throw new Error();
   } catch {
     throw new ProprClientError('The ProPR instance returned an unsafe pairing approval URL.', {
       kind: 'invalid_response',
@@ -107,10 +116,21 @@ export const parseDesktopPairingStart = (value: unknown): ProprDesktopPairingSta
   };
 };
 
+const cancelled = (cause?: unknown): ProprClientError =>
+  new ProprClientError('Desktop pairing was cancelled.', { kind: 'aborted', cause });
+
+const expired = (cause?: unknown): ProprClientError =>
+  new ProprClientError('Desktop pairing expired before it was approved.', {
+    kind: 'authentication', code: 'PAIRING_EXPIRED', cause,
+  });
+
+const safeDelay = (milliseconds: number): number =>
+  Math.max(1, Math.min(MAX_TIMER_DELAY_MS, Math.ceil(milliseconds)));
+
 const defaultSleep = (milliseconds: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
   const aborted = () => {
     clearTimeout(timer);
-    reject(new ProprClientError('Desktop pairing was cancelled.', { kind: 'aborted' }));
+    reject(cancelled());
   };
   const timer = setTimeout(() => {
     signal?.removeEventListener('abort', aborted);
@@ -127,33 +147,58 @@ export const completeDesktopPairing = async (
 ): Promise<ProprDesktopPairingComplete> => {
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
+  const deadline = Date.parse(start.expiresAt);
+  if (!Number.isFinite(deadline)) {
+    throw new ProprClientError('The ProPR instance returned an invalid pairing deadline.', {
+      kind: 'invalid_response',
+    });
+  }
   let intervalSeconds = start.interval;
   await options.onApprovalRequired?.(start.approvalUrl, start.expiresAt);
 
   while (true) {
-    if (options.signal?.aborted) {
-      throw new ProprClientError('Desktop pairing was cancelled.', { kind: 'aborted' });
-    }
-    if (now() >= Date.parse(start.expiresAt)) {
-      throw new ProprClientError('Desktop pairing expired before it was approved.', {
-        kind: 'authentication', code: 'PAIRING_EXPIRED',
-      });
-    }
-    await sleep(intervalSeconds * 1000, options.signal);
-    if (now() >= Date.parse(start.expiresAt)) {
-      throw new ProprClientError('Desktop pairing expired before it was approved.', {
-        kind: 'authentication', code: 'PAIRING_EXPIRED',
-      });
-    }
-    const value = await client.request<unknown>(
-      `/api/desktop/pairings/${encodeURIComponent(start.pairingId)}/poll`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceSecret: start.deviceSecret }),
-        signal: options.signal,
-      },
+    if (options.signal?.aborted) throw cancelled(options.signal.reason);
+    const remainingBeforeSleep = deadline - now();
+    if (remainingBeforeSleep <= 0) throw expired();
+    const delay = safeDelay(Math.min(intervalSeconds * 1000, remainingBeforeSleep));
+    await sleep(delay, options.signal);
+    if (options.signal?.aborted) throw cancelled(options.signal.reason);
+    const remaining = deadline - now();
+    if (remaining <= 0) throw expired();
+
+    const deadlineController = new AbortController();
+    const deadlineTimer = setTimeout(
+      () => deadlineController.abort(expired()),
+      safeDelay(remaining),
     );
+    const requestController = new AbortController();
+    const forwardCallerAbort = () => requestController.abort(options.signal?.reason);
+    const forwardDeadlineAbort = () => requestController.abort(deadlineController.signal.reason);
+    if (options.signal?.aborted) forwardCallerAbort();
+    else options.signal?.addEventListener('abort', forwardCallerAbort, { once: true });
+    deadlineController.signal.addEventListener('abort', forwardDeadlineAbort, { once: true });
+
+    let value: unknown;
+    try {
+      value = await client.request<unknown>(
+        `/api/desktop/pairings/${encodeURIComponent(start.pairingId)}/poll`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceSecret: start.deviceSecret }),
+          signal: requestController.signal,
+        },
+        { timeoutMs: Math.min(PAIRING_REQUEST_TIMEOUT_MS, safeDelay(remaining)) },
+      );
+    } catch (error) {
+      if (options.signal?.aborted) throw cancelled(error);
+      if (deadlineController.signal.aborted || now() >= deadline) throw expired(error);
+      throw error;
+    } finally {
+      clearTimeout(deadlineTimer);
+      options.signal?.removeEventListener('abort', forwardCallerAbort);
+      deadlineController.signal.removeEventListener('abort', forwardDeadlineAbort);
+    }
     const body = record(value);
     if (body.status === 'pending' && Number.isFinite(body.interval) && Number(body.interval) > 0) {
       intervalSeconds = Number(body.interval);
@@ -161,7 +206,7 @@ export const completeDesktopPairing = async (
     }
     if (body.status === 'complete' && string(body.token)
       && /^propr_it_[A-Za-z0-9_-]{43}$/.test(body.token) && body.tokenType === 'Bearer'
-      && (body.expiresAt === null || string(body.expiresAt))) {
+      && (body.expiresAt === null || (string(body.expiresAt) && Number.isFinite(Date.parse(body.expiresAt))))) {
       return { token: body.token, tokenType: 'Bearer', expiresAt: body.expiresAt as string | null };
     }
     throw new ProprClientError('The ProPR instance returned an invalid pairing status.', {

@@ -5,7 +5,7 @@ import * as runtimeConfig from '../config/runtimeConfig';
 import { DesktopContext } from './DesktopContext';
 import { normalizeBaseUrl } from './browserAdapters';
 import { useDesktopModal, useSerializedMutationQueue } from './desktopExperienceHooks';
-import { DESKTOP_ACCESS_INVALID_EVENT, type DesktopAdapters, type DesktopConnectionResult, type DesktopProfile } from './types';
+import { DESKTOP_ACCESS_INVALID_EVENT, type DesktopAccessInvalidEventDetail, type DesktopAdapters, type DesktopConnectionResult, type DesktopProfile } from './types';
 import './desktop.css';
 
 type ExperienceState =
@@ -226,8 +226,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       });
       if (!isCurrentAttempt()) return;
       setProfiles(current => mergeProfiles(current, [connectedProfile]));
-      runtimeConfig.setDesktopApiBaseUrl(connectedProfile.baseUrl);
-      setApiBaseUrl(connectedProfile.baseUrl);
+      runtimeConfig.setDesktopApiBaseUrl(connectedProfile.baseUrl); setApiBaseUrl(connectedProfile.baseUrl); adapters.connection.activate?.(connectedProfile, result);
       setState({ phase: 'connected', profile: connectedProfile, result });
     } catch (error) {
       if (!isCurrentAttempt()) return;
@@ -262,10 +261,11 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   }, [adapters, connect]);
 
   useEffect(() => {
-    const accessInvalid = () => {
+    const accessInvalid = (event: Event) => {
+      const detail = (event as CustomEvent<DesktopAccessInvalidEventDetail>).detail;
       setState(current => {
         if (current.phase !== 'connected') return current;
-        void adapters.connection.clearCredentials?.(current.profile).catch(() => undefined);
+        if (!detail || detail.profileId !== current.profile.id || detail.connectionGeneration !== current.result.connectionGeneration) return current;
         adapters.connection.deactivate?.();
         return {
           phase: 'blocked',
