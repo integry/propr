@@ -30,7 +30,7 @@ describe('desktop browser fixtures', () => {
 
   it('normalizes safe instance origins and rejects non-http protocols', () => {
     expect(normalizeBaseUrl(' https://propr.example.com/// ')).toBe('https://propr.example.com');
-    expect(() => normalizeBaseUrl('file:///tmp/propr')).toThrow(/http/);
+    expect(() => normalizeBaseUrl('file:///tmp/propr')).toThrow(/http/i);
     expect(() => normalizeBaseUrl('https://user:secret@example.com')).toThrow(/credentials/);
   });
 
