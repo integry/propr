@@ -36,6 +36,9 @@ const connectionLabel = (result: DesktopConnectionResult): string => {
   return 'Connected';
 };
 
+const recoverableError = (message: string, error: unknown): string =>
+  `${message}${error instanceof Error && error.message ? ` ${error.message}` : ''} Try again.`;
+
 const DesktopBrand: React.FC = () => (
   <div className="desktop-brand" aria-label="ProPR Desktop">
     <img src="/logo.png" alt="" />
@@ -45,14 +48,15 @@ const DesktopBrand: React.FC = () => (
 
 interface ProfileEditorProps {
   initial?: DesktopProfile;
+  operationError?: string | null;
   onCancel(): void;
   onSave(profile: DesktopProfile): void;
 }
 
-const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, onCancel, onSave }) => {
+const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operationError, onCancel, onSave }) => {
   const [name, setName] = useState(initial?.name || 'My ProPR');
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl || 'http://127.0.0.1:3000');
-  const [error, setError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -65,9 +69,11 @@ const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, onCancel, onSave
         lastConnectedAt: initial?.lastConnectedAt,
       });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Enter a valid instance URL.');
+      setValidationError(caught instanceof Error ? caught.message : 'Enter a valid instance URL.');
     }
   };
+
+  const error = validationError || operationError;
 
   return (
     <form className="desktop-profile-form" onSubmit={submit}>
@@ -122,25 +128,30 @@ const ProfileList: React.FC<ProfileListProps> = ({ profiles, onConnect, onEdit, 
 interface ChooserProps extends ProfileListProps {
   busy: boolean;
   error: string | null;
+  localSetupSupported: boolean;
   onLocalSetup(): void;
   onConnectNew(): void;
   onDiscover(): void;
 }
 
-const InstanceChooser: React.FC<ChooserProps> = ({ profiles, busy, error, onLocalSetup, onConnectNew, onDiscover, ...listProps }) => (
+const InstanceChooser: React.FC<ChooserProps> = ({ profiles, busy, error, localSetupSupported, onLocalSetup, onConnectNew, onDiscover, ...listProps }) => (
   <main className="desktop-welcome-card">
     <DesktopBrand />
     <div className="desktop-welcome-copy">
       <span className="desktop-eyebrow">ProPR Desktop</span>
-      <h1>{profiles.length ? 'Choose an instance' : 'Let’s set up this computer'}</h1>
-      <p>Keep your repositories and coding agents close, or connect securely to a ProPR instance you already use.</p>
+      <h1>{profiles.length ? 'Choose an instance' : localSetupSupported ? 'Let’s set up this computer' : 'Connect to ProPR'}</h1>
+      <p>{localSetupSupported
+        ? 'Keep your repositories and coding agents close, or connect securely to a ProPR instance you already use.'
+        : 'Local setup is currently available on Linux. Connect securely to a ProPR instance hosted elsewhere.'}</p>
     </div>
     <div className="desktop-setup-actions">
-      <button type="button" className="desktop-choice-button desktop-choice-primary" onClick={onLocalSetup} disabled={busy}>
-        <span><Computer aria-hidden="true" /></span>
-        <span><strong>Set up this computer</strong><small>Create a local ProPR workspace</small></span>
-        {busy ? <LoaderCircle className="desktop-spin" /> : <ChevronRight />}
-      </button>
+      {localSetupSupported && (
+        <button type="button" className="desktop-choice-button desktop-choice-primary" onClick={onLocalSetup} disabled={busy}>
+          <span><Computer aria-hidden="true" /></span>
+          <span><strong>Set up this computer</strong><small>Create a local ProPR workspace</small></span>
+          {busy ? <LoaderCircle className="desktop-spin" /> : <ChevronRight />}
+        </button>
+      )}
       <button type="button" className="desktop-choice-button" onClick={onConnectNew} disabled={busy}>
         <span><Server aria-hidden="true" /></span>
         <span><strong>Connect to an existing instance</strong><small>Use a local or remote server URL</small></span>
@@ -198,6 +209,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   const [busy, setBusy] = useState(false);
   const [networkOffline, setNetworkOffline] = useState(!navigator.onLine);
   const connectionAttempt = useRef(0);
+  const activeProfileId = useRef<string | null>(null);
 
   const connect = useCallback(async (profile: DesktopProfile) => {
     const attempt = ++connectionAttempt.current;
@@ -217,8 +229,11 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
       const connectedProfile = { ...profile, lastConnectedAt: new Date().toISOString() };
       await adapters.profiles.save(connectedProfile);
       if (!isCurrentAttempt()) return;
-      await adapters.profiles.setActiveId(profile.id);
-      if (!isCurrentAttempt()) return;
+      if (activeProfileId.current !== profile.id) {
+        await adapters.profiles.setActiveId(profile.id);
+        if (!isCurrentAttempt()) return;
+        activeProfileId.current = profile.id;
+      }
       setProfiles(current => mergeProfiles(current, [connectedProfile]));
       runtimeConfig.setDesktopApiBaseUrl(connectedProfile.baseUrl);
       setApiBaseUrl(connectedProfile.baseUrl);
@@ -235,8 +250,10 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   useEffect(() => {
     let cancelled = false;
+    activeProfileId.current = null;
     void Promise.all([adapters.profiles.list(), adapters.profiles.getActiveId()]).then(([stored, activeId]) => {
       if (cancelled) return;
+      activeProfileId.current = activeId;
       setProfiles(stored);
       const active = stored.find(profile => profile.id === activeId);
       if (active) void connect(active);
@@ -284,16 +301,32 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   const removeProfile = async (profile: DesktopProfile) => {
     if (!window.confirm(`Remove “${profile.name}” from this computer?`)) return;
-    await adapters.profiles.remove(profile.id);
-    setProfiles(current => current.filter(item => item.id !== profile.id));
-    if (state.phase === 'connected' && state.profile.id === profile.id) setState({ phase: 'choose' });
+    setOperationError(null);
+    try {
+      await adapters.profiles.remove(profile.id);
+      setProfiles(current => current.filter(item => item.id !== profile.id));
+      if (activeProfileId.current === profile.id) activeProfileId.current = null;
+      if (state.phase === 'connected' && state.profile.id === profile.id) setState({ phase: 'choose' });
+    } catch (error) {
+      setOperationError(recoverableError('ProPR Desktop could not remove this instance.', error));
+    }
   };
 
   const saveProfile = async (profile: DesktopProfile, shouldConnect = true) => {
-    await adapters.profiles.save(profile);
-    setProfiles(current => mergeProfiles(current, [profile]));
-    setEditing(null);
-    if (shouldConnect) void connect(profile);
+    setOperationError(null);
+    if (shouldConnect) {
+      setEditing(null);
+      await connect(profile);
+      return;
+    }
+
+    try {
+      await adapters.profiles.save(profile);
+      setProfiles(current => mergeProfiles(current, [profile]));
+      setEditing(null);
+    } catch (error) {
+      setOperationError(recoverableError('ProPR Desktop could not save this instance.', error));
+    }
   };
 
   const setupLocal = async () => {
@@ -325,7 +358,10 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
 
   const choose = () => {
     connectionAttempt.current += 1;
-    void adapters.profiles.setActiveId(null);
+    activeProfileId.current = null;
+    void adapters.profiles.setActiveId(null).catch(error => {
+      setOperationError(recoverableError('ProPR Desktop could not clear the active instance.', error));
+    });
     setManagerOpen(false);
     setEditing(null);
     setState({ phase: 'choose' });
@@ -335,12 +371,25 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     if ('profile' in state) void connect(state.profile);
   };
 
+  const runBlockedAction = async (profile: DesktopProfile, action: () => Promise<void>, failureMessage: string) => {
+    try {
+      await action();
+    } catch (error) {
+      const message = recoverableError(failureMessage, error);
+      setState(current => current.phase === 'blocked' && current.profile.id === profile.id
+        ? { ...current, result: { ...current.result, message } }
+        : current);
+    }
+  };
+
+  const openEditor = (profile: DesktopProfile | 'new') => { setOperationError(null); setEditing(profile); };
+
   const content = () => {
     if (state.phase === 'loading') return <div className="desktop-loading"><LoaderCircle className="desktop-spin" /><span>Opening ProPR…</span></div>;
-    if (state.phase === 'connecting') return <ConnectionPanel profile={state.profile} onBack={choose} onRetry={retry} onAuthenticate={() => undefined} onHelp={() => void adapters.externalBrowser.open('https://propr.dev')} />;
-    if (state.phase === 'blocked') return <ConnectionPanel profile={state.profile} result={state.result} onBack={choose} onRetry={retry} onAuthenticate={() => void adapters.authentication.authenticate(state.profile)} onHelp={() => void adapters.externalBrowser.open('https://propr.dev')} />;
-    if (editing) return <main className="desktop-welcome-card"><DesktopBrand /><ProfileEditor initial={editing === 'new' ? undefined : editing} onCancel={() => setEditing(null)} onSave={profile => void saveProfile(profile)} /></main>;
-    return <InstanceChooser profiles={profiles} busy={busy} error={operationError} onLocalSetup={() => void setupLocal()} onConnectNew={() => setEditing('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={setEditing} onRemove={profile => void removeProfile(profile)} />;
+    if (state.phase === 'connecting') return <ConnectionPanel profile={state.profile} onBack={choose} onRetry={retry} onAuthenticate={() => undefined} onHelp={() => undefined} />;
+    if (state.phase === 'blocked') return <ConnectionPanel profile={state.profile} result={state.result} onBack={choose} onRetry={retry} onAuthenticate={() => void runBlockedAction(state.profile, () => adapters.authentication.authenticate(state.profile), 'ProPR Desktop could not open sign in.')} onHelp={() => void runBlockedAction(state.profile, () => adapters.externalBrowser.open('https://propr.dev'), 'ProPR Desktop could not open connection help.')} />;
+    if (editing) return <main className="desktop-welcome-card"><DesktopBrand /><ProfileEditor initial={editing === 'new' ? undefined : editing} operationError={operationError} onCancel={() => setEditing(null)} onSave={profile => void saveProfile(profile)} /></main>;
+    return <InstanceChooser profiles={profiles} busy={busy} error={operationError} localSetupSupported={adapters.platform === 'linux'} onLocalSetup={() => void setupLocal()} onConnectNew={() => openEditor('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />;
   };
 
   if (state.phase !== 'connected') {
@@ -369,11 +418,12 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
           <section className="desktop-profile-manager" role="dialog" aria-modal="true" aria-labelledby="desktop-manager-title">
             <header><div><span className="desktop-eyebrow">Desktop</span><h2 id="desktop-manager-title">Manage instances</h2></div><button autoFocus type="button" className="desktop-icon-button" onClick={() => setManagerOpen(false)} aria-label="Close instance manager"><X /></button></header>
             {editing ? (
-              <ProfileEditor initial={editing === 'new' ? undefined : editing} onCancel={() => setEditing(null)} onSave={profile => void saveProfile(profile, false)} />
+              <ProfileEditor initial={editing === 'new' ? undefined : editing} operationError={operationError} onCancel={() => setEditing(null)} onSave={profile => void saveProfile(profile, editing === 'new' || state.profile.id === profile.id)} />
             ) : (
               <>
-                <ProfileList profiles={profiles} onConnect={profile => { setManagerOpen(false); void connect(profile); }} onEdit={setEditing} onRemove={profile => void removeProfile(profile)} />
-                <button type="button" className="desktop-secondary-button desktop-add-instance" onClick={() => setEditing('new')}><Plus /> Add instance</button>
+                {operationError && <div className="desktop-inline-error" role="alert">{operationError}</div>}
+                <ProfileList profiles={profiles} onConnect={profile => { setManagerOpen(false); void connect(profile); }} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />
+                <button type="button" className="desktop-secondary-button desktop-add-instance" onClick={() => openEditor('new')}><Plus /> Add instance</button>
               </>
             )}
           </section>

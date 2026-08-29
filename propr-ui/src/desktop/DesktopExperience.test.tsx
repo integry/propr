@@ -17,6 +17,13 @@ const localProfile: DesktopProfile = {
   kind: 'local',
 };
 
+const remoteProfile: DesktopProfile = {
+  id: 'remote',
+  name: 'Team server',
+  baseUrl: 'https://propr.example.com',
+  kind: 'remote',
+};
+
 const adaptersFor = (
   profiles: DesktopProfile[] = [],
   activeId: string | null = null,
@@ -109,7 +116,7 @@ describe('DesktopExperience', () => {
 
     expect(await screen.findByText('Dashboard content')).toBeInTheDocument();
     expect(adapters.profiles.save).toHaveBeenCalledTimes(2);
-    expect(adapters.profiles.setActiveId).toHaveBeenCalledWith(localProfile.id);
+    expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
   });
 
   it('ignores a stale connection result after the adapters change', async () => {
@@ -172,5 +179,140 @@ describe('DesktopExperience', () => {
     expect(await screen.findByRole('dialog', { name: 'Manage instances' })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('connects a new instance added from the manager', async () => {
+    const adapters = adaptersFor([localProfile], localProfile.id);
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    vi.clearAllMocks();
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: /Add instance/i }));
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'New server' } });
+    fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://new.example.com/' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(adapters.connection.probe).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'New server',
+      baseUrl: 'https://new.example.com',
+    }));
+    expect(adapters.profiles.setActiveId).toHaveBeenCalledWith(expect.any(String));
+    expect(runtimeMock.setDesktopApiBaseUrl).toHaveBeenLastCalledWith('https://new.example.com');
+    expect(apiMock.setApiBaseUrl).toHaveBeenLastCalledWith('https://new.example.com');
+  });
+
+  it('reconnects an edited active instance but saves an inactive edit without connecting', async () => {
+    const adapters = adaptersFor([localProfile, remoteProfile], localProfile.id);
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    vi.clearAllMocks();
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit This computer' }));
+    fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://active.example.com/' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(adapters.connection.probe).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://active.example.com' }));
+    expect(adapters.profiles.save).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://active.example.com' }));
+    expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
+    expect(apiMock.setApiBaseUrl).toHaveBeenLastCalledWith('https://active.example.com');
+
+    vi.clearAllMocks();
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Team server' }));
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Renamed team server' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText('Renamed team server')).toBeInTheDocument();
+    expect(adapters.profiles.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'remote', name: 'Renamed team server' }));
+    expect(adapters.connection.probe).not.toHaveBeenCalled();
+    expect(apiMock.setApiBaseUrl).not.toHaveBeenCalled();
+  });
+
+  it('does not persist an active profile edit until the updated connection is ready', async () => {
+    const probe = vi.fn()
+      .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' })
+      .mockResolvedValueOnce({ status: 'offline', message: 'The updated server is unavailable.' });
+    const adapters = adaptersFor([localProfile], localProfile.id, probe);
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    vi.clearAllMocks();
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit This computer' }));
+    fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'https://unavailable.example.com/' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText('The updated server is unavailable.')).toBeInTheDocument();
+    expect(adapters.profiles.save).not.toHaveBeenCalled();
+    expect(adapters.profiles.setActiveId).not.toHaveBeenCalled();
+    expect(runtimeMock.setDesktopApiBaseUrl).not.toHaveBeenCalled();
+    expect(apiMock.setApiBaseUrl).not.toHaveBeenCalled();
+  });
+
+  it('keeps a failed save in the manager editor so it can be retried', async () => {
+    const adapters = adaptersFor([localProfile, remoteProfile], localProfile.id);
+    vi.mocked(adapters.profiles.save)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('Profile storage is locked.'))
+      .mockResolvedValueOnce(undefined);
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: ',', ctrlKey: true });
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Team server' }));
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Retryable edit' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not save this instance.*storage is locked.*try again/i);
+    expect(screen.getByLabelText('Display name')).toHaveValue('Retryable edit');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText('Retryable edit')).toBeInTheDocument();
+  });
+
+  it('keeps a profile visible and reports a rejected removal', async () => {
+    const adapters = adaptersFor([remoteProfile]);
+    vi.mocked(adapters.profiles.remove).mockRejectedValueOnce(new Error('Profile storage is locked.'));
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Team server')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Team server' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not remove this instance.*storage is locked.*try again/i);
+    expect(screen.getByText('Team server')).toBeInTheDocument();
+    expect(adapters.profiles.remove).toHaveBeenCalledWith(remoteProfile.id);
+  });
+
+  it('reports rejected authentication and connection-help operations in the blocked panel', async () => {
+    const adapters = adaptersFor(
+      [remoteProfile],
+      remoteProfile.id,
+      async () => ({ status: 'authentication-required', message: 'Please sign in.' })
+    );
+    vi.mocked(adapters.authentication.authenticate).mockRejectedValueOnce(new Error('Browser launch failed.'));
+    vi.mocked(adapters.externalBrowser.open).mockRejectedValueOnce(new Error('No browser is configured.'));
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Sign in in browser/i }));
+    expect(await screen.findByText(/could not open sign in.*browser launch failed.*try again/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Sign in in browser/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Open connection help/i }));
+    expect(await screen.findByText(/could not open connection help.*no browser is configured.*try again/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Open connection help/i })).toBeInTheDocument();
+  });
+
+  it.each(['macos', 'windows'] as const)('offers remote connection guidance instead of local setup on %s', async platform => {
+    const adapters = adaptersFor();
+    adapters.platform = platform;
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByRole('heading', { name: 'Connect to ProPR' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Set up this computer/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/local setup is currently available on Linux/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Connect to an existing instance/i })).toBeInTheDocument();
   });
 });
