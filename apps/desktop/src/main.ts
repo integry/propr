@@ -24,6 +24,7 @@ const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
   : undefined;
 const PACKAGED_RENDERER_SCHEME = 'propr-app';
 const PACKAGED_RENDERER_HOST = 'renderer';
+const PACKAGED_LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
 let mainWindow: BrowserWindow | null = null;
@@ -110,6 +111,50 @@ const openAllowedExternalUrl = async (url: string): Promise<void> => {
   await shell.openExternal(url);
 };
 
+const inspectPackagedLayout = async (window: BrowserWindow): Promise<Record<string, unknown>> => {
+  const rendererLayout = await window.webContents.executeJavaScript(`(async () => {
+    const deadline = performance.now() + 5000;
+    let elements;
+    do {
+      const card = document.querySelector('.desktop-connection-card');
+      const form = card?.querySelector('form');
+      const labels = form ? Array.from(form.querySelectorAll(':scope > label')) : [];
+      elements = {
+        titlebar: document.querySelector('.desktop-titlebar'),
+        logo: document.querySelector('.desktop-titlebar img[alt="ProPR"]'),
+        card,
+        connectionName: labels[0]?.querySelector('input'),
+        apiUrl: labels[1]?.querySelector('input'),
+        apiHelp: labels[1]?.querySelector('span'),
+        submit: form?.querySelector(':scope > button[type="submit"]'),
+        footer: card?.lastElementChild,
+      };
+      if (Object.values(elements).every(Boolean) && elements.footer.textContent.includes('Runtime:')) break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    } while (performance.now() < deadline);
+
+    const missing = Object.entries(elements).filter(([, element]) => !element).map(([name]) => name);
+    if (missing.length > 0) return { missing };
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const bounds = element => {
+      const rect = element.getBoundingClientRect();
+      return {
+        bottom: rect.bottom,
+        height: rect.height,
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        width: rect.width,
+      };
+    };
+    return {
+      viewport: { height: window.innerHeight, width: window.innerWidth },
+      ...Object.fromEntries(Object.entries(elements).map(([name, element]) => [name, bounds(element)])),
+    };
+  })()`);
+  return { windowBounds: window.getBounds(), ...rendererLayout };
+};
+
 const createMainWindow = async (): Promise<BrowserWindow> => {
   const window = new BrowserWindow(createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged));
   const readyToShow = new Promise<void>(resolveReady => window.once('ready-to-show', resolveReady));
@@ -167,6 +212,9 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
       throw new Error(`Packaged renderer profile API request failed with HTTP ${result?.status ?? 'unknown'}`);
     }
     log('info', 'desktop.renderer.profile_api.ready', { origin: DESKTOP_RENDERER_ORIGIN });
+  }
+  if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1') {
+    log('info', PACKAGED_LAYOUT_READY_EVENT, { layout: await inspectPackagedLayout(window) });
   }
   log('info', 'desktop.renderer.ready', { preloadBridgeExposed: true });
   if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1') {
