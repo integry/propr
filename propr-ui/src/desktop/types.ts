@@ -9,7 +9,7 @@ export interface DesktopProfile {
 }
 
 export type DesktopConnectionResult =
-  | { status: 'ready'; version?: string; authentication?: string; activationTicket?: string; transportScope?: string }
+  | { status: 'ready'; version?: string; authentication?: string; activationTicket?: string; transportScope?: string; profileId?: string }
   | { status: 'authentication-required'; message?: string; version?: string; authentication?: string }
   | { status: 'incompatible'; message: string; version?: string }
   | { status: 'offline'; message: string };
@@ -62,7 +62,7 @@ export interface DesktopConnectionAdapter {
   activate?(
     profile: DesktopProfile,
     result: Extract<DesktopConnectionResult, { status: 'ready' }>,
-  ): Promise<Extract<DesktopConnectionResult, { status: 'ready' }>>;
+  ): Promise<DesktopConnectionResult>;
   publishActivation?(profile: DesktopProfile, result: Extract<DesktopConnectionResult, { status: 'ready' }>): void;
   deactivate?(): void;
 }

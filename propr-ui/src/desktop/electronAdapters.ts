@@ -95,21 +95,35 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
       }
       return bridge.connection.probe(toStoredProfile(profile));
     },
-    async activate(_profile, result) {
+    async activate(profile, result) {
       if (result.activationTicket === undefined) throw new Error('Desktop activation ticket is missing.');
       const activated = await bridge.connection.activate(result.activationTicket);
+      if (activated.profileId !== profile.id) {
+        setDesktopConnectionScope(null);
+        return {
+          status: 'authentication-required',
+          message: 'This connection changed while it was being activated. Check it again to continue.',
+          version: result.version,
+          authentication: result.authentication,
+        };
+      }
       return {
         status: 'ready',
         version: result.version,
         authentication: result.authentication,
+        profileId: activated.profileId,
         transportScope: activated.transportScope,
       };
     },
     publishActivation(profile, result) {
       if (result.transportScope === undefined) throw new Error('Desktop transport scope is missing.');
+      if (result.profileId === undefined || result.profileId !== profile.id) {
+        setDesktopConnectionScope(null);
+        throw new Error('Desktop activation profile changed before publication.');
+      }
       setDesktopConnectionScope({
         bridge,
-        profileId: profile.id,
+        profileId: result.profileId,
         transportScope: result.transportScope,
       }, profile.baseUrl);
     },

@@ -65,6 +65,29 @@ describe('desktop profile store', () => {
     assert.equal(onDisk.includes(storedCredential.token), false);
   });
 
+  it('atomically refuses activation when the credential origin differs from the profile origin', async () => {
+    const store = new ProfileStore(await createDirectory(), encryption());
+    const profile = await store.save({
+      id: 'profile-b', label: 'B', apiBaseUrl: 'https://b.example.test',
+    });
+    const staleCredential = {
+      ...credential(profile.id),
+      origin: 'https://a.example.test',
+    };
+    await store.writeCredential(staleCredential);
+
+    const activated = await store.activateProfile(
+      staleCredential,
+      profile.apiBaseUrl,
+      null,
+      () => true,
+    );
+
+    assert.equal(activated, false);
+    assert.equal((await store.list()).activeProfileId, null);
+    assert.deepEqual(await store.readCredential(profile.id), staleCredential);
+  });
+
   it('serializes concurrent credential writes with last-write semantics', async () => {
     const store = new ProfileStore(await createDirectory(), encryption());
 

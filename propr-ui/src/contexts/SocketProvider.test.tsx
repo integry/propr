@@ -153,6 +153,44 @@ describe('SocketProvider', () => {
     expect(sockets[0].connect).not.toHaveBeenCalled();
   });
 
+  it('reconnects the current Manager when authorization changes without invalidating its token', async () => {
+    state.scope = scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA');
+    handleDesktopAccessCode.mockResolvedValueOnce('authorization-changed');
+    render(<SocketProvider><div>app</div></SocketProvider>);
+    const socketA = sockets[0];
+
+    socketA.handlers.get('authentication:error')?.({ code: 'AUTHORIZATION_CHANGED' });
+
+    await vi.waitFor(() => expect(socketA.connect).toHaveBeenCalledOnce());
+    expect(handleDesktopAccessCode).toHaveBeenCalledWith('AUTHORIZATION_CHANGED', state.scope);
+    expect(socketA.disconnect).toHaveBeenCalledOnce();
+  });
+
+  it('never reconnects a stale same-origin Manager after deferred authorization work resolves', async () => {
+    state.scope = scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA');
+    let resolveClassification!: (value: 'authorization-changed') => void;
+    handleDesktopAccessCode.mockReturnValueOnce(new Promise(resolve => { resolveClassification = resolve; }));
+    render(<SocketProvider><div>app</div></SocketProvider>);
+    const socketA = sockets[0];
+    const staleAuthenticationHandler = socketA.handlers.get('authentication:error');
+
+    staleAuthenticationHandler?.({ code: 'AUTHORIZATION_CHANGED' });
+    await vi.waitFor(() => expect(handleDesktopAccessCode).toHaveBeenCalledWith(
+      'AUTHORIZATION_CHANGED', state.scope,
+    ));
+    publish(scope('profile-b', 'BBBBBBBBBBBBBBBBBBBBBB'));
+    const socketB = sockets[1];
+    resolveClassification('authorization-changed');
+    await Promise.resolve();
+
+    expect(socketA.connect).not.toHaveBeenCalled();
+    expect(socketA.disconnect).toHaveBeenCalledOnce();
+    expect(socketA.off).toHaveBeenCalledWith('authentication:error', staleAuthenticationHandler);
+    expect(socketA.handlers.size).toBe(0);
+    expect(socketB.disconnect).not.toHaveBeenCalled();
+    expect(socketB.connect).not.toHaveBeenCalled();
+  });
+
   it('fully detaches listeners and disconnects on unmount', () => {
     state.scope = scope('profile-a', 'AAAAAAAAAAAAAAAAAAAAAA');
     const { unmount } = render(<SocketProvider><div>app</div></SocketProvider>);

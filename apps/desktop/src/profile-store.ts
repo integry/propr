@@ -30,6 +30,12 @@ export interface SavedProfileTransaction {
   originChanged: boolean;
 }
 
+export interface ProfileCredentialSnapshot {
+  profile: DesktopProfile | null;
+  credential: StoredCredential | null;
+  activeProfileId: string | null;
+}
+
 interface PersistedState {
   version: 1;
   activeProfileId: string | null;
@@ -209,6 +215,8 @@ export class ProfileStore {
       if (!isCurrent()
         || state.activeProfileId !== expectedActiveProfileId
         || profile?.apiBaseUrl !== expectedProfileOrigin
+        || expected.origin !== expectedProfileOrigin
+        || credential?.origin !== profile.apiBaseUrl
         || !this.#sameCredential(credential, expected)) return false;
 
       const previousActiveProfileId = state.activeProfileId;
@@ -240,6 +248,22 @@ export class ProfileStore {
     assertProfileId(profileId);
     if (!this.security().available) return null;
     return this.#readCredentialFile(profileId);
+  }
+
+  readProfileCredential(profileId: string): Promise<ProfileCredentialSnapshot> {
+    assertProfileId(profileId);
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      const profile = state.profiles.find(item => item.id === profileId) ?? null;
+      const credential = this.security().available
+        ? await this.#readCredentialFile(profileId)
+        : null;
+      return {
+        profile: profile ? { ...profile } : null,
+        credential,
+        activeProfileId: state.activeProfileId,
+      };
+    });
   }
 
   async #readCredentialFile(profileId: string): Promise<StoredCredential | null> {

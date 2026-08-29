@@ -159,6 +159,127 @@ describe('main-process desktop credential service', () => {
     })).requestHeaders, { Authorization: `Bearer ${token('B')}` });
   });
 
+  it('detaches profile B credential A without sending any bearer request to A or minting a ticket', async () => {
+    const store = await createStore();
+    const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://b.example.test' });
+    await store.writeCredential(credential(profileB.id, 'https://a.example.test', 'A'));
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        requests.push({ url, authorization: new Headers(init?.headers).get('Authorization') });
+        return json(discovery);
+      },
+    });
+
+    const result = await service.probe({
+      id: profileB.id, label: profileB.label, apiBaseUrl: profileB.apiBaseUrl,
+    });
+
+    assert.equal(result.status, 'authentication-required');
+    assert.equal('activationTicket' in result, false);
+    assert.deepEqual(requests, [{
+      url: 'https://b.example.test/api/desktop/discovery',
+      authorization: null,
+    }]);
+    assert.equal(requests.some(request => request.url.startsWith('https://a.example.test/')), false);
+    assert.equal(await store.readCredential(profileB.id), null);
+    assert.equal((await store.list()).activeProfileId, null);
+  });
+
+  it('does not mint a ticket when a delayed B probe observes credential replacement with origin A', async () => {
+    const store = await createStore();
+    const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://b.example.test' });
+    await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
+    const response = deferred<Response>();
+    const authenticatedRequestStarted = deferred<void>();
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        const authorization = new Headers(init?.headers).get('Authorization');
+        requests.push({ url, authorization });
+        if (url.endsWith('/api/desktop/discovery')) return json(discovery);
+        authenticatedRequestStarted.resolve();
+        return response.promise;
+      },
+    });
+
+    const probe = service.probe({
+      id: profileB.id, label: profileB.label, apiBaseUrl: profileB.apiBaseUrl,
+    });
+    await authenticatedRequestStarted.promise;
+    const replacement = credential(profileB.id, 'https://a.example.test', 'A');
+    await store.writeCredential(replacement);
+    response.resolve(json({ username: 'b' }));
+    const result = await probe;
+
+    assert.equal(result.status, 'offline');
+    assert.match(result.message, /connection changed/i);
+    assert.equal('activationTicket' in result, false);
+    assert.equal(requests.some(request => request.url.startsWith('https://a.example.test/')), false);
+    assert.deepEqual(requests.at(-1), {
+      url: 'https://b.example.test/api/auth/user',
+      authorization: `Bearer ${token('B')}`,
+    });
+    assert.deepEqual(await store.readCredential(profileB.id), replacement);
+    assert.equal((await store.list()).activeProfileId, null);
+  });
+
+  it('atomically rejects a ticket when delayed activation races with profile B credential A', async () => {
+    const store = await createStore();
+    const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://b.example.test' });
+    await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
+    const activationStarted = deferred<void>();
+    const releaseActivation = deferred<void>();
+    const delayedProfiles = new Proxy(store, {
+      get(target, property, receiver) {
+        if (property === 'activateProfile') {
+          return async (...args: Parameters<ProfileStore['activateProfile']>) => {
+            activationStarted.resolve();
+            await releaseActivation.promise;
+            return target.activateProfile(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    const service = new DesktopCredentialService({
+      profiles: delayedProfiles,
+      clientName: 'Test desktop',
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        requests.push({ url, authorization: new Headers(init?.headers).get('Authorization') });
+        return url.endsWith('/api/desktop/discovery') ? json(discovery) : json({ username: 'b' });
+      },
+    });
+    const ready = await service.probe({
+      id: profileB.id, label: profileB.label, apiBaseUrl: profileB.apiBaseUrl,
+    });
+    assert.equal(ready.status, 'ready');
+    if (ready.status !== 'ready') return;
+
+    const activation = service.activate(ready.activationTicket);
+    await activationStarted.promise;
+    const staleCredential = credential(profileB.id, 'https://a.example.test', 'A');
+    await store.writeCredential(staleCredential);
+    releaseActivation.resolve();
+
+    await assert.rejects(activation, /expired/i);
+    assert.equal(requests.some(request => request.url.startsWith('https://a.example.test/')), false);
+    assert.deepEqual(await store.readCredential(profileB.id), staleCredential);
+    assert.equal((await store.list()).activeProfileId, null);
+  });
+
   it('keeps a slow successful same-origin A probe status-only after fast B activates', async () => {
     const store = await createStore();
     const profileA = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://same.example.test' });
@@ -267,7 +388,7 @@ describe('main-process desktop credential service', () => {
   });
 
   it('rejects activation after candidate removal, selection drift, or exact credential replacement', async () => {
-    for (const race of ['remove', 'selection', 'credential'] as const) {
+    for (const race of ['remove', 'selection', 'credential', 'credential-origin'] as const) {
       const store = await createStore();
       const profileA = await store.save({ id: `profile-a-${race}`, label: 'A', apiBaseUrl: 'https://a.example.test' });
       const profileB = await store.save({ id: `profile-b-${race}`, label: 'B', apiBaseUrl: 'https://b.example.test' });
@@ -286,12 +407,18 @@ describe('main-process desktop credential service', () => {
       if (probeB.status !== 'ready') continue;
       if (race === 'remove') await service.removeProfile(profileB.id);
       else if (race === 'selection') await store.setActive(null);
-      else await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'C'));
+      else if (race === 'credential') {
+        await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'C'));
+      } else {
+        await store.writeCredential(credential(profileB.id, profileA.apiBaseUrl, 'A'));
+      }
 
       await assert.rejects(service.activate(probeB.activationTicket), /expired/i);
       assert.notEqual((await store.list()).activeProfileId, profileB.id);
       if (race === 'credential') {
         assert.deepEqual(await store.readCredential(profileB.id), credential(profileB.id, profileB.apiBaseUrl, 'C'));
+      } else if (race === 'credential-origin') {
+        assert.deepEqual(await store.readCredential(profileB.id), credential(profileB.id, profileA.apiBaseUrl, 'A'));
       }
     }
   });
@@ -894,6 +1021,7 @@ describe('main-process desktop credential service', () => {
         activateProfile: (...args: Parameters<ProfileStore['activateProfile']>) => store.activateProfile(...args),
         security: () => store.security(),
         readCredential: (profileId: string) => store.readCredential(profileId),
+        readProfileCredential: (profileId: string) => store.readProfileCredential(profileId),
         writeCredential: (value: StoredCredential) => store.writeCredential(value),
         removeCredential: (profileId: string) => store.removeCredential(profileId),
         removeCredentialIfCurrent: (...args: Parameters<ProfileStore['removeCredentialIfCurrent']>) =>

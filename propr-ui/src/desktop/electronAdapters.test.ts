@@ -78,12 +78,43 @@ describe('Electron remote instance adapters', () => {
     if (result.status !== 'ready') return;
     const activated = await adapters.connection.activate?.(profile, result);
     expect(fixture.activate).toHaveBeenCalledWith('ticket-7');
-    if (activated) adapters.connection.publishActivation?.(profile, activated);
-    expect(setDesktopConnectionScope).toHaveBeenCalledWith({
-      bridge: fixture.bridge,
+    expect(activated).toEqual({
+      status: 'ready',
+      version: '0.8.15',
+      authentication: undefined,
       profileId: profile.id,
       transportScope: 'scope-7',
+    });
+    if (activated?.status === 'ready') adapters.connection.publishActivation?.(profile, activated);
+    expect(setDesktopConnectionScope).toHaveBeenCalledWith({
+      bridge: fixture.bridge,
+      profileId: storedProfile.id,
+      transportScope: 'scope-7',
     }, profile.baseUrl);
+  });
+
+  it('rejects a main-bound profile mismatch without publishing the returned scope', async () => {
+    const fixture = bridgeFixture();
+    fixture.activate.mockResolvedValueOnce({
+      status: 'ready',
+      profileId: 'profile-2',
+      transportScope: 'wrong-profile-scope',
+    });
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+    const profile = (await adapters.profiles.list())[0];
+    const probe = await adapters.connection.probe(profile);
+    if (probe.status !== 'ready') return;
+
+    const activated = await adapters.connection.activate?.(profile, probe);
+
+    expect(activated).toEqual(expect.objectContaining({
+      status: 'authentication-required',
+      message: expect.stringMatching(/connection changed/i),
+    }));
+    expect(setDesktopConnectionScope).toHaveBeenCalledWith(null);
+    expect(setDesktopConnectionScope).not.toHaveBeenCalledWith(expect.objectContaining({
+      profileId: 'profile-2',
+    }), expect.anything());
   });
 
   it('cancels pairing and removes profiles entirely through main-process IPC', async () => {

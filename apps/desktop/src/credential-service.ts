@@ -19,7 +19,8 @@ const DEFINITIVE_INVALID_CODES = new Set([
 export interface CredentialServiceDependencies {
   profiles: Pick<ProfileStore,
     'list' | 'saveAndDetachCredential' | 'detachProfile' | 'setActive' | 'activateProfile' | 'security'
-    | 'readCredential' | 'writeCredential' | 'removeCredential' | 'removeCredentialIfCurrent'>;
+    | 'readCredential' | 'readProfileCredential' | 'writeCredential' | 'removeCredential'
+    | 'removeCredentialIfCurrent'>;
   fetch: typeof globalThis.fetch;
   openExternal(url: string): Promise<void>;
   clientName: string;
@@ -259,12 +260,45 @@ export class DesktopCredentialService {
       };
     }
 
-    const initialState = await this.#profiles.list();
-    const initiallyPersisted = initialState.profiles.find(profile => profile.id === input.id);
-    const credential = initiallyPersisted?.apiBaseUrl === origin
-      ? await this.#profiles.readCredential(input.id)
-      : null;
+    const initial = await this.#profiles.readProfileCredential(input.id);
+    if (this.#generation(input.id) !== operationGeneration
+      || this.#selectionGeneration !== operationSelection
+      || this.#latestProbeTicket !== probeTicket) {
+      return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
+    }
+    if (initial.profile?.apiBaseUrl !== origin) {
+      return {
+        status: 'authentication-required',
+        message: discovery.desktopAuthentication.browserPairing
+          ? 'Approve this desktop in your browser to continue.'
+          : 'This instance does not support secure desktop pairing.',
+        version: discovery.version,
+        authentication,
+      };
+    }
+    const credential = initial.credential;
     if (!credential) {
+      return {
+        status: 'authentication-required',
+        message: discovery.desktopAuthentication.browserPairing
+          ? 'Approve this desktop in your browser to continue.'
+          : 'This instance does not support secure desktop pairing.',
+        version: discovery.version,
+        authentication,
+      };
+    }
+    if (credential.origin !== origin) {
+      const removed = await this.#profiles.removeCredentialIfCurrent(
+        credential,
+        origin,
+        () => this.#generation(input.id!) === operationGeneration
+          && this.#selectionGeneration === operationSelection
+          && this.#latestProbeTicket === probeTicket,
+      );
+      if (!removed) {
+        return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
+      }
+      this.#clearActiveIfCredential(credential);
       return {
         status: 'authentication-required',
         message: discovery.desktopAuthentication.browserPairing
@@ -282,21 +316,19 @@ export class DesktopCredentialService {
       return { status: 'offline', message: 'The instance was discovered but authentication could not be checked.' };
     }
     if (response.ok) {
-      const persistedState = await this.#profiles.list();
-      const persisted = persistedState.profiles.find(profile => profile.id === input.id);
+      const current = await this.#profiles.readProfileCredential(input.id);
       if (this.#generation(input.id) !== operationGeneration
         || this.#selectionGeneration !== operationSelection
         || this.#latestProbeTicket !== probeTicket
-        || !persisted || persisted.apiBaseUrl !== origin) {
+        || current.profile?.apiBaseUrl !== origin
+        || current.credential?.origin !== origin) {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
       }
-      const currentCredential = await this.#profiles.readCredential(input.id);
-      if (this.#generation(input.id) !== operationGeneration
-        || this.#selectionGeneration !== operationSelection
-        || this.#latestProbeTicket !== probeTicket
-        || !currentCredential
-        || currentCredential.origin !== credential.origin
-        || currentCredential.token !== credential.token) {
+      if (!current.credential
+        || current.credential.version !== credential.version
+        || current.credential.profileId !== credential.profileId
+        || current.credential.origin !== credential.origin
+        || current.credential.token !== credential.token) {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
       }
       const activationTicket = randomBytes(32).toString('base64url');
@@ -307,7 +339,7 @@ export class DesktopCredentialService {
         origin,
         profileGeneration: operationGeneration,
         selectionGeneration: operationSelection,
-        activeProfileId: persistedState.activeProfileId,
+        activeProfileId: current.activeProfileId,
         credential: { ...credential },
       };
       return { status: 'ready', version: discovery.version, authentication, activationTicket };
