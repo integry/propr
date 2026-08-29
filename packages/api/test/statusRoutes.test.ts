@@ -4,7 +4,12 @@ import { after, afterEach, test } from 'node:test';
 import type { Request, Response as ExpressResponse } from 'express';
 import type { Agent, AgentConfig } from '@propr/core';
 import type { RedisClientType } from 'redis';
-import { PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY, PROPR_VERSION } from '@propr/shared';
+import {
+  PROPR_API_COMPATIBILITY,
+  PROPR_UI_COMPATIBILITY,
+  PROPR_VERSION,
+  parseProprDesktopDiscovery,
+} from '@propr/shared';
 
 type StatusRoutesDeps = {
   redisClient: RedisClientType;
@@ -259,6 +264,7 @@ test('/api/desktop/discovery returns the bounded public identity and runtime ori
   });
   assert.equal(headers()['Cache-Control'], 'no-store, max-age=0');
   assert.equal(JSON.stringify(body()).includes('SENTINEL'), false);
+  assert.deepEqual(parseProprDesktopDiscovery(body()), body());
 });
 
 test('/api/desktop/discovery redacts identity persistence failures', async () => {

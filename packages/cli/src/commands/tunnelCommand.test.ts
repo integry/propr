@@ -108,6 +108,26 @@ test("tunnel setup builds env from the Connect proxy URL", () => {
   );
 });
 
+test("tunnel setup normalizes redundant trailing slashes before strict parsing", () => {
+  assert.equal(
+    buildTunnelSetupEnv({ token: "secret-token", url: "https://t-abc123.propr.dev////" })
+      .PROPR_UI_PUBLIC_API_URL,
+    "https://t-abc123.propr.dev",
+  );
+  for (const url of [
+    "https://user@t-abc123.propr.dev///",
+    "https://t-abc123.propr.dev:443///",
+    "https://t-abc123.propr.dev/path///",
+    "https://t-abc123.propr.dev?query=1///",
+    "https://t-abc123.propr.dev#fragment///",
+    "https://t%2dabc123.propr.dev///",
+    "https://t-abc123.propr.dev.///",
+    "https://t-\u00e4bc.propr.dev///",
+  ]) {
+    assert.throws(() => buildTunnelSetupEnv({ token: "secret-token", url }), /hosted proxy URL/);
+  }
+});
+
 test("tunnel setup builds env from an instance id", () => {
   assert.deepEqual(
     buildTunnelSetupEnv({

@@ -109,6 +109,7 @@ export {
   PUBLIC_INSTANCE_IDENTITY_SCHEMA_VERSION,
   PUBLIC_INSTANCE_IDENTITY_FILENAME,
   isPublicInstanceIdentity,
+  parseProprDesktopDiscovery,
   parsePublicInstanceIdentityDocument,
   type PublicInstanceIdentityDocument,
   type ProprDesktopDiscovery,

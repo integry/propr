@@ -219,9 +219,14 @@ function envFileValueFrom(envFileLocal, name) {
  * `check`/`init` commands to inspect HOST_*_DIR settings without re-reading.
  */
 export function readEnvFile(envFilePath) {
+    if (!envFilePath || !isReadableFile(envFilePath)) return {};
+    return parseEnvFileContents(readFileSync(envFilePath, 'utf8'));
+}
+
+/** Parse already-authorized env bytes without reopening their pathname. */
+export function parseEnvFileContents(contents) {
     const out = {};
-    if (!envFilePath || !isReadableFile(envFilePath)) return out;
-    for (const rawLine of readFileSync(envFilePath, 'utf8').split(/\r?\n/)) {
+    for (const rawLine of contents.split(/\r?\n/)) {
         const parsed = parseEnvAssignment(rawLine);
         if (parsed) out[parsed.name] = parsed.value;
     }
@@ -254,10 +259,15 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // from the CLI/launcher process environment. Inspect that exact source so a
     // developer's shell NODE_ENV cannot accidentally describe (or alter) the
     // packaged container runtime.
-    const nodeEnv = readEnvFile(envFileLocal).NODE_ENV || undefined;
+    const authorizedEnvFileValues = overrides.envFileValues;
+    const nodeEnv = (authorizedEnvFileValues ?? readEnvFile(envFileLocal)).NODE_ENV || undefined;
 
     // value precedence: explicit override → process env → .env file
-    const get = (name) => env[name] !== undefined ? env[name] : envFileValueFrom(envFileLocal, name) || undefined;
+    const get = (name) => env[name] !== undefined
+        ? env[name]
+        : authorizedEnvFileValues
+            ? authorizedEnvFileValues[name] || undefined
+            : envFileValueFrom(envFileLocal, name) || undefined;
 
     const hostData = overrides.hostData ?? env.PROPR_DATA_DIR;
     const hostLogs = overrides.hostLogs ?? env.PROPR_LOGS_DIR;

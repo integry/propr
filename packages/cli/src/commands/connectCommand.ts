@@ -1,21 +1,20 @@
 import { Command } from "commander";
-import { join } from "node:path";
 import {
   PROPR_CONNECT_DISCOVERY_MAX_BYTES,
   PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION,
   canonicalProprProxyUrl,
   evaluateProprApiCompatibility,
-  isPublicInstanceIdentity,
+  parseProprDesktopDiscovery,
   type ProprDesktopDiscovery,
 } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
-import { getHostConfig } from "../orchestrator/index.js";
-import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/types.js";
+import { prepareConnectHostConfig } from "../orchestrator/index.js";
+import type { OrchestratorConfig } from "../orchestrator/types.js";
 import {
   ConnectRootError,
   PublicInstanceIdentityError,
-  getOrCreatePublicInstanceIdentity,
-  resolveOwnedConnectRoot,
+  getOrCreateSnapshotPublicInstanceIdentity,
+  withOwnedConnectRootSnapshot,
 } from "../connectIdentity.js";
 
 export const CONNECT_STATUS_EXIT = {
@@ -97,53 +96,68 @@ function parseContentLength(response: Response): number | null {
   return Number(raw);
 }
 
-async function readBoundedBody(response: Response): Promise<string | null> {
-  const declaredLength = parseContentLength(response);
-  if (declaredLength !== null && declaredLength > PROPR_CONNECT_DISCOVERY_MAX_BYTES) return null;
-  if (!response.body) return "";
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    length += value.byteLength;
-    if (length > PROPR_CONNECT_DISCOVERY_MAX_BYTES) {
-      await reader.cancel().catch(() => undefined);
-      return null;
-    }
-    chunks.push(value);
+function cancelResponseBody(response: Response): void {
+  try {
+    const cancellation = response.body?.cancel();
+    if (cancellation) void cancellation.catch(() => undefined);
+  } catch {
+    // Cancellation is best-effort at the transport adapter boundary; the
+    // owning AbortController is also aborted before probe return.
   }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-function parseDesktopDiscovery(value: unknown): ProprDesktopDiscovery | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const candidate = value as Record<string, unknown>;
-  const endpoint = candidate.canonicalEndpoint;
-  if (
-    candidate.schemaVersion !== PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION
-    || candidate.product !== "ProPR"
-    || typeof candidate.version !== "string"
-    || candidate.version.length === 0
-    || candidate.version.length > 64
-    || typeof candidate.apiCompatibility !== "string"
-    || candidate.apiCompatibility.length === 0
-    || candidate.apiCompatibility.length > 64
-    || typeof candidate.uiCompatibility !== "string"
-    || candidate.uiCompatibility.length > 64
-    || !isPublicInstanceIdentity(candidate.publicInstanceIdentity)
-    || (endpoint !== null && (typeof endpoint !== "string" || canonicalProprProxyUrl(endpoint) !== endpoint))
-  ) return null;
-  return candidate as unknown as ProprDesktopDiscovery;
+type BoundedBodyResult =
+  | { kind: "ok"; body: string }
+  | { kind: "tooLarge" }
+  | { kind: "invalid" };
+
+async function readBoundedBody(response: Response, signal: AbortSignal): Promise<BoundedBodyResult> {
+  const declaredLength = parseContentLength(response);
+  if (declaredLength !== null && declaredLength > PROPR_CONNECT_DISCOVERY_MAX_BYTES) {
+    cancelResponseBody(response);
+    return { kind: "tooLarge" };
+  }
+  if (!response.body) return { kind: "ok", body: "" };
+
+  const reader = response.body.getReader();
+  const abort = () => {
+    try {
+      void reader.cancel().catch(() => undefined);
+    } catch {
+      // The stream may already be closed or errored.
+    }
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      length += value.byteLength;
+      if (length > PROPR_CONNECT_DISCOVERY_MAX_BYTES) {
+        abort();
+        return { kind: "tooLarge" };
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    try {
+      return { kind: "ok", body: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+    } catch {
+      cancelResponseBody(response);
+      return { kind: "invalid" };
+    }
+  } finally {
+    signal.removeEventListener("abort", abort);
+    reader.releaseLock();
+  }
 }
 
 async function performDiscoveryFetch(
@@ -157,22 +171,37 @@ async function performDiscoveryFetch(
       redirect: "manual",
       headers: { Accept: "application/json" },
     });
-    if (response.status === 404) return { kind: "unsupported" };
-    if (!response.ok) return { kind: "unreachable" };
+    if (signal.aborted) {
+      cancelResponseBody(response);
+      return { kind: "timeout" };
+    }
+    if (response.status === 404) {
+      cancelResponseBody(response);
+      return { kind: "unsupported" };
+    }
+    if (!response.ok) {
+      cancelResponseBody(response);
+      return { kind: "unreachable" };
+    }
     const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-    if (contentType !== "application/json") return { kind: "invalid" };
-    const body = await readBoundedBody(response);
-    if (body === null) return { kind: "tooLarge" };
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
+    if (contentType !== "application/json") {
+      cancelResponseBody(response);
       return { kind: "invalid" };
     }
-    const discovery = parseDesktopDiscovery(parsed);
+    const bodyResult = await readBoundedBody(response, signal);
+    if (bodyResult.kind !== "ok") return { kind: bodyResult.kind };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(bodyResult.body);
+    } catch {
+      cancelResponseBody(response);
+      return { kind: "invalid" };
+    }
+    const discovery = parseProprDesktopDiscovery(parsed);
+    if (!discovery) cancelResponseBody(response);
     return discovery ? { kind: "ok", discovery } : { kind: "invalid" };
   } catch {
-    return { kind: "unreachable" };
+    return signal.aborted ? { kind: "timeout" } : { kind: "unreachable" };
   }
 }
 
@@ -197,12 +226,13 @@ export async function probeConnectDiscovery(
     ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    controller.abort();
   }
 }
 
 export interface ResolveConnectStatusOptions {
-  cfg: OrchestratorConfig;
-  orch: Pick<OrchestratorModule, "getServiceState">;
+  cfg: Pick<OrchestratorConfig, "uiPublicApiUrl" | "proprInstanceId" | "uiTunnelEnabled">;
+  sidecarRunning: boolean;
   publicInstanceIdentity: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -211,7 +241,7 @@ export interface ResolveConnectStatusOptions {
 /** Pure status state machine used by the CLI wiring and deterministic tests. */
 export async function resolveConnectStatus({
   cfg,
-  orch,
+  sidecarRunning,
   publicInstanceIdentity,
   fetchImpl = fetch,
   timeoutMs = 5000,
@@ -219,7 +249,6 @@ export async function resolveConnectStatus({
   const configuredValue = cfg.uiPublicApiUrl;
   const canonicalEndpoint = canonicalProprProxyUrl(configuredValue) ?? null;
   const enabled = Boolean(cfg.uiTunnelEnabled);
-  const sidecarRunning = Boolean(orch.getServiceState(cfg, "tunnel", { timeout: 3000 })?.running);
   const common = {
     canonicalEndpoint,
     publicInstanceIdentity,
@@ -288,22 +317,34 @@ export async function resolveConnectStatus({
 }
 
 export async function getLocalConnectStatus(root: string | undefined): Promise<ConnectStatusDocument> {
-  let rootDir: string;
   try {
-    rootDir = resolveOwnedConnectRoot(root);
+    const configManager = await createConfigManager(undefined, { warn: () => undefined });
+    const prepared = await prepareConnectHostConfig(configManager);
+    const local = withOwnedConnectRootSnapshot(root, (snapshot) => {
+      const cfg = prepared.resolveSnapshot(snapshot);
+      const publicInstanceIdentity = getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory);
+      const sidecarRunning = Boolean(
+        prepared.orch.getServiceState(cfg, "tunnel", { timeout: 3000 })?.running,
+      );
+      return {
+        cfg: {
+          uiPublicApiUrl: cfg.uiPublicApiUrl,
+          proprInstanceId: cfg.proprInstanceId,
+          uiTunnelEnabled: cfg.uiTunnelEnabled,
+        },
+        publicInstanceIdentity,
+        sidecarRunning,
+      };
+    }, { parseEnvFile: prepared.parseEnvFile });
+    return await resolveConnectStatus({
+      cfg: local.cfg,
+      sidecarRunning: local.sidecarRunning,
+      publicInstanceIdentity: local.publicInstanceIdentity,
+    });
   } catch (error) {
     if (error instanceof ConnectRootError) {
       return baseDocument("invalidConfig", { reasonCodes: ["INVALID_ROOT"] });
     }
-    throw error;
-  }
-
-  try {
-    const configManager = await createConfigManager();
-    const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
-    const publicInstanceIdentity = getOrCreatePublicInstanceIdentity(join(rootDir, "data"));
-    return await resolveConnectStatus({ cfg, orch, publicInstanceIdentity });
-  } catch (error) {
     if (error instanceof PublicInstanceIdentityError) {
       return baseDocument("invalidConfig", { reasonCodes: ["IDENTITY_UNAVAILABLE"] });
     }

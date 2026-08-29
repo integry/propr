@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { parseProprDesktopDiscovery } from "@propr/shared";
 import {
   CONNECT_STATUS_EXIT,
   probeConnectDiscovery,
   resolveConnectStatus,
 } from "./connectCommand.js";
-import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/types.js";
+import type { OrchestratorConfig } from "../orchestrator/types.js";
 
 const IDENTITY = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ENDPOINT = "https://t-abc123.propr.dev";
@@ -17,20 +18,6 @@ function cfg(overrides: Partial<OrchestratorConfig> = {}): OrchestratorConfig {
     uiTunnelEnabled: true,
     ...overrides,
   } as OrchestratorConfig;
-}
-
-function orch(running: boolean): Pick<OrchestratorModule, "getServiceState"> {
-  return {
-    getServiceState: () => running ? {
-      name: "propr-tunnel",
-      service: "tunnel",
-      exists: true,
-      running: true,
-      state: "running",
-      status: "Up",
-      ports: "",
-    } : undefined,
-  };
 }
 
 function discovery(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -79,7 +66,7 @@ test("missing, disabled, and stopped tunnel states do not probe", async () => {
 
   const missing = await resolveConnectStatus({
     cfg: cfg({ uiPublicApiUrl: undefined, proprInstanceId: undefined, uiTunnelEnabled: false }),
-    orch: orch(false),
+    sidecarRunning: false,
     publicInstanceIdentity: IDENTITY,
     fetchImpl,
   });
@@ -87,12 +74,12 @@ test("missing, disabled, and stopped tunnel states do not probe", async () => {
   assert.deepEqual(missing.reasonCodes, ["NOT_CONFIGURED", "TUNNEL_DISABLED"]);
 
   const disabled = await resolveConnectStatus({
-    cfg: cfg({ uiTunnelEnabled: false }), orch: orch(false), publicInstanceIdentity: IDENTITY, fetchImpl,
+    cfg: cfg({ uiTunnelEnabled: false }), sidecarRunning: false, publicInstanceIdentity: IDENTITY, fetchImpl,
   });
   assert.deepEqual(disabled.reasonCodes, ["TUNNEL_DISABLED"]);
 
   const stopped = await resolveConnectStatus({
-    cfg: cfg(), orch: orch(false), publicInstanceIdentity: IDENTITY, fetchImpl,
+    cfg: cfg(), sidecarRunning: false, publicInstanceIdentity: IDENTITY, fetchImpl,
   });
   assert.deepEqual(stopped.reasonCodes, ["SIDECAR_NOT_RUNNING"]);
   assert.equal(probes, 0);
@@ -100,7 +87,7 @@ test("missing, disabled, and stopped tunnel states do not probe", async () => {
 
 test("ready requires matching canonical origin, identity, and compatibility", async () => {
   const status = await resolveConnectStatus({
-    cfg: cfg(), orch: orch(true), publicInstanceIdentity: IDENTITY, fetchImpl: jsonFetch(),
+    cfg: cfg(), sidecarRunning: true, publicInstanceIdentity: IDENTITY, fetchImpl: jsonFetch(),
   });
   assert.equal(status.status, "ready");
   assert.equal(status.apiReady, true);
@@ -113,7 +100,7 @@ test("ready requires matching canonical origin, identity, and compatibility", as
 test("same API identity with stale runtime origin requires restart", async () => {
   const status = await resolveConnectStatus({
     cfg: cfg(),
-    orch: orch(true),
+    sidecarRunning: true,
     publicInstanceIdentity: IDENTITY,
     fetchImpl: jsonFetch(discovery({ canonicalEndpoint: null })),
   });
@@ -126,7 +113,7 @@ test("same API identity with stale runtime origin requires restart", async () =>
 test("a reassigned or stale endpoint cannot pass an identity mismatch", async () => {
   const status = await resolveConnectStatus({
     cfg: cfg(),
-    orch: orch(true),
+    sidecarRunning: true,
     publicInstanceIdentity: IDENTITY,
     fetchImpl: jsonFetch(discovery({ publicInstanceIdentity: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" })),
   });
@@ -137,7 +124,7 @@ test("a reassigned or stale endpoint cannot pass an identity mismatch", async ()
 test("old discovery compatibility has an incompatible result", async () => {
   const status = await resolveConnectStatus({
     cfg: cfg(),
-    orch: orch(true),
+    sidecarRunning: true,
     publicInstanceIdentity: IDENTITY,
     fetchImpl: jsonFetch(discovery({ apiCompatibility: "2025-01-01" })),
   });
@@ -163,11 +150,144 @@ test("probe distinguishes timeout, non-JSON, and capped output", async () => {
   assert.deepEqual(await probeConnectDiscovery(ENDPOINT, oversized, 100), { kind: "tooLarge" });
 });
 
+test("the shared v1 parser requires every exact canonical field and capability", () => {
+  assert.ok(parseProprDesktopDiscovery(discovery()));
+  const topLevelKeys = Object.keys(discovery());
+  for (const key of topLevelKeys) {
+    const candidate = discovery();
+    delete candidate[key];
+    assert.equal(parseProprDesktopDiscovery(candidate), null, `missing ${key}`);
+  }
+  for (const key of [
+    "protocolVersion",
+    "browserPairing",
+    "instanceBearerTokens",
+    "socketIoBearerAuthentication",
+  ]) {
+    const candidate = discovery();
+    const capabilities = { ...(candidate.desktopAuthentication as Record<string, unknown>) };
+    delete capabilities[key];
+    candidate.desktopAuthentication = capabilities;
+    assert.equal(parseProprDesktopDiscovery(candidate), null, `missing desktopAuthentication.${key}`);
+  }
+
+  for (const invalid of [
+    discovery({ extra: true }),
+    discovery({ version: "v0.8.15" }),
+    discovery({ version: "00.8.15" }),
+    discovery({ version: "0.8" }),
+    discovery({ apiCompatibility: "2026-6-27" }),
+    discovery({ apiCompatibility: "2026-02-30" }),
+    discovery({ uiCompatibility: "" }),
+    discovery({ canonicalEndpoint: `${ENDPOINT}/` }),
+    discovery({ publicInstanceIdentity: IDENTITY.toUpperCase() }),
+    discovery({ desktopAuthentication: {
+      protocolVersion: 2,
+      browserPairing: true,
+      instanceBearerTokens: true,
+      socketIoBearerAuthentication: true,
+    } }),
+    discovery({ desktopAuthentication: {
+      protocolVersion: 1,
+      browserPairing: 1,
+      instanceBearerTokens: true,
+      socketIoBearerAuthentication: true,
+    } }),
+    discovery({ desktopAuthentication: {
+      protocolVersion: 1,
+      browserPairing: true,
+      instanceBearerTokens: true,
+      socketIoBearerAuthentication: true,
+      omittedCapabilityReplacement: true,
+    } }),
+  ]) assert.equal(parseProprDesktopDiscovery(invalid), null);
+});
+
+function neverEndingResponse(
+  status: number,
+  headers: Readonly<Record<string, string | undefined>>,
+  onCancel: () => void,
+): Response {
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("{"));
+    },
+    cancel() {
+      onCancel();
+    },
+  }), {
+    status,
+    headers: Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => (
+      entry[1] !== undefined
+    ))),
+  });
+}
+
+test("every early response rejection cancels a never-ending body", async () => {
+  for (const branch of [
+    { status: 404, headers: { "content-type": "application/json" }, kind: "unsupported" },
+    { status: 503, headers: { "content-type": "application/json" }, kind: "unreachable" },
+    { status: 200, headers: { "content-type": "text/html" }, kind: "invalid" },
+    {
+      status: 200,
+      headers: { "content-type": "application/json", "content-length": "9000" },
+      kind: "tooLarge",
+    },
+  ] as const) {
+    let canceled = 0;
+    const fetchImpl = (async () => neverEndingResponse(
+      branch.status,
+      branch.headers,
+      () => { canceled += 1; },
+    )) as typeof fetch;
+    assert.deepEqual(await probeConnectDiscovery(ENDPOINT, fetchImpl, 100), { kind: branch.kind });
+    assert.equal(canceled, 1, branch.kind);
+  }
+});
+
+test("fatal UTF-8, malformed JSON, and incomplete schema are invalid rather than unreachable", async () => {
+  const invalidUtf8 = (async () => new Response(Uint8Array.from([0xc3, 0x28]), {
+    headers: { "content-type": "application/json" },
+  })) as typeof fetch;
+  assert.deepEqual(await probeConnectDiscovery(ENDPOINT, invalidUtf8, 100), { kind: "invalid" });
+
+  for (const body of ["{", JSON.stringify({ schemaVersion: 1, product: "ProPR" })]) {
+    let signal: AbortSignal | undefined;
+    const fetchImpl = (async (_url, init) => {
+      signal = init?.signal ?? undefined;
+      return new Response(body, { headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    assert.deepEqual(await probeConnectDiscovery(ENDPOINT, fetchImpl, 100), { kind: "invalid" });
+    assert.equal(signal?.aborted, true);
+  }
+});
+
+test("timeout cancels an active body and late-settling responses are canceled on arrival", async () => {
+  let activeCanceled = 0;
+  const active = (async () => neverEndingResponse(
+    200,
+    { "content-type": "application/json" },
+    () => { activeCanceled += 1; },
+  )) as typeof fetch;
+  assert.deepEqual(await probeConnectDiscovery(ENDPOINT, active, 10), { kind: "timeout" });
+  assert.equal(activeCanceled, 1);
+
+  for (const status of [200, 404, 503]) {
+    let settle!: (response: Response) => void;
+    let lateCanceled = 0;
+    const late = (() => new Promise<Response>((resolve) => { settle = resolve; })) as typeof fetch;
+    assert.deepEqual(await probeConnectDiscovery(ENDPOINT, late, 10), { kind: "timeout" });
+    settle(neverEndingResponse(status, { "content-type": "text/html" }, () => { lateCanceled += 1; }));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(lateCanceled, 1, `late status ${status}`);
+  }
+});
+
 test("serialized JSON is bounded and cannot include local secret sentinels", async () => {
   const secret = "cloudflare-token-SENTINEL";
   const status = await resolveConnectStatus({
     cfg: cfg({ uiTunnelToken: secret }),
-    orch: orch(true),
+    sidecarRunning: true,
     publicInstanceIdentity: IDENTITY,
     fetchImpl: jsonFetch(),
   });

@@ -419,7 +419,9 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
   const token = input.token.trim();
   if (!token) throw new Error("--token is required");
 
-  const explicitUrl = input.url?.trim();
+  // Preserve setup's established tolerance for redundant origin slashes. The
+  // discovery trust boundary still passes unmodified input to the strict parser.
+  const explicitUrl = input.url?.trim().replace(/\/+$/, "");
   const explicitInstanceId = input.instanceId?.trim();
   if (!explicitUrl && !explicitInstanceId) {
     throw new Error("provide --url https://t-<id>.propr.dev or --instance-id <id>");

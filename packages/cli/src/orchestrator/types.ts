@@ -136,6 +136,10 @@ export interface ResolveHostConfigOptions {
   cliOverrides?: Record<string, unknown>;
 }
 
+export interface ResolveConfigOverrides extends Partial<OrchestratorConfig> {
+  envFileValues?: Readonly<Record<string, string>>;
+}
+
 export interface OnLogOption {
   onLog?: (line: string) => void;
   pull?: boolean;
@@ -144,9 +148,10 @@ export interface OnLogOption {
 
 /** Public surface of orchestrator.mjs consumed by the CLI. */
 export interface OrchestratorModule {
-  resolveConfig(env?: NodeJS.ProcessEnv, overrides?: Partial<OrchestratorConfig>): OrchestratorConfig;
+  resolveConfig(env?: NodeJS.ProcessEnv, overrides?: ResolveConfigOverrides): OrchestratorConfig;
   resolveHostConfig(opts?: ResolveHostConfigOptions): OrchestratorConfig;
   readEnvFile(envFilePath: string): Record<string, string>;
+  parseEnvFileContents(contents: string): Record<string, string>;
   validateEnv(cfg: OrchestratorConfig): ValidationResult;
   validateDockerBindPath(name: string, value?: string, opts?: { containerPath?: boolean }): string | null;
 

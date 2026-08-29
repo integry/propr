@@ -103,8 +103,10 @@ export type {
   FormatOutputOptions,
 } from "./utils/index.js";
 
-// Load environment variables
-config();
+// Connect discovery authorizes and reads only its explicit root. In particular,
+// do not let dotenv pre-read a replaceable cwd/.env before root acquisition.
+const connectStatusInvocation = process.argv[2] === "connect" && process.argv[3] === "status";
+if (!connectStatusInvocation) config();
 
 const packageJson = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")

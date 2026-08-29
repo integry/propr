@@ -62,6 +62,7 @@ export class ConfigManager {
   private configFilePath: string;
   private config: CLIConfig;
   private initialized: boolean = false;
+  private readonly warn: (message: string) => void;
 
   /**
    * Creates a new ConfigManager instance.
@@ -69,10 +70,11 @@ export class ConfigManager {
    * @param customConfigDir - Optional custom configuration directory path.
    *                          Defaults to ~/.propr
    */
-  constructor(customConfigDir?: string) {
+  constructor(customConfigDir?: string, options: { warn?: (message: string) => void } = {}) {
     this.configDir = customConfigDir ?? path.join(os.homedir(), CONFIG_DIR_NAME);
     this.configFilePath = path.join(this.configDir, CONFIG_FILE_NAME);
     this.config = { ...DEFAULT_CONFIG };
+    this.warn = options.warn ?? ((message) => console.warn(message));
   }
 
   /**
@@ -107,7 +109,7 @@ export class ConfigManager {
 
       // Validate that parsed data is an object
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        console.warn(
+        this.warn(
           `Warning: Configuration file at ${this.configFilePath} contains invalid data. Using defaults.`
         );
         this.config = { ...DEFAULT_CONFIG };
@@ -132,7 +134,7 @@ export class ConfigManager {
 
       if (err instanceof SyntaxError) {
         // JSON parsing error - corrupted file
-        console.warn(
+        this.warn(
           `Warning: Configuration file at ${this.configFilePath} is corrupted (invalid JSON). Using defaults.`
         );
         this.config = { ...DEFAULT_CONFIG };
@@ -140,7 +142,7 @@ export class ConfigManager {
       }
 
       // Other errors (permission issues, etc.)
-      console.warn(
+      this.warn(
         `Warning: Could not read configuration file at ${this.configFilePath}: ${err.message}. Using defaults.`
       );
       this.config = { ...DEFAULT_CONFIG };
@@ -616,9 +618,10 @@ export class ConfigManager {
  * @returns A promise that resolves to an initialized ConfigManager.
  */
 export async function createConfigManager(
-  customConfigDir?: string
+  customConfigDir?: string,
+  options: { warn?: (message: string) => void } = {},
 ): Promise<ConfigManager> {
-  const manager = new ConfigManager(customConfigDir);
+  const manager = new ConfigManager(customConfigDir, options);
   await manager.init();
   return manager;
 }

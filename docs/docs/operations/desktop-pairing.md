@@ -8,16 +8,19 @@ bridge and must not read the device secret or instance token.
 
 ## Discovery
 
-Before login, call `GET /api/desktop/discovery` (or the existing
-`GET /api/compatibility`). The dedicated response is deliberately limited to
-the product name, release/API/UI compatibility values, and this capability:
+Before login, call `GET /api/desktop/discovery`. The v1 response is deliberately
+limited to the exact product, release/API/UI compatibility, canonical managed
+endpoint, random public installation identity, and authentication capabilities:
 
 ```json
 {
+  "schemaVersion": 1,
   "product": "ProPR",
   "version": "0.8.15",
   "apiCompatibility": "2026-06-27",
   "uiCompatibility": "2026-06-27",
+  "canonicalEndpoint": "https://t-abc123.propr.dev",
+  "publicInstanceIdentity": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "desktopAuthentication": {
     "protocolVersion": 1,
     "browserPairing": true,
@@ -27,8 +30,28 @@ the product name, release/API/UI compatibility values, and this capability:
 }
 ```
 
+Consumers must parse the entire document as the exact v1 contract before using
+any field. The version is canonical SemVer; both compatibility values are
+canonical `YYYY-MM-DD` versions; the identity is an exact lowercase UUIDv4; and
+the endpoint is either `null` during restart/configuration or the bare canonical
+`https://t-<id>.propr.dev` origin. Every capability key is required and every
+capability value is a JSON boolean. Missing, extra, coerced, malformed, or
+non-canonical fields are incompatible discovery, never partial readiness.
+
+The public identity is not a credential. It is randomly created in the stack's
+private durable `data/` directory and is shared by the host CLI and root-running
+API container. The directory remains owned by the host caller with mode `0700`.
+The single-link regular identity file may be owned by that host caller or by the
+root API container account; it is never group/world writable, and a root-owned
+file remains host-readable. Creation writes and fsyncs a private same-directory
+temporary, publishes without replacing a concurrent winner, and fsyncs the
+directory. Normal restarts, upgrades, and tunnel rotation preserve the value;
+replacing the durable data directory creates a new identity.
+
 Discovery is rate limited per trusted network address. A `false` capability
-means the deployment (for example, public demo mode) must not be paired.
+means the deployment (for example, public demo mode) must not be paired. The
+legacy `GET /api/compatibility` metadata is not a substitute for the v1 endpoint
+and identity contract.
 
 ## Pairing sequence
 

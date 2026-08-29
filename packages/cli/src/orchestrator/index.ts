@@ -130,3 +130,48 @@ export async function getHostConfig(opts: {
   const cfg = orch.resolveHostConfig({ rootDir, env: process.env, manifestPath, cliOverrides });
   return { orch, cfg, rootDir };
 }
+
+export interface ConnectHostConfigSnapshotInput {
+  requestedRoot: string;
+  envFileValues: Readonly<Record<string, string>>;
+}
+
+/**
+ * Load all code/manifest state before Connect acquires root authority. The
+ * returned resolver is synchronous so authorized root bytes never cross an
+ * await boundary.
+ */
+export async function prepareConnectHostConfig(configManager: ConfigManager): Promise<{
+  orch: OrchestratorModule;
+  parseEnvFile(contents: string): Record<string, string>;
+  resolveSnapshot(input: ConnectHostConfigSnapshotInput): OrchestratorConfig;
+}> {
+  const orch = await loadOrchestrator();
+  const orchPath = cachedPath ?? resolveOrchestratorPath();
+  const manifestPath = resolveManifestPath(orchPath);
+  if (!manifestPath) {
+    throw new Error("Connect host configuration manifest is unavailable");
+  }
+  return {
+    orch,
+    parseEnvFile: (contents) => orch.parseEnvFileContents(contents),
+    resolveSnapshot: ({ requestedRoot, envFileValues }) => {
+      const cliOverrides: Record<string, unknown> = {};
+      const docsExplicit = configManager.get("docsEnabled");
+      if (docsExplicit !== undefined) cliOverrides.docsEnabled = docsExplicit;
+      const tunnelExplicit = configManager.getTunnelEnabled(requestedRoot);
+      if (tunnelExplicit !== undefined) cliOverrides.uiTunnelEnabled = tunnelExplicit;
+      return orch.resolveConfig(process.env, {
+        envFileValues,
+        envFileLocal: join(requestedRoot, ".env"),
+        envFileHost: join(requestedRoot, ".env"),
+        hostData: join(requestedRoot, "data"),
+        hostLogs: join(requestedRoot, "logs"),
+        hostRepos: join(requestedRoot, "repos"),
+        validateHostPaths: true,
+        manifestPath,
+        ...cliOverrides,
+      });
+    },
+  };
+}
