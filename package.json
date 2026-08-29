@@ -68,6 +68,12 @@
     "cli:pack": "node packages/cli/scripts/build-publish.mjs",
     "cli:publish": "node packages/cli/scripts/build-publish.mjs --publish",
     "deploy:hosted-ui": "npm run build -w propr-ui && npx wrangler deploy --config wrangler.hosted-ui.toml",
+    "desktop": "npm run dev -w @propr/desktop",
+    "desktop:dev": "npm run dev -w @propr/desktop",
+    "desktop:typecheck": "npm run typecheck -w @propr/desktop && npm run typecheck -w propr-ui",
+    "desktop:test": "npm run test -w @propr/desktop",
+    "desktop:package": "npm run package -w @propr/desktop",
+    "desktop:make": "npm run make -w @propr/desktop",
     "start:prod": "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $PWD/.env:/app/.env:ro -v $PWD/data:/app/data -v $PWD/logs:/app/logs -v $PWD/repos:/app/repos propr/launcher:latest"
   },
   "keywords": [],
