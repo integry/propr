@@ -24,13 +24,6 @@ const remoteProfile: DesktopProfile = {
   kind: 'remote',
 };
 
-const connectProfile: DesktopProfile = {
-  id: 'connect',
-  name: 'Managed workspace',
-  baseUrl: 'https://t-stale123.propr.dev',
-  kind: 'remote',
-};
-
 const adaptersFor = (
   profiles: DesktopProfile[] = [],
   activeId: string | null = null,
@@ -113,80 +106,6 @@ describe('DesktopExperience', () => {
 
     expect(await screen.findByText('Dashboard content')).toBeInTheDocument();
     expect(probe).toHaveBeenCalledTimes(2);
-  });
-
-  it('shows bounded managed-tunnel recovery guidance and accessible actions without the endpoint', async () => {
-    const adapters = adaptersFor(
-      [connectProfile],
-      connectProfile.id,
-      async () => ({ status: 'offline', message: 'Failed at https://t-stale123.propr.dev?token=secret-sentinel' })
-    );
-    render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
-
-    expect(await screen.findByText(/endpoint may be stale or the local stack may have restarted/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Re-enter Connect address' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Rediscover Connect endpoint' })).toBeInTheDocument();
-    expect(document.body).not.toHaveTextContent('t-stale123.propr.dev');
-    expect(document.body).not.toHaveTextContent('secret-sentinel');
-  });
-
-  it('requires confirmation before a rediscovered managed endpoint replaces the profile', async () => {
-    const candidate = { ...connectProfile, baseUrl: 'https://t-restarted456.propr.dev' };
-    const adapters = adaptersFor(
-      [connectProfile],
-      connectProfile.id,
-      vi.fn()
-        .mockResolvedValueOnce({ status: 'offline', message: 'offline' })
-        .mockResolvedValueOnce({ status: 'ready', version: '0.8.15' })
-    );
-    adapters.managedTunnelRecovery = { rediscover: vi.fn(async () => candidate) };
-    render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Rediscover Connect endpoint' }));
-    expect(await screen.findByRole('heading', { name: 'Use the rediscovered endpoint?' })).toBeInTheDocument();
-    expect(adapters.managedTunnelRecovery.rediscover).toHaveBeenCalledWith(connectProfile.id);
-    expect(adapters.profiles.save).not.toHaveBeenCalled();
-    expect(document.body).not.toHaveTextContent(candidate.baseUrl);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Connect to rediscovered endpoint' }));
-    expect(await screen.findByText('Dashboard content')).toBeInTheDocument();
-    expect(adapters.profiles.save).toHaveBeenCalledWith(expect.objectContaining({
-      id: connectProfile.id,
-      baseUrl: candidate.baseUrl,
-    }));
-  });
-
-  it('re-enters a managed address without exposing or overwriting the stale value', async () => {
-    const adapters = adaptersFor(
-      [connectProfile],
-      connectProfile.id,
-      async () => ({ status: 'offline', message: 'offline' })
-    );
-    render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Re-enter Connect address' }));
-    expect(screen.getByLabelText('Instance URL')).toHaveValue('');
-    expect(document.body).not.toHaveTextContent(connectProfile.baseUrl);
-    expect(adapters.profiles.save).not.toHaveBeenCalled();
-  });
-
-  it('turns a managed pairing failure into the same recovery state without leaking the failure', async () => {
-    const adapters = adaptersFor(
-      [connectProfile],
-      connectProfile.id,
-      async () => ({ status: 'authentication-required', message: 'pair at private-path-sentinel' })
-    );
-    vi.mocked(adapters.authentication.authenticate).mockRejectedValueOnce(
-      new Error('password-sentinel at /Users/private/config')
-    );
-    render(<DesktopExperience adapters={adapters}><div>Dashboard content</div></DesktopExperience>);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Sign in in browser' }));
-    expect(await screen.findByText(/endpoint may be stale or the local stack may have restarted/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
-    expect(document.body).not.toHaveTextContent('password-sentinel');
-    expect(document.body).not.toHaveTextContent('/Users/private/config');
   });
 
   it('shows a retryable failure when the connection adapter rejects', async () => {

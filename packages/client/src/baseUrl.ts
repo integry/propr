@@ -78,7 +78,7 @@ export const normalizeApiBaseUrl = (
     return invalidApiBaseUrl();
   }
 
-  if (isProprConnectReservedHostAttempt(candidate) && !parseProprConnectEndpoint(candidate)) {
+  if (isProprConnectReservedHostAttempt(value) && !parseProprConnectEndpoint(value)) {
     return invalidApiBaseUrl();
   }
 

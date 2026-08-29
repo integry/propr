@@ -27,7 +27,7 @@ export const normalizeApiBaseUrl = (value: string): string | null => {
   if (url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) return null;
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
   if (url.pathname.replace(/\//g, '') !== '') return null;
-  if (isProprConnectReservedHostAttempt(candidate) && !parseProprConnectEndpoint(candidate)) return null;
+  if (isProprConnectReservedHostAttempt(value) && !parseProprConnectEndpoint(value)) return null;
   return url.origin;
 };
 

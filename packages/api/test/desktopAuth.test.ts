@@ -88,7 +88,7 @@ describe('desktop browser pairing', () => {
       database,
       now: () => new Date(now),
       approvalBaseUrl: 'https://app.propr.dev',
-      publicApiUrl: 'https://t-instance123.foo.propr.dev',
+      publicApiUrl: 'https://t-instance123.propr.dev.example.com',
     });
     const pairing = await lookalike.startPairing('Lookalike test');
 
@@ -100,8 +100,20 @@ describe('desktop browser pairing', () => {
 
   test('rejects noncanonical reserved API_PUBLIC_URL spellings before starting pairing', async () => {
     for (const publicApiUrl of [
+      ' https://t-instance123.propr.dev',
+      'https://t-instance123.propr.dev ',
+      'https://t-instance123.propr.dev/',
+      'https://t-instance123.propr.dev//',
+      'HTTPS://t-instance123.propr.dev',
+      'https://T-instance123.propr.dev',
+      'https://user:secret@t-instance123.propr.dev',
       'https://t-instance123.propr.dev:443',
+      'https://t-instance123.propr.dev?query=secret',
+      'https://t-instance123.propr.dev#fragment',
       'https://t-%69nstance123.propr.dev',
+      'https://t-%zz.propr.dev',
+      'https://x.t-instance123.propr.dev',
+      'https://nested.t-instance123.propr.dev',
     ]) {
       const invalidConnect = new DesktopAuthService({
         database,

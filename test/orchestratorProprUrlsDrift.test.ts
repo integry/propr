@@ -67,11 +67,18 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
     const cases = [
       'https://t-abc123.propr.dev',
       'https://t-abc123.propr.dev/',
+      ' https://t-abc123.propr.dev',
+      'https://t-abc123.propr.dev ',
+      'https://t-abc123.propr.dev//',
+      'HTTPS://t-abc123.propr.dev',
+      'https://T-abc123.propr.dev',
       'https://app.propr.dev',
       'http://t-abc123.propr.dev',
       'https://abc123.example.com',
       'https://propr.dev',
       'https://t-foo.bar.propr.dev',
+      'https://x.t-abc123.propr.dev',
+      'https://nested.t-abc123.propr.dev',
       'https://t-.propr.dev',
       'https://t-abc123.propr.dev/api',
       'https://t-abc123.propr.dev?x=1',
@@ -89,9 +96,11 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
       undefined,
     ];
     for (const url of cases) {
+      const expected = url === 'https://t-abc123.propr.dev';
+      assert.equal(sharedIsProxyUrl(url as string | undefined), expected);
       assert.equal(
         launcherIsProxyUrl(url as string | undefined),
-        sharedIsProxyUrl(url as string | undefined),
+        expected,
         `isProprProxyUrl diverged for ${JSON.stringify(url)}`,
       );
     }

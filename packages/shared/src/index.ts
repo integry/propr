@@ -100,6 +100,7 @@ export {
   proprInstanceProxyUrl,
   isValidProprInstanceId,
   parseProprConnectEndpoint,
+  isCanonicalProprConnectHostname,
   isProprConnectReservedHostAttempt,
   type ProprConnectEndpoint,
   isProprProxyUrl,

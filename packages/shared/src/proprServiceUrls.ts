@@ -51,6 +51,9 @@ export const PROPR_UI_PROXY_SUFFIX = 'propr.dev';
 export const PROPR_UI_PROXY_LABEL_PREFIX = 't-';
 export const MAX_PROPR_API_BASE_URL_LENGTH = 2048;
 
+const CANONICAL_PROPR_CONNECT_HOST_PATTERN =
+  /^(t-([a-z0-9]|[a-z0-9][a-z0-9-]{0,59}[a-z0-9]))\.propr\.dev$/;
+
 /** A verified, canonical ProPR Connect API origin. */
 export interface ProprConnectEndpoint {
   kind: 'propr-connect';
@@ -103,51 +106,35 @@ export function proprInstanceProxyUrl(instanceId: string | undefined | null): st
  * tunnel base URL must be one of them. Requires https and *exactly one* valid
  * `t-<instance-id>` label in front of the shared {@link PROPR_UI_PROXY_SUFFIX}.
  * Other propr.dev hosts like `app.propr.dev` and nested hosts are rejected. It
- * must also be a bare origin: a non-root path, query, or fragment (e.g.
+ * must also be the exact raw bare origin: a slash, path, query, or fragment (e.g.
  * `https://t-abc.propr.dev/api`) is rejected because
  * {@link proprTunnelEndpoints} appends `/api/...` itself and a base path would
  * double it up (`.../api/api/status`). Returns false for a malformed URL.
  */
 export function parseProprConnectEndpoint(url: string | undefined | null): ProprConnectEndpoint | null {
   if (typeof url !== 'string' || url.length > MAX_PROPR_API_BASE_URL_LENGTH) return null;
-  const candidate = url?.trim();
-  if (!candidate) return null;
-  try {
-    const parsed = new URL(candidate);
-    const { protocol, hostname, pathname, search, hash } = parsed;
-    if (protocol !== 'https:' || parsed.username || parsed.password || parsed.port) return null;
+  // Trust only one byte-for-byte spelling. Avoid URL parsing before this match:
+  // WHATWG normalization would erase case, default ports, escapes, IDNA input,
+  // repeated slashes, and other distinctions that are security-significant for
+  // the reserved Connect namespace.
+  const match = /^https:\/\/(t-(?:[a-z0-9]|[a-z0-9][a-z0-9-]{0,59}[a-z0-9])\.propr\.dev)$/.exec(url);
+  if (!match) return null;
+  const hostname = match[1];
+  const hostMatch = CANONICAL_PROPR_CONNECT_HOST_PATTERN.exec(hostname);
+  if (!hostMatch) return null;
+  return {
+    kind: 'propr-connect',
+    origin: url,
+    hostname,
+    instanceId: hostMatch[2],
+  };
+}
 
-    // Compare the authority before WHATWG URL normalization. This rejects an
-    // explicit default/alternate port, Unicode/IDNA input, percent-encoded host
-    // bytes, credentials, and other spellings that could otherwise normalize
-    // into a trusted-looking Connect hostname after validation.
-    const authorityMatch = /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i.exec(candidate);
-    if (!authorityMatch || authorityMatch[1].toLowerCase() !== hostname.toLowerCase()) return null;
-
-    // Must be a bare origin — the tunnel endpoint helpers own the path suffix.
-    // Trailing slashes (`/`, `//`) are tolerated (callers trim them); any real
-    // path segment, query, or fragment is rejected so a base path can't double
-    // up the appended `/api/...`.
-    if (/[^/]/.test(pathname) || search || hash) return null;
-    const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
-    if (!hostname.endsWith(suffix)) return null;
-    const label = hostname.slice(0, -suffix.length);
-    if (label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) {
-      return null;
-    }
-    const instanceId = label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length);
-    // The complete `t-<id>` value is one DNS label and therefore cannot exceed
-    // 63 characters, even though an instance id used elsewhere may be longer.
-    if (label.length > 63 || !isValidProprInstanceId(instanceId)) return null;
-    return {
-      kind: 'propr-connect',
-      origin: parsed.origin,
-      hostname,
-      instanceId,
-    };
-  } catch {
-    return null;
-  }
+/** Whether a raw host is the exact lowercase ASCII Connect shorthand. */
+export function isCanonicalProprConnectHostname(hostname: string | undefined | null): boolean {
+  return typeof hostname === 'string'
+    && hostname.length <= 253
+    && CANONICAL_PROPR_CONNECT_HOST_PATTERN.test(hostname);
 }
 
 /**
@@ -162,8 +149,10 @@ export function isProprConnectReservedHostAttempt(url: string | undefined | null
 
   const isReservedHostname = (hostname: string): boolean => {
     const normalized = hostname.toLowerCase().replace(/\.+$/, '');
-    return normalized.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
-      && normalized.endsWith(`.${PROPR_UI_PROXY_SUFFIX}`);
+    const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
+    if (!normalized.endsWith(suffix)) return false;
+    const labels = normalized.slice(0, -suffix.length).split('.');
+    return labels.some(label => label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX));
   };
 
   try {

@@ -93,7 +93,7 @@ test("tunnel setup builds env from the Connect proxy URL", () => {
   assert.deepEqual(
     buildTunnelSetupEnv({
       token: "secret-token",
-      url: "https://t-abc123.propr.dev/",
+      url: "https://t-abc123.propr.dev",
     }),
     {
       PROPR_UI_TUNNEL_TOKEN: "secret-token",
@@ -161,6 +161,25 @@ test("tunnel setup rejects a proxy URL carrying a path", () => {
       }),
     /hosted proxy URL/
   );
+});
+
+test("tunnel setup rejects alternate raw Connect URL spellings", () => {
+  for (const url of [
+    " https://t-abc123.propr.dev",
+    "https://t-abc123.propr.dev ",
+    "https://t-abc123.propr.dev/",
+    "https://t-abc123.propr.dev//",
+    "HTTPS://t-abc123.propr.dev",
+    "https://T-abc123.propr.dev",
+    "https://t-abc123.propr.dev:443",
+    "https://x.t-abc123.propr.dev",
+  ]) {
+    assert.throws(
+      () => buildTunnelSetupEnv({ token: "secret-token", url }),
+      /hosted proxy URL/,
+      url,
+    );
+  }
 });
 
 test("tunnel setup rejects --force because it only applies to tunnel on", () => {

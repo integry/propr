@@ -65,34 +65,12 @@ export function proprInstanceProxyUrl(instanceId) {
 // propr-routing only forwards /api/* and /socket.io/* on these hosts, so the
 // tunnel base URL must be one of them. Requires exactly one t-<instance-id>
 // label before the suffix (other propr.dev hosts and nested hosts are rejected)
-// and a bare origin (a non-root path/query/fragment is rejected so
+// and the exact lowercase ASCII bare origin (a slash/path/query/fragment is rejected so
 // proprTunnelEndpoints does not double up the /api prefix). Mirrors
 // isProprProxyUrl() in the shared pkg.
 export function isProprProxyUrl(url) {
-    const candidate = url?.trim();
-    if (!candidate) return false;
-    try {
-        const parsed = new URL(candidate);
-        const { protocol, hostname, pathname, search, hash } = parsed;
-        if (protocol !== 'https:' || parsed.username || parsed.password || parsed.port) return false;
-        // Reject authority spellings that WHATWG URL parsing would silently
-        // canonicalize into a trusted Connect hostname.
-        const authorityMatch = /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i.exec(candidate);
-        if (!authorityMatch || authorityMatch[1].toLowerCase() !== hostname.toLowerCase()) return false;
-        // Trailing slashes are tolerated; any real path segment/query/fragment
-        // is rejected so a base path can't double up the appended /api prefix.
-        if (/[^/]/.test(pathname) || search || hash) return false;
-        const suffix = `.${PROPR_UI_PROXY_SUFFIX}`;
-        if (!hostname.endsWith(suffix)) return false;
-        const label = hostname.slice(0, -suffix.length);
-        if (label.includes('.') || !label.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)) {
-            return false;
-        }
-        return label.length <= 63
-            && isValidProprInstanceId(label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length));
-    } catch {
-        return false;
-    }
+    return typeof url === 'string'
+        && /^https:\/\/t-(?:[a-z0-9]|[a-z0-9][a-z0-9-]{0,59}[a-z0-9])\.propr\.dev$/.test(url);
 }
 
 function normalizeProprInstanceId(instanceId) {
@@ -345,12 +323,10 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || manifest.images.cloudflared || DEFAULT_CLOUDFLARED_IMAGE;
     // Explicit URL wins; otherwise derive from the instance id's proxy hostname.
     // Falls back to undefined for local development (no instance id), where
-    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Trailing
-    // slashes are stripped once here so every consumer (API/worker/UI env, status
-    // output, endpoint rendering) sees one canonical form — the derived URL never
-    // has one, but an explicit PROPR_UI_PUBLIC_API_URL might.
-    const uiPublicApiUrl =
-        (get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId))?.replace(/\/+$/, '') || undefined;
+    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Preserve
+    // explicit raw spelling so validation cannot turn an alternate reserved
+    // Connect spelling into a trusted canonical endpoint.
+    const uiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId) || undefined;
 
     return Object.freeze({
         stack, network, envFileLocal, envFileHost, nodeEnv,

@@ -114,16 +114,16 @@ describe('getApiBaseUrl', () => {
     expect(getApiBaseUrl()).toBe('');
   });
 
-  it('strips a trailing slash from the runtime value so paths do not double up', async () => {
+  it('rejects a trailing slash on a reserved Connect runtime value', async () => {
     window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://t-abc123.propr.dev/' };
     const getApiBaseUrl = await loadGetApiBaseUrl();
-    expect(getApiBaseUrl()).toBe('https://t-abc123.propr.dev');
+    expect(getApiBaseUrl()).toBe('');
   });
 
-  it('strips multiple trailing slashes', async () => {
+  it('rejects repeated trailing slashes on a reserved Connect runtime value', async () => {
     window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://t-abc123.propr.dev///' };
     const getApiBaseUrl = await loadGetApiBaseUrl();
-    expect(getApiBaseUrl()).toBe('https://t-abc123.propr.dev');
+    expect(getApiBaseUrl()).toBe('');
   });
 
   it('strips a trailing slash from the build-time env var', async () => {
@@ -232,11 +232,15 @@ describe('hosted tunnel query API base', () => {
     ).toBe('https://t-abc123.propr.dev');
   });
 
-  it('accepts a full hosted proxy URL and strips trailing slashes', async () => {
+  it('accepts only a literal exact full hosted proxy URL', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
     expect(
-      hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=https%3A%2F%2Ft-abc123.propr.dev%2F%2F')
+      hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=https://t-abc123.propr.dev')
     ).toBe('https://t-abc123.propr.dev');
+    expect(hostedTunnelQueryApiBaseUrl(
+      'app.propr.dev',
+      '?tunnel=https%3A%2F%2Ft-abc123.propr.dev',
+    )).toBeNull();
   });
 
   it('rejects a bare instance id because shorthand must include the complete canonical host', async () => {
@@ -244,12 +248,10 @@ describe('hosted tunnel query API base', () => {
     expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=abc123')).toBeNull();
   });
 
-  it('accepts only literal redundant slashes on exact canonical shorthand', async () => {
+  it('rejects every slash on scheme-less shorthand', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
     expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=t-abc123.propr.dev%2F%2F')).toBeNull();
-    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=t-abc123.propr.dev//')).toBe(
-      'https://t-abc123.propr.dev'
-    );
+    expect(hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=t-abc123.propr.dev//')).toBeNull();
   });
 
   it('rejects exact noncanonical Connect shorthand reproductions without storing flow state', async () => {
@@ -319,7 +321,7 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
 
     const flowId = rememberHostedTunnelApiBaseUrl(
       'app.propr.dev',
-      'https://t-abc123.propr.dev/',
+      'https://t-abc123.propr.dev',
       storage,
       'tab-context'
     );
@@ -342,7 +344,7 @@ describe('stored hosted tunnel API base (flow-token-gated sessionStorage)', () =
       readStoredHostedTunnelApiBaseUrl,
     } = await load();
     const storage = memoryStorage({
-      [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev/',
+      [HOSTED_TUNNEL_API_BASE_STORAGE_KEY]: 'https://t-abc123.propr.dev',
       [HOSTED_TUNNEL_CONTEXT_ID_KEY]: 'test-context-id',
       [HOSTED_TUNNEL_FLOW_ID_KEY]: 'test-flow-id',
     });
@@ -783,7 +785,7 @@ describe('runtimeConfigWarning', () => {
   it('warns on the hosted UI origin when apiBaseUrl is empty', async () => {
     const runtimeConfigWarning = await loadWarning();
     expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '' })).toBe('[propr] HOSTED_STACK_REQUIRED');
-    expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '   ' })).toBe('[propr] HOSTED_STACK_REQUIRED');
+    expect(runtimeConfigWarning('app.propr.dev', { apiBaseUrl: '   ' })).toBe('[propr] INVALID_RUNTIME_CONFIGURATION');
   });
 
   it('does not warn when apiBaseUrl is configured', async () => {

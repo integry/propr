@@ -13,6 +13,18 @@ import './desktop.css';
 
 const logoUrl = new URL('./media/logo-and-name.png', window.location.href).href;
 
+const apiUrlFromConnectDeepLink = (value: string): string | null => {
+  try {
+    const deepLink = new URL(value);
+    if (deepLink.hostname !== 'connect') return null;
+    const apiUrl = deepLink.searchParams.get('api');
+    if (!apiUrl) return null;
+    return normalizeApiBaseUrl(apiUrl) || null;
+  } catch {
+    return null;
+  }
+};
+
 export const DesktopTitleBar = ({
   metadata,
   profile,
@@ -166,22 +178,8 @@ export const DesktopRoot = () => {
     }
     let cancelled = false;
     const unsubscribe = bridge.app.onDeepLink(value => {
-      try {
-        const deepLink = new URL(value);
-        if (deepLink.hostname === 'connect') {
-          const apiUrl = deepLink.searchParams.get('api');
-          if (apiUrl) {
-            try {
-              const normalized = normalizeApiBaseUrl(apiUrl);
-              if (normalized) setInitialApiUrl(normalized);
-            } catch {
-              // Keep the current safe value; configuration errors are generic.
-            }
-          }
-        }
-      } catch {
-        // Main validates protocol input; ignore malformed values defensively.
-      }
+      const normalized = apiUrlFromConnectDeepLink(value);
+      if (normalized) setInitialApiUrl(normalized);
     });
     void Promise.all([bridge.app.getMetadata(), bridge.storage.security(), bridge.profiles.list()])
       .then(async ([appMetadata, storageSecurity, profiles]) => {

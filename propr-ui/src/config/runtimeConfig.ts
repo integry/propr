@@ -36,6 +36,26 @@ import {
   MAX_PROPR_API_BASE_URL_LENGTH,
 } from '@propr/shared';
 import { normalizeApiBaseUrl } from '@propr/client';
+import {
+  flowIdFromSearch,
+  hasHostedTunnelQueryParameter,
+  HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+  hostedTunnelQueryApiBaseUrl,
+  isHostedUiOrigin,
+  readStoredHostedTunnelApiBaseUrl,
+  rememberHostedTunnelApiBaseUrl,
+  storageForWindow,
+  type HostedTunnelStorage,
+} from './hostedTunnelConfig';
+export {
+  HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+  HOSTED_TUNNEL_CONTEXT_ID_KEY,
+  HOSTED_TUNNEL_FLOW_ID_KEY,
+  hostedTunnelQueryApiBaseUrl,
+  isHostedUiOrigin,
+  readStoredHostedTunnelApiBaseUrl,
+  rememberHostedTunnelApiBaseUrl,
+} from './hostedTunnelConfig';
 
 export interface ProprRuntimeConfig {
   /** Base URL for REST and Socket.IO. Empty string means same-origin. */
@@ -62,18 +82,6 @@ declare global {
 const runtimeConfig: ProprRuntimeConfig =
   (typeof window !== 'undefined' && window.__PROPR_CONFIG__) || {};
 
-export const HOSTED_TUNNEL_API_BASE_STORAGE_KEY = 'propr.hostedTunnelApiBaseUrl';
-/** Paired with HOSTED_TUNNEL_API_BASE_STORAGE_KEY; must match the URL ?flow= param to be trusted. */
-export const HOSTED_TUNNEL_FLOW_ID_KEY = 'propr.hostedTunnelFlowId';
-/** Paired with HOSTED_TUNNEL_FLOW_ID_KEY; must match this browsing context's window.name token. */
-export const HOSTED_TUNNEL_CONTEXT_ID_KEY = 'propr.hostedTunnelContextId';
-
-const WINDOW_NAME_CONTEXT_PREFIX = 'propr-hosted-flow-context:';
-const WINDOW_NAME_CONTEXT_SEPARATOR = '|';
-const MAX_HOSTED_QUERY_LENGTH = 4096;
-const MAX_HOSTED_FLOW_ID_LENGTH = 128;
-const CANONICAL_CONNECT_HOST_PATTERN = /^t-(?:[a-z0-9]|[a-z0-9][a-z0-9-]{0,59}[a-z0-9])\.propr\.dev$/;
-
 export const INVALID_RUNTIME_CONFIGURATION_CODE = 'INVALID_RUNTIME_CONFIGURATION';
 
 const invalidRuntimeConfigurationIssue = (): HostedUiConnectionIssue => ({
@@ -86,12 +94,6 @@ let activeHostedTunnelFlowId: string | null = null;
 let desktopApiBaseUrl: string | null = null;
 
 /**
- * Hostname of the managed hosted UI (e.g. `app.propr.dev`), derived from the
- * shared origin constant so there is a single source of truth.
- */
-const HOSTED_UI_HOSTNAME = new URL(DEFAULT_PROPR_UI_ORIGIN).hostname;
-
-/**
  * Whether the page is being served from the managed hosted UI origin
  * (`app.propr.dev`) — the single static bundle that serves many per-instance
  * proxies and is versioned independently from the API. Used to scope hosted-only
@@ -100,9 +102,6 @@ const HOSTED_UI_HOSTNAME = new URL(DEFAULT_PROPR_UI_ORIGIN).hostname;
  * ships the UI and API together and is NOT a hosted-UI origin, so it is exempt
  * from both — only the actual hosted UI is gated. Exported for unit testing.
  */
-export const isHostedUiOrigin = (hostname: string): boolean =>
-  hostname === HOSTED_UI_HOSTNAME;
-
 export const isHostedOAuthCompletionRoute = (
   hostname: string,
   pathname: string,
@@ -126,219 +125,6 @@ export const isValidHttpUrl = (value: string): boolean => {
   } catch {
     return false;
   }
-};
-
-/**
- * Resolve the Connect deep-link API base from `?tunnel=`. Connect opens the
- * hosted UI as `https://app.propr.dev?tunnel=t-<id>.propr.dev` after a
- * tunnel passes health checks. Accept only hosted ProPR proxy targets and only
- * on the managed hosted UI origin so arbitrary self-hosted pages cannot smuggle
- * a cross-origin API base through the query string.
- */
-export const hostedTunnelQueryApiBaseUrl = (
-  hostname: string,
-  search: string
-): string | null => {
-  if (!isHostedUiOrigin(hostname) || search.length > MAX_HOSTED_QUERY_LENGTH) return null;
-
-  const query = search.startsWith('?') ? search.slice(1) : search;
-  const rawValues = query.split('&').flatMap(parameter => {
-    const separator = parameter.indexOf('=');
-    const name = separator === -1 ? parameter : parameter.slice(0, separator);
-    return name === 'tunnel' ? [separator === -1 ? '' : parameter.slice(separator + 1)] : [];
-  });
-  const decodedValues = new URLSearchParams(search).getAll('tunnel');
-  if (rawValues.length !== 1 || decodedValues.length !== 1) return null;
-
-  const rawComponent = rawValues[0];
-  const value = decodedValues[0];
-  if (
-    !value
-    || value.length > MAX_PROPR_API_BASE_URL_LENGTH
-    || /[^\x21-\x7e]/.test(value)
-  ) return null;
-
-  if (/^https:\/\//.test(value)) {
-    if (!isProprProxyUrl(value)) return null;
-    return value.replace(/\/+$/, '');
-  }
-
-  // Scheme-less shorthand is trusted only when its complete raw query spelling
-  // is already canonical. Parsing and rebuilding a hostname here would erase
-  // credentials, ports, escapes, or path delimiters before the trust decision.
-  if (rawComponent !== value) return null;
-  const host = value.replace(/\/+$/, '');
-  if (!CANONICAL_CONNECT_HOST_PATTERN.test(host)) return null;
-  return `https://${host}`;
-};
-
-const hasHostedTunnelQueryParameter = (search: string): boolean => {
-  if (search.length > MAX_HOSTED_QUERY_LENGTH) return true;
-  const query = search.startsWith('?') ? search.slice(1) : search;
-  return query.split('&').some(parameter => parameter === 'tunnel' || parameter.startsWith('tunnel='));
-};
-
-type HostedTunnelStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
-
-const storageForWindow = (): HostedTunnelStorage | undefined => {
-  if (typeof window === 'undefined') return undefined;
-  try {
-    return window.sessionStorage;
-  } catch {
-    return undefined;
-  }
-};
-
-/** Generate a random per-tab flow token. */
-const generateFlowId = (): string => {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return Math.random().toString(36).slice(2) + Date.now().toString(36);
-  }
-};
-
-const generateHostedTunnelContextId = (): string => generateFlowId();
-
-const isValidHostedFlowToken = (value: string | null | undefined): value is string =>
-  typeof value === 'string' && /^[A-Za-z0-9-]{1,128}$/.test(value);
-
-const contextIdFromWindowName = (name: string): string | null => {
-  if (!name.startsWith(WINDOW_NAME_CONTEXT_PREFIX)) return null;
-  const rest = name.slice(WINDOW_NAME_CONTEXT_PREFIX.length);
-  const separatorIndex = rest.indexOf(WINDOW_NAME_CONTEXT_SEPARATOR);
-  const contextId = separatorIndex === -1 ? rest : rest.slice(0, separatorIndex);
-  return isValidHostedFlowToken(contextId) ? contextId : null;
-};
-
-const currentHostedTunnelContextId = (): string | null => {
-  if (typeof window === 'undefined') return null;
-  try {
-    return contextIdFromWindowName(window.name);
-  } catch {
-    return null;
-  }
-};
-
-const setHostedTunnelContextId = (contextId: string): string | null => {
-  if (typeof window === 'undefined') return contextId;
-  try {
-    const existing = window.name || '';
-    const separatorIndex = existing.indexOf(WINDOW_NAME_CONTEXT_SEPARATOR);
-    const preservedName = existing.startsWith(WINDOW_NAME_CONTEXT_PREFIX)
-      ? (separatorIndex === -1 ? '' : existing.slice(separatorIndex + 1))
-      : existing;
-    window.name = `${WINDOW_NAME_CONTEXT_PREFIX}${contextId}${WINDOW_NAME_CONTEXT_SEPARATOR}${preservedName}`;
-    return contextId;
-  } catch {
-    return null;
-  }
-};
-
-const ensureHostedTunnelContextId = (): string | null => {
-  const existing = currentHostedTunnelContextId();
-  if (existing) return existing;
-  return setHostedTunnelContextId(generateHostedTunnelContextId());
-};
-
-/** Extract the `?flow=` token from a URL search string. */
-const flowIdFromSearch = (search: string): string | null =>
-  search.length <= MAX_HOSTED_QUERY_LENGTH
-    ? (() => {
-      const value = new URLSearchParams(search).get('flow');
-      return isValidHostedFlowToken(value) ? value : null;
-    })()
-    : null;
-
-const effectiveHostedTunnelContextId = (
-  _flowId: string,
-  _storedContextId: string,
-  contextId: string | null | undefined
-): string | null => {
-  const currentContextId = contextId === undefined ? currentHostedTunnelContextId() : contextId;
-  if (currentContextId) return currentContextId;
-  return null;
-};
-
-/**
- * Store the selected hosted tunnel URL in sessionStorage together with a
- * per-tab flow token. Returns the generated flow token (to be embedded in the
- * page URL by the caller), or null if nothing was stored.
- */
-export const rememberHostedTunnelApiBaseUrl = (
-  hostname: string,
-  apiBaseUrl: string,
-  storage: HostedTunnelStorage | undefined = storageForWindow(),
-  contextId: string | null = ensureHostedTunnelContextId()
-): string | null => {
-  if (
-    !isHostedUiOrigin(hostname)
-    || !storage
-    || !contextId
-    || !isValidHostedFlowToken(contextId)
-    || apiBaseUrl.length > MAX_PROPR_API_BASE_URL_LENGTH
-    || !isProprProxyUrl(apiBaseUrl)
-  ) return null;
-  try {
-    const flowId = generateFlowId();
-    storage.setItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY, apiBaseUrl.replace(/\/+$/, ''));
-    storage.setItem(HOSTED_TUNNEL_FLOW_ID_KEY, flowId);
-    storage.setItem(HOSTED_TUNNEL_CONTEXT_ID_KEY, contextId);
-    return flowId;
-  } catch {
-    // sessionStorage can be disabled or full.
-    return null;
-  }
-};
-
-/**
- * Read the previously stored hosted tunnel URL from sessionStorage, but only
- * when the supplied `flowId` matches the stored per-tab token. A new browsing
- * context whose sessionStorage was copied from another tab (window.open(),
- * duplicate-tab) but whose URL carries no valid flow token is rejected here,
- * preventing silent cross-tab tunnel inheritance.
- */
-export const readStoredHostedTunnelApiBaseUrl = (
-  hostname: string,
-  flowId: string | null,
-  storage: HostedTunnelStorage | undefined = storageForWindow(),
-  contextId?: string | null
-): string | null => {
-  if (!isHostedUiOrigin(hostname) || !storage) return null;
-  try {
-    const rawStoredFlowId = storage.getItem(HOSTED_TUNNEL_FLOW_ID_KEY);
-    const rawStoredContextId = storage.getItem(HOSTED_TUNNEL_CONTEXT_ID_KEY);
-    if (
-      (rawStoredFlowId?.length ?? 0) > MAX_HOSTED_FLOW_ID_LENGTH
-      || (rawStoredContextId?.length ?? 0) > MAX_HOSTED_FLOW_ID_LENGTH
-    ) return null;
-    if (!isValidHostedFlowToken(rawStoredFlowId) || !isValidHostedFlowToken(rawStoredContextId)) return null;
-    const storedFlowId = rawStoredFlowId;
-    const storedContextId = rawStoredContextId;
-    // Reject if storage has no flow token (never legitimately set by this tab)
-    // or context token, or if the URL/current tab tokens do not match storage.
-    if (!storedFlowId || storedFlowId !== flowId || !storedContextId) {
-      return null;
-    }
-    if (effectiveHostedTunnelContextId(storedFlowId, storedContextId, contextId) !== storedContextId) {
-      return null;
-    }
-    const rawStored = storage.getItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
-    if ((rawStored?.length ?? 0) > MAX_PROPR_API_BASE_URL_LENGTH) {
-      storage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
-      return null;
-    }
-    if (rawStored !== rawStored?.trim()) {
-      storage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
-      return null;
-    }
-    const stored = rawStored || undefined;
-    if (stored && isProprProxyUrl(stored)) return stored.replace(/\/+$/, '');
-    if (stored) storage.removeItem(HOSTED_TUNNEL_API_BASE_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-  return null;
 };
 
 /**
@@ -372,7 +158,7 @@ export const runtimeConfigWarning = (
   if ((configured?.length ?? 0) > MAX_PROPR_API_BASE_URL_LENGTH) {
     return `[propr] ${INVALID_RUNTIME_CONFIGURATION_CODE}`;
   }
-  const apiBaseUrl = configured?.trim();
+  const apiBaseUrl = configured;
   if (!apiBaseUrl) {
     return '[propr] HOSTED_STACK_REQUIRED';
   }
@@ -412,7 +198,7 @@ export const hostedUiConnectionIssue = (
   const configured = config?.apiBaseUrl;
   if (configured !== undefined && typeof configured !== 'string') return invalidRuntimeConfigurationIssue();
   if ((configured?.length ?? 0) > MAX_PROPR_API_BASE_URL_LENGTH) return invalidRuntimeConfigurationIssue();
-  const apiBaseUrl = configured?.trim();
+  const apiBaseUrl = configured;
   if (!apiBaseUrl) {
     return {
       code: 'HOSTED_STACK_REQUIRED',

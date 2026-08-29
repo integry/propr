@@ -418,7 +418,7 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
   const token = input.token.trim();
   if (!token) throw new Error("--token is required");
 
-  const explicitUrl = input.url?.trim().replace(/\/+$/, "");
+  const explicitUrl = input.url;
   const explicitInstanceId = input.instanceId?.trim();
   if (!explicitUrl && !explicitInstanceId) {
     throw new Error("provide --url https://t-<id>.propr.dev or --instance-id <id>");
@@ -432,11 +432,10 @@ export function buildTunnelSetupEnv(input: TunnelSetupInput): TunnelSetupEnv {
     throw new Error(`tunnel URL must be a bare hosted proxy URL such as https://${PROPR_UI_PROXY_LABEL_PREFIX}<id>.${PROPR_UI_PROXY_SUFFIX} (no path/query/fragment)`);
   }
 
-  // Canonicalize: URL parsing already lowercases the host, and `.origin` drops
-  // any (validated-absent) path so the persisted value matches what the launcher
-  // resolves. DNS is case-insensitive, so the instance id is lowercased too — a
-  // mixed-case --instance-id would otherwise diverge from the launcher's value.
-  const publicUrl = new URL(candidateUrl).origin;
+  // candidateUrl has already passed the exact raw Connect-origin contract.
+  // Instance-id input remains a derivation input and is lowercased before its
+  // canonical endpoint is generated.
+  const publicUrl = candidateUrl;
   const derivedInstanceId = instanceIdFromProxyUrl(publicUrl);
   const normalizedExplicitInstanceId = explicitInstanceId?.startsWith(PROPR_UI_PROXY_LABEL_PREFIX)
     ? explicitInstanceId.slice(PROPR_UI_PROXY_LABEL_PREFIX.length)

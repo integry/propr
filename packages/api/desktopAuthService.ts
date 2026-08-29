@@ -2,7 +2,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
-import { parseProprConnectEndpoint } from '@propr/shared';
+import { isProprConnectReservedHostAttempt, parseProprConnectEndpoint } from '@propr/shared';
 import type { GitHubUser } from './authTypes.js';
 
 const DEFAULT_PAIRING_TTL_MS = 10 * 60_000;
@@ -152,18 +152,15 @@ function frontendApprovalBase(configured?: string): URL {
 function publicApiBase(configured?: string): URL | null {
   const raw = configured ?? process.env.API_PUBLIC_URL;
   if (!raw) return null;
-  const url = new URL(raw);
   const canonicalConnectEndpoint = parseProprConnectEndpoint(raw);
-  // Use the normalized hostname only to reserve the managed namespace. The
-  // original spelling must still pass the strict parser before it is trusted.
-  const normalizedHostnameIsReserved = parseProprConnectEndpoint(`https://${url.hostname}`) !== null;
-  if (normalizedHostnameIsReserved && !canonicalConnectEndpoint) {
+  if (isProprConnectReservedHostAttempt(raw) && !canonicalConnectEndpoint) {
     throw new DesktopAuthError(
       'PAIRING_CONFIGURATION_INVALID',
       503,
       'Desktop pairing is unavailable because the public API URL is invalid',
     );
   }
+  const url = new URL(raw);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname))) {
     throw new Error('Desktop pairing browser entry requires HTTPS except on loopback hosts');
   }

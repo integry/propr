@@ -42,8 +42,7 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const SummaryBrowserPage = lazy(() => import('./pages/SummaryBrowserPage'))
 const TasksPage = lazy(() => import('./pages/TasksPage'))
 
-type CompatibilityState = { status: 'checking' } | { status: 'ready' }
-  | { status: 'blocked'; title: string; message: string };
+type CompatibilityState = { status: 'checking' } | { status: 'ready' } | { status: 'blocked'; title: string; message: string };
 
 const AUTHORIZATION_REFRESH_INTERVAL_MS = 60_000;
 

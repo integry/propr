@@ -37,15 +37,23 @@ describe('Propr API base URLs and instance profiles', () => {
       'http://propr.example.com',
       'https://t-instance123.propr.dev:443',
       'https://t-instance123.propr.dev:8443',
+      ' https://t-instance123.propr.dev',
+      'https://t-instance123.propr.dev ',
+      'https://t-instance123.propr.dev/',
+      'https://t-instance123.propr.dev//',
+      'HTTPS://t-instance123.propr.dev',
+      'https://T-instance123.propr.dev',
       'https://t-%69nstance123.propr.dev',
       'https://t-instance123.propr%2edev',
+      'https://x.t-instance123.propr.dev',
+      'https://nested.t-instance123.propr.dev',
     ]) {
       assert.throws(() => normalizeApiBaseUrl(value), ProprClientError);
     }
   });
 
   it('classifies only the canonical hosted ProPR Connect origin as verified', () => {
-    assert.deepEqual(classifyApiBaseUrl(' https://T-instance-123.propr.dev/ '), {
+    assert.deepEqual(classifyApiBaseUrl('https://t-instance-123.propr.dev'), {
       baseUrl: 'https://t-instance-123.propr.dev',
       kind: 'propr-connect',
       connectInstanceId: 'instance-123',
@@ -55,6 +63,7 @@ describe('Propr API base URLs and instance profiles', () => {
 
     for (const rejectedReserved of [
       'https://t-instance-123.foo.propr.dev',
+      'https://x.t-instance-123.propr.dev',
       'https://t-\u0430bc.propr.dev',
     ]) {
       assert.throws(() => classifyApiBaseUrl(rejectedReserved), (error: unknown) =>
