@@ -4,5 +4,11 @@ export default defineConfig({
   build: {
     sourcemap: true,
     minify: false,
+    rollupOptions: {
+      output: {
+        format: 'cjs',
+        entryFileNames: 'main.cjs',
+      },
+    },
   },
 });

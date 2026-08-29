@@ -1,4 +1,3 @@
-import { fileURLToPath } from 'node:url';
 import { DESKTOP_PROTOCOL } from './shared/contract';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
@@ -40,18 +39,13 @@ export const validatedDevServerUrl = (value: string | undefined): URL | null => 
 export const isTrustedRendererUrl = (
   candidate: string,
   devServerUrl: string | undefined,
-  rendererFilePath: string,
+  packagedRendererUrl: string,
 ): boolean => {
   const candidateUrl = parseUrl(candidate);
   if (!candidateUrl) return false;
   const devUrl = validatedDevServerUrl(devServerUrl);
   if (devUrl) return candidateUrl.origin === devUrl.origin;
-  if (candidateUrl.protocol !== 'file:') return false;
-  try {
-    return fileURLToPath(candidateUrl) === rendererFilePath;
-  } catch {
-    return false;
-  }
+  return candidateUrl.href === packagedRendererUrl;
 };
 
 export const normalizeDeepLink = (value: string): string | null => {

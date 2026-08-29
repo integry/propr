@@ -8,7 +8,7 @@
   "license": "Apache-2.0",
   "homepage": "https://github.com/integry/propr",
   "type": "module",
-  "main": ".vite/build/main.js",
+  "main": ".vite/build/main.cjs",
   "scripts": {
     "dev": "electron-forge start",
     "typecheck": "tsc --noEmit",

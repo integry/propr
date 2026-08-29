@@ -13,7 +13,7 @@ interface RegisterIpcOptions {
   lifecycle: LocalLifecycleController;
   logger: DesktopLogger;
   devServerUrl: string | undefined;
-  rendererFilePath: string;
+  packagedRendererUrl: string;
 }
 
 type Handler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown;
@@ -21,7 +21,7 @@ type Handler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown;
 export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
   const trusted = (event: IpcMainInvokeEvent): boolean => {
     const senderUrl = event.senderFrame?.url ?? '';
-    return isTrustedRendererUrl(senderUrl, options.devServerUrl, options.rendererFilePath);
+    return isTrustedRendererUrl(senderUrl, options.devServerUrl, options.packagedRendererUrl);
   };
   const handle = (channel: string, handler: Handler): void => {
     options.ipcMain.handle(channel, async (event, ...args) => {

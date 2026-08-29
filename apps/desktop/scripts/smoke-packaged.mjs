@@ -10,6 +10,12 @@ import {
 } from '@electron/fuses';
 
 const READY_EVENT = 'desktop.renderer.ready';
+const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
+const MAIN_PROCESS_ERROR_MARKERS = [
+  'desktop.main_process.uncaught_exception',
+  'A JavaScript error occurred in the main process',
+  'Uncaught Exception:',
+];
 const TIMEOUT_MS = 30_000;
 const binaryPath = resolve('out', `ProPR Desktop-linux-${process.arch}`, 'propr-desktop');
 
@@ -83,14 +89,21 @@ try {
     });
   });
 
+  const mainProcessError = MAIN_PROCESS_ERROR_MARKERS.find(marker => output.includes(marker));
+  if (mainProcessError) {
+    throw new Error(`Packaged desktop reported a main-process uncaught exception (${mainProcessError})`);
+  }
   if (result.code !== 0) {
     throw new Error(`Packaged desktop exited with code ${result.code ?? 'null'} (signal ${result.signal ?? 'none'})`);
   }
   if (!output.includes(READY_EVENT)) {
     throw new Error('Packaged desktop exited without reporting renderer-ready');
   }
+  if (!output.includes(PRELOAD_BRIDGE_PROOF)) {
+    throw new Error('Packaged desktop reported renderer-ready without proving window.proprDesktop is exposed');
+  }
 
-  console.log('Packaged Linux desktop reached renderer-ready with sandboxing enabled.');
+  console.log('Packaged Linux desktop exposed window.proprDesktop and reached renderer-ready with sandboxing enabled.');
 } finally {
   await rm(userDataPath, { recursive: true, force: true });
 }

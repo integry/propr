@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 import {
   deepLinkFromArguments,
@@ -45,10 +43,10 @@ describe('desktop URL security', () => {
     );
   });
 
-  it('only trusts the packaged renderer file', () => {
-    const renderer = join('/opt', 'ProPR', 'renderer.html');
-    assert.equal(isTrustedRendererUrl(pathToFileURL(renderer).href, undefined, renderer), true);
-    assert.equal(isTrustedRendererUrl(pathToFileURL(join('/opt', 'ProPR', 'other.html')).href, undefined, renderer), false);
+  it('only trusts the packaged renderer URL', () => {
+    const renderer = 'propr-app://renderer/renderer.html';
+    assert.equal(isTrustedRendererUrl(renderer, undefined, renderer), true);
+    assert.equal(isTrustedRendererUrl('propr-app://renderer/other.html', undefined, renderer), false);
     assert.equal(isTrustedRendererUrl('https://propr.example.com', undefined, renderer), false);
   });
 

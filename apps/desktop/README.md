@@ -24,10 +24,11 @@ The desktop typecheck and package commands build required renderer workspace dep
 `desktop:prepare`, so they do not depend on a previously generated `packages/shared/dist` directory.
 
 Development renderer URLs are accepted only when Electron Forge supplies an HTTP loopback URL. Packaged builds load
-the generated renderer file from the application ASAR.
+the generated renderer from the application ASAR through an app-owned protocol.
 
 The packaged-binary smoke test verifies the hardened fuse states, launches the Linux artifact without a
-sandbox-disabling flag, and waits for Electron's renderer `ready-to-show` event before accepting a clean exit.
+sandbox-disabling flag, rejects main-process uncaught exceptions, and requires proof that `window.proprDesktop` is
+exposed before accepting renderer-ready and a clean exit.
 
 `desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
 the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release

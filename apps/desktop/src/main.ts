@@ -1,5 +1,6 @@
-import { join } from 'node:path';
-import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from 'electron';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
@@ -18,7 +19,10 @@ import { createBrowserWindowOptions } from './window-options';
 const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
   ? MAIN_WINDOW_VITE_DEV_SERVER_URL
   : undefined;
-const rendererFilePath = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/renderer.html`);
+const PACKAGED_RENDERER_SCHEME = 'propr-app';
+const PACKAGED_RENDERER_HOST = 'renderer';
+const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
+const packagedRendererUrl = `${PACKAGED_RENDERER_SCHEME}://${PACKAGED_RENDERER_HOST}/renderer.html`;
 let mainWindow: BrowserWindow | null = null;
 let pendingDeepLink: string | null = deepLinkFromArguments(process.argv);
 let logger: DesktopLogger | null = null;
@@ -28,6 +32,19 @@ const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?:
   logger
     ? logger.log(level, event, fields)
     : console.error(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...fields }));
+
+process.on('uncaughtExceptionMonitor', error => {
+  log('error', 'desktop.main_process.uncaught_exception', { error });
+});
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: PACKAGED_RENDERER_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+  },
+}]);
 
 const registerProtocolClient = (): void => {
   if (process.defaultApp && process.argv[1]) {
@@ -58,6 +75,28 @@ const configureSessionSecurity = (): void => {
   });
 };
 
+const configurePackagedRendererProtocol = (): void => {
+  protocol.handle(PACKAGED_RENDERER_SCHEME, request => {
+    const requestUrl = new URL(request.url);
+    if (requestUrl.hostname !== PACKAGED_RENDERER_HOST) {
+      return new Response(null, { status: 404 });
+    }
+
+    let requestedPath: string;
+    try {
+      requestedPath = decodeURIComponent(requestUrl.pathname).replace(/^\/+/, '');
+    } catch {
+      return new Response(null, { status: 400 });
+    }
+    const filePath = resolve(packagedRendererRoot, requestedPath);
+    const relativePath = relative(packagedRendererRoot, filePath);
+    if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+      return new Response(null, { status: 403 });
+    }
+    return net.fetch(pathToFileURL(filePath).href);
+  });
+};
+
 const openAllowedExternalUrl = async (url: string): Promise<void> => {
   if (!isSafeExternalUrl(url)) {
     log('warn', 'desktop.external_url.rejected');
@@ -67,14 +106,15 @@ const openAllowedExternalUrl = async (url: string): Promise<void> => {
 };
 
 const createMainWindow = async (): Promise<BrowserWindow> => {
-  const window = new BrowserWindow(createBrowserWindowOptions(join(__dirname, 'preload.js'), !app.isPackaged));
+  const window = new BrowserWindow(createBrowserWindowOptions(join(__dirname, 'preload.cjs'), !app.isPackaged));
+  const readyToShow = new Promise<void>(resolveReady => window.once('ready-to-show', resolveReady));
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     void openAllowedExternalUrl(url);
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', (event, url) => {
-    if (isTrustedRendererUrl(url, devServerUrl, rendererFilePath)) return;
+    if (isTrustedRendererUrl(url, devServerUrl, packagedRendererUrl)) return;
     event.preventDefault();
     void openAllowedExternalUrl(url);
   });
@@ -88,14 +128,6 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
       pendingDeepLink = null;
     }
   });
-  window.once('ready-to-show', () => {
-    log('info', 'desktop.renderer.ready');
-    if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1') {
-      app.quit();
-      return;
-    }
-    window.show();
-  });
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
   });
@@ -105,7 +137,21 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
   if (validatedDevUrl) {
     await window.loadURL(new URL('renderer.html', validatedDevUrl).href);
   } else {
-    await window.loadFile(rendererFilePath);
+    await window.loadURL(packagedRendererUrl);
+  }
+
+  await readyToShow;
+  const preloadBridgeExposed = await window.webContents.executeJavaScript(
+    "typeof window.proprDesktop === 'object' && window.proprDesktop !== null",
+  );
+  if (preloadBridgeExposed !== true) {
+    throw new Error('Desktop preload bridge was not exposed to the renderer');
+  }
+  log('info', 'desktop.renderer.ready', { preloadBridgeExposed: true });
+  if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1') {
+    app.quit();
+  } else {
+    window.show();
   }
   return window;
 };
@@ -135,6 +181,7 @@ if (!hasSingleInstanceLock) {
     logger = createDesktopLogger(join(app.getPath('logs'), 'desktop.jsonl'));
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
     configureSessionSecurity();
+    configurePackagedRendererProtocol();
 
     const encryption: EncryptionProvider = {
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -158,7 +205,7 @@ if (!hasSingleInstanceLock) {
       lifecycle,
       logger,
       devServerUrl,
-      rendererFilePath,
+      packagedRendererUrl,
     });
     mainWindow = await createMainWindow();
 
