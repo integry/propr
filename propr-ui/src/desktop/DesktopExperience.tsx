@@ -93,11 +93,7 @@ const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operationError, 
         Instance URL
         <input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} inputMode="url" placeholder="https://propr.example.com" aria-describedby={error ? 'profile-url-error' : undefined} />
       </label>
-      {connectEndpoint && (
-        <div className="desktop-connect-verified" role="status">
-          <Cloud aria-hidden="true" /> Verified ProPR Connect endpoint
-        </div>
-      )}
+      {connectEndpoint && <div className="desktop-connect-verified" role="status"><Cloud aria-hidden="true" /> Verified ProPR Connect endpoint</div>}
       {error && <div id="profile-url-error" className="desktop-inline-error" role="alert">{error}</div>}
       <button type="submit" className="desktop-primary-button">{initial ? 'Save changes' : 'Connect'}</button>
     </form>

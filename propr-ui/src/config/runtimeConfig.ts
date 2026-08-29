@@ -99,7 +99,8 @@ export const isHostedOAuthCompletionRoute = (
  */
 export const isValidHttpUrl = (value: string): boolean => {
   try {
-    return normalizeApiBaseUrl(value, { allowInsecureHttp: true }) !== '';
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
   } catch {
     return false;
   }
