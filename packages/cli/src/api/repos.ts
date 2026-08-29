@@ -257,10 +257,10 @@ export interface RepoConfigResponse {
  * }
  * ```
  */
-export async function getRepos(client?: ApiClient): Promise<GetReposResponse> {
+export async function getRepos(client?: ApiClient, signal?: AbortSignal): Promise<GetReposResponse> {
   const apiClient = client ?? (await createApiClient());
 
-  const response = await apiClient.get<GetReposResponse>("/api/config/repos");
+  const response = await apiClient.get<GetReposResponse>("/api/config/repos", { signal });
 
   return response.data;
 }
@@ -288,12 +288,13 @@ export async function getRepos(client?: ApiClient): Promise<GetReposResponse> {
 export async function addRepo(
   fullName: string,
   options: AddRepoOptions = {},
-  client?: ApiClient
+  client?: ApiClient,
+  signal?: AbortSignal
 ): Promise<RepoConfigResponse> {
   const apiClient = client ?? (await createApiClient());
 
   // First, fetch the current list of repos
-  const currentRepos = await getRepos(apiClient);
+  const currentRepos = await getRepos(apiClient, signal);
 
   // Check if repo already exists
   const existingRepo = currentRepos.repos_to_monitor.find(
@@ -317,6 +318,7 @@ export async function addRepo(
 
   const response = await apiClient.post<RepoConfigResponse>("/api/config/repos", {
     body: { repos_to_monitor: updatedRepos },
+    signal,
   });
 
   return response.data;

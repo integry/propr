@@ -26,11 +26,11 @@ export async function createDesktopLocalHost(resourcesPath?: string): Promise<De
   const defaultActions = createDefaultActions(config);
   const actions: SetupActions = {
     ...defaultActions,
-    async loginWithGithub({ onLog } = {}) {
+    async loginWithGithub({ onLog, signal } = {}) {
       // A packaged GUI has no controlling terminal. Reuse an existing gh
       // session, but leave an actionable recovery step instead of launching an
       // invisible interactive process when the user is not signed in.
-      const result = await loginWithGithubCli(config, { interactive: false, onLog });
+      const result = await loginWithGithubCli(config, { interactive: false, onLog, signal });
       if (!result.ok) onLog?.(result.message);
       return result.ok;
     },

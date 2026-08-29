@@ -4,7 +4,6 @@ import { logoutDesktopSession } from './desktop-session';
 import type { DesktopLogger } from './logger';
 import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
-import type { DesktopConnectionController } from './desktop-connections';
 import type { DesktopSetupController } from './setup-controller';
 import { isSafeExternalUrl, isTrustedRendererUrl } from './security';
 import { IPC_CHANNELS } from './shared/contract';
@@ -15,7 +14,6 @@ interface RegisterIpcOptions {
   profiles: ProfileStore;
   lifecycle: LocalLifecycleController;
   setup: DesktopSetupController;
-  connections: DesktopConnectionController;
   logger: DesktopLogger;
   desktopSession: Session;
   devServerUrl: string | undefined;
@@ -61,21 +59,33 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
   handle(IPC_CHANNELS.profilesSave, (_event, input) => options.profiles.save(input));
   handle(IPC_CHANNELS.profilesRemove, (_event, profileId) => options.profiles.remove(profileId));
   handle(IPC_CHANNELS.profilesSetActive, (_event, profileId) => options.profiles.setActive(profileId));
-  handle(IPC_CHANNELS.credentialsRead, (_event, profileId) => options.profiles.readCredential(profileId));
-  handle(IPC_CHANNELS.credentialsWrite, (_event, profileId, value) => options.profiles.writeCredential(profileId, value));
-  handle(IPC_CHANNELS.credentialsRemove, (_event, profileId) => options.profiles.removeCredential(profileId));
   handle(IPC_CHANNELS.lifecycleStatus, () => options.lifecycle.status());
   handle(IPC_CHANNELS.lifecycleStart, () => options.lifecycle.start());
   handle(IPC_CHANNELS.lifecycleStop, () => options.lifecycle.stop());
   handle(IPC_CHANNELS.lifecycleRestart, () => options.lifecycle.restart());
-  handle(IPC_CHANNELS.connectionProbe, (_event, profile) => options.connections.probe(profile));
-  handle(IPC_CHANNELS.connectionAuthenticate, async (_event, profile) => {
-    await options.profiles.save({ id: profile.id, label: profile.name, apiBaseUrl: profile.baseUrl });
-    await options.connections.authenticate(profile);
-  });
   handle(IPC_CHANNELS.discovery, () => []);
-  handle(IPC_CHANNELS.setupStatus, () => options.setup.status());
-  handle(IPC_CHANNELS.setupStart, (_event, request) => options.setup.start(request));
-  handle(IPC_CHANNELS.setupRetry, (_event, request) => options.setup.retry(request));
-  handle(IPC_CHANNELS.setupCancel, () => options.setup.cancel());
+  handle(IPC_CHANNELS.setupStatus, (_event, ...args) => {
+    if (args.length) throw new Error('Invalid local setup status request');
+    return options.setup.status();
+  });
+  handle(IPC_CHANNELS.setupStart, (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Invalid local setup start request');
+    return options.setup.start(args[0]);
+  });
+  handle(IPC_CHANNELS.setupRetry, (_event, ...args) => {
+    if (args.length > 1) throw new Error('Invalid local setup retry request');
+    return options.setup.retry(args[0]);
+  });
+  handle(IPC_CHANNELS.setupCancel, (_event, ...args) => {
+    if (args.length) throw new Error('Invalid local setup cancellation request');
+    return options.setup.cancel();
+  });
+  handle(IPC_CHANNELS.setupSelectDirectory, (_event, ...args) => {
+    if (args.length) throw new Error('Invalid directory selection request');
+    return options.setup.selectDirectory();
+  });
+  handle(IPC_CHANNELS.setupSelectPrivateKey, (_event, ...args) => {
+    if (args.length) throw new Error('Invalid private-key selection request');
+    return options.setup.selectPrivateKey();
+  });
 };

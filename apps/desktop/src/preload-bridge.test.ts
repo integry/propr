@@ -24,19 +24,18 @@ class FakeIpc implements PreloadIpc {
 describe('desktop preload bridge', () => {
   it('exposes only the narrow frozen namespaces', () => {
     const bridge = createDesktopBridge(new FakeIpc());
-    assert.deepEqual(Object.keys(bridge).sort(), ['app', 'auth', 'credentials', 'external', 'lifecycle', 'profiles', 'storage']);
+    assert.deepEqual(Object.keys(bridge).sort(), ['app', 'auth', 'external', 'lifecycle', 'profiles', 'storage']);
     assert.equal(Object.isFrozen(bridge), true);
     assert.equal(Object.values(bridge).every(Object.isFrozen), true);
     assert.equal('fs' in bridge, false);
     assert.equal('exec' in bridge, false);
   });
 
-  it('maps profile and credential operations to fixed channels', async () => {
+  it('maps profile operations to fixed channels without a credential namespace', async () => {
     const ipc = new FakeIpc();
     const bridge = createDesktopBridge(ipc);
     await bridge.auth.logout('http://localhost:4000');
     await bridge.profiles.save({ label: 'Local', apiBaseUrl: 'http://localhost:4000' });
-    await bridge.credentials.write('profile-1', 'secret');
     await bridge.lifecycle.start();
     assert.deepEqual(ipc.invocations, [
       { channel: IPC_CHANNELS.authLogout, args: ['http://localhost:4000'] },
@@ -44,7 +43,6 @@ describe('desktop preload bridge', () => {
         channel: IPC_CHANNELS.profilesSave,
         args: [{ label: 'Local', apiBaseUrl: 'http://localhost:4000' }],
       },
-      { channel: IPC_CHANNELS.credentialsWrite, args: ['profile-1', 'secret'] },
       { channel: IPC_CHANNELS.lifecycleStart, args: [] },
     ]);
   });
@@ -55,17 +53,17 @@ describe('desktop preload bridge', () => {
     const received: unknown[] = [];
     bridge.localSetup.onProgress(snapshot => received.push(snapshot));
     const request = {
-      rootDir: '/srv/propr', reinitialize: false, agents: [], loginAgents: [],
+      sessionId: '00000000-0000-4000-8000-000000000000', root: { mode: 'default' as const }, reinitialize: false, agents: [], loginAgents: [],
       github: { mode: 'demo' as const }, intake: { mode: 'keep' as const }, whitelist: null, repository: null,
     };
     await bridge.localSetup.start(request);
     ipc.listeners.get(IPC_CHANNELS.setupProgress)?.(
       { sender: 'must-not-leak' },
-      { phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, logs: [] },
+      { phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: request.sessionId, logs: [] },
     );
 
     assert.deepEqual(ipc.invocations, [{ channel: IPC_CHANNELS.setupStart, args: [request] }]);
-    assert.deepEqual(received, [{ phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, logs: [] }]);
+    assert.deepEqual(received, [{ phase: 'running', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: request.sessionId, logs: [] }]);
     assert.equal('invoke' in bridge, false);
   });
 

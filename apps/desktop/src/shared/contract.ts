@@ -9,20 +9,17 @@ export const IPC_CHANNELS = Object.freeze({
   profilesSave: 'desktop:profiles-save',
   profilesRemove: 'desktop:profiles-remove',
   profilesSetActive: 'desktop:profiles-set-active',
-  credentialsRead: 'desktop:credentials-read',
-  credentialsWrite: 'desktop:credentials-write',
-  credentialsRemove: 'desktop:credentials-remove',
   lifecycleStatus: 'desktop:lifecycle-status',
   lifecycleStart: 'desktop:lifecycle-start',
   lifecycleStop: 'desktop:lifecycle-stop',
   lifecycleRestart: 'desktop:lifecycle-restart',
-  connectionProbe: 'desktop:connection-probe',
-  connectionAuthenticate: 'desktop:connection-authenticate',
   discovery: 'desktop:discovery',
   setupStatus: 'desktop:setup-status',
   setupStart: 'desktop:setup-start',
   setupRetry: 'desktop:setup-retry',
   setupCancel: 'desktop:setup-cancel',
+  setupSelectDirectory: 'desktop:setup-select-directory',
+  setupSelectPrivateKey: 'desktop:setup-select-private-key',
   setupProgress: 'desktop:setup-progress',
   deepLink: 'desktop:deep-link',
 } as const);
@@ -66,14 +63,6 @@ export type StorageSecurity = {
   reason: 'os-encryption-unavailable' | 'insecure-basic-text-backend';
 };
 
-export type CredentialReadResult =
-  | { available: false; value: null }
-  | { available: true; value: string | null };
-
-export type CredentialWriteResult =
-  | { stored: true }
-  | { stored: false; reason: 'encryption-unavailable' };
-
 export type LocalLifecycleState = 'disconnected' | 'starting' | 'connected' | 'stopping' | 'error';
 
 export interface LocalLifecycleStatus {
@@ -105,11 +94,6 @@ export interface DesktopBridge {
     remove(profileId: string): Promise<void>;
     setActive(profileId: string | null): Promise<void>;
   };
-  credentials: {
-    read(profileId: string): Promise<CredentialReadResult>;
-    write(profileId: string, value: string): Promise<CredentialWriteResult>;
-    remove(profileId: string): Promise<void>;
-  };
   lifecycle: {
     status(): Promise<LocalLifecycleStatus>;
     start(): Promise<LocalLifecycleOperationResult>;
@@ -136,21 +120,38 @@ export type DesktopConnectionResult =
   | { status: 'offline'; message: string };
 
 export interface DesktopSetupRequest {
-  rootDir: string;
+  sessionId: string;
+  root: { mode: 'default' | 'resume' } | { mode: 'selected'; capability: string };
   reinitialize: boolean;
   agents: string[];
   loginAgents: string[];
   github:
     | { mode: 'keep' }
     | { mode: 'demo' }
-    | { mode: 'relay'; relayUrl?: string }
-    | { mode: 'app'; appId: string; privateKeyPath: string; installationId: string };
+    | { mode: 'relay' }
+    | { mode: 'app'; appId: string; privateKeyCapability: string; installationId: string };
   intake:
     | { mode: 'keep' }
     | { mode: 'routing_websocket' | 'polling' }
     | { mode: 'direct_webhook'; webhookSecret: string };
   whitelist: string[] | null;
   repository: { fullName: string; alias?: string; baseBranch?: string } | null;
+}
+
+export interface DesktopFilesystemSelection {
+  capability: string;
+  label: string;
+}
+
+export interface DesktopSetupResumeView {
+  agents: string[];
+  loginAgents: string[];
+  reinitialize: boolean;
+  github: { mode: 'keep' | 'demo' | 'relay' } | { mode: 'app'; appId: string; installationId: string; reconfigurationRequired: true };
+  intake: { mode: 'keep' | 'routing_websocket' | 'polling' } | { mode: 'direct_webhook'; reconfigurationRequired: true };
+  whitelist: string[] | null;
+  repository: { fullName: string; alias?: string; baseBranch?: string } | null;
+  reconfigurationStage?: 'github' | 'intake';
 }
 
 export type DesktopSetupPhase =
@@ -165,12 +166,16 @@ export type DesktopSetupPhase =
 export interface DesktopSetupSnapshot {
   phase: DesktopSetupPhase;
   capability: import('@propr/local-setup').LocalSetupCapability;
+  sessionId: string;
   rootDir?: string;
   state?: import('@propr/local-setup').SetupState;
   logs: string[];
   errors?: import('@propr/local-setup').SetupStructuredError[];
   error?: string;
   profile?: DesktopProfileView;
+  resume?: DesktopSetupResumeView;
+  resumeAvailable?: boolean;
+  reconfigurationRequired?: boolean;
 }
 
 /** Narrow bridge consumed by `propr-ui/src/desktop`. */
@@ -192,6 +197,8 @@ export interface DesktopRendererBridge {
     start(request: DesktopSetupRequest): Promise<DesktopSetupSnapshot>;
     retry(request?: DesktopSetupRequest): Promise<DesktopSetupSnapshot>;
     cancel(): Promise<DesktopSetupSnapshot>;
+    selectDirectory(): Promise<DesktopFilesystemSelection | null>;
+    selectPrivateKey(): Promise<DesktopFilesystemSelection | null>;
     onProgress(listener: (snapshot: DesktopSetupSnapshot) => void): () => void;
   };
   connection: { probe(profile: DesktopProfileView): Promise<DesktopConnectionResult> };

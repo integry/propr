@@ -69,7 +69,7 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       assertSafeAgentCredentialDir(path);
       mkdirSync(path, { recursive: true, mode: 0o700 });
     },
-    async pullImages({ rootDir, agentTypes, onLog }) {
+    async pullImages({ rootDir, agentTypes, onLog, signal }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
       const selected = new Set(agentTypes);
@@ -85,10 +85,10 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
         onLog?.(`pulling ${tag}…`);
         // Async exec keeps the event loop free so the wizard's Ink spinner keeps
         // animating while the (often slow) pull runs, instead of freezing.
-        const pulled = await orch.dockerAsync(["pull", tag]);
+        const pulled = await orch.dockerAsync(["pull", tag], { signal });
         if (pulled.status === 0) {
           try {
-            orch.tagAgentLatest(key, tag);
+            await orch.tagAgentLatestAsync(key, tag, signal);
           } catch {
             /* best-effort local retag; the pull itself succeeded */
           }
@@ -99,12 +99,12 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       }
       return result;
     },
-    async isStackRunning(rootDir) {
+    async isStackRunning(rootDir, signal) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
-      return orch.isStackRunningAsync(cfg);
+      return orch.isStackRunningAsync(cfg, signal);
     },
-    async startStack({ rootDir, ui, docs, onLog }) {
+    async startStack({ rootDir, ui, docs, onLog, signal }) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
       // Pre-create the host Vibe prompt-cache dir owned by this user so Docker
@@ -124,22 +124,24 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       // Use the async start path: `propr setup` drives this from behind a live
       // Ink TUI, so the blocking synchronous startStack would freeze the spinner
       // and swallow keystrokes for the seconds-to-minutes a cold start takes.
-      await orch.ensureNetworkAsync(cfg, onLog);
+      await orch.ensureNetworkAsync(cfg, onLog, { signal });
       await orch.startStackAsync(cfg, {
         ui: ui ?? configManager?.getUiEnabled() ?? true,
         docs: docs ?? cfg.docsEnabled,
         onLog,
+        signal,
       });
     },
-    async checkBackendHealth({ rootDir, timeoutMs = 60_000 }) {
+    async checkBackendHealth({ rootDir, timeoutMs = 60_000, signal }) {
       const { getSystemStatus } = await import("../../api/system.js");
       const client = await localApiClient(rootDir);
       const deadline = Date.now() + timeoutMs;
       let lastError = "no response";
       // Containers take a few seconds to report healthy; poll until the deadline.
       do {
+        signal?.throwIfAborted();
         try {
-          const status = await getSystemStatus(client);
+          const status = await getSystemStatus(client, signal);
           if (String(status.api).toLowerCase() === "healthy") {
             return { healthy: true, detail: `API healthy (daemon ${status.daemon}, worker ${status.worker})` };
           }
@@ -154,22 +156,25 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
           lastError = (error as Error).message;
         }
         if (Date.now() >= deadline) break;
-        await sleep(2_000);
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, 2_000);
+          signal?.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+        });
       } while (Date.now() < deadline);
       return { healthy: false, detail: `backend not healthy within ${Math.round(timeoutMs / 1000)}s (${lastError})` };
     },
-    async addRepository({ fullName, alias, baseBranch }, rootDir) {
+    async addRepository({ fullName, alias, baseBranch }, rootDir, signal) {
       const { addRepo } = await import("../../api/repos.js");
       // Point the client at this stack's API port rather than the saved remote.
       const client = await localApiClient(rootDir);
-      await addRepo(fullName, { alias, baseBranch }, client);
+      await addRepo(fullName, { alias, baseBranch }, client, signal);
     },
     async resolveUiUrl(rootDir) {
       const { getHostConfig } = await import("../../orchestrator/index.js");
       const { cfg } = await getHostConfig({ configManager, root: rootDir });
       return localhostServiceUrl(cfg.uiPort);
     },
-    async openUrl(url) {
+    async openUrl(url, signal) {
       // Open in the host's default browser with the platform launcher. Detached
       // and unref'd so the wizard isn't held open by the child, with stdio
       // ignored so the launcher can't scribble over the TUI.
@@ -178,40 +183,58 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       const command = platform === "darwin" ? "open" : platform === "win32" ? "cmd" : "xdg-open";
       const args = platform === "win32" ? ["/c", "start", "", url] : [url];
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(command, args, { stdio: "ignore", detached: true });
+        signal?.throwIfAborted();
+        const child = spawn(command, args, { stdio: "ignore", detached: process.platform !== "win32" });
+        let forceTimer: NodeJS.Timeout | undefined;
+        const terminate = (force = false) => {
+          if (!child.pid) return;
+          if (process.platform === "win32") {
+            const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", ...(force ? ["/F"] : [])], { stdio: "ignore" });
+            killer.unref();
+          } else {
+            try { process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM"); } catch { child.kill(force ? "SIGKILL" : "SIGTERM"); }
+          }
+        };
+        const abort = () => {
+          terminate();
+          forceTimer = setTimeout(() => { terminate(true); reject(signal?.reason); }, 2_000);
+        };
+        signal?.addEventListener("abort", abort, { once: true });
         child.once("error", reject);
-        // The launcher returns immediately; once it has spawned we're done.
-        child.once("spawn", () => {
-          child.unref();
-          resolve();
+        child.once("close", code => {
+          if (forceTimer) clearTimeout(forceTimer);
+          signal?.removeEventListener("abort", abort);
+          if (signal?.aborted) reject(signal.reason);
+          else if (code === 0) resolve();
+          else reject(new Error(`browser launcher exited with code ${code ?? "?"}`));
         });
       });
     },
-    async saveWhitelistSetting(rootDir, users) {
+    async saveWhitelistSetting(rootDir, users, signal) {
       const { updateSetting } = await import("../../api/settings.js");
       // Point the client at this stack's API port rather than the saved remote.
       const client = await localApiClient(rootDir);
-      await updateSetting("github_user_whitelist", users, client);
+      await updateSetting("github_user_whitelist", users, client, signal);
     },
     hasGithubToken() {
       return Boolean(configManager?.getGithubToken());
     },
-    async fetchRelayInstallations({ relayUrl }) {
+    async fetchRelayInstallations({ relayUrl, signal }) {
       const { fetchAuthenticatedUser } = await import("../../api/relay.js");
-      const me = await fetchAuthenticatedUser(relayClient(relayUrl));
+      const me = await fetchAuthenticatedUser(relayClient(relayUrl, signal));
       return { username: me.username, installations: me.installations };
     },
-    async enrollRelay({ relayUrl, installationId, label }) {
+    async enrollRelay({ relayUrl, installationId, label, signal }) {
       const { enrollRelayToken } = await import("../../api/relay.js");
-      const client = relayClient(relayUrl);
+      const client = relayClient(relayUrl, signal);
       // Default the token label to the hostname, mirroring `propr relay enroll`.
       const result = await enrollRelayToken(client, { installationId, label: label ?? hostname() });
       return { relayUrl: client.baseUrl, token: result.token };
     },
-    async loginWithGithub({ onLog } = {}) {
+    async loginWithGithub({ onLog, signal } = {}) {
       if (!configManager) return false;
       const { loginWithGithubCli } = await import("../../auth/githubLogin.js");
-      const result = await loginWithGithubCli(configManager, { interactive: true, onLog });
+      const result = await loginWithGithubCli(configManager, { interactive: true, onLog, signal });
       if (!result.ok) onLog?.(result.message);
       return result.ok;
     },
@@ -224,12 +247,12 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
    * Build a relay client bound to the stored GitHub token. The hosted relay is
    * the default base URL; an explicit `relayUrl` (self-hosted) overrides it.
    */
-  function relayClient(relayUrl?: string): RelayClientOptions {
+  function relayClient(relayUrl?: string, signal?: AbortSignal): RelayClientOptions {
     const githubToken = configManager?.getGithubToken();
     if (!githubToken) {
       throw new Error("Not logged in to GitHub. Run `propr login` first.");
     }
-    return { baseUrl: relayUrl ?? DEFAULT_PROPR_GH_RELAY_URL, githubToken };
+    return { baseUrl: relayUrl ?? DEFAULT_PROPR_GH_RELAY_URL, githubToken, signal };
   }
 }
 

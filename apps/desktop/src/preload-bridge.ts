@@ -52,11 +52,6 @@ export const createDesktopBridge = (ipc: PreloadIpc): DesktopBridge => {
       remove: (profileId) => invoke(ipc, IPC_CHANNELS.profilesRemove, profileId),
       setActive: (profileId) => invoke(ipc, IPC_CHANNELS.profilesSetActive, profileId),
     },
-    credentials: {
-      read: (profileId) => invoke(ipc, IPC_CHANNELS.credentialsRead, profileId),
-      write: (profileId, value) => invoke(ipc, IPC_CHANNELS.credentialsWrite, profileId, value),
-      remove: (profileId) => invoke(ipc, IPC_CHANNELS.credentialsRemove, profileId),
-    },
     lifecycle: {
       status: () => invoke(ipc, IPC_CHANNELS.lifecycleStatus),
       start: () => invoke(ipc, IPC_CHANNELS.lifecycleStart),
@@ -119,19 +114,21 @@ export const createDesktopRendererBridge = (
       setActiveId: (profileId) => invoke(ipc, IPC_CHANNELS.profilesSetActive, profileId),
     },
     discovery: { discover: () => invoke(ipc, IPC_CHANNELS.discovery) },
-    authentication: { authenticate: (profile) => invoke(ipc, IPC_CHANNELS.connectionAuthenticate, profile) },
+    authentication: { authenticate: async () => { throw new Error('Remote pairing is not included in local setup.'); } },
     externalBrowser: { open: (url) => invoke(ipc, IPC_CHANNELS.openExternal, url) },
     localSetup: {
       status: () => invoke(ipc, IPC_CHANNELS.setupStatus),
       start: (request) => invoke(ipc, IPC_CHANNELS.setupStart, request),
       retry: (request) => invoke(ipc, IPC_CHANNELS.setupRetry, request),
       cancel: () => invoke(ipc, IPC_CHANNELS.setupCancel),
+      selectDirectory: () => invoke(ipc, IPC_CHANNELS.setupSelectDirectory),
+      selectPrivateKey: () => invoke(ipc, IPC_CHANNELS.setupSelectPrivateKey),
       onProgress: (listener) => {
         progressListeners.add(listener);
         return () => progressListeners.delete(listener);
       },
     },
-    connection: { probe: (profile) => invoke(ipc, IPC_CHANNELS.connectionProbe, profile) },
+    connection: { probe: async () => ({ status: 'offline', message: 'Remote connections are not included in local setup.' }) },
   };
   Object.values(bridge).filter(value => typeof value === 'object').forEach(Object.freeze);
   return Object.freeze(bridge);

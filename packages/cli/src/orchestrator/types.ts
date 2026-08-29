@@ -149,10 +149,11 @@ export interface OrchestratorModule {
 
   dockerAvailable(): boolean;
   inspectImageFreshness(tag: string, opts?: { skipRemoteCheck?: boolean }): ImageFreshnessResult;
-  inspectImageFreshnessAsync(tag: string, opts?: { skipRemoteCheck?: boolean }): Promise<ImageFreshnessResult>;
+  inspectImageFreshnessAsync(tag: string, opts?: { skipRemoteCheck?: boolean; signal?: AbortSignal }): Promise<ImageFreshnessResult>;
   tagAgentLatest(key: string, imageTag: string): void;
+  tagAgentLatestAsync(key: string, imageTag: string, signal?: AbortSignal): Promise<void>;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
-  ensureNetworkAsync(cfg: OrchestratorConfig, onLog?: (line: string) => void): Promise<void>;
+  ensureNetworkAsync(cfg: OrchestratorConfig, onLog?: (line: string) => void, opts?: { signal?: AbortSignal }): Promise<void>;
   ensureServiceImage(
     cfg: OrchestratorConfig,
     service: string,
@@ -169,7 +170,7 @@ export interface OrchestratorModule {
   readonly TOGGLE_SERVICES: readonly string[];
 
   isStackRunning(cfg: OrchestratorConfig): boolean;
-  isStackRunningAsync(cfg: OrchestratorConfig): Promise<boolean>;
+  isStackRunningAsync(cfg: OrchestratorConfig, signal?: AbortSignal): Promise<boolean>;
 
   startService(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): ServiceState | undefined;
   startServiceAsync(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): Promise<ServiceState | undefined>;
@@ -188,7 +189,7 @@ export interface OrchestratorModule {
   ): StackStatus;
   startStackAsync(
     cfg: OrchestratorConfig,
-    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void }
+    opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; onLog?: (line: string) => void; signal?: AbortSignal }
   ): Promise<StackStatus>;
   stopStack(
     cfg: OrchestratorConfig,
@@ -209,5 +210,5 @@ export interface OrchestratorModule {
 
   containerExists(cfg: OrchestratorConfig, name: string): boolean;
   docker(args: string[], opts?: DockerCommandOptions): DockerCommandResult;
-  dockerAsync(args: string[], opts?: { timeout?: number }): Promise<DockerCommandResult>;
+  dockerAsync(args: string[], opts?: { timeout?: number; signal?: AbortSignal }): Promise<DockerCommandResult>;
 }

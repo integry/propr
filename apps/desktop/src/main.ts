@@ -1,16 +1,15 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
 import { DESKTOP_RENDERER_ORIGIN } from '@propr/shared';
 import { DeepLinkDelivery } from './deep-link-delivery';
-import { DesktopConnectionController } from './desktop-connections';
-import { configureDesktopRequestAuthentication } from './desktop-request-auth';
 import { createDesktopLocalHost } from './desktop-host';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
 import { DesktopSetupController } from './setup-controller';
+import { redactDesktopValue } from './secret-redaction';
 import {
   deepLinkFromArguments,
   isSafeExternalUrl,
@@ -43,7 +42,7 @@ let setupController: DesktopSetupController | null = null;
 const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>
   logger
     ? logger.log(level, event, fields)
-    : console.error(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...fields }));
+    : console.error(JSON.stringify(redactDesktopValue({ timestamp: new Date().toISOString(), level, event, ...fields })));
 
 process.on('uncaughtExceptionMonitor', error => {
   log('error', 'desktop.main_process.uncaught_exception', { error });
@@ -223,28 +222,37 @@ if (!hasSingleInstanceLock) {
       decrypt: value => safeStorage.decryptString(value),
     };
     const profiles = new ProfileStore(app.getPath('userData'), encryption);
-    configureDesktopRequestAuthentication(session.defaultSession, {
-      profiles,
-      devServerUrl,
-      packagedRendererUrl,
-      rendererWebContentsId: () => mainWindow?.webContents.id,
-    });
     const localHost = await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined);
     const lifecycle = new LocalLifecycleController(process.platform === 'linux' ? localHost.lifecycle : undefined);
-    const connections = new DesktopConnectionController({
-      session: session.defaultSession,
-      profiles,
-      openExternal: openAllowedExternalUrl,
-    });
     setupController = new DesktopSetupController({
       actions: localHost.actions,
       platform: process.platform,
       statePath: join(app.getPath('userData'), 'desktop', 'setup-state.json'),
       defaultRootDir: localHost.config.getStackRoot() ?? join(app.getPath('documents'), 'ProPR'),
+      async selectDirectory() {
+        const options = {
+          title: 'Choose the ProPR setup directory',
+          properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
+        };
+        const selected = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+        return selected.canceled ? null : selected.filePaths[0] ?? null;
+      },
+      async selectPrivateKey() {
+        const options = {
+          title: 'Choose the GitHub App private key',
+          properties: ['openFile'] as Array<'openFile'>,
+          filters: [{ name: 'Private keys', extensions: ['pem', 'key'] }],
+        };
+        const selected = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+        return selected.canceled ? null : selected.filePaths[0] ?? null;
+      },
       resolveApiBaseUrl: localHost.resolveApiBaseUrl,
-      async registerProfile({ name, apiBaseUrl }) {
+      async registerProfile({ name, apiBaseUrl }, signal) {
+        signal?.throwIfAborted();
         const existing = (await profiles.list()).profiles.find(profile => profile.apiBaseUrl === apiBaseUrl);
-        const saved = await profiles.save({ id: existing?.id, label: name, apiBaseUrl });
+        signal?.throwIfAborted();
+        const saved = await profiles.save({ id: existing?.id, label: name, apiBaseUrl }, signal);
+        signal?.throwIfAborted();
         return {
           id: saved.id,
           name: saved.label,
@@ -257,6 +265,7 @@ if (!hasSingleInstanceLock) {
         const target = mainWindow;
         if (target && !target.isDestroyed()) target.webContents.send(IPC_CHANNELS.setupProgress, snapshot);
       },
+      diagnose(event, fields) { log('error', event, fields); },
     });
     registerIpcHandlers({
       app,
@@ -264,7 +273,6 @@ if (!hasSingleInstanceLock) {
       profiles,
       lifecycle,
       setup: setupController,
-      connections,
       logger,
       desktopSession: session.defaultSession,
       devServerUrl,

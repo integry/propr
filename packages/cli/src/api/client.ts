@@ -123,6 +123,7 @@ export class ApiClient {
       headers: customHeaders = {},
       params,
       timeout = this.defaultTimeout,
+      signal,
     } = options;
 
     // Build the full URL
@@ -156,7 +157,8 @@ export class ApiClient {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       // Each retry receives its own timeout window and abort signal.
       const controller = new AbortController();
-      fetchOptions.signal = controller.signal;
+      signal?.throwIfAborted();
+      fetchOptions.signal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
       try {
@@ -197,6 +199,7 @@ export class ApiClient {
           throw error;
         }
 
+        if (signal?.aborted) throw signal.reason;
         const retryableError = error instanceof Error && error.name === "AbortError"
           ? new TimeoutError("Request timed out.", timeout)
           : error instanceof TypeError

@@ -165,11 +165,13 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
   },
   localSetup: {
     async status() {
-      return { phase: 'idle', capability: { supported: true, kind: 'local', platform: 'linux' }, logs: [] };
+      return { phase: 'idle', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: '00000000-0000-4000-8000-000000000000', logs: [] };
     },
     async start() { throw new Error('Local setup requires the Electron desktop host.'); },
     async retry() { throw new Error('Local setup requires the Electron desktop host.'); },
-    async cancel() { return { phase: 'cancelled', capability: { supported: true, kind: 'local', platform: 'linux' }, logs: [] }; },
+    async cancel() { return { phase: 'cancelled', capability: { supported: true, kind: 'local', platform: 'linux' }, sessionId: '00000000-0000-4000-8000-000000000000', logs: [] }; },
+    async selectDirectory() { throw new Error('Directory selection requires the Electron desktop host.'); },
+    async selectPrivateKey() { throw new Error('Private-key selection requires the Electron desktop host.'); },
     onProgress() { return () => undefined; },
   },
   connection: {

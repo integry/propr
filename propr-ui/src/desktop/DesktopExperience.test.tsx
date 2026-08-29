@@ -39,13 +39,13 @@ const adaptersFor = (
   localSetup: {
     status: vi.fn(async () => ({
       phase: 'idle' as const,
-      capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const },
+      capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const }, sessionId: '00000000-0000-4000-8000-000000000000',
       rootDir: '/tmp/propr',
       logs: [],
     })),
     start: vi.fn(async () => ({
       phase: 'completed' as const,
-      capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const },
+      capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const }, sessionId: '00000000-0000-4000-8000-000000000000',
       rootDir: '/tmp/propr',
       logs: [],
       profile: localProfile,
@@ -53,10 +53,10 @@ const adaptersFor = (
     retry: vi.fn(async () => { throw new Error('not used'); }),
     cancel: vi.fn(async () => ({
       phase: 'cancelled' as const,
-      capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const },
+      capability: { supported: true as const, kind: 'local' as const, platform: 'linux' as const }, sessionId: '00000000-0000-4000-8000-000000000000',
       logs: [],
     })),
-    onProgress: vi.fn(() => () => undefined),
+    selectDirectory: vi.fn(async () => null), selectPrivateKey: vi.fn(async () => null), onProgress: vi.fn(() => () => undefined),
   },
   connection: { probe: vi.fn(probe) },
 });
@@ -87,7 +87,7 @@ describe('DesktopExperience', () => {
     fireEvent.click(screen.getByRole('button', { name: /Set up this computer/i }));
 
     expect(await screen.findByRole('heading', { name: 'Check the essentials' })).toBeInTheDocument();
-    for (let step = 0; step < 4; step += 1) {
+    for (let step = 0; step < 5; step += 1) {
       fireEvent.click(screen.getByRole('button', { name: /Continue/i }));
     }
     fireEvent.click(screen.getByRole('button', { name: /Install ProPR/i }));

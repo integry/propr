@@ -60,10 +60,14 @@ interface ExecResult {
 function execAsync(
   cmd: string,
   args: string[],
-  opts: { input?: string; cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs: number }
+  opts: { input?: string; cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal }
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
+    if (opts.signal?.aborted) {
+      resolve({ status: null, stdout: "", stderr: "", error: Object.assign(new Error("cancelled"), { code: "ABORT_ERR" }) });
+      return;
+    }
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -71,16 +75,39 @@ function execAsync(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (forceTimer) clearTimeout(forceTimer);
+      opts.signal?.removeEventListener("abort", abort);
       resolve(res);
     };
+    const terminate = (force = false): void => {
+      if (!child.pid) return;
+      if (process.platform === "win32") {
+        const killer = spawn("taskkill", ["/pid", String(child.pid), "/T", ...(force ? ["/F"] : [])], { stdio: "ignore" });
+        killer.unref();
+      } else {
+        try { process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM"); } catch { child.kill(force ? "SIGKILL" : "SIGTERM"); }
+      }
+    };
+    let terminalError: NodeJS.ErrnoException | undefined;
+    let forceTimer: NodeJS.Timeout | undefined;
+    const abort = (): void => {
+      terminalError = Object.assign(new Error("cancelled"), { code: "ABORT_ERR" });
+      terminate();
+      forceTimer = setTimeout(() => {
+        terminate(true);
+        forceTimer = setTimeout(() => finish({ status: null, stdout, stderr, error: terminalError }), 2_000);
+      }, 2_000);
+    };
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish({ status: null, stdout, stderr, error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) });
+      terminalError = Object.assign(new Error("timed out"), { code: "ETIMEDOUT" });
+      terminate(true);
+      forceTimer = setTimeout(() => finish({ status: null, stdout, stderr, error: terminalError }), 2_000);
     }, opts.timeoutMs);
     child.stdout.on("data", (d) => { stdout += d.toString(); });
     child.stderr.on("data", (d) => { stderr += d.toString(); });
     child.on("error", (error) => finish({ status: null, stdout, stderr, error }));
-    child.on("close", (code) => finish({ status: code, stdout, stderr }));
+    opts.signal?.addEventListener("abort", abort, { once: true });
+    child.on("close", (code) => finish({ status: terminalError ? null : code, stdout, stderr, error: terminalError }));
     child.stdin.on("error", () => { /* ignore EPIPE if the child never reads stdin */ });
     if (opts.input != null) child.stdin.write(opts.input);
     child.stdin.end();
@@ -353,8 +380,8 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
   },
 ];
 
-function imagePresent(orch: OrchestratorModule, tag: string): boolean {
-  return orch.docker(["images", "-q", tag], { capture: true }).stdout.trim().length > 0;
+async function imagePresent(orch: OrchestratorModule, tag: string, signal?: AbortSignal): Promise<boolean> {
+  return (await orch.dockerAsync(["images", "-q", tag], { signal })).stdout.trim().length > 0;
 }
 
 function commandExists(bin: string): boolean {
@@ -404,6 +431,7 @@ export interface ValidateAgentsOptions {
   onUpdate?: (agent: string, update: AgentCellUpdate) => void;
   /** Skip the billable host invocation; setup uses the worker image as truth. */
   skipHost?: boolean;
+  signal?: AbortSignal;
 }
 
 /** The agent types that would be validated for the given filter (for seeding a live view). */
@@ -463,13 +491,14 @@ export interface AgentValidationRow {
 async function versionInfo(
   d: AgentValidationDescriptor,
   image: string | undefined,
-  orch: OrchestratorModule
+  orch: OrchestratorModule,
+  options: Pick<ValidateAgentsOptions, "signal" | "skipHost">
 ): Promise<{ host?: string; image?: string; drift?: "older" | "newer" }> {
-  const hostPromise = d.hostBin && commandExists(d.hostBin)
-    ? execAsync(d.hostBin, ["--version"], { timeoutMs: VERSION_TIMEOUT_MS }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
+  const hostPromise = !options.skipHost && d.hostBin && commandExists(d.hostBin)
+    ? execAsync(d.hostBin, ["--version"], { timeoutMs: VERSION_TIMEOUT_MS, signal: options.signal }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
     : Promise.resolve(undefined);
-  const imagePromise = image && imagePresent(orch, image)
-    ? execAsync("docker", ["run", "--rm", "--network=none", "-e", `PROPR_AGENT_TYPE=${d.type}`, image, ...d.versionArgs], { timeoutMs: VERSION_TIMEOUT_MS }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
+  const imagePromise = image && await imagePresent(orch, image, options.signal)
+    ? execAsync("docker", ["run", "--rm", "--network=none", "-e", `PROPR_AGENT_TYPE=${d.type}`, image, ...d.versionArgs], { timeoutMs: VERSION_TIMEOUT_MS, signal: options.signal }).then((r) => parseVersion(`${r.stdout}\n${r.stderr}`))
     : Promise.resolve(undefined);
   const [host, img] = await Promise.all([hostPromise, imagePromise]);
   const drift = host && img && host !== img ? (compareVersions(img, host) < 0 ? "older" : "newer") : undefined;
@@ -526,13 +555,13 @@ export async function validateAgents(
       return { status: "warn", detail: `${d.hostBin} not installed on host — skipped` };
     }
     const { args, stdin } = d.hostInvocation({ prompt: VALIDATION_PROMPT, promptFileHost });
-    const run = await execAsync(d.hostBin, args, { input: stdin, cwd: workspaceDir, timeoutMs: VALIDATION_TIMEOUT_MS });
+    const run = await execAsync(d.hostBin, args, { input: stdin, cwd: workspaceDir, timeoutMs: VALIDATION_TIMEOUT_MS, signal: options.signal });
     const ev = evaluateRun(run);
     return { status: ev.ok ? "ok" : "fail", detail: ev.detail, ...(ev.ok ? {} : { fix: `Run \`${hostDebugCommand(d)}\` on the host to debug ${d.type} auth.` }) };
   };
 
   const runImage = async (d: AgentValidationDescriptor, image: string | undefined, hostDir: string | undefined): Promise<AgentCell> => {
-    if (!image || !imagePresent(orch, image)) {
+    if (!image || !(await imagePresent(orch, image, options.signal))) {
       return { status: "warn", detail: `image ${image ?? d.imageKey} not present — skipped` };
     }
     if (!hostDir) {
@@ -561,6 +590,7 @@ export async function validateAgents(
       input: stdin,
       env: d.type === "vibe" && cfg.mistralApiKey ? { ...process.env, MISTRAL_API_KEY: cfg.mistralApiKey } : undefined,
       timeoutMs: VALIDATION_TIMEOUT_MS,
+      signal: options.signal,
     });
     const ev = evaluateRun(run);
     const loginHint = d.loginArgs ? ` Re-authenticate with: propr agent login ${d.type}.` : "";
@@ -585,7 +615,8 @@ export async function validateAgents(
           mkdirSync(hostDir, { recursive: true, mode: 0o700 });
         }
         // Emit each cell as it resolves so a live view can fill the table in.
-        const versionP = versionInfo(d, image, orch).then((v) => {
+        options.signal?.throwIfAborted();
+        const versionP = versionInfo(d, image, orch, options).then((v) => {
           options.onUpdate?.(d.type, { field: "version", hostVersion: v.host, imageVersion: v.image, drift: v.drift });
           return v;
         });

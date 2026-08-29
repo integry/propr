@@ -1,15 +1,12 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { redactDesktopValue } from './secret-redaction';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface DesktopLogger {
   log(level: LogLevel, event: string, fields?: Record<string, unknown>): void;
 }
-
-const serializeError = (value: unknown): unknown => value instanceof Error
-  ? { name: value.name, message: value.message, stack: value.stack }
-  : value;
 
 export const createDesktopLogger = (logPath: string): DesktopLogger => {
   let pending = Promise.resolve();
@@ -18,7 +15,7 @@ export const createDesktopLogger = (logPath: string): DesktopLogger => {
       timestamp: new Date().toISOString(),
       level,
       event,
-      ...Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, serializeError(value)])),
+      ...redactDesktopValue(fields) as Record<string, unknown>,
     });
     const consoleMethod = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
     consoleMethod(record);
@@ -27,7 +24,7 @@ export const createDesktopLogger = (logPath: string): DesktopLogger => {
         await mkdir(dirname(logPath), { recursive: true, mode: 0o700 });
         await appendFile(logPath, `${record}\n`, { encoding: 'utf8', mode: 0o600 });
       })
-      .catch(error => console.error(JSON.stringify({ level: 'error', event: 'desktop.log.write_failed', error: serializeError(error) })));
+      .catch(error => console.error(JSON.stringify({ level: 'error', event: 'desktop.log.write_failed', error: redactDesktopValue(error) })));
   };
   return { log };
 };

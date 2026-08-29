@@ -15,6 +15,7 @@ export interface RelayClientOptions {
   baseUrl: string;
   /** GitHub user token used to prove identity to the relay. */
   githubToken: string;
+  signal?: AbortSignal;
 }
 
 export interface EnrollRelayTokenResult {
@@ -75,7 +76,7 @@ async function relayRequest<T>(
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (error) {
     throw new Error(`Cannot reach the relay at ${options.baseUrl}: ${(error as Error).message}`);

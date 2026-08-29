@@ -2,8 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
-  CredentialReadResult,
-  CredentialWriteResult,
   DesktopProfile,
   DesktopProfileInput,
   DesktopProfileList,
@@ -13,6 +11,9 @@ import { normalizeApiBaseUrl } from './security';
 
 const PROFILE_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 const MAX_CREDENTIAL_LENGTH = 65_536;
+
+type CredentialReadResult = { available: false; value: null } | { available: true; value: string | null };
+type CredentialWriteResult = { stored: true } | { stored: false; reason: 'encryption-unavailable' };
 
 interface PersistedState {
   version: 1;
@@ -121,10 +122,12 @@ export class ProfileStore {
     };
   }
 
-  save(input: DesktopProfileInput): Promise<DesktopProfile> {
+  save(input: DesktopProfileInput, signal?: AbortSignal): Promise<DesktopProfile> {
     return this.#mutate(async () => {
+      signal?.throwIfAborted();
       const normalized = normalizedProfileInput(input);
       const state = await this.#readState();
+      signal?.throwIfAborted();
       const existing = state.profiles.find(profile => profile.id === normalized.id);
       const now = new Date().toISOString();
       const profile: DesktopProfile = {
@@ -133,7 +136,7 @@ export class ProfileStore {
         updatedAt: now,
       };
       state.profiles = [...state.profiles.filter(item => item.id !== profile.id), profile];
-      await this.#writeState(state);
+      await this.#writeState(state, signal);
       return { ...profile };
     });
   }
@@ -213,11 +216,19 @@ export class ProfileStore {
     }
   }
 
-  async #writeState(state: PersistedState): Promise<void> {
+  async #writeState(state: PersistedState, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     await this.#ensureDirectories();
+    signal?.throwIfAborted();
     const temporary = `${this.#statePath}.${process.pid}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    await rename(temporary, this.#statePath);
+    try {
+      await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      signal?.throwIfAborted();
+      await rename(temporary, this.#statePath);
+    } catch (error) {
+      await unlink(temporary).catch(() => undefined);
+      throw error;
+    }
     await chmod(this.#statePath, 0o600).catch(() => undefined);
   }
 
