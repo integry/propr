@@ -126,6 +126,40 @@ afterEach(async () => database.destroy());
 after(async () => closeConnection());
 
 describe('notification preference API migration', { concurrency: false }, () => {
+    test('preserves pre-existing unrelated foreign-key violations', async () => {
+        await database.schema.createTable('legacy_parent', table => {
+            table.text('id').primary();
+        });
+        await database.schema.createTable('legacy_child', table => {
+            table.text('id').primary();
+            table.text('parent_id').notNullable()
+                .references('id')
+                .inTable('legacy_parent');
+        });
+        await database.raw('PRAGMA foreign_keys = OFF');
+        try {
+            await database('legacy_child').insert({
+                id: 'legacy-orphan',
+                parent_id: 'missing-parent'
+            });
+        } finally {
+            await database.raw('PRAGMA foreign_keys = ON');
+        }
+        const baselineViolations = await database.raw('PRAGMA foreign_key_check');
+        assert.deepEqual(baselineViolations, [{
+            table: 'legacy_child',
+            rowid: 1,
+            parent: 'legacy_parent',
+            fkid: 0
+        }]);
+
+        await addNotificationPreferenceApis(database);
+        assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), baselineViolations);
+
+        await removeNotificationPreferenceApis(database);
+        assert.deepEqual(await database.raw('PRAGMA foreign_key_check'), baselineViolations);
+    });
+
     test('preserves populated preferences, subscription history, and delivery foreign keys', async () => {
         await database('notification_preferences').insert([
             {
