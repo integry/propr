@@ -36,10 +36,10 @@ describe('AuthenticatedAttachmentImage', () => {
   });
 
   it('aborts a pending attachment request on scope change and revokes on unmount', async () => {
-    let requestSignal: AbortSignal | null = null;
+    const requestSignals: AbortSignal[] = [];
     let resolveFetch!: (response: Response) => void;
     vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
-      requestSignal = init?.signal ?? null;
+      if (init?.signal) requestSignals.push(init.signal);
       return new Promise(resolve => { resolveFetch = resolve; });
     });
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:late');
@@ -50,14 +50,16 @@ describe('AuthenticatedAttachmentImage', () => {
       transportScope: 'AAAAAAAAAAAAAAAAAAAAAA',
     });
     const { unmount } = render(<AuthenticatedAttachmentImage src="/api/attachments/a" alt="attachment" />);
-    await waitFor(() => expect(requestSignal).not.toBeNull());
+    await waitFor(() => expect(requestSignals).toHaveLength(1));
+    const requestSignal = requestSignals[0];
+    if (!requestSignal) throw new Error('Expected attachment fetch to capture an AbortSignal');
 
     setDesktopConnectionScope({
       bridge: {} as never,
       profileId: 'profile-b',
       transportScope: 'BBBBBBBBBBBBBBBBBBBBBB',
     });
-    expect(requestSignal?.aborted).toBe(true);
+    expect(requestSignal.aborted).toBe(true);
     resolveFetch(new Response('late', { status: 200 }));
     await Promise.resolve();
     expect(screen.queryByRole('img', { name: 'attachment' })).not.toBeInTheDocument();
