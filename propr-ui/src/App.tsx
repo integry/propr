@@ -455,6 +455,4 @@ const WebApp: React.FC = () => {
   )
 }
 
-const App: React.FC = () => <DesktopPresentationBoundary fallback={<WebApp />} desktop={<DemoModeProvider><AppContent /></DemoModeProvider>} />;
-
-export default App
+export default function App() { return <DesktopPresentationBoundary fallback={<WebApp />} desktop={<DemoModeProvider><AppContent /></DemoModeProvider>} />; }
