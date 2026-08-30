@@ -111,14 +111,30 @@ export function createSyntheticAgentConfigRoutes({
       });
     });
 
-    if (result.status === 200) {
-      if (refreshAgentRegistry) {
-        try {
-          await refreshAgentRegistry();
-        } catch (error) {
-          console.error('Synthetic agents were saved but the local AgentRegistry refresh failed:', error);
-        }
+    let responseResult = result;
+    const committed = result.status === 200 || result.body.committed === true;
+    if (committed && refreshAgentRegistry) {
+      try {
+        await refreshAgentRegistry();
+      } catch (error) {
+        console.error('Synthetic agents were saved but the local AgentRegistry refresh failed:', error);
+        const refreshError = 'The local AgentRegistry refresh failed, so this process may still be using stale synthetic-agent configuration.';
+        const existingError = typeof result.body.error === 'string' ? result.body.error : undefined;
+        responseResult = {
+          status: 500,
+          body: {
+            ...result.body,
+            success: false,
+            error: existingError
+              ? `${existingError} ${refreshError}`
+              : `Synthetic agents were saved, but the local AgentRegistry refresh failed. This process may still be using stale synthetic-agent configuration.`,
+            committed: true,
+            registry_out_of_sync: true,
+          },
+        };
       }
+    }
+    if (responseResult.status === 200) {
       try {
         await logActivityHelper(
           `Updated synthetic agents configuration (${parsed.syntheticAgents.length} agents)`,
@@ -130,7 +146,7 @@ export function createSyntheticAgentConfigRoutes({
         console.error('Failed to log synthetic agents configuration activity:', error);
       }
     }
-    res.status(result.status).json(result.body);
+    res.status(responseResult.status).json(responseResult.body);
   }
 
   return { getSyntheticAgents, postSyntheticAgents };

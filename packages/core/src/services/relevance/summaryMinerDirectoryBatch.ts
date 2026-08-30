@@ -1,6 +1,5 @@
 import type { Logger } from 'pino';
 import { Agent, type AnalyzeOptions } from '../../agents/types.js';
-import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
@@ -116,6 +115,7 @@ export async function processDirectoryBatch(options: ProcessDirectoryBatchOption
 interface DirectoryBatchState {
   agentUsed: Agent;
   modelLogged: string;
+  routingMetadata?: Record<string, unknown>;
   success: boolean;
   errorMessage?: string;
   results: DirectoryResult[];
@@ -147,6 +147,9 @@ async function analyzeDirectoryBatchWithFallback(options: ProcessDirectoryBatchO
       prompt, directories, agent, model: modelUsed ?? modelOverride, context: `directory_aggregation:${fullName}`, fullName,
       routingSession: options.routingSession,
     });
+    state.routingMetadata = options.routingSession?.routingMetadata;
+    const physicalModel = state.routingMetadata?.physicalModel;
+    if (typeof physicalModel === 'string') state.modelLogged = physicalModel;
     // Best-effort bookkeeping: a transient runtime-state error here must not
     // discard a directory batch the LLM aggregated successfully.
     await clearSummarizationPrimaryQuotaFailuresSafe(
@@ -252,6 +255,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     state.fallbackAgentAlias = fallbackAgentAliasSetting;
     state.agentUsed = fallbackAgent as Agent;
     state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
+    state.routingMetadata = undefined;
     if (failureKind === 'quota') {
       await clearSummarizationCooldown(fullName, branch, {
         primaryAgentAlias,
@@ -293,9 +297,12 @@ async function logDirectoryBatchCall(options: ProcessDirectoryBatchOptions & {
   durationMs: number;
 }): Promise<void> {
   const { directories, fullName, log, state, estimatedInputTokens, estimatedOutputTokens, durationMs } = options;
+  const physicalAgentAlias = typeof state.routingMetadata?.physicalAgentAlias === 'string'
+    ? state.routingMetadata.physicalAgentAlias
+    : state.agentUsed.config.alias;
   await logSummarizationCall({
     timestamp: new Date().toISOString(), callType: 'directory_aggregation', model: state.modelLogged,
-    agentAlias: state.agentUsed.config.alias, repository: fullName, estimatedInputTokens, estimatedOutputTokens,
+    agentAlias: physicalAgentAlias, repository: fullName, estimatedInputTokens, estimatedOutputTokens,
     estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
     fileCount: directories.length, success: state.success, durationMs, error: state.errorMessage
   }, log);
@@ -303,8 +310,12 @@ async function logDirectoryBatchCall(options: ProcessDirectoryBatchOptions & {
   await persistLlmLog(createLlmLogFromAnalysis({
     executionType: 'summarization', modelUsed: state.modelLogged, executionTimeMs: durationMs, success: state.success,
     tokenUsage: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens },
-    error: state.errorMessage, repository: fullName, agentAlias: state.agentUsed.config.alias,
-    metadata: { directoryCount: directories.length, phase: 'directory_aggregation' },
+    error: state.errorMessage, repository: fullName, agentAlias: physicalAgentAlias,
+    metadata: {
+      directoryCount: directories.length,
+      phase: 'directory_aggregation',
+      ...(state.routingMetadata && { syntheticRouting: state.routingMetadata }),
+    },
     workRef: { workType: 'repository', workRepository: fullName },
   }));
 }
@@ -340,7 +351,7 @@ async function analyzeDirectoryBatchWithAgent(options: {
         executionType: 'summarization',
         repository: fullName,
         metadata: { phase: 'directory_aggregation', directoryCount: directories.length },
-        suppressLlmLog: !(agent instanceof SyntheticAgent)
+        suppressLlmLog: true
       };
       const analysisResult = routingSession
         ? await routingSession.analyze(prompt, analyzeOptions)

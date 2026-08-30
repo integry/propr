@@ -1,7 +1,6 @@
 import type { Logger } from 'pino';
 import logger from '../../utils/logger.js';
 import { Agent, type AnalyzeOptions } from '../../agents/types.js';
-import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
 import { resolveExpectedSummaryPath } from './summaryMinerDirectoryHelpers.js';
 import { saveBatchSummaries, logFileBatchCall, type SummaryResult } from './summaryMinerBatchPersistence.js';
@@ -63,6 +62,7 @@ export interface ProcessSingleBatchResult {
 interface BatchAnalysisResult {
   results: SummaryResult[]; agentUsed: Agent;
   modelLogged: string;
+  routingMetadata?: Record<string, unknown>;
   fallbackUsed: boolean;
   primaryAgentAlias?: string; fallbackAgentAlias?: string;
 }
@@ -116,30 +116,36 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
   let stopProcessing = false;
   let fallbackPrimaryAgentAlias: string | undefined;
   let fallbackAgentAlias: string | undefined;
+  let routingMetadata: Record<string, unknown> | undefined;
 
   try {
     const summaries = await analyzeBatchWithFallback({
       prompt, batch, agent, log, modelUsed, primaryAgentAliasSetting,
-      fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch
+      fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch,
+      routingSession: options.routingSession,
     });
     agentUsed = summaries.agentUsed;
     modelLogged = summaries.modelLogged;
     fallbackUsed = summaries.fallbackUsed;
     fallbackPrimaryAgentAlias = summaries.primaryAgentAlias;
     fallbackAgentAlias = summaries.fallbackAgentAlias;
+    routingMetadata = summaries.routingMetadata;
     await saveBatchSummaries({ fullName, batch, summaries: summaries.results, modelUsed: modelLogged, branch });
     success = true;
     log.debug({ savedCount: summaries.results.length }, 'Saved batch summaries');
   } catch (error) {
     errorMessage = (error as Error).message;
     stopProcessing = error instanceof SummarizationCooldownRecordedError;
+    routingMetadata = options.routingSession?.routingMetadata;
+    const physicalModel = routingMetadata?.physicalModel;
+    if (typeof physicalModel === 'string') modelLogged = physicalModel;
     log.error({ error: errorMessage, fileCount: batch.length }, 'Failed to process batch');
   }
 
   const durationMs = Date.now() - startTime;
   await logFileBatchCall({
     log, fullName, batch, modelLogged, agentUsed, estimatedInputTokens,
-    estimatedOutputTokens, durationMs, success, errorMessage
+    estimatedOutputTokens, durationMs, success, errorMessage, routingMetadata
   });
   return {
     success,
@@ -168,7 +174,15 @@ async function analyzeBatchWithFallback(
       { primaryAgentAlias: primaryAgentAliasSetting || agent.config.alias, repository: fullName, branch },
       log
     );
-    return { results, agentUsed: agent, modelLogged: modelUsed, fallbackUsed: false };
+    const routingMetadata = options.routingSession?.routingMetadata;
+    const physicalModel = routingMetadata?.physicalModel;
+    return {
+      results,
+      agentUsed: agent,
+      modelLogged: typeof physicalModel === 'string' ? physicalModel : modelUsed,
+      routingMetadata,
+      fallbackUsed: false,
+    };
   } catch (primaryError) {
     return analyzeBatchAfterPrimaryFailure(
       primaryError, primaryAgentAliasSetting || agent.config.alias, options
@@ -368,7 +382,7 @@ async function analyzeBatchWithAgent(options: {
         executionType: 'summarization',
         repository: fullName,
         metadata: { phase: 'batch_summarization', fileCount: batch.length },
-        suppressLlmLog: !(agent instanceof SyntheticAgent)
+        suppressLlmLog: true
       };
       const analysisResult = routingSession
         ? await routingSession.analyze(prompt, analyzeOptions)
