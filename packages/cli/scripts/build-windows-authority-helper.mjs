@@ -564,100 +564,170 @@ function Complete-ProfileMismatch([string]$reason){
   Send-ProprProgress 8
   [Console]::Out.Write(($document|ConvertTo-Json -Compress))
 }
-function Invoke-BoundedVswhereInventory([string]$path){
+# BEGIN BOUNDED_VSWHERE_PROCESS
+function Get-RemainingInventoryMilliseconds([DateTime]$deadline){
+  $remaining=[Math]::Ceiling(($deadline-[DateTime]::UtcNow).TotalMilliseconds)
+  if($remaining-le0){return 0}
+  if($remaining-ge[int]::MaxValue){return [int]::MaxValue}
+  return [int]$remaining
+}
+function Complete-PendingInventoryRead([IO.Stream]$stream,[System.IAsyncResult]$pending,[DateTime]$deadline){
+  if($null-eq$pending){return}
+  $remaining=Get-RemainingInventoryMilliseconds $deadline
+  if($remaining-gt0-and$pending.AsyncWaitHandle.WaitOne($remaining)){
+    try{$stream.EndRead($pending)|Out-Null}catch{}
+  }
+}
+function Invoke-BoundedRedirectedInventoryProcess([Diagnostics.ProcessStartInfo]$start,[int]$timeoutMilliseconds){
   $process=$null
   $stdout=[IO.MemoryStream]::new()
   $stderr=[IO.MemoryStream]::new()
+  $outPending=$null;$errPending=$null;$reason=$null
+  $deadline=[DateTime]::UtcNow.AddMilliseconds($timeoutMilliseconds)
   try{
-    $start=[Diagnostics.ProcessStartInfo]::new()
-    $start.FileName=$path
-    $start.Arguments="-all -prerelease -products * -format json -utf8"
-    $start.UseShellExecute=$false
-    $start.CreateNoWindow=$true
-    $start.RedirectStandardOutput=$true
-    $start.RedirectStandardError=$true
     $process=[Diagnostics.Process]::new()
     $process.StartInfo=$start
-    if(-not$process.Start()){return [pscustomobject]@{reason='VS_INVENTORY_TOOL';bytes=$null}}
+    if(-not$process.Start()){$reason='VS_INVENTORY_TOOL'}
     $outBuffer=[byte[]]::new(4096);$errBuffer=[byte[]]::new(1024)
-    $outPending=$process.StandardOutput.BaseStream.BeginRead($outBuffer,0,$outBuffer.Length,$null,$null)
-    $errPending=$process.StandardError.BaseStream.BeginRead($errBuffer,0,$errBuffer.Length,$null,$null)
-    $deadline=[DateTime]::UtcNow.AddSeconds(30)
-    while($null-ne$outPending-or$null-ne$errPending){
-      if([DateTime]::UtcNow-ge$deadline){try{$process.Kill()}catch{};return [pscustomobject]@{reason='VS_INVENTORY_TOOL';bytes=$null}}
+    if($null-eq$reason){
+      $outPending=$process.StandardOutput.BaseStream.BeginRead($outBuffer,0,$outBuffer.Length,$null,$null)
+      $errPending=$process.StandardError.BaseStream.BeginRead($errBuffer,0,$errBuffer.Length,$null,$null)
+    }
+    while($null-eq$reason-and($null-ne$outPending-or$null-ne$errPending)){
+      $remaining=Get-RemainingInventoryMilliseconds $deadline
+      if($remaining-le0){$reason='VS_INVENTORY_TOOL';break}
       $progress=$false
       if($null-ne$outPending-and$outPending.IsCompleted){
-        $count=$process.StandardOutput.BaseStream.EndRead($outPending);$progress=$true
+        $completed=$outPending;$outPending=$null
+        $count=$process.StandardOutput.BaseStream.EndRead($completed);$progress=$true
         if($count-eq0){$outPending=$null}else{
-          if($stdout.Length+$count-gt65536){try{$process.Kill()}catch{};return [pscustomobject]@{reason='VS_INVENTORY_OVERSIZED';bytes=$null}}
-          $stdout.Write($outBuffer,0,$count)
-          $outPending=$process.StandardOutput.BaseStream.BeginRead($outBuffer,0,$outBuffer.Length,$null,$null)
+          if($stdout.Length+$count-gt65536){$reason='VS_INVENTORY_OVERSIZED'}else{
+            $stdout.Write($outBuffer,0,$count)
+            $outPending=$process.StandardOutput.BaseStream.BeginRead($outBuffer,0,$outBuffer.Length,$null,$null)
+          }
         }
       }
-      if($null-ne$errPending-and$errPending.IsCompleted){
-        $count=$process.StandardError.BaseStream.EndRead($errPending);$progress=$true
+      if($null-eq$reason-and$null-ne$errPending-and$errPending.IsCompleted){
+        $completed=$errPending;$errPending=$null
+        $count=$process.StandardError.BaseStream.EndRead($completed);$progress=$true
         if($count-eq0){$errPending=$null}else{
-          if($stderr.Length+$count-gt4096){try{$process.Kill()}catch{};return [pscustomobject]@{reason='VS_INVENTORY_TOOL';bytes=$null}}
-          $stderr.Write($errBuffer,0,$count)
-          $errPending=$process.StandardError.BaseStream.BeginRead($errBuffer,0,$errBuffer.Length,$null,$null)
+          if($stderr.Length+$count-gt4096){$reason='VS_INVENTORY_OVERSIZED'}else{
+            $stderr.Write($errBuffer,0,$count)
+            $errPending=$process.StandardError.BaseStream.BeginRead($errBuffer,0,$errBuffer.Length,$null,$null)
+          }
         }
       }
-      if(-not$progress){[Threading.Thread]::Sleep(5)}
+      if($null-eq$reason-and-not$progress){[Threading.Thread]::Sleep([Math]::Min(5,$remaining))}
     }
-    $process.WaitForExit()
-    if($process.ExitCode-ne0-or$stderr.Length-ne0-or$stdout.Length-lt2){return [pscustomobject]@{reason='VS_INVENTORY_TOOL';bytes=$null}}
-    return [pscustomobject]@{reason=$null;bytes=$stdout.ToArray()}
-  }catch{return [pscustomobject]@{reason='VS_INVENTORY_TOOL';bytes=$null}}
-  finally{if($null-ne$process){$process.Dispose()};$stdout.Dispose();$stderr.Dispose()}
+    if($null-eq$reason){
+      $remaining=Get-RemainingInventoryMilliseconds $deadline
+      if($remaining-le0-or-not$process.WaitForExit($remaining)){$reason='VS_INVENTORY_TOOL'}
+    }
+    if($null-eq$reason-and($process.ExitCode-ne0-or$stderr.Length-ne0-or$stdout.Length-lt2)){$reason='VS_INVENTORY_TOOL'}
+  }catch{$reason='VS_INVENTORY_TOOL'}
+  if($null-ne$reason-and$null-ne$process){
+    try{if(-not$process.HasExited){$process.Kill()}}catch{}
+    # Cleanup gets its own short bound only after the one execution deadline
+    # has failed. Every outstanding EndRead is settled when the killed child
+    # closes its pipes; no parameterless process wait remains.
+    $cleanupDeadline=[DateTime]::UtcNow.AddSeconds(5)
+    if($null-ne$outPending){Complete-PendingInventoryRead $process.StandardOutput.BaseStream $outPending $cleanupDeadline}
+    if($null-ne$errPending){Complete-PendingInventoryRead $process.StandardError.BaseStream $errPending $cleanupDeadline}
+    try{
+      $remaining=Get-RemainingInventoryMilliseconds $cleanupDeadline
+      if($remaining-gt0){$process.WaitForExit($remaining)|Out-Null}
+    }catch{}
+  }
+  $result=if($null-eq$reason){[pscustomobject]@{reason=$null;bytes=$stdout.ToArray()}}else{[pscustomobject]@{reason=$reason;bytes=$null}}
+  if($null-ne$process){$process.Dispose()};$stdout.Dispose();$stderr.Dispose()
+  return $result
 }
-function Test-BoundedInventoryObject([object]$value){
+function Invoke-BoundedVswhereInventory([string]$path){
+  $start=[Diagnostics.ProcessStartInfo]::new()
+  $start.FileName=$path
+  $start.Arguments="-all -prerelease -products * -format json -utf8"
+  $start.UseShellExecute=$false
+  $start.CreateNoWindow=$true
+  $start.RedirectStandardOutput=$true
+  $start.RedirectStandardError=$true
+  return Invoke-BoundedRedirectedInventoryProcess $start 30000
+}
+# END BOUNDED_VSWHERE_PROCESS
+# BEGIN BOUNDED_VSWHERE_SCHEMA
+function Test-BoundedInventoryScalar([object]$value){
+  if($null-eq$value){return $true}
+  if($value-is[string]){return $value.Length-le2048-and$value.IndexOf([char]0)-lt0}
+  if($value-is[bool]-or$value-is[byte]-or$value-is[sbyte]-or$value-is[int16]-or$value-is[uint16]-or
+     $value-is[int32]-or$value-is[uint32]-or$value-is[int64]-or$value-is[uint64]-or$value-is[decimal]-or
+     $value-is[DateTime]){return $true}
+  if($value-is[single]){return -not[single]::IsNaN($value)-and-not[single]::IsInfinity($value)}
+  if($value-is[double]){return -not[double]::IsNaN($value)-and-not[double]::IsInfinity($value)}
+  return $false
+}
+function Test-BoundedInventoryObject([object]$value,[ref]$totalProperties,[int]$depth){
   if($null-eq$value-or$value.GetType().FullName-ne'System.Management.Automation.PSCustomObject'){return $false}
   $properties=@($value.PSObject.Properties)
-  if($properties.Count-lt5-or$properties.Count-gt32){return $false}
-  $allowed=@('instanceId','installDate','installationName','installationPath','installationVersion','productId','productPath','state','isComplete','isLaunchable','isPrerelease','isRebootRequired','displayName','description','channelId','channelUri','enginePath','installChannelUri','installedChannelId','installedChannelUri','releaseNotes','resolvedInstallationPath','thirdPartyNotices','updateDate','catalog','properties')
+  if($properties.Count-gt64){return $false}
+  $totalProperties.Value=[int]$totalProperties.Value+$properties.Count
+  if($totalProperties.Value-gt1024){return $false}
   foreach($property in $properties){
-    if($allowed-cnotcontains$property.Name-or$property.Name.Length-gt64){return $false}
-    if($property.Value-is[string]){if($property.Value.Length-gt2048-or$property.Value.IndexOf([char]0)-ge0){return $false}}
-    elseif($property.Name-eq'catalog'-or$property.Name-eq'properties'){
-      if($null-eq$property.Value-or$property.Value.GetType().FullName-ne'System.Management.Automation.PSCustomObject'){return $false}
-      $nested=@($property.Value.PSObject.Properties)
-      if($nested.Count-gt64){return $false}
-      foreach($child in $nested){if($child.Name.Length-gt128-or-not($child.Value-is[string])-or$child.Value.Length-gt2048-or$child.Value.IndexOf([char]0)-ge0){return $false}}
-    }
-    elseif(($property.Name-eq'installDate'-or$property.Name-eq'updateDate')-and$property.Value-is[DateTime]){}
-    elseif($property.Name-eq'state'-and($property.Value-is[int]-or$property.Value-is[long])){}
-    elseif(-not($property.Value-is[bool])){return $false}
+    if([string]::IsNullOrEmpty($property.Name)-or$property.Name.Length-gt128){return $false}
+    if(Test-BoundedInventoryScalar $property.Value){continue}
+    if($depth-ne0-or-not(Test-BoundedInventoryObject $property.Value $totalProperties 1)){return $false}
   }
-  foreach($required in @('instanceId','installationPath','installationVersion','productId','isComplete','isLaunchable')){
-    if($properties.Name-cnotcontains$required){return $false}
-  }
-  return $value.instanceId-is[string]-and$value.instanceId.Length-ge1-and$value.instanceId.Length-le128-and
-    $value.installationPath-is[string]-and$value.installationPath.Length-ge3-and$value.installationPath.Length-le260-and
-    $value.installationVersion-is[string]-and$value.installationVersion.Length-ge1-and$value.installationVersion.Length-le64-and
-    $value.productId-is[string]-and$value.productId.Length-ge1-and$value.productId.Length-le128-and
-    $value.isComplete-is[bool]-and$value.isLaunchable-is[bool]
+  return $true
 }
+function ConvertTo-BoundedInventoryInstance([object]$value,[ref]$totalProperties){
+  if(-not(Test-BoundedInventoryObject $value $totalProperties 0)){throw [IO.InvalidDataException]::new()}
+  $properties=@($value.PSObject.Properties)
+  foreach($required in @('instanceId','installationPath','installationVersion','productId','isComplete','isLaunchable')){
+    if($properties.Name-cnotcontains$required){throw [IO.InvalidDataException]::new()}
+  }
+  $channelPathProperty=$value.PSObject.Properties['channelPath']
+  if($null-ne$channelPathProperty-and(-not($channelPathProperty.Value-is[string])-or
+     $channelPathProperty.Value.Length-lt1-or$channelPathProperty.Value.Length-gt2048-or
+     $channelPathProperty.Value.IndexOf([char]0)-ge0)){throw [IO.InvalidDataException]::new()}
+  if(-not($value.instanceId-is[string])-or$value.instanceId.Length-lt1-or$value.instanceId.Length-gt128-or$value.instanceId.IndexOf([char]0)-ge0-or
+     -not($value.installationPath-is[string])-or$value.installationPath.Length-lt3-or$value.installationPath.Length-gt260-or$value.installationPath.IndexOf([char]0)-ge0-or
+     -not($value.installationVersion-is[string])-or$value.installationVersion.Length-lt1-or$value.installationVersion.Length-gt64-or$value.installationVersion.IndexOf([char]0)-ge0-or
+     -not($value.productId-is[string])-or$value.productId.Length-lt1-or$value.productId.Length-gt128-or$value.productId.IndexOf([char]0)-ge0-or
+     -not($value.isComplete-is[bool])-or-not($value.isLaunchable-is[bool])){throw [IO.InvalidDataException]::new()}
+  # Only these reviewed security fields survive metadata validation.
+  return [pscustomobject][ordered]@{instanceId=$value.instanceId;productId=$value.productId;installationPath=$value.installationPath;installationVersion=$value.installationVersion;isComplete=$value.isComplete;isLaunchable=$value.isLaunchable}
+}
+function Select-ReviewedEnterpriseInventory([object[]]$instances,[string]$programFiles,[string]$runnerArchitecture){
+  $enterprise=@($instances|Where-Object{$_.productId-ceq'Microsoft.VisualStudio.Product.Enterprise'})
+  if($enterprise.Count-eq0){return [pscustomobject]@{reason='VS_ENTERPRISE_ZERO';selected=$null;profile=$null}}
+  # Policy: multiple Enterprise installations are intentionally fatal before
+  # reviewed-version filtering, even if exactly one would otherwise match.
+  if($enterprise.Count-gt1){return [pscustomobject]@{reason='VS_ENTERPRISE_AMBIGUOUS';selected=$null;profile=$null}}
+  if(-not$enterprise[0].isComplete-or-not$enterprise[0].isLaunchable){return [pscustomobject]@{reason='VS_ENTERPRISE_UNEXPECTED';selected=$null;profile=$null}}
+  $expected18=[IO.Path]::Combine($programFiles,'Microsoft Visual Studio','18','Enterprise')
+  $expected17=[IO.Path]::Combine($programFiles,'Microsoft Visual Studio','2022','Enterprise')
+  $reviewed=@($enterprise|Where-Object{
+    ($_.installationVersion-ceq'18.9.12112.369'-and[string]::Equals($_.installationPath,$expected18,[StringComparison]::OrdinalIgnoreCase))-or
+    ($runnerArchitecture-eq'x64'-and$_.installationVersion-ceq'17.14.37502.11'-and[string]::Equals($_.installationPath,$expected17,[StringComparison]::OrdinalIgnoreCase))
+  })
+  if($reviewed.Count-ne1){return [pscustomobject]@{reason='VS_ENTERPRISE_UNEXPECTED';selected=$null;profile=$null}}
+  $profile=if($reviewed[0].installationVersion-ceq'18.9.12112.369'){('vs2026-18.9-'+$runnerArchitecture)}else{'vs2022-17.14-x64'}
+  return [pscustomobject]@{reason=$null;selected=$reviewed[0];profile=$profile}
+}
+# END BOUNDED_VSWHERE_SCHEMA
 $inventoryResult=Invoke-BoundedVswhereInventory $vswhere
 if($null-ne$inventoryResult.reason){Complete-ProfileMismatch $inventoryResult.reason;return}
 try{
   $inventoryText=[Text.UTF8Encoding]::new($false,$true).GetString($inventoryResult.bytes)
-  $instances=@($inventoryText|ConvertFrom-Json)
+  $rawInstances=@($inventoryText|ConvertFrom-Json)
+  if($rawInstances.Count-gt16){throw [IO.InvalidDataException]::new()}
+  $propertyCount=0
+  $instances=@()
+  foreach($rawInstance in $rawInstances){$instances+=@(ConvertTo-BoundedInventoryInstance $rawInstance ([ref]$propertyCount))}
 }catch{Complete-ProfileMismatch 'VS_INVENTORY_SCHEMA';return}
 if($instances.Count-eq0){Complete-ProfileMismatch 'VS_ENTERPRISE_ZERO';return}
-if($instances.Count-gt16-or-not(@($instances|Where-Object{-not(Test-BoundedInventoryObject $_)}).Count-eq0)){Complete-ProfileMismatch 'VS_INVENTORY_SCHEMA';return}
-$enterprise=@($instances|Where-Object{$_.productId-ceq'Microsoft.VisualStudio.Product.Enterprise'})
-if($enterprise.Count-eq0){Complete-ProfileMismatch 'VS_ENTERPRISE_ZERO';return}
-if($enterprise.Count-gt1){Complete-ProfileMismatch 'VS_ENTERPRISE_AMBIGUOUS';return}
-if(-not$enterprise[0].isComplete-or-not$enterprise[0].isLaunchable){Complete-ProfileMismatch 'VS_ENTERPRISE_UNEXPECTED';return}
-$expected18=[IO.Path]::Combine($programFiles,'Microsoft Visual Studio','18','Enterprise')
-$expected17=[IO.Path]::Combine($programFiles,'Microsoft Visual Studio','2022','Enterprise')
-$vs2026=@($enterprise|Where-Object{$_.installationVersion-ceq'18.9.12112.369'-and[string]::Equals($_.installationPath,$expected18,[StringComparison]::OrdinalIgnoreCase)})
-$vs2022=@($enterprise|Where-Object{$runnerArchitecture-eq'x64'-and$_.installationVersion-ceq'17.14.37502.11'-and[string]::Equals($_.installationPath,$expected17,[StringComparison]::OrdinalIgnoreCase)})
-$reviewed=@($vs2026)+@($vs2022)
-if($reviewed.Count-gt1){Complete-ProfileMismatch 'VS_ENTERPRISE_AMBIGUOUS';return}
-if($reviewed.Count-eq0){Complete-ProfileMismatch 'VS_ENTERPRISE_UNEXPECTED';return}
-$selected=$reviewed[0]
-$profile=if($selected.installationVersion-ceq'18.9.12112.369'){('vs2026-18.9-'+$runnerArchitecture)}else{'vs2022-17.14-x64'}
+$selection=Select-ReviewedEnterpriseInventory $instances $programFiles $runnerArchitecture
+if($null-ne$selection.reason){Complete-ProfileMismatch $selection.reason;return}
+$selected=$selection.selected
+$profile=$selection.profile
 $installation=$selected.installationPath
 $installationVersion=$selected.installationVersion
 Send-ProprProgress 4
@@ -747,7 +817,7 @@ if (resolvedToolchain && typeof resolvedToolchain === "object" && !Array.isArray
     "VS_ENTERPRISE_AMBIGUOUS", "VS_ENTERPRISE_UNEXPECTED"].includes(resolvedToolchain.profileMismatch)
   && typeof resolvedToolchain.buildWorkspace === "string") {
   emergencyBuildWorkspace = resolvedToolchain.buildWorkspace;
-  throw new WindowsHelperBuildError("BUILD_COMPILER", "TOOLCHAIN_MISMATCH");
+  throw new WindowsHelperBuildError("BUILD_COMPILER", resolvedToolchain.profileMismatch);
 }
 if (!resolvedToolchain || typeof resolvedToolchain !== "object" || Array.isArray(resolvedToolchain)
   || Object.keys(resolvedToolchain).sort().join("\0") !== [

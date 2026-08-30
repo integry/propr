@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
   WindowsHelperBuildError,
+  WINDOWS_HELPER_DIAGNOSTICS,
   WINDOWS_BUILD_TOOL_SIGNER_POLICY,
   WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY,
   WINDOWS_BUILD_TOOLCHAIN_PROFILES,
@@ -21,6 +25,38 @@ import {
   validateNativeWindowsDirectories,
   windowsBuildLeaseProgressFrames,
 } from "./windows-authority-build-lib.mjs";
+
+const windowsBuildSource = readFileSync(new URL("./build-windows-authority-helper.mjs", import.meta.url), "utf8");
+
+function markedPowerShellSection(name) {
+  const startMarker = `# BEGIN ${name}`;
+  const endMarker = `# END ${name}`;
+  const start = windowsBuildSource.indexOf(startMarker);
+  const end = windowsBuildSource.indexOf(endMarker);
+  assert.ok(start >= 0 && end > start, `${name} production PowerShell section is missing`);
+  return windowsBuildSource.slice(start + startMarker.length, end);
+}
+
+function runWindowsPowerShell(script, environment = {}) {
+  const directory = mkdtempSync(join(tmpdir(), "propr-vs-inventory-"));
+  const scriptPath = join(directory, "test.ps1");
+  try {
+    writeFileSync(scriptPath, script, "utf8");
+    const powershell = join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const result = spawnSync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+      encoding: "utf8",
+      env: { SystemRoot: process.env.SystemRoot, ...environment },
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, `PowerShell test failed: ${result.stderr}`);
+    assert.equal(result.stderr, "");
+    return result.stdout;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 test("hosted x64 and ARM64 compiler families are finite reviewed profiles", () => {
   assert.deepEqual(WINDOWS_BUILD_TOOLCHAIN_PROFILES, {
@@ -46,17 +82,262 @@ test("hosted x64 and ARM64 compiler families are finite reviewed profiles", () =
   for (const version of ["5.900.26.35704", "5.10.0.0", "6.0.0.0", "4.15.0.0"]) {
     assert.throws(() => assertModernRoslynVersion(version, "vs2026-18.9-x64"), WindowsHelperBuildError);
   }
-  const source = readFileSync(new URL("./build-windows-authority-helper.mjs", import.meta.url), "utf8");
+  const source = windowsBuildSource;
   assert.equal(source.match(/-all -prerelease -products \* -format json -utf8/g)?.length, 1);
   assert.doesNotMatch(source, /\$vswhere[^\n]*(?:-requires|-version|-latest|-property)/u);
   assert.match(source, /\$stdout\.Length\+\$count-gt65536/u);
-  assert.match(source, /\$instances\.Count-gt16/u);
+  assert.match(source, /\$rawInstances\.Count-gt16/u);
+  assert.match(source, /\$totalProperties\.Value-gt1024/u);
+  assert.match(source, /\$properties\.Count-gt64/u);
+  assert.match(source, /channelPathProperty/u);
+  assert.match(source, /Only these reviewed security fields survive metadata validation/u);
+  assert.doesNotMatch(source, /\$process\.WaitForExit\(\)/u);
+  assert.match(source, /\$process\.WaitForExit\(\$remaining\)/u);
+  const vswhereAuthorization = source.indexOf("if(-not(Test-AuthorizedResolverFile $vswhere)){exit 32}");
+  const vswhereInventory = source.indexOf("$inventoryResult=Invoke-BoundedVswhereInventory $vswhere");
+  assert.ok(vswhereAuthorization >= 0 && vswhereInventory > vswhereAuthorization,
+    "vswhere inventory ran before the fixed signer/subject authorization");
   assert.match(source, /Microsoft\.VisualStudio\.Product\.Enterprise/u);
   assert.match(source, /installationVersion-ceq'18\.9\.12112\.369'/u);
   assert.match(source, /VS_ENTERPRISE_(?:ZERO|AMBIGUOUS|UNEXPECTED)/u);
   assert.match(source, /\[IO\.Path\]::Combine\(\$programFiles,'Microsoft Visual Studio','18','Enterprise'\)/);
   assert.match(source, /\[string\]::Equals\(\$_\.installationPath,\$expected18,\[StringComparison\]::OrdinalIgnoreCase\)/);
   assert.equal(source.includes("-version '[18.0,19.0)'"), false);
+});
+
+function realisticVswhereInstance(overrides = {}) {
+  return {
+    instanceId: "f17e91ce",
+    installDate: "2026-08-12T18:22:31Z",
+    installationName: "VisualStudio/18.9.0+12112.369",
+    installationPath: "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+    installationVersion: "18.9.12112.369",
+    productId: "Microsoft.VisualStudio.Product.Enterprise",
+    productPath: "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\Common7\\IDE\\devenv.exe",
+    state: 4294967295,
+    isComplete: true,
+    isLaunchable: true,
+    isPrerelease: true,
+    isRebootRequired: false,
+    displayName: "Visual Studio Enterprise 2026 Insiders",
+    description: "Microsoft DevOps solution for productivity and coordination across teams",
+    channelId: "VisualStudio.18.Release",
+    channelPath: "C:\\ProgramData\\Microsoft\\VisualStudio\\Packages\\_Channels\\18\\channelManifest.json",
+    channelUri: "https://aka.ms/vs/18/release/channel",
+    enginePath: "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\resources\\app\\ServiceHub\\Services\\Microsoft.VisualStudio.Setup.Service",
+    installChannelUri: "https://aka.ms/vs/18/release/channel",
+    installedChannelId: "VisualStudio.18.Release",
+    installedChannelUri: "https://aka.ms/vs/18/release/channel",
+    releaseNotes: "https://learn.microsoft.com/visualstudio/releases/18/release-notes",
+    resolvedInstallationPath: "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+    thirdPartyNotices: "https://go.microsoft.com/fwlink/?LinkId=661288",
+    updateDate: "2026-08-12T18:22:31.0000000Z",
+    catalog: {
+      buildBranch: "d18.9",
+      buildVersion: "18.9.12112.369",
+      productDisplayVersion: "18.9.0 Insiders",
+      productLineVersion: "18",
+    },
+    properties: {
+      campaignId: "2030:runner",
+      channelManifestId: "VisualStudio.18.Release/18.9.0+12112.369",
+      includeRecommended: "1",
+      nickname: "",
+    },
+    futureScalarMetadata: "accepted-after-authentication",
+    futureMetadataBag: { revision: "1", enabled: true },
+    ...overrides,
+  };
+}
+
+function inspectVswhereText(text) {
+  const encoded = Buffer.from(text, "utf8").toString("base64");
+  const output = runWindowsPowerShell(`${markedPowerShellSection("BOUNDED_VSWHERE_SCHEMA")}
+$text=[Text.UTF8Encoding]::new($false,$true).GetString([Convert]::FromBase64String($env:PROPR_TEST_INVENTORY))
+try{
+  $rawInstances=@($text|ConvertFrom-Json)
+  if($rawInstances.Count-gt16){throw [IO.InvalidDataException]::new()}
+  $propertyCount=0
+  $instances=@()
+  foreach($rawInstance in $rawInstances){$instances+=@(ConvertTo-BoundedInventoryInstance $rawInstance ([ref]$propertyCount))}
+  $selection=Select-ReviewedEnterpriseInventory $instances 'C:\\Program Files' 'x64'
+  [Console]::Out.Write(($selection|ConvertTo-Json -Compress -Depth 4))
+}catch{[Console]::Out.Write('VS_INVENTORY_SCHEMA')}
+`, { PROPR_TEST_INVENTORY: encoded });
+  return output === "VS_INVENTORY_SCHEMA" ? output : JSON.parse(output);
+}
+
+function inspectVswhereDocument(document) {
+  return inspectVswhereText(JSON.stringify(document));
+}
+
+test("realistic complete vswhere 3.1.7 inventory accepts bounded channelPath and harmless metadata", {
+  skip: process.platform !== "win32",
+}, () => {
+  const result = inspectVswhereDocument([realisticVswhereInstance()]);
+  assert.equal(result.reason, null);
+  assert.equal(result.profile, "vs2026-18.9-x64");
+  assert.deepEqual(Object.keys(result.selected).sort(), [
+    "instanceId", "productId", "installationPath", "installationVersion", "isComplete", "isLaunchable",
+  ].sort());
+});
+
+test("bounded vswhere schema rejects bad channelPath, exact-field types, deep nesting, names, scalars, and instance overflow", {
+  skip: process.platform !== "win32",
+}, () => {
+  const invalid = [
+    [realisticVswhereInstance({ channelPath: true })],
+    [realisticVswhereInstance({ isComplete: "true" })],
+    [realisticVswhereInstance({ futureMetadataBag: { nested: { abuse: "x" } } })],
+    [realisticVswhereInstance({ ["n".repeat(129)]: "x" })],
+    [realisticVswhereInstance({ futureScalarMetadata: "x".repeat(2049) })],
+    [realisticVswhereInstance(Object.fromEntries(Array.from({ length: 30 }, (_, outer) => [
+      `futureBag${outer}`,
+      Object.fromEntries(Array.from({ length: 40 }, (_, inner) => [`property${inner}`, "x"])),
+    ])))],
+    Array.from({ length: 17 }, (_, index) => realisticVswhereInstance({ instanceId: `instance-${index}` })),
+  ];
+  for (const document of invalid) assert.equal(inspectVswhereDocument(document), "VS_INVENTORY_SCHEMA");
+  assert.equal(inspectVswhereText("[{]"), "VS_INVENTORY_SCHEMA");
+});
+
+test("multiple Enterprise installs are fatal before reviewed candidate filtering", {
+  skip: process.platform !== "win32",
+}, () => {
+  const result = inspectVswhereDocument([
+    realisticVswhereInstance(),
+    realisticVswhereInstance({
+      instanceId: "old-enterprise",
+      installationPath: "C:\\Program Files\\Microsoft Visual Studio\\16\\Enterprise",
+      installationVersion: "16.11.0.0",
+    }),
+  ]);
+  assert.equal(result.reason, "VS_ENTERPRISE_AMBIGUOUS");
+  assert.equal(result.selected, null);
+});
+
+function runBoundedInventoryProcessScenario(scenario, timeoutMilliseconds = 500) {
+  const directory = mkdtempSync(join(tmpdir(), "propr-vswhere-child-"));
+  const childPath = join(directory, "child.js");
+  const pidPath = join(directory, "pid.txt");
+  try {
+    writeFileSync(childPath, `
+const { writeFileSync } = require("node:fs");
+writeFileSync(process.env.PROPR_TEST_PID_FILE, String(process.pid));
+const scenario = process.argv[2];
+if (scenario === "slow-valid") {
+  process.stdout.write("[");
+  setTimeout(() => process.stdout.end("]"), 80);
+} else if (scenario === "partial-utf8") {
+  process.stdout.write(Buffer.from([0x5b, 0x22, 0xc3]));
+} else if (scenario === "split-utf8") {
+  process.stdout.write(Buffer.from([0x5b, 0x22, 0xc3]));
+  setTimeout(() => process.stdout.end(Buffer.from([0xa9, 0x22, 0x5d])), 25);
+} else if (scenario === "stderr") {
+  process.stdout.write("[]");
+  process.stderr.write("bounded failure");
+} else if (scenario === "stdout-oversize") {
+  process.stdout.write(Buffer.alloc(65537, 0x61));
+} else if (scenario === "stderr-oversize") {
+  process.stdout.write("[]");
+  process.stderr.write(Buffer.alloc(4097, 0x61));
+} else if (scenario === "close-streams-hang") {
+  process.stdout.end("[]");
+  process.stderr.end();
+  setInterval(() => {}, 1000);
+} else if (scenario === "timeout") {
+  setInterval(() => {}, 1000);
+} else {
+  process.exitCode = 2;
+}
+`, "utf8");
+    const started = Date.now();
+    const output = runWindowsPowerShell(`${markedPowerShellSection("BOUNDED_VSWHERE_PROCESS")}
+$start=[Diagnostics.ProcessStartInfo]::new()
+$start.FileName=$env:PROPR_TEST_NODE
+$start.Arguments=('"'+$env:PROPR_TEST_CHILD+'" '+$env:PROPR_TEST_SCENARIO)
+$start.UseShellExecute=$false
+$start.CreateNoWindow=$true
+$start.RedirectStandardOutput=$true
+$start.RedirectStandardError=$true
+$result=Invoke-BoundedRedirectedInventoryProcess $start ${timeoutMilliseconds}
+$document=[ordered]@{reason=$result.reason;bytes=$(if($null-eq$result.bytes){$null}else{[Convert]::ToBase64String($result.bytes)})}
+[Console]::Out.Write(($document|ConvertTo-Json -Compress))
+`, {
+      PROPR_TEST_NODE: process.execPath,
+      PROPR_TEST_CHILD: childPath,
+      PROPR_TEST_SCENARIO: scenario,
+      PROPR_TEST_PID_FILE: pidPath,
+    });
+    const pid = Number(readFileSync(pidPath, "utf8"));
+    let alive = true;
+    try { process.kill(pid, 0); } catch { alive = false; }
+    return { ...JSON.parse(output), alive, elapsed: Date.now() - started };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("bounded vswhere read accepts slow valid stdout under one deadline", {
+  skip: process.platform !== "win32",
+}, () => {
+  const result = runBoundedInventoryProcessScenario("slow-valid", 1_000);
+  assert.equal(result.reason, null);
+  assert.equal(Buffer.from(result.bytes, "base64").toString("utf8"), "[]");
+  assert.equal(result.alive, false);
+});
+
+test("bounded vswhere read preserves split UTF-8 and rejects a truncated partial scalar", {
+  skip: process.platform !== "win32",
+}, () => {
+  const split = runBoundedInventoryProcessScenario("split-utf8");
+  assert.equal(split.reason, null);
+  assert.equal(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(split.bytes, "base64")), "[\"é\"]");
+  assert.equal(split.alive, false);
+  const truncated = runBoundedInventoryProcessScenario("partial-utf8");
+  assert.equal(truncated.reason, null);
+  assert.throws(() => new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(truncated.bytes, "base64")));
+  assert.equal(truncated.alive, false);
+});
+
+test("bounded vswhere read rejects any stderr under its independent 4 KiB cap", {
+  skip: process.platform !== "win32",
+}, () => {
+  const stderr = runBoundedInventoryProcessScenario("stderr");
+  assert.equal(stderr.reason, "VS_INVENTORY_TOOL");
+  assert.equal(stderr.bytes, null);
+  assert.equal(stderr.alive, false);
+  const oversized = runBoundedInventoryProcessScenario("stderr-oversize");
+  assert.equal(oversized.reason, "VS_INVENTORY_OVERSIZED");
+  assert.equal(oversized.bytes, null);
+  assert.equal(oversized.alive, false);
+});
+
+test("bounded vswhere read rejects stdout beyond its independent 64 KiB cap", {
+  skip: process.platform !== "win32",
+}, () => {
+  const result = runBoundedInventoryProcessScenario("stdout-oversize");
+  assert.equal(result.reason, "VS_INVENTORY_OVERSIZED");
+  assert.equal(result.bytes, null);
+  assert.equal(result.alive, false);
+});
+
+test("bounded vswhere read kills a child that closes both streams then hangs", {
+  skip: process.platform !== "win32",
+}, () => {
+  const result = runBoundedInventoryProcessScenario("close-streams-hang", 150);
+  assert.equal(result.reason, "VS_INVENTORY_TOOL");
+  assert.equal(result.alive, false);
+  assert.ok(result.elapsed < 3_000, `close-stream hang cleanup took ${result.elapsed}ms`);
+});
+
+test("bounded vswhere timeout settles pending reads and process cleanup", {
+  skip: process.platform !== "win32",
+}, () => {
+  const result = runBoundedInventoryProcessScenario("timeout", 150);
+  assert.equal(result.reason, "VS_INVENTORY_TOOL");
+  assert.equal(result.alive, false);
+  assert.ok(result.elapsed < 3_000, `timeout cleanup took ${result.elapsed}ms`);
 });
 
 test("x64 and arm64 slow-host lease readiness is inventory-sized and hard bounded", async () => {
@@ -139,6 +420,27 @@ test("intentional lease-readiness stall remains BUILD_COMPILER diagnostic 4", as
     assert.equal(typeof fire, "function");
     return true;
   });
+});
+
+test("natural inventory failures have distinct fixed secret-free diagnostics and cannot satisfy mutation evidence", () => {
+  const reasons = [
+    "VS_INVENTORY_TOOL",
+    "VS_INVENTORY_OVERSIZED",
+    "VS_INVENTORY_SCHEMA",
+    "VS_ENTERPRISE_ZERO",
+    "VS_ENTERPRISE_AMBIGUOUS",
+    "VS_ENTERPRISE_UNEXPECTED",
+  ];
+  assert.deepEqual(WINDOWS_HELPER_DIAGNOSTICS.slice(12), reasons);
+  reasons.forEach((reason, offset) => {
+    const error = new WindowsHelperBuildError("BUILD_COMPILER", reason, new Error("C:\\secret\\inventory.json"));
+    assert.equal(fixedBuildDiagnostic(error), `[win-authority-stage:BUILD_COMPILER:${12 + offset}]`);
+    assert.equal(error.message.includes("secret"), false);
+  });
+  assert.match(windowsBuildSource, /new WindowsHelperBuildError\("BUILD_COMPILER", resolvedToolchain\.profileMismatch\)/u);
+  const verifier = readFileSync(new URL("../../../scripts/verify-windows-authority-build-evidence.mjs", import.meta.url), "utf8");
+  assert.match(verifier, /\[\["BUILD_COMPILER", 6\], \["BUILD_SOURCE", 6\], \["BUILD_OUTPUT", 6\]\]/u);
+  assert.doesNotMatch(verifier, /VS_(?:INVENTORY|ENTERPRISE)/u);
 });
 
 test("security-pinned source bytes are canonical across clean LF and CRLF checkouts", () => {
