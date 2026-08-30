@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, verify } from 'node:crypto';
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -199,7 +199,14 @@ describe('desktop release artifacts', () => {
     assert.equal(Object.keys(manifest.feeds).length, 0);
     assert.equal(Object.keys(manifest.nativeSigners).length, 0);
     await assert.rejects(access(join(output, 'desktop-release.json.sig')));
-    assert.match(await readFile(join(output, 'SHA256SUMS'), 'utf8'), /ProPR-Desktop-1\.2\.3-windows-x64-Setup\.exe/);
+    const checksumLines = (await readFile(join(output, 'SHA256SUMS'), 'utf8')).trim().split('\n');
+    assert.equal(checksumLines.length, 16);
+    assert.ok(checksumLines.some(line => line.endsWith('ProPR-Desktop-1.2.3-windows-x64-Setup.exe')));
+    for (const line of checksumLines) {
+      const match = /^([a-f0-9]{64})  ([^/\\]+)$/.exec(line);
+      assert.ok(match, `invalid SHA256SUMS line: ${line}`);
+      assert.equal(createHash('sha256').update(await readFile(join(output, match[2]))).digest('hex'), match[1]);
+    }
     assert.match(
       await readFile(join(output, 'ProPR-Desktop-1.2.3-windows-x64-RELEASES'), 'utf8'),
       /ProPR-Desktop-1\.2\.3-windows-x64-full\.nupkg/,
@@ -239,6 +246,43 @@ describe('desktop release artifacts', () => {
       }),
       /does not bind the exact canonical DMG bytes/,
     );
+  });
+
+  test('rejects DMG mutation or replacement during native inspection without emitting evidence', async () => {
+    for (const operation of ['mutate', 'replace']) {
+      const root = await mkdtemp(join(tmpdir(), `propr-release-dmg-inspection-${operation}-`));
+      const makeDirectory = join(root, 'make');
+      const outputDirectory = join(root, 'stage');
+      await mkdir(makeDirectory);
+      await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
+      await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+      await assert.rejects(
+        stageArtifacts({
+          makeDirectory,
+          outputDirectory,
+          platform: 'darwin',
+          arch: 'arm64',
+          version: '1.2.3',
+          inspectArchitecture: async arguments_ => {
+            const inspection = await architectureInspector(arguments_);
+            if (arguments_.kind === 'dmg') {
+              if (operation === 'mutate') {
+                await writeFile(arguments_.path, 'darwin-arm64-dmg-mutated-during-native-validation');
+              } else {
+                const replacement = `${arguments_.path}.replacement`;
+                await writeFile(replacement, await readFile(arguments_.path));
+                await rename(replacement, arguments_.path);
+              }
+            }
+            return inspection;
+          },
+        }),
+        /Staged DMG identity or content changed during native validation/,
+        operation,
+      );
+      await assert.rejects(access(join(outputDirectory, 'release-fragment.json')), undefined, operation);
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test('does not emit claimed DMG layout evidence without the native-validation marker', async () => {

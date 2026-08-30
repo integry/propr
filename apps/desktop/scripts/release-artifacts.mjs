@@ -1,5 +1,5 @@
 import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
-import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inspectArtifactArchitecture, NATIVE_DMG_VALIDATOR } from './release-architecture.mjs';
@@ -156,6 +156,47 @@ const recursiveFiles = async directory => {
 const checksumBytes = value => createHash('sha256').update(value).digest('hex');
 const checksum = async path => checksumBytes(await readFile(path));
 const squirrelChecksumBytes = value => createHash('sha1').update(value).digest('hex');
+
+const dmgFileState = stats => ({
+  device: stats.dev,
+  inode: stats.ino,
+  mode: stats.mode,
+  links: stats.nlink,
+  size: stats.size,
+  modified: stats.mtimeNs,
+  changed: stats.ctimeNs,
+});
+
+const sameDmgFileState = (left, right) => Object.keys(left).every(key => left[key] === right[key]);
+
+const captureDmgBytes = async path => {
+  const before = await lstat(path, { bigint: true });
+  if (!before.isFile() || before.isSymbolicLink()) {
+    throw new Error('Staged DMG must be a real regular file, not a symbolic link or special file');
+  }
+  const sha256 = await checksum(path);
+  const after = await lstat(path, { bigint: true });
+  if (!after.isFile() || after.isSymbolicLink()
+    || !sameDmgFileState(dmgFileState(before), dmgFileState(after))) {
+    throw new Error('Staged DMG identity or content changed while its exact bytes were captured');
+  }
+  if (after.size <= 0n || after.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Staged DMG size must be a positive safe integer');
+  }
+  return {
+    state: dmgFileState(after),
+    size: Number(after.size),
+    sha256,
+  };
+};
+
+const assertStableDmgBytes = (before, after) => {
+  if (!sameDmgFileState(before.state, after.state)
+    || before.size !== after.size
+    || before.sha256 !== after.sha256) {
+    throw new Error('Staged DMG identity or content changed during native validation');
+  }
+};
 
 const parseWindowsSignerPins = value => {
   if (!value) throw new Error('PROPR_DESKTOP_WINDOWS_SIGNER_PINS is required');
@@ -324,20 +365,23 @@ export const stageArtifacts = async ({
     } else {
       await copyFile(byKind.get(kind), destination);
     }
+    const dmgBeforeInspection = kind === 'dmg' ? await captureDmgBytes(destination) : undefined;
     const inspection = await inspectArchitecture({
       path: destination,
       kind,
       platform,
       arch,
     });
-    const details = await stat(destination);
+    const dmgAfterInspection = kind === 'dmg' ? await captureDmgBytes(destination) : undefined;
+    if (dmgBeforeInspection) assertStableDmgBytes(dmgBeforeInspection, dmgAfterInspection);
+    const details = kind === 'dmg' ? dmgAfterInspection : await stat(destination);
     const artifact = {
       platform,
       arch,
       kind,
       fileName,
       size: details.size,
-      sha256: await checksum(destination),
+      sha256: kind === 'dmg' ? details.sha256 : await checksum(destination),
       architectureEvidence: kind === 'dmg'
         ? { format: inspection.format, executable: inspection.executable }
         : inspection,

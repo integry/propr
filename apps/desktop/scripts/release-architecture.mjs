@@ -368,6 +368,25 @@ const decodeZipSymlinkTarget = entry => {
   return target;
 };
 
+const decodeDmgSymlinkTarget = (bytes, entryPath) => {
+  if (bytes.length === 0 || bytes.length > MAX_ZIP_SYMLINK_BYTES) {
+    throw new Error(`DMG framework symbolic link ${entryPath} has an empty or oversized target`);
+  }
+  let target;
+  try {
+    target = UTF8_DECODER.decode(bytes);
+  } catch (error) {
+    throw new Error(`DMG framework symbolic link ${entryPath} target cannot be decoded strictly: ${error.message}`);
+  }
+  if (target.includes('\0') || target.includes('\\') || target.normalize('NFC') !== target
+    || target.startsWith('/') || target.startsWith('//') || /^[A-Za-z]:/.test(target)
+    || posix.normalize(target) !== target
+    || target.split('/').some(component => !component || component === '.' || component === '..')) {
+    throw new Error(`DMG framework symbolic link ${entryPath} has an unsafe relative target`);
+  }
+  return target;
+};
+
 const validateDarwinFrameworkSymlinks = entries => {
   const symlinks = entries.filter(entry => entry.symbolicLink);
   if (symlinks.length > MAX_ZIP_SYMLINKS) throw new Error('ZIP contains too many symbolic links');
@@ -408,6 +427,44 @@ const validateDarwinFrameworkSymlinks = entries => {
     const resolved = components.join('/');
     if (resolved !== frameworkRoot && !resolved.startsWith(`${frameworkRoot}/`)) {
       throw new Error(`ZIP symbolic link ${link.name} escapes its canonical framework`);
+    }
+  }
+};
+
+const validateDmgFrameworkSymlinks = entries => {
+  const symlinks = entries.filter(entry => entry.symbolicLink);
+  if (symlinks.length > MAX_ZIP_SYMLINKS) throw new Error('DMG contains too many symbolic links');
+  const entriesByPath = new Map(entries.map(entry => [entry.path, entry]));
+
+  for (const link of symlinks) {
+    const frameworkRoot = link.frameworkRoot;
+    let components = link.path.split('/');
+    const visited = new Set();
+    let index = 0;
+    while (index < components.length) {
+      const candidate = components.slice(0, index + 1).join('/');
+      const entry = entriesByPath.get(candidate);
+      if (entry?.symbolicLink) {
+        if (visited.has(candidate)) throw new Error(`DMG framework symbolic link ${link.path} contains a cycle`);
+        visited.add(candidate);
+        if (visited.size > MAX_ZIP_SYMLINKS) throw new Error(`DMG framework symbolic link ${link.path} chain is too long`);
+        const resolvedTarget = posix.normalize(posix.join(posix.dirname(candidate), entry.target));
+        if (resolvedTarget !== frameworkRoot && !resolvedTarget.startsWith(`${frameworkRoot}/`)) {
+          throw new Error(`DMG framework symbolic link ${link.path} escapes its canonical framework`);
+        }
+        components = [...resolvedTarget.split('/'), ...components.slice(index + 1)];
+        index = 0;
+        continue;
+      }
+      if (!entry) throw new Error(`DMG framework symbolic link ${link.path} has a missing target ${candidate}`);
+      if (index < components.length - 1 && !entry.directory) {
+        throw new Error(`DMG framework symbolic link ${link.path} traverses non-directory target ${candidate}`);
+      }
+      index += 1;
+    }
+    const resolved = components.join('/');
+    if (resolved !== frameworkRoot && !resolved.startsWith(`${frameworkRoot}/`)) {
+      throw new Error(`DMG framework symbolic link ${link.path} escapes its canonical framework`);
     }
   }
 };
@@ -750,13 +807,28 @@ export const inspectDmgLayout = async ({ root, platform, arch, artifact }) => {
   const contents = join(application, 'Contents');
   const macos = join(contents, 'MacOS');
   const executable = join(macos, EXECUTABLE_NAME);
+  const helperDirectory = join(contents, 'Frameworks');
   const installLink = join(rootPath, DMG_INSTALL_LINK);
-  for (const [path, description, expectedType] of [
+  const canonicalPaths = [
     [application, `${EXECUTABLE_NAME}.app`, 'directory'],
     [contents, `${EXECUTABLE_NAME}.app/Contents`, 'directory'],
     [macos, `${EXECUTABLE_NAME}.app/Contents/MacOS`, 'directory'],
     [executable, `${EXECUTABLE_NAME}.app/Contents/MacOS/${EXECUTABLE_NAME}`, 'regular file'],
-  ]) {
+    [helperDirectory, `${EXECUTABLE_NAME}.app/Contents/Frameworks`, 'directory'],
+  ];
+  for (const helperBundle of DMG_HELPER_BUNDLES) {
+    const helperName = helperBundle.slice(0, -'.app'.length);
+    const helper = join(helperDirectory, helperBundle);
+    const helperContents = join(helper, 'Contents');
+    const helperMacos = join(helperContents, 'MacOS');
+    canonicalPaths.push(
+      [helper, `${EXECUTABLE_NAME}.app/Contents/Frameworks/${helperBundle}`, 'directory'],
+      [helperContents, `${EXECUTABLE_NAME}.app/Contents/Frameworks/${helperBundle}/Contents`, 'directory'],
+      [helperMacos, `${EXECUTABLE_NAME}.app/Contents/Frameworks/${helperBundle}/Contents/MacOS`, 'directory'],
+      [join(helperMacos, helperName), `${EXECUTABLE_NAME}.app/Contents/Frameworks/${helperBundle}/Contents/MacOS/${helperName}`, 'regular file'],
+    );
+  }
+  for (const [path, description, expectedType] of canonicalPaths) {
     let stats;
     try { stats = await lstat(path); } catch (error) {
       if (error?.code === 'ENOENT') throw new Error(`DMG is missing canonical ${description}`);
@@ -789,28 +861,43 @@ export const inspectDmgLayout = async ({ root, platform, arch, artifact }) => {
 
   const applications = [];
   const sameNameExecutables = [];
+  const applicationEntries = [{
+    path: `${EXECUTABLE_NAME}.app`,
+    symbolicLink: false,
+    directory: true,
+  }];
+  const casePaths = new Map();
   const visit = async directory => {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const entryPath = join(directory, entry.name);
       const stats = await lstat(entryPath);
-      if (entry.name.toLocaleLowerCase('en-US').endsWith('.app')) applications.push(entryPath);
+      const relativePath = displayPackagePath(rootPath, entryPath);
+      const casePath = relativePath.toLocaleLowerCase('en-US');
+      if (casePaths.has(casePath) && casePaths.get(casePath) !== relativePath) {
+        throw new Error(`DMG contains duplicate or case-colliding application path ${relativePath}`);
+      }
+      casePaths.set(casePath, relativePath);
       if (entry.name.toLocaleLowerCase('en-US') === EXECUTABLE_NAME) sameNameExecutables.push(entryPath);
       if (stats.isSymbolicLink()) {
-        const target = await readlink(entryPath);
-        if (isAbsolute(target)) throw new Error(`DMG application bundle contains unsafe absolute symbolic link ${displayPackagePath(rootPath, entryPath)}`);
-        const resolvedTarget = resolve(dirname(entryPath), target);
-        if (!pathInside(application, resolvedTarget)) {
-          throw new Error(`DMG application bundle symbolic link escapes the canonical application: ${displayPackagePath(rootPath, entryPath)}`);
+        const frameworkRoot = darwinFrameworkRoot(relativePath);
+        if (!frameworkRoot) {
+          throw new Error(`DMG symbolic link ${relativePath} is outside canonical macOS framework internals`);
         }
+        const target = decodeDmgSymlinkTarget(await readlink(entryPath, { encoding: 'buffer' }), relativePath);
+        applicationEntries.push({ path: relativePath, symbolicLink: true, directory: false, frameworkRoot, target });
       } else if (stats.isDirectory()) {
+        applicationEntries.push({ path: relativePath, symbolicLink: false, directory: true });
+        if (entry.name.toLocaleLowerCase('en-US').endsWith('.app')) applications.push(entryPath);
         await visit(entryPath);
+      } else if (stats.isFile()) {
+        applicationEntries.push({ path: relativePath, symbolicLink: false, directory: false });
       } else if (!stats.isFile()) {
-        throw new Error(`DMG contains special file ${displayPackagePath(rootPath, entryPath)}`);
+        throw new Error(`DMG contains special file ${relativePath}`);
       }
     }
   };
   await visit(application);
-  const helperDirectory = join(contents, 'Frameworks');
+  validateDmgFrameworkSymlinks(applicationEntries);
   const unexpectedApplications = applications.filter(path => (
     dirname(path) !== helperDirectory || !DMG_HELPER_BUNDLES.has(basename(path))
   ));
@@ -825,14 +912,6 @@ export const inspectDmgLayout = async ({ root, platform, arch, artifact }) => {
   for (const helperBundle of DMG_HELPER_BUNDLES) {
     const helperName = helperBundle.slice(0, -'.app'.length);
     const helperExecutable = join(helperDirectory, helperBundle, 'Contents', 'MacOS', helperName);
-    let helperStats;
-    try { helperStats = await lstat(helperExecutable); } catch (error) {
-      if (error?.code === 'ENOENT') throw new Error(`DMG Electron helper bundle is missing canonical executable ${helperName}`);
-      throw error;
-    }
-    if (!helperStats.isFile() || helperStats.isSymbolicLink()) {
-      throw new Error(`DMG Electron helper executable ${helperName} must be a real regular file`);
-    }
     const helperInspection = inspectExecutableBytes(await readPrefix(helperExecutable));
     assertExecutableArchitecture(helperInspection, platform, arch, artifact);
   }

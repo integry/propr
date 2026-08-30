@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -155,10 +155,17 @@ describe('DMG application layout', { skip: process.platform === 'win32' }, () =>
       await mkdir(helperMacos, { recursive: true });
       await writeFile(join(helperMacos, name), executable, { mode: 0o755 });
     }
-    const frameworkVersions = join(frameworks, 'Electron Framework.framework', 'Versions');
+    const framework = join(frameworks, 'Electron Framework.framework');
+    const frameworkVersions = join(framework, 'Versions');
     await mkdir(join(frameworkVersions, 'A', 'Resources'), { recursive: true });
+    await mkdir(join(frameworkVersions, 'A', 'Libraries'), { recursive: true });
+    await mkdir(join(frameworkVersions, 'A', 'Helpers'), { recursive: true });
+    await writeFile(join(frameworkVersions, 'A', 'Electron Framework'), executable, { mode: 0o755 });
     await symlink('A', join(frameworkVersions, 'Current'));
-    await symlink('Versions/Current/Resources', join(frameworks, 'Electron Framework.framework', 'Resources'));
+    await symlink('Versions/Current/Electron Framework', join(framework, 'Electron Framework'));
+    await symlink('Versions/Current/Resources', join(framework, 'Resources'));
+    await symlink('Versions/Current/Libraries', join(framework, 'Libraries'));
+    await symlink('Versions/Current/Helpers', join(framework, 'Helpers'));
     await symlink('/Applications', join(root, 'Applications'));
   };
 
@@ -170,6 +177,80 @@ describe('DMG application layout', { skip: process.platform === 'win32' }, () =>
       await inspectDmgLayout({ root, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
       { format: 'mach-o', architectures: ['arm64'] },
     );
+  });
+
+  test('rejects a symbolic-link canonical helper bundle', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-dmg-helper-link-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    await createDmgLayout(root);
+    const frameworks = join(root, 'propr-desktop.app', 'Contents', 'Frameworks');
+    const helper = join(frameworks, 'propr-desktop Helper.app');
+    await rename(helper, `${helper}.real`);
+    await symlink('propr-desktop Helper.app.real', helper);
+    await assert.rejects(
+      inspectDmgLayout({ root, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /canonical .*Helper\.app must be a real directory, found symbolic link/,
+    );
+  });
+
+  test('rejects a symbolic-link canonical helper executable ancestor', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-dmg-helper-ancestor-link-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    await createDmgLayout(root);
+    const helper = join(root, 'propr-desktop.app', 'Contents', 'Frameworks', 'propr-desktop Helper (GPU).app');
+    const contents = join(helper, 'Contents');
+    await rename(contents, join(helper, 'RealContents'));
+    await symlink('RealContents', contents);
+    await assert.rejects(
+      inspectDmgLayout({ root, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /Helper \(GPU\)\.app\/Contents must be a real directory, found symbolic link/,
+    );
+  });
+
+  test('rejects every symbolic link outside canonical framework internals', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-dmg-non-framework-link-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    await createDmgLayout(root);
+    const resources = join(root, 'propr-desktop.app', 'Contents', 'Resources');
+    await mkdir(resources);
+    await symlink('../MacOS', join(resources, 'MacOS'));
+    await assert.rejects(
+      inspectDmgLayout({ root, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      /outside canonical macOS framework internals/,
+    );
+  });
+
+  test('rejects escaping, cyclic, missing, and case-mismatched framework symbolic links', async context => {
+    for (const [name, alter, pattern] of [
+      ['escape', async framework => {
+        await rm(join(framework, 'Resources'));
+        await symlink('../../../../MacOS', join(framework, 'Resources'));
+      }, /unsafe relative target/],
+      ['cycle', async framework => {
+        const versions = join(framework, 'Versions');
+        await rm(join(versions, 'Current'));
+        await symlink('B', join(versions, 'Current'));
+        await symlink('Current', join(versions, 'B'));
+      }, /contains a cycle/],
+      ['missing', async framework => {
+        await rm(join(framework, 'Resources'));
+        await symlink('Versions/B/Resources', join(framework, 'Resources'));
+      }, /missing target/],
+      ['case-mismatched', async framework => {
+        await rm(join(framework, 'Resources'));
+        await symlink('Versions/a/Resources', join(framework, 'Resources'));
+      }, /missing target/],
+    ]) {
+      const root = await mkdtemp(join(tmpdir(), `propr-dmg-framework-${name}-`));
+      context.after(() => rm(root, { recursive: true, force: true }));
+      await createDmgLayout(root);
+      await alter(join(root, 'propr-desktop.app', 'Contents', 'Frameworks', 'Electron Framework.framework'));
+      await assert.rejects(
+        inspectDmgLayout({ root, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+        pattern,
+        name,
+      );
+    }
   });
 
   test('never treats Linux 7z sanitized install-link output as native layout evidence', async context => {
@@ -238,7 +319,7 @@ describe('DMG application layout', { skip: process.platform === 'win32' }, () =>
     await symlink('/tmp/escape', join(unsafeLink, 'propr-desktop.app', 'Contents', 'escape'));
     await assert.rejects(
       inspectDmgLayout({ root: unsafeLink, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
-      /unsafe absolute symbolic link/,
+      /outside canonical macOS framework internals/,
     );
   });
 
