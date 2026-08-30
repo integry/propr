@@ -171,6 +171,9 @@ jobs:
       - name: Verify bounded helper build diagnostics
         run: node --test packages/cli/scripts/windows-authority-build-lib.test.mjs
 
+      - name: Require real production build-stage mutation evidence
+        run: node scripts/verify-windows-authority-build-evidence.mjs
+
       - name: Build audited AnyCPU authority helper
         run: npm run build:windows-authority-validation -w @propr/cli
 
@@ -212,6 +215,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$(node -p process.platform)" = win32 ]; then
+            build_evidence_receipt="$RUNNER_TEMP/propr-windows-build-evidence-${GITHUB_RUN_ID}.json"
+            node scripts/verify-windows-authority-build-evidence.mjs --receipt="$build_evidence_receipt"
+            echo "PROPR_WINDOWS_BUILD_EVIDENCE_RECEIPT=$build_evidence_receipt" >> "$GITHUB_ENV"
             npm run build:windows-authority-validation -w @propr/cli
           fi
           npm run build -w @propr/shared

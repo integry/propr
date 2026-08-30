@@ -1,12 +1,87 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   WindowsHelperBuildError,
+  WINDOWS_BUILD_TOOL_SIGNER_POLICY,
+  WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY,
+  authorizeWindowsBuildToolDependencies,
+  authorizeWindowsBuildToolSigner,
+  canonicalWindowsBuildSourceBytes,
   fixedBuildDiagnostic,
   runBoundedBuildTool,
   validateNativeWindowsDirectories,
 } from "./windows-authority-build-lib.mjs";
+
+test("security-pinned source bytes are canonical across clean LF and CRLF checkouts", () => {
+  const lf = Buffer.from("first\nsecond\n", "utf8");
+  const crlf = Buffer.from("first\r\nsecond\r\n", "utf8");
+  const canonicalLf = canonicalWindowsBuildSourceBytes(lf);
+  const canonicalCrlf = canonicalWindowsBuildSourceBytes(crlf);
+  assert.deepEqual(canonicalLf, lf);
+  assert.deepEqual(canonicalCrlf, lf);
+  assert.deepEqual(canonicalCrlf, canonicalLf);
+  assert.notEqual(canonicalCrlf, crlf);
+});
+
+test("canonical source binding rejects ambiguous bytes and stages only canonical bytes", () => {
+  assert.throws(() => canonicalWindowsBuildSourceBytes(Buffer.from("first\rsecond\n")), WindowsHelperBuildError);
+  assert.throws(() => canonicalWindowsBuildSourceBytes(Buffer.from([0x61, 0x00, 0x0a])), WindowsHelperBuildError);
+  const source = readFileSync(new URL("../native/windows-authority-bootstrap.c", import.meta.url));
+  const canonical = canonicalWindowsBuildSourceBytes(Buffer.from(source.toString("utf8").replaceAll("\n", "\r\n")));
+  assert.deepEqual(canonical, source);
+});
+
+test("every pinned Windows and fixture source hashes the same canonical bytes that are compiled", () => {
+  const pins = new Map([
+    ["../native/windows-authority-bootstrap.c", "1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e"],
+    ["../native/windows-authority-broker.c", "30347ad0d3bc382b115977439db72538afab176d34e59a68426060d7ba51c071"],
+    ["../native/windows-authority-supervisor.cs", "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff"],
+    ["../../../scripts/fixtures/windows-connect-docker-fixture.c", "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c"],
+    ["../../../test/fixtures/windowsAuthorityReplacementAttacker.c", "01ccc521cf6784f92cc33bbc4846b218625d61cb3b7dcbd9ed9366f50d12f6fa"],
+  ]);
+  for (const [relative, expected] of pins) {
+    const lf = canonicalWindowsBuildSourceBytes(readFileSync(new URL(relative, import.meta.url)));
+    const crlf = canonicalWindowsBuildSourceBytes(Buffer.from(lf.toString("utf8").replaceAll("\n", "\r\n")));
+    assert.deepEqual(crlf, lf, `${relative} CRLF checkout changed compiled bytes`);
+    assert.equal(createHash("sha256").update(lf).digest("hex"), expected, `${relative} pin drifted`);
+  }
+});
+
+test("build tools require a fixed reviewed leaf and SPKI before authorization", () => {
+  for (const [role, expected] of Object.entries(WINDOWS_BUILD_TOOL_SIGNER_POLICY)) {
+    assert.deepEqual(authorizeWindowsBuildToolSigner(role, { signatureKind: "E", ...expected }), {
+      signatureKind: "E", ...expected,
+    });
+    assert.throws(() => authorizeWindowsBuildToolSigner(role, {
+      signatureKind: "E", ...expected, authenticodeLeafSha256: "0".repeat(64),
+    }), WindowsHelperBuildError, `${role} accepted a same-subject/same-root wrong leaf`);
+    assert.throws(() => authorizeWindowsBuildToolSigner(role, {
+      signatureKind: "E", ...expected, authenticodeSpkiSha256: "f".repeat(64),
+    }), WindowsHelperBuildError, `${role} accepted a wrong signing key`);
+    assert.throws(() => authorizeWindowsBuildToolSigner(role, {
+      signatureKind: "C", ...expected,
+    }), WindowsHelperBuildError, `${role} accepted a replacement catalog trust mode`);
+  }
+  assert.throws(() => authorizeWindowsBuildToolSigner("unknown", {
+    signatureKind: "E",
+    authenticodeLeafSha256: "0".repeat(64),
+    authenticodeSpkiSha256: "0".repeat(64),
+  }), WindowsHelperBuildError);
+});
+
+test("compiler and linker module/config inventories are fixed before launch", () => {
+  for (const [role, expected] of Object.entries(WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY)) {
+    assert.deepEqual(authorizeWindowsBuildToolDependencies(role, expected), expected);
+    assert.throws(() => authorizeWindowsBuildToolDependencies(role, {
+      ...expected, sha256: "0".repeat(64),
+    }), WindowsHelperBuildError, `${role} accepted a dependent module/config swap`);
+    assert.throws(() => authorizeWindowsBuildToolDependencies(role, {
+      ...expected, files: expected.files + 1,
+    }), WindowsHelperBuildError, `${role} accepted a dependent module insertion`);
+  }
+});
 
 function result(overrides = {}) {
   return {
@@ -95,9 +170,12 @@ test("production signer pins cannot be copied from environment claims", () => {
   assert.match(buildSource, /--print-signing-pins-v1/u);
   assert.match(buildSource, /Propr\.WindowsAuthority\.SigningPins/u);
   assert.doesNotMatch(buildSource, /SignerCertificate\.Subject-notmatch/u);
-  assert.match(buildSource, /Test-AuthorizedMicrosoftFile/u);
+  assert.match(buildSource, /authorizeWindowsBuildToolSigner/u);
+  assert.doesNotMatch(buildSource, /Test-AuthorizedMicrosoftFile/u);
+  assert.match(buildSource, /Test-AuthorizedResolverFile/u);
   assert.match(buildSource, /runAuthorityLeasedBuildTool\(nativeLinker, nativeLinkArgs/u);
   assert.match(buildSource, /lease-build-inputs-v1/u);
+  assert.match(buildSource, /input\.tool === true \|\| prior\.tool !== true/u);
   assert.match(buildSource, /signer-pins-v1/u);
   assert.match(buildSource, /authenticodeLeafSha256/u);
   assert.match(buildSource, /authenticodeSpkiSha256/u);

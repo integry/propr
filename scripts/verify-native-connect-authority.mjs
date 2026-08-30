@@ -20,7 +20,7 @@ const common = [
     ? [
       'atomic-publication', 'encoded-loader', 'preprotocol-cleanup', 'invalid-handle-cleanup',
       'identity-mismatch-cleanup', 'contents-cleanup', 'cleanup-swap',
-      'bootstrap-after-lock', 'bootstrap-aba', 'settling-race',
+      'bootstrap-first-launch', 'bootstrap-aba', 'settling-race',
       'helper-build-provenance', 'helper-manifest', 'direct-helper-spawn',
       'helper-lease-swap', 'helper-lease-delete', 'helper-lease-reparse',
       'helper-lease-hardlink', 'helper-lease-inplace-write', 'helper-lease-aba',

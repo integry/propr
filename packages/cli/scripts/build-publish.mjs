@@ -41,6 +41,15 @@ const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:2024.12.2";
 const WINDOWS_AUTHORITY_MANIFEST_PUBLIC_KEY = createPublicKey(`-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEABGK5YqTyhB9t0ItFKrMe9jiZ1two1naR/H1jqb6lRYU=
 -----END PUBLIC KEY-----`);
+const WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS = [
+  ["compiler", "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae", "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560"],
+  ["native-compiler", "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d"],
+  ["native-linker", "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed", "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d"],
+];
+const WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES = [
+  ["roslyn-runtime", "72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209", 111, "38581501"],
+  ["msvc-host-runtime", "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2", 53, "62411793"],
+];
 
 const canonicalJson = (value) => {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -142,6 +151,12 @@ if (supervisorManifestBytes.at(-1) !== 0x0a
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.compilerSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.launcherCompilerSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.launcherLinkerSha256 ?? "")
+  || JSON.stringify(supervisorManifest.build?.toolSigners?.map((item) => [
+    item.name, item.authenticodeLeafSha256, item.authenticodeSpkiSha256,
+  ])) !== JSON.stringify(WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS)
+  || JSON.stringify(supervisorManifest.build?.toolDependencies?.map((item) => [
+    item.name, item.sha256, item.files, item.bytes,
+  ])) !== JSON.stringify(WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES)
   || !Array.isArray(supervisorManifest.build?.nativeInputs)
   || supervisorManifest.build.nativeInputs.length !== 7
   || !supervisorManifest.build.nativeInputs.every((input) => input

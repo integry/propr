@@ -27,7 +27,6 @@ import {
 } from '../packages/cli/dist/connectRootAuthority.js';
 import { PUBLIC_INSTANCE_IDENTITY_FILENAME } from '@propr/shared';
 import { getOrCreatePublicInstanceIdentityPinned } from '@propr/local-setup';
-import { publishWindowsBuildArtifactNoReplace } from '../packages/cli/scripts/windows-authority-build-lib.mjs';
 
 const ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const READY = `.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.ready-v1`;
@@ -47,7 +46,7 @@ const expectedScenarios = [
     ? [
       'atomic-publication', 'encoded-loader', 'preprotocol-cleanup', 'invalid-handle-cleanup',
       'identity-mismatch-cleanup', 'contents-cleanup', 'cleanup-swap',
-      'bootstrap-after-lock', 'bootstrap-aba', 'settling-race',
+      'bootstrap-first-launch', 'bootstrap-aba', 'settling-race',
       'helper-build-provenance', 'helper-manifest', 'direct-helper-spawn',
       'helper-lease-swap', 'helper-lease-delete', 'helper-lease-reparse',
       'helper-lease-hardlink', 'helper-lease-inplace-write', 'helper-lease-aba',
@@ -613,6 +612,116 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       /unknown Windows authority stage/,
     );
     const command = join(process.env.SystemRoot!, 'System32', 'cmd.exe');
+    const packagedBootstrapPath = join(process.cwd(), 'packages', 'cli', 'dist', 'native', 'prebuilds',
+      'win32-x64', 'connect-authority-bootstrap.exe');
+    const packagedBootstrapBackup = `${packagedBootstrapPath}.trusted-test-backup-${process.pid}`;
+    const sourceBootstrapPath = join(process.cwd(), 'packages', 'cli', 'native', 'prebuilds',
+      'win32-x64', 'connect-authority-bootstrap.exe');
+    const sourceBootstrapBackup = `${sourceBootstrapPath}.trusted-test-backup-${process.pid}`;
+    const bootstrapMarker = join(dirname(packagedBootstrapPath), 'packaged-broker-attacker-executed');
+    const replacementAttacker = join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityReplacementAttacker.exe');
+    const originalBootstrapBytes = readFileSync(packagedBootstrapPath);
+    const assertBootstrapNegative = async (replacement: Buffer, expected: RegExp) => {
+      await closeWindowsAuthorityCapability();
+      renameSync(packagedBootstrapPath, packagedBootstrapBackup);
+      try {
+        writeFileSync(packagedBootstrapPath, replacement, { flag: 'wx', mode: 0o600 });
+        await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest(), expected);
+        assert.throws(() => lstatSync(bootstrapMarker), /ENOENT/);
+      } finally {
+        rmSync(packagedBootstrapPath, { force: true });
+        renameSync(packagedBootstrapBackup, packagedBootstrapPath);
+      }
+    };
+    await closeWindowsAuthorityCapability();
+    renameSync(packagedBootstrapPath, packagedBootstrapBackup);
+    renameSync(sourceBootstrapPath, sourceBootstrapBackup);
+    try {
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest(), /HELPER_OPEN|capability|authority/);
+    } finally {
+      renameSync(sourceBootstrapBackup, sourceBootstrapPath);
+      renameSync(packagedBootstrapBackup, packagedBootstrapPath);
+    }
+    await assertBootstrapNegative(Buffer.from('tampered packaged bootstrap'), /HELPER_HASH|capability|authority/);
+    let wrongIdentityObserved = false;
+    try {
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
+        onBootstrapFirstLaunch: (bootstrapPath) => {
+          const detached = `${bootstrapPath}.wrong-identity`;
+          renameSync(bootstrapPath, detached);
+          writeFileSync(bootstrapPath, originalBootstrapBytes, { flag: 'wx', mode: 0o600 });
+          wrongIdentityObserved = true;
+        },
+      }), /HELPER_IDENTITY|capability|authority/);
+      assert.equal(wrongIdentityObserved, true);
+    } finally {
+      rmSync(packagedBootstrapPath, { force: true });
+      if (existsSync(`${packagedBootstrapPath}.wrong-identity`)) {
+        renameSync(`${packagedBootstrapPath}.wrong-identity`, packagedBootstrapPath);
+      }
+    }
+    let maliciousReplacementObserved = false;
+    try {
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
+        onBootstrapFirstLaunch: (bootstrapPath) => {
+          const detached = `${bootstrapPath}.first-launch-trusted`;
+          renameSync(bootstrapPath, detached);
+          copyFileSync(replacementAttacker, bootstrapPath);
+          maliciousReplacementObserved = true;
+        },
+      }), /HELPER_IDENTITY|HELPER_HASH|capability|authority/);
+      assert.equal(maliciousReplacementObserved, true);
+      assert.throws(() => lstatSync(bootstrapMarker), /ENOENT/);
+    } finally {
+      rmSync(packagedBootstrapPath, { force: true });
+      if (existsSync(`${packagedBootstrapPath}.first-launch-trusted`)) {
+        renameSync(`${packagedBootstrapPath}.first-launch-trusted`, packagedBootstrapPath);
+      }
+      rmSync(bootstrapMarker, { force: true });
+    }
+    completeScenario('bootstrap-first-launch');
+
+    const packagedSupervisorPath = join(process.cwd(), 'packages', 'cli', 'dist', 'native', 'prebuilds',
+      'win32-anycpu', 'connect-authority-supervisor.exe');
+    const sourceSupervisorPath = join(process.cwd(), 'packages', 'cli', 'native', 'prebuilds',
+      'win32-anycpu', 'connect-authority-supervisor.exe');
+    const packagedSupervisorBackup = `${packagedSupervisorPath}.trusted-test-backup-${process.pid}`;
+    const sourceSupervisorBackup = `${sourceSupervisorPath}.trusted-test-backup-${process.pid}`;
+    const supervisorBytes = readFileSync(packagedSupervisorPath);
+    await closeWindowsAuthorityCapability();
+    renameSync(packagedSupervisorPath, packagedSupervisorBackup);
+    renameSync(sourceSupervisorPath, sourceSupervisorBackup);
+    try {
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest(), /HELPER_OPEN|capability|authority/);
+    } finally {
+      renameSync(sourceSupervisorBackup, sourceSupervisorPath);
+      renameSync(packagedSupervisorBackup, packagedSupervisorPath);
+    }
+    renameSync(packagedSupervisorPath, packagedSupervisorBackup);
+    try {
+      writeFileSync(packagedSupervisorPath, 'tampered packaged supervisor', { flag: 'wx', mode: 0o600 });
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest(), /HELPER_HASH|capability|authority/);
+    } finally {
+      rmSync(packagedSupervisorPath, { force: true });
+      renameSync(packagedSupervisorBackup, packagedSupervisorPath);
+    }
+    let supervisorWrongIdentityObserved = false;
+    try {
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
+        onSupervisorStarting: ({ helperPath }) => {
+          const detached = `${helperPath}.wrong-identity`;
+          renameSync(helperPath, detached);
+          writeFileSync(helperPath, supervisorBytes, { flag: 'wx', mode: 0o600 });
+          supervisorWrongIdentityObserved = true;
+        },
+      }), /HELPER_IDENTITY|capability|authority/);
+      assert.equal(supervisorWrongIdentityObserved, true);
+    } finally {
+      rmSync(packagedSupervisorPath, { force: true });
+      if (existsSync(`${packagedSupervisorPath}.wrong-identity`)) {
+        renameSync(`${packagedSupervisorPath}.wrong-identity`, packagedSupervisorPath);
+      }
+    }
     const preLockControl = nativeFixtureParent('propr-bootstrap-before-lock-');
     try {
       await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
@@ -633,23 +742,20 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       rmSync(preLockControl, { recursive: true, force: true });
     }
 
-    const publicationDirectory = nativeFixtureParent('propr-build-publication-');
-    const publicationTemporary = join(publicationDirectory, 'broker.building');
-    const publicationFinal = join(publicationDirectory, 'broker.exe');
-    try {
-      writeFileSync(publicationTemporary, 'trusted build output', { mode: 0o600 });
-      assert.throws(() => publishWindowsBuildArtifactNoReplace(publicationTemporary, publicationFinal, {
-        beforePublish: () => writeFileSync(publicationFinal, 'same-user collision', { flag: 'wx', mode: 0o600 }),
-      }));
-      assert.equal(readFileSync(publicationFinal, 'utf8'), 'same-user collision');
-      assert.equal(readFileSync(publicationTemporary, 'utf8'), 'trusted build output');
-      unlinkSync(publicationTemporary);
-      unlinkSync(publicationFinal);
-      assert.deepEqual(readdirSync(publicationDirectory), []);
-      completeScenario('atomic-publication');
-    } finally {
-      rmSync(publicationDirectory, { recursive: true, force: true });
-    }
+    const buildEvidenceReceipt = process.env.PROPR_WINDOWS_BUILD_EVIDENCE_RECEIPT;
+    assert.ok(buildEvidenceReceipt, 'hosted production build evidence receipt is required');
+    const buildEvidence = JSON.parse(readFileSync(buildEvidenceReceipt, 'utf8')) as {
+      version?: number;
+      stages?: Array<Record<string, unknown>>;
+    };
+    assert.equal(buildEvidence.version, 1);
+    assert.deepEqual(buildEvidence.stages?.map((item) => item.stage), [
+      'BUILD_COMPILER', 'BUILD_SOURCE', 'BUILD_OUTPUT',
+    ]);
+    assert.deepEqual(buildEvidence.stages?.map((item) => [
+      item.publishedArtifacts, item.stagingResidue, item.childTerminated,
+    ]), [[0, 0, true], [0, 0, true], [0, 0, true]]);
+    completeScenario('atomic-publication');
 
     const startupControl = nativeFixtureParent('propr-supervisor-startup-swap-');
     try {
@@ -815,6 +921,20 @@ test('native helper replacement is rejected before attacker bytes can execute', 
           assert.match(signer.authenticodeLeafSha256, /^[0-9a-f]{64}$/);
           assert.match(signer.authenticodeSpkiSha256, /^[0-9a-f]{64}$/);
         }
+        assert.deepEqual(manifest.build.toolDependencies, [
+          {
+            name: 'roslyn-runtime',
+            sha256: '72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209',
+            files: 111,
+            bytes: '38581501',
+          },
+          {
+            name: 'msvc-host-runtime',
+            sha256: 'b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2',
+            files: 53,
+            bytes: '62411793',
+          },
+        ]);
         completeScenario('encoded-loader');
         completeScenario('direct-helper-spawn');
       },
@@ -877,7 +997,6 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     assert.equal(betweenRequests.stagedPath, locked.stagedPath);
     assert.equal(betweenRequests.supervisorPid, locked.supervisorPid);
     assert.deepEqual(JSON.parse(betweenRequests.output.toString('utf8')), { version: 1, ready: true });
-    completeScenario('bootstrap-after-lock');
 
     const lockedIdentity = lstatSync(locked.stagedPath, { bigint: true });
     let replacementFired = false;

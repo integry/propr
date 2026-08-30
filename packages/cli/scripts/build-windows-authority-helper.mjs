@@ -26,6 +26,9 @@ import { fileURLToPath } from "node:url";
 import {
   WindowsHelperBuildError,
   assertModernRoslynVersion,
+  authorizeWindowsBuildToolDependencies,
+  authorizeWindowsBuildToolSigner,
+  canonicalWindowsBuildSourceBytes,
   fixedBuildDiagnostic,
   publishWindowsBuildArtifactNoReplace,
   runBoundedBuildTool,
@@ -47,6 +50,8 @@ const bootstrapOutput = join(launcherOutputDirectory, "connect-authority-bootstr
 const smokeFixtureSource = join(cliDir, "..", "..", "scripts", "fixtures", "windows-connect-docker-fixture.c");
 const smokeFixtureOutput = join(cliDir, "..", "..", "scripts", "fixtures", "windows-connect-docker-fixture.exe");
 const validation = process.argv.includes("--validation");
+const evidenceArguments = process.argv.filter((item) => item.startsWith("--evidence-stage="));
+const evidenceStage = evidenceArguments.length === 1 ? evidenceArguments[0].slice("--evidence-stage=".length) : undefined;
 const nonce = randomBytes(32).toString("hex");
 const protocolVersion = 2;
 const sourceSha256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
@@ -71,6 +76,10 @@ if (process.platform !== "win32") {
   throw new WindowsHelperBuildError("BUILD_COMPILER", "SPAWN_ERROR");
 }
 if (validation === process.argv.includes("--production")) {
+  throw new WindowsHelperBuildError("BUILD_OUTPUT", "UNKNOWN");
+}
+if (evidenceArguments.length > 1 || (evidenceStage !== undefined
+  && (!validation || !["BUILD_COMPILER", "BUILD_SOURCE", "BUILD_OUTPUT"].includes(evidenceStage)))) {
   throw new WindowsHelperBuildError("BUILD_OUTPUT", "UNKNOWN");
 }
 
@@ -174,7 +183,12 @@ async function runAuthorityLeasedBuildTool(command, args, options, rawInputs) {
         || !/^[0-9a-f]{64}$/u.test(input.authenticodeSpkiSha256))) {
       throw new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT");
     }
-    unique.set(input.path.toLowerCase(), input);
+    const key = input.path.toLowerCase();
+    const prior = unique.get(key);
+    // Directory inventories deliberately contain the tool executable too.
+    // Never let its ordinary-file inventory row downgrade the stronger fixed
+    // leaf/SPKI authorization row for the same identity.
+    if (!prior || input.tool === true || prior.tool !== true) unique.set(key, input);
   }
   if (unique.size < 1 || unique.size > 30_000) {
     throw new WindowsHelperBuildError(options.stage, "OVERSIZED_OUTPUT");
@@ -219,9 +233,24 @@ async function runAuthorityLeasedBuildTool(command, args, options, rawInputs) {
   });
   try {
     await readiness;
+    if (options.evidenceLeaseTarget) {
+      let denied = 0;
+      for (const mutate of [
+        () => writeFileSync(options.evidenceLeaseTarget, "same-user lease mutation\n"),
+        () => rmSync(options.evidenceLeaseTarget),
+        () => renameSync(options.evidenceLeaseTarget, `${options.evidenceLeaseTarget}.same-user-replaced`),
+      ]) {
+        try { mutate(); } catch { denied += 1; }
+      }
+      if (denied !== 3) throw new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT");
+      // A malformed release byte makes the real native lease authority fail
+      // closed. No compiler child is created after the evidence mutation.
+      authority.stdin.end(Buffer.from("!"));
+      return undefined;
+    }
     return runBoundedBuildTool(command, args, options);
   } finally {
-    authority.stdin.end(Buffer.from("X"));
+    if (!authority.stdin.writableEnded) authority.stdin.end(Buffer.from("X"));
     const authorityReleased = await new Promise((resolveExit) => {
       if (authority.exitCode !== null) resolveExit(authority.exitCode === 0);
       else {
@@ -240,8 +269,9 @@ async function runAuthorityLeasedBuildTool(command, args, options, rawInputs) {
 // manager GLOBALROOT name, the resulting DOS path is a valid CreateProcessW
 // application name.
 const committedBootstrapSource = heldIdentity(bootstrapSource, true);
+const bootstrapSourceBytes = canonicalWindowsBuildSourceBytes(committedBootstrapSource.bytes, "BUILD_COMPILER");
 const bootstrapAuthority = heldIdentity(bootstrapOutput, true);
-if (sha256(committedBootstrapSource.bytes) !== bootstrapSourceSha256
+if (sha256(bootstrapSourceBytes) !== bootstrapSourceSha256
   || sha256(bootstrapAuthority.bytes) !== bootstrapSha256) {
   closeSync(committedBootstrapSource.fd);
   closeSync(bootstrapAuthority.fd);
@@ -314,26 +344,26 @@ $authorizedSubjects=@(
   'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
   'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
 )
-function Test-AuthorizedMicrosoftFile([string]$path){
+function Test-AuthorizedResolverFile([string]$path){
   $signature=Get-AuthenticodeSignature -LiteralPath $path
   return $signature.Status-eq'Valid'-and$authorizedSubjects-ccontains$signature.SignerCertificate.Subject
 }
 $currentPowerShell=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-if($currentPowerShell-ne$env:PROPR_BUILD_POWERSHELL-or-not(Test-AuthorizedMicrosoftFile $currentPowerShell)){exit 44}
+if($currentPowerShell-ne$env:PROPR_BUILD_POWERSHELL-or-not(Test-AuthorizedResolverFile $currentPowerShell)){exit 44}
 $vswhere=[IO.Path]::Combine($programFilesX86,'Microsoft Visual Studio','Installer','vswhere.exe')
-if(-not(Test-AuthorizedMicrosoftFile $vswhere)){exit 32}
+if(-not(Test-AuthorizedResolverFile $vswhere)){exit 32}
 $installation=& $vswhere -latest -products '*' -version '[17.14,17.15)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationPath
 if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($installation)-or$installation.Contains([char]10)){exit 33}
 $compiler=[IO.Path]::Combine($installation.Trim(),'MSBuild','Current','Bin','Roslyn','csc.exe')
-if(-not(Test-AuthorizedMicrosoftFile $compiler)){exit 34}
+if(-not(Test-Path -LiteralPath $compiler -PathType Leaf)){exit 34}
 $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($compiler).ProductVersion
 if($version-notmatch'^4\.14\.'){exit 35}
 $toolsets=@(Get-ChildItem -LiteralPath ([IO.Path]::Combine($installation.Trim(),'VC','Tools','MSVC')) -Directory|Where-Object{$_.Name-match'^14\.44\.'})
 if($toolsets.Count-ne1){exit 38}
 $nativeCompiler=[IO.Path]::Combine($toolsets[0].FullName,'bin','Hostx64','x64','cl.exe')
 $nativeLinker=[IO.Path]::Combine($toolsets[0].FullName,'bin','Hostx64','x64','link.exe')
-if(-not(Test-AuthorizedMicrosoftFile $nativeCompiler)){exit 39}
-if(-not(Test-AuthorizedMicrosoftFile $nativeLinker)){exit 41}
+if(-not(Test-Path -LiteralPath $nativeCompiler -PathType Leaf)){exit 39}
+if(-not(Test-Path -LiteralPath $nativeLinker -PathType Leaf)){exit 41}
 $sdkRoot=[IO.Path]::Combine($programFilesX86,'Windows Kits','10')
 $sdkVersions=@(Get-ChildItem -LiteralPath ([IO.Path]::Combine($sdkRoot,'Include')) -Directory|Where-Object{$_.Name-match'^10\.0\.26100\.'})
 if($sdkVersions.Count-ne1){exit 40}
@@ -445,25 +475,36 @@ const heldCompiler = heldIdentity(compiler, true);
 const heldNativeCompiler = heldIdentity(nativeCompiler, true);
 const heldNativeLinker = heldIdentity(nativeLinker, true);
 const heldReferences = references.map((item) => ({ path: item, ...heldIdentity(item, true) }));
+// /noconfig and a minimal child environment disable ambient response/config
+// lookup. Lease every ordinary file beside each executable as the bounded set
+// from which Roslyn/MSVC can load private DLLs, message resources, and explicit
+// tool configuration. The native compiler and linker share one directory.
+const toolRuntimeInventories = [dirname(compiler), dirname(nativeCompiler)].map((path) => ({
+  path,
+  ...authoritativeDirectoryInventory(path),
+}));
+authorizeWindowsBuildToolDependencies("roslyn-runtime", toolRuntimeInventories[0]);
+authorizeWindowsBuildToolDependencies("msvc-host-runtime", toolRuntimeInventories[1]);
 const nativeInputInventories = [...nativeIncludes, ...nativeLibraries].map((path) => ({
   path,
   ...authoritativeDirectoryInventory(path),
 }));
 const committedSource = heldIdentity(source, true);
-const sourceBytes = committedSource.bytes;
+const sourceBytes = canonicalWindowsBuildSourceBytes(committedSource.bytes);
 if (sha256(sourceBytes) !== sourceSha256) {
   throw new WindowsHelperBuildError("BUILD_SOURCE", "NONZERO_OUTPUT");
 }
 const committedLauncherSource = heldIdentity(launcherSource, true);
-const launcherSourceBytes = committedLauncherSource.bytes;
+const launcherSourceBytes = canonicalWindowsBuildSourceBytes(committedLauncherSource.bytes);
 if (sha256(launcherSourceBytes) !== launcherSourceSha256) {
   throw new WindowsHelperBuildError("BUILD_SOURCE", "NONZERO_OUTPUT");
 }
 const committedSmokeFixtureSource = heldIdentity(smokeFixtureSource, true);
-if (sha256(committedSmokeFixtureSource.bytes) !== smokeFixtureSourceSha256) {
+const smokeFixtureSourceBytes = canonicalWindowsBuildSourceBytes(committedSmokeFixtureSource.bytes);
+if (sha256(smokeFixtureSourceBytes) !== smokeFixtureSourceSha256) {
   throw new WindowsHelperBuildError("BUILD_SOURCE", "NONZERO_OUTPUT");
 }
-const readBuildToolSignerPolicy = (path) => {
+const readBuildToolSignerPolicy = (role, path) => {
   const result = runBoundedBuildTool(bootstrapOutput, ["signer-pins-v1", path], {
     stage: "BUILD_COMPILER", timeout: 10_000, maxBytes: 256, sensitiveValues: [path, bootstrapOutput],
   });
@@ -471,17 +512,22 @@ const readBuildToolSignerPolicy = (path) => {
     new TextDecoder("utf-8", { fatal: true }).decode(result.stdout),
   );
   if (!match) throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
-  return { signatureKind: "E", authenticodeLeafSha256: match[1], authenticodeSpkiSha256: match[2] };
+  return authorizeWindowsBuildToolSigner(role, {
+    signatureKind: "E", authenticodeLeafSha256: match[1], authenticodeSpkiSha256: match[2],
+  });
 };
 const heldInput = (item) => ({
   path: item.path,
   sha256: sha256(item.bytes),
-  ...(item.tool ? { tool: true, ...readBuildToolSignerPolicy(item.path) } : {}),
+  ...(item.tool ? { tool: true, ...readBuildToolSignerPolicy(item.role, item.path) } : {}),
 });
-const managedToolInputs = [heldInput({ path: compiler, bytes: heldCompiler.bytes, tool: true }), ...heldReferences.map(heldInput)];
-const nativeCompilerInputs = [heldInput({ path: nativeCompiler, bytes: heldNativeCompiler.bytes, tool: true }),
+const managedToolInputs = [heldInput({ path: compiler, bytes: heldCompiler.bytes, tool: true, role: "compiler" }),
+  ...toolRuntimeInventories[0].inputs, ...heldReferences.map(heldInput)];
+const nativeCompilerInputs = [heldInput({ path: nativeCompiler, bytes: heldNativeCompiler.bytes, tool: true, role: "native-compiler" }),
+  ...toolRuntimeInventories[1].inputs,
   ...nativeInputInventories.slice(0, nativeIncludes.length).flatMap((item) => item.inputs)];
-const nativeLinkerInputs = [heldInput({ path: nativeLinker, bytes: heldNativeLinker.bytes, tool: true }),
+const nativeLinkerInputs = [heldInput({ path: nativeLinker, bytes: heldNativeLinker.bytes, tool: true, role: "native-linker" }),
+  ...toolRuntimeInventories[1].inputs,
   ...nativeInputInventories.slice(nativeIncludes.length).flatMap((item) => item.inputs)];
 
 // Remove the previous complete release set before any expensive work. Final
@@ -494,6 +540,7 @@ rmSync(launcherOutput, { force: true });
 rmSync(smokeFixtureOutput, { force: true });
 const temporaryOutput = join(buildWorkspace, "connect-authority-supervisor.exe");
 const temporarySource = join(buildWorkspace, "windows-authority-supervisor.cs");
+const temporaryCompilerConfig = join(buildWorkspace, "windows-authority-compiler.config");
 const temporaryPolicy = join(buildWorkspace, "windows-authority-signing-policy.txt");
 const temporaryLauncherSource = join(buildWorkspace, "windows-authority-launcher.c");
 const temporaryLauncher = join(buildWorkspace, "windows-authority-launcher.exe");
@@ -502,6 +549,7 @@ const temporarySmokeFixtureSource = join(buildWorkspace, "windows-connect-docker
 const temporarySmokeFixtureObject = join(buildWorkspace, "windows-connect-docker-fixture.obj");
 const temporarySmokeFixture = join(buildWorkspace, "windows-connect-docker-fixture.exe");
 let sourceLease;
+let compilerConfigLease;
 let policyLease;
 let launcherSourceLease;
 let smokeFixtureSourceLease;
@@ -535,6 +583,16 @@ try {
   }
   closeSync(sourceLease);
   sourceLease = openSync(temporarySource, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const compilerConfigBytes = Buffer.from(
+    '<?xml version="1.0" encoding="utf-8"?>\n<configuration><runtime /></configuration>\n',
+    "utf8",
+  );
+  compilerConfigLease = openSync(temporaryCompilerConfig, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
+  if (writeSync(compilerConfigLease, compilerConfigBytes, 0, compilerConfigBytes.byteLength, 0)
+    !== compilerConfigBytes.byteLength) throw new WindowsHelperBuildError("BUILD_SOURCE", "UNEXPECTED_EXIT");
+  fsyncSync(compilerConfigLease);
+  closeSync(compilerConfigLease);
+  compilerConfigLease = openSync(temporaryCompilerConfig, constants.O_RDONLY | constants.O_NOFOLLOW);
   launcherSourceLease = openSync(temporaryLauncherSource, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
   let launcherOffset = 0;
   while (launcherOffset < launcherSourceBytes.byteLength) {
@@ -548,32 +606,44 @@ try {
   launcherSourceLease = openSync(temporaryLauncherSource, constants.O_RDONLY | constants.O_NOFOLLOW);
   const args = [
     "/nologo", "/noconfig", "/nostdlib+", "/target:exe", "/platform:anycpu", "/optimize+", "/deterministic+",
+    `/appconfig:${temporaryCompilerConfig}`,
     `/out:${temporaryOutput}`,
     ...references.map((item) => `/reference:${item}`),
     temporarySource,
   ];
   smokeFixtureSourceLease = openSync(temporarySmokeFixtureSource, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
-  if (writeSync(smokeFixtureSourceLease, committedSmokeFixtureSource.bytes, 0,
-    committedSmokeFixtureSource.bytes.byteLength, 0) !== committedSmokeFixtureSource.bytes.byteLength) {
+  if (writeSync(smokeFixtureSourceLease, smokeFixtureSourceBytes, 0,
+    smokeFixtureSourceBytes.byteLength, 0) !== smokeFixtureSourceBytes.byteLength) {
     throw new WindowsHelperBuildError("BUILD_SOURCE", "UNEXPECTED_EXIT");
   }
   fsyncSync(smokeFixtureSourceLease);
   closeSync(smokeFixtureSourceLease);
   smokeFixtureSourceLease = openSync(temporarySmokeFixtureSource, constants.O_RDONLY | constants.O_NOFOLLOW);
   const compilerOptions = {
-    stage: "BUILD_COMPILER",
+    stage: evidenceStage === "BUILD_SOURCE" ? "BUILD_SOURCE" : "BUILD_COMPILER",
     env: { SystemRoot: windowsDirectory, TEMP: buildWorkspace, TMP: buildWorkspace },
     timeout: 30_000,
     maxBytes: 64 * 1024,
     sensitiveValues: [compiler, source, temporarySource, temporaryOutput, buildWorkspace, ...references],
   };
+  if (evidenceStage === "BUILD_SOURCE") {
+    // Mutate the actual staged production source immediately before its real
+    // compiler input lease. The pinned canonical digest must reject it.
+    writeFileSync(temporarySource, "same-user staged source replacement\n");
+  } else if (evidenceStage === "BUILD_COMPILER") {
+    // Attack a real compiler input after the native authority reports that all
+    // inputs are leased and immediately before the compiler would be spawned.
+    compilerOptions.evidenceLeaseTarget = temporaryCompilerConfig;
+  }
   await runAuthorityLeasedBuildTool(compiler, args, compilerOptions, [
     ...managedToolInputs, { path: temporarySource, sha256: sha256(sourceBytes) },
+    { path: temporaryCompilerConfig, sha256: sha256(compilerConfigBytes) },
   ]);
   const deterministicFirst = heldIdentity(temporaryOutput);
   rmSync(temporaryOutput, { force: true });
   await runAuthorityLeasedBuildTool(compiler, args, compilerOptions, [
     ...managedToolInputs, { path: temporarySource, sha256: sha256(sourceBytes) },
+    { path: temporaryCompilerConfig, sha256: sha256(compilerConfigBytes) },
   ]);
   const deterministicSecond = heldIdentity(temporaryOutput);
   if (sha256(deterministicFirst.bytes) !== sha256(deterministicSecond.bytes)) {
@@ -626,7 +696,7 @@ try {
     "/c", `/Fo${temporarySmokeFixtureObject}`, temporarySmokeFixtureSource,
   ], nativeOptions, [
     ...nativeCompilerInputs,
-    { path: temporarySmokeFixtureSource, sha256: sha256(committedSmokeFixtureSource.bytes) },
+    { path: temporarySmokeFixtureSource, sha256: sha256(smokeFixtureSourceBytes) },
   ]);
   await runAuthorityLeasedBuildTool(nativeLinker, [
     "/NOLOGO", "/Brepro", "/SUBSYSTEM:CONSOLE", "/MANIFEST:EMBED", `/OUT:${temporarySmokeFixture}`,
@@ -663,7 +733,8 @@ try {
       throw new Error("trusted absolute signtool, signing certificate, and HTTPS timestamp are required");
     }
     signToolLease = heldIdentity(signTool, true);
-    const signToolInput = heldInput({ path: signTool, bytes: signToolLease.bytes, tool: true });
+    const signToolPins = readBuildToolSignerPolicy("sign-tool", signTool);
+    const signToolInput = { path: signTool, sha256: sha256(signToolLease.bytes), tool: true, ...signToolPins };
     const signPath = async (target) => {
       await runAuthorityLeasedBuildTool(signTool, [
         "sign", "/fd", "SHA256", "/sha1", certificate, "/tr", timestamp, "/td", "SHA256", target,
@@ -710,6 +781,7 @@ try {
       ...compilerOptions, sensitiveValues: [...compilerOptions.sensitiveValues, temporaryPolicy],
     }, [...managedToolInputs,
       { path: temporarySource, sha256: sha256(sourceBytes) },
+      { path: temporaryCompilerConfig, sha256: sha256(compilerConfigBytes) },
       { path: temporaryPolicy, sha256: sha256(policyBytes) },
     ]);
     const policyFirst = heldIdentity(temporaryOutput);
@@ -718,6 +790,7 @@ try {
       ...compilerOptions, sensitiveValues: [...compilerOptions.sensitiveValues, temporaryPolicy],
     }, [...managedToolInputs,
       { path: temporarySource, sha256: sha256(sourceBytes) },
+      { path: temporaryCompilerConfig, sha256: sha256(compilerConfigBytes) },
       { path: temporaryPolicy, sha256: sha256(policyBytes) },
     ]);
     const policySecond = heldIdentity(temporaryOutput);
@@ -800,6 +873,12 @@ try {
       throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
     }
   }
+  for (const before of toolRuntimeInventories) {
+    const after = authoritativeDirectoryInventory(before.path);
+    if (after.sha256 !== before.sha256 || after.files !== before.files || after.bytes !== before.bytes) {
+      throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+    }
+  }
   for (const [path, before] of [[source, committedSource], [launcherSource, committedLauncherSource],
     [smokeFixtureSource, committedSmokeFixtureSource]]) {
     const after = heldIdentity(path);
@@ -808,8 +887,9 @@ try {
     }
   }
   verifyStagedLease(temporarySource, sourceLease, sourceBytes);
+  verifyStagedLease(temporaryCompilerConfig, compilerConfigLease, compilerConfigBytes);
   verifyStagedLease(temporaryLauncherSource, launcherSourceLease, launcherSourceBytes);
-  verifyStagedLease(temporarySmokeFixtureSource, smokeFixtureSourceLease, committedSmokeFixtureSource.bytes);
+  verifyStagedLease(temporarySmokeFixtureSource, smokeFixtureSourceLease, smokeFixtureSourceBytes);
   if (policyLease !== undefined) {
     verifyStagedLease(temporaryPolicy, policyLease, Buffer.from(
       `${derivedSigningPins.authenticodeLeafSha256}\n${derivedSigningPins.authenticodeSpkiSha256}\n`,
@@ -842,6 +922,10 @@ try {
           authenticodeLeafSha256: nativeLinkerInputs[0].authenticodeLeafSha256,
           authenticodeSpkiSha256: nativeLinkerInputs[0].authenticodeSpkiSha256 },
       ],
+      toolDependencies: toolRuntimeInventories.map((item, index) => ({
+        name: index === 0 ? "roslyn-runtime" : "msvc-host-runtime",
+        sha256: item.sha256, files: item.files, bytes: item.bytes,
+      })),
       references: heldReferences.map((item) => ({
         name: basename(item.path),
         sha256: sha256(item.bytes),
@@ -875,6 +959,11 @@ try {
   // Publication is no-replace at the final names after every byte and held
   // compiler/reference identity has been verified. Cleanup below proves no
   // compiler output survives a failed build.
+  if (evidenceStage === "BUILD_OUTPUT") {
+    // Collide with the actual final production name after deterministic PE and
+    // provenance verification. The no-replace primitive must reject it.
+    writeFileSync(output, "same-user no-replace collision\n", { flag: "wx", mode: 0o600 });
+  }
   publishWindowsBuildArtifactNoReplace(temporaryOutput, output);
   publishedOutput = true;
   publishWindowsBuildArtifactNoReplace(temporaryLauncher, launcherOutput);
@@ -887,6 +976,8 @@ try {
   publishedSmokeFixture = true;
   closeSync(sourceLease);
   sourceLease = undefined;
+  closeSync(compilerConfigLease);
+  compilerConfigLease = undefined;
   if (policyLease !== undefined) {
     closeSync(policyLease);
     policyLease = undefined;
@@ -896,6 +987,7 @@ try {
   closeSync(smokeFixtureSourceLease);
   smokeFixtureSourceLease = undefined;
   rmSync(temporarySource, { force: true });
+  rmSync(temporaryCompilerConfig, { force: true });
   rmSync(temporaryPolicy, { force: true });
   rmSync(temporaryLauncherSource, { force: true });
   rmSync(temporaryLauncherObject, { force: true });
@@ -909,6 +1001,9 @@ try {
   if (sourceLease !== undefined) {
     try { closeSync(sourceLease); } catch { /* Fixed build diagnostic owns failure output. */ }
   }
+  if (compilerConfigLease !== undefined) {
+    try { closeSync(compilerConfigLease); } catch { /* Fixed build diagnostic owns failure output. */ }
+  }
   if (policyLease !== undefined) {
     try { closeSync(policyLease); } catch { /* Fixed build diagnostic owns failure output. */ }
   }
@@ -919,6 +1014,7 @@ try {
     try { closeSync(smokeFixtureSourceLease); } catch { /* Fixed build diagnostic owns failure output. */ }
   }
   rmSync(temporarySource, { force: true });
+  rmSync(temporaryCompilerConfig, { force: true });
   rmSync(temporaryPolicy, { force: true });
   rmSync(temporaryLauncherSource, { force: true });
   rmSync(temporaryLauncher, { force: true });
@@ -934,6 +1030,7 @@ try {
   if (publishedSignature) rmSync(signaturePath, { force: true });
   if (publishedLauncher) rmSync(launcherOutput, { force: true });
   if (publishedSmokeFixture) rmSync(smokeFixtureOutput, { force: true });
+  if (evidenceStage === "BUILD_OUTPUT") rmSync(output, { force: true });
   const failure = error instanceof WindowsHelperBuildError
     ? error
     : new WindowsHelperBuildError("BUILD_OUTPUT", "UNKNOWN", error);

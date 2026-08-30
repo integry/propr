@@ -149,6 +149,32 @@ const WINDOWS_AUTHORITY_BOOTSTRAP_SOURCE_SHA256 = "1b4dd2771e235bb1a4912095667f8
 const WINDOWS_AUTHORITY_PROTOCOL_VERSION = 2;
 const WINDOWS_AUTHORITY_SUPERVISOR_SOURCE_SHA256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
 const WINDOWS_AUTHORITY_LAUNCHER_SOURCE_SHA256 = "30347ad0d3bc382b115977439db72538afab176d34e59a68426060d7ba51c071";
+const WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS = Object.freeze({
+  compiler: Object.freeze({
+    leaf: "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae",
+    spki: "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560",
+  }),
+  "native-compiler": Object.freeze({
+    leaf: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed",
+    spki: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d",
+  }),
+  "native-linker": Object.freeze({
+    leaf: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed",
+    spki: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d",
+  }),
+});
+const WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES = Object.freeze({
+  "roslyn-runtime": Object.freeze({
+    sha256: "72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209",
+    files: 111,
+    bytes: "38581501",
+  }),
+  "msvc-host-runtime": Object.freeze({
+    sha256: "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2",
+    files: 53,
+    bytes: "62411793",
+  }),
+});
 const WINDOWS_AUTHORITY_MANIFEST_PUBLIC_KEY = createPublicKey(`-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEABGK5YqTyhB9t0ItFKrMe9jiZ1two1naR/H1jqb6lRYU=
 -----END PUBLIC KEY-----`);
@@ -267,6 +293,35 @@ function windowsBootstrapArtifact(): ReturnType<typeof authorityBrokerArtifact> 
   throw new WindowsSupervisorStartupError("HELPER_OPEN");
 }
 
+function revalidateWindowsBootstrapArtifact(
+  bootstrap: ReturnType<typeof windowsBootstrapArtifact>,
+): void {
+  let namedFd: number | undefined;
+  try {
+    namedFd = openSync(bootstrap.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const held = fstatSync(bootstrap.fd, { bigint: true });
+    const named = fstatSync(namedFd, { bigint: true });
+    const path = lstatSync(bootstrap.path, { bigint: true });
+    if (!held.isFile() || !named.isFile() || path.isSymbolicLink()
+      || held.dev !== named.dev || held.ino !== named.ino
+      || named.dev !== path.dev || named.ino !== path.ino
+      || named.nlink !== 1n || named.size !== BigInt(bootstrap.bytes.byteLength)) {
+      throw new WindowsSupervisorStartupError("HELPER_IDENTITY");
+    }
+    const digest = createHash("sha256")
+      .update(readExactDescriptor(namedFd, bootstrap.bytes.byteLength)).digest("hex");
+    if (digest !== bootstrap.digest || digest !== WINDOWS_AUTHORITY_BOOTSTRAP_SHA256) {
+      throw new WindowsSupervisorStartupError("HELPER_HASH");
+    }
+  } catch (error) {
+    if (error instanceof WindowsSupervisorStartupError) throw error;
+    throw new WindowsSupervisorStartupError((error as NodeJS.ErrnoException).code === "ENOENT"
+      ? "HELPER_OPEN" : "HELPER_IDENTITY");
+  } finally {
+    if (namedFd !== undefined) closeSync(namedFd);
+  }
+}
+
 interface WindowsSupervisorManifest {
   readonly format: "propr-windows-authority-helper-v2";
   readonly protocolVersion: 2;
@@ -288,6 +343,7 @@ interface WindowsSupervisorManifest {
       readonly authenticodeLeafSha256: string;
       readonly authenticodeSpkiSha256: string;
     }[];
+    readonly toolDependencies: readonly { readonly name: string; readonly sha256: string; readonly files: number; readonly bytes: string }[];
     readonly references: readonly { readonly name: string; readonly sha256: string }[];
     readonly nativeInputs: readonly { readonly name: string; readonly sha256: string; readonly files: number; readonly bytes: string }[];
   };
@@ -314,7 +370,7 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
   const trust = manifest.trust as Record<string, unknown> | undefined;
   if (!pe || Array.isArray(pe) || !exactKeys(pe, ["architecture", "managed", "deterministic"])
     || pe.architecture !== "anycpu" || pe.managed !== true || pe.deterministic !== true
-    || !build || Array.isArray(build) || !exactKeys(build, ["compilerSha256", "launcherCompilerSha256", "launcherLinkerSha256", "bootstrapSourceSha256", "bootstrapSha256", "compilerRelativePath", "toolSigners", "references", "nativeInputs"])
+    || !build || Array.isArray(build) || !exactKeys(build, ["compilerSha256", "launcherCompilerSha256", "launcherLinkerSha256", "bootstrapSourceSha256", "bootstrapSha256", "compilerRelativePath", "toolSigners", "toolDependencies", "references", "nativeInputs"])
     || typeof build.compilerRelativePath !== "string" || build.compilerRelativePath.length < 1 || build.compilerRelativePath.length > 160
     || !/^[0-9a-f]{64}$/.test(String(build.compilerSha256))
     || !/^[0-9a-f]{64}$/.test(String(build.launcherCompilerSha256))
@@ -326,9 +382,23 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
       && exactKeys(item as Record<string, unknown>, ["name", "signatureKind", "authenticodeLeafSha256", "authenticodeSpkiSha256"])
       && (item as Record<string, unknown>).name
       && (item as Record<string, unknown>).signatureKind === "E"
-      && /^[0-9a-f]{64}$/.test(String((item as Record<string, unknown>).authenticodeLeafSha256))
-      && /^[0-9a-f]{64}$/.test(String((item as Record<string, unknown>).authenticodeSpkiSha256)))
+      && (item as Record<string, unknown>).authenticodeLeafSha256
+        === WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS }).name]?.leaf
+      && (item as Record<string, unknown>).authenticodeSpkiSha256
+        === WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS }).name]?.spki)
       .join("\0") !== "compiler\0native-compiler\0native-linker"
+    || !Array.isArray(build.toolDependencies) || build.toolDependencies.length !== 2
+    || !build.toolDependencies.every((item) => item && typeof item === "object" && !Array.isArray(item)
+      && exactKeys(item as Record<string, unknown>, ["name", "sha256", "files", "bytes"])
+      && ["roslyn-runtime", "msvc-host-runtime"].includes(String((item as Record<string, unknown>).name))
+      && (item as Record<string, unknown>).sha256
+        === WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES }).name]?.sha256
+      && (item as Record<string, unknown>).files
+        === WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES }).name]?.files
+      && (item as Record<string, unknown>).bytes
+        === WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES }).name]?.bytes)
+    || build.toolDependencies.map((item) => (item as { name: string }).name).join("\0")
+      !== "roslyn-runtime\0msvc-host-runtime"
     || !Array.isArray(build.references) || build.references.length < 1 || build.references.length > 16
     || !build.references.every((item) => item && typeof item === "object" && !Array.isArray(item)
       && exactKeys(item as Record<string, unknown>, ["name", "sha256"])
@@ -566,6 +636,8 @@ export interface WindowsAuthorityCapabilityProbe {
   readonly args?: readonly string[];
   readonly onStaged?: (stagedPath: string) => void;
   readonly onPackagedBrokerLocked?: (packagedBrokerPath: string) => void;
+  /** Native-test-only replacement probe immediately before final bootstrap identity binding. */
+  readonly onBootstrapFirstLaunch?: (bootstrapPath: string) => void;
   readonly onSupervisorStarting?: (details: {
     readonly stagedPath: string;
     readonly helperPath: string;
@@ -681,6 +753,36 @@ export interface WindowsAuthorityStageTestResult {
   readonly status: "failed";
   readonly stage: WindowsSupervisorStage;
   readonly publicError: "Windows system authority capability is unavailable";
+}
+
+function requireWindowsProductionBuildEvidence(requestedStage: WindowsSupervisorStage): void {
+  const receiptPath = process.env.PROPR_WINDOWS_BUILD_EVIDENCE_RECEIPT;
+  if (!receiptPath) throw new Error("production build evidence is unavailable");
+  const receiptBytes = readFileSync(receiptPath);
+  if (receiptBytes.byteLength < 2 || receiptBytes.byteLength > 4096 || receiptBytes.at(-1) !== 0x0a) {
+    throw new Error("production build evidence is malformed");
+  }
+  const receipt = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(receiptBytes)) as unknown;
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
+    || !exactKeys(receipt as Record<string, unknown>, ["version", "stages"])
+    || (receipt as Record<string, unknown>).version !== 1
+    || !Array.isArray((receipt as Record<string, unknown>).stages)) {
+    throw new Error("production build evidence is malformed");
+  }
+  const stages = (receipt as { stages: unknown[] }).stages;
+  const expected = [["BUILD_COMPILER", 6], ["BUILD_SOURCE", 6], ["BUILD_OUTPUT", 0]] as const;
+  if (stages.length !== expected.length || !stages.every((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)
+      || !exactKeys(item as Record<string, unknown>, ["stage", "diagnostic", "publishedArtifacts", "stagingResidue", "childTerminated"])) return false;
+    const record = item as Record<string, unknown>;
+    return record.stage === expected[index][0]
+      && record.diagnostic === expected[index][1]
+      && record.publishedArtifacts === 0
+      && record.stagingResidue === 0
+      && record.childTerminated === true;
+  }) || !expected.some(([stage]) => stage === requestedStage)) {
+    throw new Error("production build evidence is incomplete");
+  }
 }
 
 /** Resolve only a bounded production stage through a fixed-length cause chain. */
@@ -1143,7 +1245,7 @@ async function destroyWindowsAuthorityCapability(
 }
 
 async function acquireWindowsAuthorityCapability(
-  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onPackagedBrokerLocked" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName" | "testWorkspaceMode">,
+  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onPackagedBrokerLocked" | "onBootstrapFirstLaunch" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName" | "testWorkspaceMode">,
   signal?: AbortSignal,
 ): Promise<WindowsAuthorityCapability> {
   if (windowsAuthorityCapability) {
@@ -1241,6 +1343,10 @@ async function acquireWindowsAuthorityCapability(
       artifact.path,
       ...brokerArgv,
     ];
+    probe?.onBootstrapFirstLaunch?.(bootstrap.path);
+    // Bind the first CreateProcess name to the already held immutable package
+    // bytes at the last synchronous boundary available to the caller.
+    revalidateWindowsBootstrapArtifact(bootstrap);
     supervisor = spawn(executable, launcherArgv, {
       shell: false,
       windowsHide: true,
@@ -1624,45 +1730,12 @@ export function exerciseWindowsAuthorityStageFailureForNativeTest(
       directoryFd = openSync(fixture, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       fileFd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
-        if (requestedStage === "BUILD_COMPILER" || requestedStage === "BUILD_SOURCE") {
-          const bootstrap = windowsBootstrapArtifact();
-          const leaseManifest = join(fixture, "build-inputs.lease");
-          const original = Buffer.from(requestedStage === "BUILD_COMPILER" ? "trusted compiler\n" : "trusted source\n");
-          writeFileSync(file, original);
-          const body = Buffer.from(`PROPR_BUILD_LEASE_V1\nF ${createHash("sha256").update(original).digest("hex")} ${file}\n`);
-          writeFileSync(leaseManifest, body, { flag: "wx", mode: 0o600 });
-          // The named mutation occurs after authorization bytes exist but at
-          // the exact native lease barrier used by production tool launches.
-          writeFileSync(file, requestedStage === "BUILD_COMPILER" ? "same-user compiler swap\n" : "same-user source swap\n");
-          try {
-            const result = spawnSync(bootstrap.path, [
-              "lease-build-inputs-v1", leaseManifest, createHash("sha256").update(body).digest("hex"),
-            ], {
-              shell: false, windowsHide: true, env: {}, input: Buffer.from("X"), encoding: "buffer",
-              stdio: ["pipe", "pipe", "pipe", bootstrap.fd],
-            });
-            if (result.status !== 23 || result.error || result.signal
-              || Buffer.byteLength(result.stdout) !== 0 || Buffer.byteLength(result.stderr) !== 0) {
-              throw new Error("build input mutation was not rejected");
-            }
-          } finally {
-            closeSync(bootstrap.fd);
-          }
+        if (requestedStage === "BUILD_COMPILER" || requestedStage === "BUILD_SOURCE" || requestedStage === "BUILD_OUTPUT") {
+          // BUILD_* credit comes only from the separate production build
+          // subprocesses run before the successful hosted build, never from a
+          // dummy file or a manually injected stage throw in this runtime.
+          requireWindowsProductionBuildEvidence(requestedStage);
           throw new WindowsSupervisorStartupError(requestedStage);
-        }
-        if (requestedStage === "BUILD_OUTPUT") {
-          const temporary = join(fixture, "supervisor.building");
-          const final = join(fixture, "supervisor.exe");
-          writeFileSync(temporary, "trusted output", { flag: "wx", mode: 0o600 });
-          writeFileSync(final, "same-user publication collision", { flag: "wx", mode: 0o600 });
-          try {
-            linkSync(temporary, final);
-          } catch {
-            if (readFileSync(final, "utf8") !== "same-user publication collision"
-              || readFileSync(temporary, "utf8") !== "trusted output") throw new Error("publication collision mutated output");
-            throw new WindowsSupervisorStartupError(requestedStage);
-          }
-          throw new Error("build publication collision replaced an existing name");
         }
         if (requestedStage === "MANIFEST") {
           const helper = windowsSupervisorArtifact();
@@ -1880,11 +1953,11 @@ export function exerciseWindowsAuthorityCapabilityForNativeTest(
 }> {
   if (process.platform !== "win32") throw new Error("Windows capability probe requires Windows");
   return enqueueWindowsAuthority(async () => {
-  if (probe.onStaged || probe.onPackagedBrokerLocked || probe.onSupervisorStarting || probe.onSupervisorSpawned) {
+  if (probe.onStaged || probe.onPackagedBrokerLocked || probe.onBootstrapFirstLaunch || probe.onSupervisorStarting || probe.onSupervisorSpawned) {
     await destroyWindowsAuthorityCapability();
   }
   const capability = await acquireWindowsAuthorityCapability(
-    probe.onStaged || probe.onPackagedBrokerLocked || probe.onSupervisorStarting || probe.onSupervisorSpawned
+    probe.onStaged || probe.onPackagedBrokerLocked || probe.onBootstrapFirstLaunch || probe.onSupervisorStarting || probe.onSupervisorSpawned
       ? probe
       : undefined,
     probe.signal,

@@ -25,6 +25,62 @@ export const WINDOWS_HELPER_DIAGNOSTICS = Object.freeze([
 const MAX_COMPILER_DIAGNOSTIC_BYTES = 64 * 1024;
 const COMPILER_TIMEOUT_MS = 30_000;
 
+// Reviewed leaf-certificate and SubjectPublicKeyInfo SHA-256 policy for the
+// exact VS 17.14 / Roslyn 4.14 toolchain selected by the hosted build. These
+// values come from the signed Microsoft distribution payloads, not from a
+// certificate observed on the runner. A valid chain, matching subject, or
+// shared Microsoft root is deliberately insufficient.
+export const WINDOWS_BUILD_TOOL_SIGNER_POLICY = Object.freeze({
+  compiler: Object.freeze({
+    authenticodeLeafSha256: "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae",
+    authenticodeSpkiSha256: "8598bc6053649a189e5ad15335f52fee71486e11f8e0f9947ae05814871e4560",
+  }),
+  "native-compiler": Object.freeze({
+    authenticodeLeafSha256: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed",
+    authenticodeSpkiSha256: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d",
+  }),
+  "native-linker": Object.freeze({
+    authenticodeLeafSha256: "d33927e4dda9b91def9f8ed282549a49217ed8cacf54577a690963cbc5eff3ed",
+    authenticodeSpkiSha256: "8d79b51d140a92816a138dcba36f41720b3ce5063718cfbc4ad77efde8315a4d",
+  }),
+  "sign-tool": Object.freeze({
+    authenticodeLeafSha256: "0a9f9ec4820fcf1943ce23889211269e5d23e16d81c667060653bada8570eeb1",
+    authenticodeSpkiSha256: "0af92917a95c39373521bd2fd5311057e26747e5084c5c320a34af8d6f9a7a85",
+  }),
+});
+
+export const WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY = Object.freeze({
+  "roslyn-runtime": Object.freeze({
+    sha256: "72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209",
+    files: 111,
+    bytes: "38581501",
+  }),
+  "msvc-host-runtime": Object.freeze({
+    sha256: "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2",
+    files: 53,
+    bytes: "62411793",
+  }),
+});
+
+export function authorizeWindowsBuildToolSigner(role, observed) {
+  const expected = WINDOWS_BUILD_TOOL_SIGNER_POLICY[role];
+  if (!expected || !observed || observed.signatureKind !== "E"
+    || observed.authenticodeLeafSha256 !== expected.authenticodeLeafSha256
+    || observed.authenticodeSpkiSha256 !== expected.authenticodeSpkiSha256) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+  return { signatureKind: "E", ...expected };
+}
+
+export function authorizeWindowsBuildToolDependencies(role, observed) {
+  const expected = WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY[role];
+  if (!expected || !observed || observed.sha256 !== expected.sha256
+    || observed.files !== expected.files || observed.bytes !== expected.bytes) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+  return expected;
+}
+
 export class WindowsHelperBuildError extends Error {
   constructor(stage, diagnostic = "UNKNOWN", cause) {
     super("Windows authority helper build failed", cause === undefined ? undefined : { cause });
@@ -36,6 +92,26 @@ export class WindowsHelperBuildError extends Error {
   get diagnosticIndex() {
     return WINDOWS_HELPER_DIAGNOSTICS.indexOf(this.diagnostic);
   }
+}
+
+/**
+ * Return the one byte representation accepted for a security-pinned committed
+ * source. Git attributes keep normal checkouts in this form; normalization is
+ * retained at the build boundary so a pre-existing CRLF worktree cannot make
+ * the bytes hashed differ from the bytes staged for the compiler. Bare CR is
+ * not a text EOL and is rejected instead of being silently rewritten.
+ */
+export function canonicalWindowsBuildSourceBytes(value, stage = "BUILD_SOURCE") {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    if (bytes[index] === 0x00) throw new WindowsHelperBuildError(stage, "NONZERO_OUTPUT");
+    if (bytes[index] === 0x0d && (index + 1 >= bytes.byteLength || bytes[index + 1] !== 0x0a)) {
+      throw new WindowsHelperBuildError(stage, "NONZERO_OUTPUT");
+    }
+  }
+  return bytes.includes(0x0d)
+    ? Buffer.from(bytes.toString("binary").replaceAll("\r\n", "\n"), "binary")
+    : Buffer.from(bytes);
 }
 
 export function fixedBuildDiagnostic(error) {
