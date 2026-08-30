@@ -591,73 +591,68 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       rmSync(preLockControl, { recursive: true, force: true });
     }
 
-    for (const [boundary, scenario] of [
-      ['after-lock', 'bootstrap-after-lock'],
-      ['during-startup', 'bootstrap-during-launch'],
-    ] as const) {
-      const control = nativeFixtureParent(`propr-bootstrap-${boundary}-`);
-      try {
-        const readyPath = join(control, 'ready');
-        const continuePath = join(control, 'continue');
-        const resultPath = join(control, 'result.json');
-        const fixture = join(process.cwd(), 'test', 'fixtures', 'windowsAuthoritySwapAttacker.mjs');
-        const capability = exerciseWindowsAuthorityCapabilityForNativeTest({
-          acquisitionBarrier: { boundary, readyPath, continuePath },
-          onStaged: (stagedPath) => {
-            const attacker = spawn(process.execPath, [
-              fixture, stagedPath, command, readyPath, continuePath, resultPath, 'replace',
-            ], { stdio: 'ignore', windowsHide: true });
-            attacker.unref();
-          },
-        });
-        assert.deepEqual(JSON.parse(capability.output.toString('utf8')), { version: 1, ready: true });
-        const result = JSON.parse(readFileSync(resultPath, 'utf8')) as {
-          attempted: boolean; replaced: boolean; restored: boolean; code: string;
-        };
-        assert.equal(result.attempted, true);
-        assert.equal(result.replaced, false, `staged replacement unexpectedly succeeded (${result.code})`);
-        assert.equal(result.restored, false);
-        completeScenario(scenario);
-      } finally {
-        rmSync(control, { recursive: true, force: true });
-      }
-    }
-
-    for (const mode of ['stale', 'current'] as const) {
-      const control = nativeFixtureParent(`propr-capability-${mode}-response-`);
-      let attacker: ReturnType<typeof spawn> | undefined;
-      try {
-        const readyPath = join(control, 'attacker-ready');
-        const resultPath = join(control, 'attacker-result.json');
-        const fixture = join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityPipeAttacker.mjs');
-        assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest({
-          onSupervisorStarting: ({ pipePath }) => {
-            attacker = spawn(process.execPath, [fixture, pipePath, readyPath, resultPath, mode], {
-              stdio: 'ignore', windowsHide: true,
-            });
-            const deadline = Date.now() + 3_000;
-            while (!existsSync(readyPath) && Date.now() < deadline) {
-              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-            }
-            assert.equal(existsSync(readyPath), true, 'forged pipe did not bind before supervisor startup');
-          },
-        }), /capability/);
-        const deadline = Date.now() + 3_000;
-        while (!existsSync(resultPath) && Date.now() < deadline) {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-        }
-        const result = JSON.parse(readFileSync(resultPath, 'utf8')) as { fired: boolean; mode: string };
-        assert.deepEqual(result, { fired: true, mode });
-      } finally {
-        try { attacker?.kill(); } catch { /* The forged server normally exits after one response. */ }
-        closeWindowsAuthorityCapability();
-        rmSync(control, { recursive: true, force: true });
-      }
+    const startupControl = nativeFixtureParent('propr-supervisor-startup-swap-');
+    try {
+      let swapFired = false;
+      assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest({
+        onSupervisorSpawned: (stagedPath) => {
+          const detached = `${stagedPath}.startup-detached`;
+          renameSync(stagedPath, detached);
+          copyFileSync(command, stagedPath);
+          swapFired = true;
+        },
+      }), /capability|FULL_IDENTITY|NO_SHARE_LOCK/);
+      assert.equal(swapFired, true, 'startup swap hook did not execute');
+      completeScenario('bootstrap-during-launch');
+    } finally {
+      closeWindowsAuthorityCapability();
+      rmSync(startupControl, { recursive: true, force: true });
     }
 
     const deniedHooks = { write: false, delete: false, rename: false, replace: false };
+    const attackerResultPath = join(tmpdir(), `propr-control-handle-attacker-${process.pid}.json`);
+    rmSync(attackerResultPath, { force: true });
     const locked = exerciseWindowsAuthorityCapabilityForNativeTest({
-      onRequestLocked: (stagedPath) => {
+      onSupervisorStarting: ({ stagedPath, environmentKeys }) => {
+        assert.deepEqual(environmentKeys, ['SystemRoot']);
+        assert.equal(environmentKeys.some((key) => key.startsWith('PROPR_')), false);
+        assert.equal(environmentKeys.includes(stagedPath), false);
+      },
+      onSupervisorSpawned: (stagedPath, supervisorPid) => {
+        const query = spawnSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+          '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+          '(Get-CimInstance Win32_Process -Filter (\'ProcessId=\'+$env:PROPR_TEST_PID)).CommandLine',
+        ], {
+          shell: false, windowsHide: true, encoding: 'utf8',
+          env: { SystemRoot: process.env.SystemRoot, PROPR_TEST_PID: String(supervisorPid) },
+          timeout: 5_000,
+        });
+        assert.equal(query.status, 0, query.stderr);
+        assert.equal(query.stdout.includes('EncodedCommand'), true, 'supervisor command line was not inspected');
+        assert.equal(query.stdout.includes(stagedPath), false);
+        assert.equal(query.stdout.includes('PROPR_CAPABILITY'), false);
+      },
+      onRequestLocked: (stagedPath, supervisorPid) => {
+        const fixture = join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityHandleAttacker.mjs');
+        const attacker = spawn(process.execPath, [fixture, attackerResultPath, String(supervisorPid)], {
+          stdio: 'ignore', windowsHide: true, env: { SystemRoot: process.env.SystemRoot },
+        });
+        attacker.unref();
+        const deadline = Date.now() + 8_000;
+        while (!existsSync(attackerResultPath) && Date.now() < deadline) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+        assert.equal(existsSync(attackerResultPath), true, 'unrelated hostile process did not complete');
+        const attackerResult = JSON.parse(readFileSync(attackerResultPath, 'utf8')) as {
+          inheritedControlHandle: boolean;
+          advertisedCapability: boolean;
+          deniedRights: { duplicate: boolean; vmRead: boolean; query: boolean };
+        };
+        assert.deepEqual(attackerResult, {
+          inheritedControlHandle: false,
+          advertisedCapability: false,
+          deniedRights: { duplicate: false, vmRead: false, query: false },
+        });
         deniedHooks.write = true;
         assert.throws(() => writeFileSync(stagedPath, 'attacker'));
         deniedHooks.delete = true;
@@ -669,17 +664,15 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability probe/);
       },
     });
+    rmSync(attackerResultPath, { force: true });
     assert.deepEqual(deniedHooks, { write: true, delete: true, rename: true, replace: true });
     assert.deepEqual(JSON.parse(locked.output.toString('utf8')), { version: 1, ready: true });
     assert.throws(() => renameSync(locked.stagedPath, `${locked.stagedPath}.between-requests`));
-    assert.throws(() => exerciseWindowsAuthorityCapabilityControlForNativeTest({ nonce: 'stale', operation: 'stop' }), /capability/);
-    assert.throws(() => exerciseWindowsAuthorityCapabilityControlForNativeTest({
-      nonce: 'current', operation: 'challenge', extra: '|extra',
-    }), /capability/);
     const betweenRequests = exerciseWindowsAuthorityCapabilityForNativeTest();
     assert.equal(betweenRequests.stagedPath, locked.stagedPath);
     assert.equal(betweenRequests.supervisorPid, locked.supervisorPid);
     assert.deepEqual(JSON.parse(betweenRequests.output.toString('utf8')), { version: 1, ready: true });
+    completeScenario('bootstrap-after-lock');
 
     const lockedIdentity = lstatSync(locked.stagedPath, { bigint: true });
     let replacementFired = false;
@@ -726,19 +719,26 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     const afterRejectedCommand = exerciseWindowsAuthorityCapabilityForNativeTest();
     assert.equal(afterRejectedCommand.stagedPath, restarted.stagedPath);
 
-    const unboundResponse = exerciseWindowsAuthorityCapabilityControlForNativeTest({
-      nonce: 'current', operation: 'challenge',
-    });
-    assert.ok(unboundResponse.byteLength > 0, 'current-nonce replay hook did not fire');
+    const unboundResponse = exerciseWindowsAuthorityCapabilityControlForNativeTest({ mode: 'unparsed-response' });
+    assert.ok(unboundResponse.byteLength > 0, 'unparsed response hook did not fire');
     assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);
     const protocolRestarted = exerciseWindowsAuthorityCapabilityForNativeTest();
     assert.notEqual(protocolRestarted.stagedPath, afterRejectedCommand.stagedPath);
     assert.deepEqual(JSON.parse(protocolRestarted.output.toString('utf8')), { version: 1, ready: true });
 
-    process.kill(protocolRestarted.supervisorPid);
+    for (const mode of [
+      'replay', 'wrong-request-id', 'wrong-identity', 'malformed', 'extra-frame', 'partial-frame', 'eof',
+    ] as const) {
+      assert.throws(() => exerciseWindowsAuthorityCapabilityControlForNativeTest({ mode }), /capability|malformed|extra output/);
+      const recovered = exerciseWindowsAuthorityCapabilityForNativeTest();
+      assert.deepEqual(JSON.parse(recovered.output.toString('utf8')), { version: 1, ready: true });
+    }
+    const afterFramingRecovery = exerciseWindowsAuthorityCapabilityForNativeTest();
+
+    process.kill(afterFramingRecovery.supervisorPid);
     const crashDeadline = Date.now() + 5_000;
     while (Date.now() < crashDeadline) {
-      try { process.kill(protocolRestarted.supervisorPid, 0); } catch { break; }
+      try { process.kill(afterFramingRecovery.supervisorPid, 0); } catch { break; }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
     }
     assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);

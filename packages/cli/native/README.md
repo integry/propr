@@ -41,11 +41,14 @@ packaged pathname. On Windows, one bounded System32 PowerShell bootstrap opens
 the randomized directory and executable with write/delete sharing denied, binds
 the full file identity and SHA-256 through that handle, and establishes and
 verifies the exact protected DACL. A parent-bound supervisor retains that
-authenticated image lock for the lifetime of the cached capability. Readiness,
-pre-launch, post-response, and shutdown exchanges use a random protected named
-pipe, HMAC transcripts under a fresh 256-bit parent nonce, a fresh challenge,
-and strict sequence/PID/full-identity/digest binding; the nonce never crosses
-the pipe, and there is no readiness or stop file. Subsequent bounded
+authenticated image lock for the lifetime of the cached capability. It is
+placed in a kill-on-close Job Object and receives only anonymous inherited
+stdin/stdout plus the staged image handle. Startup material travels in the
+first control frame, never argv or the environment. Readiness, pre-launch,
+post-response, and shutdown use strict 4-byte-length-prefixed versioned frames
+with fresh parent request IDs and sequence/PID/full-identity/digest binding.
+There is no reconnectable IPC name, environment secret, readiness file, or stop
+file. Subsequent bounded
 broker batches inherit the caller's held setup or inspection descriptors
 directly and are serialized. Their 4 KiB stdin protocol carries only a fixed
 version, random request ID, operation, count, and fixed entry kinds—never a
