@@ -7,10 +7,13 @@ import {
   mkdir,
   mkdtemp,
   open,
+  opendir,
   readFile,
   readdir,
   rename,
+  rmdir,
   rm,
+  unlink,
   type FileHandle,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -96,6 +99,11 @@ export const SIGNED_UPDATE_CACHE_POLICY = {
   namespaceBytes: 1024 * 1024 * 1024 + 64 * 1024,
   maxRootEntries: 2,
   maxEntryEntries: 2,
+  inspectionEntryCap: 64,
+  inspectionNameBytes: 16 * 1024,
+  inspectionDepth: 3,
+  inspectionElapsedMs: 250,
+  cleanupEntryCap: 64,
 } as const;
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -683,6 +691,7 @@ interface PreparedSignedUpdate {
 const acquireFilesystemCacheLock = async (cacheDirectory: string): Promise<() => Promise<void>> => {
   if (process.platform !== 'win32') await mkdir(cacheDirectory, { recursive: true, mode: 0o700 });
   await ensurePrivateDirectory(cacheDirectory);
+  await preflightCacheNamespace(cacheDirectory);
   const lockPath = join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.lockName);
   const ownerPath = join(lockPath, SIGNED_UPDATE_CACHE_POLICY.lockOwnerName);
   const deadline = Date.now() + SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactTimeoutMs + 30_000;
@@ -715,8 +724,18 @@ const acquireFilesystemCacheLock = async (cacheDirectory: string): Promise<() =>
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       let active = false;
       try {
-        const bytes = await readFile(ownerPath, 'utf8');
-        const value: unknown = JSON.parse(bytes);
+        const heldOwner = await openPrivateRegularFile(ownerPath, 1024);
+        let bytes: Buffer;
+        try {
+          const size = heldOwner.windowsLock
+            ? BigInt(heldOwner.windowsLock.inspection.size)
+            : (await heldOwner.handle!.stat({ bigint: true })).size;
+          if (size <= 0n || size > 1024n) throw new Error('Verified update cache lock is unavailable');
+          bytes = await readHeldFile(heldOwner, 0, Number(size));
+        } finally {
+          try { await heldOwner.windowsLock?.close(); } finally { await heldOwner.handle?.close(); }
+        }
+        const value: unknown = JSON.parse(bytes.toString('utf8'));
         if (isRecord(value) && value.schemaVersion === 1 && Number.isSafeInteger(value.pid) && Number(value.pid) > 0) {
           try { process.kill(Number(value.pid), 0); active = true; } catch { active = false; }
         }
@@ -848,21 +867,164 @@ const syncDirectory = async (path: string): Promise<void> => {
   }
 };
 
-const removeCachePath = async (path: string): Promise<void> => {
+interface NamespaceBudget {
+  entries: number;
+  nameBytes: number;
+  readonly startedAt: number;
+  readonly entryCap: number;
+}
+
+const newNamespaceBudget = (entryCap = SIGNED_UPDATE_CACHE_POLICY.inspectionEntryCap): NamespaceBudget => ({
+  entries: 0,
+  nameBytes: 0,
+  startedAt: Date.now(),
+  entryCap,
+});
+
+const assertNamespaceBudget = (budget: NamespaceBudget, name?: string): void => {
+  if (Date.now() - budget.startedAt > SIGNED_UPDATE_CACHE_POLICY.inspectionElapsedMs
+    || budget.entries >= budget.entryCap) throw new Error('Verified update cache namespace inspection limit exceeded');
+  if (name !== undefined) {
+    const bytes = Buffer.byteLength(name);
+    if (bytes <= 0 || bytes > SIGNED_UPDATE_CACHE_POLICY.inspectionNameBytes
+      || budget.nameBytes + bytes > SIGNED_UPDATE_CACHE_POLICY.inspectionNameBytes) {
+      throw new Error('Verified update cache namespace inspection limit exceeded');
+    }
+    budget.entries += 1;
+    budget.nameBytes += bytes;
+  }
+};
+
+const boundedDirectoryNames = async (path: string, budget = newNamespaceBudget()): Promise<string[]> => {
+  const directory = await opendir(path);
+  const names: string[] = [];
+  try {
+    while (true) {
+      assertNamespaceBudget(budget);
+      const entry = await directory.read();
+      if (!entry) break;
+      assertNamespaceBudget(budget, entry.name);
+      names.push(entry.name);
+    }
+  } finally {
+    try { await directory.close(); } catch { /* async iteration may already have closed it */ }
+  }
+  return names;
+};
+
+const boundedRemoveCachePath = async (
+  path: string,
+  budget = newNamespaceBudget(SIGNED_UPDATE_CACHE_POLICY.cleanupEntryCap),
+  depth = 0,
+): Promise<boolean> => {
+  if (depth > SIGNED_UPDATE_CACHE_POLICY.inspectionDepth) return false;
   let stats;
   try { stats = await lstat(path); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
     throw error;
   }
-  if (stats.isDirectory() && !stats.isSymbolicLink()) await rm(path, { recursive: true, force: true });
-  else await rm(path, { force: true });
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    assertNamespaceBudget(budget);
+    budget.entries += 1;
+    await unlink(path);
+    return true;
+  }
+  const directory = await opendir(path);
+  let complete = true;
+  try {
+    while (true) {
+      try { assertNamespaceBudget(budget); } catch { complete = false; break; }
+      const entry = await directory.read();
+      if (!entry) break;
+      try { assertNamespaceBudget(budget, entry.name); } catch { complete = false; break; }
+      if (depth === SIGNED_UPDATE_CACHE_POLICY.inspectionDepth
+        || !await boundedRemoveCachePath(join(path, entry.name), budget, depth + 1)) {
+        complete = false;
+        break;
+      }
+    }
+  } finally {
+    try { await directory.close(); } catch { /* already closed */ }
+  }
+  if (!complete) return false;
+  try { await rmdir(path); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+  }
+  return true;
+};
+
+const removeCachePath = async (path: string): Promise<void> => {
+  if (!await boundedRemoveCachePath(path)) {
+    throw new Error('Verified update cache bounded cleanup limit exceeded');
+  }
+};
+
+const quarantineCacheNamespace = async (cacheDirectory: string): Promise<void> => {
+  const quarantine = join(
+    dirname(cacheDirectory),
+    `.${basename(cacheDirectory)}.quarantine-${randomBytes(16).toString('hex')}`,
+  );
+  try {
+    await rename(cacheDirectory, quarantine);
+  } catch {
+    throw new Error('Verified update cache namespace could not be quarantined');
+  }
+  try {
+    await ensurePrivateDirectory(cacheDirectory);
+  } catch (error) {
+    try { await rename(quarantine, cacheDirectory); } catch { /* preserve quarantine if a concurrent creator won */ }
+    throw error;
+  }
+  // Cleanup is deliberately incremental. An attacker-controlled quarantine that
+  // exceeds any cap remains isolated for a later bounded pass; it is never walked
+  // recursively without limits.
+  try { await boundedRemoveCachePath(quarantine); } catch { /* quarantined content is no longer authoritative */ }
+};
+
+const preflightCacheNamespace = async (cacheDirectory: string): Promise<void> => {
+  const budget = newNamespaceBudget();
+  let invalid = false;
+  try {
+    const names = await boundedDirectoryNames(cacheDirectory, budget);
+    const folded = new Set<string>();
+    if (names.length > SIGNED_UPDATE_CACHE_POLICY.maxRootEntries) invalid = true;
+    for (const name of names) {
+      const canonical = name.toLocaleLowerCase('en-US');
+      if (folded.has(canonical)) invalid = true;
+      folded.add(canonical);
+      if (name !== SIGNED_UPDATE_CACHE_POLICY.entryName && name !== SIGNED_UPDATE_CACHE_POLICY.lockName) {
+        invalid = true;
+        break;
+      }
+      const child = join(cacheDirectory, name);
+      await inspectPrivatePath(child, true);
+      const childNames = await boundedDirectoryNames(child, budget);
+      const expected: Set<string> = name === SIGNED_UPDATE_CACHE_POLICY.entryName
+        ? new Set([SIGNED_UPDATE_CACHE_POLICY.artifactName, SIGNED_UPDATE_CACHE_POLICY.metadataName])
+        : new Set([SIGNED_UPDATE_CACHE_POLICY.lockOwnerName]);
+      if (childNames.length !== expected.size) invalid = true;
+      let childBytes = 0n;
+      for (const childName of childNames) {
+        if (!expected.delete(childName)) invalid = true;
+        const inspected = await inspectPrivatePath(join(child, childName));
+        childBytes += inspected.size;
+      }
+      if (name === SIGNED_UPDATE_CACHE_POLICY.lockName && (childBytes <= 0n || childBytes > 1024n)) invalid = true;
+      if (name === SIGNED_UPDATE_CACHE_POLICY.entryName
+        && childBytes > BigInt(SIGNED_UPDATE_CACHE_POLICY.namespaceBytes)) invalid = true;
+      if (expected.size !== 0) invalid = true;
+    }
+  } catch {
+    invalid = true;
+  }
+  if (invalid) await quarantineCacheNamespace(cacheDirectory);
 };
 
 const prepareCacheDirectory = async (cacheDirectory: string, now: number): Promise<void> => {
   if (process.platform !== 'win32') await mkdir(cacheDirectory, { recursive: true, mode: 0o700 });
   await ensurePrivateDirectory(cacheDirectory);
 
-  const names = await readdir(cacheDirectory);
+  const names = await boundedDirectoryNames(cacheDirectory);
   const foldedNames = new Set<string>();
   let invalidateEntry = names.length > SIGNED_UPDATE_CACHE_POLICY.maxRootEntries;
   for (const name of names) {
@@ -871,7 +1033,7 @@ const prepareCacheDirectory = async (cacheDirectory: string, now: number): Promi
     foldedNames.add(folded);
     if (name === SIGNED_UPDATE_CACHE_POLICY.lockName) {
       await inspectPrivatePath(join(cacheDirectory, name), true);
-      const lockNames = await readdir(join(cacheDirectory, name));
+      const lockNames = await boundedDirectoryNames(join(cacheDirectory, name));
       if (lockNames.length !== 1 || lockNames[0] !== SIGNED_UPDATE_CACHE_POLICY.lockOwnerName) {
         throw new Error('Verified update cache is unavailable');
       }
@@ -880,15 +1042,14 @@ const prepareCacheDirectory = async (cacheDirectory: string, now: number): Promi
       continue;
     }
     if (name.startsWith('.partial-') || name !== SIGNED_UPDATE_CACHE_POLICY.entryName) {
-      await removeCachePath(join(cacheDirectory, name));
-      if (!name.startsWith('.partial-')) invalidateEntry = true;
+      throw new Error('Verified update cache contains unknown content');
     }
   }
   const entryPath = join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName);
   try {
     if (invalidateEntry) throw new Error('invalid');
     await inspectPrivatePath(entryPath, true);
-    const entryNames = await readdir(entryPath);
+    const entryNames = await boundedDirectoryNames(entryPath);
     if (entryNames.length !== SIGNED_UPDATE_CACHE_POLICY.maxEntryEntries) throw new Error('invalid');
     const expected = new Set<string>([SIGNED_UPDATE_CACHE_POLICY.artifactName, SIGNED_UPDATE_CACHE_POLICY.metadataName]);
     const foldedEntryNames = new Set<string>();
@@ -912,13 +1073,24 @@ const prepareCacheDirectory = async (cacheDirectory: string, now: number): Promi
 };
 
 interface HeldPrivateFile {
-  handle: FileHandle;
+  handle?: FileHandle;
   identity: ExactFileIdentity;
   path: string;
   windowsLock?: WindowsLockedArtifact;
 }
 
-const openPrivateRegularFile = async (path: string): Promise<HeldPrivateFile> => {
+const openPrivateRegularFile = async (
+  path: string,
+  maxBytes = SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes,
+): Promise<HeldPrivateFile> => {
+  if (process.platform === 'win32') {
+    const windowsLock = await openWindowsLockedArtifact(path, maxBytes);
+    return {
+      identity: windowsLock.inspection.identity,
+      path,
+      windowsLock,
+    };
+  }
   const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   try {
     const stats = await handle.stat({ bigint: true });
@@ -927,7 +1099,7 @@ const openPrivateRegularFile = async (path: string): Promise<HeldPrivateFile> =>
     if (stats.nlink !== 1n || pathStats.nlink !== 1n
       || pathStats.dev !== stats.dev || pathStats.ino !== stats.ino || pathStats.size !== stats.size
       || inspected.size !== stats.size || inspected.links !== 1n
-      || process.platform !== 'win32' && !isOwnedPrivate(stats)) {
+      || !isOwnedPrivate(stats)) {
       throw new Error('Verified update cache entry is invalid');
     }
     return { handle, identity: inspected.identity, path };
@@ -937,7 +1109,26 @@ const openPrivateRegularFile = async (path: string): Promise<HeldPrivateFile> =>
   }
 };
 
-const hashHeldFile = async (handle: FileHandle, maxBytes: number): Promise<{ size: number; sha256: string; sha1: string }> => {
+const readHeldFile = async (held: HeldPrivateFile, offset: number, length: number): Promise<Buffer> => {
+  if (held.windowsLock) return held.windowsLock.read(offset, length);
+  if (!held.handle) throw new Error('Verified update artifact capability is unavailable');
+  const bytes = Buffer.alloc(length);
+  const { bytesRead } = await held.handle.read(bytes, 0, length, offset);
+  if (bytesRead !== length) throw new Error('Verified update artifact capability is unavailable');
+  return bytes;
+};
+
+const hashHeldFile = async (held: HeldPrivateFile, maxBytes: number): Promise<{ size: number; sha256: string; sha1: string }> => {
+  if (held.windowsLock) {
+    const verified = await held.windowsLock.verify();
+    const size = Number(verified.size);
+    if (!Number.isSafeInteger(size) || size <= 0 || size > maxBytes) {
+      throw new Error('Verified update artifact is invalid');
+    }
+    return { size, sha256: verified.sha256, sha1: verified.sha1 };
+  }
+  if (!held.handle) throw new Error('Verified update artifact is invalid');
+  const handle = held.handle;
   const stats = await handle.stat({ bigint: true });
   if (!stats.isFile() || stats.nlink !== 1n || stats.size <= 0n || stats.size > BigInt(maxBytes)) {
     throw new Error('Verified update artifact is invalid');
@@ -964,6 +1155,22 @@ const assertHeldArtifact = async (
   artifact: SignedUpdateArtifact,
   squirrelEntry?: SquirrelReleaseEntry,
 ): Promise<void> => {
+  if (held.windowsLock) {
+    const verified = await held.windowsLock.verify();
+    if (!sameExactFileIdentity(verified.identity, held.identity)
+      || verified.links !== '1'
+      || BigInt(verified.size) !== BigInt(artifact.size)) {
+      throw new Error('Verified update artifact is invalid');
+    }
+    if (Number(verified.size) !== artifact.size || verified.sha256 !== artifact.sha256) {
+      throw new Error('Verified update artifact does not match signed metadata');
+    }
+    if (squirrelEntry && (Number(verified.size) !== squirrelEntry.size || verified.sha1 !== squirrelEntry.sha1)) {
+      throw new Error('Verified update artifact does not match Squirrel metadata');
+    }
+    return;
+  }
+  if (!held.handle) throw new Error('Verified update artifact is invalid');
   const descriptor = await held.handle.stat({ bigint: true });
   const pathStats = await lstat(path, { bigint: true });
   const inspected = await inspectPrivatePath(path);
@@ -973,7 +1180,7 @@ const assertHeldArtifact = async (
     || process.platform !== 'win32' && !isOwnedPrivate(descriptor)) {
     throw new Error('Verified update artifact is invalid');
   }
-  const hashes = await hashHeldFile(held.handle, SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes);
+  const hashes = await hashHeldFile(held, SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes);
   if (hashes.size !== artifact.size || hashes.sha256 !== artifact.sha256) {
     throw new Error('Verified update artifact does not match signed metadata');
   }
@@ -1020,8 +1227,9 @@ const verifyHeldNativeSigner = async (
       let offset = 0;
       while (offset < prepared.feed.artifact.size) {
         const length = Math.min(chunk.length, prepared.feed.artifact.size - offset);
-        const { bytesRead } = await source.handle.read(chunk, 0, length, offset);
-        if (bytesRead !== length) throw new Error('Verified update signer snapshot is invalid');
+        const bytes = await readHeldFile(source, offset, length);
+        bytes.copy(chunk, 0);
+        const bytesRead = bytes.length;
         let written = 0;
         while (written < bytesRead) {
           const result = await output.write(chunk, written, bytesRead - written, offset + written);
@@ -1035,13 +1243,6 @@ const verifyHeldNativeSigner = async (
       await output.close();
     }
     snapshot = await openPrivateRegularFile(snapshotPath);
-    if (process.platform === 'win32') {
-      snapshot.windowsLock = await openWindowsLockedArtifact(snapshotPath);
-      const lockedIdentity = (await inspectWindowsPrivatePath(snapshotPath)).identity;
-      if (!sameExactFileIdentity(lockedIdentity, snapshot.identity)) {
-        throw new Error('Verified update signer snapshot is invalid');
-      }
-    }
     await assertHeldArtifact(snapshot, snapshotPath, prepared.feed.artifact, prepared.squirrelEntry);
     const beforeSignerDirectory = await lstat(directory, { bigint: true });
     const signer = await verifyNativeSigner(snapshotPath, prepared.feed.artifact, prepared.feed.signer);
@@ -1056,7 +1257,7 @@ const verifyHeldNativeSigner = async (
     return signer;
   } finally {
     try { await snapshot?.windowsLock?.close(); } finally {
-      await snapshot?.handle.close();
+      await snapshot?.handle?.close();
       await rm(directory, { recursive: true, force: true });
     }
   }
@@ -1072,15 +1273,23 @@ const withVerifiedArtifact = async <T>(
   try {
     const entryDirectory = dirname(packagePath);
     const cacheDirectory = dirname(entryDirectory);
-    const initialDirectory = await lstat(entryDirectory, { bigint: true });
-    const initialParent = await lstat(cacheDirectory, { bigint: true });
+    const initialDirectory = await inspectPrivatePath(entryDirectory, true);
+    const initialParent = await inspectPrivatePath(cacheDirectory, true);
+    const initialDirectoryState = process.platform === 'win32' ? undefined : await lstat(entryDirectory, { bigint: true });
+    const initialParentState = process.platform === 'win32' ? undefined : await lstat(cacheDirectory, { bigint: true });
     const assertDirectoryUnchanged = async (): Promise<void> => {
-      const current = await lstat(entryDirectory, { bigint: true });
-      const currentParent = await lstat(cacheDirectory, { bigint: true });
-      if (current.dev !== initialDirectory.dev || current.ino !== initialDirectory.ino
-        || current.ctimeNs !== initialDirectory.ctimeNs || current.mtimeNs !== initialDirectory.mtimeNs
-        || currentParent.dev !== initialParent.dev || currentParent.ino !== initialParent.ino
-        || currentParent.ctimeNs !== initialParent.ctimeNs || currentParent.mtimeNs !== initialParent.mtimeNs) {
+      const current = await inspectPrivatePath(entryDirectory, true);
+      const currentParent = await inspectPrivatePath(cacheDirectory, true);
+      const currentDirectoryState = initialDirectoryState && await lstat(entryDirectory, { bigint: true });
+      const currentParentState = initialParentState && await lstat(cacheDirectory, { bigint: true });
+      if (!sameExactFileIdentity(current.identity, initialDirectory.identity)
+        || !sameExactFileIdentity(currentParent.identity, initialParent.identity)
+        || initialDirectoryState && currentDirectoryState
+          && (currentDirectoryState.ctimeNs !== initialDirectoryState.ctimeNs
+            || currentDirectoryState.mtimeNs !== initialDirectoryState.mtimeNs)
+        || initialParentState && currentParentState
+          && (currentParentState.ctimeNs !== initialParentState.ctimeNs
+            || currentParentState.mtimeNs !== initialParentState.mtimeNs)) {
         throw new Error('Verified update artifact is invalid');
       }
     };
@@ -1090,34 +1299,27 @@ const withVerifiedArtifact = async <T>(
       prepared.feed.signer,
     );
     await assertDirectoryUnchanged();
-    if (process.platform === 'win32') {
-      held.windowsLock = await openWindowsLockedArtifact(packagePath);
-      const lockedIdentity = (await inspectWindowsPrivatePath(packagePath)).identity;
-      if (!sameExactFileIdentity(lockedIdentity, held.identity)) {
-        throw new Error('Verified update artifact lock failed');
-      }
-    }
     await assertHeldArtifact(held, packagePath, prepared.feed.artifact, prepared.squirrelEntry);
     const result = await use(held);
     await assertDirectoryUnchanged();
     await assertHeldArtifact(held, packagePath, prepared.feed.artifact, prepared.squirrelEntry);
     return result;
   } finally {
-    try { await held.windowsLock?.close(); } finally { await held.handle.close(); }
+    try { await held.windowsLock?.close(); } finally { await held.handle?.close(); }
   }
 };
 
 const readCacheMetadata = async (entryPath: string): Promise<UpdateCacheMetadata> => {
   const path = join(entryPath, SIGNED_UPDATE_CACHE_POLICY.metadataName);
-  const held = await openPrivateRegularFile(path);
+  const held = await openPrivateRegularFile(path, SIGNED_UPDATE_CACHE_POLICY.metadataBytes);
   try {
-    const stats = await held.handle.stat({ bigint: true });
-    if (stats.size <= 0n || stats.size > BigInt(SIGNED_UPDATE_CACHE_POLICY.metadataBytes)) {
+    const size = held.windowsLock
+      ? BigInt(held.windowsLock.inspection.size)
+      : (await held.handle!.stat({ bigint: true })).size;
+    if (size <= 0n || size > BigInt(SIGNED_UPDATE_CACHE_POLICY.metadataBytes)) {
       throw new Error('Verified update cache entry is invalid');
     }
-    const bytes = Buffer.alloc(Number(stats.size));
-    const { bytesRead } = await held.handle.read(bytes, 0, bytes.length, 0);
-    if (bytesRead !== bytes.length) throw new Error('Verified update cache entry is invalid');
+    const bytes = await readHeldFile(held, 0, Number(size));
     const value: unknown = JSON.parse(bytes.toString('utf8'));
     if (!isRecord(value) || value.schemaVersion !== 1 || !isRecord(value.key)
       || !Number.isSafeInteger(value.createdAt) || !Number.isSafeInteger(value.expiresAt)) {
@@ -1127,7 +1329,7 @@ const readCacheMetadata = async (entryPath: string): Promise<UpdateCacheMetadata
   } catch {
     throw new Error('Verified update cache entry is invalid');
   } finally {
-    await held.handle.close();
+    try { await held.windowsLock?.close(); } finally { await held.handle?.close(); }
   }
 };
 
@@ -1413,11 +1615,7 @@ export const applySignedUpdate = async (
             || offset + length > prepared.feed.artifact.size) {
             throw new Error('Verified update artifact capability is unavailable');
           }
-          if (held.windowsLock) return held.windowsLock.read(offset, length);
-          const bytes = Buffer.alloc(length);
-          const { bytesRead } = await held.handle.read(bytes, 0, length, offset);
-          if (bytesRead !== length) throw new Error('Verified update artifact capability is unavailable');
-          return bytes;
+          return readHeldFile(held, offset, length);
         },
       });
       const capability: VerifiedUpdateArtifact = Object.freeze({
@@ -1425,7 +1623,14 @@ export const applySignedUpdate = async (
         artifact: Object.freeze({ ...prepared.feed.artifact }),
         apply: async (): Promise<void> => {
           if (!active || application) throw new Error('Verified update artifact capability is unavailable');
-          application = effectiveOptions.applyHeldArtifact!(source);
+          application = (async () => {
+            // The challenge proves that the exact broker session is live at the
+            // launch barrier. Its no-share handle remains held while the platform
+            // adapter consumes only source.read(), never a mutable pathname.
+            await held.windowsLock?.verify();
+            await effectiveOptions.applyHeldArtifact!(source);
+            await held.windowsLock?.verify();
+          })();
           await application;
         },
       });

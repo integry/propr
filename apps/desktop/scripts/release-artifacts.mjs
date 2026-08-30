@@ -212,7 +212,15 @@ const assertDmgPathNamesHeldFile = async (path, held) => {
   }
 };
 
-const isCurrentOwner = stats => typeof process.getuid === 'function' && stats.uid === BigInt(process.getuid());
+const isCurrentPosixOwner = stats => process.platform !== 'win32'
+  && typeof process.getuid === 'function'
+  && stats.uid === BigInt(process.getuid());
+
+const isScopedWindowsDmgFixtureAuthority = authority => process.platform === 'win32'
+  && authority?.schemaVersion === 1
+  && authority?.platform === 'win32'
+  && authority?.scope === 'release-test-private-dmg'
+  && Object.keys(authority).length === 3;
 
 const lstatPrivateDmgPath = async (path, label) => {
   try {
@@ -222,23 +230,25 @@ const lstatPrivateDmgPath = async (path, label) => {
   }
 };
 
-const assertPrivateDmgDirectory = async (path, publicOutputDirectory) => {
+const assertPrivateDmgDirectory = async (path, publicOutputDirectory, fixtureAuthority) => {
   const relationship = relative(resolve(publicOutputDirectory), resolve(path));
   if (relationship === '' || (!isAbsolute(relationship) && relationship !== '..' && !relationship.startsWith(`..${sep}`))) {
     throw new Error('Private DMG snapshot directory must be outside the public output path');
   }
   const stats = await lstatPrivateDmgPath(path, 'Private DMG snapshot directory');
-  if (!stats.isDirectory() || stats.isSymbolicLink() || !isCurrentOwner(stats)
-    || (process.platform !== 'win32' && (stats.mode & 0o777n) !== 0o700n)) {
+  const platformAuthority = isCurrentPosixOwner(stats) && (stats.mode & 0o777n) === 0o700n;
+  if (!stats.isDirectory() || stats.isSymbolicLink()
+    || (!platformAuthority && !isScopedWindowsDmgFixtureAuthority(fixtureAuthority))) {
     throw new Error('Private DMG snapshot directory must be a real owner-only mode-0700 directory');
   }
 };
 
-const assertPrivateDmgPathNamesHeldFile = async (path, held) => {
+const assertPrivateDmgPathNamesHeldFile = async (path, held, fixtureAuthority) => {
   const pathStats = await lstatPrivateDmgPath(path, 'Private DMG snapshot pathname');
+  const invalidPlatformMode = (pathStats.mode & 0o777n) !== 0o600n;
+  const platformAuthority = isCurrentPosixOwner(pathStats) && !invalidPlatformMode;
   if (!pathStats.isFile() || pathStats.isSymbolicLink()
-    || !isCurrentOwner(pathStats)
-    || (process.platform !== 'win32' && (pathStats.mode & 0o777n) !== 0o600n)
+    || (!platformAuthority && !isScopedWindowsDmgFixtureAuthority(fixtureAuthority))
     || pathStats.nlink !== 1n
     || !sameDmgFileState(dmgFileState(pathStats), held.state)) {
     throw new Error('Private DMG snapshot pathname no longer names the held owner-only single-link regular file');
@@ -259,7 +269,7 @@ const assertSameDmgContent = (expected, actual) => {
   }
 };
 
-const openHeldDmg = async (path, { privateSnapshot = false } = {}) => {
+const openHeldDmg = async (path, { privateSnapshot = false, fixtureAuthority } = {}) => {
   let handle;
   try {
     handle = await open(
@@ -274,7 +284,7 @@ const openHeldDmg = async (path, { privateSnapshot = false } = {}) => {
   }
   try {
     const captured = await captureHeldDmgBytes(handle);
-    if (privateSnapshot) await assertPrivateDmgPathNamesHeldFile(path, captured);
+    if (privateSnapshot) await assertPrivateDmgPathNamesHeldFile(path, captured, fixtureAuthority);
     else await assertDmgPathNamesHeldFile(path, captured);
     return { handle, captured };
   } catch (error) {
@@ -310,18 +320,18 @@ const copyHeldDmgToExclusivePath = async (handle, size, path) => {
   }
 };
 
-const createPrivateDmgSnapshot = async ({ sourcePath, publicOutputDirectory, description }) => {
+const createPrivateDmgSnapshot = async ({ sourcePath, publicOutputDirectory, description, fixtureAuthority }) => {
   const source = await openHeldDmg(sourcePath);
   let privateDirectory;
   let snapshot;
   try {
     privateDirectory = await mkdtemp(join(tmpdir(), 'propr-dmg-snapshot-'));
-    await assertPrivateDmgDirectory(privateDirectory, publicOutputDirectory);
+    await assertPrivateDmgDirectory(privateDirectory, publicOutputDirectory, fixtureAuthority);
     const privatePath = join(privateDirectory, `${randomUUID()}.dmg`);
     await copyHeldDmgToExclusivePath(source.handle, source.captured.size, privatePath);
     const sourceAfterCopy = await captureHeldDmgBytes(source.handle);
     assertStableDmgBytes(source.captured, sourceAfterCopy);
-    snapshot = await openHeldDmg(privatePath, { privateSnapshot: true });
+    snapshot = await openHeldDmg(privatePath, { privateSnapshot: true, fixtureAuthority });
     assertSameDmgContent(sourceAfterCopy, snapshot.captured);
     return {
       privateDirectory,
@@ -517,11 +527,17 @@ export const stageArtifacts = async ({
   version,
   env = process.env,
   inspectArchitecture = inspectArtifactArchitecture,
+  privateDmgFixtureAuthority,
 }) => {
   if (!VERSION_PATTERN.test(version)) throw new Error(`Invalid desktop release version: ${version}`);
   const target = `${platform}-${arch}`;
   const expectedKinds = TARGETS.get(target);
   if (!expectedKinds) throw new Error(`Unsupported desktop release target: ${target}`);
+  if (platform === 'darwin' && process.platform === 'win32'
+    && (inspectArchitecture === inspectArtifactArchitecture
+      || !isScopedWindowsDmgFixtureAuthority(privateDmgFixtureAuthority))) {
+    throw new Error('Windows-hosted DMG fixtures require an explicit scoped fixture authority and injected inspector');
+  }
 
   const candidates = await recursiveFiles(makeDirectory);
   const byKind = new Map();
@@ -547,11 +563,12 @@ export const stageArtifacts = async ({
           sourcePath: byKind.get(kind),
           publicOutputDirectory: outputDirectory,
           description: fileName,
+          fixtureAuthority: privateDmgFixtureAuthority,
         });
         const inspection = await inspectArchitecture({ heldArtifact: snapshot.heldArtifact, kind, platform, arch });
         const afterInspection = await captureHeldDmgBytes(snapshot.held.handle);
         assertStableDmgBytes(snapshot.held.captured, afterInspection);
-        await assertPrivateDmgPathNamesHeldFile(snapshot.privatePath, afterInspection);
+        await assertPrivateDmgPathNamesHeldFile(snapshot.privatePath, afterInspection, privateDmgFixtureAuthority);
         const details = await publishHeldDmg({
           handle: snapshot.held.handle,
           captured: afterInspection,

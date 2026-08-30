@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHash, generateKeyPairSync, verify } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, lstat, mkdtemp, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, lstat, mkdtemp, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -98,6 +98,17 @@ const architectureInspector = async ({ path, heldArtifact, kind, platform, arch 
   };
 };
 
+const windowsDmgFixtureAuthority = Object.freeze({
+  schemaVersion: 1,
+  platform: 'win32',
+  scope: 'release-test-private-dmg',
+});
+
+const stageFixtureArtifacts = arguments_ => stageArtifacts({
+  ...arguments_,
+  privateDmgFixtureAuthority: windowsDmgFixtureAuthority,
+});
+
 const signerEnvironment = platform => platform === 'darwin'
   ? {
       PROPR_DESKTOP_ACTUAL_SIGNER_TYPE: 'apple-team-id',
@@ -126,7 +137,7 @@ const createFragments = async (root, { signed = false } = {}) => {
         : kind === 'nupkg' ? nupkgContents : `${target}-${kind}`;
       await writeFile(join(makeDirectory, sourceName(kind)), contents);
     }
-    await stageArtifacts({
+    await stageFixtureArtifacts({
       makeDirectory,
       outputDirectory: join(fragments, target),
       platform,
@@ -288,7 +299,7 @@ describe('desktop release artifacts', () => {
       await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
       const previousSnapshots = new Set(await privateDmgSnapshotPaths());
       await assert.rejects(
-        stageArtifacts({
+        stageFixtureArtifacts({
           makeDirectory,
           outputDirectory,
           platform: 'darwin',
@@ -330,7 +341,7 @@ describe('desktop release artifacts', () => {
     await writeFile(originalPath, 'darwin-arm64-dmg-A');
     await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
     const expectedBytes = Buffer.from('darwin-arm64-dmg-A');
-    const fragment = await stageArtifacts({
+    const fragment = await stageFixtureArtifacts({
       makeDirectory,
       outputDirectory,
       platform: 'darwin',
@@ -365,6 +376,54 @@ describe('desktop release artifacts', () => {
     );
   });
 
+  test('requires explicit fixture authority for Windows-hosted DMG evidence tests', {
+    skip: process.platform !== 'win32',
+  }, async () => {
+    await assert.rejects(
+      stageArtifacts({
+        makeDirectory: 'unused',
+        outputDirectory: 'unused',
+        platform: 'darwin',
+        arch: 'x64',
+        version: '1.2.3',
+        inspectArchitecture: architectureInspector,
+      }),
+      /explicit scoped fixture authority/,
+    );
+  });
+
+  test('keeps owner-only private DMG mode enforcement strict on native macOS', {
+    skip: process.platform !== 'darwin',
+  }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-private-mode-'));
+    const makeDirectory = join(root, 'make');
+    await mkdir(makeDirectory);
+    await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
+    await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+    const previousSnapshots = new Set(await privateDmgSnapshotPaths());
+    try {
+      await assert.rejects(
+        stageFixtureArtifacts({
+          makeDirectory,
+          outputDirectory: join(root, 'stage'),
+          platform: 'darwin',
+          arch: 'arm64',
+          version: '1.2.3',
+          inspectArchitecture: async arguments_ => {
+            const inspection = await architectureInspector(arguments_);
+            if (arguments_.kind === 'dmg') {
+              await chmod(await findNewPrivateDmgSnapshot(previousSnapshots), 0o644);
+            }
+            return inspection;
+          },
+        }),
+        /owner-only single-link regular file/,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('accepts native xattr/ctime-only change when held bytes and identity are unchanged', {
     skip: process.platform !== 'darwin',
   }, async () => {
@@ -375,7 +434,7 @@ describe('desktop release artifacts', () => {
     await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
     await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
     const previousSnapshots = new Set(await privateDmgSnapshotPaths());
-    const fragment = await stageArtifacts({
+    const fragment = await stageFixtureArtifacts({
       makeDirectory,
       outputDirectory,
       platform: 'darwin',
@@ -404,7 +463,7 @@ describe('desktop release artifacts', () => {
     await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
     await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
     await assert.rejects(
-      stageArtifacts({
+      stageFixtureArtifacts({
         makeDirectory,
         outputDirectory: join(root, 'stage'),
         platform: 'darwin',
@@ -546,7 +605,7 @@ describe('desktop release artifacts', () => {
       `${'0'.repeat(40)} desktop-1.2.3-full.nupkg ${Buffer.byteLength('win32-x64-nupkg')}\n`,
     );
     await assert.rejects(
-      stageArtifacts({
+      stageFixtureArtifacts({
         makeDirectory,
         outputDirectory: join(root, 'stage'),
         platform: 'win32',
@@ -975,7 +1034,7 @@ describe('desktop release artifacts', () => {
       await writeFile(join(makeDirectory, sourceName(kind)), contents);
     }
     await assert.rejects(
-      stageArtifacts({
+      stageFixtureArtifacts({
         makeDirectory,
         outputDirectory: join(root, 'stage'),
         platform: 'linux',

@@ -715,7 +715,17 @@ describe('verified update artifact cache', () => {
   });
 
   test('enforces the whole-cache one-entry and byte quota during concurrent cleanup', async t => {
-    for (const scenario of ['unknown', 'many-small', 'oversized', 'nested', 'case-collision'] as const) {
+    for (const scenario of [
+      'unknown',
+      'many-small',
+      'over-limit',
+      'long-name-total',
+      'oversized',
+      'nested',
+      'deep-nesting',
+      'symlink-loop',
+      'case-collision',
+    ] as const) {
       await t.test(scenario, async context => {
         const directory = await mkdtemp(join(tmpdir(), 'propr-update-cache-quota-test-'));
         const cacheDirectory = join(directory, 'cache');
@@ -729,6 +739,12 @@ describe('verified update artifact cache', () => {
           } else if (scenario === 'many-small') {
             await Promise.all(Array.from({ length: 32 }, (_, index) =>
               writeFile(join(cacheDirectory, `unknown-${index}`), 'x')));
+          } else if (scenario === 'over-limit') {
+            await Promise.all(Array.from({ length: SIGNED_UPDATE_CACHE_POLICY.inspectionEntryCap + 8 }, (_, index) =>
+              writeFile(join(cacheDirectory, `overflow-${index}`), 'x')));
+          } else if (scenario === 'long-name-total') {
+            await Promise.all(Array.from({ length: 60 }, (_, index) =>
+              writeFile(join(cacheDirectory, `${index}-${'n'.repeat(230)}`), 'x')));
           } else if (scenario === 'oversized') {
             await truncate(
               join(entry, SIGNED_UPDATE_CACHE_POLICY.artifactName),
@@ -737,6 +753,16 @@ describe('verified update artifact cache', () => {
           } else if (scenario === 'nested') {
             await mkdir(join(entry, 'nested'));
             await writeFile(join(entry, 'nested', 'unknown'), 'x');
+          } else if (scenario === 'deep-nesting') {
+            let nested = join(entry, 'nested');
+            for (let depth = 0; depth < SIGNED_UPDATE_CACHE_POLICY.inspectionDepth + 8; depth += 1) {
+              await mkdir(nested, { recursive: true });
+              nested = join(nested, 'deeper');
+            }
+          } else if (scenario === 'symlink-loop') {
+            const nested = join(entry, 'nested');
+            await mkdir(nested);
+            await symlink(nested, join(nested, 'loop'), process.platform === 'win32' ? 'junction' : 'dir');
           } else {
             const collision = join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName.toUpperCase());
             try {
@@ -753,12 +779,15 @@ describe('verified update artifact cache', () => {
             checkForSignedUpdates(options),
             checkForSignedUpdates(options),
           ]), ['available', 'available']);
+          assert.equal(await checkForSignedUpdates(options), 'available', 'restart must reuse only the fresh namespace');
           assert.equal(counted.count(), 2);
           assert.deepEqual(await readdir(cacheDirectory), [SIGNED_UPDATE_CACHE_POLICY.entryName]);
           assert.deepEqual((await readdir(entry)).sort(), [
             SIGNED_UPDATE_CACHE_POLICY.artifactName,
             SIGNED_UPDATE_CACHE_POLICY.metadataName,
           ].sort());
+          assert.equal(SIGNED_UPDATE_CACHE_POLICY.inspectionEntryCap, 64);
+          assert.equal(SIGNED_UPDATE_CACHE_POLICY.inspectionDepth, 3);
         } finally {
           await rm(directory, { recursive: true, force: true });
         }
