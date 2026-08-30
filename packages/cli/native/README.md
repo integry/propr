@@ -35,39 +35,36 @@ before any mutation.
 
 All broker outputs are fixed-version bounded JSON. The runtime resolves them
 only inside the packaged CLI native directory and reads them through a held
-non-symlink descriptor. After a hard-coded SHA-256 check, execution uses only
-those held bytes staged into a randomized private capability, never the
-packaged pathname. On Windows, one bounded System32 PowerShell bootstrap opens
-the randomized directory and executable with write/delete sharing denied, binds
-the full file identity and SHA-256 through that handle, and establishes and
-verifies the exact protected DACL. A parent-bound supervisor retains that
-authenticated image lock for the lifetime of the cached capability. It is
-placed in a kill-on-close Job Object and receives only anonymous inherited
-stdin/stdout plus the staged image handle. Startup material travels in the
-first control frame, never argv or the environment. Readiness, pre-launch,
-post-response, and shutdown use strict 4-byte-length-prefixed versioned frames
-with fresh parent request IDs and sequence/PID/full-identity/digest binding.
-The small constant loader is passed only as UTF-16LE Base64 through
-`-EncodedCommand`; its complete absolute executable and fixed-switch command
-line is checked against the Windows 32,767-code-unit limit with a safety
-margin. It contains no supervisor source or dynamic startup material. The
-bounded supervisor source remains an exact raw UTF-8 length frame on anonymous
-stdin and is decoded and parsed before any compiler workspace is published.
-The parsed supervisor derives its compiler parent only as `SystemRoot\Temp`,
-holds verified SystemRoot and Temp directory handles, and atomically publishes
-the 256-bit-random directory with its explicit non-inherited security
-descriptor using `NtCreateFile(FILE_CREATE)` relative to the held Temp handle.
-That same native call returns the root handle used to reject reparse points and
-verify full identity, owner, and every DACL field. Only that private directory
-is assigned to process-local `TEMP` and `TMP`; no caller value is inherited.
-Cleanup enumerates and opens descendants relative to held directory handles,
-never traverses a reparse point, deletes each exact opened entry, retries a
-fixed number of times, and finally deletes the exact root through its retained
-handle. Compiler finalizers and handles are drained and the workspace is gone
-before job creation, so startup failures, protocol failures, timeouts, aborts,
-and job termination cannot leave a post-compilation workspace or delete a
-same-name replacement. Diagnostics never report the workspace path or the
-underlying ACL/compiler/cleanup error.
+non-symlink descriptor. After a hard-coded SHA-256 check, broker execution uses
+only held bytes staged into a randomized private capability.
+
+`windows-authority-supervisor.cs` is the complete persistent Windows authority
+source. It is compiled in an explicit Windows-only build step into a
+deterministic AnyCPU PE and is never compiled at runtime. The build emits a
+canonical manifest binding the exact source and helper SHA-256, managed AnyCPU
+metadata, protocol version, compiler and reference provenance, and either the
+explicit `unsigned-validation` trust mode or production Authenticode leaf/SPKI
+pins plus a detached Ed25519 manifest signature. Production discovery rejects
+an absent helper, an unsigned manifest, a non-canonical manifest, a bad
+signature, or any hash/metadata mismatch. Thus an installed CLI never needs
+PowerShell, `Add-Type`, `csc.exe`, a compiler temp directory, or source
+transport.
+
+The CLI starts the compiled supervisor directly with the single constant
+`--lease-v2` switch, an empty environment, binary anonymous stdin/stdout,
+and the already-held broker image handle. That mode opens its own canonical PE
+with `FILE_SHARE_READ` only, creates the protocol instance suspended, assigns
+the kill-on-close job, opens the loaded process image, and compares its volume,
+full file ID, and SHA-256 with the leased file object before resuming. The lease
+and job remain open through protocol exit; x64 and arm64 both execute the same
+AnyCPU helper and native API boundary. Stdout is exclusively the strict
+4-byte-length-prefixed protocol; stderr is required to remain empty. The
+parent-bound supervisor retains the broker's write/delete-denying image lock,
+full identity and hash for the cached capability lifetime, hardens its process
+DACL, and enters a kill-on-close Job Object before READY. Readiness,
+pre-launch, post-response, and shutdown use fresh request IDs and strict
+sequence/PID/full-identity/digest binding. There is no runtime compiler
+workspace to publish or clean up.
 The parent uses only the documented asynchronous ChildProcess streams with an
 incremental bounded parser, backpressure-aware writes, abort propagation, and
 startup/request/shutdown deadlines; it never extracts private pipe descriptors

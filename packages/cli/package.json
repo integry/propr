@@ -16,6 +16,8 @@
   },
   "scripts": {
     "build": "tsc && node scripts/copy-assets.mjs",
+    "build:windows-authority-validation": "node scripts/build-windows-authority-helper.mjs --validation",
+    "build:windows-authority-production": "node scripts/build-windows-authority-helper.mjs --production",
     "prepack": "npm run build",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json"

@@ -149,6 +149,35 @@ jobs:
           test ! -e "$skill_fixture/home/.gemini/antigravity-cli/skills/propr"
           test ! -e "$skill_fixture/xdg/opencode/skills/propr"
 
+  windows-authority-helper:
+    name: Windows Authority Helper (AnyCPU)
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build audited AnyCPU authority helper
+        run: npm run build:windows-authority-validation -w @propr/cli
+
+      - name: Upload exact helper set
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-authority-helper-${{ github.run_id }}
+          path: packages/cli/native/prebuilds/win32-anycpu
+          if-no-files-found: error
+          overwrite: true
+
   connect-authority-native:
     name: Connect Authority (${{ matrix.os }}, Node 22)
     runs-on: ${{ matrix.os }}
@@ -176,6 +205,9 @@ jobs:
         run: |
           set -euo pipefail
           node -e "if (process.platform === 'win32' && process.arch !== 'x64') process.exit(1)"
+          if [ "$(node -p process.platform)" = win32 ]; then
+            npm run build:windows-authority-validation -w @propr/cli
+          fi
           npm run build -w @propr/shared
           npm run build -w @propr/core
           npm run build -w @propr/local-setup
@@ -185,18 +217,25 @@ jobs:
       - name: Require hosted Windows supervisor smoke
         if: runner.os == 'Windows'
         shell: bash
+        env:
+          PROPR_WINDOWS_AUTHORITY_VALIDATION: '1'
         run: node scripts/verify-windows-authority-smoke.mjs
 
       - name: Run platform-safe focused Connect suites
         shell: bash
+        env:
+          PROPR_WINDOWS_AUTHORITY_VALIDATION: ${{ runner.os == 'Windows' && '1' || '' }}
         run: node scripts/verify-platform-safe-connect.mjs
 
       - name: Require complete native Connect authority proof
         shell: bash
+        env:
+          PROPR_WINDOWS_AUTHORITY_VALIDATION: ${{ runner.os == 'Windows' && '1' || '' }}
         run: node scripts/verify-native-connect-authority.mjs
 
   validate:
     name: Validate Changes
+    needs: windows-authority-helper
     runs-on: ubuntu-latest
     env:
       ACTIONLINT_IMAGE: rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
@@ -308,6 +347,12 @@ jobs:
             npm ci
           } > >(tee -a build_log.txt) 2>&1
 
+      - name: Download audited Windows authority helper
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: windows-authority-helper-${{ github.run_id }}
+          path: packages/cli/native/prebuilds/win32-anycpu
+
       - name: Verify release-candidate metadata
         env:
           RELEASE_CANDIDATE: 'true'
@@ -357,6 +402,8 @@ jobs:
 
       - name: Verify CLI Release Package
         id: cli_pack
+        env:
+          PROPR_WINDOWS_AUTHORITY_PACKAGE_VALIDATION: '1'
         run: |
           set -euo pipefail
           {

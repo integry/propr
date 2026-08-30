@@ -111,10 +111,43 @@ for (const [relativeArtifact, expected] of Object.entries(authorityArtifacts)) {
   const actual = createHash("sha256").update(readFileSync(artifact)).digest("hex");
   if (actual !== expected) throw new Error(`${relativeArtifact} failed integrity verification`);
 }
+const windowsSupervisorDirectory = join(stageDir, "dist", "native", "prebuilds", "win32-anycpu");
+const windowsSupervisor = join(windowsSupervisorDirectory, "connect-authority-supervisor.exe");
+const windowsSupervisorManifest = join(windowsSupervisorDirectory, "connect-authority-supervisor.manifest.json");
+const windowsSupervisorSignature = join(windowsSupervisorDirectory, "connect-authority-supervisor.manifest.sig");
+for (const artifact of [windowsSupervisor, windowsSupervisorManifest, windowsSupervisorSignature]) {
+  if (!existsSync(artifact)) throw new Error(`Prebuilt Windows authority helper artifact is missing: ${artifact}`);
+}
+const supervisorManifestBytes = readFileSync(windowsSupervisorManifest);
+const supervisorManifest = JSON.parse(supervisorManifestBytes.toString("utf8"));
+if (supervisorManifestBytes.at(-1) !== 0x0a
+  || supervisorManifest.format !== "propr-windows-authority-helper-v2"
+  || supervisorManifest.protocolVersion !== 2
+  || supervisorManifest.pe?.architecture !== "anycpu"
+  || supervisorManifest.pe?.managed !== true
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.sourceSha256 ?? "")
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.helperSha256 ?? "")
+  || createHash("sha256").update(readFileSync(windowsSupervisor)).digest("hex") !== supervisorManifest.helperSha256) {
+  throw new Error("Prebuilt Windows authority helper manifest failed integrity verification");
+}
+if (supervisorManifest.trust?.mode !== "production-signed"
+  && !(supervisorManifest.trust?.mode === "unsigned-validation"
+    && process.env.PROPR_WINDOWS_AUTHORITY_PACKAGE_VALIDATION === "1")) {
+  throw new Error("Unsigned Windows authority helper cannot enter a production npm artifact");
+}
+const expectedSupervisorFiles = [
+  "connect-authority-supervisor.exe",
+  "connect-authority-supervisor.manifest.json",
+  "connect-authority-supervisor.manifest.sig",
+];
+if (readdirSync(windowsSupervisorDirectory).sort().join("\0") !== expectedSupervisorFiles.sort().join("\0")) {
+  throw new Error("Windows authority helper target contains an unexpected artifact");
+}
 for (const auditedFile of [
   "directory-operations.c",
   "darwin-authority-broker.c",
   "windows-authority-broker.c",
+  "windows-authority-supervisor.cs",
   "README.md",
 ]) {
   const bundled = join(stageDir, "dist", "native", auditedFile);
