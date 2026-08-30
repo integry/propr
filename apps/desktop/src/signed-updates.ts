@@ -38,7 +38,7 @@ export interface SignedUpdateBytes {
 
 export interface SignedUpdateArtifact extends SignedUpdateBytes {
   fileName: string;
-  kind: 'zip' | 'nupkg';
+  kind: 'zip' | 'msi';
 }
 
 export interface SignedUpdateSigner {
@@ -85,7 +85,6 @@ export const SIGNED_UPDATE_DOWNLOAD_LIMITS = {
   artifactBytes: 1024 * 1024 * 1024,
   metadataTimeoutMs: 30_000,
   artifactTimeoutMs: 10 * 60_000,
-  squirrelReleaseBytes: 64 * 1024,
 } as const;
 
 export const SIGNED_UPDATE_CACHE_POLICY = {
@@ -115,17 +114,9 @@ export const SIGNED_UPDATE_CACHE_POLICY = {
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
-const SHA1_PATTERN = /^[a-fA-F0-9]{40}$/;
 const TARGET_PATTERN = /^(darwin|win32)-(x64|arm64)$/;
-const SQUIRREL_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}\.nupkg$/;
 const execFileAsync = promisify(execFile);
 const cacheLocks = new Map<string, Promise<void>>();
-
-export interface SquirrelReleaseEntry {
-  sha1: string;
-  fileName: string;
-  size: number;
-}
 
 export interface VerifiedUpdateArtifact {
   feedBytes: Buffer;
@@ -206,14 +197,14 @@ const parseFeed = (value: unknown, target: string, version: string): SignedUpdat
   if (!isRecord(value.artifact)
     || typeof value.artifact.fileName !== 'string'
     || basename(value.artifact.fileName) !== value.artifact.fileName
-    || (value.artifact.kind !== 'zip' && value.artifact.kind !== 'nupkg')) {
+    || (value.artifact.kind !== 'zip' && value.artifact.kind !== 'msi')) {
     throw new Error(`${label} artifact descriptor is invalid`);
   }
-  const expectedKind = target.startsWith('darwin-') ? 'zip' : 'nupkg';
+  const expectedKind = target.startsWith('darwin-') ? 'zip' : 'msi';
   const [, arch] = target.split('-');
   const expectedFileName = target.startsWith('darwin-')
     ? `ProPR-Desktop-${version}-macos-${arch}-zip`
-    : `ProPR-Desktop-${version}-windows-${arch}-full.nupkg`;
+    : `ProPR-Desktop-${version}-windows-${arch}-Machine-Setup.msi`;
   if (value.artifact.kind !== expectedKind
     || value.artifact.fileName !== expectedFileName
     || basename(new URL(parsedArtifact.url).pathname) !== value.artifact.fileName) {
@@ -506,74 +497,21 @@ export const downloadBoundedUpdateFile = async (
   }
 };
 
-export const parseSquirrelReleaseEntry = (
-  feedBytes: Buffer,
-  version: string,
-  artifact: SignedUpdateArtifact,
-): SquirrelReleaseEntry => {
-  const fail = (): never => { throw new Error('Signed Windows update feed is invalid'); };
-  const canonicalFileNames = new Set([
-    `ProPR-Desktop-${version}-windows-x64-full.nupkg`,
-    `ProPR-Desktop-${version}-windows-arm64-full.nupkg`,
-  ]);
-  if (!VERSION_PATTERN.test(version)
-    || artifact.kind !== 'nupkg'
-    || !canonicalFileNames.has(artifact.fileName)
-    || feedBytes.length === 0
-    || feedBytes.length > SIGNED_UPDATE_DOWNLOAD_LIMITS.squirrelReleaseBytes) fail();
-
-  let text: string;
-  try { text = new TextDecoder('utf-8', { fatal: true }).decode(feedBytes); } catch { return fail(); }
-  if (text.includes('\0') || text.includes('\r') && !text.includes('\r\n')) fail();
-  const normalized = text.endsWith('\r\n')
-    ? text.slice(0, -2)
-    : text.endsWith('\n') ? text.slice(0, -1) : text;
-  if (!normalized || normalized.includes('\r') && !normalized.split('\r\n').every(Boolean)) fail();
-  const lines = normalized.split(text.includes('\r\n') ? '\r\n' : '\n');
-  if (lines.length > 128 || lines.some(line => !line || line.length > 512)) fail();
-
-  const seen = new Set<string>();
-  const selected: SquirrelReleaseEntry[] = [];
-  for (const line of lines) {
-    const tokens = line.split(' ');
-    if (tokens.length !== 3 || tokens.some(token => !token)) fail();
-    const [sha1, fileName, sizeText] = tokens;
-    if (!SHA1_PATTERN.test(sha1)
-      || !SQUIRREL_FILE_NAME_PATTERN.test(fileName)
-      || basename(fileName) !== fileName
-      || fileName.includes('/')
-      || fileName.includes('\\')
-      || !/^[1-9]\d*$/.test(sizeText)) fail();
-    const size = Number(sizeText);
-    if (!Number.isSafeInteger(size) || size > SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes) fail();
-    const foldedName = fileName.toLowerCase();
-    if (seen.has(foldedName)) fail();
-    seen.add(foldedName);
-    if (fileName === artifact.fileName) selected.push({ sha1: sha1.toLowerCase(), fileName, size });
-  }
-  if (selected.length !== 1 || selected[0].size !== artifact.size) fail();
-  return selected[0];
-};
-
 const verifyFeedReferencesArtifact = (
   target: string,
   version: string,
   feedBytes: Buffer,
   artifact: SignedUpdateArtifact,
-): SquirrelReleaseEntry | undefined => {
-  if (target.startsWith('darwin-')) {
-    let feed: unknown;
-    try {
-      feed = JSON.parse(feedBytes.toString('utf8'));
-    } catch {
-      throw new Error('Signed macOS update feed is not valid JSON');
-    }
-    if (!isRecord(feed) || feed.url !== artifact.url || feed.name !== version) {
-      throw new Error('Signed macOS update feed does not reference the bound version and artifact URL');
-    }
-    return undefined;
+): void => {
+  let feed: unknown;
+  try {
+    feed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(feedBytes));
+  } catch {
+    throw new Error('Signed native update feed is not valid JSON');
   }
-  return parseSquirrelReleaseEntry(feedBytes, version, artifact);
+  if (!isRecord(feed) || feed.url !== artifact.url || feed.name !== version) {
+    throw new Error('Signed native update feed does not reference the bound version and artifact URL');
+  }
 };
 
 export const validateMacOSUpdateApplicationLayout = async (extracted: string): Promise<string> => {
@@ -624,16 +562,11 @@ export const verifyNativeUpdateSigner = async (
       return { type: 'apple-team-id', identity, designatedRequirement };
     }
 
+    if (artifact.kind !== 'msi') throw new Error('Windows update artifact is not the canonical machine MSI');
     const script = [
       '$ErrorActionPreference = "Stop"',
       `$package = ${JSON.stringify(packagePath)}`,
-      `$extract = ${JSON.stringify(extracted)}`,
-      '$zip = "$package.zip"',
-      'Copy-Item -LiteralPath $package -Destination $zip',
-      'Expand-Archive -LiteralPath $zip -DestinationPath $extract',
-      "$executable = Get-Item -LiteralPath (Join-Path $extract 'lib/net45/propr-desktop.exe')",
-      "if (!$executable -or $executable.PSIsContainer) { throw 'Windows update package canonical application is missing' }",
-      '$signature = Get-AuthenticodeSignature -LiteralPath $executable.FullName',
+      '$signature = Get-AuthenticodeSignature -LiteralPath $package',
       "if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or !$signature.TimeStamperCertificate) { throw 'Windows update Authenticode chain or timestamp status is invalid' }",
       '$certificateBase64 = [Convert]::ToBase64String($signature.SignerCertificate.RawData)',
       '@{ identity = $signature.SignerCertificate.Subject; certificateBase64 = $certificateBase64 } | ConvertTo-Json -Compress',
@@ -707,7 +640,6 @@ interface PreparedSignedUpdate {
   target: string;
   feed: SignedUpdateFeed;
   feedBytes: Buffer;
-  squirrelEntry?: SquirrelReleaseEntry;
 }
 
 const acquireFilesystemCacheLock = async (cacheDirectory: string): Promise<() => Promise<void>> => {
@@ -1347,14 +1279,14 @@ const readHeldFile = async (held: HeldPrivateFile, offset: number, length: numbe
   return bytes;
 };
 
-const hashHeldFile = async (held: HeldPrivateFile, maxBytes: number): Promise<{ size: number; sha256: string; sha1: string }> => {
+const hashHeldFile = async (held: HeldPrivateFile, maxBytes: number): Promise<{ size: number; sha256: string }> => {
   if (held.windowsLock) {
     const verified = await held.windowsLock.verify();
     const size = Number(verified.size);
     if (!Number.isSafeInteger(size) || size <= 0 || size > maxBytes) {
       throw new Error('Verified update artifact is invalid');
     }
-    return { size, sha256: verified.sha256, sha1: verified.sha1 };
+    return { size, sha256: verified.sha256 };
   }
   if (!held.handle) throw new Error('Verified update artifact is invalid');
   const handle = held.handle;
@@ -1363,7 +1295,6 @@ const hashHeldFile = async (held: HeldPrivateFile, maxBytes: number): Promise<{ 
     throw new Error('Verified update artifact is invalid');
   }
   const sha256 = createHash('sha256');
-  const sha1 = createHash('sha1');
   const size = Number(stats.size);
   const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, size));
   let offset = 0;
@@ -1372,17 +1303,15 @@ const hashHeldFile = async (held: HeldPrivateFile, maxBytes: number): Promise<{ 
     if (bytesRead === 0) throw new Error('Verified update artifact is invalid');
     const bytes = chunk.subarray(0, bytesRead);
     sha256.update(bytes);
-    sha1.update(bytes);
     offset += bytesRead;
   }
-  return { size: offset, sha256: sha256.digest('hex'), sha1: sha1.digest('hex') };
+  return { size: offset, sha256: sha256.digest('hex') };
 };
 
 const assertHeldArtifact = async (
   held: HeldPrivateFile,
   path: string,
   artifact: SignedUpdateArtifact,
-  squirrelEntry?: SquirrelReleaseEntry,
 ): Promise<void> => {
   if (held.windowsLock) {
     const verified = await held.windowsLock.verify();
@@ -1393,9 +1322,6 @@ const assertHeldArtifact = async (
     }
     if (Number(verified.size) !== artifact.size || verified.sha256 !== artifact.sha256) {
       throw new Error('Verified update artifact does not match signed metadata');
-    }
-    if (squirrelEntry && (Number(verified.size) !== squirrelEntry.size || verified.sha1 !== squirrelEntry.sha1)) {
-      throw new Error('Verified update artifact does not match Squirrel metadata');
     }
     return;
   }
@@ -1412,10 +1338,6 @@ const assertHeldArtifact = async (
   const hashes = await hashHeldFile(held, SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes);
   if (hashes.size !== artifact.size || hashes.sha256 !== artifact.sha256) {
     throw new Error('Verified update artifact does not match signed metadata');
-  }
-  // SHA-1 is only Squirrel's compatibility binding; signed SHA-256 metadata remains the trust root.
-  if (squirrelEntry && (hashes.size !== squirrelEntry.size || hashes.sha1 !== squirrelEntry.sha1)) {
-    throw new Error('Verified update artifact does not match Squirrel metadata');
   }
 };
 
@@ -1472,7 +1394,7 @@ const verifyHeldNativeSigner = async (
       await output.close();
     }
     snapshot = await openPrivateRegularFile(snapshotPath);
-    await assertHeldArtifact(snapshot, snapshotPath, prepared.feed.artifact, prepared.squirrelEntry);
+    await assertHeldArtifact(snapshot, snapshotPath, prepared.feed.artifact);
     const beforeSignerDirectory = await lstat(directory, { bigint: true });
     const signer = await verifyNativeSigner(snapshotPath, prepared.feed.artifact, prepared.feed.signer);
     const afterSignerDirectory = await lstat(directory, { bigint: true });
@@ -1482,7 +1404,7 @@ const verifyHeldNativeSigner = async (
       || beforeSignerDirectory.mtimeNs !== afterSignerDirectory.mtimeNs) {
       throw new Error('Verified update signer snapshot is invalid');
     }
-    await assertHeldArtifact(snapshot, snapshotPath, prepared.feed.artifact, prepared.squirrelEntry);
+    await assertHeldArtifact(snapshot, snapshotPath, prepared.feed.artifact);
     return signer;
   } finally {
     try { await snapshot?.windowsLock?.close(); } finally {
@@ -1539,16 +1461,16 @@ const withVerifiedArtifact = async <T>(
         throw new Error('Verified update artifact is invalid');
       }
     };
-    await assertHeldArtifact(held, packagePath, prepared.feed.artifact, prepared.squirrelEntry);
+    await assertHeldArtifact(held, packagePath, prepared.feed.artifact);
     assertSigner(
       await verifyHeldNativeSigner(held, prepared, verifyNativeSigner),
       prepared.feed.signer,
     );
     await assertDirectoryUnchanged();
-    await assertHeldArtifact(held, packagePath, prepared.feed.artifact, prepared.squirrelEntry);
+    await assertHeldArtifact(held, packagePath, prepared.feed.artifact);
     const result = await use(held);
     await assertDirectoryUnchanged();
-    await assertHeldArtifact(held, packagePath, prepared.feed.artifact, prepared.squirrelEntry);
+    await assertHeldArtifact(held, packagePath, prepared.feed.artifact);
     return result;
   } finally {
     try { await held.windowsLock?.close(); } finally { await held.handle?.close(); }
@@ -1739,14 +1661,13 @@ const prepareSignedUpdate = async ({
     expected: feed.feed,
   });
   verifyBytes(feedBytes, feed.feed, 'Native update feed');
-  const squirrelEntry = verifyFeedReferencesArtifact(target, manifest.version, feedBytes, feed.artifact);
+  verifyFeedReferencesArtifact(target, manifest.version, feedBytes, feed.artifact);
   return {
     manifest,
     manifestDigest: createHash('sha256').update(payload).digest('hex'),
     target,
     feed,
     feedBytes,
-    squirrelEntry,
   };
 };
 

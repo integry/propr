@@ -202,11 +202,8 @@ describe('desktop trusted release workflow', () => {
     assert.match(production, /SpkiSha256/);
     assert.match(production, /Windows artifacts have mixed Authenticode signers/);
     assert.match(production, /certificate\|spki\)-sha256:\[a-f0-9\]\{64\}/);
-    assert.match(production, /release-architecture\.mjs inspect[\s\S]*--kind nupkg[\s\S]*lib\/net45\/propr-desktop\.exe/);
-    assert.ok(
-      production.indexOf('release-architecture.mjs inspect') < production.indexOf('Expand-Archive'),
-      'the complete NUPKG must be validated before any executable is extracted or inspected',
-    );
+    assert.match(production, /release-architecture\.mjs inspect[\s\S]*--kind msi/);
+    assert.doesNotMatch(production, /--kind nupkg|Expand-Archive|full\.nupkg|\*Setup\.exe/);
     assert.match(production, /PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS: '1'/);
   });
 
@@ -391,7 +388,7 @@ describe('desktop trusted release workflow', () => {
     assert.match(workflow, /-Architecture '\$\{\{ matrix\.arch \}\}'/);
     assert.match(forgeConfig, /postMake:/);
     assert.match(forgeConfig, /buildWindowsMachineInstaller/);
-    assert.match(forgeConfig, /noMsi: true/);
+    assert.doesNotMatch(forgeConfig, /MakerSquirrel|noMsi|Setup\.exe|full\.nupkg/);
     assert.match(forgeConfig, /Machine-Setup\.msi/);
     assert.match(windowsMachineInstaller, /InstallScope="perMachine"/);
     assert.match(windowsMachineInstaller, /\/inheritance:r/);
@@ -404,5 +401,13 @@ describe('desktop trusted release workflow', () => {
     assert.match(installedWindowsAuthorityTest, /OpenWrite/);
     assert.match(installedWindowsAuthorityTest, /File\]::Move/);
     assert.match(installedWindowsAuthorityTest, /File\]::Delete/);
+    assert.match(installedWindowsAuthorityTest, /'\/fa'/);
+    assert.match(installedWindowsAuthorityTest, /machine uninstall left the protected canonical install tree behind/);
+    assert.match(installedWindowsAuthorityTest, /machine downgrade unexpectedly succeeded/);
+    assert.match(installedWindowsAuthorityTest, /deliberately failing upgrade unexpectedly succeeded/);
+    assert.match(windowsMachineInstaller, /RollbackProbe/);
+    assert.match(windowsMachineInstaller, /MajorUpgrade AllowSameVersionUpgrades="yes"/);
+    assert.match(windowsMachineInstaller, /Software\\\\Classes\\\\propr/);
+    assert.match(workflow, /PROPR_DESKTOP_WINDOWS_INSTALLED_AUTHORITY=1/g);
   });
 });

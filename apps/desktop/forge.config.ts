@@ -1,12 +1,12 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerDeb } from '@electron-forge/maker-deb';
 import { MakerRpm } from '@electron-forge/maker-rpm';
-import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { flipFuses, FuseV1Options, FuseVersion } from '@electron/fuses';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { rm } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   readCompleteEnvironmentGroup,
@@ -14,7 +14,7 @@ import {
   resolveDesktopVersion,
   resolveTrustedUpdateBuildConfig,
 } from './src/release-config';
-import { DESKTOP_EXECUTABLE_NAME, SQUIRREL_PACKAGE_NAME } from './src/squirrel-events';
+const DESKTOP_EXECUTABLE_NAME = 'propr-desktop';
 
 const desktopPackage = JSON.parse(
   readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf8'),
@@ -122,7 +122,7 @@ const config: ForgeConfig = {
       if (packageResult.platform !== 'win32') return;
       // The Windows signer runs after extra resources are copied and signs every
       // PE in the application. Bind the manifest to those final signed helper
-      // bytes before Squirrel/checksum assembly consumes the packaged layout.
+      // bytes before MSI/checksum assembly consumes the packaged layout.
       const authorityInspectorModule = './scripts/inspect-packaged-windows-authority.mjs';
       const { refreshPackagedWindowsAuthorityManifest, inspectPackagedWindowsAuthority } = await import(
         authorityInspectorModule
@@ -143,11 +143,10 @@ const config: ForgeConfig = {
       const { buildWindowsMachineInstaller } = await import(installerModule);
       for (const result of makeResults) {
         if (result.platform !== 'win32' || (result.arch !== 'x64' && result.arch !== 'arm64')) continue;
-        const setup = result.artifacts.find(path => path.endsWith('Setup.exe'));
-        if (!setup) throw new Error('Squirrel output is missing its canonical setup executable');
+        const triggerArtifact = result.artifacts[0];
+        if (!triggerArtifact) throw new Error('Windows make did not produce its private MSI build trigger');
         const machineInstaller = resolve(
-          setup,
-          '..',
+          dirname(triggerArtifact),
           `ProPR-Desktop-${releaseVersion}-Machine-Setup.msi`,
         );
         const built = await buildWindowsMachineInstaller({
@@ -161,20 +160,17 @@ const config: ForgeConfig = {
           const { sign } = await import('@electron/windows-sign');
           await sign({ files: [machineInstaller], ...windowsSign });
         }
-        result.artifacts.push(machineInstaller);
+        await Promise.all(result.artifacts.map(path => rm(path, { force: true })));
+        result.artifacts = [machineInstaller];
       }
       return makeResults;
     },
   },
   makers: [
-    new MakerSquirrel({
-      name: SQUIRREL_PACKAGE_NAME,
-      setupExe: `ProPR-Desktop-${releaseVersion}-Setup.exe`,
-      noMsi: true,
-      version: releaseVersion,
-      ...(windowsSign ? { windowsSign } : {}),
-    }),
-    new MakerZIP({}, ['darwin', 'linux']),
+    // Forge requires a maker result before postMake. On Windows this ZIP is a
+    // private build trigger only: postMake deletes it and returns exactly the
+    // protected machine-wide MSI as the sole maker artifact.
+    new MakerZIP({}, ['darwin', 'linux', 'win32']),
     ...(process.env.PROPR_DESKTOP_ENABLE_DEB === '1'
       ? [new MakerDeb({
         options: {

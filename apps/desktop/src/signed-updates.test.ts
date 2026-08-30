@@ -13,7 +13,6 @@ import {
   collectUpdateCacheQuarantinesForTest,
   downloadBoundedUpdateFile,
   fetchBoundedUpdateBytes,
-  parseSquirrelReleaseEntry,
   posixAuthorityIsPrivate,
   quarantineUpdateCacheNamespaceForTest,
   SIGNED_UPDATE_CACHE_POLICY,
@@ -33,9 +32,13 @@ const publicKey = keys.publicKey.export({ format: 'der', type: 'spki' }).toStrin
 const certificateSha256 = '1'.repeat(64);
 const spkiSha256 = '2'.repeat(64);
 const artifact = Buffer.from('signed windows package bytes');
-const artifactUrl = 'https://updates.example.test/win32/x64/ProPR-Desktop-1.2.4-windows-x64-full.nupkg';
-const artifactSha1 = createHash('sha1').update(artifact).digest('hex');
-const feed = Buffer.from(`${artifactSha1} ProPR-Desktop-1.2.4-windows-x64-full.nupkg ${artifact.length}\r\n`);
+const artifactUrl = 'https://updates.example.test/win32/x64/ProPR-Desktop-1.2.4-windows-x64-Machine-Setup.msi';
+const feed = Buffer.from(`${JSON.stringify({
+  url: artifactUrl,
+  name: '1.2.4',
+  notes: 'ProPR Desktop 1.2.4',
+  pub_date: '2026-08-29T12:00:00.000Z',
+}, null, 2)}\n`);
 const bytes = (url: string, value: Buffer) => ({
   url,
   size: value.length,
@@ -53,11 +56,11 @@ const manifest: SignedUpdateManifest = {
     'win32-x64': {
       target: 'win32-x64',
       version: '1.2.4',
-      feed: bytes('https://updates.example.test/win32/x64/RELEASES', feed),
+      feed: bytes('https://updates.example.test/win32/x64/updates.json', feed),
       artifact: {
         ...bytes(artifactUrl, artifact),
-        fileName: 'ProPR-Desktop-1.2.4-windows-x64-full.nupkg',
-        kind: 'nupkg',
+        fileName: 'ProPR-Desktop-1.2.4-windows-x64-Machine-Setup.msi',
+        kind: 'msi',
       },
       signer: {
         type: 'authenticode-subject',
@@ -128,55 +131,6 @@ test('security identities preserve adjacent device/inode values above Number pre
   assert.equal(posixAuthorityIsPrivate(1000n, 0o100600n, undefined), false);
   assert.equal(posixAuthorityIsPrivate(1000n, 0o100600n, 1000n), true);
   assert.equal(posixAuthorityIsPrivate(1000n, 0o100644n, 1000n), false);
-});
-
-describe('runtime Squirrel RELEASES binding', () => {
-  test('accepts a canonical Windows Squirrel record and canonicalizes its SHA-1', () => {
-    const entry = parseSquirrelReleaseEntry(
-      Buffer.from(`${artifactSha1.toUpperCase()} ${windowsArtifact.fileName} ${artifact.length}\r\n`),
-      '1.2.4',
-      windowsArtifact,
-    );
-    assert.deepEqual(entry, { sha1: artifactSha1, fileName: windowsArtifact.fileName, size: artifact.length });
-  });
-
-  test('rejects duplicate, ambiguous, wrong-name/version/size, traversal, case, and algorithm records', () => {
-    const valid = `${artifactSha1} ${windowsArtifact.fileName} ${artifact.length}`;
-    const hostile = [
-      `${valid}\n${valid}\n`,
-      `${valid}\n${artifactSha1} ${windowsArtifact.fileName.toUpperCase()} ${artifact.length}\n`,
-      `${artifactSha1} ProPR-Desktop-1.2.5-windows-x64-full.nupkg ${artifact.length}\n`,
-      `${artifactSha1} other.nupkg ${artifact.length}\n`,
-      `${artifactSha1} ${windowsArtifact.fileName} ${artifact.length + 1}\n`,
-      `${artifactSha1} ../${windowsArtifact.fileName} ${artifact.length}\n`,
-      `sha1:${artifactSha1} ${windowsArtifact.fileName} ${artifact.length}\n`,
-      `${artifactSha1}  ${windowsArtifact.fileName} ${artifact.length}\n`,
-    ];
-    for (const candidate of hostile) {
-      assert.throws(
-        () => parseSquirrelReleaseEntry(Buffer.from(candidate), '1.2.4', windowsArtifact),
-        /Signed Windows update feed is invalid/,
-      );
-    }
-  });
-
-  test('rejects a RELEASES SHA-1 that does not bind the signed SHA-256 package bytes', async () => {
-    const mismatched = Buffer.from(`${'0'.repeat(40)} ${windowsArtifact.fileName} ${artifact.length}\n`);
-    const changed = structuredClone(manifest);
-    changed.feeds['win32-x64'].feed = bytes(manifest.feeds['win32-x64'].feed.url, mismatched);
-    const release = signed(changed);
-    await assert.rejects(
-      checkForSignedUpdates({
-        config,
-        currentVersion: '1.2.3',
-        platform: 'win32',
-        arch: 'x64',
-        request: fetcher(release.payload, release.signature, { feed: mismatched }),
-        verifyNativeSigner: async () => assert.fail('mismatched SHA-1 must fail before signer verification'),
-      }),
-      /does not match Squirrel metadata/,
-    );
-  });
 });
 
 describe('signed desktop updates', () => {

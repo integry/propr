@@ -7,6 +7,8 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const desktopRoot = fileURLToPath(new URL('..', import.meta.url));
 const repositoryRoot = resolve(desktopRoot, '..', '..');
+// This dependency is only the pinned carrier for WiX v3 candle/light. Forge
+// never invokes its per-user Squirrel packaging implementation.
 const wixVendor = join(repositoryRoot, 'node_modules', 'electron-winstaller', 'vendor');
 const MAX_FILES = 4096;
 const MAX_PATH_BYTES = 32 * 1024;
@@ -79,7 +81,7 @@ const directoryXml = files => {
   return { content: render(root, '          '), components };
 };
 
-const sourceFor = (appDirectory, version, arch, files) => {
+export const windowsMachineInstallerSourceForTest = (appDirectory, version, arch, files, failAfterInstall = false) => {
   const tree = directoryXml(files);
   const platform = arch === 'arm64' ? 'arm64' : 'x64';
   const productCode = '*';
@@ -93,17 +95,36 @@ const sourceFor = (appDirectory, version, arch, files) => {
   <Product Id="${productCode}" Name="ProPR Desktop" Language="1033" Version="${xml(version)}"
       Manufacturer="Unchained Development OÜ" UpgradeCode="${UPGRADE_CODE}">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="${platform}" />
-    <MajorUpgrade DowngradeErrorMessage="A newer ProPR Desktop is already installed." />
+    <Property Id="ALLUSERS" Value="1" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
+      DowngradeErrorMessage="A newer ProPR Desktop is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="ProPR Desktop">
 ${tree.content}
+          <Component Id="ApplicationRegistration" Guid="*" Win64="yes">
+            <RegistryValue Root="HKLM" Key="Software\\Classes\\propr" Name="" Value="URL:ProPR Protocol" Type="string" KeyPath="yes" />
+            <RegistryValue Root="HKLM" Key="Software\\Classes\\propr" Name="URL Protocol" Value="" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\\Classes\\propr\\shell\\open\\command" Name=""
+              Value="&quot;[INSTALLFOLDER]propr-desktop.exe&quot; &quot;%1&quot;" Type="string" />
+            <RegistryValue Root="HKLM" Key="Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\propr-desktop.exe"
+              Name="" Value="[INSTALLFOLDER]propr-desktop.exe" Type="string" />
+            <Shortcut Id="ApplicationStartMenuShortcut" Directory="ApplicationProgramsFolder" Name="ProPR Desktop"
+              Description="ProPR Desktop" Target="[INSTALLFOLDER]propr-desktop.exe" WorkingDirectory="INSTALLFOLDER">
+              <ShortcutProperty Key="System.AppUserModel.ID" Value="dev.propr.desktop" />
+            </Shortcut>
+            <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+          </Component>
         </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="ProPR Desktop" />
       </Directory>
     </Directory>
     <Feature Id="MainApplication" Title="ProPR Desktop" Level="1">
 ${tree.components.map(id => `      <ComponentRef Id="${id}" />`).join('\n')}
+      <ComponentRef Id="ApplicationRegistration" />
     </Feature>
     <CustomAction Id="ResetInstallAcl" Directory="SystemFolder" Execute="deferred" Impersonate="no" Return="check"
       ExeCommand="&quot;[SystemFolder]icacls.exe&quot; &quot;${sealTarget}&quot; /reset /T /C /Q" />
@@ -113,18 +134,21 @@ ${tree.components.map(id => `      <ComponentRef Id="${id}" />`).join('\n')}
       ExeCommand="&quot;[SystemFolder]icacls.exe&quot; &quot;${sealTarget}&quot; /grant:r ${system} ${trustedInstaller} ${administrators} ${users} /T /C /Q" />
     <CustomAction Id="OwnInstallTree" Directory="SystemFolder" Execute="deferred" Impersonate="no" Return="check"
       ExeCommand="&quot;[SystemFolder]icacls.exe&quot; &quot;${sealTarget}&quot; /setowner *S-1-5-18 /T /C /Q" />
+${failAfterInstall ? `    <CustomAction Id="RollbackProbe" Directory="SystemFolder" Execute="deferred" Impersonate="no" Return="check"
+      ExeCommand="&quot;[SystemFolder]cmd.exe&quot; /d /c exit 23" />` : ''}
     <InstallExecuteSequence>
       <Custom Action="ResetInstallAcl" After="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="ProtectInstallAcl" After="ResetInstallAcl">NOT REMOVE</Custom>
       <Custom Action="GrantInstallAcl" After="ProtectInstallAcl">NOT REMOVE</Custom>
       <Custom Action="OwnInstallTree" After="GrantInstallAcl">NOT REMOVE</Custom>
+${failAfterInstall ? '      <Custom Action="RollbackProbe" After="OwnInstallTree">NOT REMOVE</Custom>' : ''}
     </InstallExecuteSequence>
   </Product>
 </Wix>
 `;
 };
 
-export const buildWindowsMachineInstaller = async ({ appDirectory, output, version, arch }) => {
+export const buildWindowsMachineInstaller = async ({ appDirectory, output, version, arch, failAfterInstall = false }) => {
   if (process.platform !== 'win32') return { skipped: true };
   if (!['x64', 'arm64'].includes(arch) || !/^\d+\.\d+\.\d+$/.test(version)) fail('arguments');
   const canonicalApp = resolve(appDirectory);
@@ -133,7 +157,7 @@ export const buildWindowsMachineInstaller = async ({ appDirectory, output, versi
   try {
     const source = join(temporary, 'propr-desktop.wxs');
     const object = join(temporary, 'propr-desktop.wixobj');
-    await writeFile(source, sourceFor(canonicalApp, version, arch, files), { encoding: 'utf8', flag: 'wx' });
+    await writeFile(source, windowsMachineInstallerSourceForTest(canonicalApp, version, arch, files, failAfterInstall), { encoding: 'utf8', flag: 'wx' });
     await execFileAsync(join(wixVendor, 'candle.exe'), ['-nologo', '-arch', arch, '-out', object, source], {
       cwd: temporary, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024,
     });
@@ -147,3 +171,13 @@ export const buildWindowsMachineInstaller = async ({ appDirectory, output, versi
   } finally { await rm(temporary, { recursive: true, force: true }); }
 };
 
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const [, , appDirectory, output, version, arch, mode] = process.argv;
+  await buildWindowsMachineInstaller({
+    appDirectory,
+    output,
+    version,
+    arch,
+    failAfterInstall: mode === '--rollback-probe',
+  });
+}

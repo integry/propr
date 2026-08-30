@@ -1,9 +1,13 @@
 param(
   [Parameter(Mandatory=$true)][string]$Installer,
-  [Parameter(Mandatory=$true)][ValidateSet('x64','arm64')][string]$Architecture
+  [Parameter(Mandatory=$true)][ValidateSet('x64','arm64')][string]$Architecture,
+  [Parameter(Mandatory=$true)][string]$PreviousInstaller,
+  [Parameter(Mandatory=$true)][string]$FailingUpgradeInstaller
 )
 $ErrorActionPreference = 'Stop'
 $installerPath = (Resolve-Path -LiteralPath $Installer).Path
+$previousInstallerPath = (Resolve-Path -LiteralPath $PreviousInstaller).Path
+$failingUpgradeInstallerPath = (Resolve-Path -LiteralPath $FailingUpgradeInstaller).Path
 $installRoot = Join-Path $env:ProgramFiles 'ProPR Desktop'
 $application = Join-Path $installRoot 'propr-desktop.exe'
 $authority = Join-Path $installRoot 'resources\windows-authority'
@@ -12,10 +16,29 @@ $testUser = "propr-ci-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 $passwordText = "P!$([Guid]::NewGuid().ToString('N'))a7"
 $password = ConvertTo-SecureString $passwordText -AsPlainText -Force
 $credential = New-Object Management.Automation.PSCredential("$env:COMPUTERNAME\$testUser", $password)
+$installed = $false
+
+function Invoke-Msi([string[]]$Arguments, [string]$Operation) {
+  $process = Start-Process msiexec.exe -ArgumentList $Arguments -Wait -PassThru
+  if ($process.ExitCode -notin @(0,3010)) { throw "$Operation exited $($process.ExitCode)" }
+}
+
+function Get-SignerEvidence([string]$Path) {
+  $signature = Get-AuthenticodeSignature -LiteralPath $Path
+  if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or !$signature.TimeStamperCertificate) { return $null }
+  $certificate = $signature.SignerCertificate
+  $spki = $certificate.GetPublicKey()
+  [PSCustomObject]@{
+    Subject = $certificate.Subject
+    Certificate = $certificate.Thumbprint
+    PublicKey = [Convert]::ToBase64String($spki)
+  }
+}
 
 try {
-  $install = Start-Process msiexec.exe -ArgumentList @('/i', "`"$installerPath`"", '/qn', '/norestart') -Wait -PassThru
-  if ($install.ExitCode -notin @(0,3010)) { throw "machine installer exited $($install.ExitCode)" }
+  Invoke-Msi @('/i', "`"$previousInstallerPath`"", '/qn', '/norestart') 'previous machine install'
+  $installed = $true
+  Invoke-Msi @('/i', "`"$installerPath`"", '/qn', '/norestart') 'machine upgrade'
   if (!(Test-Path -LiteralPath $application -PathType Leaf) -or !(Test-Path -LiteralPath $helper -PathType Leaf)) {
     throw 'machine installer did not install the canonical application authority layout'
   }
@@ -54,8 +77,21 @@ try {
     }
   }
 
+  $installerSigner = Get-SignerEvidence $installerPath
+  if ($installerSigner) {
+    foreach ($signedPath in @($application, $helper,
+      (Join-Path $authority 'propr-windows-launcher.node'),
+      (Join-Path $authority 'propr-windows-bootstrap.node'))) {
+      $signer = Get-SignerEvidence $signedPath
+      if (!$signer -or ($signer | ConvertTo-Json -Compress) -cne ($installerSigner | ConvertTo-Json -Compress)) {
+        throw "$signedPath does not have the exact canonical MSI signer identity"
+      }
+    }
+  }
+
   New-LocalUser -Name $testUser -Password $password -AccountNeverExpires -PasswordNeverExpires | Out-Null
-  $process = Start-Process -FilePath $application -ArgumentList '--propr-authority-smoke' -Credential $credential -Wait -PassThru
+  $process = Start-Process -FilePath $application -ArgumentList '--propr-authority-smoke' -Credential $credential `
+    -WorkingDirectory $env:ProgramFiles -Wait -PassThru
   if ($process.ExitCode -ne 0) { throw "standard-user installed authority handshake exited $($process.ExitCode)" }
 
   $helper64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($helper))
@@ -83,9 +119,28 @@ if (`$failed) { exit 1 } else { exit 0 }
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($attack))
   $attackProcess = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
     -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',$encoded) `
-    -Credential $credential -Wait -PassThru
+    -Credential $credential -WorkingDirectory $env:ProgramFiles -Wait -PassThru
   if ($attackProcess.ExitCode -ne 0) { throw 'standard user could mutate or replace the installed authority' }
+
+  Invoke-Msi @('/fa', "`"$installerPath`"", '/qn', '/norestart') 'machine repair'
+  $repairedProcess = Start-Process -FilePath $application -ArgumentList '--propr-authority-smoke' -Credential $credential `
+    -WorkingDirectory $env:ProgramFiles -Wait -PassThru
+  if ($repairedProcess.ExitCode -ne 0) { throw "standard-user repaired authority handshake exited $($repairedProcess.ExitCode)" }
+  $downgrade = Start-Process msiexec.exe -ArgumentList @('/i', "`"$previousInstallerPath`"", '/qn', '/norestart') -Wait -PassThru
+  if ($downgrade.ExitCode -in @(0,3010)) { throw 'machine downgrade unexpectedly succeeded' }
+  if (!(Test-Path -LiteralPath $application -PathType Leaf)) { throw 'downgrade rejection damaged the installed application' }
+  $rollback = Start-Process msiexec.exe -ArgumentList @('/i', "`"$failingUpgradeInstallerPath`"", '/qn', '/norestart') -Wait -PassThru
+  if ($rollback.ExitCode -in @(0,3010)) { throw 'deliberately failing upgrade unexpectedly succeeded' }
+  $rollbackProcess = Start-Process -FilePath $application -ArgumentList '--propr-authority-smoke' -Credential $credential `
+    -WorkingDirectory $env:ProgramFiles -Wait -PassThru
+  if ($rollbackProcess.ExitCode -ne 0) { throw "rollback did not restore the standard-user authority handshake: $($rollbackProcess.ExitCode)" }
 } finally {
   if (Get-LocalUser -Name $testUser -ErrorAction SilentlyContinue) { Remove-LocalUser -Name $testUser }
-  Start-Process msiexec.exe -ArgumentList @('/x', "`"$installerPath`"", '/qn', '/norestart') -Wait | Out-Null
+  if ($installed) {
+    Invoke-Msi @('/x', "`"$installerPath`"", '/qn', '/norestart') 'machine uninstall'
+    if (Test-Path -LiteralPath $installRoot) { throw 'machine uninstall left the protected canonical install tree behind' }
+    if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\propr') {
+      throw 'machine uninstall left protocol discovery metadata behind'
+    }
+  }
 }

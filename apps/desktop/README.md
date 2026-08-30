@@ -43,7 +43,7 @@ committed authority-broker C# source with the exact leased .NET Framework compil
 directory. The build emits a managed AnyCPU PE, a per-architecture Node-API lease/launcher, and a deterministic strict
 manifest binding both binaries, the source and compiler-input digests, format, protocol, signer pins, and trust mode.
 Forge packages exactly those three files under `resources/windows-authority`; Windows signing covers both PE images
-before the post-package hook refreshes their final-byte hashes, and NUPKG/release checksum validation requires the same
+before the post-package hook refreshes their final-byte hashes, and protected MSI/checksum validation requires the same
 exact set. The packaged application uses the native boundary to hold the helper file against write/delete/rename,
 create it with only three inherited anonymous-pipe handles, assign a parent-owned kill-on-close job, and prove the
 loaded process image before accepting READY. End-user machines never compile source or invoke a shell.
@@ -71,7 +71,7 @@ not download, install, start, or execute ProPR runtime components.
 
 Desktop releases have their own `desktop-v<major>.<minor>.<patch>` tags. They do not use or require the monorepo's
 `v<version>` tag. `PROPR_DESKTOP_VERSION` propagates the tag version into the packaged application, renderer, native
-metadata, Linux packages, Squirrel package, artifact names, and release manifest without changing the monorepo
+metadata, Linux packages, protected machine MSI, artifact names, and release manifest without changing the monorepo
 package versions.
 
 The native GitHub Actions matrix produces these assets for both x64 and arm64:
@@ -80,7 +80,7 @@ The native GitHub Actions matrix produces these assets for both x64 and arm64:
 | --- | --- | --- |
 | Linux | `ubuntu-24.04`, `ubuntu-24.04-arm` | DEB, RPM, ZIP |
 | macOS | `macos-15-intel`, `macos-15` | DMG, ZIP |
-| Windows | `windows-2025`, `windows-11-arm` | Squirrel Setup.exe, full NuGet update package, RELEASES metadata |
+| Windows | `windows-2025`, `windows-11-arm` | signed per-machine Program Files MSI |
 
 Every matrix job stages names in the form `ProPR-Desktop-<version>-<platform>-<arch>-<kind>`. The final job rejects
 missing targets or changed fragment checksums, emits `SHA256SUMS` and `desktop-release.json`, and attaches the complete
@@ -149,8 +149,8 @@ GitHub Actions variables (public configuration, not secrets):
 - `PROPR_DESKTOP_UPDATE_PUBLIC_KEY`: base64 Ed25519 SPKI DER public key matching the update private key.
 - `PROPR_DESKTOP_UPDATE_MANIFEST_URL`: stable HTTPS URL from which clients fetch `desktop-release.json`; the detached
   signature must be published beside it as `desktop-release.json.sig`.
-- `PROPR_DESKTOP_DARWIN_X64_FEED_URL`, `PROPR_DESKTOP_DARWIN_ARM64_FEED_URL`: Squirrel.Mac JSON feed URLs.
-- `PROPR_DESKTOP_WINDOWS_X64_FEED_URL`, `PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL`: Squirrel.Windows feed directories.
+- `PROPR_DESKTOP_DARWIN_X64_FEED_URL`, `PROPR_DESKTOP_DARWIN_ARM64_FEED_URL`: macOS JSON feed URLs.
+- `PROPR_DESKTOP_WINDOWS_X64_FEED_URL`, `PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL`: Windows MSI `updates.json` feed URLs.
 
 Generate the independent update-channel keys once and store only the public output as a repository variable:
 
@@ -181,9 +181,10 @@ the documented pathname plus `.sig`.
 Linux never checks for native updates. macOS and Windows operate as check-only channels: they verify the Ed25519
 manifest, exact target/version/feed bytes, package URL/size/SHA-256, and the actual Team ID/designated requirement or
 Authenticode certificate subject plus certificate/SPKI SHA-256 fingerprints extracted from the downloaded package.
-Windows requires the identical valid, timestamped signer on the installer, packaged application, and the exact
-`lib/net45/propr-desktop.exe` from the validated NUPKG; the runtime also requires its signed fingerprint evidence to
-match the allowlist embedded in the installed build. Electron's `autoUpdater` is not initialized,
+Windows publishes only the machine-wide MSI and requires its valid, timestamped signer to match the packaged
+application and protected authority binaries; the runtime authenticates the exact held MSI and requires its signed
+fingerprint evidence to match the allowlist embedded in the installed build. Per-user Squirrel Setup/NUPKG artifacts
+are unsupported and are never staged, checksummed, advertised, or published. Electron's `autoUpdater` is not initialized,
 because it would re-fetch mutable URLs instead of installing the already verified bytes. Unsigned developer packages
 remain update-disabled. The internal apply API exposes only a one-shot held-byte capability, never a verified mutable
 pathname; without a platform adapter that can consume that held/locked capability, automatic apply fails closed.

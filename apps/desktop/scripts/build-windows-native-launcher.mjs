@@ -20,14 +20,59 @@ const SYSTEM_SID = '*S-1-5-18';
 const ADMINISTRATORS_SID = '*S-1-5-32-544';
 const TRUSTED_INSTALLER_SID = '*S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464';
 
-const fail = (substage = 'OUTPUT_VALIDATION') => {
+const fail = (substage = 'OUTPUT_VALIDATION', diagnostics = []) => {
   const error = new Error(`Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`);
   error.stage = 'BUILD_COMPILER';
   error.substage = substage;
   error.code = substage;
+  error.diagnostics = Object.freeze([...diagnostics]);
   throw error;
 };
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+
+const BUILD_DIAGNOSTIC_LIMIT = 8;
+const diagnosticRecord = (file, line, code) => `${file}:${line}:${code}`;
+
+// node-gyp output contains checkout paths, SDK paths, user profiles and the
+// complete inherited build environment. Preserve only a bounded compiler
+// location/code tuple rooted at the committed source basename.
+export const sanitizeWindowsNativeBuildDiagnostics = output => {
+  const text = Buffer.isBuffer(output) ? output.toString('utf8') : typeof output === 'string' ? output : '';
+  const diagnostics = [];
+  const seen = new Set();
+  const patterns = [
+    /(?:^|[\\/])(propr_windows_launcher\.cc)\((\d+)(?:,\d+)?\)\s*:\s*(?:fatal\s+)?error\s+(C\d{4})\b/gim,
+    /(?:^|[\\/])(propr_windows_launcher\.(?:cc|obj))\s*:\s*(?:fatal\s+)?error\s+(LNK\d{4})\b/gim,
+    /\b(?:fatal\s+)?error\s+(LNK\d{4})\b/gim,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const value = match[3]
+        ? diagnosticRecord(match[1], match[2], match[3].toUpperCase())
+        : match[2]
+          ? diagnosticRecord(match[1], '0', match[2].toUpperCase())
+          : diagnosticRecord('link', '0', match[1].toUpperCase());
+      if (!seen.has(value)) {
+        seen.add(value);
+        diagnostics.push(value);
+      }
+      if (diagnostics.length === BUILD_DIAGNOSTIC_LIMIT) return Object.freeze(diagnostics);
+    }
+  }
+  return Object.freeze(diagnostics);
+};
+
+export const classifyWindowsNativeBuildFailure = error => {
+  const code = error && typeof error === 'object' ? error.code : undefined;
+  if (code === 'ENOENT' || code === 'EACCES' || code === 'EPERM') return 'SPAWN';
+  if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || error?.name === 'RangeError'
+    && /maxBuffer/i.test(String(error?.message ?? ''))) return 'OUTPUT_LIMIT';
+  if (error?.killed === true && error?.signal) return 'TIMEOUT';
+  const diagnostics = sanitizeWindowsNativeBuildDiagnostics(`${error?.stdout ?? ''}\n${error?.stderr ?? ''}`);
+  if (diagnostics.some(value => /:LNK\d{4}$/.test(value))) return 'LINK';
+  if (diagnostics.some(value => /:C\d{4}$/.test(value))) return 'COMPILE';
+  return 'EXIT';
+};
 
 const authorityAclTool = async (tool, args) => {
   await execFileAsync(tool, args, {
@@ -110,9 +155,13 @@ const buildWindowsNativeLauncherOnce = async () => {
   if (process.arch !== 'x64' && process.arch !== 'arm64') fail('OUTPUT_VALIDATION');
   await prepareWindowsAuthorityBuildDirectory();
   const nodeGyp = join(repositoryRoot, 'node_modules', 'node-gyp', 'bin', 'node-gyp.js');
-  await execFileAsync(process.execPath, [nodeGyp, 'rebuild', '--directory', WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY,
-    `--arch=${process.arch}`], { cwd: repositoryRoot, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024 })
-    .catch(() => fail('SPAWN'));
+  try {
+    await execFileAsync(process.execPath, [nodeGyp, 'rebuild', '--directory', WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY,
+      `--arch=${process.arch}`], { cwd: repositoryRoot, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024 });
+  } catch (error) {
+    const diagnostics = sanitizeWindowsNativeBuildDiagnostics(`${error?.stdout ?? ''}\n${error?.stderr ?? ''}`);
+    fail(classifyWindowsNativeBuildFailure(error), diagnostics);
+  }
   const built = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_launcher.node');
   const builtBootstrap = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_bootstrap.node');
   const bytes = await heldBytes(built);

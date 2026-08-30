@@ -18,6 +18,10 @@ import {
 } from './build-windows-authority-helper.mjs';
 import { prepareWindowsAuthorityBuildDirectory } from './build-windows-native-launcher.mjs';
 import {
+  classifyWindowsNativeBuildFailure,
+  sanitizeWindowsNativeBuildDiagnostics,
+} from './build-windows-native-launcher.mjs';
+import {
   inspectPackagedWindowsAuthority,
   refreshPackagedWindowsAuthorityManifest,
 } from './inspect-packaged-windows-authority.mjs';
@@ -78,9 +82,35 @@ test('compiler failures expose only fixed non-secret authenticate-to-spawn subst
     'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY',
     'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
     'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY', 'SPAWN',
-    'IMAGE', 'EXIT', 'OUTPUT_VALIDATION',
+    'COMPILE', 'LINK', 'EXIT', 'TIMEOUT', 'OUTPUT_LIMIT', 'IMAGE', 'OUTPUT_VALIDATION',
   ]);
   assert.ok(WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.every(stage => /^[A-Z_]{4,24}$/.test(stage)));
+});
+
+test('node-gyp failures retain bounded secret-free compiler causes and evidence', () => {
+  const compile = Object.assign(new Error('command failed'), {
+    code: 1,
+    stdout: '',
+    stderr: String.raw`D:\a\propr\propr\apps\desktop\src\native\windows-launcher\propr_windows_launcher.cc(503,36): error C2065: 'SECRET_ENV_VALUE': undeclared identifier`,
+  });
+  assert.equal(classifyWindowsNativeBuildFailure(compile), 'COMPILE');
+  assert.deepEqual(sanitizeWindowsNativeBuildDiagnostics(compile.stderr), [
+    'propr_windows_launcher.cc:503:C2065',
+  ]);
+  assert.equal(classifyWindowsNativeBuildFailure(Object.assign(new Error('failed'), {
+    code: 2,
+    stderr: String.raw`D:\private\propr_windows_launcher.obj : fatal error LNK1120: 1 unresolved externals`,
+  })), 'LINK');
+  assert.equal(classifyWindowsNativeBuildFailure(Object.assign(new Error('spawn'), { code: 'ENOENT' })), 'SPAWN');
+  assert.equal(classifyWindowsNativeBuildFailure(Object.assign(new Error('timeout'), {
+    code: null, killed: true, signal: 'SIGTERM',
+  })), 'TIMEOUT');
+  assert.equal(classifyWindowsNativeBuildFailure(Object.assign(new Error('stdout maxBuffer length exceeded'), {
+    code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+  })), 'OUTPUT_LIMIT');
+  assert.equal(classifyWindowsNativeBuildFailure(Object.assign(new Error('signal'), {
+    code: null, killed: false, signal: 'SIGABRT',
+  })), 'EXIT');
 });
 
 test('compiler layout preserves recognized probe substages and redacts unknown failures', async () => {
@@ -139,6 +169,8 @@ test('system catalog policy is standalone, cache-only, held, and independently d
   assert.match(source, /SameHeldCatalog\(catalogs\[index\], catalog_identities\[index\], catalog_hashes\[index\]\)/);
   assert.match(source, /kMicrosoftCatalogPolicy/);
   assert.match(source, /ApprovedMicrosoftCatalog/);
+  assert.match(source, /GUID driver_action = DRIVER_ACTION_VERIFY/);
+  assert.doesNotMatch(source, /&DRIVER_ACTION_VERIFY/);
   assert.doesNotMatch(source, /compiler-(?:wrong-signer|same-root-wrong-certificate|same-root-wrong-signer|subject-spoof|wrong-spki|manifest-replacement)/);
   assert.doesNotMatch(source, /\(void\)presented/);
   assert.doesNotMatch(source, /certificate->size\(\)\s*!=\s*64|spki->size\(\)\s*!=\s*64/);

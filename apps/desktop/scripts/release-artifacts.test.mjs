@@ -9,10 +9,8 @@ import { describe, test } from 'node:test';
 import { promisify } from 'node:util';
 import {
   finalizeArtifacts,
-  parseSquirrelReleases,
   signReleaseMetadata,
   stageArtifacts,
-  validateSquirrelReleases,
 } from './release-artifacts.mjs';
 import {
   createHeldDmgArtifact,
@@ -26,13 +24,11 @@ const kinds = {
   'linux-arm64': ['deb', 'rpm', 'zip'],
   'darwin-x64': ['dmg', 'zip'],
   'darwin-arm64': ['dmg', 'zip'],
-  'win32-x64': ['setup', 'msi', 'nupkg', 'releases'],
-  'win32-arm64': ['setup', 'msi', 'nupkg', 'releases'],
+  'win32-x64': ['msi'],
+  'win32-arm64': ['msi'],
 };
 
-const sourceName = kind => kind === 'setup' ? 'Desktop Setup.exe'
-  : kind === 'msi' ? 'Desktop-Machine-Setup.msi'
-    : kind === 'nupkg' ? 'desktop-1.2.3-full.nupkg' : kind === 'releases' ? 'RELEASES' : `desktop.${kind}`;
+const sourceName = kind => kind === 'msi' ? 'Desktop-Machine-Setup.msi' : `desktop.${kind}`;
 const certificateSha256 = '1'.repeat(64);
 const spkiSha256 = '2'.repeat(64);
 const windowsSignerPins = `certificate-sha256:${certificateSha256},spki-sha256:${spkiSha256}`;
@@ -149,12 +145,8 @@ const createFragments = async (root, { signed = false } = {}) => {
     const [platform, arch] = target.split('-');
     const makeDirectory = join(root, 'make', target);
     await mkdir(makeDirectory, { recursive: true });
-    const nupkgContents = `${target}-nupkg`;
     for (const kind of targetKinds) {
-      const contents = kind === 'releases'
-        ? `${createHash('sha1').update(nupkgContents).digest('hex')} desktop-1.2.3-full.nupkg ${Buffer.byteLength(nupkgContents)}\n`
-        : kind === 'nupkg' ? nupkgContents : `${target}-${kind}`;
-      await writeFile(join(makeDirectory, sourceName(kind)), contents);
+      await writeFile(join(makeDirectory, sourceName(kind)), `${target}-${kind}`);
     }
     await stageFixtureArtifacts({
       makeDirectory,
@@ -162,7 +154,10 @@ const createFragments = async (root, { signed = false } = {}) => {
       platform,
       arch,
       version: '1.2.3',
-      env: signed ? signerEnvironment(platform) : {},
+      env: {
+        ...(signed ? signerEnvironment(platform) : {}),
+        ...(platform === 'win32' ? { PROPR_DESKTOP_WINDOWS_INSTALLED_AUTHORITY: '1' } : {}),
+      },
       inspectArchitecture: architectureInspector,
     });
   }
@@ -343,23 +338,19 @@ describe('desktop release artifacts', () => {
     const output = join(root, 'final');
     const manifest = await finalizeArtifacts({ inputDirectory: fragments, outputDirectory: output, version: '1.2.3', inspectArchitecture: architectureInspector });
     assert.equal(manifest.schemaVersion, 2);
-    assert.equal(manifest.artifacts.length, 18);
+    assert.equal(manifest.artifacts.length, 12);
     assert.equal(manifest.tag, 'desktop-v1.2.3');
     assert.equal(Object.keys(manifest.feeds).length, 0);
     assert.equal(Object.keys(manifest.nativeSigners).length, 0);
     await assert.rejects(access(join(output, 'desktop-release.json.sig')));
     const checksumLines = (await readFile(join(output, 'SHA256SUMS'), 'utf8')).trim().split('\n');
-    assert.equal(checksumLines.length, 18);
-    assert.ok(checksumLines.some(line => line.endsWith('ProPR-Desktop-1.2.3-windows-x64-Setup.exe')));
+    assert.equal(checksumLines.length, 12);
+    assert.ok(checksumLines.some(line => line.endsWith('ProPR-Desktop-1.2.3-windows-x64-Machine-Setup.msi')));
     for (const line of checksumLines) {
       const match = /^([a-f0-9]{64})  ([^/\\]+)$/.exec(line);
       assert.ok(match, `invalid SHA256SUMS line: ${line}`);
       assert.equal(createHash('sha256').update(await readFile(join(output, match[2]))).digest('hex'), match[1]);
     }
-    assert.match(
-      await readFile(join(output, 'ProPR-Desktop-1.2.3-windows-x64-RELEASES'), 'utf8'),
-      /ProPR-Desktop-1\.2\.3-windows-x64-full\.nupkg/,
-    );
     const dmg = manifest.artifacts.find(artifact => artifact.kind === 'dmg' && artifact.arch === 'arm64');
     assert.deepEqual(dmg.nativeDmgValidationEvidence.artifact, {
       fileName: dmg.fileName,
@@ -714,87 +705,24 @@ describe('desktop release artifacts', () => {
     );
   });
 
-  test('parses every exact Squirrel RELEASES record and verifies SHA-1 and decimal size', () => {
-    const bytes = Buffer.from('exact nupkg bytes');
-    const fileName = 'ProPR-Desktop-1.2.3-windows-x64-full.nupkg';
-    const hash = createHash('sha1').update(bytes).digest('hex');
-    for (const ending of ['\n', '\r\n']) {
-      const releases = Buffer.from(`${hash} ${fileName} ${bytes.length}${ending}`);
-      assert.deepEqual(validateSquirrelReleases(releases, [{ fileName, bytes }]).records, [
-        { sha1: hash, fileName, size: bytes.length },
-      ]);
-    }
-    assert.equal(parseSquirrelReleases(Buffer.from(`${hash.toUpperCase()} ${fileName} ${bytes.length}`)).records[0].sha1, hash);
-  });
-
-  test('rejects wrong Squirrel hash, size, duplicate, extra, missing, path, case, delta, and malformed lines', () => {
-    const bytes = Buffer.from('exact nupkg bytes');
-    const fileName = 'ProPR-Desktop-1.2.3-windows-x64-full.nupkg';
-    const hash = createHash('sha1').update(bytes).digest('hex');
-    const record = `${hash} ${fileName} ${bytes.length}`;
-    const invalid = [
-      `${'0'.repeat(40)} ${fileName} ${bytes.length}`,
-      `${hash} ${fileName} ${bytes.length + 1}`,
-      `${record}\n${record}`,
-      `${record}\n${hash} foreign-full.nupkg ${bytes.length}`,
-      '',
-      `${hash} path/${fileName} ${bytes.length}`,
-      `${hash} ${fileName.toUpperCase()} ${bytes.length}`,
-      `${hash} ProPR-Desktop-1.2.3-windows-x64-delta.nupkg ${bytes.length}`,
-      `${record}\n\n`,
-      `${hash}  ${fileName} ${bytes.length}`,
-    ];
-    for (const contents of invalid) {
-      assert.throws(
-        () => validateSquirrelReleases(Buffer.from(contents), [{ fileName, bytes }]),
-        /Squirrel RELEASES|Invalid Squirrel|does not contain|SHA-1 mismatch|size mismatch/,
+  test('rejects either Windows fragment when the installed machine authority gate was skipped', async () => {
+    for (const target of ['win32-x64', 'win32-arm64']) {
+      const root = await mkdtemp(join(tmpdir(), 'propr-release-missing-installed-authority-'));
+      const fragments = await createFragments(root);
+      const path = join(fragments, target, 'release-fragment.json');
+      const fragment = JSON.parse(await readFile(path, 'utf8'));
+      fragment.installedAuthorityValidated = false;
+      await writeFile(path, `${JSON.stringify(fragment, null, 2)}\n`);
+      await assert.rejects(
+        finalizeArtifacts({
+          inputDirectory: fragments,
+          outputDirectory: join(root, 'final'),
+          version: '1.2.3',
+          inspectArchitecture: architectureInspector,
+        }),
+        new RegExp(`${target} skipped the installed machine authority gate`),
       );
     }
-  });
-
-  test('revalidates exact Squirrel package bytes during staging and aggregate finalization', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'propr-release-squirrel-binding-'));
-    const makeDirectory = join(root, 'make');
-    await mkdir(makeDirectory, { recursive: true });
-    await writeFile(join(makeDirectory, 'Desktop Setup.exe'), 'win32-x64-setup');
-    await writeFile(join(makeDirectory, 'Desktop-Machine-Setup.msi'), 'win32-x64-msi');
-    await writeFile(join(makeDirectory, 'desktop-1.2.3-full.nupkg'), 'win32-x64-nupkg');
-    await writeFile(
-      join(makeDirectory, 'RELEASES'),
-      `${'0'.repeat(40)} desktop-1.2.3-full.nupkg ${Buffer.byteLength('win32-x64-nupkg')}\n`,
-    );
-    await assert.rejects(
-      stageFixtureArtifacts({
-        makeDirectory,
-        outputDirectory: join(root, 'stage'),
-        platform: 'win32',
-        arch: 'x64',
-        version: '1.2.3',
-        inspectArchitecture: architectureInspector,
-      }),
-      /SHA-1 mismatch/,
-    );
-
-    const fragments = await createFragments(root);
-    const releasesPath = join(fragments, 'win32-x64', 'ProPR-Desktop-1.2.3-windows-x64-RELEASES');
-    const valid = await readFile(releasesPath, 'utf8');
-    const tamperedReleases = valid.replace(/^[a-f0-9]{40}/, 'f'.repeat(40));
-    await writeFile(releasesPath, tamperedReleases);
-    const fragmentPath = join(fragments, 'win32-x64', 'release-fragment.json');
-    const fragment = JSON.parse(await readFile(fragmentPath, 'utf8'));
-    const releasesArtifact = fragment.artifacts.find(artifact => artifact.kind === 'releases');
-    releasesArtifact.size = Buffer.byteLength(tamperedReleases);
-    releasesArtifact.sha256 = createHash('sha256').update(tamperedReleases).digest('hex');
-    await writeFile(fragmentPath, `${JSON.stringify(fragment, null, 2)}\n`);
-    await assert.rejects(
-      finalizeArtifacts({
-        inputDirectory: fragments,
-        outputDirectory: join(root, 'final'),
-        version: '1.2.3',
-        inspectArchitecture: architectureInspector,
-      }),
-      /invalid Squirrel RELEASES metadata.*SHA-1 mismatch/,
-    );
   });
 
   test('fails closed when trusted update signing configuration is incomplete', async () => {
@@ -866,7 +794,7 @@ describe('desktop release artifacts', () => {
     const fragments = await createFragments(root, { signed: true });
     const unsigned = join(root, 'unsigned');
     await finalizeArtifacts({ inputDirectory: fragments, outputDirectory: unsigned, version: '1.2.3', inspectArchitecture: architectureInspector });
-    await writeFile(join(unsigned, 'ProPR-Desktop-1.2.3-windows-x64-full.nupkg'), 'tampered');
+    await writeFile(join(unsigned, 'ProPR-Desktop-1.2.3-windows-x64-Machine-Setup.msi'), 'tampered');
     await assert.rejects(
       signReleaseMetadata({
         inputDirectory: unsigned,

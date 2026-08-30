@@ -266,8 +266,6 @@ bool QualifiedAceSidAndMask(const ACE_HEADER* header, ACCESS_MASK* mask, PSID* s
 }
 
 bool DangerousUntrustedAcl(PACL dacl, bool allow_current_user) {
-  constexpr DWORD dangerous = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
-    | FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
   int prior_order = -1;
   for (DWORD index = 0; index < dacl->AceCount; ++index) {
     void* raw = nullptr;
@@ -282,13 +280,17 @@ bool DangerousUntrustedAcl(PACL dacl, bool allow_current_user) {
       ? (allow_ace ? 3 : 2) : (allow_ace ? 1 : 0);
     if (order < prior_order) return true;
     prior_order = order;
+    GENERIC_MAPPING mapping{FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS};
+    MapGenericMask(&mask, &mapping);
     // Callback and conditional allow ACEs are conservatively treated as
     // effective. Evaluating their claims against only the current token would
     // miss a future attacker token for which the condition becomes true.
     // A named attacker SID is just as dangerous as a well-known broad group.
     // Only the user and the fixed Windows authority principals may mutate an
     // authenticated input while it is leased.
-    if (allow_ace && (mask & dangerous) != 0 && !TrustedAuthoritySid(sid, allow_current_user)) return true;
+    constexpr DWORD mapped_dangerous = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
+      | FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER;
+    if (allow_ace && (mask & mapped_dangerous) != 0 && !TrustedAuthoritySid(sid, allow_current_user)) return true;
   }
   return false;
 }
@@ -646,7 +648,8 @@ bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* cat
     CatalogContextLease* context_lease, CatalogFailure* failure) {
   *failure = CatalogFailure::Enumeration;
   HCATADMIN admin = nullptr;
-  if (!CryptCATAdminAcquireContext2(&admin, &DRIVER_ACTION_VERIFY, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) return false;
+  GUID driver_action = DRIVER_ACTION_VERIFY;
+  if (!CryptCATAdminAcquireContext2(&admin, &driver_action, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) return false;
   DWORD hash_bytes = 0;
   bool ok = CryptCATAdminCalcHashFromFileHandle2(admin, file, &hash_bytes, nullptr, 0) != FALSE
     && hash_bytes > 0 && hash_bytes <= 128;

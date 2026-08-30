@@ -20,7 +20,7 @@ export const WINDOWS_AUTHORITY_COMPILER_SUBSTAGES = Object.freeze([
   'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY',
   'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
   'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY', 'SPAWN',
-  'IMAGE', 'EXIT', 'OUTPUT_VALIDATION',
+  'COMPILE', 'LINK', 'EXIT', 'TIMEOUT', 'OUTPUT_LIMIT', 'IMAGE', 'OUTPUT_VALIDATION',
 ]);
 const MAX_SOURCE_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -41,19 +41,20 @@ const MICROSOFT_COMPILER_CATALOG_POLICY = Object.freeze([
 })));
 const require = createRequire(import.meta.url);
 
-const fail = (stage, substage) => {
+const fail = (stage, substage, diagnostics = []) => {
   const boundedSubstage = stage === 'BUILD_COMPILER' && WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(substage)
     ? `:${substage}` : '';
   const error = new Error(`Windows authority helper build failed [win-authority:${stage}${boundedSubstage}]`);
   error.stage = stage;
   if (boundedSubstage) error.substage = substage;
+  error.diagnostics = Object.freeze(Array.isArray(diagnostics) ? diagnostics.slice(0, 8) : []);
   throw error;
 };
 
 export const preserveWindowsAuthorityCompilerFailure = (error, fallback = 'DIRECTORY_PROBE') => {
   if (typeof error === 'object' && error !== null) {
     if (error.stage === 'BUILD_COMPILER' && WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(error.substage)) {
-      fail('BUILD_COMPILER', error.substage);
+      fail('BUILD_COMPILER', error.substage, error.diagnostics);
     }
     if (WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(error.code)) fail('BUILD_COMPILER', error.code);
   }
@@ -346,7 +347,7 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
         cwd: privateOutputDirectory,
         fault: env.PROPR_WINDOWS_AUTHORITY_TEST_COMPILER_FAULT ?? null,
       });
-    } catch (error) { fail('BUILD_COMPILER', compilerSubstage(error)); }
+    } catch (error) { fail('BUILD_COMPILER', compilerSubstage(error), error?.diagnostics); }
     await Promise.all(buildInputs.map(reverifyBuildInput)).catch(() => fail('BUILD_COMPILER', 'LEASE'));
     await reverifySourceInput(sourceInput);
     const output = await readHeldBuildOutput(privateOutputDirectory, temporaryOutput);
@@ -455,6 +456,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     if (!result.skipped) process.stdout.write('Windows authority helper built and verified\n');
   }).catch(error => {
     process.stderr.write(`${error instanceof Error ? error.message : 'Windows authority helper build failed'}\n`);
+    for (const diagnostic of error?.diagnostics ?? []) {
+      process.stderr.write(`Windows native build diagnostic [win-authority-build:${diagnostic}]\n`);
+    }
     process.exitCode = 1;
   });
 }

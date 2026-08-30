@@ -8,7 +8,6 @@ import {
   resolveDesktopVersion,
   resolveTrustedUpdateBuildConfig,
 } from './release-config';
-import { squirrelAppUserModelId } from './squirrel-events';
 
 const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
 const certificatePin = `certificate-sha256:${'1'.repeat(64)}`;
@@ -35,7 +34,6 @@ describe('desktop release configuration', () => {
       const { default: forgeConfig } = await import('../forge.config');
       const executableName = forgeConfig.packagerConfig?.executableName;
       assert.equal(executableName, 'propr-desktop');
-      assert.equal(squirrelAppUserModelId(executableName), 'com.squirrel.propr_desktop.propr-desktop');
 
       const linuxMakers = forgeConfig.makers?.filter(isLinuxMaker) ?? [];
       assert.deepEqual(linuxMakers.map(maker => maker.name).sort(), ['deb', 'rpm']);

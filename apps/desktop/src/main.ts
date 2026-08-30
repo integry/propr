@@ -18,7 +18,6 @@ import {
 } from './security';
 import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
-import { handleSquirrelStartupEvent, squirrelAppUserModelId } from './squirrel-events';
 import { createBrowserWindowOptions } from './window-options';
 
 const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
@@ -37,11 +36,8 @@ const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
 );
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
-const squirrelStartupHandled = process.platform === 'win32'
-  && handleSquirrelStartupEvent({ quit: () => app.quit() });
-
 if (process.platform === 'win32') {
-  app.setAppUserModelId(squirrelAppUserModelId());
+  app.setAppUserModelId('dev.propr.desktop');
 }
 
 const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>
@@ -239,10 +235,8 @@ app.on('open-url', (event, url) => {
   if (normalized) deliverDeepLink(normalized);
 });
 
-const hasSingleInstanceLock = !squirrelStartupHandled && app.requestSingleInstanceLock();
-if (squirrelStartupHandled) {
-  // The Squirrel event handler owns shortcut maintenance and process exit.
-} else if (!hasSingleInstanceLock) {
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
@@ -318,12 +312,7 @@ if (squirrelStartupHandled) {
         }).then(result => log('info', 'desktop.update.check_complete', { result }))
           .catch(() => log('error', 'desktop.update.check_failed'));
       };
-      // Squirrel holds an installer lock briefly on Windows first run.
-      if (process.platform === 'win32' && process.argv.includes('--squirrel-firstrun')) {
-        setTimeout(runUpdateCheck, 10_000);
-      } else {
-        runUpdateCheck();
-      }
+      runUpdateCheck();
     }
 
     app.on('activate', () => {

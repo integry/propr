@@ -351,7 +351,15 @@ function Get-HeldIdentity([IntPtr]$handle, [bool]$directory) {
       links=$links.ToString(); reparseTag=$reparse.ToString('x8') }
   } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($tag); [Runtime.InteropServices.Marshal]::FreeHGlobal($id); [Runtime.InteropServices.Marshal]::FreeHGlobal($basic) }
 }
-function Get-HeldSecurity([IntPtr]$handle) {
+function Expand-FileAccessMask([uint32]$mask) {
+  if (($mask -band [uint32]0x80000000) -ne 0) {$mask=[uint32](($mask -band [uint32]0x7fffffff) -bor [uint32]0x00120089)}
+  if (($mask -band [uint32]0x40000000) -ne 0) {$mask=[uint32](($mask -band [uint32]0xbfffffff) -bor [uint32]0x00120116)}
+  if (($mask -band [uint32]0x20000000) -ne 0) {$mask=[uint32](($mask -band [uint32]0xdfffffff) -bor [uint32]0x001200a0)}
+  if (($mask -band [uint32]0x10000000) -ne 0) {$mask=[uint32](($mask -band [uint32]0xefffffff) -bor [uint32]0x001f01ff)}
+  return $mask
+}
+function Get-HeldSecurity([IntPtr]$handle, [string]$role) {
+  if ($role -cne 'package' -and $role -cne 'os') {throw 'security-role'}
   $owner=[IntPtr]::Zero; $group=[IntPtr]::Zero; $dacl=[IntPtr]::Zero; $sacl=[IntPtr]::Zero; $descriptor=[IntPtr]::Zero
   if ($native::GetSecurityInfo($handle, 1, 5, [ref]$owner, [ref]$group, [ref]$dacl, [ref]$sacl, [ref]$descriptor) -ne 0 -or
       $owner -eq [IntPtr]::Zero -or $dacl -eq [IntPtr]::Zero -or $descriptor -eq [IntPtr]::Zero) { throw 'security' }
@@ -360,8 +368,9 @@ function Get-HeldSecurity([IntPtr]$handle) {
     try { $ownerSid=[Runtime.InteropServices.Marshal]::PtrToStringUni($ownerText) } finally { if ($ownerText -ne [IntPtr]::Zero) { [void]$native::LocalFree($ownerText) } }
     if ($trustedOwners -notcontains $ownerSid -or $currentAuthorities.Contains($ownerSid)) { throw 'owner' }
     $control=[uint16]0; $revision=[uint32]0
-    if (!$native::GetSecurityDescriptorControl($descriptor, [ref]$control, [ref]$revision) -or
-        ($control -band 0x1000) -eq 0) { throw 'dacl-protection' }
+    if (!$native::GetSecurityDescriptorControl($descriptor, [ref]$control, [ref]$revision)) {throw 'dacl-protection'}
+    $protected=($control -band 0x1000) -ne 0
+    if ($role -ceq 'package' -and !$protected) {throw 'dacl-protection'}
     $present=$false; $defaulted=$false; $actualDacl=[IntPtr]::Zero
     if (!$native::GetSecurityDescriptorDacl($descriptor, [ref]$present, [ref]$actualDacl, [ref]$defaulted) -or !$present -or $actualDacl -eq [IntPtr]::Zero) { throw 'dacl' }
     $descriptorLength=$native::GetSecurityDescriptorLength($descriptor)
@@ -383,12 +392,12 @@ function Get-HeldSecurity([IntPtr]$handle) {
       $inherited=($ace.AceFlags -band [Security.AccessControl.AceFlags]::Inherited) -ne 0
       $order=if ($inherited) {if ($allowed) {3} else {2}} else {if ($allowed) {1} else {0}}
       if ($order -lt $priorOrder) {throw 'ace-order'}; $priorOrder=$order
-      $mask=[uint32]$known.AccessMask
-      if (!$allowed -or ($mask -band [uint32]0x500D0156) -eq 0) {continue}
+      $mask=Expand-FileAccessMask ([uint32]$known.AccessMask)
+      if (!$allowed -or ($mask -band [uint32]0x000D0156) -eq 0) {continue}
       $sid=$known.SecurityIdentifier.Value
       if ($currentAuthorities.Contains($sid) -or $trustedOwners -notcontains $sid) {throw 'ace'}
     }
-    return @{ ownerSid=$ownerSid; daclProtected=$true; aceCount=$aceCount.ToString() }
+    return @{ ownerSid=$ownerSid; daclProtected=$protected; aceCount=$aceCount.ToString(); role=$role }
   } finally { if ($descriptor -ne [IntPtr]::Zero) {[void]$native::LocalFree($descriptor)} }
 }
 function Get-FinalPath([IntPtr]$handle) { $value=New-Object Text.StringBuilder 32768; $length=$native::GetFinalPathNameByHandleW($handle,$value,32768,0); if ($length -le 0 -or $length -ge 32768) {throw 'path'}; $value.ToString() }
@@ -544,7 +553,7 @@ function Get-SystemCatalogProof([IntPtr]$memberHandle, [string]$windowsRoot) {
         $catalogPath.IndexOf('\',$catalogRoot.Length) -ge 0) {throw 'catalog-path'}
     $stream=[IO.File]::Open($catalogPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try {
-      $handle=$stream.SafeFileHandle.DangerousGetHandle(); $identity=Get-HeldIdentity $handle $false; [void](Get-HeldSecurity $handle)
+      $handle=$stream.SafeFileHandle.DangerousGetHandle(); $identity=Get-HeldIdentity $handle $false; [void](Get-HeldSecurity $handle 'os')
       if (!(Get-FinalPath $handle).EndsWith($catalogPath,[StringComparison]::OrdinalIgnoreCase)) {throw 'catalog-path'}
       Invoke-HeldCatalogTrust $memberHandle (Get-FinalPath $memberHandle) $catalogPath $memberHash $admin
       $bytes=Read-Held $stream $stream.Length 33554432; $sha=[Security.Cryptography.SHA256]::Create()
@@ -569,7 +578,7 @@ $heldHandle=$native::_get_osfhandle(3); if ($heldHandle -eq [IntPtr](-1)) {throw
 $heldSafe=New-Object Microsoft.Win32.SafeHandles.SafeFileHandle($heldHandle,$false)
 $held=New-Object IO.FileStream($heldSafe,[IO.FileAccess]::Read,65536,$false)
 $load=[IO.File]::Open($policy.path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
-$ancestorHandles=New-Object Collections.Generic.List[IntPtr]
+$ancestorHandles=New-Object Collections.Generic.List[object]
 $self=$null
 try {
   $heldIdentity=Get-HeldIdentity $heldHandle $false; $loadHandle=$load.SafeFileHandle.DangerousGetHandle()
@@ -577,13 +586,13 @@ try {
   if ($heldIdentity.volumeSerial -cne $loadIdentity.volumeSerial -or $heldIdentity.fileId128 -cne $loadIdentity.fileId128 -or
       $heldIdentity.nodeDev -cne $policy.nodeDev -or $heldIdentity.nodeIno -cne $policy.nodeIno -or $heldIdentity.links -cne '1') {throw 'split-handle'}
   if ((Get-FinalPath $heldHandle) -cne (Get-FinalPath $loadHandle)) {throw 'load-path'}
-  $security=Get-HeldSecurity $heldHandle
+  $security=Get-HeldSecurity $heldHandle 'package'
   $authorityRoot=[IO.Path]::GetFullPath($policy.authorityRoot).TrimEnd('\')
   $cursor=[IO.Directory]::GetParent($policy.path); $rootSeen=$false
   while ($cursor) {
     $directory=$native::CreateFileW($cursor.FullName,0x80 -bor 0x20000,1,[IntPtr]::Zero,3,0x2200000,[IntPtr]::Zero)
-    if ($directory -eq [IntPtr](-1)) {throw 'ancestor'}; $ancestorHandles.Add($directory)
-    [void](Get-HeldIdentity $directory $true); [void](Get-HeldSecurity $directory)
+    if ($directory -eq [IntPtr](-1)) {throw 'ancestor'}; $ancestorHandles.Add([pscustomobject]@{handle=$directory;role='package'})
+    [void](Get-HeldIdentity $directory $true); [void](Get-HeldSecurity $directory 'package')
     if ($cursor.FullName.TrimEnd('\') -ieq $authorityRoot) {$rootSeen=$true; break}; $cursor=$cursor.Parent
   }
   if (!$rootSeen) {throw 'ancestor-root'}
@@ -595,12 +604,12 @@ try {
   $self=[IO.File]::Open($selfPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
   $selfHandle=$self.SafeFileHandle.DangerousGetHandle()
   if (!(Get-FinalPath $selfHandle).EndsWith('\System32\WindowsPowerShell\v1.0\powershell.exe',[StringComparison]::OrdinalIgnoreCase)) {throw 'self-path'}
-  $selfIdentity=Get-HeldIdentity $selfHandle $false; [void](Get-HeldSecurity $selfHandle)
+  $selfIdentity=Get-HeldIdentity $selfHandle $false; [void](Get-HeldSecurity $selfHandle 'os')
   $selfCursor=[IO.Directory]::GetParent($selfPath); $selfRoot=$selfCursor.Parent.Parent.Parent.FullName.TrimEnd('\'); $selfRootSeen=$false
   while ($selfCursor) {
     $selfDirectory=$native::CreateFileW($selfCursor.FullName,0x80 -bor 0x20000,1,[IntPtr]::Zero,3,0x2200000,[IntPtr]::Zero)
-    if ($selfDirectory -eq [IntPtr](-1)) {throw 'self-ancestor'}; $ancestorHandles.Add($selfDirectory)
-    [void](Get-HeldIdentity $selfDirectory $true); [void](Get-HeldSecurity $selfDirectory)
+    if ($selfDirectory -eq [IntPtr](-1)) {throw 'self-ancestor'}; $ancestorHandles.Add([pscustomobject]@{handle=$selfDirectory;role='os'})
+    [void](Get-HeldIdentity $selfDirectory $true); [void](Get-HeldSecurity $selfDirectory 'os')
     if ($selfCursor.FullName.TrimEnd('\') -ieq $selfRoot) {$selfRootSeen=$true; break}; $selfCursor=$selfCursor.Parent
   }
   if (!$selfRootSeen) {throw 'self-root'}
@@ -617,15 +626,15 @@ try {
   $heldFinal=Get-HeldIdentity $heldHandle $false; $loadFinal=Get-HeldIdentity $loadHandle $false
   if ($heldFinal.volumeSerial -cne $heldIdentity.volumeSerial -or $heldFinal.fileId128 -cne $heldIdentity.fileId128 -or
       $loadFinal.volumeSerial -cne $loadIdentity.volumeSerial -or $loadFinal.fileId128 -cne $loadIdentity.fileId128) {throw 'final-identity'}
-  [void](Get-HeldSecurity $heldHandle); [void](Get-HeldSecurity $loadHandle)
+  [void](Get-HeldSecurity $heldHandle 'package'); [void](Get-HeldSecurity $loadHandle 'package')
   $finalBytes=Read-Held $held ([int64]$policy.size); $finalSha=[Security.Cryptography.SHA256]::Create()
   try {$finalDigest=Hex-Bytes $finalSha.ComputeHash($finalBytes)} finally {$finalSha.Dispose()}
   if ($finalDigest -cne $digest -or (Get-FinalPath $heldHandle) -cne (Get-FinalPath $loadHandle)) {throw 'final-bootstrap'}
-  $selfFinal=Get-HeldIdentity $selfHandle $false; [void](Get-HeldSecurity $selfHandle)
+  $selfFinal=Get-HeldIdentity $selfHandle $false; [void](Get-HeldSecurity $selfHandle 'os')
   if ($selfFinal.volumeSerial -cne $selfIdentity.volumeSerial -or $selfFinal.fileId128 -cne $selfIdentity.fileId128) {throw 'final-self'}
   foreach ($catalogLease in $catalogLeases) {
     $catalogHandle=$catalogLease.stream.SafeFileHandle.DangerousGetHandle()
-    $catalogFinal=Get-HeldIdentity $catalogHandle $false; [void](Get-HeldSecurity $catalogHandle)
+    $catalogFinal=Get-HeldIdentity $catalogHandle $false; [void](Get-HeldSecurity $catalogHandle 'os')
     $catalogFinalPath=Get-FinalPath $catalogHandle
     if ($catalogFinal.volumeSerial -cne $catalogLease.volumeSerial -or $catalogFinal.fileId128 -cne $catalogLease.fileId128 -or
         !$catalogFinalPath.EndsWith($catalogLease.path,[StringComparison]::OrdinalIgnoreCase)) {throw 'final-catalog'}
@@ -633,7 +642,7 @@ try {
     try {$catalogDigest=Hex-Bytes $catalogSha.ComputeHash($catalogBytes)} finally {$catalogSha.Dispose()}
     if ($catalogDigest -cne $catalogLease.sha256) {throw 'final-catalog'}
   }
-  foreach ($handle in $ancestorHandles) {[void](Get-HeldSecurity $handle)}
+  foreach ($lease in $ancestorHandles) {[void](Get-HeldSecurity $lease.handle $lease.role)}
 } finally {
   if ($self) {$self.Dispose()}
   foreach ($catalogLease in $catalogLeases) {
@@ -641,7 +650,7 @@ try {
     if ($catalogLease.admin -ne [IntPtr]::Zero) {[void]$native::CryptCATAdminReleaseContext($catalogLease.admin,0)}
     $catalogLease.stream.Dispose()
   }
-  foreach ($handle in $ancestorHandles) {[void]$native::CloseHandle($handle)}; $load.Dispose(); $held.Dispose()
+  foreach ($lease in $ancestorHandles) {[void]$native::CloseHandle($lease.handle)}; $load.Dispose(); $held.Dispose()
 }
 `;
 

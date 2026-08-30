@@ -220,6 +220,12 @@ test('production verifier is kernel-rooted and never selected by the process com
   assert.match(implementation, /\$heldHandle=\$native::_get_osfhandle\(3\)/);
   assert.match(implementation, /GetFileInformationByHandleEx/);
   assert.match(implementation, /GetSecurityInfo/);
+  assert.match(implementation, /Get-HeldSecurity\(\[IntPtr\]\$handle, \[string\]\$role\)/);
+  assert.match(implementation, /Get-HeldSecurity \$heldHandle 'package'/);
+  assert.match(implementation, /Get-HeldSecurity \$selfHandle 'os'/);
+  assert.match(implementation, /Get-HeldSecurity \$catalogHandle 'os'/);
+  assert.match(implementation, /Get-HeldSecurity \$lease\.handle \$lease\.role/);
+  assert.match(implementation, /Expand-FileAccessMask/);
   assert.doesNotMatch(implementation, /Get-AuthenticodeSignature\s+-Content/);
   assert.match(implementation, /WinVerifyTrust/);
   assert.match(implementation, /CryptQueryObject\(2,\$blob/);
@@ -534,6 +540,14 @@ test('native ACL policy rejects real arbitrary SID, object, callback, and condit
     assert.equal(helper.launcher.dangerousAclForTest?.({
       sddl: 'O:SYG:SYD:(D;;GW;;;BU)(A;;GR;;;BU)',
     }), false, 'canonical deny/allow order with no effective untrusted write is safe');
+    assert.equal(helper.launcher.dangerousAclForTest?.({
+      sddl: 'O:SYG:SYD:AI(A;ID;GRGX;;;BU)',
+    }), false, 'a safely inherited OS read/execute ACE does not need a protected DACL');
+    for (const rights of ['GW', 'WD', 'WO', 'DC']) {
+      assert.equal(helper.launcher.dangerousAclForTest?.({
+        sddl: `O:SYG:SYD:AI(A;ID;${rights};;;BU)`,
+      }), true, `inherited untrusted ${rights} authority must be rejected`);
+    }
   } finally {
     await helper.executableHandle.close();
     await helper.launcherHandle.close();
