@@ -21,7 +21,7 @@ import {
   protectWindowsSetupEntry,
   stableAuthorityIdentity,
   WINDOWS_SUPERVISOR_STAGE_VALUES,
-  windowsAuthorityStageResultForNativeTest,
+  exerciseWindowsAuthorityStageFailureForNativeTest,
 } from '../packages/cli/dist/connectRootAuthority.js';
 import { PUBLIC_INSTANCE_IDENTITY_FILENAME } from '@propr/shared';
 import { getOrCreatePublicInstanceIdentityPinned } from '@propr/local-setup';
@@ -419,7 +419,7 @@ test('native root/env/data/identity authority accepts the protected object and r
     let identitySwapProven = false;
     await assert.rejects(withOwnedConnectRootSnapshot(root, async (snapshot) => {
       try {
-        return getOrCreatePublicInstanceIdentityPinned(snapshot.identityDirectory, {
+        return await getOrCreatePublicInstanceIdentityPinned(snapshot.identityDirectory, {
           role: 'host',
           onBoundary: async (boundary) => {
             if (boundary !== 'identity-read-statted' || identityReplaced) return;
@@ -576,19 +576,25 @@ test('native helper replacement is rejected before attacker bytes can execute', 
 
   if (process.platform === 'win32') {
     assert.deepEqual(WINDOWS_SUPERVISOR_STAGE_VALUES, [
-      'CHANNEL_CREATE', 'SCRIPT_LOAD', 'JOB_CREATE', 'JOB_ASSIGN', 'PARENT_OPEN',
+      'PATH_NAME', 'CHANNEL_CREATE', 'SCRIPT_LOAD', 'JOB_CREATE', 'JOB_ASSIGN', 'PARENT_OPEN',
       'PROCESS_DACL', 'IMAGE_OPEN', 'IMAGE_HASH', 'IMAGE_IDENTITY', 'OWNER_DACL',
       'REPARSE', 'LOCK', 'READY_FRAME', 'PRE_CHALLENGE', 'BATCH_LAUNCH',
       'FD_DUPLICATE', 'BATCH_RESPONSE', 'POST_CHALLENGE', 'SHUTDOWN',
     ]);
     for (const stage of WINDOWS_SUPERVISOR_STAGE_VALUES) {
-      assert.deepEqual(windowsAuthorityStageResultForNativeTest(stage), {
+      assert.deepEqual(await exerciseWindowsAuthorityStageFailureForNativeTest(stage), {
         version: 1,
         status: 'failed',
         stage,
         publicError: 'Windows system authority capability is unavailable',
       });
     }
+    assert.throws(
+      () => exerciseWindowsAuthorityStageFailureForNativeTest(
+        'UNKNOWN' as (typeof WINDOWS_SUPERVISOR_STAGE_VALUES)[number],
+      ),
+      /unknown Windows authority stage/,
+    );
     const command = join(process.env.SystemRoot!, 'System32', 'cmd.exe');
     const preLockControl = nativeFixtureParent('propr-bootstrap-before-lock-');
     try {
@@ -626,10 +632,11 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     rmSync(attackerResultPath, { force: true });
     let concurrentRequest: Promise<Awaited<ReturnType<typeof exerciseWindowsAuthorityCapabilityForNativeTest>>> | undefined;
     const locked = await exerciseWindowsAuthorityCapabilityForNativeTest({
-      onSupervisorStarting: ({ stagedPath, environmentKeys }) => {
+      onSupervisorStarting: ({ stagedPath, environmentKeys, encodedLoaderLength }) => {
         assert.deepEqual(environmentKeys, ['SystemRoot']);
         assert.equal(environmentKeys.some((key) => key.startsWith('PROPR_')), false);
         assert.equal(environmentKeys.includes(stagedPath), false);
+        assert.ok(encodedLoaderLength > 0 && encodedLoaderLength < 2_048, 'supervisor loader exceeded its fixed launch bound');
       },
       onSupervisorSpawned: (stagedPath, supervisorPid) => {
         const query = spawnSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [

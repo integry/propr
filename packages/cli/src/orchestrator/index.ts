@@ -215,7 +215,7 @@ export function connectExecutionEnvironment(
   }
   const allowed: NodeJS.ProcessEnv = {};
   const bootstrap = platform === "win32"
-    ? ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TMP", "TEMP", "USERPROFILE"] as const
+    ? ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TMP", "TEMP"] as const
     : ["PATH", "TMPDIR", "TMP", "TEMP", "HOME"] as const;
   for (const name of bootstrap) {
     const value = environmentString(source, name);
@@ -229,6 +229,21 @@ export function connectExecutionEnvironment(
       throw new Error("Connect platform environment is invalid");
     }
     allowed[name] = value;
+  }
+  if (platform === "win32") {
+    const userProfile = environmentString(source, "USERPROFILE");
+    const homeDrive = environmentString(source, "HOMEDRIVE");
+    const homePath = environmentString(source, "HOMEPATH");
+    if (userProfile !== undefined) {
+      if (!win32.isAbsolute(userProfile)) throw new Error("Connect platform environment is invalid");
+      allowed.USERPROFILE = userProfile;
+    } else if (homeDrive !== undefined || homePath !== undefined) {
+      if (!homeDrive || !/^[A-Za-z]:$/.test(homeDrive) || !homePath || !win32.isAbsolute(homePath)) {
+        throw new Error("Connect platform environment is invalid");
+      }
+      allowed.HOMEDRIVE = homeDrive;
+      allowed.HOMEPATH = homePath;
+    }
   }
   for (const [name, maximum] of Object.entries(CONNECT_DOCKER_ENV_LIMITS)) {
     const value = environmentString(source, name, maximum);

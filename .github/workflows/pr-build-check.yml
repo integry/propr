@@ -182,6 +182,11 @@ jobs:
           npm run typecheck -w @propr/cli
           npm run build -w @propr/cli
 
+      - name: Require hosted Windows supervisor smoke
+        if: runner.os == 'Windows'
+        shell: bash
+        run: node scripts/verify-windows-authority-smoke.mjs
+
       - name: Run platform-safe focused Connect suites
         shell: bash
         run: node scripts/verify-platform-safe-connect.mjs
