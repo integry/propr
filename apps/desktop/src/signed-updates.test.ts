@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { access, chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
+  applySignedUpdate,
   checkForSignedUpdates,
   downloadBoundedUpdateFile,
   fetchBoundedUpdateBytes,
+  parseSquirrelReleaseEntry,
+  SIGNED_UPDATE_CACHE_POLICY,
   SIGNED_UPDATE_DOWNLOAD_LIMITS,
   type SignedUpdateManifest,
   type SignedUpdateRequest,
@@ -21,7 +24,8 @@ const certificateSha256 = '1'.repeat(64);
 const spkiSha256 = '2'.repeat(64);
 const artifact = Buffer.from('signed windows package bytes');
 const artifactUrl = 'https://updates.example.test/win32/x64/ProPR-Desktop-1.2.4-windows-x64-full.nupkg';
-const feed = Buffer.from(`0123456789abcdef0123456789abcdef01234567 ProPR-Desktop-1.2.4-windows-x64-full.nupkg ${artifact.length}\n`);
+const artifactSha1 = createHash('sha1').update(artifact).digest('hex');
+const feed = Buffer.from(`${artifactSha1} ProPR-Desktop-1.2.4-windows-x64-full.nupkg ${artifact.length}\r\n`);
 const bytes = (url: string, value: Buffer) => ({
   url,
   size: value.length,
@@ -94,6 +98,63 @@ const config = {
   signingIdentity: 'CN=Example Publisher',
   windowsSignerPins: [`certificate-sha256:${certificateSha256}`],
 };
+
+const windowsArtifact = manifest.feeds['win32-x64'].artifact;
+const windowsSigner = async () => ({
+  type: 'authenticode-subject' as const,
+  identity: 'CN=Example Publisher',
+  certificateSha256,
+  spkiSha256,
+});
+
+describe('runtime Squirrel RELEASES binding', () => {
+  test('accepts a canonical Windows Squirrel record and canonicalizes its SHA-1', () => {
+    const entry = parseSquirrelReleaseEntry(
+      Buffer.from(`${artifactSha1.toUpperCase()} ${windowsArtifact.fileName} ${artifact.length}\r\n`),
+      '1.2.4',
+      windowsArtifact,
+    );
+    assert.deepEqual(entry, { sha1: artifactSha1, fileName: windowsArtifact.fileName, size: artifact.length });
+  });
+
+  test('rejects duplicate, ambiguous, wrong-name/version/size, traversal, case, and algorithm records', () => {
+    const valid = `${artifactSha1} ${windowsArtifact.fileName} ${artifact.length}`;
+    const hostile = [
+      `${valid}\n${valid}\n`,
+      `${valid}\n${artifactSha1} ${windowsArtifact.fileName.toUpperCase()} ${artifact.length}\n`,
+      `${artifactSha1} ProPR-Desktop-1.2.5-windows-x64-full.nupkg ${artifact.length}\n`,
+      `${artifactSha1} other.nupkg ${artifact.length}\n`,
+      `${artifactSha1} ${windowsArtifact.fileName} ${artifact.length + 1}\n`,
+      `${artifactSha1} ../${windowsArtifact.fileName} ${artifact.length}\n`,
+      `sha1:${artifactSha1} ${windowsArtifact.fileName} ${artifact.length}\n`,
+      `${artifactSha1}  ${windowsArtifact.fileName} ${artifact.length}\n`,
+    ];
+    for (const candidate of hostile) {
+      assert.throws(
+        () => parseSquirrelReleaseEntry(Buffer.from(candidate), '1.2.4', windowsArtifact),
+        /Signed Windows update feed is invalid/,
+      );
+    }
+  });
+
+  test('rejects a RELEASES SHA-1 that does not bind the signed SHA-256 package bytes', async () => {
+    const mismatched = Buffer.from(`${'0'.repeat(40)} ${windowsArtifact.fileName} ${artifact.length}\n`);
+    const changed = structuredClone(manifest);
+    changed.feeds['win32-x64'].feed = bytes(manifest.feeds['win32-x64'].feed.url, mismatched);
+    const release = signed(changed);
+    await assert.rejects(
+      checkForSignedUpdates({
+        config,
+        currentVersion: '1.2.3',
+        platform: 'win32',
+        arch: 'x64',
+        request: fetcher(release.payload, release.signature, { feed: mismatched }),
+        verifyNativeSigner: async () => assert.fail('mismatched SHA-1 must fail before signer verification'),
+      }),
+      /does not match Squirrel metadata/,
+    );
+  });
+});
 
 describe('signed desktop updates', () => {
   test('accepts only the real canonical macOS application at the ZIP root', async () => {
@@ -172,6 +233,61 @@ describe('signed desktop updates', () => {
     assert.equal(result, 'available');
     assert.deepEqual(verifiedBytes, artifact);
     await assert.rejects(access(verifiedPath!));
+  });
+
+  test('keeps macOS checks non-installing while caching notarized signer-verified bytes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-macos-update-cache-test-'));
+    const macArtifact = Buffer.from('signed macOS ZIP bytes');
+    const macArtifactUrl = 'https://updates.example.test/darwin/x64/ProPR-Desktop-1.2.4-macos-x64-zip';
+    const macFeed = Buffer.from(JSON.stringify({ url: macArtifactUrl, name: '1.2.4' }));
+    const macManifest = structuredClone(manifest);
+    macManifest.feeds['darwin-x64'] = {
+      target: 'darwin-x64',
+      version: '1.2.4',
+      feed: bytes('https://updates.example.test/darwin/x64/RELEASES.json', macFeed),
+      artifact: {
+        ...bytes(macArtifactUrl, macArtifact),
+        fileName: 'ProPR-Desktop-1.2.4-macos-x64-zip',
+        kind: 'zip',
+      },
+      signer: {
+        type: 'apple-team-id',
+        identity: 'TEAMID1234',
+        designatedRequirement: 'designated => identifier "com.propr.desktop" and anchor apple generic',
+      },
+    };
+    const release = signed(macManifest);
+    let artifactRequests = 0;
+    const request: SignedUpdateRequest = async url => {
+      if (url.endsWith('desktop-release.json.sig')) return byteResponse(url, Buffer.from(release.signature));
+      if (url.endsWith('desktop-release.json')) return byteResponse(url, release.payload);
+      if (url === macManifest.feeds['darwin-x64'].feed.url) return byteResponse(url, macFeed);
+      if (url === macArtifactUrl) {
+        artifactRequests += 1;
+        return byteResponse(url, macArtifact);
+      }
+      throw new Error(`Unexpected URL ${url}`);
+    };
+    let installs = 0;
+    try {
+      assert.equal(await checkForSignedUpdates({
+        config: { ...config, signingIdentity: 'TEAMID1234' },
+        currentVersion: '1.2.3',
+        platform: 'darwin',
+        arch: 'x64',
+        request,
+        cacheDirectory: join(directory, 'cache'),
+        verifyNativeSigner: async () => ({
+          type: 'apple-team-id',
+          identity: 'TEAMID1234',
+          designatedRequirement: 'designated => identifier "com.propr.desktop" and anchor apple generic',
+        }),
+      }), 'available');
+      assert.equal(installs, 0);
+      assert.equal(artifactRequests, 1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   test('rejects tampered native feed bytes', async () => {
@@ -359,6 +475,219 @@ describe('signed desktop updates', () => {
       request: async () => assert.fail('unsupported builds must not fetch metadata'),
     }), 'unsupported');
     assert.equal(artifactFetched, false);
+  });
+});
+
+describe('verified update artifact cache', () => {
+  const makeOptions = (
+    cacheDirectory: string,
+    request: SignedUpdateRequest,
+    extra: Partial<Parameters<typeof checkForSignedUpdates>[0]> = {},
+  ) => ({
+    config,
+    currentVersion: '1.2.3',
+    platform: 'win32' as const,
+    arch: 'x64',
+    request,
+    cacheDirectory,
+    verifyNativeSigner: windowsSigner,
+    ...extra,
+  });
+
+  const countingFetcher = (release: ReturnType<typeof signed>) => {
+    let artifactRequests = 0;
+    const base = fetcher(release.payload, release.signature);
+    return {
+      request: (async (url, init) => {
+        if (url === artifactUrl) artifactRequests += 1;
+        return base(url, init);
+      }) as SignedUpdateRequest,
+      count: () => artifactRequests,
+    };
+  };
+
+  test('check then explicit apply downloads one artifact and check-only never installs', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-update-cache-test-'));
+    const cacheDirectory = join(directory, 'cache');
+    const counted = countingFetcher(signed());
+    let installs = 0;
+    try {
+      assert.equal(await checkForSignedUpdates(makeOptions(cacheDirectory, counted.request)), 'available');
+      assert.equal(installs, 0);
+      assert.equal(counted.count(), 1);
+      assert.equal(await applySignedUpdate({
+        ...makeOptions(cacheDirectory, counted.request),
+        installVerifiedArtifact: async ({ packagePath, feedBytes }) => {
+          installs += 1;
+          assert.deepEqual(await readFile(packagePath), artifact);
+          assert.deepEqual(feedBytes, feed);
+        },
+      }), 'applied');
+      assert.equal(installs, 1);
+      assert.equal(counted.count(), 1);
+      await assert.rejects(access(join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName)));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('expiry and corruption each cause exactly one safe artifact redownload', async t => {
+    for (const scenario of ['expired', 'corrupt'] as const) {
+      await t.test(scenario, async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'propr-update-cache-test-'));
+        const cacheDirectory = join(directory, 'cache');
+        const counted = countingFetcher(signed());
+        let now = 10_000;
+        try {
+          const options = makeOptions(cacheDirectory, counted.request, { now: () => now });
+          await checkForSignedUpdates(options);
+          if (scenario === 'expired') now += SIGNED_UPDATE_CACHE_POLICY.expiryMs + 1;
+          else await writeFile(
+            join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName, SIGNED_UPDATE_CACHE_POLICY.artifactName),
+            Buffer.alloc(artifact.length, 0x41),
+          );
+          await applySignedUpdate({
+            ...options,
+            installVerifiedArtifact: async ({ packagePath }) => assert.deepEqual(await readFile(packagePath), artifact),
+          });
+          assert.equal(counted.count(), 2);
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
+    }
+  });
+
+  test('origin, channel, and version cache-key mismatches each force one redownload', async t => {
+    for (const field of ['origin', 'channel', 'version'] as const) {
+      await t.test(field, async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'propr-update-cache-test-'));
+        const cacheDirectory = join(directory, 'cache');
+        const counted = countingFetcher(signed());
+        try {
+          const options = makeOptions(cacheDirectory, counted.request);
+          await checkForSignedUpdates(options);
+          const metadataPath = join(
+            cacheDirectory,
+            SIGNED_UPDATE_CACHE_POLICY.entryName,
+            SIGNED_UPDATE_CACHE_POLICY.metadataName,
+          );
+          const metadata = JSON.parse(await readFile(metadataPath, 'utf8'));
+          metadata.key[field] = field === 'origin' ? 'https://other.example.test' : field === 'channel' ? 'beta' : '9.9.9';
+          await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`, { mode: 0o600 });
+          await applySignedUpdate({
+            ...options,
+            installVerifiedArtifact: async ({ packagePath }) => assert.deepEqual(await readFile(packagePath), artifact),
+          });
+          assert.equal(counted.count(), 2);
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
+    }
+  });
+
+  test('rejects symlink, hardlink, permission-broad, partial, and ABA-swapped entries', async t => {
+    for (const scenario of ['symlink', 'hardlink', 'permissions', 'partial', 'aba'] as const) {
+      await t.test(scenario, async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'propr-update-cache-test-'));
+        const cacheDirectory = join(directory, 'cache');
+        const counted = countingFetcher(signed());
+        let attack = false;
+        const signer = async (packagePath: string) => {
+          if (attack) {
+            attack = false;
+            const held = `${packagePath}.held`;
+            await rename(packagePath, held);
+            await writeFile(packagePath, Buffer.alloc(artifact.length, 0x42), { mode: 0o600 });
+            await rm(packagePath);
+            await rename(held, packagePath);
+          }
+          return windowsSigner();
+        };
+        try {
+          const options = makeOptions(cacheDirectory, counted.request, { verifyNativeSigner: signer });
+          if (scenario === 'partial') {
+            await mkdir(join(cacheDirectory, '.partial-crash'), { recursive: true, mode: 0o700 });
+            await writeFile(join(cacheDirectory, '.partial-crash', 'artifact'), 'partial');
+          }
+          await checkForSignedUpdates(options);
+          const artifactPath = join(
+            cacheDirectory,
+            SIGNED_UPDATE_CACHE_POLICY.entryName,
+            SIGNED_UPDATE_CACHE_POLICY.artifactName,
+          );
+          if (scenario === 'symlink') {
+            const decoy = join(directory, 'decoy');
+            await writeFile(decoy, artifact);
+            await rm(artifactPath);
+            await symlink(decoy, artifactPath);
+          } else if (scenario === 'hardlink') {
+            await link(artifactPath, join(directory, 'hardlink'));
+          } else if (scenario === 'permissions') {
+            await chmod(artifactPath, 0o644);
+          } else if (scenario === 'aba') {
+            attack = true;
+          }
+          await applySignedUpdate({
+            ...options,
+            installVerifiedArtifact: async ({ packagePath }) => assert.deepEqual(await readFile(packagePath), artifact),
+          });
+          assert.equal(counted.count(), scenario === 'partial' ? 1 : 2);
+          await assert.rejects(access(join(cacheDirectory, '.partial-crash')));
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
+    }
+  });
+
+  test('serializes concurrent checks and retains only the single bounded artifact', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-update-cache-test-'));
+    const cacheDirectory = join(directory, 'cache');
+    const counted = countingFetcher(signed());
+    try {
+      const options = makeOptions(cacheDirectory, counted.request);
+      assert.deepEqual(await Promise.all([
+        checkForSignedUpdates(options),
+        checkForSignedUpdates(options),
+        checkForSignedUpdates(options),
+      ]), ['available', 'available', 'available']);
+      assert.equal(counted.count(), 1);
+      assert.deepEqual(
+        (await readFile(join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName, SIGNED_UPDATE_CACHE_POLICY.artifactName))),
+        artifact,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('cancellation removes private partials before a later safe retry', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-update-cache-test-'));
+    const cacheDirectory = join(directory, 'cache');
+    const release = signed();
+    const good = fetcher(release.payload, release.signature);
+    let cancelArtifact = true;
+    let artifactRequests = 0;
+    const request: SignedUpdateRequest = async (url, init) => {
+      if (url === artifactUrl) {
+        artifactRequests += 1;
+        if (cancelArtifact) throw new DOMException('cancelled', 'AbortError');
+      }
+      return good(url, init);
+    };
+    try {
+      const options = makeOptions(cacheDirectory, request);
+      await assert.rejects(checkForSignedUpdates(options), /cancelled/);
+      assert.deepEqual(await readdir(cacheDirectory), []);
+      cancelArtifact = false;
+      assert.equal(await checkForSignedUpdates(options), 'available');
+      assert.equal(artifactRequests, 2);
+      assert.deepEqual(await readdir(cacheDirectory), [SIGNED_UPDATE_CACHE_POLICY.entryName]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
 

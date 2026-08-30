@@ -1,8 +1,19 @@
-import { createHash, createPublicKey, verify, X509Certificate } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, verify, X509Certificate } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { lstat, mkdtemp, open, readdir, rm } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  rename,
+  rm,
+  type FileHandle,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { parseWindowsSignerPins } from './release-config';
 
@@ -60,12 +71,36 @@ export const SIGNED_UPDATE_DOWNLOAD_LIMITS = {
   artifactBytes: 1024 * 1024 * 1024,
   metadataTimeoutMs: 30_000,
   artifactTimeoutMs: 10 * 60_000,
+  squirrelReleaseBytes: 64 * 1024,
+} as const;
+
+export const SIGNED_UPDATE_CACHE_POLICY = {
+  expiryMs: 10 * 60_000,
+  metadataBytes: 16 * 1024,
+  entryName: 'verified-update',
+  artifactName: 'artifact',
+  metadataName: 'entry.json',
 } as const;
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const SHA1_PATTERN = /^[a-fA-F0-9]{40}$/;
 const TARGET_PATTERN = /^(darwin|win32)-(x64|arm64)$/;
+const SQUIRREL_FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}\.nupkg$/;
 const execFileAsync = promisify(execFile);
+const cacheLocks = new Map<string, Promise<void>>();
+
+export interface SquirrelReleaseEntry {
+  sha1: string;
+  fileName: string;
+  size: number;
+}
+
+export interface SignedUpdateInstallArtifact {
+  packagePath: string;
+  feedBytes: Buffer;
+  artifact: SignedUpdateArtifact;
+}
 
 interface ExpectedDownloadBytes {
   size: number;
@@ -395,7 +430,11 @@ export const downloadBoundedUpdateFile = async (
 
   let file;
   try {
-    file = await open(options.destinationPath, 'wx', 0o600);
+    file = await open(
+      options.destinationPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
     await withBoundedResponse(options, async (response, signal) => {
       await consumeResponse(response, signal, options, async chunk => {
         const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
@@ -406,6 +445,7 @@ export const downloadBoundedUpdateFile = async (
         }
       });
     });
+    await file.sync();
     await file.close();
     file = undefined;
   } catch (error) {
@@ -415,12 +455,61 @@ export const downloadBoundedUpdateFile = async (
   }
 };
 
+export const parseSquirrelReleaseEntry = (
+  feedBytes: Buffer,
+  version: string,
+  artifact: SignedUpdateArtifact,
+): SquirrelReleaseEntry => {
+  const fail = (): never => { throw new Error('Signed Windows update feed is invalid'); };
+  const canonicalFileNames = new Set([
+    `ProPR-Desktop-${version}-windows-x64-full.nupkg`,
+    `ProPR-Desktop-${version}-windows-arm64-full.nupkg`,
+  ]);
+  if (!VERSION_PATTERN.test(version)
+    || artifact.kind !== 'nupkg'
+    || !canonicalFileNames.has(artifact.fileName)
+    || feedBytes.length === 0
+    || feedBytes.length > SIGNED_UPDATE_DOWNLOAD_LIMITS.squirrelReleaseBytes) fail();
+
+  let text: string;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(feedBytes); } catch { return fail(); }
+  if (text.includes('\0') || text.includes('\r') && !text.includes('\r\n')) fail();
+  const normalized = text.endsWith('\r\n')
+    ? text.slice(0, -2)
+    : text.endsWith('\n') ? text.slice(0, -1) : text;
+  if (!normalized || normalized.includes('\r') && !normalized.split('\r\n').every(Boolean)) fail();
+  const lines = normalized.split(text.includes('\r\n') ? '\r\n' : '\n');
+  if (lines.length > 128 || lines.some(line => !line || line.length > 512)) fail();
+
+  const seen = new Set<string>();
+  const selected: SquirrelReleaseEntry[] = [];
+  for (const line of lines) {
+    const tokens = line.split(' ');
+    if (tokens.length !== 3 || tokens.some(token => !token)) fail();
+    const [sha1, fileName, sizeText] = tokens;
+    if (!SHA1_PATTERN.test(sha1)
+      || !SQUIRREL_FILE_NAME_PATTERN.test(fileName)
+      || basename(fileName) !== fileName
+      || fileName.includes('/')
+      || fileName.includes('\\')
+      || !/^[1-9]\d*$/.test(sizeText)) fail();
+    const size = Number(sizeText);
+    if (!Number.isSafeInteger(size) || size > SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes) fail();
+    const foldedName = fileName.toLowerCase();
+    if (seen.has(foldedName)) fail();
+    seen.add(foldedName);
+    if (fileName === artifact.fileName) selected.push({ sha1: sha1.toLowerCase(), fileName, size });
+  }
+  if (selected.length !== 1 || selected[0].size !== artifact.size) fail();
+  return selected[0];
+};
+
 const verifyFeedReferencesArtifact = (
   target: string,
   version: string,
   feedBytes: Buffer,
   artifact: SignedUpdateArtifact,
-): void => {
+): SquirrelReleaseEntry | undefined => {
   if (target.startsWith('darwin-')) {
     let feed: unknown;
     try {
@@ -431,14 +520,9 @@ const verifyFeedReferencesArtifact = (
     if (!isRecord(feed) || feed.url !== artifact.url || feed.name !== version) {
       throw new Error('Signed macOS update feed does not reference the bound version and artifact URL');
     }
-    return;
+    return undefined;
   }
-
-  const referenced = feedBytes.toString('utf8').split(/\r?\n/).some(line => {
-    const match = /^[a-fA-F0-9]{40}\s+(\S+)\s+(\d+)$/.exec(line.trim());
-    return match?.[1] === artifact.fileName && Number(match[2]) === artifact.size;
-  });
-  if (!referenced) throw new Error('Signed Windows update feed does not reference the bound package bytes');
+  return parseSquirrelReleaseEntry(feedBytes, version, artifact);
 };
 
 export const validateMacOSUpdateApplicationLayout = async (extracted: string): Promise<string> => {
@@ -475,6 +559,7 @@ export const verifyNativeUpdateSigner = async (
       await execFileAsync('/usr/bin/ditto', ['-x', '-k', packagePath, extracted]);
       const application = await validateMacOSUpdateApplicationLayout(extracted);
       await execFileAsync('/usr/bin/codesign', ['--verify', '--deep', '--strict', application]);
+      await execFileAsync('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose=4', application]);
       const details = await execFileAsync('/usr/bin/codesign', ['-d', '--verbose=4', application]);
       const output = `${details.stdout}\n${details.stderr}`;
       const identity = /^TeamIdentifier=(.+)$/m.exec(output)?.[1]?.trim();
@@ -523,25 +608,344 @@ export const verifyNativeUpdateSigner = async (
   }
 };
 
-export const checkForSignedUpdates = async ({
-  config,
-  currentVersion,
-  platform,
-  arch,
-  request,
-  verifyNativeSigner = verifyNativeUpdateSigner,
-}: {
+interface UpdateCacheKey {
+  origin: string;
+  channel: 'stable';
+  version: string;
+  manifestSha256: string;
+  artifactSha256: string;
+  target: string;
+  artifactSize: number;
+  artifactFileName: string;
+}
+
+interface UpdateCacheMetadata {
+  schemaVersion: 1;
+  createdAt: number;
+  expiresAt: number;
+  key: UpdateCacheKey;
+}
+
+interface SignedUpdateOperationOptions {
   config: SignedUpdateRuntimeConfig;
   currentVersion: string;
   platform: NodeJS.Platform;
   arch: string;
   request: SignedUpdateRequest;
+  cacheDirectory?: string;
+  now?: () => number;
   verifyNativeSigner?: (
     packagePath: string,
     artifact: SignedUpdateArtifact,
     signer: SignedUpdateSigner,
   ) => Promise<SignedUpdateSigner>;
-}): Promise<'available' | 'current' | 'unsupported'> => {
+}
+
+interface PreparedSignedUpdate {
+  manifest: SignedUpdateManifest;
+  manifestDigest: string;
+  target: string;
+  feed: SignedUpdateFeed;
+  feedBytes: Buffer;
+  squirrelEntry?: SquirrelReleaseEntry;
+}
+
+const withCacheLock = async <T>(cacheDirectory: string, operation: () => Promise<T>): Promise<T> => {
+  const previous = cacheLocks.get(cacheDirectory) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>(resolve => { release = resolve; });
+  const queued = previous.then(() => current);
+  cacheLocks.set(cacheDirectory, queued);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (cacheLocks.get(cacheDirectory) === queued) cacheLocks.delete(cacheDirectory);
+  }
+};
+
+const isOwnedPrivate = (stats: Awaited<ReturnType<typeof lstat>>, directory = false): boolean => {
+  const expectedType = directory ? stats.isDirectory() : stats.isFile();
+  const expectedOwner = typeof process.getuid !== 'function' || stats.uid === process.getuid();
+  // libuv does not expose Windows ACLs as Unix owner/group mode bits; the cache inherits
+  // the per-user Electron data-directory ACL there and is still checked for real-file identity.
+  const expectedMode = process.platform === 'win32' || (Number(stats.mode) & 0o077) === 0;
+  return expectedType && !stats.isSymbolicLink() && expectedOwner && expectedMode;
+};
+
+const syncDirectory = async (path: string): Promise<void> => {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    await handle.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (process.platform !== 'win32' || !['EINVAL', 'ENOTSUP', 'EPERM', 'EISDIR'].includes(code ?? '')) throw error;
+  } finally {
+    await handle?.close();
+  }
+};
+
+const removeCachePath = async (path: string): Promise<void> => {
+  let stats;
+  try { stats = await lstat(path); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (stats.isDirectory() && !stats.isSymbolicLink()) await rm(path, { recursive: true, force: true });
+  else await rm(path, { force: true });
+};
+
+const prepareCacheDirectory = async (cacheDirectory: string, now: number): Promise<void> => {
+  await mkdir(cacheDirectory, { recursive: true, mode: 0o700 });
+  const stats = await lstat(cacheDirectory);
+  if (!stats.isDirectory() || stats.isSymbolicLink()
+    || typeof process.getuid === 'function' && stats.uid !== process.getuid()) {
+    throw new Error('Verified update cache is unavailable');
+  }
+  await chmod(cacheDirectory, 0o700);
+  if (!isOwnedPrivate(await lstat(cacheDirectory), true)) throw new Error('Verified update cache is unavailable');
+
+  for (const name of await readdir(cacheDirectory)) {
+    if (name.startsWith('.partial-')) await removeCachePath(join(cacheDirectory, name));
+  }
+  const entryPath = join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName);
+  try {
+    const entryStats = await lstat(entryPath);
+    if (!isOwnedPrivate(entryStats, true)) throw new Error('invalid');
+    const metadata = await readCacheMetadata(entryPath);
+    if (metadata.expiresAt <= now) await removeCachePath(entryPath);
+  } catch {
+    await removeCachePath(entryPath);
+  }
+};
+
+const openPrivateRegularFile = async (path: string): Promise<FileHandle> => {
+  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const stats = await handle.stat();
+    const pathStats = await lstat(path);
+    if (!isOwnedPrivate(stats) || stats.nlink !== 1
+      || pathStats.dev !== stats.dev || pathStats.ino !== stats.ino || pathStats.size !== stats.size) {
+      throw new Error('Verified update cache entry is invalid');
+    }
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+};
+
+const hashHeldFile = async (handle: FileHandle, maxBytes: number): Promise<{ size: number; sha256: string; sha1: string }> => {
+  const stats = await handle.stat();
+  if (!stats.isFile() || stats.nlink !== 1 || stats.size <= 0 || stats.size > maxBytes) {
+    throw new Error('Verified update artifact is invalid');
+  }
+  const sha256 = createHash('sha256');
+  const sha1 = createHash('sha1');
+  const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, stats.size));
+  let offset = 0;
+  while (offset < stats.size) {
+    const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, stats.size - offset), offset);
+    if (bytesRead === 0) throw new Error('Verified update artifact is invalid');
+    const bytes = chunk.subarray(0, bytesRead);
+    sha256.update(bytes);
+    sha1.update(bytes);
+    offset += bytesRead;
+  }
+  return { size: offset, sha256: sha256.digest('hex'), sha1: sha1.digest('hex') };
+};
+
+const assertHeldArtifact = async (
+  handle: FileHandle,
+  path: string,
+  artifact: SignedUpdateArtifact,
+  squirrelEntry?: SquirrelReleaseEntry,
+): Promise<void> => {
+  const descriptor = await handle.stat();
+  const pathStats = await lstat(path);
+  if (!isOwnedPrivate(descriptor) || descriptor.nlink !== 1
+    || pathStats.dev !== descriptor.dev || pathStats.ino !== descriptor.ino || pathStats.size !== descriptor.size) {
+    throw new Error('Verified update artifact is invalid');
+  }
+  const hashes = await hashHeldFile(handle, SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes);
+  if (hashes.size !== artifact.size || hashes.sha256 !== artifact.sha256) {
+    throw new Error('Verified update artifact does not match signed metadata');
+  }
+  // SHA-1 is only Squirrel's compatibility binding; signed SHA-256 metadata remains the trust root.
+  if (squirrelEntry && (hashes.size !== squirrelEntry.size || hashes.sha1 !== squirrelEntry.sha1)) {
+    throw new Error('Verified update artifact does not match Squirrel metadata');
+  }
+};
+
+const assertSigner = (actual: SignedUpdateSigner, expected: SignedUpdateSigner): void => {
+  if (actual.type !== expected.type
+    || actual.identity !== expected.identity
+    || actual.designatedRequirement !== expected.designatedRequirement
+    || actual.certificateSha256 !== expected.certificateSha256
+    || actual.spkiSha256 !== expected.spkiSha256) {
+    throw new Error('Native update artifact signer does not match the signed build pin');
+  }
+};
+
+const withVerifiedArtifact = async <T>(
+  packagePath: string,
+  prepared: PreparedSignedUpdate,
+  verifyNativeSigner: NonNullable<SignedUpdateOperationOptions['verifyNativeSigner']>,
+  use: (packagePath: string) => Promise<T>,
+): Promise<T> => {
+  const handle = await openPrivateRegularFile(packagePath);
+  try {
+    const entryDirectory = dirname(packagePath);
+    const cacheDirectory = dirname(entryDirectory);
+    const initialDirectory = await lstat(entryDirectory, { bigint: true });
+    const initialParent = await lstat(cacheDirectory, { bigint: true });
+    const assertDirectoryUnchanged = async (): Promise<void> => {
+      const current = await lstat(entryDirectory, { bigint: true });
+      const currentParent = await lstat(cacheDirectory, { bigint: true });
+      if (current.dev !== initialDirectory.dev || current.ino !== initialDirectory.ino
+        || current.ctimeNs !== initialDirectory.ctimeNs || current.mtimeNs !== initialDirectory.mtimeNs
+        || currentParent.dev !== initialParent.dev || currentParent.ino !== initialParent.ino
+        || currentParent.ctimeNs !== initialParent.ctimeNs || currentParent.mtimeNs !== initialParent.mtimeNs) {
+        throw new Error('Verified update artifact is invalid');
+      }
+    };
+    await assertHeldArtifact(handle, packagePath, prepared.feed.artifact, prepared.squirrelEntry);
+    assertSigner(
+      await verifyNativeSigner(packagePath, prepared.feed.artifact, prepared.feed.signer),
+      prepared.feed.signer,
+    );
+    await assertDirectoryUnchanged();
+    await assertHeldArtifact(handle, packagePath, prepared.feed.artifact, prepared.squirrelEntry);
+    const result = await use(packagePath);
+    await assertDirectoryUnchanged();
+    await assertHeldArtifact(handle, packagePath, prepared.feed.artifact, prepared.squirrelEntry);
+    return result;
+  } finally {
+    await handle.close();
+  }
+};
+
+const readCacheMetadata = async (entryPath: string): Promise<UpdateCacheMetadata> => {
+  const path = join(entryPath, SIGNED_UPDATE_CACHE_POLICY.metadataName);
+  const handle = await openPrivateRegularFile(path);
+  try {
+    const stats = await handle.stat();
+    if (stats.size <= 0 || stats.size > SIGNED_UPDATE_CACHE_POLICY.metadataBytes) {
+      throw new Error('Verified update cache entry is invalid');
+    }
+    const bytes = Buffer.alloc(stats.size);
+    const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+    if (bytesRead !== bytes.length) throw new Error('Verified update cache entry is invalid');
+    const value: unknown = JSON.parse(bytes.toString('utf8'));
+    if (!isRecord(value) || value.schemaVersion !== 1 || !isRecord(value.key)
+      || !Number.isSafeInteger(value.createdAt) || !Number.isSafeInteger(value.expiresAt)) {
+      throw new Error('Verified update cache entry is invalid');
+    }
+    return value as unknown as UpdateCacheMetadata;
+  } catch {
+    throw new Error('Verified update cache entry is invalid');
+  } finally {
+    await handle.close();
+  }
+};
+
+const exactCacheKey = (left: UpdateCacheKey, right: UpdateCacheKey): boolean =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+const cacheKeyFor = (prepared: PreparedSignedUpdate): UpdateCacheKey => ({
+  origin: new URL(prepared.manifest.manifestUrl).origin,
+  channel: prepared.manifest.channel,
+  version: prepared.manifest.version,
+  manifestSha256: prepared.manifestDigest,
+  artifactSha256: prepared.feed.artifact.sha256,
+  target: prepared.target,
+  artifactSize: prepared.feed.artifact.size,
+  artifactFileName: prepared.feed.artifact.fileName,
+});
+
+const findCachedArtifact = async (
+  cacheDirectory: string,
+  key: UpdateCacheKey,
+  now: number,
+): Promise<string | undefined> => {
+  const entryPath = join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName);
+  try {
+    const entryStats = await lstat(entryPath);
+    if (!isOwnedPrivate(entryStats, true)) throw new Error('invalid');
+    const metadata = await readCacheMetadata(entryPath);
+    if (metadata.expiresAt <= now || metadata.expiresAt - metadata.createdAt !== SIGNED_UPDATE_CACHE_POLICY.expiryMs
+      || !exactCacheKey(metadata.key, key)) throw new Error('invalid');
+    return join(entryPath, SIGNED_UPDATE_CACHE_POLICY.artifactName);
+  } catch {
+    await removeCachePath(entryPath);
+    return undefined;
+  }
+};
+
+const publishCachedArtifact = async (
+  cacheDirectory: string,
+  prepared: PreparedSignedUpdate,
+  request: SignedUpdateRequest,
+  verifyNativeSigner: NonNullable<SignedUpdateOperationOptions['verifyNativeSigner']>,
+  now: number,
+): Promise<string> => {
+  const partialName = `.partial-${randomBytes(16).toString('hex')}`;
+  const partialPath = join(cacheDirectory, partialName);
+  const artifactPath = join(partialPath, SIGNED_UPDATE_CACHE_POLICY.artifactName);
+  await mkdir(partialPath, { mode: 0o700 });
+  try {
+    await downloadBoundedUpdateFile({
+      request,
+      url: prepared.feed.artifact.url,
+      destinationPath: artifactPath,
+      label: 'Native update artifact',
+      maxBytes: SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes,
+      timeoutMs: SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactTimeoutMs,
+      expected: prepared.feed.artifact,
+    });
+    await chmod(artifactPath, 0o600);
+    await withVerifiedArtifact(artifactPath, prepared, verifyNativeSigner, async () => undefined);
+
+    const metadata: UpdateCacheMetadata = {
+      schemaVersion: 1,
+      createdAt: now,
+      expiresAt: now + SIGNED_UPDATE_CACHE_POLICY.expiryMs,
+      key: cacheKeyFor(prepared),
+    };
+    const metadataPath = join(partialPath, SIGNED_UPDATE_CACHE_POLICY.metadataName);
+    const metadataHandle = await open(
+      metadataPath,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      await metadataHandle.writeFile(`${JSON.stringify(metadata)}\n`, 'utf8');
+      await metadataHandle.sync();
+    } finally {
+      await metadataHandle.close();
+    }
+    await syncDirectory(partialPath);
+
+    const entryPath = join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName);
+    await removeCachePath(entryPath);
+    await rename(partialPath, entryPath);
+    await syncDirectory(cacheDirectory);
+    return join(entryPath, SIGNED_UPDATE_CACHE_POLICY.artifactName);
+  } catch (error) {
+    await removeCachePath(partialPath);
+    throw error;
+  }
+};
+
+const prepareSignedUpdate = async ({
+  config,
+  currentVersion,
+  platform,
+  arch,
+  request,
+}: SignedUpdateOperationOptions): Promise<PreparedSignedUpdate | 'current' | 'unsupported'> => {
   if (platform !== 'darwin' && platform !== 'win32') return 'unsupported';
   if (!VERSION_PATTERN.test(currentVersion)) throw new Error('Current desktop version is invalid');
 
@@ -602,32 +1006,114 @@ export const checkForSignedUpdates = async ({
     expected: feed.feed,
   });
   verifyBytes(feedBytes, feed.feed, 'Native update feed');
-  verifyFeedReferencesArtifact(target, manifest.version, feedBytes, feed.artifact);
-  const directory = await mkdtemp(join(tmpdir(), 'propr-update-download-'));
-  try {
-    const packagePath = join(directory, feed.artifact.fileName);
-    await downloadBoundedUpdateFile({
-      request,
-      url: feed.artifact.url,
-      destinationPath: packagePath,
-      label: 'Native update artifact',
-      maxBytes: SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes,
-      timeoutMs: SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactTimeoutMs,
-      expected: feed.artifact,
-    });
-    const actualSigner = await verifyNativeSigner(packagePath, feed.artifact, feed.signer);
-    if (actualSigner.type !== feed.signer.type
-      || actualSigner.identity !== feed.signer.identity
-      || actualSigner.designatedRequirement !== feed.signer.designatedRequirement
-      || actualSigner.certificateSha256 !== feed.signer.certificateSha256
-      || actualSigner.spkiSha256 !== feed.signer.spkiSha256) {
-      throw new Error('Native update artifact signer does not match the signed build pin');
+  const squirrelEntry = verifyFeedReferencesArtifact(target, manifest.version, feedBytes, feed.artifact);
+  return {
+    manifest,
+    manifestDigest: createHash('sha256').update(payload).digest('hex'),
+    target,
+    feed,
+    feedBytes,
+    squirrelEntry,
+  };
+};
+
+const usePreparedArtifact = async <T>(
+  prepared: PreparedSignedUpdate,
+  options: SignedUpdateOperationOptions,
+  consume: boolean,
+  use: (packagePath: string) => Promise<T>,
+): Promise<T> => {
+  const verifySigner = options.verifyNativeSigner ?? verifyNativeUpdateSigner;
+  if (!options.cacheDirectory) {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-update-download-'));
+    try {
+      const heldDirectory = join(directory, 'held');
+      await mkdir(heldDirectory, { mode: 0o700 });
+      const packagePath = join(heldDirectory, prepared.feed.artifact.fileName);
+      await downloadBoundedUpdateFile({
+        request: options.request,
+        url: prepared.feed.artifact.url,
+        destinationPath: packagePath,
+        label: 'Native update artifact',
+        maxBytes: SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes,
+        timeoutMs: SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactTimeoutMs,
+        expected: prepared.feed.artifact,
+      });
+      await chmod(packagePath, 0o600);
+      return await withVerifiedArtifact(packagePath, prepared, verifySigner, use);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
-  } finally {
-    await rm(directory, { recursive: true, force: true });
   }
 
-  // Electron autoUpdater cannot install these preverified bytes without fetching the mutable feed again.
-  // Keep this channel check-only until the native installation API can consume the exact verified package.
-  return 'available';
+  const cacheDirectory = options.cacheDirectory;
+  const now = (options.now ?? Date.now)();
+  await prepareCacheDirectory(cacheDirectory, now);
+  const entryPath = join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName);
+  const key = cacheKeyFor(prepared);
+  let packagePath = await findCachedArtifact(cacheDirectory, key, now);
+  if (packagePath) {
+    let useStarted = false;
+    try {
+      const result = await withVerifiedArtifact(packagePath, prepared, verifySigner, path => {
+        useStarted = true;
+        return use(path);
+      });
+      if (consume) await removeCachePath(entryPath);
+      return result;
+    } catch (error) {
+      await removeCachePath(entryPath);
+      if (useStarted) throw error;
+      packagePath = undefined;
+    }
+  }
+
+  packagePath = await publishCachedArtifact(
+    cacheDirectory,
+    prepared,
+    options.request,
+    verifySigner,
+    now,
+  );
+  try {
+    return await withVerifiedArtifact(packagePath, prepared, verifySigner, use);
+  } finally {
+    if (consume) await removeCachePath(entryPath);
+  }
+};
+
+export const checkForSignedUpdates = async (
+  options: SignedUpdateOperationOptions,
+): Promise<'available' | 'current' | 'unsupported'> => {
+  const operation = async (): Promise<'available' | 'current' | 'unsupported'> => {
+    if (options.cacheDirectory) {
+      await prepareCacheDirectory(options.cacheDirectory, (options.now ?? Date.now)());
+    }
+    const prepared = await prepareSignedUpdate(options);
+    if (prepared === 'current' || prepared === 'unsupported') return prepared;
+    await usePreparedArtifact(prepared, options, false, async () => undefined);
+    return 'available';
+  };
+  return options.cacheDirectory ? withCacheLock(options.cacheDirectory, operation) : operation();
+};
+
+export const applySignedUpdate = async (
+  options: SignedUpdateOperationOptions & {
+    installVerifiedArtifact: (artifact: SignedUpdateInstallArtifact) => Promise<void>;
+  },
+): Promise<'applied' | 'current' | 'unsupported'> => {
+  const operation = async (): Promise<'applied' | 'current' | 'unsupported'> => {
+    if (options.cacheDirectory) {
+      await prepareCacheDirectory(options.cacheDirectory, (options.now ?? Date.now)());
+    }
+    const prepared = await prepareSignedUpdate(options);
+    if (prepared === 'current' || prepared === 'unsupported') return prepared;
+    await usePreparedArtifact(prepared, options, true, packagePath => options.installVerifiedArtifact({
+      packagePath,
+      feedBytes: prepared.feedBytes,
+      artifact: prepared.feed.artifact,
+    }));
+    return 'applied';
+  };
+  return options.cacheDirectory ? withCacheLock(options.cacheDirectory, operation) : operation();
 };

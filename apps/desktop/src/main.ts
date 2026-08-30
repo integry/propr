@@ -306,8 +306,9 @@ if (squirrelStartupHandled) {
           platform: process.platform,
           arch: process.arch,
           request: (url, init) => net.fetch(url, init),
+          cacheDirectory: join(app.getPath('userData'), 'verified-updates'),
         }).then(result => log('info', 'desktop.update.check_complete', { result }))
-          .catch(error => log('error', 'desktop.update.check_failed', { error }));
+          .catch(() => log('error', 'desktop.update.check_failed'));
       };
       // Squirrel holds an installer lock briefly on Windows first run.
       if (process.platform === 'win32' && process.argv.includes('--squirrel-firstrun')) {
