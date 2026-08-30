@@ -37,13 +37,29 @@ const data = join(root, "data");
 const endpoint = "https://t-abc123.propr.dev";
 const identity = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
-const statusKinds = new Set(["ready", "internalFailure", "notReady", "incompatible", "invalidConfig", "timeout"]);
-const reasonCodes = new Set([
+const scenarioAllowlist = Object.freeze([
+  "ready", "down", "disabled", "restart-required", "malformed", "oversized", "timeout",
+  "identity-mismatch", "secret-sentinel", "api",
+]);
+const assertionStageAllowlist = Object.freeze([
+  "write-env", "spawn", "signal", "exit", "bounds", "schema", "status", "endpoint",
+  "identity", "reasons", "api-ready", "restart", "stderr", "sentinel", "api-spawn",
+  "api-exit", "api-count",
+]);
+const statusKindAllowlist = Object.freeze([
+  "ready", "internalFailure", "notReady", "incompatible", "invalidConfig", "timeout",
+]);
+const reasonCodeAllowlist = Object.freeze([
   "NOT_CONFIGURED", "TUNNEL_DISABLED", "SIDECAR_NOT_RUNNING", "API_UNREACHABLE", "API_TIMEOUT",
   "DISCOVERY_UNSUPPORTED", "DISCOVERY_INVALID", "DISCOVERY_TOO_LARGE", "API_INCOMPATIBLE",
   "IDENTITY_MISMATCH", "ENDPOINT_MISMATCH", "RESTART_REQUIRED", "INVALID_ROOT", "INVALID_ENDPOINT",
   "IDENTITY_UNAVAILABLE", "INTERNAL_FAILURE", "ACL_DIAGNOSTIC_UNAVAILABLE",
 ]);
+const scenarioNames = new Set(scenarioAllowlist);
+const assertionStages = new Set(assertionStageAllowlist);
+const statusKinds = new Set(statusKindAllowlist);
+const diagnosticStatuses = new Set([null, ...statusKindAllowlist]);
+const reasonCodes = new Set(reasonCodeAllowlist);
 
 function parseBoundedFailureStatus(stdout) {
   if (typeof stdout !== "string" || stdout.length === 0 || Buffer.byteLength(stdout, "utf8") >= 2048) return null;
@@ -61,6 +77,17 @@ function parseBoundedFailureStatus(stdout) {
   }
 }
 
+function createFailureDiagnostic(scenario, stage, failureStatus) {
+  const status = failureStatus?.status ?? null;
+  const codes = failureStatus?.reasonCodes ?? [];
+  if (!scenarioNames.has(scenario) || !assertionStages.has(stage) || !diagnosticStatuses.has(status)
+    || !Array.isArray(codes) || codes.length > reasonCodes.size
+    || new Set(codes).size !== codes.length || codes.some((code) => !reasonCodes.has(code))) {
+    return { scenario: "ready", stage: "write-env", status: null, reasonCodes: [] };
+  }
+  return { scenario, stage, status, reasonCodes: [...codes] };
+}
+
 const cases = [
   { name: "ready", fetch: "ready", docker: "ready", enabled: true, status: "ready", exit: 0, reasons: ["ACL_DIAGNOSTIC_UNAVAILABLE"] },
   { name: "down", fetch: "ready", docker: "down", enabled: true, status: "notReady", exit: 0, reasons: ["SIDECAR_NOT_RUNNING", "ACL_DIAGNOSTIC_UNAVAILABLE"] },
@@ -73,6 +100,8 @@ const cases = [
   { name: "secret-sentinel", fetch: "secret-sentinel", docker: "ready", enabled: true, status: "notReady", exit: 0, reasons: ["API_UNREACHABLE", "ACL_DIAGNOSTIC_UNAVAILABLE"] },
 ];
 
+let currentScenario = "ready";
+let currentStage = "write-env";
 let failureStatus = null;
 try {
   assert.ok(expectedUser && actualUser.toLowerCase() === expectedUser.toLowerCase(), "proof did not run as the limited user");
@@ -92,6 +121,9 @@ try {
   })}\n`);
 
   for (const scenario of cases) {
+    currentScenario = scenario.name;
+    currentStage = "write-env";
+    failureStatus = null;
     writeFileSync(join(root, ".env"), [
       "PROPR_STACK=authorized",
       "PROPR_INSTANCE_ID=abc123",
@@ -100,6 +132,7 @@ try {
       "PROPR_UI_TUNNEL_TOKEN=root-token-SENTINEL",
       "",
     ].join("\n"));
+    currentStage = "spawn";
     const result = spawnSync(process.execPath, [
       ...fixtureNodeArgs,
       cli,
@@ -128,20 +161,33 @@ try {
         GITHUB_TOKEN: "github-token-SENTINEL",
       },
     });
+    currentStage = "bounds";
     failureStatus = parseBoundedFailureStatus(result.stdout);
+    currentStage = "signal";
     assert.equal(result.signal, null, scenario.name);
+    currentStage = "exit";
     assert.equal(result.status, scenario.exit, scenario.name);
+    currentStage = "bounds";
     assert.ok(result.stdout.length > 0 && result.stdout.length < 2048, scenario.name);
+    currentStage = "schema";
     assert.equal(result.stdout.trim().split(/\r?\n/).length, 1, scenario.name);
     const document = JSON.parse(result.stdout);
+    currentStage = "status";
     assert.equal(document.status, scenario.status, scenario.name);
+    currentStage = "endpoint";
     assert.equal(document.canonicalEndpoint, endpoint, scenario.name);
+    currentStage = "identity";
     assert.equal(document.publicInstanceIdentity, identity, scenario.name);
+    currentStage = "reasons";
     assert.deepEqual(document.reasonCodes, scenario.reasons, scenario.name);
+    currentStage = "api-ready";
     assert.equal(document.apiReady, scenario.status === "ready", scenario.name);
+    currentStage = "restart";
     assert.equal(document.restartRequired, scenario.name === "restart-required", scenario.name);
+    currentStage = "stderr";
     const expectedStderr = scenario.status === "ready" ? "" : `ProPR Connect discovery: ${scenario.status}.\n`;
     assert.equal(result.stderr, expectedStderr, scenario.name);
+    currentStage = "sentinel";
     for (const sentinel of [
       "root-token-SENTINEL", "connector-token-SENTINEL", "relay-token-SENTINEL",
       "github-token-SENTINEL", "docker-secret-SENTINEL", "private-path-SENTINEL", fixture,
@@ -151,6 +197,8 @@ try {
     }
   }
 
+  currentScenario = "api";
+  currentStage = "api-spawn";
   failureStatus = null;
   const api = spawnSync(process.execPath, [
     "--import", "tsx", "--test", join(repo, "packages", "api", "test", "statusRoutes.test.ts"),
@@ -163,15 +211,18 @@ try {
     maxBuffer: 4 * 1024 * 1024,
     env: process.env,
   });
+  currentStage = "api-exit";
   assert.equal(api.status, 0, api.stderr || api.stdout);
+  currentStage = "api-count";
   const pass = [...api.stdout.matchAll(/^# pass (\d+)$/gm)].at(-1);
   const fail = [...api.stdout.matchAll(/^# fail (\d+)$/gm)].at(-1);
   assert.ok(pass && Number(pass[1]) > 0, "API discovery tests did not report passes");
   assert.equal(Number(fail?.[1]), 0, "API discovery tests reported failures");
   process.stdout.write(`Windows ordinary-user discovery proof: cli=${cases.length} api=${pass[1]} authority=1 user=${actualUser}\n`);
 } catch {
+  const diagnostic = createFailureDiagnostic(currentScenario, currentStage, failureStatus);
   process.stderr.write(`Windows ordinary-user discovery assertion failed: ${JSON.stringify(
-    failureStatus ?? { status: null, reasonCodes: [] },
+    diagnostic,
   )}\n`);
   process.exitCode = 1;
 } finally {
