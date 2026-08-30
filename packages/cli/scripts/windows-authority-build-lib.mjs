@@ -361,7 +361,7 @@ export const WINDOWS_BUILD_TOOLCHAIN_PROFILES = Object.freeze({
   }),
   "vs2022-17.14-x64": Object.freeze({
     visualStudioRange: "[17.14,17.15)",
-    visualStudioVersion: "17.14",
+    visualStudioVersion: "17.14.37502.11",
     visualStudioPathFamily: "VisualStudio/2022/17.14",
     roslynVersion: "4.14",
     msvcVersion: "14.44",

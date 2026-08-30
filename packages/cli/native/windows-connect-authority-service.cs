@@ -28,8 +28,8 @@ namespace Propr.ConnectAuthority {
     private const int MaxFrame = 4096;
     private const int ReadDeadlineMilliseconds = 3000;
     private volatile bool stopping;
-    private readonly ReplayWindow replay = new ReplayWindow(1024, TimeSpan.FromMinutes(2));
-    private readonly ReplayWindow authenticationReplay = new ReplayWindow(1024, TimeSpan.FromMinutes(2));
+    private readonly ReplayWindow replay = new ReplayWindow(1024, 768, TimeSpan.FromMinutes(2));
+    private readonly ReplayWindow authenticationReplay = new ReplayWindow(1024, 768, TimeSpan.FromMinutes(2));
     private FileStream serviceImageLease;
 
     internal AuthorityService() { ServiceName = Name; CanStop = true; AutoLog = false; }
@@ -166,74 +166,107 @@ namespace Propr.ConnectAuthority {
     }
     internal sealed class ReplayWindow {
       private readonly int capacity;
+      private readonly int identityCapacity;
       private readonly long lifetimeTicks;
       private readonly Func<long> clock;
-      private readonly Dictionary<string, long> active = new Dictionary<string, long>(StringComparer.Ordinal);
-      private readonly Dictionary<string, long> recent = new Dictionary<string, long>(StringComparer.Ordinal);
+      private readonly Dictionary<string, string> active = new Dictionary<string, string>(StringComparer.Ordinal);
+      private readonly Dictionary<string, ReplayEntry> recent = new Dictionary<string, ReplayEntry>(StringComparer.Ordinal);
+      private readonly Dictionary<string, int> identityCounts = new Dictionary<string, int>(StringComparer.Ordinal);
       private readonly object gate = new object();
 
-      internal ReplayWindow(int capacity, TimeSpan lifetime, Func<long> clock = null) {
-        if (capacity < 1 || lifetime <= TimeSpan.Zero) throw new ArgumentOutOfRangeException();
+      private sealed class ReplayEntry {
+        internal readonly string Identity;
+        internal readonly long Expires;
+        internal ReplayEntry(string identity, long expires) { Identity = identity; Expires = expires; }
+      }
+
+      internal ReplayWindow(int capacity, int identityCapacity, TimeSpan lifetime, Func<long> clock = null) {
+        if (capacity < 1 || identityCapacity < 1 || identityCapacity > capacity || lifetime <= TimeSpan.Zero)
+          throw new ArgumentOutOfRangeException();
         this.capacity = capacity;
+        this.identityCapacity = identityCapacity;
         lifetimeTicks = Math.Max(1, (long)(lifetime.TotalSeconds * Stopwatch.Frequency));
         this.clock = clock ?? Stopwatch.GetTimestamp;
       }
-      private void Expire(long now) {
-        foreach (string key in recent.Where(pair => pair.Value <= now).Select(pair => pair.Key).ToArray())
-          recent.Remove(key);
+      private static string Key(string identity, string requestId) { return identity + "\0" + requestId; }
+      private void RemoveIdentitySlot(string identity) {
+        int count;
+        if (!identityCounts.TryGetValue(identity, out count) || count < 1) throw new InvalidOperationException();
+        if (count == 1) identityCounts.Remove(identity); else identityCounts[identity] = count - 1;
       }
-      internal bool TryAcquire(string requestId) {
+      private void Expire(long now) {
+        foreach (string key in recent.Where(pair => pair.Value.Expires <= now).Select(pair => pair.Key).ToArray()) {
+          RemoveIdentitySlot(recent[key].Identity);
+          recent.Remove(key);
+        }
+      }
+      internal bool TryAcquire(string identity, string requestId) {
+        if (String.IsNullOrEmpty(identity) || String.IsNullOrEmpty(requestId) ||
+            identity.IndexOf('\0') >= 0 || requestId.IndexOf('\0') >= 0) return false;
         lock (gate) {
           long now = clock();
           Expire(now);
-          if (active.ContainsKey(requestId) || recent.ContainsKey(requestId)) return false;
-          active.Add(requestId, now);
+          string key = Key(identity, requestId);
+          int identityCount;
+          identityCounts.TryGetValue(identity, out identityCount);
+          if (active.ContainsKey(key) || recent.ContainsKey(key) || active.Count + recent.Count >= capacity ||
+              identityCount >= identityCapacity) return false;
+          active.Add(key, identity);
+          identityCounts[identity] = identityCount + 1;
           return true;
         }
       }
-      internal void Complete(string requestId) {
+      internal void Complete(string identity, string requestId) {
         lock (gate) {
-          if (!active.Remove(requestId)) return;
+          string key = Key(identity, requestId);
+          string activeIdentity;
+          if (!active.TryGetValue(key, out activeIdentity) || activeIdentity != identity) return;
+          active.Remove(key);
           long now = clock();
           Expire(now);
-          if (recent.Count >= capacity) {
-            string oldest = recent.OrderBy(pair => pair.Value).ThenBy(pair => pair.Key, StringComparer.Ordinal).First().Key;
-            recent.Remove(oldest);
-          }
-          recent[requestId] = checked(now + lifetimeTicks);
+          // TryAcquire reserves both the global and per-identity slot. Moving
+          // that slot from active to recent cannot overflow either cap, so no
+          // unexpired replay ID is ever evicted to admit another request.
+          recent.Add(key, new ReplayEntry(identity, checked(now + lifetimeTicks)));
         }
       }
       internal static bool ValidateDeterministically() {
         long now = 0;
-        ReplayWindow bounded = new ReplayWindow(4, TimeSpan.FromSeconds(10), () => now);
+        ReplayWindow bounded = new ReplayWindow(4, 4, TimeSpan.FromSeconds(10), () => now);
         for (int index = 0; index < 4; index++) {
           string id = index.ToString("x32");
-          if (!bounded.TryAcquire(id)) return false;
-          bounded.Complete(id);
+          if (!bounded.TryAcquire("user-a", id)) return false;
+          bounded.Complete("user-a", id);
         }
-        if (!bounded.TryAcquire("ffffffffffffffffffffffffffffffff")) return false;
-        bounded.Complete("ffffffffffffffffffffffffffffffff");
-        if (!bounded.TryAcquire("00000000000000000000000000000000")) return false;
-        bounded.Complete("00000000000000000000000000000000");
-        string expiring = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-        if (!bounded.TryAcquire(expiring)) return false;
-        bounded.Complete(expiring);
-        if (bounded.TryAcquire(expiring)) return false;
+        if (bounded.TryAcquire("user-a", "ffffffffffffffffffffffffffffffff")) return false;
+        if (bounded.TryAcquire("user-a", "00000000000000000000000000000000")) return false;
         now = 11 * Stopwatch.Frequency;
-        if (!bounded.TryAcquire(expiring)) return false;
+        if (!bounded.TryAcquire("user-a", "00000000000000000000000000000000")) return false;
 
-        ReplayWindow concurrent = new ReplayWindow(4, TimeSpan.FromSeconds(10), () => 0);
+        ReplayWindow concurrent = new ReplayWindow(4, 4, TimeSpan.FromSeconds(10), () => 0);
         int accepted = 0;
-        System.Threading.Tasks.Parallel.For(0, 64, _ => {
-          if (concurrent.TryAcquire("cccccccccccccccccccccccccccccccc")) Interlocked.Increment(ref accepted);
+        System.Threading.Tasks.Parallel.For(0, 64, index => {
+          if (concurrent.TryAcquire("user-a", index.ToString("x32"))) Interlocked.Increment(ref accepted);
         });
-        return accepted == 1;
+        if (accepted != 4 || concurrent.TryAcquire("user-a", "ffffffffffffffffffffffffffffffff")) return false;
+
+        ReplayWindow isolated = new ReplayWindow(4, 2, TimeSpan.FromSeconds(10), () => 0);
+        if (!isolated.TryAcquire("user-a", "00000000000000000000000000000000") ||
+            !isolated.TryAcquire("user-a", "00000000000000000000000000000001") ||
+            isolated.TryAcquire("user-a", "00000000000000000000000000000002") ||
+            !isolated.TryAcquire("user-b", "00000000000000000000000000000000") ||
+            !isolated.TryAcquire("user-b", "00000000000000000000000000000001") ||
+            isolated.TryAcquire("user-c", "00000000000000000000000000000000")) return false;
+        isolated.Complete("user-a", "00000000000000000000000000000000");
+        if (isolated.TryAcquire("user-a", "00000000000000000000000000000000")) return false;
+        return true;
       }
     }
 
     private void Serve(NamedPipeServerStream pipe) {
       FileStream lease = null;
       string leaseId = null;
+      string replayIdentity = null;
       string authenticationReplayId = null;
       List<string> operationReplayIds = new List<string>();
       try {
@@ -241,6 +274,7 @@ namespace Propr.ConnectAuthority {
         pipe.RunAsClient(() => clientSid = WindowsIdentity.GetCurrent(true).User);
         if (clientSid == null || clientSid.IsWellKnown(WellKnownSidType.AnonymousSid) ||
             clientSid.IsWellKnown(WellKnownSidType.LocalSystemSid)) throw new UnauthorizedAccessException();
+        replayIdentity = clientSid.Value;
         uint clientPid;
         if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out clientPid) || clientPid < 1)
           throw new UnauthorizedAccessException();
@@ -253,7 +287,8 @@ namespace Propr.ConnectAuthority {
         string authenticationNonce = Required(authentication, "nonce", 64);
         if (Convert.ToInt32(authentication["version"]) != 3 ||
             Required(authentication, "kind", 32) != "authenticate-server" ||
-            !Hex(authenticationId, 32) || !Hex(authenticationNonce, 64) || !authenticationReplay.TryAcquire(authenticationId))
+            !Hex(authenticationId, 32) || !Hex(authenticationNonce, 64) ||
+            !authenticationReplay.TryAcquire(replayIdentity, authenticationId))
           throw new InvalidDataException();
         authenticationReplayId = authenticationId;
         FileIdentity authenticatedSelf = FileIdentity.ReadProcess(Process.GetCurrentProcess());
@@ -283,7 +318,7 @@ namespace Propr.ConnectAuthority {
             "nonce", nonce, "serviceVersion", Version));
           return;
         }
-        if (!replay.TryAcquire(requestId)) throw new InvalidDataException();
+        if (!replay.TryAcquire(replayIdentity, requestId)) throw new InvalidDataException();
         operationReplayIds.Add(requestId);
         lease = new FileStream(artifactPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096,
           FileOptions.SequentialScan);
@@ -306,19 +341,25 @@ namespace Propr.ConnectAuthority {
           "volumeSerialNumber", self.Volume.ToString(), "fileId", self.FileId.ToString(), "sha256", HashFile(selfPath),
           "authenticodeLeafSha256", pins[0], "authenticodeSpkiSha256", pins[1], "accountSid", "S-1-5-18",
           "daclProtected", true, "replayed", false));
-        Control(pipe, leaseId, artifactIdentity, artifactHash, artifactPath, "confirm-launch", operationReplayIds);
-        Control(pipe, leaseId, artifactIdentity, artifactHash, artifactPath, "release-launch", operationReplayIds);
+        Control(pipe, leaseId, artifactIdentity, artifactHash, artifactPath, "confirm-launch", replayIdentity, operationReplayIds);
+        Control(pipe, leaseId, artifactIdentity, artifactHash, artifactPath, "release-launch", replayIdentity, operationReplayIds);
       } catch { /* Closing the pipe and lease is the only failure surface. */ }
       finally {
-        foreach (string id in operationReplayIds) replay.Complete(id);
-        if (authenticationReplayId != null) authenticationReplay.Complete(authenticationReplayId);
+        if (replayIdentity != null) {
+          // Every successfully acquired authorize/confirm/release ID leaves
+          // the active table exactly once and remains replay-protected for the
+          // full window, including failure and read-deadline cleanup paths.
+          foreach (string id in operationReplayIds) replay.Complete(replayIdentity, id);
+          if (authenticationReplayId != null) authenticationReplay.Complete(replayIdentity, authenticationReplayId);
+        }
         if (lease != null) lease.Dispose();
         pipe.Dispose();
       }
     }
 
     private void Control(NamedPipeServerStream pipe, string leaseId, FileIdentity artifact,
-      string hash, string artifactPath, string expectedKind, List<string> operationReplayIds) {
+      string hash, string artifactPath, string expectedKind, string replayIdentity,
+      List<string> operationReplayIds) {
       Dictionary<string, object> control = Parse(ReadFrame(pipe));
       string[] keys = expectedKind == "confirm-launch"
         ? new[] { "version", "kind", "requestId", "nonce", "leaseId", "childPid" }
@@ -329,7 +370,7 @@ namespace Propr.ConnectAuthority {
       if (Convert.ToInt32(control["version"]) != 3 || Required(control, "kind", 32) != expectedKind ||
           Required(control, "leaseId", 32) != leaseId || !Hex(requestId, 32) || !Hex(nonce, 64))
         throw new InvalidDataException();
-      if (!replay.TryAcquire(requestId)) throw new InvalidDataException();
+      if (!replay.TryAcquire(replayIdentity, requestId)) throw new InvalidDataException();
       operationReplayIds.Add(requestId);
       if (expectedKind == "confirm-launch") {
         int pid;

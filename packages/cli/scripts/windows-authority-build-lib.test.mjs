@@ -36,7 +36,7 @@ test("hosted x64 and ARM64 compiler families are finite reviewed profiles", () =
     },
     "vs2022-17.14-x64": {
       visualStudioRange: "[17.14,17.15)", visualStudioPathFamily: "VisualStudio/2022/17.14",
-      visualStudioVersion: "17.14", roslynVersion: "4.14", msvcVersion: "14.44",
+      visualStudioVersion: "17.14.37502.11", roslynVersion: "4.14", msvcVersion: "14.44",
       msvcProductVersion: "14.44", runnerArchitecture: "x64",
     },
   });
@@ -47,11 +47,15 @@ test("hosted x64 and ARM64 compiler families are finite reviewed profiles", () =
     assert.throws(() => assertModernRoslynVersion(version, "vs2026-18.9-x64"), WindowsHelperBuildError);
   }
   const source = readFileSync(new URL("./build-windows-authority-helper.mjs", import.meta.url), "utf8");
-  const queries = [...source.matchAll(/\& \$vswhere -latest -prerelease -products '\*' -version '\[18\.9,18\.10\)' -requires Microsoft\.VisualStudio\.Component\.Roslyn\.Compiler -property (installationPath|installationVersion)/g)];
-  assert.deepEqual(queries.map((match) => match[1]), ["installationPath", "installationVersion"]);
-  assert.match(source, /\$installationVersion-ne'18\.9\.12112\.369'/);
+  assert.equal(source.match(/-all -prerelease -products \* -format json -utf8/g)?.length, 1);
+  assert.doesNotMatch(source, /\$vswhere[^\n]*(?:-requires|-version|-latest|-property)/u);
+  assert.match(source, /\$stdout\.Length\+\$count-gt65536/u);
+  assert.match(source, /\$instances\.Count-gt16/u);
+  assert.match(source, /Microsoft\.VisualStudio\.Product\.Enterprise/u);
+  assert.match(source, /installationVersion-ceq'18\.9\.12112\.369'/u);
+  assert.match(source, /VS_ENTERPRISE_(?:ZERO|AMBIGUOUS|UNEXPECTED)/u);
   assert.match(source, /\[IO\.Path\]::Combine\(\$programFiles,'Microsoft Visual Studio','18','Enterprise'\)/);
-  assert.match(source, /\[string\]::Equals\(\$installation,\$expectedInstallation,\[StringComparison\]::OrdinalIgnoreCase\)/);
+  assert.match(source, /\[string\]::Equals\(\$_\.installationPath,\$expected18,\[StringComparison\]::OrdinalIgnoreCase\)/);
   assert.equal(source.includes("-version '[18.0,19.0)'"), false);
 });
 
@@ -161,7 +165,7 @@ test("every pinned Windows and fixture source hashes the same canonical bytes th
     ["../native/windows-authority-bootstrap.c", "9c78ab7d06b43dcee72420ec6442fc639b5542a8ef76be3a46d281843d43ef72"],
     ["../native/windows-authority-broker.c", "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c"],
     ["../native/windows-authority-supervisor.cs", "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff"],
-    ["../native/windows-connect-authority-service.cs", "06c95b4e533a41d6cd7ed741e396fdbc1b4ce9031cab584882f55596b0daeb73"],
+    ["../native/windows-connect-authority-service.cs", "512c4716be5396877360e6011c2a3034d58305d676c0db950120c47f2009fe0c"],
     ["../native/windows-connect-authority.wxs", "3f3d7034b47bbf1ad7100cdb5ce4bce9360e6479669629a5452c23b4eefc77e6"],
     ["../../../scripts/fixtures/windows-connect-docker-fixture.c", "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c"],
     ["../../../test/fixtures/windowsAuthorityReplacementAttacker.c", "01ccc521cf6784f92cc33bbc4846b218625d61cb3b7dcbd9ed9366f50d12f6fa"],
@@ -212,6 +216,20 @@ test("compiler and linker module/config inventories are fixed before launch", ()
     }), WindowsHelperBuildError, `${role} accepted a dependent module insertion`);
     }
   }
+});
+
+test("service replay capacity never evicts an unexpired identity-scoped ID", () => {
+  const source = readFileSync(new URL("../native/windows-connect-authority-service.cs", import.meta.url), "utf8");
+  assert.match(source, /new ReplayWindow\(1024, 768, TimeSpan\.FromMinutes\(2\)\)/u);
+  assert.match(source, /active\.Count \+ recent\.Count >= capacity/u);
+  assert.match(source, /identityCount >= identityCapacity/u);
+  assert.match(source, /recent\.Add\(key, new ReplayEntry\(identity, checked\(now \+ lifetimeTicks\)\)\)/u);
+  assert.doesNotMatch(source, /recent\.OrderBy|recent\.Remove\(oldest\)/u);
+  assert.match(source, /if \(bounded\.TryAcquire\("user-a", "f{32}"\)\) return false;/u);
+  assert.match(source, /now = 11 \* Stopwatch\.Frequency;/u);
+  assert.match(source, /Parallel\.For\(0, 64/u);
+  assert.match(source, /ReplayWindow isolated = new ReplayWindow\(4, 2/u);
+  assert.match(source, /foreach \(string id in operationReplayIds\) replay\.Complete\(replayIdentity, id\)/u);
 });
 
 function result(overrides = {}) {

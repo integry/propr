@@ -68,7 +68,7 @@ const evidenceStage = evidenceArguments.length === 1 ? evidenceArguments[0].slic
 const nonce = randomBytes(32).toString("hex");
 const protocolVersion = 2;
 const sourceSha256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
-const serviceSourceSha256 = "06c95b4e533a41d6cd7ed741e396fdbc1b4ce9031cab584882f55596b0daeb73";
+const serviceSourceSha256 = "512c4716be5396877360e6011c2a3034d58305d676c0db950120c47f2009fe0c";
 const serviceInstallerSourceSha256 = "3f3d7034b47bbf1ad7100cdb5ce4bce9360e6479669629a5452c23b4eefc77e6";
 const launcherSourceSha256 = "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c";
 const bootstrapSourceSha256 = "9c78ab7d06b43dcee72420ec6442fc639b5542a8ef76be3a46d281843d43ef72";
@@ -557,44 +557,110 @@ $vswhere=[IO.Path]::Combine($programFilesX86,'Microsoft Visual Studio','Installe
 if(-not(Test-AuthorizedResolverFile $vswhere)){exit 32}
 $runnerArchitecture=$env:PROPR_BUILD_RUNNER_ARCHITECTURE
 if($runnerArchitecture-ne'x64'-and$runnerArchitecture-ne'arm64'){exit 33}
-$profile=('vs2026-18.9-'+$runnerArchitecture)
-$installation=& $vswhere -latest -prerelease -products '*' -version '[18.9,18.10)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationPath
-if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($installation)){
-  if($runnerArchitecture-ne'x64'){
-    Send-ProprProgress 4;Send-ProprProgress 5;Send-ProprProgress 6;Send-ProprProgress 7
-    $document=[ordered]@{profileMismatch='VS18.9.12112_ROSLYN5.900_MSVC14.51_OR_VS17.14_ROSLYN4.14_MSVC14.44';buildWorkspace=$workspace}
-    Send-ProprProgress 8;[Console]::Out.Write(($document|ConvertTo-Json -Compress));return
-  }
-  $profile='vs2022-17.14-x64'
-  $installation=& $vswhere -latest -products '*' -version '[17.14,17.15)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationPath
-}
-if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($installation)-or$installation.Contains([char]10)){
-  Send-ProprProgress 4
-  Send-ProprProgress 5
-  Send-ProprProgress 6
-  Send-ProprProgress 7
-  $document=[ordered]@{profileMismatch='VS18.9.12112_ROSLYN5.900_MSVC14.51_OR_VS17.14_ROSLYN4.14_MSVC14.44';buildWorkspace=$workspace}
+function Complete-ProfileMismatch([string]$reason){
+  if(@('VS_INVENTORY_TOOL','VS_INVENTORY_OVERSIZED','VS_INVENTORY_SCHEMA','VS_ENTERPRISE_ZERO','VS_ENTERPRISE_AMBIGUOUS','VS_ENTERPRISE_UNEXPECTED')-notcontains$reason){$reason='VS_INVENTORY_SCHEMA'}
+  Send-ProprProgress 4;Send-ProprProgress 5;Send-ProprProgress 6;Send-ProprProgress 7
+  $document=[ordered]@{profileMismatch=$reason;buildWorkspace=$workspace}
   Send-ProprProgress 8
   [Console]::Out.Write(($document|ConvertTo-Json -Compress))
-  return
 }
+function Invoke-BoundedVswhereInventory([string]$path){
+  $process=$null
+  $stdout=[IO.MemoryStream]::new()
+  $stderr=[IO.MemoryStream]::new()
+  try{
+    $start=[Diagnostics.ProcessStartInfo]::new()
+    $start.FileName=$path
+    $start.Arguments="-all -prerelease -products * -format json -utf8"
+    $start.UseShellExecute=$false
+    $start.CreateNoWindow=$true
+    $start.RedirectStandardOutput=$true
+    $start.RedirectStandardError=$true
+    $process=[Diagnostics.Process]::new()
+    $process.StartInfo=$start
+    if(-not$process.Start()){return [pscustomobject]@{reason='VS_INVENTORY_TOOL';bytes=$null}}
+    $outBuffer=[byte[]]::new(4096);$errBuffer=[byte[]]::new(1024)
+    $outPending=$process.StandardOutput.BaseStream.BeginRead($outBuffer,0,$outBuffer.Length,$null,$null)
+    $errPending=$process.StandardError.BaseStream.BeginRead($errBuffer,0,$errBuffer.Length,$null,$null)
+    $deadline=[DateTime]::UtcNow.AddSeconds(30)
+    while($null-ne$outPending-or$null-ne$errPending){
+      if([DateTime]::UtcNow-ge$deadline){try{$process.Kill()}catch{};return [pscustomobject]@{reason='VS_INVENTORY_TOOL';bytes=$null}}
+      $progress=$false
+      if($null-ne$outPending-and$outPending.IsCompleted){
+        $count=$process.StandardOutput.BaseStream.EndRead($outPending);$progress=$true
+        if($count-eq0){$outPending=$null}else{
+          if($stdout.Length+$count-gt65536){try{$process.Kill()}catch{};return [pscustomobject]@{reason='VS_INVENTORY_OVERSIZED';bytes=$null}}
+          $stdout.Write($outBuffer,0,$count)
+          $outPending=$process.StandardOutput.BaseStream.BeginRead($outBuffer,0,$outBuffer.Length,$null,$null)
+        }
+      }
+      if($null-ne$errPending-and$errPending.IsCompleted){
+        $count=$process.StandardError.BaseStream.EndRead($errPending);$progress=$true
+        if($count-eq0){$errPending=$null}else{
+          if($stderr.Length+$count-gt4096){try{$process.Kill()}catch{};return [pscustomobject]@{reason='VS_INVENTORY_TOOL';bytes=$null}}
+          $stderr.Write($errBuffer,0,$count)
+          $errPending=$process.StandardError.BaseStream.BeginRead($errBuffer,0,$errBuffer.Length,$null,$null)
+        }
+      }
+      if(-not$progress){[Threading.Thread]::Sleep(5)}
+    }
+    $process.WaitForExit()
+    if($process.ExitCode-ne0-or$stderr.Length-ne0-or$stdout.Length-lt2){return [pscustomobject]@{reason='VS_INVENTORY_TOOL';bytes=$null}}
+    return [pscustomobject]@{reason=$null;bytes=$stdout.ToArray()}
+  }catch{return [pscustomobject]@{reason='VS_INVENTORY_TOOL';bytes=$null}}
+  finally{if($null-ne$process){$process.Dispose()};$stdout.Dispose();$stderr.Dispose()}
+}
+function Test-BoundedInventoryObject([object]$value){
+  if($null-eq$value-or$value.GetType().FullName-ne'System.Management.Automation.PSCustomObject'){return $false}
+  $properties=@($value.PSObject.Properties)
+  if($properties.Count-lt5-or$properties.Count-gt32){return $false}
+  $allowed=@('instanceId','installDate','installationName','installationPath','installationVersion','productId','productPath','state','isComplete','isLaunchable','isPrerelease','isRebootRequired','displayName','description','channelId','channelUri','enginePath','installChannelUri','installedChannelId','installedChannelUri','releaseNotes','resolvedInstallationPath','thirdPartyNotices','updateDate','catalog','properties')
+  foreach($property in $properties){
+    if($allowed-cnotcontains$property.Name-or$property.Name.Length-gt64){return $false}
+    if($property.Value-is[string]){if($property.Value.Length-gt2048-or$property.Value.IndexOf([char]0)-ge0){return $false}}
+    elseif($property.Name-eq'catalog'-or$property.Name-eq'properties'){
+      if($null-eq$property.Value-or$property.Value.GetType().FullName-ne'System.Management.Automation.PSCustomObject'){return $false}
+      $nested=@($property.Value.PSObject.Properties)
+      if($nested.Count-gt64){return $false}
+      foreach($child in $nested){if($child.Name.Length-gt128-or-not($child.Value-is[string])-or$child.Value.Length-gt2048-or$child.Value.IndexOf([char]0)-ge0){return $false}}
+    }
+    elseif(($property.Name-eq'installDate'-or$property.Name-eq'updateDate')-and$property.Value-is[DateTime]){}
+    elseif($property.Name-eq'state'-and($property.Value-is[int]-or$property.Value-is[long])){}
+    elseif(-not($property.Value-is[bool])){return $false}
+  }
+  foreach($required in @('instanceId','installationPath','installationVersion','productId','isComplete','isLaunchable')){
+    if($properties.Name-cnotcontains$required){return $false}
+  }
+  return $value.instanceId-is[string]-and$value.instanceId.Length-ge1-and$value.instanceId.Length-le128-and
+    $value.installationPath-is[string]-and$value.installationPath.Length-ge3-and$value.installationPath.Length-le260-and
+    $value.installationVersion-is[string]-and$value.installationVersion.Length-ge1-and$value.installationVersion.Length-le64-and
+    $value.productId-is[string]-and$value.productId.Length-ge1-and$value.productId.Length-le128-and
+    $value.isComplete-is[bool]-and$value.isLaunchable-is[bool]
+}
+$inventoryResult=Invoke-BoundedVswhereInventory $vswhere
+if($null-ne$inventoryResult.reason){Complete-ProfileMismatch $inventoryResult.reason;return}
+try{
+  $inventoryText=[Text.UTF8Encoding]::new($false,$true).GetString($inventoryResult.bytes)
+  $instances=@($inventoryText|ConvertFrom-Json)
+}catch{Complete-ProfileMismatch 'VS_INVENTORY_SCHEMA';return}
+if($instances.Count-eq0){Complete-ProfileMismatch 'VS_ENTERPRISE_ZERO';return}
+if($instances.Count-gt16-or-not(@($instances|Where-Object{-not(Test-BoundedInventoryObject $_)}).Count-eq0)){Complete-ProfileMismatch 'VS_INVENTORY_SCHEMA';return}
+$enterprise=@($instances|Where-Object{$_.productId-ceq'Microsoft.VisualStudio.Product.Enterprise'})
+if($enterprise.Count-eq0){Complete-ProfileMismatch 'VS_ENTERPRISE_ZERO';return}
+if($enterprise.Count-gt1){Complete-ProfileMismatch 'VS_ENTERPRISE_AMBIGUOUS';return}
+if(-not$enterprise[0].isComplete-or-not$enterprise[0].isLaunchable){Complete-ProfileMismatch 'VS_ENTERPRISE_UNEXPECTED';return}
+$expected18=[IO.Path]::Combine($programFiles,'Microsoft Visual Studio','18','Enterprise')
+$expected17=[IO.Path]::Combine($programFiles,'Microsoft Visual Studio','2022','Enterprise')
+$vs2026=@($enterprise|Where-Object{$_.installationVersion-ceq'18.9.12112.369'-and[string]::Equals($_.installationPath,$expected18,[StringComparison]::OrdinalIgnoreCase)})
+$vs2022=@($enterprise|Where-Object{$runnerArchitecture-eq'x64'-and$_.installationVersion-ceq'17.14.37502.11'-and[string]::Equals($_.installationPath,$expected17,[StringComparison]::OrdinalIgnoreCase)})
+$reviewed=@($vs2026)+@($vs2022)
+if($reviewed.Count-gt1){Complete-ProfileMismatch 'VS_ENTERPRISE_AMBIGUOUS';return}
+if($reviewed.Count-eq0){Complete-ProfileMismatch 'VS_ENTERPRISE_UNEXPECTED';return}
+$selected=$reviewed[0]
+$profile=if($selected.installationVersion-ceq'18.9.12112.369'){('vs2026-18.9-'+$runnerArchitecture)}else{'vs2022-17.14-x64'}
+$installation=$selected.installationPath
+$installationVersion=$selected.installationVersion
 Send-ProprProgress 4
-$installationVersion=if($profile.StartsWith('vs2026')){
-  & $vswhere -latest -prerelease -products '*' -version '[18.9,18.10)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationVersion
-}else{
-  & $vswhere -latest -products '*' -version '[17.14,17.15)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationVersion
-}
-if($LASTEXITCODE-ne0-or$installationVersion-is[array]-or[string]::IsNullOrWhiteSpace($installationVersion)-or$installationVersion.Contains([char]10)){exit 45}
-$installationVersion=$installationVersion.Trim()
-if(($profile.StartsWith('vs2026')-and$installationVersion-ne'18.9.12112.369')-or
-   ($profile-eq'vs2022-17.14-x64'-and$installationVersion-notmatch'^17\.14\.')){exit 45}
-$installation=$installation.Trim()
-$expectedInstallation=if($profile.StartsWith('vs2026')){
-  [IO.Path]::Combine($programFiles,'Microsoft Visual Studio','18','Enterprise')
-}else{
-  [IO.Path]::Combine($programFiles,'Microsoft Visual Studio','2022','Enterprise')
-}
-if(-not[string]::Equals($installation,$expectedInstallation,[StringComparison]::OrdinalIgnoreCase)){exit 45}
 $compiler=[IO.Path]::Combine($installation,'MSBuild','Current','Bin','Roslyn','csc.exe')
 if(-not(Test-Path -LiteralPath $compiler -PathType Leaf)){exit 34}
 $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($compiler).ProductVersion
@@ -677,7 +743,8 @@ try {
 }
 if (resolvedToolchain && typeof resolvedToolchain === "object" && !Array.isArray(resolvedToolchain)
   && Object.keys(resolvedToolchain).sort().join("\0") === ["buildWorkspace", "profileMismatch"].sort().join("\0")
-  && resolvedToolchain.profileMismatch === "VS18.9.12112_ROSLYN5.900_MSVC14.51_OR_VS17.14_ROSLYN4.14_MSVC14.44"
+  && ["VS_INVENTORY_TOOL", "VS_INVENTORY_OVERSIZED", "VS_INVENTORY_SCHEMA", "VS_ENTERPRISE_ZERO",
+    "VS_ENTERPRISE_AMBIGUOUS", "VS_ENTERPRISE_UNEXPECTED"].includes(resolvedToolchain.profileMismatch)
   && typeof resolvedToolchain.buildWorkspace === "string") {
   emergencyBuildWorkspace = resolvedToolchain.buildWorkspace;
   throw new WindowsHelperBuildError("BUILD_COMPILER", "TOOLCHAIN_MISMATCH");
