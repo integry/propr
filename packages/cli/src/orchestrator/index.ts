@@ -12,7 +12,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { delimiter, dirname, join, posix, resolve, win32 } from "node:path";
 import type { OrchestratorConfig, OrchestratorModule } from "./types.js";
 import type { ConfigManager } from "../config/index.js";
-import { readTrustedConnectTunnelOverride } from "../connectIdentity.js";
 
 export type {
   OrchestratorConfig,
@@ -277,7 +276,7 @@ export function connectExecutionEnvironment(
 export async function prepareConnectHostConfig(): Promise<{
   orch: OrchestratorModule;
   parseEnvFile(contents: string): Record<string, string>;
-  resolveSnapshot(input: ConnectHostConfigSnapshotInput): Promise<OrchestratorConfig>;
+  resolveSnapshot(input: ConnectHostConfigSnapshotInput): OrchestratorConfig;
   inspectTunnel(cfg: OrchestratorConfig): { kind: "ok"; running: boolean } | { kind: "internalFailure" };
 }> {
   const orch = await loadOrchestrator();
@@ -290,8 +289,7 @@ export async function prepareConnectHostConfig(): Promise<{
   return {
     orch,
     parseEnvFile: (contents) => orch.parseEnvFileContents(contents),
-    resolveSnapshot: async ({ requestedRoot, envFileValues }) => {
-      const tunnelOverride = await readTrustedConnectTunnelOverride(requestedRoot);
+    resolveSnapshot: ({ requestedRoot, envFileValues }) => {
       return orch.resolveConfig(executionEnv, {
         envFileValues,
         stack: envFileValues.PROPR_STACK || "propr",
@@ -305,7 +303,6 @@ export async function prepareConnectHostConfig(): Promise<{
         managedCredentialsDir: join(requestedRoot, "data", "agent-credentials"),
         validateHostPaths: true,
         manifestPath,
-        ...(tunnelOverride === undefined ? {} : { uiTunnelEnabled: tunnelOverride }),
       });
     },
     inspectTunnel: (cfg) => {

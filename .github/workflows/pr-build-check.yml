@@ -238,6 +238,34 @@ jobs:
           PROPR_WINDOWS_AUTHORITY_VALIDATION: '1'
         run: node scripts/verify-windows-authority-smoke.mjs
 
+      - name: Require real standard-user status and installed-service client
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $userName = 'propr-standard'
+          $plainPassword = [Guid]::NewGuid().ToString('N') + 'aA1!'
+          $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+          New-LocalUser -Name $userName -Password $securePassword -PasswordNeverExpires | Out-Null
+          $administrators = Get-LocalGroupMember -Group 'Administrators' | ForEach-Object { $_.Name }
+          if ($administrators -contains "$env:COMPUTERNAME\$userName") { throw 'limited test user is an administrator' }
+          $credential = [PSCredential]::new("$env:COMPUTERNAME\$userName", $securePassword)
+          $stdout = Join-Path $env:RUNNER_TEMP 'propr-standard-user.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'propr-standard-user.stderr'
+          try {
+            $node = (Get-Command node.exe).Source
+            $process = Start-Process -FilePath $node -ArgumentList @('scripts/verify-windows-standard-user-connect.mjs', $userName) -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            Get-Content -LiteralPath $stdout
+            if ($process.ExitCode -ne 0) {
+              Get-Content -LiteralPath $stderr
+              throw "standard-user Connect proof exited $($process.ExitCode)"
+            }
+            if ((Get-Content -Raw -LiteralPath $stderr).Length -ne 0) { throw 'standard-user Connect proof wrote stderr' }
+          } finally {
+            Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Run platform-safe focused Connect suites
         shell: bash
         env:

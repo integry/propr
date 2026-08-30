@@ -1387,6 +1387,35 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       rmSync(compilerHookDirectory, { recursive: true, force: true });
     }
 
+    assert.ok(installedServiceIdentity && installedPackagedBrokerPath);
+    const replayWindowProof = spawnSync(installedServiceIdentity.imagePath!, ['--validation-replay-window-v1'], {
+      shell: false, windowsHide: true, encoding: 'utf8', timeout: 5_000,
+    });
+    assert.equal(replayWindowProof.status, 0, replayWindowProof.stderr);
+    assert.equal(replayWindowProof.stderr, '');
+    assert.deepEqual(JSON.parse(replayWindowProof.stdout), {
+      bounded: true, concurrent: true, expiry: true, version: 1,
+    });
+
+    const partialClients = Array.from({ length: 8 }, () => new Promise<void>((resolveClosed, rejectClosed) => {
+      const socket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
+      const timer = setTimeout(() => { socket.destroy(); rejectClosed(new Error('partial authority client did not expire')); }, 8_000);
+      socket.once('connect', () => {
+        const partial = Buffer.alloc(5);
+        partial.writeUInt32LE(128, 0);
+        partial[4] = 0x7b;
+        socket.write(partial);
+      });
+      socket.once('error', (error) => { clearTimeout(timer); rejectClosed(error); });
+      socket.once('close', () => { clearTimeout(timer); resolveClosed(); });
+    }));
+    await Promise.all(partialClients);
+    const afterStarvation = await acquireInstalledWindowsLaunchLease({
+      path: installedPackagedBrokerPath,
+      sha256: sha256Digest(readFileSync(installedPackagedBrokerPath)),
+    }, installedServiceIdentity);
+    await assert.rejects(afterStarvation.release());
+
     const lifecycleSocket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
     await new Promise<void>((resolveConnected, rejectConnected) => {
       lifecycleSocket.once('connect', resolveConnected);
@@ -1403,7 +1432,6 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     });
     assert.equal(stopped.status, 0, 'installed authority service could not be stopped during a partial request');
     await lifecycleClosed;
-    assert.ok(installedServiceIdentity && installedPackagedBrokerPath);
     const squatterFrame = (document: unknown) => {
       const body = Buffer.from(JSON.stringify(document));
       const value = Buffer.alloc(body.byteLength + 4);
@@ -1413,7 +1441,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     };
     const squatter = createServer((socket) => {
       // A same-user owner may claim every old receipt field. The installed
-      // verifier must reject its kernel PID/token/image/ACL before trusting it.
+      // verifier must reject its kernel PID/session/image/ACL before trusting it.
       socket.on('data', () => socket.write(squatterFrame({
         accountSid: 'S-1-5-18', daclProtected: true,
         fileId: installedServiceIdentity!.fileId, imagePath: installedServiceIdentity!.imagePath,

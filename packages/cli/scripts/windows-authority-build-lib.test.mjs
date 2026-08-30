@@ -46,6 +46,13 @@ test("hosted x64 and ARM64 compiler families are finite reviewed profiles", () =
   for (const version of ["5.900.26.35704", "5.10.0.0", "6.0.0.0", "4.15.0.0"]) {
     assert.throws(() => assertModernRoslynVersion(version, "vs2026-18.9-x64"), WindowsHelperBuildError);
   }
+  const source = readFileSync(new URL("./build-windows-authority-helper.mjs", import.meta.url), "utf8");
+  const queries = [...source.matchAll(/\& \$vswhere -latest -prerelease -products '\*' -version '\[18\.9,18\.10\)' -requires Microsoft\.VisualStudio\.Component\.Roslyn\.Compiler -property (installationPath|installationVersion)/g)];
+  assert.deepEqual(queries.map((match) => match[1]), ["installationPath", "installationVersion"]);
+  assert.match(source, /\$installationVersion-ne'18\.9\.12112\.369'/);
+  assert.match(source, /\[IO\.Path\]::Combine\(\$programFiles,'Microsoft Visual Studio','18','Enterprise'\)/);
+  assert.match(source, /\[string\]::Equals\(\$installation,\$expectedInstallation,\[StringComparison\]::OrdinalIgnoreCase\)/);
+  assert.equal(source.includes("-version '[18.0,19.0)'"), false);
 });
 
 test("x64 and arm64 slow-host lease readiness is inventory-sized and hard bounded", async () => {
@@ -154,7 +161,7 @@ test("every pinned Windows and fixture source hashes the same canonical bytes th
     ["../native/windows-authority-bootstrap.c", "9c78ab7d06b43dcee72420ec6442fc639b5542a8ef76be3a46d281843d43ef72"],
     ["../native/windows-authority-broker.c", "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c"],
     ["../native/windows-authority-supervisor.cs", "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff"],
-    ["../native/windows-connect-authority-service.cs", "4b30b4374ad85433f6ff4b065bf9df013ec5393ecd2f49b74ac6eabe9901499c"],
+    ["../native/windows-connect-authority-service.cs", "06c95b4e533a41d6cd7ed741e396fdbc1b4ce9031cab584882f55596b0daeb73"],
     ["../native/windows-connect-authority.wxs", "3f3d7034b47bbf1ad7100cdb5ce4bce9360e6479669629a5452c23b4eefc77e6"],
     ["../../../scripts/fixtures/windows-connect-docker-fixture.c", "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c"],
     ["../../../test/fixtures/windowsAuthorityReplacementAttacker.c", "01ccc521cf6784f92cc33bbc4846b218625d61cb3b7dcbd9ed9366f50d12f6fa"],

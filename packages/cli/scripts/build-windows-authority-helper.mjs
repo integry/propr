@@ -68,7 +68,7 @@ const evidenceStage = evidenceArguments.length === 1 ? evidenceArguments[0].slic
 const nonce = randomBytes(32).toString("hex");
 const protocolVersion = 2;
 const sourceSha256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
-const serviceSourceSha256 = "4b30b4374ad85433f6ff4b065bf9df013ec5393ecd2f49b74ac6eabe9901499c";
+const serviceSourceSha256 = "06c95b4e533a41d6cd7ed741e396fdbc1b4ce9031cab584882f55596b0daeb73";
 const serviceInstallerSourceSha256 = "3f3d7034b47bbf1ad7100cdb5ce4bce9360e6479669629a5452c23b4eefc77e6";
 const launcherSourceSha256 = "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c";
 const bootstrapSourceSha256 = "9c78ab7d06b43dcee72420ec6442fc639b5542a8ef76be3a46d281843d43ef72";
@@ -518,8 +518,9 @@ function Send-ProprProgress([int]$stage){
 $windows=[Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
 $system=[Environment]::SystemDirectory
 $systemWindows=[Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+$programFiles=[Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
 $programFilesX86=[Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
-if([string]::IsNullOrWhiteSpace($windows)-or[string]::IsNullOrWhiteSpace($system)-or[string]::IsNullOrWhiteSpace($programFilesX86)-or
+if([string]::IsNullOrWhiteSpace($windows)-or[string]::IsNullOrWhiteSpace($system)-or[string]::IsNullOrWhiteSpace($programFiles)-or[string]::IsNullOrWhiteSpace($programFilesX86)-or
    $windows-ne$env:PROPR_BUILD_WINDOWS_DIRECTORY-or$system-ne$env:PROPR_BUILD_SYSTEM_DIRECTORY-or
    $systemWindows-ne$env:PROPR_BUILD_SYSTEM_WINDOWS_DIRECTORY){exit 31}
 Send-ProprProgress 1
@@ -557,7 +558,7 @@ if(-not(Test-AuthorizedResolverFile $vswhere)){exit 32}
 $runnerArchitecture=$env:PROPR_BUILD_RUNNER_ARCHITECTURE
 if($runnerArchitecture-ne'x64'-and$runnerArchitecture-ne'arm64'){exit 33}
 $profile=('vs2026-18.9-'+$runnerArchitecture)
-$installation=& $vswhere -latest -products '*' -version '[18.9,18.10)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationPath
+$installation=& $vswhere -latest -prerelease -products '*' -version '[18.9,18.10)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationPath
 if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($installation)){
   if($runnerArchitecture-ne'x64'){
     Send-ProprProgress 4;Send-ProprProgress 5;Send-ProprProgress 6;Send-ProprProgress 7
@@ -578,16 +579,29 @@ if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($installation)-or$installati
   return
 }
 Send-ProprProgress 4
-$installationVersion=& $vswhere -latest -products '*' -version $(if($profile.StartsWith('vs2026')){'[18.9,18.10)'}else{'[17.14,17.15)'}) -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationVersion
+$installationVersion=if($profile.StartsWith('vs2026')){
+  & $vswhere -latest -prerelease -products '*' -version '[18.9,18.10)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationVersion
+}else{
+  & $vswhere -latest -products '*' -version '[17.14,17.15)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationVersion
+}
+if($LASTEXITCODE-ne0-or$installationVersion-is[array]-or[string]::IsNullOrWhiteSpace($installationVersion)-or$installationVersion.Contains([char]10)){exit 45}
+$installationVersion=$installationVersion.Trim()
 if(($profile.StartsWith('vs2026')-and$installationVersion-ne'18.9.12112.369')-or
    ($profile-eq'vs2022-17.14-x64'-and$installationVersion-notmatch'^17\.14\.')){exit 45}
-$compiler=[IO.Path]::Combine($installation.Trim(),'MSBuild','Current','Bin','Roslyn','csc.exe')
+$installation=$installation.Trim()
+$expectedInstallation=if($profile.StartsWith('vs2026')){
+  [IO.Path]::Combine($programFiles,'Microsoft Visual Studio','18','Enterprise')
+}else{
+  [IO.Path]::Combine($programFiles,'Microsoft Visual Studio','2022','Enterprise')
+}
+if(-not[string]::Equals($installation,$expectedInstallation,[StringComparison]::OrdinalIgnoreCase)){exit 45}
+$compiler=[IO.Path]::Combine($installation,'MSBuild','Current','Bin','Roslyn','csc.exe')
 if(-not(Test-Path -LiteralPath $compiler -PathType Leaf)){exit 34}
 $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($compiler).ProductVersion
 if(($profile.StartsWith('vs2026')-and$version-ne'5.900.26.35703')-or
    ($profile-eq'vs2022-17.14-x64'-and$version-notmatch'^4\.14\.')){exit 35}
 $toolsetPattern=if($profile.StartsWith('vs2026')){'^14\.51\.36231$'}else{'^14\.44\.'}
-$toolsets=@(Get-ChildItem -LiteralPath ([IO.Path]::Combine($installation.Trim(),'VC','Tools','MSVC')) -Directory|Where-Object{$_.Name-match$toolsetPattern})
+$toolsets=@(Get-ChildItem -LiteralPath ([IO.Path]::Combine($installation,'VC','Tools','MSVC')) -Directory|Where-Object{$_.Name-match$toolsetPattern})
 if($toolsets.Count-ne1){exit 38}
 $nativeCompiler=[IO.Path]::Combine($toolsets[0].FullName,'bin','Hostx64','x64','cl.exe')
 $nativeLinker=[IO.Path]::Combine($toolsets[0].FullName,'bin','Hostx64','x64','link.exe')

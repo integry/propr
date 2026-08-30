@@ -17,6 +17,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
+using System.Threading;
 using System.Web.Script.Serialization;
 
 namespace Propr.ConnectAuthority {
@@ -25,10 +26,10 @@ namespace Propr.ConnectAuthority {
     internal const string Version = "3.0.0";
     private const string PipeName = "ProPR.Connect.Authority.v3";
     private const int MaxFrame = 4096;
+    private const int ReadDeadlineMilliseconds = 3000;
     private volatile bool stopping;
-    private readonly HashSet<string> replay = new HashSet<string>(StringComparer.Ordinal);
-    private readonly HashSet<string> authenticationReplay = new HashSet<string>(StringComparer.Ordinal);
-    private readonly object replayLock = new object();
+    private readonly ReplayWindow replay = new ReplayWindow(1024, TimeSpan.FromMinutes(2));
+    private readonly ReplayWindow authenticationReplay = new ReplayWindow(1024, TimeSpan.FromMinutes(2));
     private FileStream serviceImageLease;
 
     internal AuthorityService() { ServiceName = Name; CanStop = true; AutoLog = false; }
@@ -104,17 +105,30 @@ namespace Propr.ConnectAuthority {
       }
     }
 
-    private static byte[] ReadFrame(Stream stream) {
-      byte[] prefix = ReadExact(stream, 4);
+    private static byte[] ReadFrame(NamedPipeServerStream stream) {
+      long deadline = Stopwatch.GetTimestamp() + (Stopwatch.Frequency * ReadDeadlineMilliseconds / 1000);
+      byte[] prefix = ReadExact(stream, 4, deadline);
       int length = BitConverter.ToInt32(prefix, 0);
       if (length < 2 || length > MaxFrame) throw new InvalidDataException();
-      return ReadExact(stream, length);
+      return ReadExact(stream, length, deadline);
     }
-    private static byte[] ReadExact(Stream stream, int length) {
+    private static byte[] ReadExact(NamedPipeServerStream stream, int length, long deadline) {
       byte[] bytes = new byte[length];
       int offset = 0;
       while (offset < length) {
-        int count = stream.Read(bytes, offset, length - offset);
+        long remainingTicks = deadline - Stopwatch.GetTimestamp();
+        if (remainingTicks <= 0) { stream.Dispose(); throw new TimeoutException(); }
+        int remainingMilliseconds = (int)Math.Min(Int32.MaxValue,
+          Math.Max(1, remainingTicks * 1000 / Stopwatch.Frequency));
+        IAsyncResult pending = stream.BeginRead(bytes, offset, length - offset, null, null);
+        if (!pending.AsyncWaitHandle.WaitOne(remainingMilliseconds)) {
+          pending.AsyncWaitHandle.Close();
+          stream.Dispose();
+          throw new TimeoutException();
+        }
+        int count;
+        try { count = stream.EndRead(pending); }
+        finally { pending.AsyncWaitHandle.Close(); }
         if (count <= 0) throw new EndOfStreamException();
         offset += count;
       }
@@ -150,18 +164,78 @@ namespace Propr.ConnectAuthority {
       if (!value.Keys.OrderBy(x => x, StringComparer.Ordinal).SequenceEqual(keys.OrderBy(x => x, StringComparer.Ordinal)))
         throw new InvalidDataException();
     }
-    private bool Fresh(HashSet<string> seen, string requestId) {
-      lock (replayLock) {
-        if (seen.Contains(requestId)) return false;
-        if (seen.Count >= 1024) return false;
-        seen.Add(requestId);
-        return true;
+    internal sealed class ReplayWindow {
+      private readonly int capacity;
+      private readonly long lifetimeTicks;
+      private readonly Func<long> clock;
+      private readonly Dictionary<string, long> active = new Dictionary<string, long>(StringComparer.Ordinal);
+      private readonly Dictionary<string, long> recent = new Dictionary<string, long>(StringComparer.Ordinal);
+      private readonly object gate = new object();
+
+      internal ReplayWindow(int capacity, TimeSpan lifetime, Func<long> clock = null) {
+        if (capacity < 1 || lifetime <= TimeSpan.Zero) throw new ArgumentOutOfRangeException();
+        this.capacity = capacity;
+        lifetimeTicks = Math.Max(1, (long)(lifetime.TotalSeconds * Stopwatch.Frequency));
+        this.clock = clock ?? Stopwatch.GetTimestamp;
+      }
+      private void Expire(long now) {
+        foreach (string key in recent.Where(pair => pair.Value <= now).Select(pair => pair.Key).ToArray())
+          recent.Remove(key);
+      }
+      internal bool TryAcquire(string requestId) {
+        lock (gate) {
+          long now = clock();
+          Expire(now);
+          if (active.ContainsKey(requestId) || recent.ContainsKey(requestId)) return false;
+          active.Add(requestId, now);
+          return true;
+        }
+      }
+      internal void Complete(string requestId) {
+        lock (gate) {
+          if (!active.Remove(requestId)) return;
+          long now = clock();
+          Expire(now);
+          if (recent.Count >= capacity) {
+            string oldest = recent.OrderBy(pair => pair.Value).ThenBy(pair => pair.Key, StringComparer.Ordinal).First().Key;
+            recent.Remove(oldest);
+          }
+          recent[requestId] = checked(now + lifetimeTicks);
+        }
+      }
+      internal static bool ValidateDeterministically() {
+        long now = 0;
+        ReplayWindow bounded = new ReplayWindow(4, TimeSpan.FromSeconds(10), () => now);
+        for (int index = 0; index < 4; index++) {
+          string id = index.ToString("x32");
+          if (!bounded.TryAcquire(id)) return false;
+          bounded.Complete(id);
+        }
+        if (!bounded.TryAcquire("ffffffffffffffffffffffffffffffff")) return false;
+        bounded.Complete("ffffffffffffffffffffffffffffffff");
+        if (!bounded.TryAcquire("00000000000000000000000000000000")) return false;
+        bounded.Complete("00000000000000000000000000000000");
+        string expiring = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        if (!bounded.TryAcquire(expiring)) return false;
+        bounded.Complete(expiring);
+        if (bounded.TryAcquire(expiring)) return false;
+        now = 11 * Stopwatch.Frequency;
+        if (!bounded.TryAcquire(expiring)) return false;
+
+        ReplayWindow concurrent = new ReplayWindow(4, TimeSpan.FromSeconds(10), () => 0);
+        int accepted = 0;
+        System.Threading.Tasks.Parallel.For(0, 64, _ => {
+          if (concurrent.TryAcquire("cccccccccccccccccccccccccccccccc")) Interlocked.Increment(ref accepted);
+        });
+        return accepted == 1;
       }
     }
 
     private void Serve(NamedPipeServerStream pipe) {
       FileStream lease = null;
       string leaseId = null;
+      string authenticationReplayId = null;
+      List<string> operationReplayIds = new List<string>();
       try {
         SecurityIdentifier clientSid = null;
         pipe.RunAsClient(() => clientSid = WindowsIdentity.GetCurrent(true).User);
@@ -179,8 +253,9 @@ namespace Propr.ConnectAuthority {
         string authenticationNonce = Required(authentication, "nonce", 64);
         if (Convert.ToInt32(authentication["version"]) != 3 ||
             Required(authentication, "kind", 32) != "authenticate-server" ||
-            !Hex(authenticationId, 32) || !Hex(authenticationNonce, 64) || !Fresh(authenticationReplay, authenticationId))
+            !Hex(authenticationId, 32) || !Hex(authenticationNonce, 64) || !authenticationReplay.TryAcquire(authenticationId))
           throw new InvalidDataException();
+        authenticationReplayId = authenticationId;
         FileIdentity authenticatedSelf = FileIdentity.ReadProcess(Process.GetCurrentProcess());
         string authenticatedPath = Process.GetCurrentProcess().MainModule.FileName;
         if (!PrivateAcl(authenticatedPath, true)) throw new UnauthorizedAccessException();
@@ -208,7 +283,8 @@ namespace Propr.ConnectAuthority {
             "nonce", nonce, "serviceVersion", Version));
           return;
         }
-        if (!Fresh(replay, requestId)) throw new InvalidDataException();
+        if (!replay.TryAcquire(requestId)) throw new InvalidDataException();
+        operationReplayIds.Add(requestId);
         lease = new FileStream(artifactPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096,
           FileOptions.SequentialScan);
         FileIdentity artifactIdentity = FileIdentity.Read(lease.SafeFileHandle);
@@ -230,14 +306,19 @@ namespace Propr.ConnectAuthority {
           "volumeSerialNumber", self.Volume.ToString(), "fileId", self.FileId.ToString(), "sha256", HashFile(selfPath),
           "authenticodeLeafSha256", pins[0], "authenticodeSpkiSha256", pins[1], "accountSid", "S-1-5-18",
           "daclProtected", true, "replayed", false));
-        Control(pipe, leaseId, artifactIdentity, artifactHash, artifactPath, "confirm-launch");
-        Control(pipe, leaseId, artifactIdentity, artifactHash, artifactPath, "release-launch");
+        Control(pipe, leaseId, artifactIdentity, artifactHash, artifactPath, "confirm-launch", operationReplayIds);
+        Control(pipe, leaseId, artifactIdentity, artifactHash, artifactPath, "release-launch", operationReplayIds);
       } catch { /* Closing the pipe and lease is the only failure surface. */ }
-      finally { if (lease != null) lease.Dispose(); pipe.Dispose(); }
+      finally {
+        foreach (string id in operationReplayIds) replay.Complete(id);
+        if (authenticationReplayId != null) authenticationReplay.Complete(authenticationReplayId);
+        if (lease != null) lease.Dispose();
+        pipe.Dispose();
+      }
     }
 
     private void Control(NamedPipeServerStream pipe, string leaseId, FileIdentity artifact,
-      string hash, string artifactPath, string expectedKind) {
+      string hash, string artifactPath, string expectedKind, List<string> operationReplayIds) {
       Dictionary<string, object> control = Parse(ReadFrame(pipe));
       string[] keys = expectedKind == "confirm-launch"
         ? new[] { "version", "kind", "requestId", "nonce", "leaseId", "childPid" }
@@ -248,7 +329,8 @@ namespace Propr.ConnectAuthority {
       if (Convert.ToInt32(control["version"]) != 3 || Required(control, "kind", 32) != expectedKind ||
           Required(control, "leaseId", 32) != leaseId || !Hex(requestId, 32) || !Hex(nonce, 64))
         throw new InvalidDataException();
-      if (!Fresh(replay, requestId)) throw new InvalidDataException();
+      if (!replay.TryAcquire(requestId)) throw new InvalidDataException();
+      operationReplayIds.Add(requestId);
       if (expectedKind == "confirm-launch") {
         int pid;
         if (!Int32.TryParse(Required(control, "childPid", 10), out pid) || pid < 1) throw new InvalidDataException();
@@ -414,6 +496,13 @@ namespace Propr.ConnectAuthority {
 
   internal static class Program {
     private static void Main(string[] args) {
+#if PROPR_VALIDATION
+      if (args.Length == 1 && args[0] == "--validation-replay-window-v1") {
+        bool valid = AuthorityService.ReplayWindow.ValidateDeterministically();
+        if (valid) Console.Out.Write("{\"bounded\":true,\"concurrent\":true,\"expiry\":true,\"version\":1}\n");
+        Environment.Exit(valid ? 0 : 23);
+      }
+#endif
       if (args.Length == 1 && args[0] == "--client-proxy-v3") {
         Environment.Exit(ClientProxy.Run());
       }
@@ -495,18 +584,6 @@ namespace Propr.ConnectAuthority {
       }
       return rules == 3 && system && administrators && authenticated;
     }
-    private static bool ServerToken(IntPtr process) {
-      IntPtr token;
-      if (!OpenProcessToken(process, 0x0008, out token)) return false;
-      try {
-        using (WindowsIdentity identity = new WindowsIdentity(token)) {
-          if (identity.User == null || !identity.User.IsWellKnown(WellKnownSidType.LocalSystemSid)) return false;
-          SecurityIdentifier service = AuthorityService.ServiceSid();
-          return identity.Groups != null && identity.Groups.Cast<IdentityReference>()
-            .Any(group => ((SecurityIdentifier)group.Translate(typeof(SecurityIdentifier))).Value == service.Value);
-        }
-      } finally { CloseHandle(token); }
-    }
     internal static int Run() {
       try {
         Stream input = Console.OpenStandardInput(); Stream output = Console.OpenStandardOutput();
@@ -522,20 +599,25 @@ namespace Propr.ConnectAuthority {
             !Hex(expectedHash, 64) || !Hex(expectedLeaf, 64) || !Hex(expectedSpki, 64)) throw new InvalidDataException();
 
         using (NamedPipeClientStream pipe = new NamedPipeClientStream(".", "ProPR.Connect.Authority.v3",
-          PipeDirection.InOut, PipeOptions.WriteThrough, TokenImpersonationLevel.Identification)) {
+          PipeAccessRights.ReadWrite | PipeAccessRights.ReadPermissions, PipeOptions.WriteThrough,
+          TokenImpersonationLevel.Identification, HandleInheritability.None)) {
           pipe.Connect(8000);
           uint pid;
           if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out pid) || pid < 1 || !PipeAcl(pipe)) throw new UnauthorizedAccessException();
-          // PROCESS_QUERY_LIMITED_INFORMATION is sufficient for the image and
-          // primary-token queries and remains available to a standard-user
-          // verifier without requesting mutation/debug rights.
+          uint serverSession;
+          if (!ProcessIdToSessionId(pid, out serverSession) || serverSession != 0) throw new UnauthorizedAccessException();
+          // PROCESS_QUERY_LIMITED_INFORMATION is available to a standard-user
+          // verifier. The exact protected pipe owner proves LocalSystem; the
+          // checksum-held service image's OnStart gate proves its service SID.
+          // Do not request TOKEN_QUERY on the LocalSystem process: Windows may
+          // correctly deny that operation to the standard-user client.
           IntPtr process = OpenProcess(0x00100000, false, pid);
           if (process == IntPtr.Zero) throw new UnauthorizedAccessException();
           try {
             StringBuilder loadedPath = new StringBuilder(32768); uint loadedLength = (uint)loadedPath.Capacity;
             if (!QueryFullProcessImageName(process, 0, loadedPath, ref loadedLength) ||
-                !String.Equals(Path.GetFullPath(loadedPath.ToString()), Path.GetFullPath(expectedPath), StringComparison.OrdinalIgnoreCase) ||
-                !ServerToken(process)) throw new UnauthorizedAccessException();
+                !String.Equals(Path.GetFullPath(loadedPath.ToString()), Path.GetFullPath(expectedPath), StringComparison.OrdinalIgnoreCase))
+              throw new UnauthorizedAccessException();
             using (FileStream held = new FileStream(loadedPath.ToString(), FileMode.Open, FileAccess.Read, FileShare.Read)) {
               AuthorityService.FileIdentity identity = AuthorityService.FileIdentity.Read(held.SafeFileHandle);
               string[] pins = AuthorityService.SigningPins(loadedPath.ToString());
@@ -579,7 +661,7 @@ namespace Propr.ConnectAuthority {
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint pid);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder path, ref uint length);
-    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool ProcessIdToSessionId(uint processId, out uint sessionId);
     [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
   }
 }

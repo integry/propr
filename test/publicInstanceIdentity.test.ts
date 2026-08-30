@@ -552,6 +552,38 @@ test('injected Windows and Darwin inspectors exercise the real root policy path'
   }
 });
 
+test('read-only Windows snapshot reports unavailable ACL diagnostics without native inspection', async () => {
+  const parent = temporaryRoot('propr-connect-windows-read-only-');
+  const root = connectRoot(parent, 'PROPR_STACK=readonly\n');
+  const data = join(root, 'data');
+  writeFileSync(identityPath(data), `${JSON.stringify({
+    schemaVersion: 1,
+    publicInstanceIdentity: IDS.first,
+  })}\n`, { mode: PUBLIC_IDENTITY_FILE_MODE });
+  let nativeCalls = 0;
+  const forbiddenInspector: ConnectRootAuthorityInspector = {
+    inspectDarwinAcl: () => { nativeCalls += 1; throw new Error('native inspector executed'); },
+    inspectWindowsAcl: async () => { nativeCalls += 1; throw new Error('native inspector executed'); },
+    inspectWindowsAcls: async () => { nativeCalls += 1; throw new Error('native inspector executed'); },
+  };
+  try {
+    const result = await withOwnedConnectRootSnapshot(root, async (snapshot) => ({
+      diagnostic: snapshot.authorityDiagnostic,
+      identity: await readSnapshotPublicInstanceIdentity(snapshot.identityDirectory),
+      stack: snapshot.envFileValues.PROPR_STACK,
+    }), {
+      platform: 'win32',
+      authorityInspector: forbiddenInspector,
+      allowUnavailableWindowsAclDiagnostic: true,
+      parseEnvFile: () => ({ PROPR_STACK: 'readonly' }),
+    });
+    assert.deepEqual(result, { diagnostic: 'acl-unavailable', identity: IDS.first, stack: 'readonly' });
+    assert.equal(nativeCalls, 0);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test('trusted Connect config read is bounded, root-specific, replacement-safe, and Windows-case canonical', async () => {
   const parent = temporaryRoot('propr-connect-trusted-config-');
   const home = join(parent, 'os-home');

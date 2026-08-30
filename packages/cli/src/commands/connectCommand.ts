@@ -47,7 +47,8 @@ export type ConnectStatusReasonCode =
   | "IDENTITY_UNAVAILABLE"
   | "INTERNAL_FAILURE"
   | "AUTHORITY_MISSING"
-  | "REPAIR_REQUIRED";
+  | "REPAIR_REQUIRED"
+  | "ACL_DIAGNOSTIC_UNAVAILABLE";
 
 export interface ConnectStatusDocument {
   schemaVersion: typeof PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION;
@@ -343,7 +344,7 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
   try {
     const prepared = await prepareConnectHostConfig();
     const local = await withOwnedConnectRootSnapshot(root, async (snapshot) => {
-      const cfg = await prepared.resolveSnapshot(snapshot);
+      const cfg = prepared.resolveSnapshot(snapshot);
       // Status is discovery, not setup: never create/repair identity state or
       // invoke a privileged Windows protection operation from this path.
       const publicInstanceIdentity = await readSnapshotPublicInstanceIdentity(snapshot.identityDirectory);
@@ -356,16 +357,27 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
         },
         publicInstanceIdentity,
         sidecarInspection,
+        authorityDiagnostic: snapshot.authorityDiagnostic,
       };
-    }, { parseEnvFile: prepared.parseEnvFile });
+    }, {
+      parseEnvFile: prepared.parseEnvFile,
+      // Node has no same-handle Windows DACL API. Read-only status reports this
+      // diagnostic explicitly instead of executing a mutable packaged helper.
+      allowUnavailableWindowsAclDiagnostic: process.platform === "win32",
+    });
+    const withAuthorityDiagnostic = (document: ConnectStatusDocument): ConnectStatusDocument => (
+      local.authorityDiagnostic === "acl-unavailable"
+        ? { ...document, reasonCodes: [...document.reasonCodes, "ACL_DIAGNOSTIC_UNAVAILABLE"] }
+        : document
+    );
     if (local.sidecarInspection.kind === "internalFailure") {
-      return baseDocument("internalFailure", { reasonCodes: ["INTERNAL_FAILURE"] });
+      return withAuthorityDiagnostic(baseDocument("internalFailure", { reasonCodes: ["INTERNAL_FAILURE"] }));
     }
-    return await resolveConnectStatus({
+    return withAuthorityDiagnostic(await resolveConnectStatus({
       cfg: local.cfg,
       sidecarRunning: local.sidecarInspection.running,
       publicInstanceIdentity: local.publicInstanceIdentity,
-    });
+    }));
   } catch (error) {
     if (error instanceof ConnectRootError) {
       return baseDocument("invalidConfig", { reasonCodes: ["INVALID_ROOT"] });

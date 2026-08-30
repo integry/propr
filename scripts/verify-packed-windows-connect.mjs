@@ -177,9 +177,10 @@ import { syncBuiltinESMExports } from 'node:module';
 const originalSpawn=childProcess.spawn;
 const originalSpawnSync=childProcess.spawnSync;
 const forbidden=(command)=>/(?:^|[\\\\/])(?:powershell|pwsh|csc|cl|link)(?:\\.exe)?$/i.test(String(command));
-childProcess.spawn=(command,...args)=>{if(forbidden(command))throw new Error('forbidden runtime tool');return originalSpawn(command,...args)};
+const packagedNative=(command)=>/(?:connect-authority-(?:broker|bootstrap|supervisor)|ProPRConnectAuthority)(?:\\.exe)?$/i.test(String(command));
+childProcess.spawn=(command,...args)=>{if(forbidden(command)||packagedNative(command))throw new Error('forbidden runtime tool');return originalSpawn(command,...args)};
 childProcess.spawnSync=(command,args,options)=>{
-  if(forbidden(command))throw new Error('forbidden runtime tool');
+  if(forbidden(command)||packagedNative(command))throw new Error('forbidden runtime tool');
   return originalSpawnSync(command,args,options);
 };
 syncBuiltinESMExports();
@@ -260,32 +261,33 @@ process.on('SIGTERM',()=>server.close(()=>process.exit(0)));
     restartRequired: false,
     compatibility: "2026-06-27",
     version: "0.8.15",
-    reasonCodes: [],
+    reasonCodes: ["ACL_DIAGNOSTIC_UNAVAILABLE"],
   });
 
   writeFileSync(modeFile, "missing");
   const missingTunnel = invoke();
   assert.equal(missingTunnel.status, 0, missingTunnel.stderr);
-  assert.deepEqual(JSON.parse(missingTunnel.stdout).reasonCodes, ["SIDECAR_NOT_RUNNING"]);
+  assert.deepEqual(JSON.parse(missingTunnel.stdout).reasonCodes, ["SIDECAR_NOT_RUNNING", "ACL_DIAGNOSTIC_UNAVAILABLE"]);
   writeFileSync(modeFile, "tampered");
   const tamperedEndpoint = invoke();
   assert.equal(tamperedEndpoint.status, 2, tamperedEndpoint.stderr);
-  assert.deepEqual(JSON.parse(tamperedEndpoint.stdout).reasonCodes, ["DISCOVERY_INVALID"]);
+  assert.deepEqual(JSON.parse(tamperedEndpoint.stdout).reasonCodes, ["DISCOVERY_INVALID", "ACL_DIAGNOSTIC_UNAVAILABLE"]);
   writeFileSync(modeFile, "wrong-target");
   const wrongEndpoint = invoke();
   assert.equal(wrongEndpoint.status, 0, wrongEndpoint.stderr);
-  assert.deepEqual(JSON.parse(wrongEndpoint.stdout).reasonCodes, ["IDENTITY_MISMATCH"]);
+  assert.deepEqual(JSON.parse(wrongEndpoint.stdout).reasonCodes, ["IDENTITY_MISMATCH", "ACL_DIAGNOSTIC_UNAVAILABLE"]);
   writeFileSync(modeFile, "stale");
   const staleEndpoint = invoke();
   assert.equal(staleEndpoint.status, 0, staleEndpoint.stderr);
-  assert.deepEqual(JSON.parse(staleEndpoint.stdout).reasonCodes, ["ENDPOINT_MISMATCH", "RESTART_REQUIRED"]);
+  assert.deepEqual(JSON.parse(staleEndpoint.stdout).reasonCodes, ["ENDPOINT_MISMATCH", "RESTART_REQUIRED", "ACL_DIAGNOSTIC_UNAVAILABLE"]);
   writeFileSync(modeFile, "ready");
 
   const helper = installedPath("dist", "native", "prebuilds", "win32-anycpu", "connect-authority-supervisor.exe");
   const saved = `${helper}.saved`;
   renameSync(helper, saved);
   const missing = invoke();
-  assert.notEqual(missing.status, 0);
+  assert.equal(missing.status, 0, missing.stderr);
+  assert.equal(JSON.parse(missing.stdout).status, "ready");
   assert.equal(`${missing.stdout}${missing.stderr}`.toLowerCase().includes("csc"), false);
   assert.equal(`${missing.stdout}${missing.stderr}`.toLowerCase().includes("powershell"), false);
   renameSync(saved, helper);
@@ -294,14 +296,16 @@ process.on('SIGTERM',()=>server.close(()=>process.exit(0)));
   bytes[bytes.length - 1] ^= 1;
   writeFileSync(helper, bytes);
   const tampered = invoke();
-  assert.notEqual(tampered.status, 0);
+  assert.equal(tampered.status, 0, tampered.stderr);
+  assert.equal(JSON.parse(tampered.stdout).status, "ready");
   assert.equal(`${tampered.stdout}${tampered.stderr}`.toLowerCase().includes("csc"), false);
   rmSync(helper, { force: true });
   renameSync(saved, helper);
   copyFileSync(helper, saved);
   copyFileSync(installedPath("dist", "native", "prebuilds", "win32-x64", "connect-authority-broker.exe"), helper);
   const wrongTarget = invoke();
-  assert.notEqual(wrongTarget.status, 0);
+  assert.equal(wrongTarget.status, 0, wrongTarget.stderr);
+  assert.equal(JSON.parse(wrongTarget.stdout).status, "ready");
   assert.equal(`${wrongTarget.stdout}${wrongTarget.stderr}`.toLowerCase().includes("csc"), false);
   rmSync(helper, { force: true });
   renameSync(saved, helper);
@@ -320,7 +324,8 @@ process.on('SIGTERM',()=>server.close(()=>process.exit(0)));
   run("msiexec.exe", ["/x", installedServiceInstaller, "/qn", "/norestart"]);
   await lifecycleClosed;
   const absentAuthority = invoke();
-  assert.notEqual(absentAuthority.status, 0, "uninstalled authority authorized a package launch");
+  assert.equal(absentAuthority.status, 0, absentAuthority.stderr);
+  assert.equal(JSON.parse(absentAuthority.stdout).status, "ready", "status depended on the uninstalled authority");
   assert.equal(existsSync(uninstallMarker), false, "package marker ran during authority uninstall");
   run("msiexec.exe", ["/i", installedServiceInstaller, "/qn", "/norestart"]);
   run("msiexec.exe", ["/fa", installedServiceInstaller, "/qn", "/norestart"]);
