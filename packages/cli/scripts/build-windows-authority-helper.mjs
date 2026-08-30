@@ -2,7 +2,7 @@
 // Explicit, Windows-only build for the committed authority supervisor.
 // Runtime and ordinary source builds never invoke this script or a compiler.
 
-import { createHash, createPrivateKey, sign } from "node:crypto";
+import { createHash, createPrivateKey, randomBytes, sign } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -12,6 +12,7 @@ import {
   linkSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
   realpathSync,
@@ -28,6 +29,7 @@ import {
   assertModernRoslynVersion,
   fixedBuildDiagnostic,
   runBoundedBuildTool,
+  validateNativeWindowsDirectories,
 } from "./windows-authority-build-lib.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -40,16 +42,23 @@ const manifestPath = join(outputDirectory, "connect-authority-supervisor.manifes
 const signaturePath = join(outputDirectory, "connect-authority-supervisor.manifest.sig");
 const launcherOutputDirectory = join(cliDir, "native", "prebuilds", "win32-x64");
 const launcherOutput = join(launcherOutputDirectory, "connect-authority-broker.exe");
+const smokeFixtureSource = join(cliDir, "..", "..", "scripts", "fixtures", "windows-connect-docker-fixture.c");
+const smokeFixtureOutput = join(cliDir, "..", "..", "scripts", "fixtures", "windows-connect-docker-fixture.exe");
 const validation = process.argv.includes("--validation");
+const nonce = randomBytes(32).toString("hex");
 const protocolVersion = 2;
 const sourceSha256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
-const launcherSourceSha256 = "ab73962d0ad9d0f8cac72b9daf92efed455b8609e797d2afd1b4c94a76d49e62";
+const launcherSourceSha256 = "30347ad0d3bc382b115977439db72538afab176d34e59a68426060d7ba51c071";
+const smokeFixtureSourceSha256 = "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c";
+let emergencyBuildWorkspace;
 
 process.once("uncaughtException", (error) => {
+  if (emergencyBuildWorkspace) rmSync(emergencyBuildWorkspace, { recursive: true, force: true });
   process.stderr.write(`${fixedBuildDiagnostic(error)}\n`);
   process.exitCode = 1;
 });
 process.once("unhandledRejection", (error) => {
+  if (emergencyBuildWorkspace) rmSync(emergencyBuildWorkspace, { recursive: true, force: true });
   process.stderr.write(`${fixedBuildDiagnostic(error)}\n`);
   process.exitCode = 1;
 });
@@ -117,35 +126,132 @@ function verifyStagedLease(path, fd, expectedBytes) {
   }
 }
 
-// GLOBALROOT\SystemRoot is the kernel-maintained SystemRoot object-manager
-// link. It avoids process.execPath, drive guessing, PATH and caller-controlled
-// SystemRoot/windir values while the trusted Windows boundary resolves the
-// canonical OS and Visual Studio directories.
-const trustedPowerShell = "\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+function authoritativeDirectoryInventory(root) {
+  const hash = createHash("sha256");
+  let count = 0;
+  let bytes = 0n;
+  const visit = (directory, relative) => {
+    const namedDirectory = lstatSync(directory, { bigint: true });
+    if (!namedDirectory.isDirectory() || namedDirectory.isSymbolicLink()) {
+      throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+    }
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name, "en"))) {
+      if (entry.isSymbolicLink()) throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+      const path = join(directory, entry.name);
+      const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) visit(path, childRelative);
+      else if (entry.isFile()) {
+        const held = heldIdentity(path);
+        count += 1;
+        bytes += BigInt(held.bytes.byteLength);
+        if (count > 30_000 || bytes > 1024n * 1024n * 1024n) {
+          throw new WindowsHelperBuildError("BUILD_COMPILER", "OVERSIZED_OUTPUT");
+        }
+        hash.update(Buffer.from(`${childRelative.length}:${childRelative}:`, "utf8"));
+        hash.update(Buffer.from(sha256(held.bytes), "ascii"));
+      } else throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+    }
+  };
+  visit(root, "");
+  return { sha256: hash.digest("hex"), files: count, bytes: bytes.toString(10) };
+}
+
+// Bootstrap only from the already audited, checksum-pinned native probe.  Its
+// GetWindowsDirectoryW/GetSystemWindowsDirectoryW result is independent of the
+// runner's drive, architecture, PATH, SystemRoot and windir.  Unlike an object
+// manager GLOBALROOT name, the resulting DOS path is a valid CreateProcessW
+// application name.
+const bootstrapBrokerSha256 = "2ba903761156ef39235347998201710335ebe4fc97e51420ed1d117d384ce1d7";
+const bootstrapBroker = heldIdentity(launcherOutput, true);
+if (sha256(bootstrapBroker.bytes) !== bootstrapBrokerSha256) {
+  closeSync(bootstrapBroker.fd);
+  throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+}
+let bootstrapPaths;
+try {
+  const nativePaths = runBoundedBuildTool(launcherOutput, ["system-paths-v1"], {
+    stage: "BUILD_COMPILER", timeout: 5_000, maxBytes: 4096, sensitiveValues: [launcherOutput],
+  });
+  const lines = new TextDecoder("utf-8", { fatal: true }).decode(nativePaths.stdout).split(/\r?\n/u);
+  if (lines.length !== 3 || lines[2] !== "") {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+  bootstrapPaths = validateNativeWindowsDirectories({
+    windowsDirectory: lines[0],
+    systemWindowsDirectory: lines[1],
+    systemDirectory: join(lines[1], "System32"),
+  });
+  const after = heldIdentity(launcherOutput);
+  if (after.device !== bootstrapBroker.device || after.file !== bootstrapBroker.file
+    || sha256(after.bytes) !== bootstrapBrokerSha256) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+} catch (error) {
+  closeSync(bootstrapBroker.fd);
+  throw error;
+}
+const trustedPowerShell = realpathSync.native(join(
+  bootstrapPaths.systemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe",
+));
+if (!/^[A-Za-z]:\\/u.test(trustedPowerShell)
+  || dirname(dirname(dirname(trustedPowerShell))).toLowerCase() !== bootstrapPaths.systemDirectory.toLowerCase()) {
+  closeSync(bootstrapBroker.fd);
+  throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+}
+const heldPowerShell = heldIdentity(trustedPowerShell, true);
+mkdirSync(outputDirectory, { recursive: true });
+mkdirSync(launcherOutputDirectory, { recursive: true });
+emergencyBuildWorkspace = join(outputDirectory, `.propr-build-${nonce}`);
 const resolver = String.raw`
 $ErrorActionPreference='Stop'
 $windows=[Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
 $system=[Environment]::SystemDirectory
+$systemWindows=[Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
 $programFilesX86=[Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
-if([string]::IsNullOrWhiteSpace($windows)-or[string]::IsNullOrWhiteSpace($system)-or[string]::IsNullOrWhiteSpace($programFilesX86)){exit 31}
+if([string]::IsNullOrWhiteSpace($windows)-or[string]::IsNullOrWhiteSpace($system)-or[string]::IsNullOrWhiteSpace($programFilesX86)-or
+   $windows-ne$env:PROPR_BUILD_WINDOWS_DIRECTORY-or$system-ne$env:PROPR_BUILD_SYSTEM_DIRECTORY-or
+   $systemWindows-ne$env:PROPR_BUILD_SYSTEM_WINDOWS_DIRECTORY){exit 31}
+$workspace=[IO.Path]::Combine($env:PROPR_BUILD_STAGING_PARENT,('.propr-build-'+$env:PROPR_BUILD_NONCE))
+if([IO.Directory]::Exists($workspace)-or[IO.File]::Exists($workspace)){exit 42}
+$identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+$administrators=[Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$systemSid=[Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$security=[Security.AccessControl.DirectorySecurity]::new()
+$security.SetOwner($identity.User)
+$security.SetAccessRuleProtection($true,$false)
+$inherit=[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
+$propagation=[Security.AccessControl.PropagationFlags]::None
+foreach($sid in @($identity.User,$administrators,$systemSid)){
+  $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::FullControl,$inherit,$propagation,[Security.AccessControl.AccessControlType]::Allow))
+}
+[IO.Directory]::CreateDirectory($workspace,$security)|Out-Null
+$workspaceAcl=Get-Acl -LiteralPath $workspace
+$workspaceOwner=([Security.Principal.NTAccount]$workspaceAcl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value
+if(-not$workspaceAcl.AreAccessRulesProtected-or$workspaceOwner-ne$identity.User.Value){exit 43}
+$authorizedSubjects=@(
+  'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
+  'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
+)
+function Test-AuthorizedMicrosoftFile([string]$path){
+  $signature=Get-AuthenticodeSignature -LiteralPath $path
+  return $signature.Status-eq'Valid'-and$authorizedSubjects-ccontains$signature.SignerCertificate.Subject
+}
+$currentPowerShell=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+if($currentPowerShell-ne$env:PROPR_BUILD_POWERSHELL-or-not(Test-AuthorizedMicrosoftFile $currentPowerShell)){exit 44}
 $vswhere=[IO.Path]::Combine($programFilesX86,'Microsoft Visual Studio','Installer','vswhere.exe')
-$signature=Get-AuthenticodeSignature -LiteralPath $vswhere
-if($signature.Status-ne'Valid'-or$signature.SignerCertificate.Subject-notmatch'(^|, )O=Microsoft Corporation(,|$)'){exit 32}
+if(-not(Test-AuthorizedMicrosoftFile $vswhere)){exit 32}
 $installation=& $vswhere -latest -products '*' -version '[17.14,17.15)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationPath
 if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($installation)-or$installation.Contains([char]10)){exit 33}
 $compiler=[IO.Path]::Combine($installation.Trim(),'MSBuild','Current','Bin','Roslyn','csc.exe')
-$compilerSignature=Get-AuthenticodeSignature -LiteralPath $compiler
-if($compilerSignature.Status-ne'Valid'-or$compilerSignature.SignerCertificate.Subject-notmatch'(^|, )O=Microsoft Corporation(,|$)'){exit 34}
+if(-not(Test-AuthorizedMicrosoftFile $compiler)){exit 34}
 $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($compiler).ProductVersion
 if($version-notmatch'^4\.14\.'){exit 35}
 $toolsets=@(Get-ChildItem -LiteralPath ([IO.Path]::Combine($installation.Trim(),'VC','Tools','MSVC')) -Directory|Where-Object{$_.Name-match'^14\.44\.'})
 if($toolsets.Count-ne1){exit 38}
 $nativeCompiler=[IO.Path]::Combine($toolsets[0].FullName,'bin','Hostx64','x64','cl.exe')
 $nativeLinker=[IO.Path]::Combine($toolsets[0].FullName,'bin','Hostx64','x64','link.exe')
-$nativeSignature=Get-AuthenticodeSignature -LiteralPath $nativeCompiler
-if($nativeSignature.Status-ne'Valid'-or$nativeSignature.SignerCertificate.Subject-notmatch'(^|, )O=Microsoft Corporation(,|$)'){exit 39}
-$linkerSignature=Get-AuthenticodeSignature -LiteralPath $nativeLinker
-if($linkerSignature.Status-ne'Valid'-or$linkerSignature.SignerCertificate.Subject-notmatch'(^|, )O=Microsoft Corporation(,|$)'){exit 41}
+if(-not(Test-AuthorizedMicrosoftFile $nativeCompiler)){exit 39}
+if(-not(Test-AuthorizedMicrosoftFile $nativeLinker)){exit 41}
 $sdkRoot=[IO.Path]::Combine($programFilesX86,'Windows Kits','10')
 $sdkVersions=@(Get-ChildItem -LiteralPath ([IO.Path]::Combine($sdkRoot,'Include')) -Directory|Where-Object{$_.Name-match'^10\.0\.26100\.'})
 if($sdkVersions.Count-ne1){exit 40}
@@ -168,7 +274,7 @@ foreach($reference in $references){
   $acl=Get-Acl -LiteralPath $reference
   if($acl.Owner-notmatch'^(NT SERVICE\\TrustedInstaller|BUILTIN\\Administrators|NT AUTHORITY\\SYSTEM)$'){exit 37}
 }
-$document=[ordered]@{windowsDirectory=$windows;systemWindowsDirectory=$windows;systemDirectory=$system;compiler=$compiler;compilerVersion=$version;nativeCompiler=$nativeCompiler;nativeLinker=$nativeLinker;nativeIncludes=$nativeIncludes;nativeLibraries=$nativeLibraries;references=$references}
+$document=[ordered]@{windowsDirectory=$windows;systemWindowsDirectory=$windows;systemDirectory=$system;buildWorkspace=$workspace;compiler=$compiler;compilerVersion=$version;nativeCompiler=$nativeCompiler;nativeLinker=$nativeLinker;nativeIncludes=$nativeIncludes;nativeLibraries=$nativeLibraries;references=$references}
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false,$true)
 [Console]::Out.Write(($document|ConvertTo-Json -Compress))
 `;
@@ -177,7 +283,21 @@ let resolvedToolchain;
 try {
   const resolved = runBoundedBuildTool(trustedPowerShell, [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", resolver,
-  ], { stage: "BUILD_COMPILER", timeout: 15_000, maxBytes: 16 * 1024 });
+  ], {
+    stage: "BUILD_COMPILER",
+    timeout: 15_000,
+    maxBytes: 16 * 1024,
+    env: {
+      SystemRoot: bootstrapPaths.windowsDirectory,
+      PROPR_BUILD_WINDOWS_DIRECTORY: bootstrapPaths.windowsDirectory,
+      PROPR_BUILD_SYSTEM_WINDOWS_DIRECTORY: bootstrapPaths.systemWindowsDirectory,
+      PROPR_BUILD_SYSTEM_DIRECTORY: bootstrapPaths.systemDirectory,
+      PROPR_BUILD_STAGING_PARENT: outputDirectory,
+      PROPR_BUILD_NONCE: nonce,
+      PROPR_BUILD_POWERSHELL: trustedPowerShell,
+    },
+    sensitiveValues: [trustedPowerShell, bootstrapPaths.windowsDirectory, bootstrapPaths.systemDirectory],
+  });
   const text = new TextDecoder("utf-8", { fatal: true }).decode(resolved.stdout);
   resolvedToolchain = JSON.parse(text);
 } catch (error) {
@@ -187,11 +307,12 @@ try {
 }
 if (!resolvedToolchain || typeof resolvedToolchain !== "object" || Array.isArray(resolvedToolchain)
   || Object.keys(resolvedToolchain).sort().join("\0") !== [
-    "compiler", "compilerVersion", "nativeCompiler", "nativeLinker", "nativeIncludes", "nativeLibraries", "references", "systemDirectory", "systemWindowsDirectory", "windowsDirectory",
+    "buildWorkspace", "compiler", "compilerVersion", "nativeCompiler", "nativeLinker", "nativeIncludes", "nativeLibraries", "references", "systemDirectory", "systemWindowsDirectory", "windowsDirectory",
   ].sort().join("\0")
   || typeof resolvedToolchain.windowsDirectory !== "string"
   || typeof resolvedToolchain.systemWindowsDirectory !== "string"
   || typeof resolvedToolchain.systemDirectory !== "string"
+  || typeof resolvedToolchain.buildWorkspace !== "string"
   || typeof resolvedToolchain.compiler !== "string"
   || typeof resolvedToolchain.compilerVersion !== "string"
   || typeof resolvedToolchain.nativeCompiler !== "string"
@@ -209,21 +330,45 @@ assertModernRoslynVersion(resolvedToolchain.compilerVersion.split(/[+-]/u, 1)[0]
 const windowsDirectory = realpathSync.native(resolvedToolchain.windowsDirectory);
 const systemWindowsDirectory = realpathSync.native(resolvedToolchain.systemWindowsDirectory);
 const systemDirectory = realpathSync.native(resolvedToolchain.systemDirectory);
+const buildWorkspace = realpathSync.native(resolvedToolchain.buildWorkspace);
+emergencyBuildWorkspace = buildWorkspace;
 const compiler = realpathSync.native(resolvedToolchain.compiler);
 const nativeCompiler = realpathSync.native(resolvedToolchain.nativeCompiler);
 const nativeLinker = realpathSync.native(resolvedToolchain.nativeLinker);
 const references = resolvedToolchain.references.map((item) => realpathSync.native(item));
+const nativeIncludes = resolvedToolchain.nativeIncludes.map((item) => realpathSync.native(item));
+const nativeLibraries = resolvedToolchain.nativeLibraries.map((item) => realpathSync.native(item));
 if (!statSync(windowsDirectory).isDirectory() || !statSync(systemWindowsDirectory).isDirectory()
   || !statSync(systemDirectory).isDirectory()
   || !compiler.toLowerCase().includes("\\msbuild\\current\\bin\\roslyn\\csc.exe")
   || compiler.toLowerCase().includes("\\microsoft.net\\framework")) {
   throw new WindowsHelperBuildError("BUILD_COMPILER", "BAD_FLAG");
 }
+if (windowsDirectory.toLowerCase() !== bootstrapPaths.windowsDirectory.toLowerCase()
+  || systemWindowsDirectory.toLowerCase() !== bootstrapPaths.systemWindowsDirectory.toLowerCase()
+  || systemDirectory.toLowerCase() !== bootstrapPaths.systemDirectory.toLowerCase()) {
+  throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+}
+if (dirname(buildWorkspace).toLowerCase() !== realpathSync.native(outputDirectory).toLowerCase()
+  || basename(buildWorkspace) !== `.propr-build-${nonce}`) {
+  throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+}
+// The OS probe and resolver are complete. Release their exact-object leases
+// before the old broker name is removed; all actual compiler/tool inputs below
+// retain their own leases through publication.
+closeSync(bootstrapBroker.fd);
+bootstrapBroker.fd = undefined;
+closeSync(heldPowerShell.fd);
+heldPowerShell.fd = undefined;
 
 const heldCompiler = heldIdentity(compiler, true);
 const heldNativeCompiler = heldIdentity(nativeCompiler, true);
 const heldNativeLinker = heldIdentity(nativeLinker, true);
 const heldReferences = references.map((item) => ({ path: item, ...heldIdentity(item, true) }));
+const nativeInputInventories = [...nativeIncludes, ...nativeLibraries].map((path) => ({
+  path,
+  ...authoritativeDirectoryInventory(path),
+}));
 const committedSource = heldIdentity(source, true);
 const sourceBytes = committedSource.bytes;
 if (sha256(sourceBytes) !== sourceSha256) {
@@ -234,9 +379,11 @@ const launcherSourceBytes = committedLauncherSource.bytes;
 if (sha256(launcherSourceBytes) !== launcherSourceSha256) {
   throw new WindowsHelperBuildError("BUILD_SOURCE", "NONZERO_OUTPUT");
 }
+const committedSmokeFixtureSource = heldIdentity(smokeFixtureSource, true);
+if (sha256(committedSmokeFixtureSource.bytes) !== smokeFixtureSourceSha256) {
+  throw new WindowsHelperBuildError("BUILD_SOURCE", "NONZERO_OUTPUT");
+}
 
-mkdirSync(outputDirectory, { recursive: true });
-mkdirSync(launcherOutputDirectory, { recursive: true });
 // Remove the previous complete release set before any expensive work. Final
 // publication below is no-replace; an ABA entry created during the build makes
 // publication fail rather than being overwritten or deleted.
@@ -244,23 +391,28 @@ rmSync(output, { force: true });
 rmSync(manifestPath, { force: true });
 rmSync(signaturePath, { force: true });
 rmSync(launcherOutput, { force: true });
-const nonce = createHash("sha256").update(`${process.pid}:${Date.now()}:${process.hrtime.bigint()}`).digest("hex");
-const temporaryOutput = join(outputDirectory, `.connect-authority-supervisor.${nonce}.exe`);
-const temporarySource = join(outputDirectory, `.windows-authority-supervisor.${nonce}.cs`);
-const temporaryPolicy = join(outputDirectory, `.windows-authority-signing-policy.${nonce}.txt`);
-const temporaryLauncherSource = join(outputDirectory, `.windows-authority-launcher.${nonce}.c`);
-const temporaryLauncher = join(outputDirectory, `.windows-authority-launcher.${nonce}.exe`);
-const temporaryLauncherObject = join(outputDirectory, `.windows-authority-launcher.${nonce}.obj`);
+rmSync(smokeFixtureOutput, { force: true });
+const temporaryOutput = join(buildWorkspace, "connect-authority-supervisor.exe");
+const temporarySource = join(buildWorkspace, "windows-authority-supervisor.cs");
+const temporaryPolicy = join(buildWorkspace, "windows-authority-signing-policy.txt");
+const temporaryLauncherSource = join(buildWorkspace, "windows-authority-launcher.c");
+const temporaryLauncher = join(buildWorkspace, "windows-authority-launcher.exe");
+const temporaryLauncherObject = join(buildWorkspace, "windows-authority-launcher.obj");
+const temporarySmokeFixtureSource = join(buildWorkspace, "windows-connect-docker-fixture.c");
+const temporarySmokeFixtureObject = join(buildWorkspace, "windows-connect-docker-fixture.obj");
+const temporarySmokeFixture = join(buildWorkspace, "windows-connect-docker-fixture.exe");
 let sourceLease;
 let policyLease;
 let launcherSourceLease;
+let smokeFixtureSourceLease;
 let signToolLease;
 let publishedOutput = false;
 let publishedLauncher = false;
 let publishedManifest = false;
 let publishedSignature = false;
+let publishedSmokeFixture = false;
 function closeBuildInputLeases() {
-  for (const lease of [signToolLease, committedLauncherSource, committedSource,
+  for (const lease of [signToolLease, heldPowerShell, bootstrapBroker, committedSmokeFixtureSource, committedLauncherSource, committedSource,
     ...heldReferences, heldNativeLinker, heldNativeCompiler, heldCompiler]) {
     if (lease?.fd === undefined) continue;
     try { closeSync(lease.fd); } catch { /* Fixed build diagnostic owns failure output. */ }
@@ -295,12 +447,18 @@ try {
     ...references.map((item) => `/reference:${item}`),
     temporarySource,
   ];
+  smokeFixtureSourceLease = openSync(temporarySmokeFixtureSource, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
+  if (writeSync(smokeFixtureSourceLease, committedSmokeFixtureSource.bytes, 0,
+    committedSmokeFixtureSource.bytes.byteLength, 0) !== committedSmokeFixtureSource.bytes.byteLength) {
+    throw new WindowsHelperBuildError("BUILD_SOURCE", "UNEXPECTED_EXIT");
+  }
+  fsyncSync(smokeFixtureSourceLease);
   const compilerOptions = {
     stage: "BUILD_COMPILER",
-    env: { SystemRoot: windowsDirectory, TEMP: outputDirectory, TMP: outputDirectory },
+    env: { SystemRoot: windowsDirectory, TEMP: buildWorkspace, TMP: buildWorkspace },
     timeout: 30_000,
     maxBytes: 64 * 1024,
-    sensitiveValues: [compiler, source, temporarySource, temporaryOutput, outputDirectory, ...references],
+    sensitiveValues: [compiler, source, temporarySource, temporaryOutput, buildWorkspace, ...references],
   };
   runBoundedBuildTool(compiler, args, compilerOptions);
   const deterministicFirst = heldIdentity(temporaryOutput);
@@ -312,41 +470,60 @@ try {
   }
   const nativeArgs = [
     "/nologo", "/TC", "/O2", "/MT", "/GS", "/guard:cf", "/Brepro", "/DUNICODE", "/D_UNICODE",
-    `/Fo${temporaryLauncherObject}`, `/Fe${temporaryLauncher}`, temporaryLauncherSource,
-    "/link", "/Brepro", "/SUBSYSTEM:CONSOLE", "/MANIFEST:EMBED",
+    "/c", `/Fo${temporaryLauncherObject}`, temporaryLauncherSource,
   ];
   const nativeOptions = {
     stage: "BUILD_COMPILER",
     env: {
       SystemRoot: windowsDirectory,
-      TEMP: outputDirectory,
-      TMP: outputDirectory,
-      PATH: `${dirname(nativeCompiler)};${systemDirectory}`,
-      INCLUDE: resolvedToolchain.nativeIncludes.join(";"),
-      LIB: resolvedToolchain.nativeLibraries.join(";"),
+      TEMP: buildWorkspace,
+      TMP: buildWorkspace,
+      PATH: systemDirectory,
+      INCLUDE: nativeIncludes.join(";"),
+      LIB: nativeLibraries.join(";"),
     },
     timeout: 30_000,
     maxBytes: 64 * 1024,
     sensitiveValues: [nativeCompiler, nativeLinker, launcherSource, temporaryLauncherSource, temporaryLauncher,
-      temporaryLauncherObject, outputDirectory, ...resolvedToolchain.nativeIncludes, ...resolvedToolchain.nativeLibraries],
+      temporaryLauncherObject, buildWorkspace, ...resolvedToolchain.nativeIncludes, ...resolvedToolchain.nativeLibraries],
   };
   runBoundedBuildTool(nativeCompiler, nativeArgs, nativeOptions);
+  const nativeLinkArgs = [
+    "/NOLOGO", "/Brepro", "/SUBSYSTEM:CONSOLE", "/MANIFEST:EMBED", `/OUT:${temporaryLauncher}`,
+    temporaryLauncherObject, "kernel32.lib", "advapi32.lib", "bcrypt.lib", "wintrust.lib", "user32.lib",
+  ];
+  runBoundedBuildTool(nativeLinker, nativeLinkArgs, nativeOptions);
   const launcherFirst = heldIdentity(temporaryLauncher);
   rmSync(temporaryLauncher, { force: true });
   rmSync(temporaryLauncherObject, { force: true });
   runBoundedBuildTool(nativeCompiler, nativeArgs, nativeOptions);
+  runBoundedBuildTool(nativeLinker, nativeLinkArgs, nativeOptions);
   const launcherSecond = heldIdentity(temporaryLauncher);
   if (sha256(launcherFirst.bytes) !== sha256(launcherSecond.bytes)) {
     throw new WindowsHelperBuildError("BUILD_COMPILER", "BAD_FLAG");
+  }
+  runBoundedBuildTool(nativeCompiler, [
+    "/nologo", "/TC", "/O2", "/MT", "/GS", "/guard:cf", "/Brepro", "/DUNICODE", "/D_UNICODE",
+    "/c", `/Fo${temporarySmokeFixtureObject}`, temporarySmokeFixtureSource,
+  ], nativeOptions);
+  runBoundedBuildTool(nativeLinker, [
+    "/NOLOGO", "/Brepro", "/SUBSYSTEM:CONSOLE", "/MANIFEST:EMBED", `/OUT:${temporarySmokeFixture}`,
+    temporarySmokeFixtureObject, "kernel32.lib",
+  ], nativeOptions);
+  const smokeFixture = heldIdentity(temporarySmokeFixture);
+  if (smokeFixture.bytes.length < 1024 || smokeFixture.bytes.length > 256 * 1024
+    || smokeFixture.bytes[0] !== 0x4d || smokeFixture.bytes[1] !== 0x5a) {
+    throw new WindowsHelperBuildError("BUILD_OUTPUT", "UNEXPECTED_EXIT");
   }
   const systemPathResult = runBoundedBuildTool(temporaryLauncher, ["system-paths-v1"], {
     stage: "BUILD_COMPILER", timeout: 5_000, maxBytes: 4096, sensitiveValues: [temporaryLauncher],
   });
   const systemPathText = new TextDecoder("utf-8", { fatal: true }).decode(systemPathResult.stdout);
   const systemPaths = systemPathText.split(/\r?\n/u);
-  if (systemPaths.length !== 3 || systemPaths[2] !== ""
+  if (systemPaths.length !== 4 || systemPaths[3] !== ""
     || realpathSync.native(systemPaths[0]).toLowerCase() !== windowsDirectory.toLowerCase()
-    || realpathSync.native(systemPaths[1]).toLowerCase() !== systemWindowsDirectory.toLowerCase()) {
+    || realpathSync.native(systemPaths[1]).toLowerCase() !== systemWindowsDirectory.toLowerCase()
+    || realpathSync.native(systemPaths[2]).toLowerCase() !== systemDirectory.toLowerCase()) {
     throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
   }
   let launcherSha256 = sha256(launcherSecond.bytes);
@@ -481,7 +658,14 @@ try {
       throw new Error("compiler reference identity changed during the build");
     }
   }
-  for (const [path, before] of [[source, committedSource], [launcherSource, committedLauncherSource]]) {
+  for (const before of nativeInputInventories) {
+    const after = authoritativeDirectoryInventory(before.path);
+    if (after.sha256 !== before.sha256 || after.files !== before.files || after.bytes !== before.bytes) {
+      throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+    }
+  }
+  for (const [path, before] of [[source, committedSource], [launcherSource, committedLauncherSource],
+    [smokeFixtureSource, committedSmokeFixtureSource]]) {
     const after = heldIdentity(path);
     if (after.device !== before.device || after.file !== before.file || sha256(after.bytes) !== sha256(before.bytes)) {
       throw new WindowsHelperBuildError("BUILD_SOURCE", "NONZERO_OUTPUT");
@@ -489,6 +673,7 @@ try {
   }
   verifyStagedLease(temporarySource, sourceLease, sourceBytes);
   verifyStagedLease(temporaryLauncherSource, launcherSourceLease, launcherSourceBytes);
+  verifyStagedLease(temporarySmokeFixtureSource, smokeFixtureSourceLease, committedSmokeFixtureSource.bytes);
   if (policyLease !== undefined) {
     verifyStagedLease(temporaryPolicy, policyLease, Buffer.from(
       `${derivedSigningPins.authenticodeLeafSha256}\n${derivedSigningPins.authenticodeSpkiSha256}\n`,
@@ -511,6 +696,9 @@ try {
       references: heldReferences.map((item) => ({
         name: basename(item.path),
         sha256: sha256(item.bytes),
+      })),
+      nativeInputs: nativeInputInventories.map((item, index) => ({
+        name: `input-${index}`, sha256: item.sha256, files: item.files, bytes: item.bytes,
       })),
     },
     trust: validation
@@ -548,6 +736,9 @@ try {
   publishedManifest = true;
   writeFileSync(signaturePath, signature, { flag: "wx" });
   publishedSignature = true;
+  linkSync(temporarySmokeFixture, smokeFixtureOutput);
+  publishedSmokeFixture = true;
+  unlinkSync(temporarySmokeFixture);
   closeSync(sourceLease);
   sourceLease = undefined;
   if (policyLease !== undefined) {
@@ -556,10 +747,16 @@ try {
   }
   closeSync(launcherSourceLease);
   launcherSourceLease = undefined;
+  closeSync(smokeFixtureSourceLease);
+  smokeFixtureSourceLease = undefined;
   rmSync(temporarySource, { force: true });
   rmSync(temporaryPolicy, { force: true });
   rmSync(temporaryLauncherSource, { force: true });
   rmSync(temporaryLauncherObject, { force: true });
+  rmSync(temporarySmokeFixtureSource, { force: true });
+  rmSync(temporarySmokeFixtureObject, { force: true });
+  rmSync(buildWorkspace, { recursive: true, force: true });
+  emergencyBuildWorkspace = undefined;
   closeBuildInputLeases();
 } catch (error) {
   closeBuildInputLeases();
@@ -572,16 +769,25 @@ try {
   if (launcherSourceLease !== undefined) {
     try { closeSync(launcherSourceLease); } catch { /* Fixed build diagnostic owns failure output. */ }
   }
+  if (smokeFixtureSourceLease !== undefined) {
+    try { closeSync(smokeFixtureSourceLease); } catch { /* Fixed build diagnostic owns failure output. */ }
+  }
   rmSync(temporarySource, { force: true });
   rmSync(temporaryPolicy, { force: true });
   rmSync(temporaryLauncherSource, { force: true });
   rmSync(temporaryLauncher, { force: true });
   rmSync(temporaryLauncherObject, { force: true });
+  rmSync(temporarySmokeFixtureSource, { force: true });
+  rmSync(temporarySmokeFixtureObject, { force: true });
+  rmSync(temporarySmokeFixture, { force: true });
   rmSync(temporaryOutput, { force: true });
+  rmSync(buildWorkspace, { recursive: true, force: true });
+  emergencyBuildWorkspace = undefined;
   if (publishedOutput) rmSync(output, { force: true });
   if (publishedManifest) rmSync(manifestPath, { force: true });
   if (publishedSignature) rmSync(signaturePath, { force: true });
   if (publishedLauncher) rmSync(launcherOutput, { force: true });
+  if (publishedSmokeFixture) rmSync(smokeFixtureOutput, { force: true });
   const failure = error instanceof WindowsHelperBuildError
     ? error
     : new WindowsHelperBuildError("BUILD_OUTPUT", "UNKNOWN", error);

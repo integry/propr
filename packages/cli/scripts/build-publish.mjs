@@ -142,6 +142,13 @@ if (supervisorManifestBytes.at(-1) !== 0x0a
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.compilerSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.launcherCompilerSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.launcherLinkerSha256 ?? "")
+  || !Array.isArray(supervisorManifest.build?.nativeInputs)
+  || supervisorManifest.build.nativeInputs.length !== 7
+  || !supervisorManifest.build.nativeInputs.every((input) => input
+    && typeof input.name === "string"
+    && /^[0-9a-f]{64}$/.test(input.sha256 ?? "")
+    && Number.isInteger(input.files) && input.files > 0
+    && /^(?:0|[1-9]\d{0,12})$/.test(String(input.bytes)))
   || createHash("sha256").update(readFileSync(join(stageDir, "dist", "native", "windows-authority-supervisor.cs"))).digest("hex") !== supervisorManifest.sourceSha256
   || createHash("sha256").update(readFileSync(join(stageDir, "dist", "native", "windows-authority-broker.c"))).digest("hex") !== supervisorManifest.launcherSourceSha256
   || createHash("sha256").update(readFileSync(windowsSupervisor)).digest("hex") !== supervisorManifest.helperSha256) {

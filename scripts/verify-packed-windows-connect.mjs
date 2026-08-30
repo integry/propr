@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
@@ -9,6 +9,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,6 +31,9 @@ const root = join(runtimeDirectory, "stack");
 const data = join(root, "data");
 const envFile = join(root, ".env");
 const endpoint = "https://t-packedfixture.propr.dev";
+const certificate = join(repo, "scripts", "fixtures", "packed-connect-cert.fixture");
+const privateKey = join(repo, "scripts", "fixtures", "packed-connect-key.b64");
+let sidecar;
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
@@ -47,11 +51,11 @@ function installedPath(...parts) {
   return join(installDirectory, "node_modules", "propr-cli", ...parts);
 }
 
-function invoke(loader, extraEnvironment = {}) {
-  return spawnSync(process.execPath, [
-    "--import", loader,
-    installedPath("dist", "index.js"),
-    "connect", "status", "--json", "--root", root,
+function invoke(extraEnvironment = {}) {
+  const entrypoint = join(installDirectory, "node_modules", ".bin", "propr.cmd");
+  assert.equal(statSync(entrypoint).isFile(), true, "npm did not install the public propr bin shim");
+  return spawnSync(process.env.ComSpec, ["/d", "/s", "/c",
+    `"${entrypoint}" connect status --json --root "${root}"`,
   ], {
     cwd: runtimeDirectory,
     shell: false,
@@ -68,10 +72,8 @@ function invoke(loader, extraEnvironment = {}) {
       USERPROFILE: process.env.USERPROFILE,
       HOMEDRIVE: process.env.HOMEDRIVE,
       HOMEPATH: process.env.HOMEPATH,
-      // Deliberately unavailable: installed discovery must not compile or use a
-      // writable compiler workspace at runtime.
-      TEMP: join(runtimeDirectory, "missing-compiler-temp"),
-      TMP: join(runtimeDirectory, "missing-compiler-temp"),
+      NODE_EXTRA_CA_CERTS: certificate,
+      NODE_OPTIONS: `--require=${join(runtimeDirectory, "connect-dns.cjs")} --import=${pathToFileURL(join(runtimeDirectory, "connect-guard.mjs")).href}`,
       PROPR_WINDOWS_AUTHORITY_VALIDATION: "1",
       ...extraEnvironment,
     },
@@ -143,22 +145,35 @@ try {
   const identity = await identityModule.getOrCreatePublicInstanceIdentity(data);
   await authority.closeWindowsAuthorityCapability({ requireGracefulShutdown: true });
 
-  const loader = join(runtimeDirectory, "connect-fixture.mjs");
-  writeFileSync(loader, `
+  const modeFile = join(runtimeDirectory, "bin", "fixture-mode.txt");
+  const dockerFixture = join(runtimeDirectory, "bin", "docker.exe");
+  writeFileSync(modeFile, "ready");
+  copyFileSync(join(repo, "scripts", "fixtures", "windows-connect-docker-fixture.exe"), dockerFixture);
+  const guard = join(runtimeDirectory, "connect-guard.mjs");
+  writeFileSync(guard, `
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 const originalSpawn=childProcess.spawn;
 const originalSpawnSync=childProcess.spawnSync;
-const forbidden=(command)=>/(?:^|[\\\\/])(?:powershell|pwsh|csc|cl)(?:\\.exe)?$/i.test(String(command));
+const forbidden=(command)=>/(?:^|[\\\\/])(?:powershell|pwsh|csc|cl|link)(?:\\.exe)?$/i.test(String(command));
 childProcess.spawn=(command,...args)=>{if(forbidden(command))throw new Error('forbidden runtime tool');return originalSpawn(command,...args)};
 childProcess.spawnSync=(command,args,options)=>{
   if(forbidden(command))throw new Error('forbidden runtime tool');
-  return command==='docker'
-    ? {pid:1,output:[],stdout:'packedfixture-tunnel\\trunning\\tUp 1 second\\t\\n',stderr:'',status:0,signal:null,error:undefined}
-    : originalSpawnSync(command,args,options);
+  return originalSpawnSync(command,args,options);
 };
 syncBuiltinESMExports();
-const body=${JSON.stringify({
+`);
+  writeFileSync(join(runtimeDirectory, "connect-dns.cjs"), `
+const dns=require('node:dns');
+const original=dns.lookup;
+dns.lookup=function(hostname,options,callback){
+  if(hostname!=='t-packedfixture.propr.dev')return original.apply(this,arguments);
+  if(typeof options==='function')return options(null,'127.0.0.1',4);
+  if(options&&options.all)return callback(null,[{address:'127.0.0.1',family:4}]);
+  return callback(null,'127.0.0.1',4);
+};
+`);
+  const discovery = {
     schemaVersion: 1,
     product: "ProPR",
     canonicalEndpoint: endpoint,
@@ -172,16 +187,43 @@ const body=${JSON.stringify({
       instanceBearerTokens: true,
       socketIoBearerAuthentication: true,
     },
-  })};
-globalThis.fetch=async(url,options)=>{
-  if(String(url)!==${JSON.stringify(`${endpoint}/api/desktop/discovery`)}
-    ||options?.redirect!=='manual'||options?.headers?.Accept!=='application/json')throw new Error('invalid discovery request');
-  return new Response(JSON.stringify(body),{headers:{
-    'content-type':'application/json','cache-control':'no-store, max-age=0',
-  }});
-};
+  };
+  const sidecarScript = join(runtimeDirectory, "connect-sidecar.mjs");
+  writeFileSync(sidecarScript, `
+import { createServer } from 'node:https';
+import { readFileSync } from 'node:fs';
+const modeFile=process.argv[2];
+const base=${JSON.stringify(discovery)};
+const encodedKey=readFileSync(process.argv[4],'ascii').trim();
+const key='-----BEGIN PRIVATE KEY-----\\n'+encodedKey+'\\n-----END PRIVATE KEY-----\\n';
+const server=createServer({cert:readFileSync(process.argv[3]),key},(request,response)=>{
+  if(request.method!=='GET'||request.url!=='/api/desktop/discovery'||request.headers.accept!=='application/json'){
+    response.writeHead(404,{'cache-control':'no-store'}).end();return;
+  }
+  const mode=readFileSync(modeFile,'utf8').trim();
+  const body=mode==='tampered'?'{"schemaVersion":2}':JSON.stringify(mode==='wrong-target'
+    ?{...base,publicInstanceIdentity:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'}
+    :mode==='stale'?{...base,canonicalEndpoint:'https://t-stale.propr.dev'}:base);
+  response.writeHead(200,{'content-type':'application/json','cache-control':'no-store, max-age=0','content-length':Buffer.byteLength(body)});
+  response.end(body);
+});
+server.listen(443,'127.0.0.1',()=>process.stdout.write('READY\\n'));
+process.on('SIGTERM',()=>server.close(()=>process.exit(0)));
 `);
-  const successful = invoke(loader);
+  sidecar = spawn(process.execPath, [sidecarScript, modeFile, certificate, privateKey], {
+    cwd: runtimeDirectory, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+  });
+  await new Promise((resolveReady, rejectReady) => {
+    const timer = setTimeout(() => rejectReady(new Error("Connect sidecar fixture did not start")), 5_000);
+    sidecar.once("error", rejectReady);
+    sidecar.once("exit", (code) => rejectReady(new Error(`Connect sidecar fixture exited ${code}`)));
+    sidecar.stdout.once("data", (chunk) => {
+      clearTimeout(timer);
+      if (String(chunk) !== "READY\n") rejectReady(new Error("Connect sidecar fixture readiness was malformed"));
+      else resolveReady();
+    });
+  });
+  const successful = invoke();
   assert.equal(successful.status, 0, successful.stderr);
   assert.equal(successful.stderr, "");
   const document = JSON.parse(successful.stdout);
@@ -200,10 +242,28 @@ globalThis.fetch=async(url,options)=>{
     reasonCodes: [],
   });
 
+  writeFileSync(modeFile, "missing");
+  const missingTunnel = invoke();
+  assert.equal(missingTunnel.status, 0, missingTunnel.stderr);
+  assert.deepEqual(JSON.parse(missingTunnel.stdout).reasonCodes, ["SIDECAR_NOT_RUNNING"]);
+  writeFileSync(modeFile, "tampered");
+  const tamperedEndpoint = invoke();
+  assert.equal(tamperedEndpoint.status, 2, tamperedEndpoint.stderr);
+  assert.deepEqual(JSON.parse(tamperedEndpoint.stdout).reasonCodes, ["DISCOVERY_INVALID"]);
+  writeFileSync(modeFile, "wrong-target");
+  const wrongEndpoint = invoke();
+  assert.equal(wrongEndpoint.status, 0, wrongEndpoint.stderr);
+  assert.deepEqual(JSON.parse(wrongEndpoint.stdout).reasonCodes, ["IDENTITY_MISMATCH"]);
+  writeFileSync(modeFile, "stale");
+  const staleEndpoint = invoke();
+  assert.equal(staleEndpoint.status, 0, staleEndpoint.stderr);
+  assert.deepEqual(JSON.parse(staleEndpoint.stdout).reasonCodes, ["ENDPOINT_MISMATCH", "RESTART_REQUIRED"]);
+  writeFileSync(modeFile, "ready");
+
   const helper = installedPath("dist", "native", "prebuilds", "win32-anycpu", "connect-authority-supervisor.exe");
   const saved = `${helper}.saved`;
   renameSync(helper, saved);
-  const missing = invoke(loader);
+  const missing = invoke();
   assert.notEqual(missing.status, 0);
   assert.equal(`${missing.stdout}${missing.stderr}`.toLowerCase().includes("csc"), false);
   assert.equal(`${missing.stdout}${missing.stderr}`.toLowerCase().includes("powershell"), false);
@@ -212,19 +272,26 @@ globalThis.fetch=async(url,options)=>{
   const bytes = readFileSync(helper);
   bytes[bytes.length - 1] ^= 1;
   writeFileSync(helper, bytes);
-  const tampered = invoke(loader);
+  const tampered = invoke();
   assert.notEqual(tampered.status, 0);
   assert.equal(`${tampered.stdout}${tampered.stderr}`.toLowerCase().includes("csc"), false);
   rmSync(helper, { force: true });
   renameSync(saved, helper);
   copyFileSync(helper, saved);
   copyFileSync(installedPath("dist", "native", "prebuilds", "win32-x64", "connect-authority-broker.exe"), helper);
-  const wrongTarget = invoke(loader);
+  const wrongTarget = invoke();
   assert.notEqual(wrongTarget.status, 0);
   assert.equal(`${wrongTarget.stdout}${wrongTarget.stderr}`.toLowerCase().includes("csc"), false);
   rmSync(helper, { force: true });
   renameSync(saved, helper);
+  sidecar.kill();
+  if (sidecar.exitCode === null) await new Promise((resolveExit) => sidecar.once("exit", resolveExit));
+  sidecar = undefined;
   process.stdout.write("Packed Windows Connect smoke: PASS\n");
 } finally {
+  if (sidecar) {
+    sidecar.kill();
+    if (sidecar.exitCode === null) await new Promise((resolveExit) => sidecar.once("exit", resolveExit));
+  }
   rmSync(fixture, { recursive: true, force: true });
 }

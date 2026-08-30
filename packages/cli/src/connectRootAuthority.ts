@@ -144,7 +144,7 @@ const WINDOWS_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
 
 const WINDOWS_AUTHORITY_PROTOCOL_VERSION = 2;
 const WINDOWS_AUTHORITY_SUPERVISOR_SOURCE_SHA256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
-const WINDOWS_AUTHORITY_LAUNCHER_SOURCE_SHA256 = "ab73962d0ad9d0f8cac72b9daf92efed455b8609e797d2afd1b4c94a76d49e62";
+const WINDOWS_AUTHORITY_LAUNCHER_SOURCE_SHA256 = "30347ad0d3bc382b115977439db72538afab176d34e59a68426060d7ba51c071";
 const WINDOWS_AUTHORITY_MANIFEST_PUBLIC_KEY = createPublicKey(`-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEABGK5YqTyhB9t0ItFKrMe9jiZ1two1naR/H1jqb6lRYU=
 -----END PUBLIC KEY-----`);
@@ -241,6 +241,7 @@ interface WindowsSupervisorManifest {
     readonly launcherLinkerSha256: string;
     readonly compilerRelativePath: string;
     readonly references: readonly { readonly name: string; readonly sha256: string }[];
+    readonly nativeInputs: readonly { readonly name: string; readonly sha256: string; readonly files: number; readonly bytes: string }[];
   };
   readonly trust: {
     readonly mode: "unsigned-validation" | "production-signed";
@@ -265,7 +266,7 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
   const trust = manifest.trust as Record<string, unknown> | undefined;
   if (!pe || Array.isArray(pe) || !exactKeys(pe, ["architecture", "managed", "deterministic"])
     || pe.architecture !== "anycpu" || pe.managed !== true || pe.deterministic !== true
-    || !build || Array.isArray(build) || !exactKeys(build, ["compilerSha256", "launcherCompilerSha256", "launcherLinkerSha256", "compilerRelativePath", "references"])
+    || !build || Array.isArray(build) || !exactKeys(build, ["compilerSha256", "launcherCompilerSha256", "launcherLinkerSha256", "compilerRelativePath", "references", "nativeInputs"])
     || typeof build.compilerRelativePath !== "string" || build.compilerRelativePath.length < 1 || build.compilerRelativePath.length > 160
     || !/^[0-9a-f]{64}$/.test(String(build.compilerSha256))
     || !/^[0-9a-f]{64}$/.test(String(build.launcherCompilerSha256))
@@ -275,6 +276,14 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
       && exactKeys(item as Record<string, unknown>, ["name", "sha256"])
       && typeof (item as Record<string, unknown>).name === "string"
       && /^[0-9a-f]{64}$/.test(String((item as Record<string, unknown>).sha256)))
+    || !Array.isArray(build.nativeInputs) || build.nativeInputs.length !== 7
+    || !build.nativeInputs.every((item) => item && typeof item === "object" && !Array.isArray(item)
+      && exactKeys(item as Record<string, unknown>, ["name", "sha256", "files", "bytes"])
+      && typeof (item as Record<string, unknown>).name === "string"
+      && /^[0-9a-f]{64}$/.test(String((item as Record<string, unknown>).sha256))
+      && Number.isInteger((item as Record<string, unknown>).files)
+      && Number((item as Record<string, unknown>).files) > 0
+      && /^(?:0|[1-9]\d{0,12})$/.test(String((item as Record<string, unknown>).bytes)))
     || !trust || Array.isArray(trust) || !exactKeys(trust, ["mode", "authenticodeLeafSha256", "authenticodeSpkiSha256"])) return false;
   const production = trust.mode === "production-signed";
   const validation = trust.mode === "unsigned-validation";
@@ -1106,7 +1115,10 @@ async function acquireWindowsAuthorityCapability(
     parentStage = "TRANSPORT_SPAWN";
     if (probe?.testFailureStage === parentStage) throw new WindowsSupervisorStartupError(parentStage);
     const supervisorEnvironment = {};
-    const executable = staged.path;
+    // The packaged, checksum-bound native broker is the initial launch
+    // authority.  It acquires the staged path with FILE_SHARE_READ only and
+    // performs the actual suspended CreateProcess after the barrier below.
+    const executable = artifact.path;
     const constantArgv = probe?.testFailureStage === "JOB_ASSIGN"
       ? ["--lease-validation-job-failure-v2"] as const
       : helper.manifest.trust.mode === "production-signed"
@@ -1125,12 +1137,16 @@ async function acquireWindowsAuthorityCapability(
       manifest: helper.manifest,
     });
     const zeroPin = "0".repeat(64);
+    const launchMode = probe?.testFailureStage === "JOB_ASSIGN"
+      ? "validation-job-failure"
+      : helper.manifest.trust.mode === "production-signed" ? "production" : "validation";
     const launcherArgv = [
-      "launch-supervisor-v2",
+      "launch-staged-broker-v1",
+      staged.path,
+      launchMode,
+      artifact.digest,
       helper.path,
-      probe?.testFailureStage === "JOB_ASSIGN"
-        ? "validation-job-failure"
-        : helper.manifest.trust.mode === "production-signed" ? "production" : "validation",
+      launchMode,
       helper.digest,
       helper.manifest.trust.authenticodeLeafSha256 ?? zeroPin,
       helper.manifest.trust.authenticodeSpkiSha256 ?? zeroPin,
@@ -1139,8 +1155,47 @@ async function acquireWindowsAuthorityCapability(
       shell: false,
       windowsHide: true,
       env: supervisorEnvironment,
-      stdio: ["pipe", "pipe", "pipe", staged.fd, helper.fd],
+      stdio: ["pipe", "pipe", "pipe", staged.fd, helper.fd, "pipe", artifact.fd],
     });
+    if (!supervisor.pid) throw new WindowsSupervisorStartupError("TRANSPORT_SPAWN");
+    const launchBarrier = (supervisor.stdio as unknown as Array<NodeJS.ReadWriteStream | null>)[5];
+    if (!launchBarrier || typeof (launchBarrier as NodeJS.ReadWriteStream).write !== "function") {
+      throw new WindowsSupervisorStartupError("TRANSPORT_SPAWN");
+    }
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout>;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        launchBarrier.off("data", onData);
+        supervisor!.off("error", onError);
+        supervisor!.off("exit", onExit);
+        if (error) reject(error); else resolve();
+      };
+      const onData = (chunk: Buffer | string) => {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        if (bytes.byteLength !== 1 || bytes[0] !== 0x52) finish(new WindowsSupervisorStartupError("TRANSPORT_SPAWN"));
+        else finish();
+      };
+      const onError = () => finish(new WindowsSupervisorStartupError("TRANSPORT_SPAWN"));
+      const onExit = () => finish(new WindowsSupervisorStartupError("TRANSPORT_SPAWN"));
+      timer = setTimeout(() => finish(new WindowsSupervisorStartupError("TRANSPORT_SPAWN")), WINDOWS_CAPABILITY_STARTUP_TIMEOUT_MS);
+      launchBarrier.once("data", onData);
+      supervisor!.once("error", onError);
+      supervisor!.once("exit", onExit);
+    });
+    // This is the real pre-CreateProcess mutation barrier: the native parent
+    // already owns its deny-write/delete/rename lease, and will not create the
+    // staged process until the hook has attempted its attack.
+    try {
+      probe?.onStaged?.(staged.path);
+      (launchBarrier as NodeJS.ReadWriteStream).end(Buffer.from("G"));
+    } catch (error) {
+      (launchBarrier as NodeJS.ReadWriteStream).end(Buffer.from("X"));
+      throw error;
+    }
     const channel = new WindowsSupervisorChannel(supervisor);
     supervisor.unref();
     (supervisor.stdin as typeof supervisor.stdin & { unref?: () => void } | null)?.unref?.();
@@ -1160,11 +1215,8 @@ async function acquireWindowsAuthorityCapability(
     };
     supervisor.once("error", () => { capability!.alive = false; });
     supervisor.once("exit", () => { capability!.alive = false; });
-    if (!supervisor.pid) throw new WindowsSupervisorStartupError("TRANSPORT_SPAWN");
-    // Native proof hooks begin only after CreateProcess has acquired the
-    // launcher's image section; no test seam may reintroduce a pre-create
-    // pathname execution window.
-    probe?.onStaged?.(staged.path);
+    // The pid is the packaged native launch authority. Its child broker and
+    // supervisor remain in the same kill-on-close job tree.
     probe?.onSupervisorSpawned?.(staged.path, supervisor.pid);
     parentStage = "PROTOCOL_INIT";
     const requestId = randomBytes(16).toString("hex");
@@ -1531,8 +1583,7 @@ export function exerciseWindowsHelperProvenanceForNativeTest(): {
       launcherSha256: helper.manifest.launcherSha256,
       trustMode: helper.manifest.trust.mode,
       signerPinsBound: helper.manifest.trust.mode === "unsigned-validation"
-        ? helper.manifest.trust.authenticodeLeafSha256 === null
-          && helper.manifest.trust.authenticodeSpkiSha256 === null
+        ? false
         : /^[0-9a-f]{64}$/.test(helper.manifest.trust.authenticodeLeafSha256 ?? "")
           && /^[0-9a-f]{64}$/.test(helper.manifest.trust.authenticodeSpkiSha256 ?? ""),
       noRuntimeCompilerWorkspace: true,

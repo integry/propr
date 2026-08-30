@@ -248,6 +248,31 @@ cleanup:
   return result;
 }
 
+static int harden_current_process(PSID current_user) {
+  LPWSTR sid = NULL;
+  PSECURITY_DESCRIPTOR descriptor = NULL;
+  PACL dacl = NULL;
+  BOOL present = FALSE;
+  BOOL defaulted = FALSE;
+  wchar_t sddl[512];
+  int result = 0;
+  if (!ConvertSidToStringSidW(current_user, &sid) ||
+      swprintf(sddl, sizeof(sddl) / sizeof(sddl[0]),
+               L"D:P(A;;0x00100001;;;%ls)(A;;GA;;;SY)(A;;GA;;;BA)", sid) <= 0 ||
+      !ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1,
+                                                             &descriptor, NULL) ||
+      !GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted) || !present || dacl == NULL) {
+    goto cleanup;
+  }
+  result = SetSecurityInfo(GetCurrentProcess(), SE_KERNEL_OBJECT,
+    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+    NULL, NULL, dacl, NULL) == ERROR_SUCCESS;
+cleanup:
+  if (descriptor != NULL) LocalFree(descriptor);
+  if (sid != NULL) LocalFree(sid);
+  return result;
+}
+
 static int current_user_sid(BYTE **token_buffer, PSID *sid, char *text, size_t capacity) {
   HANDLE token = NULL;
   DWORD size = 0;
@@ -447,6 +472,169 @@ static int verify_authenticode(const wchar_t *path) {
   return status == ERROR_SUCCESS;
 }
 
+/*
+ * The packaged broker is the native launch authority for the private staged
+ * broker.  Node never calls CreateProcess on the staged pathname.  Both the
+ * inherited staged handle and a no-write/no-delete pathname lease must name
+ * the same full FILE_ID_128 and hash, and the lease remains held until the
+ * suspended child has joined a kill-on-close job, its loaded image has been
+ * re-opened and authenticated, and the child has exited.
+ *
+ * fd 5 is a private one-byte barrier.  The parent observes 'R' only after the
+ * exclusive lease exists; it may then run the real mutation attack before
+ * replying 'G'.  CreateProcessW is never attempted unless that attack was
+ * denied by the exact held file object.
+ */
+static int secure_launch_staged_broker(int argc, wchar_t **argv) {
+  if (argc != 10 || argv[2] == NULL || argv[2][0] == L'\0' || wcschr(argv[2], L'"') != NULL ||
+      argv[5] == NULL || argv[5][0] == L'\0' || wcschr(argv[5], L'"') != NULL) return PROPR_LAUNCH_FAILURE;
+  int production = wcscmp(argv[3], L"production") == 0;
+  int validation = wcscmp(argv[3], L"validation") == 0;
+  int validation_job_failure = wcscmp(argv[3], L"validation-job-failure") == 0;
+  if ((!production && !validation && !validation_job_failure) || wcscmp(argv[3], argv[6]) != 0) {
+    return PROPR_LAUNCH_FAILURE;
+  }
+  char staged_expected[65];
+  char helper_expected[65];
+  if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[4], -1, staged_expected,
+                          sizeof(staged_expected), NULL, NULL) != 65 ||
+      WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[7], -1, helper_expected,
+                          sizeof(helper_expected), NULL, NULL) != 65 ||
+      !hex_digest(staged_expected) || !hex_digest(helper_expected)) return PROPR_LAUNCH_FAILURE;
+
+  wchar_t self_path[32768];
+  DWORD self_length = GetModuleFileNameW(NULL, self_path, sizeof(self_path) / sizeof(self_path[0]));
+  intptr_t inherited_value = _get_osfhandle(3);
+  intptr_t barrier_value = _get_osfhandle(5);
+  intptr_t artifact_value = _get_osfhandle(6);
+  if (self_length == 0 || self_length >= sizeof(self_path) / sizeof(self_path[0]) ||
+      inherited_value == -1 || barrier_value == -1 || artifact_value == -1) return PROPR_LAUNCH_FAILURE;
+  HANDLE inherited = (HANDLE)inherited_value;
+  HANDLE barrier = (HANDLE)barrier_value;
+  HANDLE artifact = (HANDLE)artifact_value;
+  HANDLE self_lease = CreateFileW(self_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  HANDLE staged_lease = CreateFileW(argv[2], GENERIC_READ | READ_CONTROL | WRITE_DAC | WRITE_OWNER,
+                                    FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  wchar_t staged_directory_path[32768];
+  if (wcslen(argv[2]) >= sizeof(staged_directory_path) / sizeof(staged_directory_path[0])) {
+    if (self_lease != INVALID_HANDLE_VALUE) CloseHandle(self_lease);
+    if (staged_lease != INVALID_HANDLE_VALUE) CloseHandle(staged_lease);
+    return PROPR_LAUNCH_FAILURE;
+  }
+  wcscpy_s(staged_directory_path, sizeof(staged_directory_path) / sizeof(staged_directory_path[0]), argv[2]);
+  wchar_t *staged_separator = wcsrchr(staged_directory_path, L'\\');
+  if (staged_separator == NULL || staged_separator == staged_directory_path) {
+    if (self_lease != INVALID_HANDLE_VALUE) CloseHandle(self_lease);
+    if (staged_lease != INVALID_HANDLE_VALUE) CloseHandle(staged_lease);
+    return PROPR_LAUNCH_FAILURE;
+  }
+  *staged_separator = L'\0';
+  HANDLE staged_directory = CreateFileW(staged_directory_path,
+    GENERIC_READ | READ_CONTROL | WRITE_DAC | WRITE_OWNER, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  BYTE *token_buffer = NULL;
+  PSID user_sid = NULL;
+  char user_sid_text[192];
+  PROPR_FILE_ID_INFO inherited_id;
+  PROPR_FILE_ID_INFO staged_id;
+  PROPR_FILE_ID_INFO self_id;
+  PROPR_FILE_ID_INFO artifact_id;
+  char self_hash[65];
+  char artifact_hash[65];
+  char inherited_hash[65];
+  char staged_hash[65];
+  int authenticated = ordinary_file(self_lease) && ordinary_file(artifact) &&
+      ordinary_file(inherited) && ordinary_file(staged_lease) &&
+      staged_directory != INVALID_HANDLE_VALUE &&
+      current_user_sid(&token_buffer, &user_sid, user_sid_text, sizeof(user_sid_text)) &&
+      harden_current_process(user_sid) &&
+      protect_entry(staged_directory, 1, user_sid) && protect_entry(staged_lease, 0, user_sid) &&
+      get_file_id(self_lease, &self_id) && get_file_id(artifact, &artifact_id) && same_file_id(&self_id, &artifact_id) &&
+      get_file_id(inherited, &inherited_id) && get_file_id(staged_lease, &staged_id) &&
+      same_file_id(&inherited_id, &staged_id) && sha256_handle(self_lease, self_hash) &&
+      sha256_handle(artifact, artifact_hash) && sha256_handle(inherited, inherited_hash) &&
+      sha256_handle(staged_lease, staged_hash) && strcmp(self_hash, staged_expected) == 0 &&
+      strcmp(artifact_hash, staged_expected) == 0 && strcmp(inherited_hash, staged_expected) == 0 &&
+      strcmp(staged_hash, staged_expected) == 0 &&
+      (!production || (verify_authenticode(self_path) && verify_authenticode(argv[2])));
+  if (!authenticated) {
+    if (self_lease != INVALID_HANDLE_VALUE) CloseHandle(self_lease);
+    if (staged_lease != INVALID_HANDLE_VALUE) CloseHandle(staged_lease);
+    if (staged_directory != INVALID_HANDLE_VALUE) CloseHandle(staged_directory);
+    if (token_buffer != NULL) LocalFree(token_buffer);
+    return PROPR_LAUNCH_FAILURE;
+  }
+  BYTE ready = 'R';
+  BYTE go = 0;
+  DWORD transferred = 0;
+  if (!WriteFile(barrier, &ready, 1, &transferred, NULL) || transferred != 1 ||
+      !ReadFile(barrier, &go, 1, &transferred, NULL) || transferred != 1 || go != 'G') {
+    CloseHandle(staged_lease);
+    CloseHandle(self_lease);
+    CloseHandle(staged_directory);
+    LocalFree(token_buffer);
+    return PROPR_LAUNCH_FAILURE;
+  }
+  if (!SetHandleInformation(barrier, HANDLE_FLAG_INHERIT, 0) ||
+      !SetHandleInformation(artifact, HANDLE_FLAG_INHERIT, 0)) {
+    CloseHandle(staged_lease);
+    CloseHandle(self_lease);
+    CloseHandle(staged_directory);
+    LocalFree(token_buffer);
+    return PROPR_LAUNCH_FAILURE;
+  }
+
+  wchar_t command[32768];
+  int length = swprintf(command, sizeof(command) / sizeof(command[0]),
+    L"\"%ls\" launch-supervisor-v2 \"%ls\" %ls %ls %ls %ls",
+    argv[2], argv[5], argv[6], argv[7], argv[8], argv[9]);
+  STARTUPINFOW startup;
+  PROCESS_INFORMATION child;
+  ZeroMemory(&startup, sizeof(startup));
+  ZeroMemory(&child, sizeof(child));
+  startup.cb = sizeof(startup);
+  GetStartupInfoW(&startup);
+  HANDLE job = NULL;
+  int status = PROPR_LAUNCH_FAILURE;
+  if (length <= 0 || length >= (int)(sizeof(command) / sizeof(command[0])) ||
+      !CreateProcessW(argv[2], command, NULL, NULL, TRUE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                      NULL, NULL, &startup, &child)) goto staged_cleanup;
+  job = CreateJobObjectW(NULL, NULL);
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+  ZeroMemory(&limits, sizeof(limits));
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (job == NULL || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+      !AssignProcessToJobObject(job, child.hProcess)) goto staged_cleanup;
+  wchar_t loaded_path[32768];
+  DWORD loaded_length = sizeof(loaded_path) / sizeof(loaded_path[0]);
+  if (!QueryFullProcessImageNameW(child.hProcess, 0, loaded_path, &loaded_length)) goto staged_cleanup;
+  HANDLE loaded = CreateFileW(loaded_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  PROPR_FILE_ID_INFO loaded_id;
+  char loaded_hash[65];
+  int loaded_ok = ordinary_file(loaded) && get_file_id(loaded, &loaded_id) &&
+                  same_file_id(&staged_id, &loaded_id) && sha256_handle(loaded, loaded_hash) &&
+                  strcmp(loaded_hash, staged_expected) == 0;
+  if (loaded != INVALID_HANDLE_VALUE) CloseHandle(loaded);
+  if (!loaded_ok || ResumeThread(child.hThread) == (DWORD)-1 ||
+      WaitForSingleObject(child.hProcess, INFINITE) != WAIT_OBJECT_0) goto staged_cleanup;
+  DWORD exit_code = PROPR_LAUNCH_FAILURE;
+  if (GetExitCodeProcess(child.hProcess, &exit_code)) status = (int)exit_code;
+
+staged_cleanup:
+  if (status == PROPR_LAUNCH_FAILURE && child.hProcess != NULL) TerminateProcess(child.hProcess, PROPR_LAUNCH_FAILURE);
+  if (child.hThread != NULL) CloseHandle(child.hThread);
+  if (child.hProcess != NULL) CloseHandle(child.hProcess);
+  if (job != NULL) CloseHandle(job);
+  CloseHandle(staged_lease);
+  CloseHandle(self_lease);
+  CloseHandle(staged_directory);
+  LocalFree(token_buffer);
+  return status;
+}
+
 static int secure_launch_supervisor(int argc, wchar_t **argv) {
   if (argc != 7 || argv[2] == NULL || argv[2][0] == L'\0' || wcschr(argv[2], L'"') != NULL) return PROPR_LAUNCH_FAILURE;
   int production = wcscmp(argv[3], L"production") == 0;
@@ -534,26 +722,35 @@ launch_cleanup:
 static int print_system_paths(void) {
   wchar_t windows_path[32768];
   wchar_t system_windows_path[32768];
+  wchar_t system_path[32768];
   UINT windows_length = GetWindowsDirectoryW(windows_path, sizeof(windows_path) / sizeof(windows_path[0]));
   UINT system_length = GetSystemWindowsDirectoryW(system_windows_path,
     sizeof(system_windows_path) / sizeof(system_windows_path[0]));
-  if (windows_length == 0 || system_length == 0 ||
+  UINT system_directory_length = GetSystemDirectoryW(system_path,
+    sizeof(system_path) / sizeof(system_path[0]));
+  if (windows_length == 0 || system_length == 0 || system_directory_length == 0 ||
       windows_length >= sizeof(windows_path) / sizeof(windows_path[0]) ||
-      system_length >= sizeof(system_windows_path) / sizeof(system_windows_path[0])) return PROPR_LAUNCH_FAILURE;
+      system_length >= sizeof(system_windows_path) / sizeof(system_windows_path[0]) ||
+      system_directory_length >= sizeof(system_path) / sizeof(system_path[0])) return PROPR_LAUNCH_FAILURE;
   char windows_utf8[32768];
   char system_utf8[32768];
+  char system_directory_utf8[32768];
   int first = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, windows_path, -1,
                                   windows_utf8, sizeof(windows_utf8), NULL, NULL);
   int second = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, system_windows_path, -1,
                                    system_utf8, sizeof(system_utf8), NULL, NULL);
-  if (first <= 1 || second <= 1) return PROPR_LAUNCH_FAILURE;
+  int third = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, system_path, -1,
+                                  system_directory_utf8, sizeof(system_directory_utf8), NULL, NULL);
+  if (first <= 1 || second <= 1 || third <= 1) return PROPR_LAUNCH_FAILURE;
   return fputs(windows_utf8, stdout) >= 0 && fputc('\n', stdout) != EOF &&
-         fputs(system_utf8, stdout) >= 0 && fputc('\n', stdout) != EOF && fflush(stdout) == 0
+         fputs(system_utf8, stdout) >= 0 && fputc('\n', stdout) != EOF &&
+         fputs(system_directory_utf8, stdout) >= 0 && fputc('\n', stdout) != EOF && fflush(stdout) == 0
     ? 0 : PROPR_LAUNCH_FAILURE;
 }
 
 int wmain(int argc, wchar_t **argv) {
   if (argc == 2 && wcscmp(argv[1], L"system-paths-v1") == 0) return print_system_paths();
+  if (argc >= 2 && wcscmp(argv[1], L"launch-staged-broker-v1") == 0) return secure_launch_staged_broker(argc, argv);
   if (argc >= 2 && wcscmp(argv[1], L"launch-supervisor-v2") == 0) return secure_launch_supervisor(argc, argv);
   if (argc == 2 && (wcscmp(argv[1], L"ping") == 0 || wcscmp(argv[1], L"ping-hold") == 0)) {
     if (wcscmp(argv[1], L"ping-hold") == 0) Sleep(1000);

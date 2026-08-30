@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { win32 } from "node:path";
 
 export const WINDOWS_HELPER_BUILD_STAGES = Object.freeze([
   "BUILD_COMPILER",
@@ -138,4 +139,40 @@ export function assertModernRoslynVersion(version) {
   if (!match || Number(match[1]) !== 4 || Number(match[2]) < 8 || Number(match[2]) > 20) {
     throw new WindowsHelperBuildError("BUILD_COMPILER", "BAD_FLAG");
   }
+}
+
+/**
+ * Validate the three paths returned by the native GetWindowsDirectoryW /
+ * GetSystemWindowsDirectoryW / GetSystemDirectoryW probe.  In particular,
+ * this deliberately does not compare against SystemRoot, windir, the Node
+ * installation drive, or PATH: all of those are caller-controlled inputs.
+ */
+export function validateNativeWindowsDirectories(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+  const windowsDirectory = value.windowsDirectory;
+  const systemWindowsDirectory = value.systemWindowsDirectory;
+  const systemDirectory = value.systemDirectory;
+  const ordinary = (path) => typeof path === "string"
+    && path.length >= 4
+    && path.length < 32768
+    && /^[A-Za-z]:\\[^\0\r\n]+$/u.test(path)
+    && !path.startsWith("\\\\")
+    && !path.includes("\\\\?\\")
+    && !path.toLowerCase().includes("\\globalroot\\")
+    && !path.split("\\").some((part) => part === "." || part === "..");
+  if (!ordinary(windowsDirectory) || !ordinary(systemWindowsDirectory) || !ordinary(systemDirectory)) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+  const canonicalWindows = win32.normalize(windowsDirectory).toLowerCase();
+  const canonicalSystemWindows = win32.normalize(systemWindowsDirectory).toLowerCase();
+  const canonicalSystem = win32.normalize(systemDirectory).toLowerCase();
+  if (canonicalWindows !== canonicalSystemWindows
+    || win32.dirname(canonicalSystem) !== canonicalWindows
+    || win32.basename(canonicalSystem) !== "system32"
+    || win32.parse(canonicalSystem).root.toLowerCase() !== win32.parse(canonicalWindows).root.toLowerCase()) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+  return Object.freeze({ windowsDirectory, systemWindowsDirectory, systemDirectory });
 }

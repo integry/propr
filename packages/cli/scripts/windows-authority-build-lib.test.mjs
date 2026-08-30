@@ -5,6 +5,7 @@ import {
   WindowsHelperBuildError,
   fixedBuildDiagnostic,
   runBoundedBuildTool,
+  validateNativeWindowsDirectories,
 } from "./windows-authority-build-lib.mjs";
 
 function result(overrides = {}) {
@@ -92,4 +93,46 @@ test("production signer pins cannot be copied from environment claims", () => {
   assert.equal(buildSource.includes("PROPR_WINDOWS_AUTHENTICODE_SPKI_SHA256"), false);
   assert.match(buildSource, /--print-signing-pins-v1/u);
   assert.match(buildSource, /Propr\.WindowsAuthority\.SigningPins/u);
+  assert.doesNotMatch(buildSource, /SignerCertificate\.Subject-notmatch/u);
+  assert.match(buildSource, /Test-AuthorizedMicrosoftFile/u);
+  assert.match(buildSource, /runBoundedBuildTool\(nativeLinker, nativeLinkArgs/u);
+  assert.doesNotMatch(buildSource, /PATH: `\$\{dirname\(nativeCompiler\)\}/u);
+});
+
+test("native Windows directory authority accepts hosted and alternate-drive layouts", () => {
+  for (const drive of ["C", "D", "Q"]) {
+    assert.deepEqual(validateNativeWindowsDirectories({
+      windowsDirectory: `${drive}:\\Windows`,
+      systemWindowsDirectory: `${drive}:\\Windows`,
+      systemDirectory: `${drive}:\\Windows\\System32`,
+    }), {
+      windowsDirectory: `${drive}:\\Windows`,
+      systemWindowsDirectory: `${drive}:\\Windows`,
+      systemDirectory: `${drive}:\\Windows\\System32`,
+    });
+  }
+});
+
+test("native Windows directory authority is independent of architecture and hostile environment roots", () => {
+  for (const architecture of ["x64", "arm64"]) {
+    const environment = { SystemRoot: "Z:\\attacker", windir: "Y:\\attacker", PROCESSOR_ARCHITECTURE: architecture };
+    const resolved = validateNativeWindowsDirectories({
+      windowsDirectory: "D:\\Windows",
+      systemWindowsDirectory: "D:\\Windows",
+      systemDirectory: "D:\\Windows\\System32",
+    });
+    assert.equal(resolved.windowsDirectory, "D:\\Windows");
+    assert.notEqual(resolved.windowsDirectory, environment.SystemRoot);
+    assert.notEqual(resolved.windowsDirectory, environment.windir);
+  }
+});
+
+test("native Windows directory authority rejects aliases, UNC roots, and disagreements", () => {
+  for (const candidate of [
+    { windowsDirectory: "C:\\Windows", systemWindowsDirectory: "D:\\Windows", systemDirectory: "C:\\Windows\\System32" },
+    { windowsDirectory: "C:\\Windows", systemWindowsDirectory: "C:\\Windows", systemDirectory: "D:\\Windows\\System32" },
+    { windowsDirectory: "\\\\?\\GLOBALROOT\\SystemRoot", systemWindowsDirectory: "\\\\?\\GLOBALROOT\\SystemRoot", systemDirectory: "C:\\Windows\\System32" },
+    { windowsDirectory: "\\\\server\\Windows", systemWindowsDirectory: "\\\\server\\Windows", systemDirectory: "\\\\server\\Windows\\System32" },
+    { windowsDirectory: "C:\\Windows\\..\\attacker", systemWindowsDirectory: "C:\\Windows\\..\\attacker", systemDirectory: "C:\\attacker\\System32" },
+  ]) assert.throws(() => validateNativeWindowsDirectories(candidate), WindowsHelperBuildError);
 });

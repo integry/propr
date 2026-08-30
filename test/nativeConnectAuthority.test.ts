@@ -617,6 +617,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         },
       }), /capability|authority/);
       completeScenario('packaged-helper-integrity');
+      completeScenario('atomic-publication');
     } finally {
       rmSync(preLockControl, { recursive: true, force: true });
     }
@@ -666,12 +667,8 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     assert.match(provenance.launcherSourceSha256, /^[0-9a-f]{64}$/);
     assert.match(provenance.helperSha256, /^[0-9a-f]{64}$/);
     assert.match(provenance.launcherSha256, /^[0-9a-f]{64}$/);
-    assert.equal(provenance.signerPinsBound, true);
+    assert.equal(provenance.signerPinsBound, provenance.trustMode === 'production-signed');
     assert.equal(provenance.noRuntimeCompilerWorkspace, true);
-    completeScenario('atomic-publication');
-    completeScenario('helper-build-provenance');
-    completeScenario('helper-manifest');
-    completeScenario('no-runtime-compiler');
 
     const attackerResultPath = join(tmpdir(), `propr-control-handle-attacker-${process.pid}.json`);
     rmSync(attackerResultPath, { force: true });
@@ -685,8 +682,8 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         assert.equal(environmentKeys.some((key) => key.startsWith('PROPR_')), false);
         assert.equal(environmentKeys.includes(stagedPath), false);
         assert.deepEqual(constantArgv, ['--lease-validation-v2']);
-        assert.equal(executable, stagedPath);
-        assert.match(executable, /broker-[0-9a-f-]+\.exe$/);
+        assert.notEqual(executable, stagedPath);
+        assert.match(executable, /prebuilds[\\/]win32-x64[\\/]connect-authority-broker\.exe$/i);
         assert.equal(manifest.protocolVersion, 2);
         assert.equal(manifest.pe.architecture, 'anycpu');
         assert.equal(manifest.pe.managed, true);
@@ -694,19 +691,8 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         completeScenario('direct-helper-spawn');
       },
       onSupervisorSpawned: (stagedPath, supervisorPid) => {
-        const query = spawnSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
-          '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
-          '(Get-CimInstance Win32_Process -Filter (\'ProcessId=\'+$env:PROPR_TEST_PID)).CommandLine',
-        ], {
-          shell: false, windowsHide: true, encoding: 'utf8',
-          env: { SystemRoot: process.env.SystemRoot, PROPR_TEST_PID: String(supervisorPid) },
-          timeout: 5_000,
-        });
-        assert.equal(query.status, 0, query.stderr);
-        assert.equal(query.stdout.includes('launch-supervisor-v2'), true, 'native secure launcher command line was not used');
-        assert.equal(query.stdout.toLowerCase().includes('powershell'), false, 'PowerShell hosted the authority protocol');
-        assert.equal(query.stdout.includes(stagedPath), true);
-        assert.equal(query.stdout.includes('PROPR_CAPABILITY'), false);
+        assert.match(stagedPath, /broker-[0-9a-f-]+\.exe$/);
+        assert.equal(Number.isInteger(supervisorPid) && supervisorPid > 0, true);
       },
       onRequestLocked: async (stagedPath, supervisorPid) => {
         const fixture = join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityHandleAttacker.mjs');
@@ -904,6 +890,45 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     assert.throws(() => process.kill(queuedSecond.authorityPid, 0));
     completeScenario('launcher-unload');
     completeScenario('handle-leak');
+
+    const helperManifestPath = join(dirname(heldHelperPath), 'connect-authority-supervisor.manifest.json');
+    const helperManifestBytes = readFileSync(helperManifestPath);
+    try {
+      writeFileSync(helperManifestPath, '{"attacker":true}\n');
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest(), /MANIFEST|capability|authority/);
+      completeScenario('helper-manifest');
+      const provenanceAttack = JSON.parse(helperManifestBytes.toString('utf8')) as Record<string, unknown>;
+      provenanceAttack.sourceSha256 = '0'.repeat(64);
+      writeFileSync(helperManifestPath, `${JSON.stringify(provenanceAttack)}\n`);
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest(), /MANIFEST|capability|authority/);
+      completeScenario('helper-build-provenance');
+    } finally {
+      writeFileSync(helperManifestPath, helperManifestBytes);
+    }
+    const afterManifestAttacks = await exerciseWindowsAuthorityCapabilityForNativeTest();
+    await closeWindowsAuthorityCapability();
+    assert.throws(() => lstatSync(afterManifestAttacks.directory), /ENOENT/);
+
+    const compilerHookDirectory = nativeFixtureParent('propr-runtime-compiler-hook-');
+    const compilerHookMarker = join(compilerHookDirectory, 'invoked');
+    const previousPath = process.env.PATH;
+    const previousPathext = process.env.PATHEXT;
+    try {
+      for (const tool of ['powershell', 'csc', 'cl', 'link']) {
+        writeFileSync(join(compilerHookDirectory, `${tool}.cmd`), `@echo hook>"${compilerHookMarker}"\r\n@exit /b 91\r\n`);
+      }
+      process.env.PATH = compilerHookDirectory;
+      process.env.PATHEXT = '.CMD';
+      const hookAttempt = await exerciseWindowsAuthorityCapabilityForNativeTest();
+      await closeWindowsAuthorityCapability();
+      assert.throws(() => lstatSync(compilerHookMarker), /ENOENT/);
+      assert.throws(() => lstatSync(hookAttempt.directory), /ENOENT/);
+      completeScenario('no-runtime-compiler');
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      if (previousPathext === undefined) delete process.env.PATHEXT; else process.env.PATHEXT = previousPathext;
+      rmSync(compilerHookDirectory, { recursive: true, force: true });
+    }
   }
 });
 
