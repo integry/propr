@@ -15,6 +15,7 @@ import {
 const READY_EVENT = 'desktop.renderer.ready';
 const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
 const PROFILE_API_PROOF = 'desktop.renderer.profile_api.ready';
+const LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const MAIN_PROCESS_ERROR_MARKERS = [
   'desktop.main_process.uncaught_exception',
   'A JavaScript error occurred in the main process',
@@ -22,6 +23,62 @@ const MAIN_PROCESS_ERROR_MARKERS = [
 ];
 const TIMEOUT_MS = 30_000;
 const binaryPath = resolve('out', `propr-desktop-linux-${process.arch}`, 'propr-desktop');
+
+const parseLayout = smokeOutput => {
+  for (const line of smokeOutput.split(/\r?\n/)) {
+    if (!line.includes(LAYOUT_READY_EVENT)) continue;
+    try {
+      const record = JSON.parse(line.slice(line.indexOf('{')));
+      if (record.event === LAYOUT_READY_EVENT) return record.layout;
+    } catch {
+      // Ignore non-JSON Chromium output that happens to mention the event name.
+    }
+  }
+  return undefined;
+};
+
+const assertGap = (before, after, minimum, description) => {
+  const gap = after.top - before.bottom;
+  if (gap < minimum) {
+    throw new Error(`Packaged layout ${description} gap was ${gap}px; expected at least ${minimum}px`);
+  }
+};
+
+const assertPackagedLayout = layout => {
+  if (!layout) throw new Error('Packaged desktop did not report renderer layout bounds');
+  if (layout.missing?.length) {
+    throw new Error(`Packaged renderer layout was missing: ${layout.missing.join(', ')}`);
+  }
+  if (layout.windowBounds?.width !== 1280 || layout.windowBounds?.height !== 820) {
+    throw new Error(`Packaged window was not 1280x820: ${JSON.stringify(layout.windowBounds)}`);
+  }
+  if (layout.viewport.width < 1200 || layout.viewport.height < 740) {
+    throw new Error(`Packaged renderer viewport is unexpectedly small: ${JSON.stringify(layout.viewport)}`);
+  }
+  if (layout.logo.height < 18 || layout.logo.height > 22 || layout.logo.width < 40 || layout.logo.width > 100) {
+    throw new Error(`Packaged title-bar logo has unreasonable bounds: ${JSON.stringify(layout.logo)}`);
+  }
+  if (
+    layout.logo.top < layout.titlebar.top
+    || layout.logo.bottom > layout.titlebar.bottom
+    || layout.card.left < 0
+    || layout.card.right > layout.viewport.width
+    || layout.card.top < layout.titlebar.bottom
+    || layout.card.bottom > layout.viewport.height
+  ) {
+    throw new Error('Packaged logo or connection card extends outside its layout container');
+  }
+  for (const name of ['connectionName', 'apiUrl', 'submit']) {
+    const control = layout[name];
+    if (control.height < 36 || control.left < layout.card.left || control.right > layout.card.right) {
+      throw new Error(`Packaged ${name} control has unreasonable bounds: ${JSON.stringify(control)}`);
+    }
+  }
+  assertGap(layout.connectionName, layout.apiUrl, 28, 'between connection inputs');
+  assertGap(layout.apiUrl, layout.apiHelp, 6, 'between API input and help text');
+  assertGap(layout.apiHelp, layout.submit, 16, 'between API help and submit button');
+  assertGap(layout.submit, layout.footer, 20, 'between submit button and runtime footer');
+};
 
 if (process.platform !== 'linux') {
   throw new Error('The packaged-binary smoke test currently targets the Linux artifact');
@@ -137,8 +194,9 @@ try {
   if (!output.includes(PROFILE_API_PROOF) || receivedProfileApiOrigin !== DESKTOP_RENDERER_ORIGIN) {
     throw new Error('Packaged desktop did not complete a profile API request from its exact renderer origin');
   }
+  assertPackagedLayout(parseLayout(output));
 
-  console.log('Packaged Linux desktop reached renderer-ready and completed a profile API request with sandboxing enabled.');
+  console.log('Packaged Linux desktop reached renderer-ready with compiled layout, sandboxing, and profile API proof.');
 } finally {
   profileApiServer.closeAllConnections();
   await new Promise(resolveClose => profileApiServer.close(resolveClose));
