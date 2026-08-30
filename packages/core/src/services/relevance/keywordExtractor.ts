@@ -294,7 +294,10 @@ export async function extractKeywordsWithLLM(
   } finally {
     const durationMs = Date.now() - startTime;
     routedMetadata ??= routingSession?.routingMetadata;
-    const modelUsed = actualModelUsed || (cachedSettings.planner_context_model as string) || agent.config.defaultModel || 'unknown';
+    const physicalModel = typeof routedMetadata?.physicalModel === 'string'
+      ? routedMetadata.physicalModel
+      : undefined;
+    const modelUsed = actualModelUsed || physicalModel || (cachedSettings.planner_context_model as string) || agent.config.defaultModel || 'unknown';
     const physicalAgentAlias = typeof routedMetadata?.physicalAgentAlias === 'string'
       ? routedMetadata.physicalAgentAlias
       : agent.config.alias;

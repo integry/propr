@@ -12,6 +12,7 @@ const {
 } = await import('../packages/core/src/index.js');
 const { processSingleBatch } = await import('../packages/core/src/services/relevance/summaryMinerBatch.js');
 const { processDirectoryBatch } = await import('../packages/core/src/services/relevance/summaryMinerDirectoryBatch.js');
+const { extractKeywordsWithLLM, invalidateSettingsCache } = await import('../packages/core/src/services/relevance/keywordExtractor.js');
 const { SyntheticRoutingService } = await import('../packages/core/src/services/syntheticRoutingService.js');
 
 function createAgent(alias: string, defaultModel: string, analyze: (prompt: string, options?: { model?: string; suppressLlmLog?: boolean }) => Promise<unknown>) {
@@ -47,7 +48,8 @@ describe('summary miner batch fallback', () => {
   beforeEach(async () => {
     await db('file_summaries').delete();
     await db('llm_logs').delete();
-    await db('system_configs').where({ key: 'summarization_runtime_state' }).delete();
+    await db('system_configs').whereIn('key', ['settings', 'summarization_runtime_state']).delete();
+    invalidateSettingsCache();
   });
 
   after(async () => {
@@ -270,6 +272,161 @@ describe('summary miner batch fallback', () => {
     assert.equal(metadata.syntheticRouting.virtualAgentAlias, 'summary-pool');
     assert.equal(metadata.syntheticRouting.virtualModel, 'smart');
     assert.equal(metadata.syntheticRouting.physicalAgentAlias, 'route-small');
+    assert.equal(metadata.syntheticRouting.physicalModel, 'gpt-5-mini');
+    assert.equal(metadata.syntheticRouting.attemptNumber, 2);
+  });
+
+  test('logs the last physical route when all synthetic directory summarization members fail', async () => {
+    const firstAgent = createAgent('directory-route-large', 'claude-opus-4-6', async (_prompt, options) => {
+      assert.equal(options?.model, 'claude-opus-4-6');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'claude-opus-4-6',
+        executionTimeMs: 1,
+        error: 'primary directory provider unavailable'
+      };
+    });
+    const secondAgent = createAgent('directory-route-small', 'gpt-5-mini', async (_prompt, options) => {
+      assert.equal(options?.model, 'gpt-5-mini');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'gpt-5-mini',
+        executionTimeMs: 1,
+        error: 'secondary directory provider unavailable'
+      };
+    });
+    const agents = new Map([
+      [firstAgent.config.alias, firstAgent],
+      [secondAgent.config.alias, secondAgent]
+    ]);
+    const router = new SyntheticRoutingService({
+      database: db,
+      loadSyntheticConfigs: async () => [{
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        alias: 'directory-summary-pool',
+        enabled: true,
+        defaultModel: 'smart',
+        models: [{
+          id: 'smart',
+          enabled: true,
+          strategy: 'round_robin',
+          members: [
+            { id: '55555555-5555-4555-8555-555555555555', directAgentAlias: 'directory-route-large', model: 'claude-opus-4-6', enabled: true, priority: 100 },
+            { id: '66666666-6666-4666-8666-666666666666', directAgentAlias: 'directory-route-small', model: 'gpt-5-mini', enabled: true, priority: 0 }
+          ]
+        }]
+      }],
+      getDirectAgent: alias => agents.get(alias) as never,
+      usageSnapshotProvider: { getSnapshot: async () => null }
+    });
+    const virtualAgent = createAgent('directory-summary-pool', 'smart', async () => {
+      throw new Error('synthetic facade should not be invoked directly');
+    });
+
+    const result = await processDirectoryBatch({
+      directories: [{
+        dirPath: 'integry/propr/src',
+        childFiles: [{ path: 'integry/propr/src/a.ts', summary: 'Exports A.' }],
+        childDirs: [],
+        newHash: 'hash-a'
+      }],
+      agent: virtualAgent as never,
+      log: log as never,
+      modelUsed: 'smart',
+      primaryAgentAliasSetting: 'directory-summary-pool',
+      fullName: 'integry/propr',
+      branch: 'main',
+      routingSession: router.begin({ requestedAgentAlias: 'directory-summary-pool', requestedModel: 'smart' })
+    });
+
+    assert.equal(result[0].summary, null);
+    assert.equal(result.fallbackUsed, false);
+    const llmLog = await db('llm_logs').orderBy('log_id', 'desc').first();
+    assert.equal(llmLog.agent_alias, 'directory-route-small');
+    assert.equal(llmLog.model_name, 'gpt-5-mini');
+    const metadata = JSON.parse(llmLog.metadata);
+    assert.equal(metadata.syntheticRouting.virtualAgentAlias, 'directory-summary-pool');
+    assert.equal(metadata.syntheticRouting.virtualModel, 'smart');
+    assert.equal(metadata.syntheticRouting.physicalAgentAlias, 'directory-route-small');
+    assert.equal(metadata.syntheticRouting.physicalModel, 'gpt-5-mini');
+    assert.equal(metadata.syntheticRouting.attemptNumber, 2);
+  });
+
+  test('keyword extraction logs the last physical model after complete synthetic exhaustion', async () => {
+    await db('system_configs').insert({
+      key: 'settings',
+      value: JSON.stringify({ planner_context_model: 'keyword-pool:smart' })
+    });
+    invalidateSettingsCache();
+
+    const firstAgent = createAgent('keyword-route-large', 'claude-opus-4-6', async (_prompt, options) => {
+      assert.equal(options?.model, 'claude-opus-4-6');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'claude-opus-4-6',
+        executionTimeMs: 1,
+        error: 'primary keyword provider unavailable'
+      };
+    });
+    const secondAgent = createAgent('keyword-route-small', 'gpt-5-mini', async (_prompt, options) => {
+      assert.equal(options?.model, 'gpt-5-mini');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'gpt-5-mini',
+        executionTimeMs: 1,
+        error: 'secondary keyword provider unavailable'
+      };
+    });
+    const agents = new Map([
+      [firstAgent.config.alias, firstAgent],
+      [secondAgent.config.alias, secondAgent]
+    ]);
+    const router = new SyntheticRoutingService({
+      database: db,
+      loadSyntheticConfigs: async () => [{
+        id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        alias: 'keyword-pool',
+        enabled: true,
+        defaultModel: 'smart',
+        models: [{
+          id: 'smart',
+          enabled: true,
+          strategy: 'round_robin',
+          members: [
+            { id: '77777777-7777-4777-8777-777777777777', directAgentAlias: 'keyword-route-large', model: 'claude-opus-4-6', enabled: true, priority: 100 },
+            { id: '88888888-8888-4888-8888-888888888888', directAgentAlias: 'keyword-route-small', model: 'gpt-5-mini', enabled: true, priority: 0 }
+          ]
+        }]
+      }],
+      getDirectAgent: alias => agents.get(alias) as never,
+      usageSnapshotProvider: { getSnapshot: async () => null }
+    });
+    const virtualAgent = createAgent('keyword-pool', 'smart', async () => {
+      throw new Error('synthetic facade should not be invoked directly');
+    });
+
+    const result = await extractKeywordsWithLLM('Fix the authentication failure', {
+      agent: virtualAgent as never,
+      routingSession: router.begin({ requestedAgentAlias: 'keyword-pool', requestedModel: 'smart' })
+    });
+
+    assert.deepEqual(result, { primary: [], alternatives: [], all: [] });
+    const llmLog = await db('llm_logs').orderBy('log_id', 'desc').first();
+    assert.equal(llmLog.success, 0);
+    assert.equal(llmLog.agent_alias, 'keyword-route-small');
+    assert.equal(llmLog.model_name, 'gpt-5-mini');
+    const metadata = JSON.parse(llmLog.metadata);
+    assert.equal(metadata.syntheticRouting.virtualAgentAlias, 'keyword-pool');
+    assert.equal(metadata.syntheticRouting.virtualModel, 'smart');
+    assert.equal(metadata.syntheticRouting.physicalAgentAlias, 'keyword-route-small');
     assert.equal(metadata.syntheticRouting.physicalModel, 'gpt-5-mini');
     assert.equal(metadata.syntheticRouting.attemptNumber, 2);
   });

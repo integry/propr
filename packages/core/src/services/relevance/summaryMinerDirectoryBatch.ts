@@ -157,6 +157,9 @@ async function analyzeDirectoryBatchWithFallback(options: ProcessDirectoryBatchO
       log
     );
   } catch (primaryError) {
+    state.routingMetadata = options.routingSession?.routingMetadata;
+    const physicalModel = state.routingMetadata?.physicalModel;
+    if (typeof physicalModel === 'string') state.modelLogged = physicalModel;
     await handlePrimaryDirectoryFailure(primaryError, options);
   }
 }
