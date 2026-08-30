@@ -184,14 +184,7 @@ jobs:
 
       - name: Run platform-safe focused Connect suites
         shell: bash
-        run: |
-          set -euo pipefail
-          npx tsx --experimental-test-module-mocks --test \
-            packages/cli/src/commands/connectCommand.test.ts \
-            packages/cli/src/config/ConfigManager.test.ts \
-            packages/cli/src/index.test.ts \
-            packages/cli/src/orchestrator/index.test.ts \
-            packages/api/test/statusRoutes.test.ts
+        run: node scripts/verify-platform-safe-connect.mjs
 
       - name: Require complete native Connect authority proof
         shell: bash

@@ -14,6 +14,7 @@
 
 #define PROPR_MAX_ENTRIES 64
 #define PROPR_MAX_OUTPUT (128 * 1024)
+#define PROPR_MAX_REQUEST 4096
 
 typedef struct {
   ULONGLONG VolumeSerialNumber;
@@ -81,6 +82,8 @@ static int sid_text(PSID sid, char *destination, size_t capacity) {
   return length > 1 && (size_t)length <= capacity;
 }
 
+/* Legacy bootstrap-only path mode retained for deterministic pre-authentication
+   attack probes. Production setup and inspection use batch-v1 handles only. */
 static HANDLE open_path(const wchar_t *path, DWORD access) {
   return CreateFileW(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                      NULL, OPEN_EXISTING,
@@ -271,11 +274,149 @@ static int parse_uintptr(const wchar_t *text, ULONG_PTR *value) {
   return 1;
 }
 
+static int request_line(char *request, size_t length, size_t *offset, char **line) {
+  if (*offset >= length) return 0;
+  size_t start = *offset;
+  while (*offset < length && request[*offset] != '\n') {
+    unsigned char value = (unsigned char)request[*offset];
+    if (value == 0 || value == '\r' || value > 0x7f) return 0;
+    *offset += 1;
+  }
+  if (*offset >= length || request[*offset] != '\n') return 0;
+  request[*offset] = '\0';
+  *offset += 1;
+  *line = request + start;
+  return 1;
+}
+
+static int request_id_valid(const char *value) {
+  if (strlen(value) != 32) return 0;
+  for (size_t index = 0; index < 32; index += 1) {
+    if (!((value[index] >= '0' && value[index] <= '9') ||
+          (value[index] >= 'a' && value[index] <= 'f'))) return 0;
+  }
+  return 1;
+}
+
+static int parse_count(const char *value, int *count) {
+  if (value[0] < '1' || value[0] > '9') return 0;
+  unsigned int parsed = 0;
+  for (size_t index = 0; value[index] != '\0'; index += 1) {
+    if (value[index] < '0' || value[index] > '9') return 0;
+    parsed = parsed * 10u + (unsigned int)(value[index] - '0');
+    if (parsed > PROPR_MAX_ENTRIES) return 0;
+  }
+  *count = (int)parsed;
+  return 1;
+}
+
+static int read_batch_request(char request[PROPR_MAX_REQUEST + 1], char **request_id,
+                              int *protect, int *count, char *kinds[PROPR_MAX_ENTRIES]) {
+  size_t length = fread(request, 1, PROPR_MAX_REQUEST + 1, stdin);
+  if (ferror(stdin) || length == 0 || length > PROPR_MAX_REQUEST) return 0;
+  size_t offset = 0;
+  char *line = NULL;
+  if (!request_line(request, length, &offset, &line) || strcmp(line, "PROPR_AUTHORITY_V1") != 0 ||
+      !request_line(request, length, &offset, request_id) || !request_id_valid(*request_id) ||
+      !request_line(request, length, &offset, &line)) return 0;
+  if (strcmp(line, "inspect") == 0) *protect = 0;
+  else if (strcmp(line, "protect") == 0) *protect = 1;
+  else return 0;
+  if (!request_line(request, length, &offset, &line) || !parse_count(line, count)) return 0;
+  for (int index = 0; index < *count; index += 1) {
+    if (!request_line(request, length, &offset, &kinds[index])) return 0;
+    if (*protect) {
+      if (strcmp(kinds[index], "directory") != 0 && strcmp(kinds[index], "file") != 0) return 0;
+    } else if (strcmp(kinds[index], "ancestor") != 0 && strcmp(kinds[index], "home") != 0 &&
+               strcmp(kinds[index], "root") != 0 && strcmp(kinds[index], "data") != 0 &&
+               strcmp(kinds[index], "env") != 0) return 0;
+  }
+  return offset == length;
+}
+
+static const wchar_t *wide_kind(const char *kind) {
+  if (strcmp(kind, "ancestor") == 0) return L"ancestor";
+  if (strcmp(kind, "home") == 0) return L"home";
+  if (strcmp(kind, "root") == 0 || strcmp(kind, "directory") == 0) return L"root";
+  if (strcmp(kind, "data") == 0) return L"data";
+  if (strcmp(kind, "env") == 0 || strcmp(kind, "file") == 0) return L"env";
+  return NULL;
+}
+
+static HANDLE reopen_for_protection(HANDLE source, int directory) {
+  PROPR_FILE_ID_INFO before;
+  PROPR_FILE_ID_INFO after;
+  BY_HANDLE_FILE_INFORMATION information;
+  if (!get_file_id(source, &before) || !GetFileInformationByHandle(source, &information) ||
+      ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) != directory ||
+      (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) return INVALID_HANDLE_VALUE;
+  HANDLE reopened = ReOpenFile(source, READ_CONTROL | WRITE_DAC | WRITE_OWNER,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+  if (reopened == INVALID_HANDLE_VALUE || !get_file_id(reopened, &after) || !same_file_id(&before, &after)) {
+    if (reopened != INVALID_HANDLE_VALUE) CloseHandle(reopened);
+    return INVALID_HANDLE_VALUE;
+  }
+  return reopened;
+}
+
 int wmain(int argc, wchar_t **argv) {
   if (argc == 2 && (wcscmp(argv[1], L"ping") == 0 || wcscmp(argv[1], L"ping-hold") == 0)) {
     if (wcscmp(argv[1], L"ping-hold") == 0) Sleep(1000);
     static const char response[] = "{\"version\":1,\"ready\":true}\n";
     return fwrite(response, 1, sizeof(response) - 1, stdout) == sizeof(response) - 1 && fflush(stdout) == 0 ? 0 : 14;
+  }
+  if (argc == 2 && wcscmp(argv[1], L"batch-v1") == 0) {
+    char request[PROPR_MAX_REQUEST + 1];
+    char *request_id = NULL;
+    char *kinds[PROPR_MAX_ENTRIES];
+    int protect = 0;
+    int count = 0;
+    if (!read_batch_request(request, &request_id, &protect, &count, kinds)) return 10;
+    BYTE *token_buffer = NULL;
+    PSID user_sid = NULL;
+    char user_sid_text[192];
+    if (!current_user_sid(&token_buffer, &user_sid, user_sid_text, sizeof(user_sid_text))) return 12;
+    HANDLE handles[PROPR_MAX_ENTRIES];
+    for (int index = 0; index < count; index += 1) handles[index] = INVALID_HANDLE_VALUE;
+    output_buffer output = {{0}, 0};
+    for (int index = 0; index < count; index += 1) {
+      intptr_t inherited = _get_osfhandle(3 + index);
+      if (inherited == -1) goto batch_failure;
+      HANDLE source = (HANDLE)inherited;
+      handles[index] = protect
+        ? reopen_for_protection(source, strcmp(kinds[index], "directory") == 0)
+        : source;
+      if (handles[index] == INVALID_HANDLE_VALUE) goto batch_failure;
+    }
+    if (protect) {
+      for (int index = 0; index < count; index += 1) {
+        if (!protect_entry(handles[index], strcmp(kinds[index], "directory") == 0, user_sid)) goto batch_failure;
+      }
+    }
+    if (!append_literal(&output, "{\"version\":1,\"requestId\":\"") ||
+        !append_literal(&output, request_id) || !append_literal(&output, "\",")) goto batch_failure;
+    if (protect && (!append_literal(&output, "\"protected\":") ||
+                    !append_u32(&output, (DWORD)count) || !append_literal(&output, ","))) goto batch_failure;
+    if (!append_literal(&output, "\"entries\":[")) goto batch_failure;
+    for (int index = 0; index < count; index += 1) {
+      const wchar_t *kind = wide_kind(kinds[index]);
+      if (kind == NULL || (index != 0 && !append_literal(&output, ",")) ||
+          !inspect_entry(&output, handles[index], user_sid_text, index, kind)) goto batch_failure;
+    }
+    if (!append_literal(&output, "]}\n")) goto batch_failure;
+    for (int index = 0; index < count; index += 1) {
+      if (protect && handles[index] != INVALID_HANDLE_VALUE) CloseHandle(handles[index]);
+    }
+    LocalFree(token_buffer);
+    return write_output(&output) ? 0 : 14;
+
+batch_failure:
+    for (int index = 0; index < count; index += 1) {
+      if (protect && handles[index] != INVALID_HANDLE_VALUE) CloseHandle(handles[index]);
+    }
+    LocalFree(token_buffer);
+    return 13;
   }
   if (argc < 3) return 10;
   int inspect = wcscmp(argv[1], L"inspect") == 0;

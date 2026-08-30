@@ -7,12 +7,15 @@ import { after, test } from 'node:test';
 import {
   ConnectRootError,
   getOrCreateSnapshotPublicInstanceIdentity,
+  PublicInstanceIdentityError,
   readTrustedConnectTunnelOverride,
   withOwnedConnectRootSnapshot,
 } from '../packages/cli/dist/connectIdentity.js';
 import {
   nativeConnectRootAuthorityInspector,
   assertNativeEntryAuthority,
+  closeWindowsAuthorityCapability,
+  exerciseWindowsAuthorityCapabilityForNativeTest,
   exerciseWindowsAuthorityBootstrapForNativeTest,
   protectWindowsSetupEntries,
   protectWindowsSetupEntry,
@@ -45,6 +48,17 @@ function completeScenario(name: string): void {
   const count = (completedScenarios.get(name) ?? 0) + 1;
   assert.equal(count, 1, `native scenario ${name} completed more than once`);
   completedScenarios.set(name, count);
+}
+
+function isFixedInvalidRoot(error: unknown, reason = 'INVALID_ROOT'): boolean {
+  return error instanceof ConnectRootError
+    && error.reason === reason
+    && error.message === `the explicit stack root is unavailable or is not owned by the caller [reason=${reason}]`;
+}
+
+function isFixedPublicIdentityError(error: unknown): boolean {
+  return error instanceof PublicInstanceIdentityError
+    && error.message === 'the public instance identity is unavailable or invalid';
 }
 
 after(() => {
@@ -335,41 +349,105 @@ test('native root/env/data/identity authority accepts the protected object and r
     assert.throws(() => lstatSync(crashReady), /ENOENT/);
     completeScenario('recovery');
 
-    const readyPath = join(root, 'data', READY);
-    // The policy-valid 0644 state must pass before ACL authority is the only
-    // changed variable; otherwise this fixture proves only a mode rejection.
-    writeFileSync(readyPath, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: ID })}\n`, { mode: 0o644 });
-    chmodSync(readyPath, 0o644);
-    if (process.platform === 'win32') protectWindowsSetupEntry(readyPath, 'file');
-    grantBroadWrite(readyPath, false);
-    assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => (
-      getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
-    ), { parseEnvFile: () => ({}) }), broadReason);
-    completeScenario('ready-denial');
-    unlinkSync(readyPath);
+    if (process.platform === 'darwin') {
+      const readyRoot = makeStack(parent, 'ready-denial-root');
+      const readyPath = join(readyRoot, 'data', READY);
+      const finalReadyPath = join(readyRoot, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME);
+      const fixtureStop = new Error('production READY fixture captured');
+      assert.throws(() => withOwnedConnectRootSnapshot(readyRoot, (snapshot) => (
+        getOrCreatePublicInstanceIdentityPinned(snapshot.identityDirectory, {
+          role: 'host',
+          generate: () => ID,
+          onBoundary: (boundary) => {
+            if (boundary === 'recovery-published') throw fixtureStop;
+          },
+        })
+      ), { parseEnvFile: () => ({}) }), (error) => error === fixtureStop);
+      assertPublishedNative(readyPath);
+      const productionIdentity = (() => {
+        const productionFd = openSync(readyPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          return stableAuthorityIdentity(productionFd);
+        } finally {
+          closeSync(productionFd);
+        }
+      })();
+
+      // First prove the untouched production READY entry is accepted and fully
+      // recovered. Move that exact inode back to the production recovery slot so
+      // the ACL is the sole variable in the denial half of the fixture.
+      assert.equal(withOwnedConnectRootSnapshot(readyRoot, (snapshot) => (
+        getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
+      ), { parseEnvFile: () => ({}) }), ID);
+      assert.throws(() => lstatSync(readyPath), /ENOENT/);
+      const recoveredFd = openSync(finalReadyPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        assert.deepEqual(stableAuthorityIdentity(recoveredFd), productionIdentity);
+      } finally {
+        closeSync(recoveredFd);
+      }
+      renameSync(finalReadyPath, readyPath);
+      assertPublishedNative(readyPath);
+      const heldReadyFd = openSync(readyPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        assert.deepEqual(stableAuthorityIdentity(heldReadyFd), productionIdentity);
+        grantBroadWrite(readyPath, false);
+        assert.deepEqual(stableAuthorityIdentity(heldReadyFd), productionIdentity);
+        assert.throws(() => withOwnedConnectRootSnapshot(readyRoot, (snapshot) => (
+          getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
+        ), { parseEnvFile: () => ({}) }), isFixedPublicIdentityError);
+      } finally {
+        closeSync(heldReadyFd);
+      }
+      completeScenario('ready-denial');
+    } else {
+      const readyPath = join(root, 'data', READY);
+      writeFileSync(readyPath, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: ID })}\n`, { mode: 0o644 });
+      protectWindowsSetupEntry(readyPath, 'file');
+      grantBroadWrite(readyPath, false);
+      assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => (
+        getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
+      ), { parseEnvFile: () => ({}) }), broadReason);
+      completeScenario('ready-denial');
+      unlinkSync(readyPath);
+    }
 
     let identityReplaced = false;
-    assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => (
-      getOrCreatePublicInstanceIdentityPinned(snapshot.identityDirectory, {
-        role: 'host',
-        onBoundary: (boundary) => {
-          if (boundary !== 'identity-read-statted' || identityReplaced) return;
-          identityReplaced = true;
-          const path = join(root, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME);
-          renameSync(path, `${path}.detached`);
-          writeFileSync(path, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: ID })}\n`, { mode: 0o644 });
-          chmodSync(path, 0o644);
-          if (process.platform === 'win32') protectWindowsSetupEntry(path, 'file');
-        },
-      })
-    ), { parseEnvFile: () => ({}) }));
+    let identitySwapProven = false;
+    assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => {
+      try {
+        return getOrCreatePublicInstanceIdentityPinned(snapshot.identityDirectory, {
+          role: 'host',
+          onBoundary: (boundary) => {
+            if (boundary !== 'identity-read-statted' || identityReplaced) return;
+            identityReplaced = true;
+            const path = join(root, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME);
+            const before = lstatSync(path, { bigint: true });
+            const detached = `${path}.detached`;
+            renameSync(path, detached);
+            writeFileSync(path, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: ID })}\n`, { mode: 0o644 });
+            chmodSync(path, 0o644);
+            if (process.platform === 'win32') protectWindowsSetupEntry(path, 'file');
+            const held = lstatSync(detached, { bigint: true });
+            const replacement = lstatSync(path, { bigint: true });
+            assert.equal(held.dev, before.dev);
+            assert.equal(held.ino, before.ino);
+            assert.notEqual(`${replacement.dev}:${replacement.ino}`, `${before.dev}:${before.ino}`);
+            identitySwapProven = true;
+          },
+        });
+      } catch {
+        throw new PublicInstanceIdentityError();
+      }
+    }, { parseEnvFile: () => ({}) }), isFixedPublicIdentityError);
     assert.equal(identityReplaced, true);
+    assert.equal(identitySwapProven, true);
     completeScenario('identity-swap');
 
     grantBroadWrite(join(root, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME), false);
     assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => (
       getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
-    ), { parseEnvFile: () => ({}) }), broadReason);
+    ), { parseEnvFile: () => ({}) }), process.platform === 'darwin' ? isFixedPublicIdentityError : broadReason);
     completeScenario('broad-publication');
 
     for (const [name, relative, directory] of [
@@ -381,7 +459,7 @@ test('native root/env/data/identity authority accepts the protected object and r
       grantBroadWrite(relative ? join(candidate, relative) : candidate, directory);
       assert.throws(
         () => withOwnedConnectRootSnapshot(candidate, () => undefined, { parseEnvFile: () => ({}) }),
-        broadReason,
+        process.platform === 'darwin' ? isFixedInvalidRoot : broadReason,
       );
       completeScenario(name);
     }
@@ -398,7 +476,7 @@ test('native root/env/data/identity authority accepts the protected object and r
     grantBroadWrite(unsafeAncestor, true);
     assert.throws(
       () => withOwnedConnectRootSnapshot(descendant, () => undefined, { parseEnvFile: () => ({}) }),
-      broadReason,
+      process.platform === 'darwin' ? isFixedInvalidRoot : broadReason,
     );
     completeScenario('broad-ancestor');
 
@@ -468,6 +546,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
   const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
   let artifactMoved = false;
   try {
+    if (process.platform === 'win32') closeWindowsAuthorityCapability();
     renameSync(artifact, backup);
     artifactMoved = true;
     if (process.platform === 'darwin') {
@@ -510,28 +589,26 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       rmSync(preLockControl, { recursive: true, force: true });
     }
 
-    for (const [boundary, scenario, mode] of [
-      ['after-lock', 'bootstrap-after-lock', 'replace'],
-      ['during-launch', 'bootstrap-during-launch', 'replace'],
-      ['before-launch', 'bootstrap-aba', 'aba'],
+    for (const [boundary, scenario] of [
+      ['after-lock', 'bootstrap-after-lock'],
+      ['during-startup', 'bootstrap-during-launch'],
     ] as const) {
-      const control = nativeFixtureParent(`propr-bootstrap-${mode}-`);
+      const control = nativeFixtureParent(`propr-bootstrap-${boundary}-`);
       try {
         const readyPath = join(control, 'ready');
         const continuePath = join(control, 'continue');
         const resultPath = join(control, 'result.json');
         const fixture = join(process.cwd(), 'test', 'fixtures', 'windowsAuthoritySwapAttacker.mjs');
-        const output = exerciseWindowsAuthorityBootstrapForNativeTest({
-          args: boundary === 'during-launch' ? ['ping-hold'] : ['ping'],
-          barrier: { boundary, readyPath, continuePath },
+        const capability = exerciseWindowsAuthorityCapabilityForNativeTest({
+          acquisitionBarrier: { boundary, readyPath, continuePath },
           onStaged: (stagedPath) => {
             const attacker = spawn(process.execPath, [
-              fixture, stagedPath, command, readyPath, continuePath, resultPath, mode,
+              fixture, stagedPath, command, readyPath, continuePath, resultPath, 'replace',
             ], { stdio: 'ignore', windowsHide: true });
             attacker.unref();
           },
         });
-        assert.deepEqual(JSON.parse(output.toString('utf8')), { version: 1, ready: true });
+        assert.deepEqual(JSON.parse(capability.output.toString('utf8')), { version: 1, ready: true });
         const result = JSON.parse(readFileSync(resultPath, 'utf8')) as {
           attempted: boolean; replaced: boolean; restored: boolean; code: string;
         };
@@ -543,6 +620,37 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         rmSync(control, { recursive: true, force: true });
       }
     }
+
+    const locked = exerciseWindowsAuthorityCapabilityForNativeTest({
+      onRequestLocked: (stagedPath) => {
+        assert.throws(() => renameSync(stagedPath, `${stagedPath}.attacker`));
+        assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability probe/);
+      },
+    });
+    assert.deepEqual(JSON.parse(locked.output.toString('utf8')), { version: 1, ready: true });
+    assert.throws(() => renameSync(locked.stagedPath, `${locked.stagedPath}.between-requests`));
+    const betweenRequests = exerciseWindowsAuthorityCapabilityForNativeTest();
+    assert.equal(betweenRequests.stagedPath, locked.stagedPath);
+    assert.deepEqual(JSON.parse(betweenRequests.output.toString('utf8')), { version: 1, ready: true });
+    completeScenario('bootstrap-aba');
+
+    process.kill(locked.supervisorPid);
+    const crashDeadline = Date.now() + 5_000;
+    while (Date.now() < crashDeadline) {
+      try { process.kill(locked.supervisorPid, 0); } catch { break; }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+    assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);
+    const restarted = exerciseWindowsAuthorityCapabilityForNativeTest();
+    assert.notEqual(restarted.stagedPath, locked.stagedPath);
+    assert.deepEqual(JSON.parse(restarted.output.toString('utf8')), { version: 1, ready: true });
+    assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest({ args: ['batch-v1'] }), /capability/);
+    const protocolRestarted = exerciseWindowsAuthorityCapabilityForNativeTest();
+    assert.notEqual(protocolRestarted.stagedPath, restarted.stagedPath);
+    assert.deepEqual(JSON.parse(protocolRestarted.output.toString('utf8')), { version: 1, ready: true });
+    closeWindowsAuthorityCapability();
+    assert.throws(() => lstatSync(protocolRestarted.directory), /ENOENT/);
+    assert.throws(() => process.kill(protocolRestarted.supervisorPid, 0));
   }
 });
 
@@ -559,7 +667,7 @@ test('native reparse, replacement, and inspection-path swap never authorize anot
     }
     assert.throws(
       () => withOwnedConnectRootSnapshot(alias, () => undefined, { parseEnvFile: () => ({}) }),
-      /REPARSE_POINT/,
+      (error) => isFixedInvalidRoot(error, 'REPARSE_POINT'),
     );
     completeScenario('reparse');
 
@@ -579,7 +687,9 @@ test('native reparse, replacement, and inspection-path swap never authorize anot
           makeStack(parent, 'real');
         }
       },
-    }), /NAMED_REPLACED|explicit stack root/);
+    }), (error) => process.platform === 'win32'
+      ? error instanceof ConnectRootError && ['NAMED_REPLACED', 'INVALID_ROOT'].includes(error.reason)
+      : isFixedInvalidRoot(error));
     assert.equal(replaced, true);
     completeScenario('replacement-barrier');
 
@@ -591,9 +701,24 @@ test('native reparse, replacement, and inspection-path swap never authorize anot
     chmodSync(safe, 0o600);
     if (process.platform === 'win32') protectWindowsSetupEntry(safe, 'file');
     let swapped = false;
+    let heldInspectionProven = false;
     const inspector = {
       inspectDarwinAcl(path: string, fd: number, identity: { device: string; file: string }) {
-        if (!swapped && path === unsafe) { swapped = true; renameSync(unsafe, `${unsafe}.held`); renameSync(safe, unsafe); }
+        if (!swapped && path === unsafe) {
+          const before = stableAuthorityIdentity(fd);
+          swapped = true;
+          renameSync(unsafe, `${unsafe}.held`);
+          renameSync(safe, unsafe);
+          const namedFd = openSync(unsafe, constants.O_RDONLY | constants.O_NOFOLLOW);
+          try {
+            assert.deepEqual(stableAuthorityIdentity(fd), before);
+            assert.notDeepEqual(stableAuthorityIdentity(namedFd), before);
+            assert.deepEqual(identity, before);
+            heldInspectionProven = true;
+          } finally {
+            closeSync(namedFd);
+          }
+        }
         return nativeConnectRootAuthorityInspector.inspectDarwinAcl(path, fd, identity);
       },
       inspectWindowsAcl(path: string, identity: { device: string; file: string }, fd?: number, kind?: 'ancestor' | 'home' | 'root' | 'data' | 'env') {
@@ -612,8 +737,9 @@ test('native reparse, replacement, and inspection-path swap never authorize anot
     assert.throws(() => withOwnedConnectRootSnapshot(unsafeRoot, () => undefined, {
       authorityInspector: inspector,
       parseEnvFile: () => ({}),
-    }), process.platform === 'win32' ? /BROAD_WRITE/ : /write authority/);
+    }), process.platform === 'win32' ? /BROAD_WRITE/ : isFixedInvalidRoot);
     assert.equal(swapped, true);
+    if (process.platform === 'darwin') assert.equal(heldInspectionProven, true);
     completeScenario('inspection-handle-swap');
   } finally {
     rmSync(parent, { recursive: true, force: true });
