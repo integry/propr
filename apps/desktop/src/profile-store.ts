@@ -384,6 +384,11 @@ export class ProfileStore {
     return encryptionStatus(this.#encryption);
   }
 
+  /** Resolves after every queued recovery, mutation, and cleanup operation has settled. */
+  awaitIdle(): Promise<void> {
+    return this.#mutation;
+  }
+
   list(): Promise<DesktopProfileList> {
     return this.#mutate(async () => {
       const state = await this.#readState();

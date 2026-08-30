@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const EXPECTED = Object.freeze({
-  'credential-service': 55,
+  'credential-service': 67,
   'profile-store': 36,
 });
 const expectedTotal = Object.values(EXPECTED).reduce((total, count) => total + count, 0);

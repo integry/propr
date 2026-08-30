@@ -31,16 +31,30 @@ export interface CredentialServiceDependencies {
     'list' | 'saveAndDetachCredential' | 'commitPairedProfile' | 'detachProfile' | 'setActive' | 'activateProfile' | 'security'
     | 'readCredential' | 'readProfileCredential' | 'writeCredential' | 'removeCredential'
     | 'removeCredentialIfCurrent' | 'journalPendingRevocation' | 'releasePendingRevocation'
-    | 'pendingRevocations' | 'completePendingRevocation'>;
+    | 'pendingRevocations' | 'completePendingRevocation' | 'awaitIdle'>;
   fetch: typeof globalThis.fetch;
   openExternal(url: string): Promise<void>;
   clientName: string;
   /** Deterministic pairing timing for protocol tests. Production uses the client defaults. */
   pairingTiming?: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
+  /** Tests may shorten, but never enlarge, the production revocation deadlines. */
+  revocationDeadlines?: Partial<RevocationDeadlines>;
   reportRevocationFailure?(diagnostic: {
     code: 'network' | 'http' | 'local-cleanup';
     status?: number;
   }): void;
+}
+
+export interface CredentialServiceInitialization {
+  status: 'ready' | 'degraded';
+  retryPending: boolean;
+}
+
+interface RevocationDeadlines {
+  headerMs: number;
+  bodyMs: number;
+  recordMs: number;
+  aggregateMs: number;
 }
 
 interface ActiveCredential extends StoredCredential {
@@ -90,6 +104,46 @@ const headerValues = (headers: RequestHeaders, name: string): string[] => {
 const TRANSPORT_SCOPE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const MAX_REVOCATION_RESPONSE_BYTES = 2_048;
 const TERMINAL_REVOCATION_CODES = new Set<string>(DESKTOP_TOKEN_TERMINAL_CODES);
+const REVOCATION_DEADLINES: RevocationDeadlines = {
+  headerMs: 8_000,
+  bodyMs: 2_000,
+  recordMs: 10_000,
+  aggregateMs: 12_000,
+};
+
+const boundedRevocationDeadlines = (
+  requested: Partial<RevocationDeadlines> | undefined,
+): RevocationDeadlines => Object.fromEntries(
+  Object.entries(REVOCATION_DEADLINES).map(([key, maximum]) => {
+    const value = requested?.[key as keyof RevocationDeadlines] ?? maximum;
+    if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+      throw new Error('Invalid desktop revocation deadline');
+    }
+    return [key, value];
+  }),
+) as unknown as RevocationDeadlines;
+
+const linkedAbortController = (signals: readonly AbortSignal[]): {
+  controller: AbortController;
+  dispose: () => void;
+} => {
+  const controller = new AbortController();
+  const onAbort = (event: Event): void => {
+    const signal = event.target as AbortSignal;
+    if (!controller.signal.aborted) controller.abort(signal.reason);
+  };
+  for (const signal of signals) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      break;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+  return {
+    controller,
+    dispose: () => signals.forEach(signal => signal.removeEventListener('abort', onAbort)),
+  };
+};
 
 const requestOrigin = (value: string): { origin: string; pathname: string; url: URL } | null => {
   try {
@@ -118,6 +172,9 @@ const isEndpointBoundTerminalRevocation = async (
   response: Response,
   credential: StoredCredential,
   credentialGeneration: string,
+  signal: AbortSignal,
+  abortNetwork: () => void,
+  bodyDeadlineMs: number,
 ): Promise<boolean> => {
   if (response.redirected) return false;
   if (response.url) {
@@ -136,36 +193,107 @@ const isEndpointBoundTerminalRevocation = async (
   if (declaredLength !== null
     && (!/^(?:0|[1-9][0-9]*)$/.test(declaredLength)
       || Number(declaredLength) > MAX_REVOCATION_RESPONSE_BYTES)) return false;
+  if (!response.body) return false;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  let rejectAbort!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+  const onAbort = (): void => rejectAbort(signal.reason ?? new Error('Desktop revocation body was cancelled'));
+  if (signal.aborted) onAbort();
+  else signal.addEventListener('abort', onAbort, { once: true });
+  deadline = setTimeout(() => {
+    abortNetwork();
+    rejectAbort(new Error('Desktop revocation body timed out'));
+  }, bodyDeadlineMs);
   let text: string;
   try {
-    text = await response.clone().text();
+    while (true) {
+      const part = await Promise.race([reader.read(), aborted]);
+      if (part.done) break;
+      if (!(part.value instanceof Uint8Array) || part.value.byteLength === 0) {
+        abortNetwork();
+        return false;
+      }
+      received += part.value.byteLength;
+      if (received > MAX_REVOCATION_RESPONSE_BYTES) {
+        abortNetwork();
+        return false;
+      }
+      chunks.push(Uint8Array.from(part.value));
+    }
+    if (declaredLength !== null && Number(declaredLength) !== received) {
+      abortNetwork();
+      return false;
+    }
+    const bytes = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
+    abortNetwork();
     return false;
+  } finally {
+    if (deadline) clearTimeout(deadline);
+    signal.removeEventListener('abort', onAbort);
+    if (signal.aborted) {
+      // Invoking both primitives is important for native fetch and deterministic
+      // ReadableStream tests. Network abort is the authoritative bounded wait.
+      let cancelDeadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          reader.cancel(),
+          new Promise<void>(resolve => {
+            cancelDeadline = setTimeout(resolve, Math.min(bodyDeadlineMs, 100));
+          }),
+        ]);
+      } catch {
+        // The owning network controller is already aborted.
+      } finally {
+        if (cancelDeadline) clearTimeout(cancelDeadline);
+      }
+    }
+    try { reader.releaseLock(); } catch { /* A hostile stream may retain a pending read. */ }
   }
-  if (Buffer.byteLength(text, 'utf8') > MAX_REVOCATION_RESPONSE_BYTES) return false;
   let raw: unknown;
   try {
     raw = JSON.parse(text) as unknown;
   } catch {
+    abortNetwork();
     return false;
   }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    abortNetwork();
+    return false;
+  }
   const body = raw as Record<string, unknown>;
   const expectedKeys = [
     'schema', 'version', 'endpoint', 'terminal', 'code', 'credentialGeneration',
   ];
   if (Object.keys(body).length !== expectedKeys.length
-    || expectedKeys.some(key => !(key in body))) return false;
+    || expectedKeys.some(key => !(key in body))) {
+    abortNetwork();
+    return false;
+  }
   if (body.schema !== DESKTOP_TOKEN_REVOCATION_SCHEMA
     || body.version !== DESKTOP_TOKEN_REVOCATION_VERSION
     || body.endpoint !== DESKTOP_TOKEN_REVOCATION_ENDPOINT
     || body.terminal !== true
     || body.credentialGeneration !== credentialGeneration
     || typeof body.code !== 'string'
-    || !TERMINAL_REVOCATION_CODES.has(body.code)) return false;
-  return response.status === 404
+    || !TERMINAL_REVOCATION_CODES.has(body.code)) {
+    abortNetwork();
+    return false;
+  }
+  const terminal = response.status === 404
     ? body.code === 'TOKEN_NOT_FOUND'
     : body.code === 'INSTANCE_TOKEN_REVOKED' || body.code === 'INSTANCE_TOKEN_EXPIRED';
+  if (!terminal) abortNetwork();
+  return terminal;
 };
 
 const authenticationSummary = (capabilities: {
@@ -185,7 +313,9 @@ export class DesktopCredentialService {
   readonly #clientName: string;
   readonly #pairingTiming: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
   readonly #reportRevocationFailure: NonNullable<CredentialServiceDependencies['reportRevocationFailure']>;
+  readonly #revocationDeadlines: RevocationDeadlines;
   readonly #internalRequestKey = randomBytes(32).toString('base64url');
+  readonly #lifecycleController = new AbortController();
   readonly #profileGenerations = new Map<string, number>();
   readonly #pairingControllers = new Map<string, AbortController>();
   #selectionGeneration = 0;
@@ -194,7 +324,12 @@ export class DesktopCredentialService {
   #active: ActiveCredential | null = null;
   #publishingPair = false;
   #publishWaiters: Array<() => void> = [];
-  #revocationRetry = Promise.resolve();
+  #retryRequested = false;
+  #retryIncludeDeferred = false;
+  #revocationWorker: Promise<CredentialServiceInitialization> | null = null;
+  readonly #backgroundTasks = new Set<Promise<unknown>>();
+  #closed = false;
+  #disposePromise: Promise<void> | null = null;
 
   constructor(dependencies: CredentialServiceDependencies) {
     this.#profiles = dependencies.profiles;
@@ -203,15 +338,52 @@ export class DesktopCredentialService {
     this.#clientName = dependencies.clientName;
     this.#pairingTiming = dependencies.pairingTiming ?? {};
     this.#reportRevocationFailure = dependencies.reportRevocationFailure ?? (() => undefined);
+    this.#revocationDeadlines = boundedRevocationDeadlines(dependencies.revocationDeadlines);
   }
 
-  async initialize(): Promise<void> {
-    await this.#retryPendingRevocations(true);
+  async initialize(): Promise<CredentialServiceInitialization> {
+    if (this.#closed) return { status: 'degraded', retryPending: true };
+    const worker = this.#requestPendingRevocationRetry(true);
+    let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        worker,
+        new Promise<CredentialServiceInitialization>(resolve => {
+          startupTimer = setTimeout(
+            () => resolve({ status: 'degraded', retryPending: true }),
+            this.#revocationDeadlines.aggregateMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (startupTimer) clearTimeout(startupTimer);
+    }
+  }
+
+  awaitIdle(): Promise<void> {
+    return this.#awaitIdle();
+  }
+
+  dispose(): Promise<void> {
+    if (this.#disposePromise) return this.#disposePromise;
+    this.#closed = true;
+    this.#active = null;
+    this.#pendingActivation = null;
+    this.#lifecycleController.abort(new Error('Desktop credential service disposed'));
+    for (const controller of this.#pairingControllers.values()) controller.abort();
+    this.#pairingControllers.clear();
+    this.#disposePromise = (async () => {
+      await this.#awaitIdle();
+      await this.#profiles.awaitIdle();
+      await this.#awaitIdle();
+    })();
+    return this.#disposePromise;
   }
 
   async saveProfile(input: DesktopProfileInput) {
+    this.#assertOpen();
     await this.#waitForPairPublish();
-    void this.#retryPendingRevocations();
+    this.#schedulePendingRevocationRetry();
     const before = input.id
       ? (await this.#profiles.list()).profiles.find(profile => profile.id === input.id)
       : undefined;
@@ -228,22 +400,24 @@ export class DesktopCredentialService {
     }
     if (transaction.detachedCredential) this.#clearActiveIfCredential(transaction.detachedCredential);
     if (transaction.originChanged && this.#active?.profileId === transaction.profile.id) this.#active = null;
-    void this.#retryPendingRevocations();
+    this.#schedulePendingRevocationRetry();
     return transaction.profile;
   }
 
   async removeProfile(profileId: string): Promise<string | null> {
+    this.#assertOpen();
     if (this.#publishingPair) await this.#waitForPairPublish();
     this.#invalidateProfileOperations(profileId);
-    void this.#retryPendingRevocations();
+    this.#schedulePendingRevocationRetry();
     const detached = await this.#profiles.detachProfile(profileId);
     if (!detached) return null;
     if (detached.credential) this.#clearActiveIfCredential(detached.credential);
-    void this.#retryPendingRevocations();
+    this.#schedulePendingRevocationRetry();
     return detached.profile.apiBaseUrl;
   }
 
   async setActiveProfile(profileId: string | null): Promise<void> {
+    this.#assertOpen();
     if (this.#publishingPair) await this.#waitForPairPublish();
     this.#selectionGeneration += 1;
     this.#latestProbeTicket += 1;
@@ -251,11 +425,12 @@ export class DesktopCredentialService {
     for (const controller of this.#pairingControllers.values()) controller.abort();
     this.#pairingControllers.clear();
     this.#active = null;
-    void this.#retryPendingRevocations();
+    this.#schedulePendingRevocationRetry();
     await this.#profiles.setActive(profileId);
   }
 
   cancelPairing(profileId: string): void {
+    if (this.#closed) return;
     if (this.#publishingPair) {
       this.#publishWaiters.push(() => this.#cancelPairingNow(profileId));
       return;
@@ -273,8 +448,9 @@ export class DesktopCredentialService {
   }
 
   async pair(input: DesktopProfileInput): Promise<{ paired: true }> {
+    this.#assertOpen();
     await this.#waitForPairPublish();
-    void this.#retryPendingRevocations();
+    this.#schedulePendingRevocationRetry();
     if (!input.id) throw new Error('Desktop profile id is required');
     if (!this.#profiles.security().available) {
       throw new Error('OS-backed secure storage is required for desktop pairing.');
@@ -343,7 +519,7 @@ export class DesktopCredentialService {
       if (!committed) throw new ProprClientError('Desktop pairing was cancelled.', { kind: 'aborted' });
       transient = null;
       transientRevocation = null;
-      void this.#retryPendingRevocations();
+      this.#schedulePendingRevocationRetry();
       return { paired: true };
     } catch (error) {
       if (transient && !transientRevocation && !publicationStarted) {
@@ -360,7 +536,7 @@ export class DesktopCredentialService {
           transientRevocation.id,
           transientRevocation.credentialGeneration,
         );
-        if (released) await this.#retryPendingRevocations();
+        if (released) await this.#requestPendingRevocationRetry();
       }
       if (error instanceof ProprClientError && error.kind === 'aborted') {
         throw new Error('Desktop pairing was cancelled.');
@@ -372,8 +548,9 @@ export class DesktopCredentialService {
   }
 
   async probe(input: DesktopProfileInput): Promise<DesktopConnectionResult> {
+    this.#assertOpen();
     await this.#waitForPairPublish();
-    void this.#retryPendingRevocations();
+    this.#schedulePendingRevocationRetry();
     if (!input.id) throw new Error('Desktop profile id is required');
     const origin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!origin || origin !== input.apiBaseUrl) throw new Error('Invalid desktop API URL');
@@ -445,7 +622,7 @@ export class DesktopCredentialService {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
       }
       this.#clearActiveIfCredential(credential);
-      void this.#retryPendingRevocations();
+      this.#schedulePendingRevocationRetry();
       return {
         status: 'authentication-required',
         message: discovery.desktopAuthentication.browserPairing
@@ -506,7 +683,7 @@ export class DesktopCredentialService {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
       }
       this.#clearActiveIfCredential(credential);
-      void this.#retryPendingRevocations();
+      this.#schedulePendingRevocationRetry();
       return {
         status: 'authentication-required',
         message: 'Access to this instance was revoked or expired. Pair again to continue.',
@@ -524,8 +701,9 @@ export class DesktopCredentialService {
   }
 
   async activate(activationTicket: unknown): Promise<DesktopActivatedConnection> {
+    this.#assertOpen();
     await this.#waitForPairPublish();
-    void this.#retryPendingRevocations();
+    this.#schedulePendingRevocationRetry();
     if (typeof activationTicket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(activationTicket)) {
       throw new Error('Invalid desktop activation ticket');
     }
@@ -569,8 +747,9 @@ export class DesktopCredentialService {
   }
 
   async invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }> {
+    this.#assertOpen();
     await this.#waitForPairPublish();
-    void this.#retryPendingRevocations();
+    this.#schedulePendingRevocationRetry();
     if (!DEFINITIVE_INVALID_CODES.has(value.code)) return { invalidated: false };
     const active = this.#active;
     if (!active || active.profileId !== value.profileId
@@ -584,13 +763,14 @@ export class DesktopCredentialService {
       active.origin,
       () => this.#generation(active.profileId) === invalidationGeneration,
     );
-    if (removed) void this.#retryPendingRevocations();
+    if (removed) this.#schedulePendingRevocationRetry();
     return { invalidated: removed };
   }
 
   async discardActivation(value: DesktopConnectionScope): Promise<{ discarded: boolean }> {
+    this.#assertOpen();
     await this.#waitForPairPublish();
-    void this.#retryPendingRevocations();
+    this.#schedulePendingRevocationRetry();
     const active = this.#active;
     if (!active || typeof value?.profileId !== 'string' || typeof value?.transportScope !== 'string'
       || active.profileId !== value.profileId || active.transportScope !== value.transportScope
@@ -609,6 +789,7 @@ export class DesktopCredentialService {
     originalHeaders: RequestHeaders,
     details: { method?: string; resourceType?: string } = {},
   ): DesktopRequestDecision {
+    if (this.#closed) return { cancel: true };
     const headers = { ...originalHeaders };
     if (/^(?:https?|wss?):/i.test(url)) {
       const httpUrl = url.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
@@ -709,50 +890,161 @@ export class DesktopCredentialService {
     return this.#fetch(input, { ...init, headers });
   };
 
-  #retryPendingRevocations(includeDeferred = false): Promise<void> {
-    const retry = async () => {
-      let pending: PendingCredentialRevocation[];
-      try {
-        pending = await this.#profiles.pendingRevocations(includeDeferred);
-      } catch {
-        this.#reportRevocationFailure({ code: 'local-cleanup' });
-        return;
-      }
-      for (const entry of pending) {
-        let response: Response;
-        try {
-          response = await this.#authenticatedFetch(
-            entry.credential,
-            DESKTOP_TOKEN_REVOCATION_ENDPOINT,
-            {
-              method: 'DELETE',
-              headers: { [DESKTOP_REVOCATION_BINDING_HEADER]: entry.credentialGeneration },
-            },
-            8_000,
-          );
-        } catch {
-          this.#reportRevocationFailure({ code: 'network' });
-          continue;
-        }
-        if (!await isEndpointBoundTerminalRevocation(
-          response, entry.credential, entry.credentialGeneration,
-        )) {
-          this.#reportRevocationFailure({ code: 'http', status: response.status });
-          continue;
-        }
-        try {
-          const completed = await this.#profiles.completePendingRevocation(
-            entry.id, entry.credential, entry.credentialGeneration,
-          );
-          if (!completed) this.#reportRevocationFailure({ code: 'local-cleanup' });
-        } catch {
-          this.#reportRevocationFailure({ code: 'local-cleanup' });
-        }
-      }
+  #schedulePendingRevocationRetry(includeDeferred = false): void {
+    this.#requestPendingRevocationRetry(includeDeferred);
+  }
+
+  #requestPendingRevocationRetry(
+    includeDeferred = false,
+  ): Promise<CredentialServiceInitialization> {
+    if (this.#closed) return Promise.resolve({ status: 'degraded', retryPending: true });
+    this.#retryRequested = true;
+    this.#retryIncludeDeferred ||= includeDeferred;
+    if (this.#revocationWorker) return this.#revocationWorker;
+    const worker = this.#runPendingRevocationWorker();
+    this.#revocationWorker = worker;
+    this.#backgroundTasks.add(worker);
+    const settled = (): void => {
+      this.#backgroundTasks.delete(worker);
+      if (this.#revocationWorker === worker) this.#revocationWorker = null;
     };
-    const result = this.#revocationRetry.then(retry, retry);
-    this.#revocationRetry = result.then(() => undefined, () => undefined);
-    return result;
+    worker.then(settled, settled);
+    return worker;
+  }
+
+  async #runPendingRevocationWorker(): Promise<CredentialServiceInitialization> {
+    const aggregate = linkedAbortController([this.#lifecycleController.signal]);
+    const aggregateTimer = setTimeout(
+      () => aggregate.controller.abort(new Error('Desktop revocation aggregate deadline exceeded')),
+      this.#revocationDeadlines.aggregateMs,
+    );
+    const attemptedGenerations = new Set<string>();
+    let retryPending = false;
+    try {
+      while (this.#retryRequested && !this.#closed && !aggregate.controller.signal.aborted) {
+        this.#retryRequested = false;
+        const includeDeferred = this.#retryIncludeDeferred;
+        this.#retryIncludeDeferred = false;
+        let pending: PendingCredentialRevocation[];
+        try {
+          pending = await this.#profiles.pendingRevocations(includeDeferred);
+        } catch {
+          retryPending = true;
+          this.#reportFixedRevocationFailure({ code: 'local-cleanup' });
+          continue;
+        }
+        for (const entry of pending) {
+          if (attemptedGenerations.has(entry.credentialGeneration)) continue;
+          if (this.#closed || aggregate.controller.signal.aborted) {
+            retryPending = true;
+            this.#reportFixedRevocationFailure({ code: 'network' });
+            break;
+          }
+          attemptedGenerations.add(entry.credentialGeneration);
+          const result = await this.#retryPendingRevocation(entry, aggregate.controller.signal);
+          if (result === 'complete') continue;
+          retryPending = true;
+          if (result === 'network') {
+            this.#reportFixedRevocationFailure({ code: 'network' });
+          } else if (typeof result === 'object') {
+            this.#reportFixedRevocationFailure({ code: 'http', status: result.status });
+          } else {
+            this.#reportFixedRevocationFailure({ code: 'local-cleanup' });
+          }
+        }
+      }
+      if (aggregate.controller.signal.aborted || this.#closed) retryPending = true;
+      return { status: retryPending ? 'degraded' : 'ready', retryPending };
+    } finally {
+      clearTimeout(aggregateTimer);
+      aggregate.dispose();
+    }
+  }
+
+  async #retryPendingRevocation(
+    entry: PendingCredentialRevocation,
+    aggregateSignal: AbortSignal,
+  ): Promise<'complete' | 'network' | 'local-cleanup' | { status: number; type: 'http' }> {
+    const record = linkedAbortController([
+      this.#lifecycleController.signal,
+      aggregateSignal,
+    ]);
+    const recordTimer = setTimeout(
+      () => record.controller.abort(new Error('Desktop revocation record deadline exceeded')),
+      this.#revocationDeadlines.recordMs,
+    );
+    try {
+      const headers = new Headers({
+        Authorization: `Bearer ${entry.credential.token}`,
+        [DESKTOP_REVOCATION_BINDING_HEADER]: entry.credentialGeneration,
+      });
+      let response: Response;
+      const headerTimer = setTimeout(
+        () => record.controller.abort(new Error('Desktop revocation header deadline exceeded')),
+        this.#revocationDeadlines.headerMs,
+      );
+      try {
+        response = await this.#mainFetch(
+          `${entry.credential.origin}${DESKTOP_TOKEN_REVOCATION_ENDPOINT}`,
+          {
+            method: 'DELETE',
+            headers,
+            credentials: 'omit',
+            cache: 'no-store',
+            redirect: 'manual',
+            signal: record.controller.signal,
+          },
+        );
+      } catch {
+        return 'network';
+      } finally {
+        clearTimeout(headerTimer);
+      }
+      if (!await isEndpointBoundTerminalRevocation(
+        response,
+        entry.credential,
+        entry.credentialGeneration,
+        record.controller.signal,
+        () => record.controller.abort(new Error('Desktop revocation response rejected')),
+        this.#revocationDeadlines.bodyMs,
+      )) {
+        return { type: 'http', status: response.status };
+      }
+      record.controller.abort();
+      try {
+        const completed = await this.#profiles.completePendingRevocation(
+          entry.id, entry.credential, entry.credentialGeneration,
+        );
+        return completed ? 'complete' : 'local-cleanup';
+      } catch {
+        return 'local-cleanup';
+      }
+    } finally {
+      record.controller.abort();
+      clearTimeout(recordTimer);
+      record.dispose();
+    }
+  }
+
+  async #awaitIdle(): Promise<void> {
+    while (this.#backgroundTasks.size > 0) {
+      await Promise.allSettled([...this.#backgroundTasks]);
+    }
+  }
+
+  #reportFixedRevocationFailure(diagnostic: {
+    code: 'network' | 'http' | 'local-cleanup';
+    status?: number;
+  }): void {
+    try {
+      this.#reportRevocationFailure(diagnostic);
+    } catch {
+      // Diagnostics must never alter durable retry state or task settlement.
+    }
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) throw new Error('Desktop credential service is closed');
   }
 
   #beginPairPublish(

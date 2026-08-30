@@ -234,7 +234,12 @@ if (!hasSingleInstanceLock) {
       },
     });
     configureSessionSecurity(credentials);
-    await credentials.initialize();
+    const credentialInitialization = await credentials.initialize();
+    if (credentialInitialization.status === 'degraded') {
+      log('warn', 'desktop.credential_revocation.startup_degraded', {
+        retryPending: credentialInitialization.retryPending,
+      });
+    }
     const lifecycle = new LocalLifecycleController();
     registerIpcHandlers({
       app,
@@ -263,7 +268,13 @@ if (!hasSingleInstanceLock) {
       if (shutdownStarted) return;
       event.preventDefault();
       shutdownStarted = true;
-      void lifecycle.shutdown().finally(() => {
+      void Promise.allSettled([
+        credentials.dispose(),
+        lifecycle.shutdown(),
+      ]).then(results => {
+        for (const result of results) {
+          if (result.status === 'rejected') log('error', 'desktop.app.shutdown_failed', { error: result.reason });
+        }
         log('info', 'desktop.app.shutdown');
         app.quit();
       });

@@ -17,6 +17,7 @@ import { DesktopCredentialService } from './credential-service';
 import { ProfileStore, type EncryptionProvider, type StoredCredential } from './profile-store';
 
 const temporaryDirectories: string[] = [];
+const credentialServices: DesktopCredentialService[] = [];
 const encryption: EncryptionProvider = {
   isEncryptionAvailable: () => true,
   backend: () => 'keychain',
@@ -77,7 +78,16 @@ const createStore = async (): Promise<ProfileStore> => {
   return new ProfileStore(directory, encryption);
 };
 
+const createCredentialService = (
+  dependencies: ConstructorParameters<typeof DesktopCredentialService>[0],
+): DesktopCredentialService => {
+  const service = new DesktopCredentialService(dependencies);
+  credentialServices.push(service);
+  return service;
+};
+
 afterEach(async () => {
+  await Promise.all(credentialServices.splice(0).map(service => service.dispose()));
   await Promise.all(temporaryDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 
@@ -88,7 +98,7 @@ describe('main-process desktop credential service', () => {
     await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
     const wireRequests: Array<{ url: string; headers: Record<string, string | string[]> }> = [];
     let service!: DesktopCredentialService;
-    service = new DesktopCredentialService({
+    service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -171,7 +181,7 @@ describe('main-process desktop credential service', () => {
     const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://same.example.test' });
     await store.writeCredential(credential(profileA.id, profileA.apiBaseUrl, 'A'));
     await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -200,7 +210,7 @@ describe('main-process desktop credential service', () => {
     const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://b.example.test' });
     await store.writeCredential(credential(profileB.id, 'https://a.example.test', 'A'));
     const requests: Array<{ url: string; authorization: string | null }> = [];
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -233,7 +243,7 @@ describe('main-process desktop credential service', () => {
     const response = deferred<Response>();
     const authenticatedRequestStarted = deferred<void>();
     const requests: Array<{ url: string; authorization: string | null }> = [];
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -288,7 +298,7 @@ describe('main-process desktop credential service', () => {
       },
     });
     const requests: Array<{ url: string; authorization: string | null }> = [];
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: delayedProfiles,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -324,7 +334,7 @@ describe('main-process desktop credential service', () => {
     await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
     const releaseA = deferred<Response>();
     const startedA = deferred<void>();
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -371,7 +381,7 @@ describe('main-process desktop credential service', () => {
     const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://same.example.test' });
     await store.writeCredential(credential(profileA.id, profileA.apiBaseUrl, 'A'));
     await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -407,7 +417,7 @@ describe('main-process desktop credential service', () => {
     const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://same.example.test' });
     await store.writeCredential(credential(profileA.id, profileA.apiBaseUrl, 'A'));
     await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -436,7 +446,7 @@ describe('main-process desktop credential service', () => {
       const profileB = await store.save({ id: `profile-b-${race}`, label: 'B', apiBaseUrl: 'https://b.example.test' });
       await store.setActive(profileA.id);
       await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
-      const service = new DesktopCredentialService({
+      const service = createCredentialService({
         profiles: store,
         clientName: 'Test desktop',
         openExternal: async () => undefined,
@@ -471,7 +481,7 @@ describe('main-process desktop credential service', () => {
     const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://same.example.test' });
     await store.writeCredential(credential(profileA.id, profileA.apiBaseUrl, 'A'));
     await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -532,8 +542,8 @@ describe('main-process desktop credential service', () => {
   });
 
   it('passes through a realistic packaged-origin CORS preflight without renderer identity or bearer injection', () => {
-    const service = new DesktopCredentialService({
-      profiles: {} as ProfileStore,
+    const service = createCredentialService({
+      profiles: { awaitIdle: async () => undefined } as unknown as ProfileStore,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
       fetch: async () => { throw new Error('Network is not expected'); },
@@ -558,7 +568,7 @@ describe('main-process desktop credential service', () => {
     const store = await createStore();
     const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'http://localhost:3000' });
     await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -596,7 +606,7 @@ describe('main-process desktop credential service', () => {
     const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
     await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
     const requests: Array<{ url: string; authorization: string | null }> = [];
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -630,7 +640,7 @@ describe('main-process desktop credential service', () => {
     const oldProbeResponse = deferred<Response>();
     const oldProbePending = deferred<void>();
     const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
@@ -687,7 +697,7 @@ describe('main-process desktop credential service', () => {
     await store.writeCredential(oldCredential);
     const oldProbeResponse = deferred<Response>();
     const oldProbePending = deferred<void>();
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -755,7 +765,7 @@ describe('main-process desktop credential service', () => {
       const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
       const requests: Array<{ url: string; authorization: string | null }> = [];
       let service!: DesktopCredentialService;
-      service = new DesktopCredentialService({
+      service = createCredentialService({
         profiles: store,
         clientName: 'Test desktop',
         pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
@@ -825,7 +835,7 @@ describe('main-process desktop credential service', () => {
       state: Awaited<ReturnType<ProfileStore['list']>>;
       credential: StoredCredential | null;
     }>();
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
@@ -879,7 +889,7 @@ describe('main-process desktop credential service', () => {
     const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
     const diagnostics: Array<{ code: string; status?: number }> = [];
     let expectedProbeToken = credentialA.token;
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
@@ -932,7 +942,7 @@ describe('main-process desktop credential service', () => {
     ).requestHeaders, { Authorization: `Bearer ${credentialB.token}` });
 
     const offlineDiagnostics: Array<{ code: string; status?: number }> = [];
-    const offlineRestart = new DesktopCredentialService({
+    const offlineRestart = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -958,7 +968,7 @@ describe('main-process desktop credential service', () => {
       },
     });
     const cleanupDiagnostics: Array<{ code: string; status?: number }> = [];
-    const remoteSucceeded = new DesktopCredentialService({
+    const remoteSucceeded = createCredentialService({
       profiles: cleanupFailingProfiles,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -970,7 +980,7 @@ describe('main-process desktop credential service', () => {
     assert.equal((await store.pendingRevocations()).length, 1);
 
     let terminalRetries = 0;
-    const onlineRestart = new DesktopCredentialService({
+    const onlineRestart = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -1004,7 +1014,7 @@ describe('main-process desktop credential service', () => {
     const uncertainB = credential(uncertainProfile.id, uncertainProfile.apiBaseUrl, 'B');
     await uncertainStore.writeCredential(uncertainA);
     const uncertainRevocations: string[] = [];
-    const uncertainService = new DesktopCredentialService({
+    const uncertainService = createCredentialService({
       profiles: uncertainStore,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
@@ -1081,7 +1091,7 @@ describe('main-process desktop credential service', () => {
       assert.deepEqual(await restarted.readCredential(profile.id), credentialB);
       assert.equal((await restarted.pendingRevocations()).length, 1);
       let retries = 0;
-      const retryingService = new DesktopCredentialService({
+      const retryingService = createCredentialService({
         profiles: restarted,
         clientName: 'Restarted desktop',
         openExternal: async () => undefined,
@@ -1114,7 +1124,7 @@ describe('main-process desktop credential service', () => {
       await store.removeCredential(profile.id);
       const pending = await store.pendingRevocations();
       assert.equal(pending.length, 1);
-      const service = new DesktopCredentialService({
+      const service = createCredentialService({
         profiles: store,
         clientName: 'Terminal contract test',
         openExternal: async () => undefined,
@@ -1167,7 +1177,7 @@ describe('main-process desktop credential service', () => {
       await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
       await store.removeCredential(profile.id);
       const diagnostics: Array<{ code: string; status?: number }> = [];
-      const service = new DesktopCredentialService({
+      const service = createCredentialService({
         profiles: store,
         clientName: 'Retryable contract test',
         openExternal: async () => undefined,
@@ -1181,6 +1191,302 @@ describe('main-process desktop credential service', () => {
     });
   }
 
+  const streamingRevocationCases: ReadonlyArray<[
+    string,
+    boolean,
+    (init: RequestInit | undefined) => Response,
+  ]> = [
+    ['chunked 2048-byte terminal JSON', true, init => {
+      const jsonBody = JSON.stringify(terminalRevocationBody(init));
+      const body = new TextEncoder().encode(jsonBody + ' '.repeat(2_048 - Buffer.byteLength(jsonBody)));
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(body.slice(0, 1_024));
+          controller.enqueue(body.slice(1_024));
+          controller.close();
+        },
+      }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+    }],
+    ['chunked 2049-byte terminal JSON', false, init => {
+      const jsonBody = JSON.stringify(terminalRevocationBody(init));
+      const body = new TextEncoder().encode(jsonBody + ' '.repeat(2_049 - Buffer.byteLength(jsonBody)));
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(body.slice(0, 2_048));
+          controller.enqueue(body.slice(2_048));
+          controller.close();
+        },
+      }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+    }],
+    ['terminal JSON without Content-Length', true, init => {
+      const body = new TextEncoder().encode(JSON.stringify(terminalRevocationBody(init)));
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(body.slice(0, 7));
+          controller.enqueue(body.slice(7));
+          controller.close();
+        },
+      }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+    }],
+    ['deceptive short Content-Length', false, init => {
+      const body = JSON.stringify(terminalRevocationBody(init));
+      return new Response(body, {
+        status: 404,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(body) - 1) },
+      });
+    }],
+    ['extra chunk after declared Content-Length', false, init => {
+      const body = new TextEncoder().encode(JSON.stringify(terminalRevocationBody(init)));
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(body);
+          controller.enqueue(new TextEncoder().encode(' '));
+          controller.close();
+        },
+      }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': String(body.byteLength) },
+      });
+    }],
+    ['malformed UTF-8', false, () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Uint8Array.from([0xc3, 0x28]));
+        controller.close();
+      },
+    }), { status: 404, headers: { 'Content-Type': 'application/json' } })],
+    ['premature body error', false, () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{'));
+        controller.error(new Error('injected body failure'));
+      },
+    }), { status: 404, headers: { 'Content-Type': 'application/json' } })],
+  ];
+
+  for (const [name, completes, response] of streamingRevocationCases) {
+    it(`${completes ? 'accepts' : 'retains'} encrypted retry material for ${name}`, async () => {
+      const store = await createStore();
+      const profile = await store.save({
+        id: 'profile-streaming', label: 'A', apiBaseUrl: 'https://a.example.test',
+      });
+      await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+      await store.removeCredential(profile.id);
+      const service = createCredentialService({
+        profiles: store,
+        clientName: 'Streaming terminal contract test',
+        openExternal: async () => undefined,
+        fetch: async (_input, init) => response(init),
+      });
+
+      const initialized = await service.initialize();
+
+      assert.equal((await store.pendingRevocations()).length, completes ? 0 : 1);
+      assert.equal(initialized.status, completes ? 'ready' : 'degraded');
+    });
+  }
+
+  it('bounds a one-byte slowloris body and retains its encrypted retry material', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-slowloris', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+    await store.removeCredential(profile.id);
+    let bodyCancelled = false;
+    const service = createCredentialService({
+      profiles: store,
+      clientName: 'Slowloris terminal contract test',
+      openExternal: async () => undefined,
+      revocationDeadlines: { headerMs: 50, bodyMs: 25, recordMs: 75, aggregateMs: 100 },
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{')); },
+        cancel() { bodyCancelled = true; },
+      }), { status: 404, headers: { 'Content-Type': 'application/json' } }),
+    });
+
+    const initialized = await service.initialize();
+
+    assert.deepEqual(initialized, { status: 'degraded', retryPending: true });
+    assert.equal(bodyCancelled, true);
+    assert.equal((await store.pendingRevocations()).length, 1);
+  });
+
+  it('dispose aborts a stalled header fetch, deduplicates its generation, and leaves no later activity', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-dispose-fetch', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+    await store.removeCredential(profile.id);
+    const fetchStarted = deferred<void>();
+    let fetchCalls = 0;
+    let fetchAborted = false;
+    const service = createCredentialService({
+      profiles: store,
+      clientName: 'Dispose fetch barrier test',
+      openExternal: async () => undefined,
+      fetch: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
+        fetchCalls += 1;
+        fetchStarted.resolve();
+        const signal = init?.signal;
+        assert.ok(signal);
+        const abort = () => {
+          fetchAborted = true;
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        };
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+      }),
+    });
+
+    const first = service.initialize();
+    const duplicate = service.initialize();
+    await fetchStarted.promise;
+    await service.dispose();
+    await Promise.all([first, duplicate]);
+    const callsAtDispose = fetchCalls;
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.equal(fetchAborted, true);
+    assert.equal(fetchCalls, 1);
+    assert.equal(fetchCalls, callsAtDispose);
+    assert.equal((await store.pendingRevocations()).length, 1);
+    await assert.rejects(
+      service.removeProfile(profile.id),
+      /credential service is closed/i,
+    );
+  });
+
+  it('dispose cancels a headers-then-stall body and retains exact encrypted material', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-dispose-body', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    const old = credential(profile.id, profile.apiBaseUrl, 'A');
+    await store.writeCredential(old);
+    await store.removeCredential(profile.id);
+    const bodyStarted = deferred<void>();
+    let bodyCancelled = false;
+    let networkCalls = 0;
+    const service = createCredentialService({
+      profiles: store,
+      clientName: 'Dispose body barrier test',
+      openExternal: async () => undefined,
+      fetch: async () => {
+        networkCalls += 1;
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{'));
+            bodyStarted.resolve();
+          },
+          cancel() { bodyCancelled = true; },
+        }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      },
+    });
+
+    const initialization = service.initialize();
+    await bodyStarted.promise;
+    await service.dispose();
+    await initialization;
+    const callsAtDispose = networkCalls;
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    const pending = await store.pendingRevocations();
+    assert.equal(bodyCancelled, true);
+    assert.equal(networkCalls, callsAtDispose);
+    assert.equal(pending.length, 1);
+    assert.deepEqual(pending[0].credential, old);
+  });
+
+  it('dispose waits for terminal journal cleanup and no file operation runs afterward', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
+    temporaryDirectories.push(directory);
+    const journalWriteStarted = deferred<void>();
+    const releaseJournalWrite = deferred<void>();
+    let barrierArmed = false;
+    let ioOperations = 0;
+    const store = new ProfileStore(directory, encryption, {
+      beforeIO: operation => {
+        ioOperations += 1;
+        if (barrierArmed && operation === 'journal-write') {
+          barrierArmed = false;
+          journalWriteStarted.resolve();
+          return releaseJournalWrite.promise;
+        }
+      },
+    });
+    const profile = await store.save({ id: 'profile-dispose-journal', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+    await store.removeCredential(profile.id);
+    barrierArmed = true;
+    let networkCalls = 0;
+    const service = createCredentialService({
+      profiles: store,
+      clientName: 'Dispose journal barrier test',
+      openExternal: async () => undefined,
+      fetch: async () => {
+        networkCalls += 1;
+        return new Response(null, { status: 204 });
+      },
+    });
+
+    const initialization = service.initialize();
+    await journalWriteStarted.promise;
+    let disposed = false;
+    const disposal = service.dispose().then(() => { disposed = true; });
+    await Promise.resolve();
+    assert.equal(disposed, false);
+    releaseJournalWrite.resolve();
+    await Promise.all([initialization, disposal]);
+    const ioAtDispose = ioOperations;
+    const networkAtDispose = networkCalls;
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.equal(ioOperations, ioAtDispose);
+    assert.equal(networkCalls, networkAtDispose);
+    assert.deepEqual(await store.pendingRevocations(), []);
+  });
+
+  it('bounds aggregate startup across stalled records and recovers all encrypted records later', async () => {
+    const store = await createStore();
+    for (const [id, character] of [['profile-startup-a', 'A'], ['profile-startup-b', 'B']] as const) {
+      const profile = await store.save({ id, label: id, apiBaseUrl: `https://${character.toLowerCase()}.example.test` });
+      await store.writeCredential(credential(profile.id, profile.apiBaseUrl, character));
+      await store.removeCredential(profile.id);
+    }
+    let stalledCalls = 0;
+    const offline = createCredentialService({
+      profiles: store,
+      clientName: 'Bounded startup test',
+      openExternal: async () => undefined,
+      revocationDeadlines: { headerMs: 100, bodyMs: 50, recordMs: 125, aggregateMs: 500 },
+      fetch: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
+        stalledCalls += 1;
+        const signal = init?.signal;
+        assert.ok(signal);
+        const abort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort, { once: true });
+      }),
+    });
+    const startedAt = Date.now();
+
+    const initialization = await offline.initialize();
+
+    assert.deepEqual(initialization, { status: 'degraded', retryPending: true });
+    assert.ok(Date.now() - startedAt < 1_500);
+    assert.equal(stalledCalls, 2);
+    assert.equal((await store.pendingRevocations()).length, 2);
+    await offline.dispose();
+
+    let recoveryCalls = 0;
+    const online = createCredentialService({
+      profiles: store,
+      clientName: 'Later online recovery test',
+      openExternal: async () => undefined,
+      fetch: async () => {
+        recoveryCalls += 1;
+        return new Response(null, { status: 204 });
+      },
+    });
+    assert.deepEqual(await online.initialize(), { status: 'ready', retryPending: false });
+    assert.equal(recoveryCalls, 2);
+    assert.deepEqual(await store.pendingRevocations(), []);
+  });
+
   it('retries a crash-left provisional pairing credential on startup', async () => {
     const store = await createStore();
     const profile = await store.save({ id: 'profile-provisional', label: 'A', apiBaseUrl: 'https://a.example.test' });
@@ -1191,7 +1497,7 @@ describe('main-process desktop credential service', () => {
     if ('stored' in provisional) return;
     assert.equal(provisional.deferred, true);
     let calls = 0;
-    const restarted = new DesktopCredentialService({
+    const restarted = createCredentialService({
       profiles: store,
       clientName: 'Restarted after provisional crash',
       openExternal: async () => undefined,
@@ -1213,7 +1519,7 @@ describe('main-process desktop credential service', () => {
     const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://b.example.test' });
     await store.writeCredential(credential(profileA.id, profileA.apiBaseUrl, 'A'));
     await store.writeCredential(credential(profileB.id, profileB.apiBaseUrl, 'B'));
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -1281,7 +1587,7 @@ describe('main-process desktop credential service', () => {
     let pairingNumber = 0;
     let currentPairing = 0;
     const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
-    service = new DesktopCredentialService({
+    service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
@@ -1338,7 +1644,7 @@ describe('main-process desktop credential service', () => {
     const store = new ProfileStore(directory, cancellingEncryption);
     const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
     const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
-    service = new DesktopCredentialService({
+    service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
@@ -1377,7 +1683,7 @@ describe('main-process desktop credential service', () => {
     await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
     const revocationStarted = deferred<void>();
     const releaseRevocation = deferred<Response>();
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
@@ -1422,7 +1728,7 @@ describe('main-process desktop credential service', () => {
     const revokeStarted = deferred<void>();
     const releaseRevoke = deferred<Response>();
     const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
@@ -1480,7 +1786,7 @@ describe('main-process desktop credential service', () => {
     const replacement = credential(profile.id, profile.apiBaseUrl, 'B');
     await store.writeCredential(oldCredential);
     const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
-    const service = new DesktopCredentialService({
+    const service = createCredentialService({
       profiles: store,
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
@@ -1570,8 +1876,9 @@ describe('main-process desktop credential service', () => {
         pendingRevocations: () => store.pendingRevocations(),
         completePendingRevocation: (...args: Parameters<ProfileStore['completePendingRevocation']>) =>
           store.completePendingRevocation(...args),
+        awaitIdle: () => store.awaitIdle(),
       };
-      service = new DesktopCredentialService({
+      service = createCredentialService({
         profiles,
         clientName: 'Test desktop',
         pairingTiming: {
@@ -1640,7 +1947,7 @@ describe('main-process desktop credential service', () => {
         await store.setActive(profileA.id);
         const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
         const revocations: string[] = [];
-        const service = new DesktopCredentialService({
+        const service = createCredentialService({
           profiles: store,
           clientName: 'Test desktop',
           pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
