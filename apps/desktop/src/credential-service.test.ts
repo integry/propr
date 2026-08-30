@@ -1755,7 +1755,9 @@ describe('main-process desktop credential service', () => {
   it('detaches a removed profile locally before deferred revoke and preserves a later replacement', async () => {
     const store = await createStore();
     const profile = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
-    await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+    const storedCredential = credential(profile.id, profile.apiBaseUrl, 'A');
+    await store.writeCredential(storedCredential);
+    await store.setActive(profile.id);
     const revocationStarted = deferred<void>();
     const releaseRevocation = deferred<Response>();
     const service = createCredentialService({
@@ -1764,8 +1766,13 @@ describe('main-process desktop credential service', () => {
       openExternal: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
+        if (url.endsWith('/api/desktop/discovery')) return json(discovery);
+        if (url.endsWith('/api/auth/user')) {
+          assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${storedCredential.token}`);
+          return json({ username: 'octocat' });
+        }
         if (url.endsWith('/api/desktop/tokens/current')) {
-          assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${token('A')}`);
+          assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${storedCredential.token}`);
           revocationStarted.resolve();
           return releaseRevocation.promise;
         }
@@ -1773,10 +1780,57 @@ describe('main-process desktop credential service', () => {
       },
     });
 
+    const ready = await service.probe(profile);
+    assert.equal(ready.status, 'ready');
+    if (ready.status !== 'ready') return;
+    const active = await service.activate(ready.activationTicket);
+    const pending = await service.probe(profile);
+    assert.equal(pending.status, 'ready');
+    if (pending.status !== 'ready') return;
+
+    let rendererSuccessPublished = false;
+    let removalError: unknown;
+    const failedRemoval = service.removeProfile(profile.id, async origin => {
+      assert.equal(origin, profile.apiBaseUrl);
+      throw new Error('origin storage clear failed');
+    }).then(result => {
+      rendererSuccessPublished = true;
+      return result;
+    });
+    await assert.rejects(failedRemoval, error => {
+      removalError = error;
+      return error instanceof Error && /origin storage clear failed/.test(error.message);
+    });
+
+    assert.equal(rendererSuccessPublished, false);
+    assert.doesNotMatch(String(removalError), new RegExp(storedCredential.token));
+    assert.deepEqual(await store.list(), { profiles: [profile], activeProfileId: profile.id });
+    assert.deepEqual(await store.readCredential(profile.id), storedCredential);
+    assert.deepEqual(await store.pendingRevocations(), []);
+    assert.deepEqual(service.prepareRequest(
+      `${profile.apiBaseUrl}/api/tasks`, transportHeaders(active.transportScope),
+    ), { cancel: true });
+    await assert.rejects(
+      service.activate(pending.activationTicket),
+      /Desktop activation expired/,
+    );
+
+    const reconstructedReady = await service.probe(profile);
+    assert.equal(reconstructedReady.status, 'ready');
+    if (reconstructedReady.status !== 'ready') return;
+    const reconstructed = await service.activate(reconstructedReady.activationTicket);
+    assert.equal(reconstructed.profileId, profile.id);
+    assert.notEqual(reconstructed.transportScope, active.transportScope);
+    assert.equal('token' in reconstructed, false);
+    assert.deepEqual(await store.readCredential(profile.id), storedCredential);
+
     const removal = service.removeProfile(profile.id);
     await revocationStarted.promise;
     assert.equal((await store.list()).profiles.some(item => item.id === profile.id), false);
     assert.equal(await store.readCredential(profile.id), null);
+    assert.deepEqual(service.prepareRequest(
+      `${profile.apiBaseUrl}/api/tasks`, transportHeaders(reconstructed.transportScope),
+    ), { cancel: true });
 
     const replacementProfile = await service.saveProfile({
       id: profile.id,

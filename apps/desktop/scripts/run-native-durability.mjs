@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 const EXPECTED = Object.freeze({
   'credential-service': 68,
-  'profile-store': 36,
+  'profile-store': 37,
   'pairing-shutdown': 10,
 });
 const expectedTotal = Object.values(EXPECTED).reduce((total, count) => total + count, 0);
