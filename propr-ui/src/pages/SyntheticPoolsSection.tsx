@@ -18,7 +18,9 @@ interface SyntheticPoolsSectionProps {
   success: string | null;
   readOnly?: boolean;
   readOnlyMessage?: string;
+  editorActive?: boolean;
   addRequested?: number;
+  onAddRequestConsumed?: (request: number) => void;
   onSave: (pools: SyntheticAgentConfig[]) => Promise<SyntheticAgentConfig[] | undefined>;
 }
 
@@ -265,15 +267,25 @@ const PoolEditor: React.FC<EditorProps> = ({
 };
 
 const SyntheticPoolsSection: React.FC<SyntheticPoolsSectionProps> = ({
-  agents, pools, loading, saving, error, warning, success, readOnly = false, readOnlyMessage, addRequested = 0, onSave,
+  agents, pools, loading, saving, error, warning, success, readOnly = false, readOnlyMessage, editorActive = true,
+  addRequested = 0, onAddRequestConsumed, onSave,
 }) => {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const fieldErrors = useMemo(() => parseFieldErrors(error), [error]);
 
   useEffect(() => {
-    if (addRequested > 0 && !readOnly) setCreating(true);
-  }, [addRequested, readOnly]);
+    if (addRequested <= 0) return;
+    onAddRequestConsumed?.(addRequested);
+    if (!readOnly && editorActive) setCreating(true);
+  }, [addRequested, editorActive, onAddRequestConsumed, readOnly]);
+
+  useEffect(() => {
+    if (!editorActive) {
+      setCreating(false);
+      setEditingIndex(null);
+    }
+  }, [editorActive]);
 
   const saveDraft = async (draft: SyntheticAgentConfig): Promise<boolean> => {
     const next = creating
@@ -320,7 +332,7 @@ const SyntheticPoolsSection: React.FC<SyntheticPoolsSectionProps> = ({
         </div>
       )}
       {saving && <p className="mt-3 text-sm text-slate-500">Saving synthetic pools…</p>}
-      {(creating || editingIndex !== null) && (
+      {editorActive && (creating || editingIndex !== null) && (
         <PoolEditor
           initial={creating ? newPool(agents) : pools[editingIndex!]}
           poolIndex={creating ? pools.length : editingIndex!}

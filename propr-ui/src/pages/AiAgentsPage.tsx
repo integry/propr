@@ -16,6 +16,38 @@ import { useDemoMode } from '../contexts/DemoModeContext';
 import { isCommittedConfigWriteError } from '../api/apiClient';
 import SyntheticPoolsSection from './SyntheticPoolsSection';
 
+type ConfigurationLayout = 'mobile' | 'desktop';
+
+interface AddPoolRequest {
+  id: number;
+  owner: ConfigurationLayout;
+}
+
+const DESKTOP_MEDIA_QUERY = '(min-width: 640px)';
+
+function useDesktopLayout(): boolean {
+  const getMatches = () => typeof window.matchMedia === 'function'
+    ? window.matchMedia(DESKTOP_MEDIA_QUERY).matches
+    : window.innerWidth >= 640;
+  const [isDesktop, setIsDesktop] = useState(getMatches);
+
+  useEffect(() => {
+    if (typeof window.matchMedia === 'function') {
+      const mediaQuery = window.matchMedia(DESKTOP_MEDIA_QUERY);
+      const handleChange = (event: MediaQueryListEvent) => setIsDesktop(event.matches);
+      setIsDesktop(mediaQuery.matches);
+      mediaQuery.addEventListener('change', handleChange);
+      return () => mediaQuery.removeEventListener('change', handleChange);
+    }
+
+    const handleResize = () => setIsDesktop(window.innerWidth >= 640);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  return isDesktop;
+}
+
 const AiAgentsPage: React.FC = () => {
   useDocumentTitle('AI Agents');
   const { isDemoMode } = useDemoMode();
@@ -34,7 +66,9 @@ const AiAgentsPage: React.FC = () => {
   const [syntheticSuccess, setSyntheticSuccess] = useState<string | null>(null);
   const [syntheticReloadRequired, setSyntheticReloadRequired] = useState(true);
   const [configView, setConfigView] = useState<'direct' | 'synthetic'>('direct');
-  const [addPoolRequest, setAddPoolRequest] = useState(0);
+  const [addPoolRequest, setAddPoolRequest] = useState<AddPoolRequest | null>(null);
+  const addPoolRequestId = useRef(0);
+  const isDesktopLayout = useDesktopLayout();
 
   // Mobile tab state: 'config' or 'playground'
   const [mobileTab, setMobileTab] = useState<'config' | 'playground'>('playground');
@@ -183,11 +217,19 @@ const AiAgentsPage: React.FC = () => {
         setSyntheticError('Reload the current synthetic pool configuration before editing again.');
         return;
       }
-      setAddPoolRequest(value => value + 1);
+      addPoolRequestId.current += 1;
+      setAddPoolRequest({
+        id: addPoolRequestId.current,
+        owner: isDesktopLayout ? 'desktop' : 'mobile',
+      });
       return;
     }
     handleAddAgentClick();
-  }, [configView, handleAddAgentClick, isDemoMode, syntheticReloadRequired]);
+  }, [configView, handleAddAgentClick, isDemoMode, isDesktopLayout, syntheticReloadRequired]);
+
+  const handleAddPoolRequestConsumed = useCallback((requestId: number) => {
+    setAddPoolRequest(current => current?.id === requestId ? null : current);
+  }, []);
 
   const addDisabled = agentsLoading || agentsSaving || syntheticLoading || syntheticSaving || isDemoMode
     || (configView === 'synthetic' && syntheticReloadRequired);
@@ -298,7 +340,9 @@ const AiAgentsPage: React.FC = () => {
                 warning={syntheticWarning}
                 readOnly={isDemoMode || syntheticReloadRequired}
                 readOnlyMessage={syntheticReloadRequired ? 'Synthetic pool changes are blocked because the saved configuration could not be reloaded. Reload this page to continue.' : undefined}
-                addRequested={addPoolRequest}
+                editorActive={!isDesktopLayout}
+                addRequested={addPoolRequest?.owner === 'mobile' ? addPoolRequest.id : 0}
+                onAddRequestConsumed={handleAddPoolRequestConsumed}
                 onSave={handleSaveSyntheticAgents}
               />}
             </div>
@@ -380,7 +424,9 @@ const AiAgentsPage: React.FC = () => {
                   warning={syntheticWarning}
                   readOnly={isDemoMode || syntheticReloadRequired}
                   readOnlyMessage={syntheticReloadRequired ? 'Synthetic pool changes are blocked because the saved configuration could not be reloaded. Reload this page to continue.' : undefined}
-                  addRequested={addPoolRequest}
+                  editorActive={isDesktopLayout}
+                  addRequested={addPoolRequest?.owner === 'desktop' ? addPoolRequest.id : 0}
+                  onAddRequestConsumed={handleAddPoolRequestConsumed}
                   onSave={handleSaveSyntheticAgents}
                 />}
               </div>

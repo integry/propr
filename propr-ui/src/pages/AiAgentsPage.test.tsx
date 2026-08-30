@@ -246,4 +246,20 @@ describe('AiAgentsPage model selection', () => {
     expect(screen.queryByRole('dialog', { name: 'Synthetic pool editor' })).not.toBeInTheDocument();
     expect(apiMocks.saveSyntheticAgents).not.toHaveBeenCalled();
   });
+
+  it('consumes a cancelled add request before switching configuration views', async () => {
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Synthetic Pools' }));
+    fireEvent.click(screen.getByRole('button', { name: '+ Add Pool' }));
+    expect(await screen.findByRole('dialog', { name: 'Synthetic pool editor' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'Synthetic pool editor' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Direct agents' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Synthetic Pools' }));
+
+    expect(screen.queryByRole('dialog', { name: 'Synthetic pool editor' })).not.toBeInTheDocument();
+  });
 });
