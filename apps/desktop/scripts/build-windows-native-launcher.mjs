@@ -24,9 +24,12 @@ const WINDOWS_NATIVE_REBUILD_PROGRESS_BUCKETS = 5;
 const WINDOWS_NATIVE_REBUILD_MAX_BUFFER_BYTES = 64 * 1024;
 const KERNEL_TAKEOWN = String.raw`\\?\GLOBALROOT\SystemRoot\System32\takeown.exe`;
 const KERNEL_ICACLS = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
+const KERNEL_WHOAMI = String.raw`\\?\GLOBALROOT\SystemRoot\System32\whoami.exe`;
+const KERNEL_POWERSHELL = String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`;
 const SYSTEM_SID = '*S-1-5-18';
 const ADMINISTRATORS_SID = '*S-1-5-32-544';
 const TRUSTED_INSTALLER_SID = '*S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464';
+const MAX_WHOAMI_OUTPUT_BYTES = 4 * 1024;
 
 const fail = (substage = 'OUTPUT_VALIDATION', diagnostics = []) => {
   const error = new Error(`Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`);
@@ -103,12 +106,17 @@ const normalDosExecutable = (path, basename) => {
   return candidate;
 };
 
-// CreateProcess does not accept the fixed GLOBALROOT spelling. Retain the
-// exact kernel-rooted file while realpath resolves its normal DOS spelling,
-// then prove that spelling opens the same non-reparse OS file before launch.
-export const resolveWindowsAclTool = async tool => {
-  const basename = tool === KERNEL_TAKEOWN ? 'takeown.exe'
-    : tool === KERNEL_ICACLS ? 'icacls.exe' : fail('DIRECTORY_PROBE');
+const normalDosPowerShell = path => {
+  const candidate = /^\\\\\?\\[A-Za-z]:\\/.test(path) ? path.slice(4) : path;
+  if (!/^[A-Za-z]:\\[^\0]+$/.test(candidate) || candidate.startsWith('\\\\')
+      || windowsPath.isAbsolute(candidate) !== true || candidate.indexOf(':', 2) >= 0
+      || !candidate.toLowerCase().endsWith('\\system32\\windowspowershell\\v1.0\\powershell.exe')) {
+    fail('DIRECTORY_PROBE');
+  }
+  return candidate;
+};
+
+const resolveWindowsFixedOsFile = async (tool, canonicalPath) => {
   const targetStats = await lstat(tool, { bigint: true }).catch(() => fail('DIRECTORY_PROBE'));
   if (!targetStats.isFile() || targetStats.isSymbolicLink() || targetStats.nlink < 1n
       || targetStats.size <= 0n || targetStats.size > BigInt(MAX_ACL_TOOL_BYTES)) fail('DIRECTORY_PROBE');
@@ -118,10 +126,7 @@ export const resolveWindowsAclTool = async tool => {
   try {
     const targetBefore = await target.stat({ bigint: true }).catch(() => fail('DIRECTORY_PROBE'));
     if (!sameFileIdentity(targetBefore, targetStats)) fail('DIRECTORY_PROBE');
-    canonical = normalDosExecutable(
-      await realpath(tool).catch(() => fail('DIRECTORY_PROBE')),
-      basename,
-    );
+    canonical = canonicalPath(await realpath(tool).catch(() => fail('DIRECTORY_PROBE')));
     const canonicalStats = await lstat(canonical, { bigint: true }).catch(() => fail('DIRECTORY_PROBE'));
     if (!canonicalStats.isFile() || canonicalStats.isSymbolicLink()
         || !sameFileIdentity(canonicalStats, targetBefore)) fail('DIRECTORY_PROBE');
@@ -138,6 +143,16 @@ export const resolveWindowsAclTool = async tool => {
   return canonical;
 };
 
+// CreateProcess does not accept the fixed GLOBALROOT spelling. Retain the
+// exact kernel-rooted file while realpath resolves its normal DOS spelling,
+// then prove that spelling opens the same non-reparse OS file before launch.
+export const resolveWindowsAclTool = async tool => {
+  const basename = tool === KERNEL_TAKEOWN ? 'takeown.exe'
+    : tool === KERNEL_ICACLS ? 'icacls.exe'
+      : tool === KERNEL_WHOAMI ? 'whoami.exe' : fail('DIRECTORY_PROBE');
+  return resolveWindowsFixedOsFile(tool, path => normalDosExecutable(path, basename));
+};
+
 export const invokeWindowsAclTool = async (tool, args, invoke = execFileAsync) => {
   try {
     await invoke(tool, args, {
@@ -152,6 +167,72 @@ export const invokeWindowsAclTool = async (tool, args, invoke = execFileAsync) =
 const authorityAclTool = async (tool, args) => {
   const canonical = await resolveWindowsAclTool(tool);
   await invokeWindowsAclTool(canonical, args);
+};
+
+const canonicalAccountSid = value => {
+  if (typeof value !== 'string') return false;
+  const fields = value.split('-');
+  if (fields.length !== 8 || fields[0] !== 'S' || fields[1] !== '1'
+      || !((fields[2] === '5' && fields[3] === '21') || (fields[2] === '12' && fields[3] === '1'))) return false;
+  return fields.slice(2).every(field => /^(?:0|[1-9]\d{0,9})$/.test(field)
+    && BigInt(field) <= 0xffff_ffffn);
+};
+
+// whoami.exe is resolved from the fixed protected System32 object, receives no
+// inherited environment, and returns one bounded CSV record. The account name
+// is deliberately ignored: only the kernel-derived token SID is authority.
+export const decodeWindowsCurrentTokenSid = output => {
+  const text = Buffer.isBuffer(output) ? output.toString('utf8') : typeof output === 'string' ? output : '';
+  if (Buffer.byteLength(text, 'utf8') > MAX_WHOAMI_OUTPUT_BYTES || text.includes('\0')) fail('BOOTSTRAP_AUTH');
+  const match = /^(?:\ufeff)?"(?:[^"]|"")*","(S-[0-9-]+)"\r?\n?$/.exec(text);
+  if (!match || !canonicalAccountSid(match[1])) fail('BOOTSTRAP_AUTH');
+  return match[1];
+};
+
+export const decodeWindowsDirectoryOwnerSid = output => {
+  const text = Buffer.isBuffer(output) ? output.toString('utf8') : typeof output === 'string' ? output : '';
+  if (Buffer.byteLength(text, 'utf8') > MAX_WHOAMI_OUTPUT_BYTES || text.includes('\0')) fail('BOOTSTRAP_AUTH');
+  const match = /^(S-[0-9-]+)\r?\n?$/.exec(text);
+  if (!match || !canonicalAccountSid(match[1])) fail('BOOTSTRAP_AUTH');
+  return match[1];
+};
+
+const currentWindowsTokenSid = async root => {
+  const whoami = await resolveWindowsAclTool(KERNEL_WHOAMI);
+  let result;
+  try {
+    result = await execFileAsync(whoami, ['/user', '/fo', 'csv', '/nh'], {
+      windowsHide: true,
+      timeout: 30_000,
+      maxBuffer: MAX_WHOAMI_OUTPUT_BYTES,
+      encoding: 'utf8',
+      env: {},
+    });
+  } catch { fail('BOOTSTRAP_AUTH'); }
+  if (result.stderr !== '') fail('BOOTSTRAP_AUTH');
+  const sid = decodeWindowsCurrentTokenSid(result.stdout);
+  const powershell = await resolveWindowsFixedOsFile(KERNEL_POWERSHELL, normalDosPowerShell);
+  const rootBytes = Buffer.from(root, 'utf16le');
+  if (rootBytes.length === 0 || rootBytes.length > 2048) fail('BOOTSTRAP_AUTH');
+  // Cross-check the token SID against the owner takeown just assigned. Encode
+  // the bounded pathname into the fixed command so PowerShell cannot reinterpret
+  // it as command text, and accept only the one canonical SID output record.
+  const ownerProbe = `$p=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${rootBytes.toString('base64')}'));`
+    + '[IO.Directory]::GetAccessControl($p,[Security.AccessControl.AccessControlSections]::Owner)'
+    + '.GetOwner([Security.Principal.SecurityIdentifier]).Value';
+  const encodedOwnerProbe = Buffer.from(ownerProbe, 'utf16le').toString('base64');
+  try {
+    result = await execFileAsync(powershell,
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedOwnerProbe], {
+      windowsHide: true,
+      timeout: 30_000,
+      maxBuffer: MAX_WHOAMI_OUTPUT_BYTES,
+      encoding: 'utf8',
+      env: {},
+    });
+  } catch { fail('BOOTSTRAP_AUTH'); }
+  if (result.stderr !== '' || decodeWindowsDirectoryOwnerSid(result.stdout) !== sid) fail('BOOTSTRAP_AUTH');
+  return sid;
 };
 
 const exactAuthorityDirectory = async root => {
@@ -175,12 +256,13 @@ export const prepareWindowsAuthorityBuildDirectory = async (root = WINDOWS_NATIV
   // must continue to reject it until sealWindowsAuthorityDirectory transfers
   // ownership to SYSTEM.
   await authorityAclTool(KERNEL_TAKEOWN, ['/F', root, '/R', '/SKIPSL']);
+  const currentSid = await currentWindowsTokenSid(root);
   // /grant:r replaces only ACEs for its named trustees. Reset the complete
   // tree first so a hostile explicit trustee cannot survive build staging.
   await authorityAclTool(KERNEL_ICACLS, [root, '/reset', '/T', '/C', '/Q']);
   await authorityAclTool(KERNEL_ICACLS, [root, '/inheritance:r', '/T', '/C', '/Q']);
   await authorityAclTool(KERNEL_ICACLS, [root, '/grant:r', `${ADMINISTRATORS_SID}:(OI)(CI)F`,
-    `${SYSTEM_SID}:(OI)(CI)F`, '/T', '/C', '/Q']);
+    `${SYSTEM_SID}:(OI)(CI)F`, `*${currentSid}:(OI)(CI)M`, '/T', '/C', '/Q']);
 };
 
 // Publish an OS-owned, protected, read/execute-only application authority.

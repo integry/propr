@@ -21,7 +21,8 @@ export const WINDOWS_AUTHORITY_BUILD_STAGES = Object.freeze(['BUILD_COMPILER', '
 export const WINDOWS_AUTHORITY_COMPILER_SUBSTAGES = Object.freeze([
   'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'POLICY_NAME', 'POLICY_HASH', 'POLICY_TUPLE', 'WINTRUST_POLICY',
   'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
-  'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY', 'SPAWN',
+  'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'BOOTSTRAP_READ', 'BOOTSTRAP_AUTH',
+  'LAUNCHER_AUTH', 'SAME_IMAGE', 'LEASE', 'SOURCE_COPY', 'SPAWN',
   'COMPILE', 'LINK', 'EXIT', 'TIMEOUT', 'OUTPUT_LIMIT', 'IMAGE', 'OUTPUT_VALIDATION',
 ]);
 const MAX_SOURCE_BYTES = 256 * 1024;
@@ -134,19 +135,22 @@ export const decodeWindowsSystemDirectoryRecord = record => {
   return path;
 };
 
+export const nativeLauncherAuthenticationSubstage = error => error?.code === 'MODULE_IMAGE'
+  ? 'SAME_IMAGE' : 'LAUNCHER_AUTH';
+
 const loadAuthenticatedNativeLauncher = async launcher => {
   const buildBootstrapBytes = await readHeldBuildOutput(
     WINDOWS_AUTHORITY_BUILD_DIRECTORY, launcher.buildBootstrap.path,
-  ).catch(() => fail('BUILD_COMPILER', 'LEASE'));
+  ).catch(() => fail('BUILD_COMPILER', 'BOOTSTRAP_READ'));
   try {
     if (buildBootstrapBytes.length !== launcher.buildBootstrap.size
-        || sha256(buildBootstrapBytes) !== launcher.buildBootstrap.sha256) fail('BUILD_COMPILER', 'LEASE');
+        || sha256(buildBootstrapBytes) !== launcher.buildBootstrap.sha256) fail('BUILD_COMPILER', 'BOOTSTRAP_AUTH');
     inspectWindowsNativeLauncherPe(buildBootstrapBytes, process.arch);
-  } catch { fail('BUILD_COMPILER', 'LEASE'); }
+  } catch { fail('BUILD_COMPILER', 'BOOTSTRAP_AUTH'); }
   let bootstrap;
   try { bootstrap = require(launcher.buildBootstrap.path); }
-  catch { fail('BUILD_COMPILER', 'DIRECTORY_PROBE'); }
-  if (!bootstrap || typeof bootstrap.loadVerifiedModule !== 'function') fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
+  catch { fail('BUILD_COMPILER', 'BOOTSTRAP_AUTH'); }
+  if (!bootstrap || typeof bootstrap.loadVerifiedModule !== 'function') fail('BUILD_COMPILER', 'BOOTSTRAP_AUTH');
   try {
     return bootstrap.loadVerifiedModule({
       path: launcher.path,
@@ -158,7 +162,7 @@ const loadAuthenticatedNativeLauncher = async launcher => {
       signerCertificateSha256: null,
       signerSpkiSha256: null,
     });
-  } catch { return fail('BUILD_COMPILER', 'LEASE'); }
+  } catch (error) { return fail('BUILD_COMPILER', nativeLauncherAuthenticationSubstage(error)); }
 };
 
 export const resolveWindowsCompilerLayout = async (env, probe) => {

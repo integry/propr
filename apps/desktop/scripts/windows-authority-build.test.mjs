@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   inspectAnyCpuPe,
+  nativeLauncherAuthenticationSubstage,
   preserveWindowsAuthorityCompilerFailure,
   buildWindowsAuthorityHelper,
   decodeWindowsSystemDirectoryRecord,
@@ -21,6 +22,8 @@ import {
 } from './build-windows-authority-helper.mjs';
 import {
   buildWindowsNativeLauncher,
+  decodeWindowsCurrentTokenSid,
+  decodeWindowsDirectoryOwnerSid,
   invokeWindowsAclTool,
   prepareWindowsAuthorityBuildDirectory,
   resolveWindowsAclTool,
@@ -44,6 +47,7 @@ const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 const kernelTakeown = String.raw`\\?\GLOBALROOT\SystemRoot\System32\takeown.exe`;
 const kernelIcacls = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
+const kernelWhoami = String.raw`\\?\GLOBALROOT\SystemRoot\System32\whoami.exe`;
 const microsoftWindowsSubjectRdns = [
   '310b3009060355040613025553',
   '311330110603550408130a57617368696e67746f6e',
@@ -105,10 +109,36 @@ test('compiler failures expose only fixed non-secret authenticate-to-spawn subst
     'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH',
     'POLICY_NAME', 'POLICY_HASH', 'POLICY_TUPLE', 'WINTRUST_POLICY',
     'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
-    'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY', 'SPAWN',
+    'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'BOOTSTRAP_READ', 'BOOTSTRAP_AUTH',
+    'LAUNCHER_AUTH', 'SAME_IMAGE', 'LEASE', 'SOURCE_COPY', 'SPAWN',
     'COMPILE', 'LINK', 'EXIT', 'TIMEOUT', 'OUTPUT_LIMIT', 'IMAGE', 'OUTPUT_VALIDATION',
   ]);
   assert.ok(WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.every(stage => /^[A-Z_]{4,24}$/.test(stage)));
+});
+
+test('token SID parsing accepts one canonical non-system account record and rejects identity claims', () => {
+  assert.equal(decodeWindowsCurrentTokenSid('"HOST\\runner","S-1-5-21-1-2-3-1001"\r\n'),
+    'S-1-5-21-1-2-3-1001');
+  assert.equal(decodeWindowsCurrentTokenSid('"AzureAD\\runner","S-1-12-1-1-2-3-4"\n'), 'S-1-12-1-1-2-3-4');
+  assert.equal(decodeWindowsDirectoryOwnerSid('S-1-5-21-1-2-3-1001\r\n'), 'S-1-5-21-1-2-3-1001');
+  for (const record of [
+    '"SYSTEM","S-1-5-18"\r\n',
+    '"Administrators","S-1-5-32-544"\r\n',
+    '"service","S-1-5-80-1-2-3-4-5"\r\n',
+    '"runner","S-1-5-21-1-2-3-4294967296"\r\n',
+    '"runner","S-1-5-21-1-2-3-1001"\r\n"other","S-1-5-21-1-2-3-1002"\r\n',
+    'runner,S-1-5-21-1-2-3-1001\r\n',
+  ]) assert.throws(() => decodeWindowsCurrentTokenSid(record), /BOOTSTRAP_AUTH/);
+  assert.throws(() => decodeWindowsDirectoryOwnerSid('S-1-5-18\r\n'), /BOOTSTRAP_AUTH/);
+  assert.throws(() => decodeWindowsDirectoryOwnerSid('S-1-5-21-1-2-3-1001\r\nextra\r\n'), /BOOTSTRAP_AUTH/);
+  assert.throws(() => decodeWindowsCurrentTokenSid(process.env.USERNAME), /BOOTSTRAP_AUTH/);
+});
+
+test('native launcher authentication failures map to fixed secret-free substages', () => {
+  assert.equal(nativeLauncherAuthenticationSubstage({ code: 'MODULE_AUTHORITY' }), 'LAUNCHER_AUTH');
+  assert.equal(nativeLauncherAuthenticationSubstage({ code: 'MODULE_ARGUMENT' }), 'LAUNCHER_AUTH');
+  assert.equal(nativeLauncherAuthenticationSubstage({ code: 'MODULE_IMAGE' }), 'SAME_IMAGE');
+  assert.equal(nativeLauncherAuthenticationSubstage(new Error('C:\\secret\\module.node')), 'LAUNCHER_AUTH');
 });
 
 test('node-gyp failures retain bounded secret-free compiler causes and evidence', () => {
@@ -182,7 +212,8 @@ test('ACL tool launch maps synchronous throws and asynchronous rejections to one
 test('fixed GLOBALROOT ACL tools resolve to normal held-identity DOS paths and execute', {
   skip: process.platform !== 'win32',
 }, async () => {
-  for (const [fixed, basename] of [[kernelTakeown, 'takeown.exe'], [kernelIcacls, 'icacls.exe']]) {
+  for (const [fixed, basename] of [[kernelTakeown, 'takeown.exe'], [kernelIcacls, 'icacls.exe'],
+    [kernelWhoami, 'whoami.exe']]) {
     const canonical = await resolveWindowsAclTool(fixed);
     assert.match(canonical, /^[A-Za-z]:\\/);
     assert.equal(canonical.startsWith('\\\\'), false);
@@ -270,6 +301,13 @@ test('the current-owner exception exists only in the unshipped build bootstrap',
   assert.match(nativeBuild, /cleanupWindowsAuthorityBuildStaging/);
   assert.match(nativeBuild, /await mkdir\(root, \{ recursive: true \}\)/);
   assert.match(nativeBuild, /KERNEL_TAKEOWN, \['\/F', root, '\/R', '\/SKIPSL'\]/);
+  assert.match(nativeBuild, /KERNEL_WHOAMI/);
+  assert.match(nativeBuild, /KERNEL_POWERSHELL/);
+  assert.match(nativeBuild, /\['\/user', '\/fo', 'csv', '\/nh'\]/);
+  assert.match(nativeBuild, /GetAccessControl/);
+  assert.match(nativeBuild, /env: \{\}/);
+  assert.match(nativeBuild, /`\*\$\{currentSid\}:\(OI\)\(CI\)M`/);
+  assert.doesNotMatch(nativeBuild, /process\.env\.(?:USERNAME|USER|USERDOMAIN)/);
   assert.match(nativeBuild, /KERNEL_ICACLS, \[root, '\/reset', '\/T', '\/C', '\/Q'\]/);
   assert.match(nativeBuild, /resolveWindowsAclTool\(tool\)/);
   assert.match(nativeBuild, /await invoke\(tool, args, \{/);
@@ -426,6 +464,30 @@ test('protected build staging removes hostile explicit and inherited ACEs and re
     }
   });
 
+test('real filtered current token can read and authenticate exact build staging', windowsNativeBuildOnly, async t => {
+  const whoami = await resolveWindowsAclTool(kernelWhoami);
+  const { stdout } = await execFileAsync(whoami, ['/groups', '/fo', 'csv', '/nh'], {
+    windowsHide: true, timeout: 30_000, maxBuffer: 64 * 1024, encoding: 'utf8', env: {},
+  });
+  const administrators = stdout.split(/\r?\n/).find(line => line.includes('S-1-5-32-544'));
+  if (administrators?.includes('Enabled group')) {
+    t.skip('current Windows test token is elevated');
+    return;
+  }
+  const launcher = await buildWindowsNativeLauncher();
+  const buildBootstrap = require(WINDOWS_NATIVE_BUILD_BOOTSTRAP);
+  assert.equal(typeof buildBootstrap.loadVerifiedModule({
+    path: launcher.path,
+    size: launcher.size,
+    sha256: launcher.sha256,
+    production: false,
+    authenticationMode: 'held-build-artifact',
+    publisher: null,
+    signerCertificateSha256: null,
+    signerSpkiSha256: null,
+  }).compileHeld, 'function');
+});
+
 test('build-owner module authentication is compile-time-only, ACL-strict, and held-identity-bound',
   windowsNativeBuildOnly, async () => {
     const launcher = await buildWindowsNativeLauncher();
@@ -463,6 +525,12 @@ test('build-owner module authentication is compile-time-only, ACL-strict, and he
       assert.throws(() => buildBootstrap.loadVerifiedModule({
         ...policy, path: broad, authenticationMode: 'held-build-artifact',
       }), error => error?.code === 'MODULE_AUTHORITY');
+      await prepareWindowsAuthorityBuildDirectory(root);
+      await invokeWindowsAclTool(await resolveWindowsAclTool(kernelIcacls),
+        [broad, '/grant', '*S-1-5-21-111111111-222222222-333333333-4444:M', '/Q']);
+      assert.throws(() => buildBootstrap.loadVerifiedModule({
+        ...policy, path: broad, authenticationMode: 'held-build-artifact',
+      }), error => error?.code === 'MODULE_AUTHORITY', 'a different user SID cannot gain staging write authority');
     } finally { await rm(root, { recursive: true, force: true }); }
 
     const loaded = buildBootstrap.loadVerifiedModule({
