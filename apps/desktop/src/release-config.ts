@@ -66,6 +66,12 @@ export const resolveTrustedUpdateBuildConfig = (
   env: Environment = process.env,
   platform: NodeJS.Platform = process.platform,
 ): TrustedUpdateBuildConfig => {
+  // Windows self-update is deliberately outside the first-release MVP. This
+  // check precedes every update environment validation so even a fully (or
+  // partially) configured Windows build embeds no update endpoint or key.
+  if (platform === 'win32') {
+    return { enabled: false, manifestUrl: '', publicKey: '', signingIdentity: '', windowsSignerPins: [] };
+  }
   if (env.PROPR_DESKTOP_ENABLE_UPDATES !== '1') {
     return { enabled: false, manifestUrl: '', publicKey: '', signingIdentity: '', windowsSignerPins: [] };
   }
@@ -87,9 +93,7 @@ export const resolveTrustedUpdateBuildConfig = (
     manifestUrl: validateHttpsUrl(manifestUrl, 'PROPR_DESKTOP_UPDATE_MANIFEST_URL'),
     publicKey: validateEd25519PublicKey(publicKey),
     signingIdentity,
-    windowsSignerPins: platform === 'win32'
-      ? parseWindowsSignerPins(env.PROPR_DESKTOP_WINDOWS_SIGNER_PINS)
-      : [],
+    windowsSignerPins: [],
   };
 };
 
@@ -117,20 +121,22 @@ export const requireProductionReleaseConfiguration = ({
   macSigning,
   macNotarization,
   windowsSigning,
+  windowsSignerPins = [],
 }: {
   platform: NodeJS.Platform;
   updateConfig: TrustedUpdateBuildConfig;
   macSigning?: CompleteEnvironmentGroup;
   macNotarization?: CompleteEnvironmentGroup;
   windowsSigning?: CompleteEnvironmentGroup;
+  windowsSignerPins?: readonly string[];
 }): void => {
   if (platform === 'darwin' && (!macSigning || !macNotarization || !updateConfig.enabled)) {
     throw new Error('Production macOS releases require signing, notarization, and signed updates');
   }
-  if (platform === 'win32' && (!windowsSigning || !updateConfig.enabled)) {
-    throw new Error('Production Windows releases require Authenticode signing and signed updates');
+  if (platform === 'win32' && !windowsSigning) {
+    throw new Error('Production Windows releases require Authenticode signing; Windows self-update is unsupported');
   }
-  if (platform === 'win32' && updateConfig.windowsSignerPins.length === 0) {
-    throw new Error('Production Windows releases require an Authenticode certificate or SPKI SHA-256 signer pin');
+  if (platform === 'win32' && windowsSignerPins.length === 0) {
+    throw new Error('Production Windows releases require an Authenticode certificate or SPKI SHA-256 artifact signer pin');
   }
 };

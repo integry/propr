@@ -11,11 +11,11 @@ import {
   FuseVersion,
   getCurrentFuseWire,
 } from '@electron/fuses';
-import { inspectPackagedWindowsAuthority } from './inspect-packaged-windows-authority.mjs';
 
 const READY_EVENT = 'desktop.renderer.ready';
 const PRELOAD_BRIDGE_PROOF = '"preloadBridgeExposed":true';
 const PROFILE_API_PROOF = 'desktop.renderer.profile_api.ready';
+const MVP_FLOWS_PROOF = 'desktop.renderer.mvp_flows.ready';
 const LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const MAIN_PROCESS_ERROR_MARKERS = [
   'desktop.main_process.uncaught_exception',
@@ -33,22 +33,11 @@ const binaryPath = process.platform === 'darwin'
 const inspectOnly = process.argv.includes('--inspect-only');
 
 if (process.platform === 'win32') {
-  const helperDirectory = resolve('out', `propr-desktop-win32-${process.arch}`, 'resources', 'windows-authority');
-  const entries = (await readdir(helperDirectory)).sort();
-  if (entries.length !== 4 || entries[0] !== 'propr-windows-authority.exe'
-    || entries[1] !== 'propr-windows-authority.manifest.json'
-    || entries[2] !== 'propr-windows-bootstrap.node'
-    || entries[3] !== 'propr-windows-launcher.node') {
-    throw new Error('Packaged Windows authority helper layout is missing or ambiguous');
+  const resources = resolve('out', `propr-desktop-win32-${process.arch}`, 'resources');
+  const entries = (await readdir(resources)).map(name => name.toLocaleLowerCase('en-US'));
+  if (entries.some(name => name.includes('windows-authority') || name.includes('windows-update-authority'))) {
+    throw new Error('Packaged Windows MVP contains a deferred update authority resource');
   }
-  const manifest = await inspectPackagedWindowsAuthority(
-    resolve(helperDirectory, entries[0]),
-    resolve(helperDirectory, entries[1]),
-  );
-  const expectedTrust = process.env.PROPR_DESKTOP_PRODUCTION_RELEASE === '1'
-    ? 'production-signed'
-    : 'unsigned-validation';
-  if (manifest.trust !== expectedTrust) throw new Error('Packaged Windows authority helper trust mode is incorrect');
 }
 
 const parseLayout = smokeOutput => {
@@ -140,7 +129,12 @@ if (inspectOnly) {
 }
 
 const userDataPath = await mkdtemp(resolve(tmpdir(), 'propr-desktop-smoke-'));
-const launchArguments = ['--disable-gpu', `--user-data-dir=${userDataPath}`];
+const launchArguments = [
+  '--disable-gpu',
+  '--propr-smoke-test',
+  `--user-data-dir=${userDataPath}`,
+  'propr://connect?api=https%3A%2F%2Fconnect.propr.dev',
+];
 if (launchArguments.some(argument => argument === '--no-sandbox' || argument === '--disable-sandbox')) {
   throw new Error('The packaged-binary smoke test must not disable Electron sandboxing');
 }
@@ -151,7 +145,7 @@ const profileApiServer = createServer((request, response) => {
   receivedProfileApiOrigin = request.headers.origin;
   if (
     request.method !== 'GET'
-    || request.url !== '/api/compatibility'
+    || !['/api/compatibility', '/api/desktop/discovery'].includes(request.url ?? '')
     || receivedProfileApiOrigin !== DESKTOP_RENDERER_ORIGIN
   ) {
     response.writeHead(403, { 'Content-Type': 'application/json' });
@@ -163,7 +157,9 @@ const profileApiServer = createServer((request, response) => {
     'Access-Control-Allow-Origin': DESKTOP_RENDERER_ORIGIN,
     'Content-Type': 'application/json',
   });
-  response.end('{"profileEndpoint":true}');
+  response.end(request.url === '/api/desktop/discovery'
+    ? '{"product":"ProPR","desktopAuthentication":{"protocolVersion":1}}'
+    : '{"profileEndpoint":true}');
 });
 profileApiServer.listen(0, '127.0.0.1');
 await once(profileApiServer, 'listening');
@@ -221,6 +217,9 @@ try {
   }
   if (!output.includes(PROFILE_API_PROOF) || receivedProfileApiOrigin !== DESKTOP_RENDERER_ORIGIN) {
     throw new Error('Packaged desktop did not complete a profile API request from its exact renderer origin');
+  }
+  if (!output.includes(MVP_FLOWS_PROOF)) {
+    throw new Error('Packaged desktop did not complete local/remote/API profile and Connect discovery flows');
   }
   assertPackagedLayout(parseLayout(output));
 

@@ -10,6 +10,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   readCompleteEnvironmentGroup,
+  parseWindowsSignerPins,
   requireProductionReleaseConfiguration,
   resolveDesktopVersion,
   resolveTrustedUpdateBuildConfig,
@@ -48,17 +49,18 @@ if (updateConfig.enabled) {
   if (process.platform === 'darwin' && !macSigning) {
     throw new Error('The macOS signed-update build must have a macOS signing identity');
   }
-  if (process.platform === 'win32' && !windowsSigning) {
-    throw new Error('The Windows signed-update build must have a Windows signing certificate');
-  }
 }
 if (process.env.PROPR_DESKTOP_PRODUCTION_RELEASE === '1') {
+  const windowsSignerPins = process.platform === 'win32'
+    ? parseWindowsSignerPins(process.env.PROPR_DESKTOP_WINDOWS_SIGNER_PINS)
+    : [];
   requireProductionReleaseConfiguration({
     platform: process.platform,
     updateConfig,
     macSigning,
     macNotarization,
     windowsSigning,
+    windowsSignerPins,
   });
 }
 
@@ -77,7 +79,6 @@ const config: ForgeConfig = {
     buildVersion: releaseVersion,
     name: DESKTOP_EXECUTABLE_NAME,
     executableName: DESKTOP_EXECUTABLE_NAME,
-    ...(process.platform === 'win32' ? { extraResource: [resolve('build', 'windows-authority')] } : {}),
     protocols: [{ name: 'ProPR Desktop', schemes: ['propr'] }],
     ...(macSigning ? {
       osxSign: {
@@ -117,25 +118,6 @@ const config: ForgeConfig = {
         [FuseV1Options.GrantFileProtocolExtraPrivileges]: false,
         [FuseV1Options.WasmTrapHandlers]: true,
       });
-    },
-    postPackage: async (_forgeConfig, packageResult) => {
-      if (packageResult.platform !== 'win32') return;
-      // The Windows signer runs after extra resources are copied and signs every
-      // PE in the application. Bind the manifest to those final signed helper
-      // bytes before MSI/checksum assembly consumes the packaged layout.
-      const authorityInspectorModule = './scripts/inspect-packaged-windows-authority.mjs';
-      const { refreshPackagedWindowsAuthorityManifest, inspectPackagedWindowsAuthority } = await import(
-        authorityInspectorModule
-      );
-      const { sealWindowsAuthorityDirectory } = await import('./scripts/build-windows-native-launcher.mjs');
-      for (const outputPath of packageResult.outputPaths) {
-        const helperDirectory = resolve(outputPath, 'resources', 'windows-authority');
-        const executable = resolve(helperDirectory, 'propr-windows-authority.exe');
-        const manifest = resolve(helperDirectory, 'propr-windows-authority.manifest.json');
-        await refreshPackagedWindowsAuthorityManifest(executable, manifest);
-        await inspectPackagedWindowsAuthority(executable, manifest);
-        await sealWindowsAuthorityDirectory(helperDirectory);
-      }
     },
     postMake: async (_forgeConfig, makeResults) => {
       if (process.platform !== 'win32') return makeResults;

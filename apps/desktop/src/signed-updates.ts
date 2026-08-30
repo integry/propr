@@ -20,15 +20,39 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { parseWindowsSignerPins } from './release-config';
-import {
-  ensureWindowsPrivateDirectory,
-  inspectWindowsPrivatePath,
-  openWindowsLockedArtifact,
-  protectWindowsPrivateDirectory,
-  protectWindowsPrivateFile,
-  type WindowsFileIdentity,
-  type WindowsLockedArtifact,
-} from './windows-update-authority';
+
+interface WindowsFileIdentity {
+  platform: 'win32';
+  volumeSerial: string;
+  fileId128: string;
+}
+
+interface WindowsPrivatePathInspection {
+  identity: WindowsFileIdentity;
+  directory: boolean;
+  links: string;
+  size: string;
+}
+
+interface WindowsHeldVerification extends WindowsPrivatePathInspection {
+  sha256: string;
+}
+
+interface WindowsLockedArtifact {
+  readonly inspection: WindowsHeldVerification;
+  read(offset: number, length: number, signal?: AbortSignal): Promise<Buffer>;
+  verify(signal?: AbortSignal): Promise<WindowsHeldVerification>;
+  close(signal?: AbortSignal): Promise<void>;
+}
+
+const windowsUpdateUnsupported = (): never => {
+  throw new Error('Windows self-update is unsupported');
+};
+const inspectWindowsPrivatePath = async (..._args: unknown[]): Promise<WindowsPrivatePathInspection> => windowsUpdateUnsupported();
+const ensureWindowsPrivateDirectory = async (..._args: unknown[]): Promise<WindowsPrivatePathInspection> => windowsUpdateUnsupported();
+const protectWindowsPrivateDirectory = async (..._args: unknown[]): Promise<WindowsPrivatePathInspection> => windowsUpdateUnsupported();
+const protectWindowsPrivateFile = async (..._args: unknown[]): Promise<WindowsPrivatePathInspection> => windowsUpdateUnsupported();
+const openWindowsLockedArtifact = async (..._args: unknown[]): Promise<WindowsLockedArtifact> => windowsUpdateUnsupported();
 
 export interface SignedUpdateBytes {
   url: string;
@@ -278,16 +302,21 @@ export const parseSignedUpdateManifest = (payload: Buffer): SignedUpdateManifest
     || value.windowsSignerPins.some(pin => typeof pin !== 'string')) {
     throw new Error('Signed update manifest Windows signer pin policy is invalid');
   }
-  const windowsSignerPins = parseWindowsSignerPins(
-    (value.windowsSignerPins as string[]).join(','),
-    'Signed update manifest Windows signer pin policy',
-  );
+  const windowsSignerPins = value.windowsSignerPins.length === 0
+    ? []
+    : parseWindowsSignerPins(
+      (value.windowsSignerPins as string[]).join(','),
+      'Signed update manifest Windows signer pin policy',
+    );
   if (!isRecord(value.feeds)) throw new Error('Signed update manifest feeds are missing');
 
   const feeds: Record<string, SignedUpdateFeed> = {};
   for (const [target, candidate] of Object.entries(value.feeds)) {
     if (!TARGET_PATTERN.test(target)) throw new Error(`Signed update manifest feed ${target} is invalid`);
     feeds[target] = parseFeed(candidate, target, value.version);
+  }
+  if (Object.keys(feeds).some(target => target.startsWith('win32-')) && windowsSignerPins.length === 0) {
+    throw new Error('Signed update manifest Windows signer pin policy is required for Windows feeds');
   }
   return { ...value, manifestUrl, windowsSignerPins, feeds } as unknown as SignedUpdateManifest;
 };
@@ -1765,6 +1794,9 @@ const usePreparedArtifact = async <T>(
 export const checkForSignedUpdates = async (
   options: SignedUpdateOperationOptions,
 ): Promise<'available' | 'current' | 'unsupported'> => {
+  // Public Windows policy boundary: return before cache locking, metadata or
+  // artifact requests, native signer inspection, and Windows authority use.
+  if (options.platform === 'win32') return 'unsupported';
   const operation = async (cacheLockHeld = true): Promise<'available' | 'current' | 'unsupported'> => {
     const effectiveOptions = cacheLockHeld ? options : { ...options, cacheDirectory: undefined };
     const prepared = await prepareSignedUpdate(effectiveOptions);
@@ -1780,6 +1812,9 @@ export const applySignedUpdate = async (
     installVerifiedArtifact: (artifact: VerifiedUpdateArtifact) => Promise<void>;
   },
 ): Promise<'applied' | 'current' | 'unsupported'> => {
+  // Never expose a verified-artifact apply capability on Windows. The native
+  // installation authority is deferred and is not part of this release.
+  if (options.platform === 'win32') return 'unsupported';
   const operation = async (cacheLockHeld = true): Promise<'applied' | 'current' | 'unsupported'> => {
     const effectiveOptions = cacheLockHeld ? options : { ...options, cacheDirectory: undefined };
     const prepared = await prepareSignedUpdate(effectiveOptions);

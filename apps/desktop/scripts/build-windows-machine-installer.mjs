@@ -38,11 +38,10 @@ const collectTree = async root => {
   };
   await visit(root);
   if (!files.some(entry => entry.name.toLowerCase() === 'propr-desktop.exe')) fail('canonical executable missing');
-  for (const name of ['propr-windows-authority.exe', 'propr-windows-authority.manifest.json',
-    'propr-windows-launcher.node', 'propr-windows-bootstrap.node']) {
-    if (!files.some(entry => entry.name.toLowerCase() === `resources\\windows-authority\\${name}`.toLowerCase())) {
-      fail('machine authority incomplete');
-    }
+  const forbiddenAuthority = files.find(entry => /(?:^|\\)(?:windows-update-authority|windows-authority)(?:\\|$)/i.test(entry.name)
+    || /propr-windows-(?:authority|launcher|bootstrap)/i.test(entry.name));
+  if (forbiddenAuthority) {
+    fail('deferred Windows update authority resource present');
   }
   return files;
 };
@@ -81,15 +80,10 @@ const directoryXml = files => {
   return { content: render(root, '          '), components };
 };
 
-export const windowsMachineInstallerSourceForTest = (appDirectory, version, arch, files, failAfterInstall = false) => {
+export const windowsMachineInstallerSourceForTest = (appDirectory, version, arch, files) => {
   const tree = directoryXml(files);
   const platform = arch === 'arm64' ? 'arm64' : 'x64';
   const productCode = '*';
-  const sealTarget = '[INSTALLFOLDER]';
-  const users = '*S-1-5-32-545:(OI)(CI)RX';
-  const administrators = '*S-1-5-32-544:(OI)(CI)RX';
-  const system = '*S-1-5-18:(OI)(CI)F';
-  const trustedInstaller = '*S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464:(OI)(CI)F';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="${productCode}" Name="ProPR Desktop" Language="1033" Version="${xml(version)}"
@@ -126,29 +120,12 @@ ${tree.content}
 ${tree.components.map(id => `      <ComponentRef Id="${id}" />`).join('\n')}
       <ComponentRef Id="ApplicationRegistration" />
     </Feature>
-    <CustomAction Id="ResetInstallAcl" Directory="SystemFolder" Execute="deferred" Impersonate="no" Return="check"
-      ExeCommand="&quot;[SystemFolder]icacls.exe&quot; &quot;${sealTarget}&quot; /reset /T /C /Q" />
-    <CustomAction Id="ProtectInstallAcl" Directory="SystemFolder" Execute="deferred" Impersonate="no" Return="check"
-      ExeCommand="&quot;[SystemFolder]icacls.exe&quot; &quot;${sealTarget}&quot; /inheritance:r /T /C /Q" />
-    <CustomAction Id="GrantInstallAcl" Directory="SystemFolder" Execute="deferred" Impersonate="no" Return="check"
-      ExeCommand="&quot;[SystemFolder]icacls.exe&quot; &quot;${sealTarget}&quot; /grant:r ${system} ${trustedInstaller} ${administrators} ${users} /T /C /Q" />
-    <CustomAction Id="OwnInstallTree" Directory="SystemFolder" Execute="deferred" Impersonate="no" Return="check"
-      ExeCommand="&quot;[SystemFolder]icacls.exe&quot; &quot;${sealTarget}&quot; /setowner *S-1-5-18 /T /C /Q" />
-${failAfterInstall ? `    <CustomAction Id="RollbackProbe" Directory="SystemFolder" Execute="deferred" Impersonate="no" Return="check"
-      ExeCommand="&quot;[SystemFolder]cmd.exe&quot; /d /c exit 23" />` : ''}
-    <InstallExecuteSequence>
-      <Custom Action="ResetInstallAcl" After="InstallFiles">NOT REMOVE</Custom>
-      <Custom Action="ProtectInstallAcl" After="ResetInstallAcl">NOT REMOVE</Custom>
-      <Custom Action="GrantInstallAcl" After="ProtectInstallAcl">NOT REMOVE</Custom>
-      <Custom Action="OwnInstallTree" After="GrantInstallAcl">NOT REMOVE</Custom>
-${failAfterInstall ? '      <Custom Action="RollbackProbe" After="OwnInstallTree">NOT REMOVE</Custom>' : ''}
-    </InstallExecuteSequence>
   </Product>
 </Wix>
 `;
 };
 
-export const buildWindowsMachineInstaller = async ({ appDirectory, output, version, arch, failAfterInstall = false }) => {
+export const buildWindowsMachineInstaller = async ({ appDirectory, output, version, arch }) => {
   if (process.platform !== 'win32') return { skipped: true };
   if (!['x64', 'arm64'].includes(arch) || !/^\d+\.\d+\.\d+$/.test(version)) fail('arguments');
   const canonicalApp = resolve(appDirectory);
@@ -157,7 +134,7 @@ export const buildWindowsMachineInstaller = async ({ appDirectory, output, versi
   try {
     const source = join(temporary, 'propr-desktop.wxs');
     const object = join(temporary, 'propr-desktop.wixobj');
-    await writeFile(source, windowsMachineInstallerSourceForTest(canonicalApp, version, arch, files, failAfterInstall), { encoding: 'utf8', flag: 'wx' });
+    await writeFile(source, windowsMachineInstallerSourceForTest(canonicalApp, version, arch, files), { encoding: 'utf8', flag: 'wx' });
     await execFileAsync(join(wixVendor, 'candle.exe'), ['-nologo', '-arch', arch, '-out', object, source], {
       cwd: temporary, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024,
     });
@@ -172,12 +149,11 @@ export const buildWindowsMachineInstaller = async ({ appDirectory, output, versi
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [, , appDirectory, output, version, arch, mode] = process.argv;
+  const [, , appDirectory, output, version, arch] = process.argv;
   await buildWindowsMachineInstaller({
     appDirectory,
     output,
     version,
     arch,
-    failAfterInstall: mode === '--rollback-probe',
   });
 }

@@ -29,22 +29,6 @@ const releasePreflight = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/release-preflight.mjs', import.meta.url)),
   'utf8',
 ));
-const windowsAuthority = normalizeWorkflowText(readFileSync(
-  fileURLToPath(new URL('./windows-update-authority.ts', import.meta.url)),
-  'utf8',
-));
-const windowsAuthoritySource = normalizeWorkflowText(readFileSync(
-  fileURLToPath(new URL('./native/propr-windows-authority.cs', import.meta.url)),
-  'utf8',
-));
-const windowsAuthorityBuild = normalizeWorkflowText(readFileSync(
-  fileURLToPath(new URL('../scripts/build-windows-authority-helper.mjs', import.meta.url)),
-  'utf8',
-));
-const windowsNativeLauncher = normalizeWorkflowText(readFileSync(
-  fileURLToPath(new URL('./native/windows-launcher/propr_windows_launcher.cc', import.meta.url)),
-  'utf8',
-));
 const forgeConfig = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../forge.config.ts', import.meta.url)),
   'utf8',
@@ -53,8 +37,8 @@ const windowsMachineInstaller = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/build-windows-machine-installer.mjs', import.meta.url)),
   'utf8',
 ));
-const installedWindowsAuthorityTest = normalizeWorkflowText(readFileSync(
-  fileURLToPath(new URL('../scripts/test-installed-windows-authority.ps1', import.meta.url)),
+const installedWindowsAppTest = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/test-installed-windows-app.ps1', import.meta.url)),
   'utf8',
 ));
 
@@ -288,131 +272,39 @@ describe('desktop trusted release workflow', () => {
     );
   });
 
-  test('runs the short-argv native Windows broker smoke before both x64 and arm64 suites', () => {
-    assert.equal(workflow.match(/Probe Windows authority production C# before desktop suite/g)?.length, 2);
-    assert.equal(workflow.match(/Smoke Windows authority broker before the runtime suite/g)?.length, 2);
+
+  test('keeps both Windows architectures mandatory while excluding every deferred update authority gate and resource', () => {
     for (const [jobName, section] of [
       ['unsigned validation', job('package', 'finalize')],
       ['trusted production', job('release-package', 'release-finalize')],
     ] as const) {
       assert.match(section, /- platform: win32\n\s+arch: x64\n\s+runner: windows-2025/);
       assert.match(section, /- platform: win32\n\s+arch: arm64\n\s+runner: windows-11-arm/);
-      assert.match(section, /Probe Windows authority production C# before desktop suite\n\s+if: matrix\.platform == 'win32'/);
-      assert.match(section, /Smoke Windows authority broker before the runtime suite\n\s+if: matrix\.platform == 'win32'/);
-      assert.ok(
-        section.indexOf('Probe Windows authority production C# before desktop suite')
-          < section.indexOf('Smoke Windows authority broker before the runtime suite'),
-        `${jobName} must build and directly launch the exact helper before starting the production broker`,
-      );
-      assert.ok(
-        section.indexOf('Smoke Windows authority broker before the runtime suite')
-          < section.indexOf(`Typecheck and test ${jobName === 'unsigned validation' ? 'unsigned' : 'production'} desktop runtime`),
-        `${jobName} must build, authenticate, and exercise the compiled broker before the complete runtime suite`,
-      );
-      const packagedProbe = jobName === 'unsigned validation'
-        ? 'Directly launch packaged Windows authority helper to READY'
-        : 'Directly launch signed packaged Windows authority helper to READY';
-      assert.ok(
-        section.indexOf(packagedProbe)
-          < section.indexOf(`Typecheck and test ${jobName === 'unsigned validation' ? 'unsigned' : 'production'} desktop runtime`),
-        `${jobName} must directly exercise the packaged helper before the complete runtime suite`,
-      );
+      assert.match(section, /Assert (?:signed )?Windows MVP package excludes update authority/);
+      assert.match(section, /Install and exercise (?:signed )?ordinary-user Windows application/);
+      assert.match(section, /Launch (?:signed )?packaged Windows application and exercise MVP desktop flows/);
+      assert.doesNotMatch(section, /READY|broker:build|windows-authority-build|windows-update-authority\.test|probe-packaged-windows-authority/,
+        `${jobName} retained a deferred Windows authority gate`);
     }
-    assert.match(workflow, /PROPR_DESKTOP_PRODUCTION_RELEASE=0 npm run desktop:broker:build/g);
-    assert.match(windowsAuthority, /spawn\(helper\.executable, \['--broker'\], \{/);
-    assert.match(windowsAuthority, /shell: false/);
-    assert.match(windowsAuthority, /windowsHide: true/);
-    assert.match(windowsAuthority, /stdio: \['pipe', 'pipe', 'pipe'\]/);
-    assert.match(windowsAuthority,
-      /env: \{\s*SystemRoot: helper\.systemRoot,\s*TEMP: sessionTempDirectory,\s*TMP: sessionTempDirectory/);
-    assert.doesNotMatch(windowsAuthority, /helper\.launcher\.launch\(\{/);
-    assert.match(windowsAuthority, /nativeLauncher\.probeSystemDirectory/);
-    assert.match(windowsAuthority, /nativeLauncher\.protectPrivateDirectory/);
-    assert.match(windowsAuthority, /activeAuthenticatedHandleSets--/);
-    assert.match(windowsAuthority, /rm\(this\.sessionTempDirectory, \{ recursive: true, force: true \}\)/);
-    assert.match(windowsNativeLauncher, /CreateFileW\(path\.c_str\(\), GENERIC_READ \| READ_CONTROL, FILE_SHARE_READ/);
-    assert.match(windowsNativeLauncher, /VerifyPinnedSignature/);
-    assert.match(windowsNativeLauncher, /CompileHeld/);
-    assert.match(windowsNativeLauncher, /VerifyMicrosoftCompilerInput/);
-    assert.match(windowsNativeLauncher, /CryptCATAdminEnumCatalogFromHash/);
-    assert.match(windowsNativeLauncher, /CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED[^_]/);
-    assert.match(windowsNativeLauncher, /SignerContent::StandaloneCatalog/);
-    assert.match(windowsNativeLauncher, /SignerContent::EmbeddedPe/);
-    assert.match(windowsNativeLauncher, /CreateProcessW\(paths\[0\]\.c_str\(\)/);
-    assert.match(windowsNativeLauncher, /HANDLE inherited\[\] = \{child_stdin, child_stdout, child_stderr\}/);
-    assert.match(windowsNativeLauncher, /SameIdentity\(identities\[0\], loaded_id\)/);
-    assert.match(windowsNativeLauncher, /DangerousUntrustedAcl/);
-    assert.match(windowsAuthority, /GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe/);
-    assert.doesNotMatch(windowsAuthority, /process\.env\.(?:SystemRoot|windir|COMSPEC|PATH)/i);
-    assert.match(windowsAuthority, /const child = spawn\(KERNEL_SYSTEM_POWERSHELL/);
-    assert.match(windowsAuthority, /env: \{\}/);
-    assert.ok(!windowsAuthority.includes('writeBootstrap'));
-    assert.ok(!windowsAuthority.includes('brokerSource'));
-    assert.match(windowsAuthority, /await session\.write\(JSON\.stringify\(\{/);
-    assert.match(windowsAuthority, /BROKER_STARTUP_TIMEOUT_MS = 60_000/);
-    assert.match(windowsAuthoritySource, /"type", "ready"/);
-    assert.match(windowsAuthoritySource, /"nativeSmoke", true/);
-    assert.match(windowsAuthoritySource, /"compileCount", 1/);
-    for (const stage of [
-      'BUILD_COMPILER',
-      'BUILD_SOURCE',
-      'BUILD_OUTPUT',
-      'TRANSPORT_SPAWN',
-      'MANIFEST',
-      'HELPER_OPEN',
-      'HELPER_OWNER_DACL',
-      'HELPER_REPARSE',
-      'HELPER_IDENTITY',
-      'HELPER_HASH',
-      'PROTOCOL_INIT',
-      'READY',
-    ]) assert.match(windowsAuthority, new RegExp(`'${stage}'`));
-    assert.doesNotMatch(windowsAuthority, /TRANSPORT_(?:HELPER|PIPE|PROCESS|JOB|IMAGE)/);
-    assert.doesNotMatch(windowsNativeLauncher, /launch-stage-/);
-    assert.match(windowsAuthorityBuild, /Microsoft\.NET', layout, 'v4\.0\.30319'/);
-    assert.match(windowsAuthorityBuild, /await invoke\(compiler, args, \{/);
-    assert.match(windowsAuthorityBuild, /'\/platform:anycpu'/);
-    assert.match(windowsAuthorityBuild, /shell: false/);
-    assert.match(windowsAuthorityBuild, /env: \{ SystemRoot: systemRoot, TEMP: cwd, TMP: cwd \}/);
-    assert.doesNotMatch(windowsAuthorityBuild, /nativeLauncher\.compileHeld\(\{/);
-    assert.doesNotMatch(windowsAuthorityBuild, /require\(launcher\.path\)/);
-    assert.doesNotMatch(windowsAuthority, /require\(launcherProof\.path\)/);
-    assert.match(windowsAuthority, /require\(bootstrapProof\.path\)/);
-    assert.match(windowsAuthority, /bootstrap\.loadVerifiedModule\(\{/);
-    assert.match(forgeConfig, /extraResource: \[resolve\('build', 'windows-authority'\)\]/);
-    assert.match(forgeConfig, /refreshPackagedWindowsAuthorityManifest/);
-    assert.match(windowsAuthority, /purpose: BrokerPurpose/);
-    assert.match(windowsAuthority, /expectedBytes: number \| null/);
-  });
-
-  test('installs the full machine-wide Windows artifact and exercises its protected authority on both architectures', () => {
-    assert.equal(workflow.match(/Install and exercise machine-protected Windows authority/g)?.length, 1);
-    assert.equal(workflow.match(/Install and exercise signed machine-protected Windows authority/g)?.length, 1);
-    assert.equal(workflow.match(/test-installed-windows-authority\.ps1/g)?.length, 2);
-    assert.match(workflow, /\*Machine-Setup\.msi/);
-    assert.match(workflow, /-Architecture '\$\{\{ matrix\.arch \}\}'/);
-    assert.match(forgeConfig, /postMake:/);
+    assert.equal(workflow.match(/\*Machine-Setup\.msi/g)?.length, 3);
+    assert.equal(workflow.match(/test-installed-windows-app\.ps1/g)?.length, 2);
+    assert.equal(workflow.match(/PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1/g)?.length, 2);
+    assert.doesNotMatch(forgeConfig, /extraResource|windows-authority|postPackage/);
     assert.match(forgeConfig, /buildWindowsMachineInstaller/);
     assert.doesNotMatch(forgeConfig, /MakerSquirrel|noMsi|Setup\.exe|full\.nupkg/);
-    assert.match(forgeConfig, /Machine-Setup\.msi/);
     assert.match(windowsMachineInstaller, /InstallScope="perMachine"/);
-    assert.match(windowsMachineInstaller, /\/inheritance:r/);
-    assert.match(windowsMachineInstaller, /\/setowner \*S-1-5-18/);
-    assert.match(windowsMachineInstaller, /\*S-1-5-32-545:\(OI\)\(CI\)RX/);
-    assert.doesNotMatch(windowsMachineInstaller, /\*S-1-5-32-545:\(OI\)\(CI\)(?:M|F)/);
-    assert.match(installedWindowsAuthorityTest, /AreAccessRulesProtected/);
-    assert.match(installedWindowsAuthorityTest, /--propr-authority-smoke/);
-    assert.match(installedWindowsAuthorityTest, /-Credential \$credential/);
-    assert.match(installedWindowsAuthorityTest, /OpenWrite/);
-    assert.match(installedWindowsAuthorityTest, /File\]::Move/);
-    assert.match(installedWindowsAuthorityTest, /File\]::Delete/);
-    assert.match(installedWindowsAuthorityTest, /'\/fa'/);
-    assert.match(installedWindowsAuthorityTest, /machine uninstall left the protected canonical install tree behind/);
-    assert.match(installedWindowsAuthorityTest, /machine downgrade unexpectedly succeeded/);
-    assert.match(installedWindowsAuthorityTest, /deliberately failing upgrade unexpectedly succeeded/);
-    assert.match(windowsMachineInstaller, /RollbackProbe/);
-    assert.match(windowsMachineInstaller, /MajorUpgrade AllowSameVersionUpgrades="yes"/);
-    assert.match(windowsMachineInstaller, /Software\\\\Classes\\\\propr/);
-    assert.match(workflow, /PROPR_DESKTOP_WINDOWS_INSTALLED_AUTHORITY=1/g);
+    assert.match(windowsMachineInstaller, /deferred Windows update authority resource present/);
+    assert.doesNotMatch(windowsMachineInstaller, /<CustomAction|<ServiceInstall|RollbackProbe|icacls\.exe/);
+    assert.match(installedWindowsAppTest, /-Credential \$credential/);
+    assert.match(installedWindowsAppTest, /--propr-smoke-test/);
+    assert.match(installedWindowsAppTest, /propr:\/\/connect/);
+    assert.match(installedWindowsAppTest, /deferred Windows update authority resource/);
+  });
+
+  test('configures signed updates only for macOS and never advertises a Windows update feed', () => {
+    const production = job('release-package', 'release-finalize');
+    assert.match(production, /Require macOS signed-update runtime configuration\n\s+if: matrix\.platform == 'darwin'/);
+    assert.doesNotMatch(workflow, /PROPR_DESKTOP_WINDOWS_(?:X64|ARM64)_FEED_URL/);
+    assert.doesNotMatch(workflow, /Require signed-update runtime configuration\n\s+if: matrix\.platform != 'linux'/);
   });
 });

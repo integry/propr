@@ -28,6 +28,9 @@ const PACKAGED_RENDERER_HOST = 'renderer';
 const PACKAGED_LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
+const packagedSmokeTest = app.isPackaged && (
+  process.env.PROPR_DESKTOP_SMOKE_TEST === '1' || process.argv.includes('--propr-smoke-test')
+);
 let mainWindow: BrowserWindow | null = null;
 const initialDeepLink = deepLinkFromArguments(process.argv);
 const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
@@ -202,26 +205,63 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
     throw new Error('Desktop preload bridge was not exposed to the renderer');
   }
   const smokeProfileApiUrl = process.env.PROPR_DESKTOP_SMOKE_PROFILE_API_URL;
-  if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1' && smokeProfileApiUrl) {
+  if (packagedSmokeTest && smokeProfileApiUrl) {
     const normalizedSmokeApiUrl = normalizeApiBaseUrl(smokeProfileApiUrl);
     if (!normalizedSmokeApiUrl || normalizedSmokeApiUrl !== smokeProfileApiUrl) {
       throw new Error('Packaged desktop smoke profile API URL is invalid');
     }
-    const endpoint = `${normalizedSmokeApiUrl}/api/compatibility`;
+    const endpoints = [
+      `${normalizedSmokeApiUrl}/api/compatibility`,
+      `${normalizedSmokeApiUrl}/api/desktop/discovery`,
+    ];
     const result = await window.webContents.executeJavaScript(`(async () => {
-      const response = await fetch(${JSON.stringify(endpoint)}, { credentials: 'include' });
-      return { ok: response.ok, status: response.status, body: await response.json() };
+      const results = [];
+      for (const endpoint of ${JSON.stringify(endpoints)}) {
+        const response = await fetch(endpoint, { credentials: 'include' });
+        results.push({ ok: response.ok, status: response.status, body: await response.json() });
+      }
+      return results;
     })()`);
-    if (result?.ok !== true || result?.body?.profileEndpoint !== true) {
-      throw new Error(`Packaged renderer profile API request failed with HTTP ${result?.status ?? 'unknown'}`);
+    if (result?.[0]?.ok !== true || result[0]?.body?.profileEndpoint !== true
+      || result?.[1]?.ok !== true || result[1]?.body?.product !== 'ProPR'
+      || result[1]?.body?.desktopAuthentication?.protocolVersion !== 1) {
+      throw new Error('Packaged renderer profile API or ProPR Connect discovery request failed');
     }
     log('info', 'desktop.renderer.profile_api.ready', { origin: DESKTOP_RENDERER_ORIGIN });
   }
-  if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1') {
+  if (packagedSmokeTest) {
+    const profileFlow = await window.webContents.executeJavaScript(`(async () => {
+      const bridge = window.proprDesktop;
+      const local = await bridge.profiles.save({ label: 'Local setup', apiBaseUrl: 'http://localhost:4000' });
+      const remote = await bridge.profiles.save({ label: 'ProPR Connect', apiBaseUrl: 'https://connect.propr.dev' });
+      await bridge.profiles.setActive(remote.id);
+      const profiles = await bridge.profiles.list();
+      const lifecycle = await bridge.lifecycle.start();
+      const deadline = performance.now() + 2000;
+      let connectDeepLink = false;
+      do {
+        const labels = Array.from(document.querySelectorAll('.desktop-connection-card form > label'));
+        connectDeepLink = labels[1]?.querySelector('input')?.value === 'https://connect.propr.dev';
+        if (connectDeepLink) break;
+        await new Promise(resolve => setTimeout(resolve, 25));
+      } while (performance.now() < deadline);
+      return {
+        active: profiles.activeProfileId === remote.id,
+        local: profiles.profiles.some(profile => profile.id === local.id && profile.apiBaseUrl === 'http://localhost:4000'),
+        remote: profiles.profiles.some(profile => profile.id === remote.id && profile.apiBaseUrl === 'https://connect.propr.dev'),
+        lifecycleBoundary: lifecycle.ok === false && lifecycle.code === 'not-implemented',
+        connectDeepLink,
+      };
+    })()`);
+    if (!profileFlow?.active || !profileFlow?.local || !profileFlow?.remote
+      || !profileFlow?.lifecycleBoundary || !profileFlow?.connectDeepLink) {
+      throw new Error('Packaged desktop local/remote/API profile flow failed');
+    }
+    log('info', 'desktop.renderer.mvp_flows.ready', { connectDiscovery: true });
     log('info', PACKAGED_LAYOUT_READY_EVENT, { layout: await inspectPackagedLayout(window) });
   }
   log('info', 'desktop.renderer.ready', { preloadBridgeExposed: true });
-  if (app.isPackaged && process.env.PROPR_DESKTOP_SMOKE_TEST === '1') {
+  if (packagedSmokeTest) {
     app.quit();
   } else {
     window.show();
@@ -253,14 +293,6 @@ if (!hasSingleInstanceLock) {
   void app.whenReady().then(async () => {
     logger = createDesktopLogger(join(app.getPath('logs'), 'desktop.jsonl'));
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
-    if (process.platform === 'win32' && app.isPackaged && process.argv.includes('--propr-authority-smoke')) {
-      const { probePackagedWindowsAuthorityHelper } = await import('./windows-update-authority');
-      const stage = await probePackagedWindowsAuthorityHelper(join(process.resourcesPath, 'windows-authority'));
-      if (stage !== 'READY') throw new Error(`Installed Windows authority failed at ${stage}`);
-      log('info', 'desktop.windows_authority.ready', { stage });
-      app.exit(0);
-      return;
-    }
     configureSessionSecurity();
     configurePackagedRendererProtocol();
 
@@ -300,7 +332,7 @@ if (!hasSingleInstanceLock) {
           windowsSignerPins: __PROPR_DESKTOP_WINDOWS_SIGNER_PINS__,
         }
       : undefined;
-    if (app.isPackaged && updateConfig && process.env.PROPR_DESKTOP_SMOKE_TEST !== '1') {
+    if (app.isPackaged && process.platform !== 'win32' && updateConfig && !packagedSmokeTest) {
       const runUpdateCheck = () => {
         void checkForSignedUpdates({
           config: updateConfig,

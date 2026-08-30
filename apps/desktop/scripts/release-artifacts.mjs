@@ -595,7 +595,7 @@ export const stageArtifacts = async ({
     target,
     artifacts,
     nativeSigner,
-    ...(platform === 'win32' ? { installedAuthorityValidated: env.PROPR_DESKTOP_WINDOWS_INSTALLED_AUTHORITY === '1' } : {}),
+    ...(platform === 'win32' ? { installedApplicationValidated: env.PROPR_DESKTOP_WINDOWS_INSTALLED_APP === '1' } : {}),
   };
   await writeFile(join(outputDirectory, 'release-fragment.json'), `${JSON.stringify(fragment, null, 2)}\n`);
   return fragment;
@@ -697,11 +697,11 @@ export const finalizeArtifacts = async ({
       throw new Error(`Release fragment ${value.target} has an unexpected artifact count`);
     }
     const [targetPlatform, targetArch] = value.target.split('-');
-    if (targetPlatform === 'win32' && value.installedAuthorityValidated !== true) {
-      throw new Error(`Release fragment ${value.target} skipped the installed machine authority gate`);
+    if (targetPlatform === 'win32' && value.installedApplicationValidated !== true) {
+      throw new Error(`Release fragment ${value.target} skipped the installed ordinary-user application gate`);
     }
-    if (targetPlatform !== 'win32' && value.installedAuthorityValidated !== undefined) {
-      throw new Error(`Release fragment ${value.target} has foreign installed authority evidence`);
+    if (targetPlatform !== 'win32' && value.installedApplicationValidated !== undefined) {
+      throw new Error(`Release fragment ${value.target} has foreign installed application evidence`);
     }
     const expectedSigner = readNativeSigner(targetPlatform, {
       PROPR_DESKTOP_ACTUAL_SIGNER_TYPE: value.nativeSigner?.type,
@@ -818,13 +818,11 @@ export const finalizeArtifacts = async ({
 const configuredFeedDefinitions = [
   ['darwin-x64', 'PROPR_DESKTOP_DARWIN_X64_FEED_URL'],
   ['darwin-arm64', 'PROPR_DESKTOP_DARWIN_ARM64_FEED_URL'],
-  ['win32-x64', 'PROPR_DESKTOP_WINDOWS_X64_FEED_URL'],
-  ['win32-arm64', 'PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL'],
 ];
 
 const exactFeedUrl = (target, configured, name) => {
   const parsed = new URL(parseHttpsUrl(configured, name));
-  const feedName = target.startsWith('darwin-') ? 'RELEASES.json' : 'updates.json';
+  const feedName = 'RELEASES.json';
   if (parsed.pathname.endsWith('/')) {
     parsed.pathname += feedName;
   } else if (!parsed.pathname.endsWith(`/${feedName}`)) {
@@ -838,7 +836,7 @@ const createSignedFeeds = async (manifest, outputDirectory, env) => {
   const feedFiles = [];
   for (const [target, variable] of configuredFeedDefinitions) {
     const feedUrl = exactFeedUrl(target, env[variable].trim(), variable);
-    const updateKind = target.startsWith('darwin-') ? 'zip' : 'msi';
+    const updateKind = 'zip';
     const artifact = manifest.artifacts.find(candidate => `${candidate.platform}-${candidate.arch}` === target && candidate.kind === updateKind);
     const signer = manifest.nativeSigners[target];
     if (!artifact || !signer) throw new Error(`Signed update metadata lacks artifact or native signer evidence for ${target}`);
@@ -849,8 +847,8 @@ const createSignedFeeds = async (manifest, outputDirectory, env) => {
       notes: `ProPR Desktop ${manifest.version}`,
       pub_date: manifest.publishedAt,
     }, null, 2)}\n`);
-    const platformName = target.startsWith('darwin-') ? 'macos' : 'windows';
-    const feedSuffix = target.startsWith('darwin-') ? 'RELEASES.json' : 'updates.json';
+    const platformName = 'macos';
+    const feedSuffix = 'RELEASES.json';
     const feedFileName = `ProPR-Desktop-${manifest.version}-${platformName}-${target.split('-')[1]}-${feedSuffix}`;
     await writeFile(join(outputDirectory, feedFileName), feedBytes);
     feedFiles.push({ fileName: feedFileName, size: feedBytes.length, sha256: checksumBytes(feedBytes) });

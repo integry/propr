@@ -91,7 +91,7 @@ describe('desktop release configuration', () => {
     );
   });
 
-  test('requires a canonical Windows certificate or SPKI SHA-256 pin allowlist', () => {
+  test('parses canonical Windows certificate or SPKI SHA-256 pin allowlists for artifact signing', () => {
     assert.deepEqual(parseWindowsSignerPins(`${certificatePin},${spkiPin}`), [certificatePin, spkiPin]);
     for (const value of [
       undefined,
@@ -111,11 +111,35 @@ describe('desktop release configuration', () => {
       PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
       PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'CN=Example Publisher',
     };
-    assert.throws(() => resolveTrustedUpdateBuildConfig(base, 'win32'), /WINDOWS_SIGNER_PINS is required/);
     assert.deepEqual(
-      resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_WINDOWS_SIGNER_PINS: certificatePin }, 'win32').windowsSignerPins,
-      [certificatePin],
+      resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_WINDOWS_SIGNER_PINS: certificatePin }, 'win32'),
+      { enabled: false, manifestUrl: '', publicKey: '', signingIdentity: '', windowsSignerPins: [] },
     );
+  });
+
+  test('fails closed to unsupported Windows updates even when every update variable is configured or malformed', () => {
+    for (const env of [
+      {
+        PROPR_DESKTOP_ENABLE_UPDATES: '1',
+        PROPR_DESKTOP_CODE_SIGNED: '1',
+        PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
+        PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
+        PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'CN=Example Publisher',
+        PROPR_DESKTOP_WINDOWS_SIGNER_PINS: certificatePin,
+      },
+      {
+        PROPR_DESKTOP_ENABLE_UPDATES: '1',
+        PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'http://unsafe.example.test/update.json?configured=1',
+      },
+    ]) {
+      assert.deepEqual(resolveTrustedUpdateBuildConfig(env, 'win32'), {
+        enabled: false,
+        manifestUrl: '',
+        publicKey: '',
+        signingIdentity: '',
+        windowsSignerPins: [],
+      });
+    }
   });
 
   test('rejects partially configured signing groups', () => {
@@ -134,10 +158,13 @@ describe('desktop release configuration', () => {
       PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
       PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'TEAM123456',
     }, 'darwin');
-    const enabledWindowsUpdates = {
-      ...enabledUpdates,
-      windowsSignerPins: [certificatePin],
-    };
+    const disabledWindowsUpdates = resolveTrustedUpdateBuildConfig({
+      PROPR_DESKTOP_ENABLE_UPDATES: '1',
+      PROPR_DESKTOP_CODE_SIGNED: '1',
+      PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://updates.example.test/stable/desktop-release.json',
+      PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
+      PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'CN=Example Publisher',
+    }, 'win32');
     const group = { configured: 'yes' };
     assert.throws(
       () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: enabledUpdates, macSigning: group }),
@@ -148,14 +175,23 @@ describe('desktop release configuration', () => {
       /signed updates/,
     );
     assert.throws(
-      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: enabledWindowsUpdates }),
+      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: disabledWindowsUpdates }),
       /Authenticode/,
+    );
+    assert.throws(
+      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: disabledWindowsUpdates, windowsSigning: group }),
+      /artifact signer pin/,
     );
     assert.doesNotThrow(
       () => requireProductionReleaseConfiguration({ platform: 'darwin', updateConfig: enabledUpdates, macSigning: group, macNotarization: group }),
     );
     assert.doesNotThrow(
-      () => requireProductionReleaseConfiguration({ platform: 'win32', updateConfig: enabledWindowsUpdates, windowsSigning: group }),
+      () => requireProductionReleaseConfiguration({
+        platform: 'win32',
+        updateConfig: disabledWindowsUpdates,
+        windowsSigning: group,
+        windowsSignerPins: [certificatePin],
+      }),
     );
   });
 });

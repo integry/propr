@@ -139,7 +139,7 @@ const createFragments = async (root, { signed = false } = {}) => {
       version: '1.2.3',
       env: {
         ...(signed ? signerEnvironment(platform) : {}),
-        ...(platform === 'win32' ? { PROPR_DESKTOP_WINDOWS_INSTALLED_AUTHORITY: '1' } : {}),
+        ...(platform === 'win32' ? { PROPR_DESKTOP_WINDOWS_INSTALLED_APP: '1' } : {}),
       },
       inspectArchitecture: architectureInspector,
     });
@@ -156,8 +156,6 @@ const signingEnvironment = keys => ({
   PROPR_DESKTOP_WINDOWS_SIGNER_PINS: windowsSignerPins,
   PROPR_DESKTOP_DARWIN_X64_FEED_URL: 'https://updates.example.test/darwin/x64/RELEASES.json',
   PROPR_DESKTOP_DARWIN_ARM64_FEED_URL: 'https://updates.example.test/darwin/arm64/RELEASES.json',
-  PROPR_DESKTOP_WINDOWS_X64_FEED_URL: 'https://updates.example.test/win32/x64/',
-  PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL: 'https://updates.example.test/win32/arm64/',
 });
 
 const peFixture = machine => {
@@ -678,13 +676,13 @@ describe('desktop release artifacts', () => {
     );
   });
 
-  test('rejects either Windows fragment when the installed machine authority gate was skipped', async () => {
+  test('rejects either Windows fragment when the installed ordinary-user application gate was skipped', async () => {
     for (const target of ['win32-x64', 'win32-arm64']) {
       const root = await mkdtemp(join(tmpdir(), 'propr-release-missing-installed-authority-'));
       const fragments = await createFragments(root);
       const path = join(fragments, target, 'release-fragment.json');
       const fragment = JSON.parse(await readFile(path, 'utf8'));
-      fragment.installedAuthorityValidated = false;
+      fragment.installedApplicationValidated = false;
       await writeFile(path, `${JSON.stringify(fragment, null, 2)}\n`);
       await assert.rejects(
         finalizeArtifacts({
@@ -693,7 +691,7 @@ describe('desktop release artifacts', () => {
           version: '1.2.3',
           inspectArchitecture: architectureInspector,
         }),
-        new RegExp(`${target} skipped the installed machine authority gate`),
+        new RegExp(`${target} skipped the installed ordinary-user application gate`),
       );
     }
   });
@@ -745,18 +743,9 @@ describe('desktop release artifacts', () => {
 
     assert.equal(manifest.manifestUrl, 'https://updates.example.test/stable/desktop-release.json');
     assert.deepEqual(manifest.windowsSignerPins, windowsSignerPins.split(','));
-    assert.deepEqual(Object.keys(manifest.feeds).sort(), [
-      'darwin-arm64',
-      'darwin-x64',
-      'win32-arm64',
-      'win32-x64',
-    ]);
+    assert.deepEqual(Object.keys(manifest.feeds).sort(), ['darwin-arm64', 'darwin-x64']);
     assert.equal(manifest.feeds['darwin-arm64'].signer.identity, 'TEAM123456');
-    assert.equal(manifest.feeds['win32-x64'].signer.identity, 'CN=Example Publisher');
-    assert.equal(manifest.feeds['win32-x64'].signer.certificateSha256, certificateSha256);
-    assert.equal(manifest.feeds['win32-x64'].signer.spkiSha256, spkiSha256);
-    assert.equal(manifest.feeds['win32-x64'].artifact.version, undefined);
-    assert.equal(manifest.feeds['win32-x64'].version, '1.2.3');
+    assert.equal(manifest.feeds['win32-x64'], undefined);
     const payload = await readFile(join(output, 'desktop-release.json'));
     const signature = Buffer.from((await readFile(join(output, 'desktop-release.json.sig'), 'utf8')).trim(), 'base64');
     assert.equal(verify(null, payload, keys.publicKey, signature), true);

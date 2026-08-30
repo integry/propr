@@ -107,33 +107,6 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Probe Windows authority production C# before desktop suite
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: |
-          PROPR_DESKTOP_PRODUCTION_RELEASE=0 npm run desktop:broker:build
-          npx tsx --test --test-name-pattern="native Windows exact production C# compile probe reaches ready" apps/desktop/src/windows-update-authority.test.ts
-
-      - name: Smoke Windows authority broker before the runtime suite
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: npx tsx --test --test-name-pattern="native Windows authority binds protected owner DACL and complete file identity" apps/desktop/src/windows-update-authority.test.ts
-
-      - name: Run exact native Windows compiler and source barrier suite
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: PROPR_WINDOWS_AUTHORITY_NATIVE_BUILD_TESTS=1 npx tsx --test apps/desktop/scripts/windows-authority-build.test.mjs
-
-      - name: Run full native Windows authority suite with zero skip
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: npx tsx --test apps/desktop/src/windows-update-authority.test.ts
-
-      - name: Execute both inherited Windows launcher fault variables
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: npx tsx --test --test-name-pattern="explicit inherited fault environment" apps/desktop/src/windows-update-authority.test.ts
-
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'
         run: |
@@ -148,10 +121,10 @@ jobs:
           test ! -e apps/desktop/out
           npm run desktop:package
 
-      - name: Directly launch packaged Windows authority helper to READY
+      - name: Assert Windows MVP package excludes update authority
         if: matrix.platform == 'win32'
         shell: bash
-        run: npx tsx apps/desktop/scripts/probe-packaged-windows-authority.ts "$(pwd)/apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority"
+        run: node apps/desktop/scripts/assert-windows-mvp-package.mjs "$(pwd)/apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}"
 
       - name: Typecheck and test unsigned desktop runtime
         shell: bash
@@ -176,29 +149,16 @@ jobs:
         shell: pwsh
         run: npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
 
-      - name: Install and exercise machine-protected Windows authority
+      - name: Install and exercise ordinary-user Windows application
         if: matrix.platform == 'win32'
         shell: pwsh
         run: |
           $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
           if ($installers.Count -ne 1) { throw 'Machine-wide Windows installer is missing or ambiguous' }
-          $parts = $env:PROPR_DESKTOP_VERSION.Split('.') | ForEach-Object { [int]$_ }
-          if ($parts[2] -gt 0) { $previousVersion = "$($parts[0]).$($parts[1]).$($parts[2]-1)" }
-          elseif ($parts[1] -gt 0) { $previousVersion = "$($parts[0]).$($parts[1]-1).0" }
-          elseif ($parts[0] -gt 0) { $previousVersion = "$($parts[0]-1).0.0" }
-          else { throw 'Installer upgrade fixture requires a version above 0.0.0' }
-          if ($parts[2] -ge 65535) { throw 'Installer upgrade fixture patch version is exhausted' }
-          $nextVersion = "$($parts[0]).$($parts[1]).$($parts[2]+1)"
-          $previousInstaller = Join-Path $env:RUNNER_TEMP 'propr-previous.msi'
-          $failingUpgradeInstaller = Join-Path $env:RUNNER_TEMP 'propr-failing-upgrade.msi'
-          node apps/desktop/scripts/build-windows-machine-installer.mjs "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}" $previousInstaller $previousVersion '${{ matrix.arch }}'
-          node apps/desktop/scripts/build-windows-machine-installer.mjs "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}" $failingUpgradeInstaller $nextVersion '${{ matrix.arch }}' --rollback-probe
-          & apps/desktop/scripts/test-installed-windows-authority.ps1 `
+          & apps/desktop/scripts/test-installed-windows-app.ps1 `
             -Installer $installers[0].FullName `
-            -Architecture '${{ matrix.arch }}' `
-            -PreviousInstaller $previousInstaller `
-            -FailingUpgradeInstaller $failingUpgradeInstaller
-          "PROPR_DESKTOP_WINDOWS_INSTALLED_AUTHORITY=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+            -Architecture '${{ matrix.arch }}'
+          "PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Launch packaged Linux application
         if: matrix.platform == 'linux'
@@ -208,8 +168,13 @@ jobs:
           sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
           xvfb-run --auto-servernum npm run desktop:smoke
 
+      - name: Launch packaged Windows application and exercise MVP desktop flows
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: npm run desktop:smoke
+
       - name: Inspect packaged application
-        if: matrix.platform != 'linux'
+        if: matrix.platform == 'darwin'
         shell: bash
         run: npm run desktop:smoke:inspect
 
@@ -422,33 +387,6 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
-      - name: Probe Windows authority production C# before desktop suite
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: |
-          PROPR_DESKTOP_PRODUCTION_RELEASE=0 npm run desktop:broker:build
-          npx tsx --test --test-name-pattern="native Windows exact production C# compile probe reaches ready" apps/desktop/src/windows-update-authority.test.ts
-
-      - name: Smoke Windows authority broker before the runtime suite
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: npx tsx --test --test-name-pattern="native Windows authority binds protected owner DACL and complete file identity" apps/desktop/src/windows-update-authority.test.ts
-
-      - name: Run exact native Windows compiler and source barrier suite
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: PROPR_WINDOWS_AUTHORITY_NATIVE_BUILD_TESTS=1 npx tsx --test apps/desktop/scripts/windows-authority-build.test.mjs
-
-      - name: Run full native Windows authority suite with zero skip
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: npx tsx --test apps/desktop/src/windows-update-authority.test.ts
-
-      - name: Execute both inherited Windows launcher fault variables
-        if: matrix.platform == 'win32'
-        shell: bash
-        run: npx tsx --test --test-name-pattern="explicit inherited fault environment" apps/desktop/src/windows-update-authority.test.ts
-
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'
         run: |
@@ -542,8 +480,8 @@ jobs:
           "PROPR_DESKTOP_ACTUAL_WINDOWS_SPKI_SHA256=$($fingerprints.spkiSha256)" | Out-File -FilePath $env:GITHUB_ENV -Append
           'DESKTOP_PLATFORM_CODE_SIGNED=1' | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Require signed-update runtime configuration
-        if: matrix.platform != 'linux'
+      - name: Require macOS signed-update runtime configuration
+        if: matrix.platform == 'darwin'
         shell: bash
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -552,12 +490,7 @@ jobs:
           test -n "$UPDATE_PUBLIC_KEY" || { echo 'Required Ed25519 update public key is missing' >&2; exit 1; }
           test -n "$UPDATE_MANIFEST_URL" || { echo 'Required update manifest URL is missing' >&2; exit 1; }
           test "${DESKTOP_PLATFORM_CODE_SIGNED:-}" = 1 || { echo 'Production updates require a code-signed build' >&2; exit 1; }
-          if [ "$PLATFORM" = darwin ]; then
-            identity="$UPDATE_MAC_TEAM_ID"
-          else
-            identity="$UPDATE_WINDOWS_SIGNING_IDENTITY"
-            test -n "$UPDATE_WINDOWS_SIGNER_PINS" || { echo 'Required Windows signer pin allowlist is missing' >&2; exit 1; }
-          fi
+          identity="$UPDATE_MAC_TEAM_ID"
           test -n "$identity" || { echo 'Required native signing identity is missing' >&2; exit 1; }
           echo "PROPR_DESKTOP_ENABLE_UPDATES=1" >> "$GITHUB_ENV"
           echo "PROPR_DESKTOP_CODE_SIGNED=1" >> "$GITHUB_ENV"
@@ -573,10 +506,10 @@ jobs:
           test ! -e apps/desktop/out
           npm run desktop:package
 
-      - name: Directly launch signed packaged Windows authority helper to READY
+      - name: Assert signed Windows MVP package excludes update authority
         if: matrix.platform == 'win32'
         shell: bash
-        run: npx tsx apps/desktop/scripts/probe-packaged-windows-authority.ts "$(pwd)/apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority"
+        run: node apps/desktop/scripts/assert-windows-mvp-package.mjs "$(pwd)/apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}"
 
       - name: Typecheck and test production desktop runtime
         shell: bash
@@ -610,29 +543,16 @@ jobs:
         shell: pwsh
         run: npm run make -w @propr/desktop -- --arch=${{ matrix.arch }}
 
-      - name: Install and exercise signed machine-protected Windows authority
+      - name: Install and exercise signed ordinary-user Windows application
         if: matrix.platform == 'win32'
         shell: pwsh
         run: |
           $installers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
           if ($installers.Count -ne 1) { throw 'Signed machine-wide Windows installer is missing or ambiguous' }
-          $parts = $env:PROPR_DESKTOP_VERSION.Split('.') | ForEach-Object { [int]$_ }
-          if ($parts[2] -gt 0) { $previousVersion = "$($parts[0]).$($parts[1]).$($parts[2]-1)" }
-          elseif ($parts[1] -gt 0) { $previousVersion = "$($parts[0]).$($parts[1]-1).0" }
-          elseif ($parts[0] -gt 0) { $previousVersion = "$($parts[0]-1).0.0" }
-          else { throw 'Installer upgrade fixture requires a version above 0.0.0' }
-          if ($parts[2] -ge 65535) { throw 'Installer upgrade fixture patch version is exhausted' }
-          $nextVersion = "$($parts[0]).$($parts[1]).$($parts[2]+1)"
-          $previousInstaller = Join-Path $env:RUNNER_TEMP 'propr-previous.msi'
-          $failingUpgradeInstaller = Join-Path $env:RUNNER_TEMP 'propr-failing-upgrade.msi'
-          node apps/desktop/scripts/build-windows-machine-installer.mjs "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}" $previousInstaller $previousVersion '${{ matrix.arch }}'
-          node apps/desktop/scripts/build-windows-machine-installer.mjs "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}" $failingUpgradeInstaller $nextVersion '${{ matrix.arch }}' --rollback-probe
-          & apps/desktop/scripts/test-installed-windows-authority.ps1 `
+          & apps/desktop/scripts/test-installed-windows-app.ps1 `
             -Installer $installers[0].FullName `
-            -Architecture '${{ matrix.arch }}' `
-            -PreviousInstaller $previousInstaller `
-            -FailingUpgradeInstaller $failingUpgradeInstaller
-          "PROPR_DESKTOP_WINDOWS_INSTALLED_AUTHORITY=1" | Out-File -FilePath $env:GITHUB_ENV -Append
+            -Architecture '${{ matrix.arch }}'
+          "PROPR_DESKTOP_WINDOWS_INSTALLED_APP=1" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Launch packaged Linux application
         if: matrix.platform == 'linux'
@@ -641,6 +561,11 @@ jobs:
           sudo chown root:root "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
           sudo chmod 4755 "apps/desktop/out/propr-desktop-linux-${{ matrix.arch }}/chrome-sandbox"
           xvfb-run --auto-servernum npm run desktop:smoke
+
+      - name: Launch signed packaged Windows application and exercise MVP desktop flows
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: npm run desktop:smoke
 
       - name: Inspect signed and notarized macOS application
         if: matrix.platform == 'darwin'
@@ -672,14 +597,7 @@ jobs:
           npm run desktop:smoke:inspect
           $machineInstallers = @(Get-ChildItem apps/desktop/out/make -Recurse -File -Filter '*Machine-Setup.msi')
           $appExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/propr-desktop.exe"
-          $helperExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-authority.exe"
-          $launcherModule = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-launcher.node"
-          $bootstrapModule = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-bootstrap.node"
-          $helperManifest = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-authority.manifest.json"
-          if (!(Test-Path -LiteralPath $helperExecutable -PathType Leaf) -or !(Test-Path -LiteralPath $launcherModule -PathType Leaf) -or !(Test-Path -LiteralPath $bootstrapModule -PathType Leaf) -or !(Test-Path -LiteralPath $helperManifest -PathType Leaf)) {
-            throw 'Packaged Windows authority helper, launcher, or bound manifest is missing'
-          }
-          node apps/desktop/scripts/inspect-packaged-windows-authority.mjs $helperExecutable $helperManifest
+          node apps/desktop/scripts/assert-windows-mvp-package.mjs (Resolve-Path "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}").Path
           if ($machineInstallers.Count -ne 1) { throw 'Canonical Windows MSI is missing or ambiguous' }
           $machineInstaller = $machineInstallers[0]
           node apps/desktop/scripts/release-architecture.mjs inspect `
@@ -703,9 +621,6 @@ jobs:
           $evidence = @(
             Get-ValidatedSignerEvidence $machineInstaller.FullName
             Get-ValidatedSignerEvidence $appExecutable
-            Get-ValidatedSignerEvidence $helperExecutable
-            Get-ValidatedSignerEvidence $launcherModule
-            Get-ValidatedSignerEvidence $bootstrapModule
           )
           foreach ($signer in $evidence) {
             if ($signer.Subject -cne $env:UPDATE_WINDOWS_SIGNING_IDENTITY) { throw 'Windows Authenticode signer does not match the configured exact subject' }
@@ -847,8 +762,6 @@ jobs:
           PROPR_DESKTOP_WINDOWS_SIGNER_PINS: ${{ vars.PROPR_DESKTOP_WINDOWS_SIGNER_PINS }}
           PROPR_DESKTOP_DARWIN_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_X64_FEED_URL }}
           PROPR_DESKTOP_DARWIN_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_DARWIN_ARM64_FEED_URL }}
-          PROPR_DESKTOP_WINDOWS_X64_FEED_URL: ${{ vars.PROPR_DESKTOP_WINDOWS_X64_FEED_URL }}
-          PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL: ${{ vars.PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           node apps/desktop/scripts/release-artifacts.mjs sign \

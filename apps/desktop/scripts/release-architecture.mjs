@@ -209,12 +209,10 @@ const inspectMachineMsi = async (path, platform, arch) => {
     await visit(extraction);
     const named = name => files.filter(file => basename(file).toLocaleLowerCase('en-US') === name);
     const applications = named('propr-desktop.exe');
-    if (applications.length !== 1
-      || named('propr-windows-authority.exe').length !== 1
-      || named('propr-windows-authority.manifest.json').length !== 1
-      || named('propr-windows-launcher.node').length !== 1
-      || named('propr-windows-bootstrap.node').length !== 1) {
-      throw new Error(`${path} machine installer has an incomplete or ambiguous protected application layout`);
+    const authorityResources = files.filter(file => /propr-windows-(?:authority|launcher|bootstrap)/i.test(basename(file))
+      || relative(extraction, file).split(sep).some(part => /^(?:windows-update-authority|windows-authority)$/i.test(part)));
+    if (applications.length !== 1 || authorityResources.length !== 0) {
+      throw new Error(`${path} machine installer has an invalid MVP application layout or deferred authority resource`);
     }
     const executable = inspectExecutableBytes(await readPrefix(applications[0]));
     assertExecutableArchitecture(executable, platform, arch, path);

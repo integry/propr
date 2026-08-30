@@ -37,16 +37,10 @@ inspection without launching a window. Release CI launches both Linux architectu
 Windows packages on their native runners, validates DMG/ZIP/DEB/RPM/NuGet containers, and validates configured OS
 signatures.
 
-On native Windows builds, `desktop:broker:build` obtains the Windows directory from a fixed-size native
-`GetSystemWindowsDirectoryW` probe after authenticating the canonical system PowerShell image, then compiles the
-committed authority-broker C# source with the exact leased .NET Framework compiler and reference files below that
-directory. The build emits a managed AnyCPU PE, a per-architecture Node-API lease/launcher, and a deterministic strict
-manifest binding both binaries, the source and compiler-input digests, format, protocol, signer pins, and trust mode.
-Forge packages exactly those three files under `resources/windows-authority`; Windows signing covers both PE images
-before the post-package hook refreshes their final-byte hashes, and protected MSI/checksum validation requires the same
-exact set. The packaged application uses the native boundary to hold the helper file against write/delete/rename,
-create it with only three inherited anonymous-pipe handles, assign a parent-owned kill-on-close job, and prove the
-loaded process image before accepting READY. End-user machines never compile source or invoke a shell.
+The first-release Windows MVP packages only the normal desktop application. Native self-update installation authority
+is deferred to issue #2000: no broker, bootstrap, launcher, service, or authority custom action is built, copied into
+`resources`, or installed by the MSI. Both Windows architectures remain mandatory release targets, and package/MSI
+inspection fails if any deferred authority resource appears.
 
 `desktop:audit` deliberately applies separate policies to the two dependency surfaces: low-or-higher advisories fail
 the production-runtime audit, while high and critical advisories fail the desktop development/build-tool audit. Release
@@ -150,7 +144,6 @@ GitHub Actions variables (public configuration, not secrets):
 - `PROPR_DESKTOP_UPDATE_MANIFEST_URL`: stable HTTPS URL from which clients fetch `desktop-release.json`; the detached
   signature must be published beside it as `desktop-release.json.sig`.
 - `PROPR_DESKTOP_DARWIN_X64_FEED_URL`, `PROPR_DESKTOP_DARWIN_ARM64_FEED_URL`: macOS JSON feed URLs.
-- `PROPR_DESKTOP_WINDOWS_X64_FEED_URL`, `PROPR_DESKTOP_WINDOWS_ARM64_FEED_URL`: Windows MSI `updates.json` feed URLs.
 
 Generate the independent update-channel keys once and store only the public output as a repository variable:
 
@@ -174,17 +167,17 @@ environments and the repository prerequisites through the GitHub API, proves the
 must match exactly `refs/tags/desktop-v*`, have no exclusions or bypass actors, and block update and deletion. Pull-
 request finalization produces unsigned validation metadata; trusted signing jobs depend on preflight, check out its
 immutable SHA, revalidate the tag before publication, and fail closed if any signing, notarization, or signed-update
-field is missing. A release operator must publish the exact signed manifest/signature, generated native feeds, and
-bound packages to their configured HTTPS URLs. The manifest URL must not contain a query, so its companion is always
-the documented pathname plus `.sig`.
+field is missing. A release operator must publish the exact signed manifest/signature, generated macOS feeds, and
+bound macOS packages to their configured HTTPS URLs. The manifest URL must not contain a query, so its companion is
+always the documented pathname plus `.sig`.
 
-Linux never checks for native updates. macOS and Windows operate as check-only channels: they verify the Ed25519
-manifest, exact target/version/feed bytes, package URL/size/SHA-256, and the actual Team ID/designated requirement or
-Authenticode certificate subject plus certificate/SPKI SHA-256 fingerprints extracted from the downloaded package.
-Windows publishes only the machine-wide MSI and requires its valid, timestamped signer to match the packaged
-application and protected authority binaries; the runtime authenticates the exact held MSI and requires its signed
-fingerprint evidence to match the allowlist embedded in the installed build. Per-user Squirrel Setup/NUPKG artifacts
-are unsupported and are never staged, checksummed, advertised, or published. Electron's `autoUpdater` is not initialized,
-because it would re-fetch mutable URLs instead of installing the already verified bytes. Unsigned developer packages
-remain update-disabled. The internal apply API exposes only a one-shot held-byte capability, never a verified mutable
-pathname; without a platform adapter that can consume that held/locked capability, automatic apply fails closed.
+Linux never checks for native updates. macOS remains a signed, check-only channel: it verifies the Ed25519 manifest,
+exact target/version/feed bytes, package URL/size/SHA-256, and actual Team ID/designated requirement. Windows self-update
+is explicitly `unsupported` for this release. The Windows build embeds no update URL or key even when update environment
+variables are present; its public check and apply boundaries return `unsupported` before any network, cache, artifact,
+signer, install-authority, or apply-capability call, and signed release metadata advertises no Windows feed.
+
+Windows still publishes exactly one timestamped Authenticode-signed machine-wide MSI for each x64 and ARM64 target,
+with the packaged application's signer and architecture inspected before staging. Per-user Squirrel Setup/NUPKG
+artifacts remain unsupported and are never staged, checksummed, advertised, or published. Unsigned developer packages
+remain update-disabled. Windows self-update installation work resumes only under issue #2000.
