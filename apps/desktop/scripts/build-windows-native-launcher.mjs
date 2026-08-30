@@ -12,6 +12,8 @@ const repositoryRoot = resolve(desktopRoot, '..', '..');
 export const WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY = join(desktopRoot, 'src', 'native', 'windows-launcher');
 export const WINDOWS_NATIVE_LAUNCHER = join(desktopRoot, 'build', 'windows-authority', 'propr-windows-launcher.node');
 export const WINDOWS_NATIVE_BOOTSTRAP = join(desktopRoot, 'build', 'windows-authority', 'propr-windows-bootstrap.node');
+export const WINDOWS_NATIVE_BUILD_BOOTSTRAP = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
+  'propr_windows_build_bootstrap.node');
 export const WINDOWS_NATIVE_AUTHORITY_DIRECTORY = join(desktopRoot, 'build', 'windows-authority');
 const MAX_LAUNCHER_BYTES = 4 * 1024 * 1024;
 const KERNEL_TAKEOWN = String.raw`\\?\GLOBALROOT\SystemRoot\System32\takeown.exe`;
@@ -164,10 +166,13 @@ const buildWindowsNativeLauncherOnce = async () => {
   }
   const built = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_launcher.node');
   const builtBootstrap = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_bootstrap.node');
+  const builtBuildBootstrap = WINDOWS_NATIVE_BUILD_BOOTSTRAP;
   const bytes = await heldBytes(built);
   const bootstrapBytes = await heldBytes(builtBootstrap);
+  const buildBootstrapBytes = await heldBytes(builtBuildBootstrap);
   const pe = inspectWindowsNativeLauncherPe(bytes, process.arch);
   const bootstrapPe = inspectWindowsNativeLauncherPe(bootstrapBytes, process.arch);
+  const buildBootstrapPe = inspectWindowsNativeLauncherPe(buildBootstrapBytes, process.arch);
   await mkdir(WINDOWS_NATIVE_AUTHORITY_DIRECTORY, { recursive: true });
   await copyFile(built, WINDOWS_NATIVE_LAUNCHER);
   await copyFile(builtBootstrap, WINDOWS_NATIVE_BOOTSTRAP);
@@ -186,6 +191,15 @@ const buildWindowsNativeLauncherOnce = async () => {
       size: bootstrapBytes.length,
       sha256: sha256(bootstrapBytes),
       ...bootstrapPe,
+    },
+    // This current-owner build capability is consumed only from node-gyp's
+    // private output. It is deliberately never copied to the authority/package
+    // directory and is not represented in the runtime manifest.
+    buildBootstrap: {
+      path: builtBuildBootstrap,
+      size: buildBootstrapBytes.length,
+      sha256: sha256(buildBootstrapBytes),
+      ...buildBootstrapPe,
     },
     ...pe,
   };

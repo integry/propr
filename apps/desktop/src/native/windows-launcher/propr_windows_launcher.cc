@@ -129,6 +129,21 @@ bool Throw(napi_env env, const char* code) {
   return false;
 }
 
+bool ThrowWithDiagnostic(napi_env env, const char* code, const std::string& diagnostic) {
+  napi_value code_value, message, error, diagnostics, value;
+  if (diagnostic.size() > 96
+      || napi_create_string_utf8(env, code, NAPI_AUTO_LENGTH, &code_value) != napi_ok
+      || napi_create_string_utf8(env, "Windows native authority boundary rejected the operation",
+        NAPI_AUTO_LENGTH, &message) != napi_ok
+      || napi_create_error(env, code_value, message, &error) != napi_ok
+      || napi_create_array_with_length(env, 1, &diagnostics) != napi_ok
+      || napi_create_string_utf8(env, diagnostic.c_str(), diagnostic.size(), &value) != napi_ok
+      || napi_set_element(env, diagnostics, 0, value) != napi_ok
+      || napi_set_named_property(env, error, "diagnostics", diagnostics) != napi_ok
+      || napi_throw(env, error) != napi_ok) return Throw(env, code);
+  return false;
+}
+
 bool StringValue(napi_env env, napi_value object, const char* name, std::wstring* result) {
   napi_value value;
   size_t length = 0;
@@ -467,7 +482,8 @@ bool ReadHeldBytes(HANDLE held, DWORD maximum, std::vector<BYTE>* bytes) {
 
 bool SignerEvidence(HANDLE held, SignerContent expected_content, std::wstring* publisher,
     std::string* certificate_hash, std::string* spki_hash, std::string* root_spki_hash = nullptr,
-    DWORD* chain_errors = nullptr) {
+    DWORD* chain_errors = nullptr, std::string* subject_der = nullptr,
+    std::string* subject_der_sha256 = nullptr) {
   HCERTSTORE store = nullptr;
   HCRYPTMSG message = nullptr;
   DWORD encoding = 0, content = 0, format = 0;
@@ -499,13 +515,20 @@ bool SignerEvidence(HANDLE held, SignerContent expected_content, std::wstring* p
     ok = certificate != nullptr;
   }
   if (ok) {
-    std::array<wchar_t, 513> name{};
-    const DWORD name_length = CertNameToStrW(certificate->dwCertEncodingType, &certificate->pCertInfo->Subject,
-      CERT_X500_NAME_STR, name.data(), static_cast<DWORD>(name.size()));
-    *publisher = name_length > 1 && name_length <= name.size() ? std::wstring(name.data(), name_length - 1) : L"";
+    if (publisher) {
+      std::array<wchar_t, 513> name{};
+      const DWORD name_length = CertNameToStrW(certificate->dwCertEncodingType, &certificate->pCertInfo->Subject,
+        CERT_X500_NAME_STR, name.data(), static_cast<DWORD>(name.size()));
+      *publisher = name_length > 1 && name_length <= name.size() ? std::wstring(name.data(), name_length - 1) : L"";
+      ok = !publisher->empty();
+    }
+    const CERT_NAME_BLOB& subject = certificate->pCertInfo->Subject;
+    ok = ok && subject.pbData != nullptr && subject.cbData > 0 && subject.cbData <= 1024;
+    if (ok && subject_der) *subject_der = Hex(subject.pbData, subject.cbData);
+    if (ok && subject_der_sha256) ok = Sha256Bytes(subject.pbData, subject.cbData, subject_der_sha256);
     BYTE* encoded = nullptr;
     DWORD encoded_bytes = 0;
-    ok = !publisher->empty() && Sha256Bytes(certificate->pbCertEncoded, certificate->cbCertEncoded, certificate_hash)
+    ok = ok && Sha256Bytes(certificate->pbCertEncoded, certificate->cbCertEncoded, certificate_hash)
       && CryptEncodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO, &certificate->pCertInfo->SubjectPublicKeyInfo,
         CRYPT_ENCODE_ALLOC_FLAG, nullptr, &encoded, &encoded_bytes)
       && Sha256Bytes(encoded, encoded_bytes, spki_hash);
@@ -569,58 +592,61 @@ bool PinnedMicrosoftRoot(const std::string& root_spki) {
 
 std::wstring SystemWindowsDirectory();
 
-bool ExactMicrosoftSystemPublisher(const std::wstring& publisher) {
-  // CertNameToStrW(CERT_X500_NAME_STR) canonical subjects issued for the
-  // Windows and .NET inbox payload catalogs. Substring matching would allow a
-  // same-root leaf with an attacker-controlled Microsoft-looking CN.
-  return publisher == L"CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
-    || publisher == L"CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
-    || publisher == L"CN=Microsoft Windows, O=Microsoft Corporation, C=US"
-    || publisher == L"CN=Microsoft Corporation, O=Microsoft Corporation, C=US";
-}
-
 struct MicrosoftCatalogPolicyEntry {
   const wchar_t* member_name;
   const wchar_t* catalog_name;
+  const char* subject_der;
   const char* certificate_sha256;
   const char* spki_sha256;
   const char* catalog_sha256;
 };
 
 // Reviewed Windows Server 2025 x64 and Windows 11 25H2 ARM64 servicing policy.
-// These are byte identities, not values learned from CryptCATAdmin on the
-// current host. A servicing rotation is intentionally fail-closed until this
-// application policy changes.
+// subject_der is the exact encoded CERT_NAME_BLOB in certificate order
+// (C, ST, L, O, CN); it is intentionally independent of CertNameToStr display
+// order and aliases such as S/ST. These are fixed byte identities, not values
+// learned from CryptCATAdmin on the current host. A servicing rotation is
+// intentionally fail-closed until this application policy changes.
+constexpr char kMicrosoftWindowsSubjectDer[] =
+  "3070310b3009060355040613025553311330110603550408130a57617368696e67746f6e3110300e060355040713075265646d6f6e64311e301c060355040a13154d6963726f736f667420436f72706f726174696f6e311a3018060355040313114d6963726f736f66742057696e646f7773";
 constexpr std::array<MicrosoftCatalogPolicyEntry, 8> kMicrosoftCatalogPolicy{{
   {L"csc.exe", L"Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat",
+    kMicrosoftWindowsSubjectDer,
     "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
     "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
     "f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef"},
   {L"System.dll", L"Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat",
+    kMicrosoftWindowsSubjectDer,
     "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
     "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
     "f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef"},
   {L"System.Web.Extensions.dll", L"Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat",
+    kMicrosoftWindowsSubjectDer,
     "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
     "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
     "f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef"},
   {L"powershell.exe", L"Microsoft-Windows-PowerShell-ServerCore-Package~31bf3856ad364e35~amd64~~10.0.26100.32230.cat",
+    kMicrosoftWindowsSubjectDer,
     "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
     "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
     "2d2ac25e4f3cc782a886422964dffc851a66af354220923d96153738867d7866"},
   {L"csc.exe", L"Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat",
+    kMicrosoftWindowsSubjectDer,
     "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
     "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
     "fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85"},
   {L"System.dll", L"Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat",
+    kMicrosoftWindowsSubjectDer,
     "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
     "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
     "fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85"},
   {L"System.Web.Extensions.dll", L"Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat",
+    kMicrosoftWindowsSubjectDer,
     "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
     "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
     "fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85"},
   {L"powershell.exe", L"Microsoft-Windows-Client-Features-Package02~31bf3856ad364e35~arm64~~10.0.26100.1.cat",
+    kMicrosoftWindowsSubjectDer,
     "ce08760345bd5a18aa9091e6f083522ad593bd42f587699e025afd55be589334",
     "130dc613f271c90adf66157a030391c404f1e4ca21ef8261ac914fc615298b62",
     "08150f5768c0780ab94d998a4302718fd1a69d6e54220a057f2d16f691a4582c"},
@@ -632,15 +658,35 @@ const wchar_t* BaseName(const std::wstring& path) {
 }
 
 bool ApprovedMicrosoftCatalog(const std::wstring& member_path, const std::wstring& catalog_path,
-    const std::string& certificate, const std::string& spki, const std::string& catalog_sha256) {
+    const std::string& subject_der, const std::string& certificate, const std::string& spki,
+    const std::string& catalog_sha256) {
   const wchar_t* member = BaseName(member_path);
   const wchar_t* catalog = BaseName(catalog_path);
   return std::any_of(kMicrosoftCatalogPolicy.begin(), kMicrosoftCatalogPolicy.end(),
     [&](const MicrosoftCatalogPolicyEntry& approved) {
       return _wcsicmp(member, approved.member_name) == 0 && _wcsicmp(catalog, approved.catalog_name) == 0
-        && certificate == approved.certificate_sha256 && spki == approved.spki_sha256
+        && subject_der == approved.subject_der && certificate == approved.certificate_sha256
+        && spki == approved.spki_sha256
         && catalog_sha256 == approved.catalog_sha256;
     });
+}
+
+napi_value ApprovedCatalogSignerForTest(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1], result;
+  std::wstring member, catalog;
+  std::string subject_der, certificate, spki, catalog_sha256;
+  if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 1
+      || !StringValue(env, args[0], "member", &member) || !StringValue(env, args[0], "catalog", &catalog)
+      || !Utf8Value(env, args[0], "subjectDer", &subject_der)
+      || !Utf8Value(env, args[0], "certificateSha256", &certificate)
+      || !Utf8Value(env, args[0], "spkiSha256", &spki)
+      || !Utf8Value(env, args[0], "catalogSha256", &catalog_sha256)) {
+    Throw(env, "CATALOG_TEST_ARGUMENT"); return nullptr;
+  }
+  napi_get_boolean(env, ApprovedMicrosoftCatalog(member, catalog, subject_der, certificate, spki, catalog_sha256),
+    &result);
+  return result;
 }
 
 bool CanonicalMicrosoftCatalog(const std::wstring& path, std::string* sha256, FileIdInfo* identity,
@@ -795,7 +841,8 @@ bool VerifyMicrosoftCompilerInput(const std::wstring& path, HANDLE file, std::st
     std::string* spki, std::string* root_spki, std::string* catalog_sha256,
     std::string* catalog_name, std::wstring* catalog_path, FileIdInfo* catalog_identity,
     HANDLE* held_catalog, CatalogContextLease* context_lease, CatalogFailure* failure,
-    CatalogBindingFault binding_fault = CatalogBindingFault::None) {
+    CatalogBindingFault binding_fault = CatalogBindingFault::None,
+    std::string* identity_diagnostic = nullptr) {
   // Inbox compiler/reference authorization is membership in the immutable,
   // OS-serviced Windows catalog rooted at the canonical CatRoot namespace.
   // An arbitrary embedded Authenticode signature, even under a Microsoft root,
@@ -803,18 +850,16 @@ bool VerifyMicrosoftCompilerInput(const std::wstring& path, HANDLE file, std::st
   std::wstring evidence_path;
   const bool trusted = VerifyCatalogTrust(path, file, &evidence_path, catalog_sha256,
     catalog_identity, held_catalog, context_lease, failure, binding_fault);
-  std::wstring publisher;
+  std::string subject_der, subject_der_sha256;
   DWORD chain_errors = 0xffffffff;
   if (!trusted) return false;
   if (!SignerEvidence(*held_catalog, SignerContent::StandaloneCatalog,
-      &publisher, certificate, spki, root_spki, &chain_errors)) {
+      nullptr, certificate, spki, root_spki, &chain_errors, &subject_der, &subject_der_sha256)) {
     *failure = (chain_errors & CERT_TRUST_IS_REVOKED) != 0
       ? CatalogFailure::Revocation : chain_errors == 0xffffffff
         ? CatalogFailure::SignerParse : CatalogFailure::WinTrustPolicy;
     return false;
   }
-  if (!ExactMicrosoftSystemPublisher(publisher)) { *failure = CatalogFailure::ExactPublisher; return false; }
-  if (!PinnedMicrosoftRoot(*root_spki)) { *failure = CatalogFailure::RootPin; return false; }
   const wchar_t* member = BaseName(path);
   const wchar_t* catalog = BaseName(evidence_path);
   const auto same_member_and_catalog = [&](const MicrosoftCatalogPolicyEntry& approved) {
@@ -823,10 +868,17 @@ bool VerifyMicrosoftCompilerInput(const std::wstring& path, HANDLE file, std::st
   const auto matching_identity = std::find_if(kMicrosoftCatalogPolicy.begin(), kMicrosoftCatalogPolicy.end(),
     same_member_and_catalog);
   if (matching_identity == kMicrosoftCatalogPolicy.end()) { *failure = CatalogFailure::CatalogHash; return false; }
+  if (subject_der != matching_identity->subject_der) {
+    if (identity_diagnostic && subject_der_sha256.size() == 64) {
+      *identity_diagnostic = "subject-der-sha256:" + subject_der_sha256;
+    }
+    *failure = CatalogFailure::ExactPublisher; return false;
+  }
+  if (!PinnedMicrosoftRoot(*root_spki)) { *failure = CatalogFailure::RootPin; return false; }
   if (*certificate != matching_identity->certificate_sha256) { *failure = CatalogFailure::CertificatePin; return false; }
   if (*spki != matching_identity->spki_sha256) { *failure = CatalogFailure::SpkiPin; return false; }
   if (*catalog_sha256 != matching_identity->catalog_sha256
-      || !ApprovedMicrosoftCatalog(path, evidence_path, *certificate, *spki, *catalog_sha256)) {
+      || !ApprovedMicrosoftCatalog(path, evidence_path, subject_der, *certificate, *spki, *catalog_sha256)) {
     *failure = CatalogFailure::CatalogHash; return false;
   }
   const wchar_t* approved_name = BaseName(evidence_path);
@@ -930,6 +982,7 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
   HANDLE system_catalog = INVALID_HANDLE_VALUE;
   CatalogContextLease system_catalog_context{};
   CatalogFailure catalog_failure = CatalogFailure::None;
+  std::string identity_diagnostic;
   std::string system_certificate, system_spki, system_root_spki, system_catalog_sha256, system_catalog_name;
   std::wstring system_catalog_path;
   std::array<wchar_t, 32768> final_path{};
@@ -942,11 +995,17 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
     && VerifyMicrosoftCompilerInput(powershell, candidate, &system_certificate, &system_spki,
       &system_root_spki, &system_catalog_sha256, &system_catalog_name, &system_catalog_path,
       &system_catalog_identity, &system_catalog, &system_catalog_context, &catalog_failure,
-      CatalogBindingFaultFromString(fault));
+      CatalogBindingFaultFromString(fault), &identity_diagnostic);
   if (system_catalog != INVALID_HANDLE_VALUE) CloseHandle(system_catalog);
   CloseHandle(candidate);
-  if (!valid) { Throw(env, catalog_failure == CatalogFailure::None
-      ? "SYSTEM_CANDIDATE" : CatalogFailureCode(catalog_failure)); return nullptr; }
+  if (!valid) {
+    const char* code = catalog_failure == CatalogFailure::None
+      ? "SYSTEM_CANDIDATE" : CatalogFailureCode(catalog_failure);
+    if (catalog_failure == CatalogFailure::ExactPublisher && !identity_diagnostic.empty()) {
+      ThrowWithDiagnostic(env, code, identity_diagnostic);
+    } else Throw(env, code);
+    return nullptr;
+  }
   constexpr std::array<const char*, 11> diagnostic_faults{
     "CATALOG_ENUMERATION", "MEMBER_TAG", "CATALOG_HASH", "WINTRUST_POLICY", "REVOCATION",
     "CATALOG_LEASE", "SIGNER_PARSE", "EXACT_PUBLISHER", "ROOT_PIN", "CERTIFICATE_PIN", "SPKI_PIN",
@@ -1002,7 +1061,7 @@ napi_value LoadVerifiedModule(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
   std::wstring path;
-  std::string expected_hash, publisher, certificate_pin, spki_pin, fault;
+  std::string expected_hash, publisher, certificate_pin, spki_pin, fault, authentication_mode;
   uint32_t expected_size = 0;
   bool production = false;
   if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 1
@@ -1015,6 +1074,17 @@ napi_value LoadVerifiedModule(napi_env env, napi_callback_info info) {
   Utf8Value(env, args[0], "signerCertificateSha256", &certificate_pin, true);
   Utf8Value(env, args[0], "signerSpkiSha256", &spki_pin, true);
   Utf8Value(env, args[0], "fault", &fault, true);
+  if (!Utf8Value(env, args[0], "authenticationMode", &authentication_mode)) {
+    Throw(env, "MODULE_ARGUMENT"); return nullptr;
+  }
+#if defined(PROPR_WINDOWS_BUILD_BOOTSTRAP)
+  const bool allow_current_build_owner = authentication_mode == "held-build-artifact" && !production
+    && publisher.empty() && certificate_pin.empty() && spki_pin.empty();
+  if (!allow_current_build_owner) { Throw(env, "MODULE_ARGUMENT"); return nullptr; }
+#else
+  const bool allow_current_build_owner = false;
+  if (authentication_mode != "runtime") { Throw(env, "MODULE_ARGUMENT"); return nullptr; }
+#endif
 
   // This handle denies write/delete sharing across authentication, loader
   // mapping, loaded-image comparison and N-API registration. Consequently a
@@ -1024,7 +1094,7 @@ napi_value LoadVerifiedModule(napi_env env, napi_callback_info info) {
   FileIdInfo held_id{};
   std::string held_hash;
   const bool authenticated = held != INVALID_HANDLE_VALUE
-    && SecureRegularFile(held, expected_size, &held_id, false) && ExpectedArchitecture(held)
+    && SecureRegularFile(held, expected_size, &held_id, false, allow_current_build_owner) && ExpectedArchitecture(held)
     && Sha256Handle(held, expected_size, &held_hash) && held_hash == expected_hash
     && (!production || VerifyPinnedSignature(path, held, publisher, certificate_pin, spki_pin));
   if (!authenticated) {
@@ -1046,7 +1116,8 @@ napi_value LoadVerifiedModule(napi_env env, napi_callback_info info) {
   FileIdInfo loaded_id{};
   std::string loaded_hash;
   const bool same_image = module && loaded != INVALID_HANDLE_VALUE
-    && SecureRegularFile(loaded, expected_size, &loaded_id, false) && SameIdentity(held_id, loaded_id)
+    && SecureRegularFile(loaded, expected_size, &loaded_id, false, allow_current_build_owner)
+    && SameIdentity(held_id, loaded_id)
     && Sha256Handle(loaded, expected_size, &loaded_hash) && loaded_hash == held_hash;
   if (loaded != INVALID_HANDLE_VALUE) CloseHandle(loaded);
   if (!same_image) {
@@ -1416,6 +1487,7 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
   std::array<std::string, 3> certificates, spkis, root_spkis, catalog_hashes, catalog_names;
   std::array<std::wstring, 3> catalog_paths;
   CatalogFailure catalog_failure = CatalogFailure::None;
+  std::string identity_diagnostic;
   bool inputs_valid = true;
   size_t failed_input = inputs.size();
   for (size_t index = 0; index < inputs.size(); ++index) {
@@ -1441,7 +1513,8 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
     // accepted; reparse points and user-writable aliases are not.
     if (!VerifyMicrosoftCompilerInput(paths[index], inputs[index], &certificates[index], &spkis[index],
         &root_spkis[index], &catalog_hashes[index], &catalog_names[index], &catalog_paths[index],
-        &catalog_identities[index], &catalogs[index], &catalog_contexts[index], &catalog_failure)) {
+        &catalog_identities[index], &catalogs[index], &catalog_contexts[index], &catalog_failure,
+        CatalogBindingFault::None, &identity_diagnostic)) {
       inputs_valid = false;
       break;
     }
@@ -1481,14 +1554,13 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
     HANDLE wrong = CreateFileW(wrong_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     LARGE_INTEGER wrong_size{};
-    std::string wrong_hash, wrong_certificate, wrong_spki, wrong_root;
-    std::wstring wrong_publisher;
+    std::string wrong_hash, wrong_certificate, wrong_spki, wrong_root, wrong_subject;
     presented = presented && wrong != INVALID_HANDLE_VALUE && GetFileSizeEx(wrong, &wrong_size)
       && wrong_size.QuadPart > 0 && wrong_size.QuadPart <= kMaxBuildInputBytes
       && Sha256Handle(wrong, static_cast<DWORD>(wrong_size.QuadPart), &wrong_hash, kMaxBuildInputBytes)
-      && SignerEvidence(wrong, SignerContent::StandaloneCatalog, &wrong_publisher,
-        &wrong_certificate, &wrong_spki, &wrong_root)
-      && !ApprovedMicrosoftCatalog(paths[0], wrong_path, wrong_certificate, wrong_spki, wrong_hash);
+      && SignerEvidence(wrong, SignerContent::StandaloneCatalog, nullptr,
+        &wrong_certificate, &wrong_spki, &wrong_root, nullptr, &wrong_subject)
+      && !ApprovedMicrosoftCatalog(paths[0], wrong_path, wrong_subject, wrong_certificate, wrong_spki, wrong_hash);
     if (wrong != INVALID_HANDLE_VALUE) CloseHandle(wrong);
     DeleteFileW(wrong_path.c_str());
     // The copied, genuinely signed bytes reached the same signer parser and
@@ -1501,8 +1573,12 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
     for (HANDLE handle : inputs) CloseHandle(handle);
     for (HANDLE handle : catalogs) if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
     CloseHandle(directory_lease);
-    Throw(env, catalog_failure == CatalogFailure::None
-      ? "SIGNER_CATALOG" : CatalogFailureCode(catalog_failure)); return nullptr;
+    const char* code = catalog_failure == CatalogFailure::None
+      ? "SIGNER_CATALOG" : CatalogFailureCode(catalog_failure);
+    if (catalog_failure == CatalogFailure::ExactPublisher && !identity_diagnostic.empty()) {
+      ThrowWithDiagnostic(env, code, identity_diagnostic);
+    } else Throw(env, code);
+    return nullptr;
   }
   if ((fault == "compiler-swap-after-open" && !MutationWasDenied(paths[0], "swap"))
       || (fault == "reference-swap-after-open" && !MutationWasDenied(paths[1], "swap"))) {
@@ -1875,6 +1951,8 @@ napi_value Init(napi_env env, napi_value exports) {
     {"leaseFiles", nullptr, LeaseFiles, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"closeFileLease", nullptr, CloseFileLease, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"dangerousAclForTest", nullptr, DangerousAclForTest, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"approvedCatalogSignerForTest", nullptr, ApprovedCatalogSignerForTest,
+      nullptr, nullptr, nullptr, napi_default, nullptr},
   };
 #endif
   napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);

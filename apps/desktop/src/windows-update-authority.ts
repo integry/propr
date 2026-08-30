@@ -200,6 +200,7 @@ interface WindowsNativeLauncher {
   close(lease: object): void;
   compileHeld?(policy: Record<string, unknown>): Record<string, unknown>;
   dangerousAclForTest?(policy: { sddl: string }): boolean;
+  approvedCatalogSignerForTest?(policy: Record<string, string>): boolean;
 }
 
 interface WindowsNativeBootstrap {
@@ -1122,6 +1123,7 @@ const authenticateWindowsAuthorityHelper = async (
         size: manifest.launcher.size,
         sha256: manifest.launcher.sha256,
         production: manifest.launcher.trust === 'production-signed',
+        authenticationMode: 'runtime',
         publisher: manifest.launcher.publisher,
         signerCertificateSha256: manifest.launcher.signerCertificateSha256,
         signerSpkiSha256: manifest.launcher.signerSpkiSha256,

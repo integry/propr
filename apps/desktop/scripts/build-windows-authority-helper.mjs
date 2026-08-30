@@ -40,6 +40,12 @@ const MICROSOFT_COMPILER_CATALOG_POLICY = Object.freeze([
     : 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
 })));
 const require = createRequire(import.meta.url);
+const boundedCompilerDiagnostics = diagnostics => Array.isArray(diagnostics)
+  ? diagnostics.filter(value => typeof value === 'string' && (
+    /^(?:propr_windows_launcher\.(?:cc|obj)|link):\d+:(?:C|LNK)\d{4}$/.test(value)
+      || /^subject-der-sha256:[a-f0-9]{64}$/.test(value)
+  )).slice(0, 8)
+  : [];
 
 const fail = (stage, substage, diagnostics = []) => {
   const boundedSubstage = stage === 'BUILD_COMPILER' && WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(substage)
@@ -47,7 +53,7 @@ const fail = (stage, substage, diagnostics = []) => {
   const error = new Error(`Windows authority helper build failed [win-authority:${stage}${boundedSubstage}]`);
   error.stage = stage;
   if (boundedSubstage) error.substage = substage;
-  error.diagnostics = Object.freeze(Array.isArray(diagnostics) ? diagnostics.slice(0, 8) : []);
+  error.diagnostics = Object.freeze(stage === 'BUILD_COMPILER' ? boundedCompilerDiagnostics(diagnostics) : []);
   throw error;
 };
 
@@ -56,7 +62,9 @@ export const preserveWindowsAuthorityCompilerFailure = (error, fallback = 'DIREC
     if (error.stage === 'BUILD_COMPILER' && WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(error.substage)) {
       fail('BUILD_COMPILER', error.substage, error.diagnostics);
     }
-    if (WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(error.code)) fail('BUILD_COMPILER', error.code);
+    if (WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(error.code)) {
+      fail('BUILD_COMPILER', error.code, error.diagnostics);
+    }
   }
   fail('BUILD_COMPILER', fallback);
 };
@@ -124,7 +132,7 @@ export const decodeWindowsSystemDirectoryRecord = record => {
 
 const loadAuthenticatedNativeLauncher = launcher => {
   let bootstrap;
-  try { bootstrap = require(launcher.bootstrap.path); }
+  try { bootstrap = require(launcher.buildBootstrap.path); }
   catch { fail('BUILD_COMPILER', 'DIRECTORY_PROBE'); }
   if (!bootstrap || typeof bootstrap.loadVerifiedModule !== 'function') fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
   try {
@@ -133,6 +141,7 @@ const loadAuthenticatedNativeLauncher = launcher => {
       size: launcher.size,
       sha256: launcher.sha256,
       production: false,
+      authenticationMode: 'held-build-artifact',
       publisher: null,
       signerCertificateSha256: null,
       signerSpkiSha256: null,

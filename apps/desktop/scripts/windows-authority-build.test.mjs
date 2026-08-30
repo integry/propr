@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { createRequire } from 'node:module';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   inspectAnyCpuPe,
   preserveWindowsAuthorityCompilerFailure,
@@ -16,7 +19,12 @@ import {
   WINDOWS_AUTHORITY_MANIFEST,
   WINDOWS_AUTHORITY_SOURCE,
 } from './build-windows-authority-helper.mjs';
-import { prepareWindowsAuthorityBuildDirectory } from './build-windows-native-launcher.mjs';
+import {
+  buildWindowsNativeLauncher,
+  prepareWindowsAuthorityBuildDirectory,
+  WINDOWS_NATIVE_BUILD_BOOTSTRAP,
+  WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY,
+} from './build-windows-native-launcher.mjs';
 import {
   classifyWindowsNativeBuildFailure,
   sanitizeWindowsNativeBuildDiagnostics,
@@ -29,6 +37,17 @@ import {
 const windowsNativeBuildOnly = {
   skip: process.platform !== 'win32' || process.env.PROPR_WINDOWS_AUTHORITY_NATIVE_BUILD_TESTS !== '1',
 };
+const require = createRequire(import.meta.url);
+const execFileAsync = promisify(execFile);
+const kernelIcacls = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
+const microsoftWindowsSubjectRdns = [
+  '310b3009060355040613025553',
+  '311330110603550408130a57617368696e67746f6e',
+  '3110300e060355040713075265646d6f6e64',
+  '311e301c060355040a13154d6963726f736f667420436f72706f726174696f6e',
+  '311a3018060355040313114d6963726f736f66742057696e646f7773',
+];
+const microsoftWindowsSubjectDer = `3070${microsoftWindowsSubjectRdns.join('')}`;
 const compilerInputEvidence = (name, sha256) => ({
   name,
   size: 1,
@@ -158,10 +177,41 @@ test('every native build boundary preserves only the fixed secret-free compiler 
       && error.message === 'Windows authority helper build failed [win-authority:BUILD_COMPILER:DIRECTORY_PROBE]'
       && !error.message.includes('secret'),
   );
+  const identity = Object.assign(new Error('raw rendered subject and host path'), {
+    code: 'EXACT_PUBLISHER',
+    diagnostics: ['subject-der-sha256:bd68f19a09e1bdede787648ed1d0fde5b77d7bece7b1f9430bcfba4d10ec058e',
+      'CN=Microsoft Windows, C:\\host'],
+  });
+  assert.throws(() => preserveWindowsAuthorityCompilerFailure(identity), error => {
+    assert.deepEqual(error.diagnostics, [
+      'subject-der-sha256:bd68f19a09e1bdede787648ed1d0fde5b77d7bece7b1f9430bcfba4d10ec058e',
+    ]);
+    return true;
+  });
+});
+
+test('the current-owner exception exists only in the unshipped build bootstrap', async () => {
+  const [binding, nativeBuild, nativeSource, runtime] = await Promise.all([
+    readFile(new URL('../src/native/windows-launcher/binding.gyp', import.meta.url), 'utf8'),
+    readFile(new URL('./build-windows-native-launcher.mjs', import.meta.url), 'utf8'),
+    readFile(new URL('../src/native/windows-launcher/propr_windows_launcher.cc', import.meta.url), 'utf8'),
+    readFile(new URL('../src/windows-update-authority.ts', import.meta.url), 'utf8'),
+  ]);
+  assert.match(binding, /propr_windows_build_bootstrap/);
+  assert.match(binding, /PROPR_WINDOWS_BUILD_BOOTSTRAP=1/);
+  assert.match(nativeBuild, /buildBootstrap:/);
+  assert.doesNotMatch(nativeBuild, /copyFile\(builtBuildBootstrap/);
+  assert.match(nativeSource, /authentication_mode == "held-build-artifact"/);
+  assert.match(nativeSource, /SecureRegularFile\(held, expected_size, &held_id, false, allow_current_build_owner\)/);
+  assert.match(nativeSource, /SameIdentity\(held_id, loaded_id\)/);
+  assert.match(runtime, /authenticationMode: 'runtime'/);
+  assert.doesNotMatch(runtime, /held-build-artifact/);
 });
 
 test('system catalog policy is standalone, cache-only, held, and independently diagnosable', async () => {
   const source = await readFile(new URL('../src/native/windows-launcher/propr_windows_launcher.cc', import.meta.url), 'utf8');
+  assert.equal(createHash('sha256').update(Buffer.from(microsoftWindowsSubjectDer, 'hex')).digest('hex'),
+    'bd68f19a09e1bdede787648ed1d0fde5b77d7bece7b1f9430bcfba4d10ec058e');
   assert.match(source, /SignerContent::StandaloneCatalog/);
   assert.match(source, /WTD_CACHE_ONLY_URL_RETRIEVAL/);
   assert.match(source, /CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY/);
@@ -169,6 +219,11 @@ test('system catalog policy is standalone, cache-only, held, and independently d
   assert.match(source, /SameHeldCatalog\(catalogs\[index\], catalog_identities\[index\], catalog_hashes\[index\]\)/);
   assert.match(source, /kMicrosoftCatalogPolicy/);
   assert.match(source, /ApprovedMicrosoftCatalog/);
+  assert.match(source, /const CERT_NAME_BLOB& subject = certificate->pCertInfo->Subject;/);
+  assert.match(source, /subject_der == approved\.subject_der/);
+  assert.match(source, /subject-der-sha256:/);
+  assert.match(source, new RegExp(microsoftWindowsSubjectDer));
+  assert.doesNotMatch(source, /ExactMicrosoftSystemPublisher/);
   assert.match(source, /GUID driver_action = DRIVER_ACTION_VERIFY/);
   assert.match(source, /member\.pcCatalogContext = nullptr;/);
   assert.match(source, /member\.hCatAdmin = admin;/);
@@ -187,6 +242,95 @@ test('system catalog policy is standalone, cache-only, held, and independently d
     assert.match(source, new RegExp(`"${code}"`));
   }
 });
+
+test('catalog signer policy pins exact DER subjects independent of rendered X.500 order',
+  windowsNativeBuildOnly, async () => {
+    await buildWindowsNativeLauncher();
+    const native = require(join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
+      'propr_windows_launcher.node'));
+    assert.equal(typeof native.approvedCatalogSignerForTest, 'function');
+    const policy = {
+      member: 'csc.exe',
+      catalog: process.arch === 'arm64'
+        ? 'Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat'
+        : 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
+      subjectDer: microsoftWindowsSubjectDer,
+      certificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
+      spkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
+      catalogSha256: process.arch === 'arm64'
+        ? 'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85'
+        : 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
+    };
+    for (const renderedSubject of [
+      'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
+      'C=US, ST=Washington, L=Redmond, O=Microsoft Corporation, CN=Microsoft Windows',
+    ]) assert.equal(native.approvedCatalogSignerForTest({ ...policy, renderedSubject }), true);
+    const reorderedDer = `3070${[...microsoftWindowsSubjectRdns].reverse().join('')}`;
+    assert.equal(native.approvedCatalogSignerForTest({ ...policy, subjectDer: reorderedDer }), false);
+    assert.equal(native.approvedCatalogSignerForTest({
+      ...policy,
+      subjectDer: `${microsoftWindowsSubjectDer.slice(0, -2)}74`,
+    }), false, 'a Microsoft-looking subject under the same root is not authority');
+    assert.equal(native.approvedCatalogSignerForTest({
+      ...policy,
+      certificateSha256: '0'.repeat(64),
+    }), false, 'the exact subject cannot authorize a different same-root leaf');
+    const powershellPolicy = process.arch === 'arm64' ? {
+      ...policy,
+      member: 'powershell.exe',
+      catalog: 'Microsoft-Windows-Client-Features-Package02~31bf3856ad364e35~arm64~~10.0.26100.1.cat',
+      certificateSha256: 'ce08760345bd5a18aa9091e6f083522ad593bd42f587699e025afd55be589334',
+      spkiSha256: '130dc613f271c90adf66157a030391c404f1e4ca21ef8261ac914fc615298b62',
+      catalogSha256: '08150f5768c0780ab94d998a4302718fd1a69d6e54220a057f2d16f691a4582c',
+    } : {
+      ...policy,
+      member: 'powershell.exe',
+      catalog: 'Microsoft-Windows-PowerShell-ServerCore-Package~31bf3856ad364e35~amd64~~10.0.26100.32230.cat',
+      catalogSha256: '2d2ac25e4f3cc782a886422964dffc851a66af354220923d96153738867d7866',
+    };
+    assert.equal(native.approvedCatalogSignerForTest(powershellPolicy), true,
+      'each reviewed certificate/SPKI/catalog tuple carries the exact approved subject DER');
+  });
+
+test('build-owner module authentication is compile-time-only, ACL-strict, and held-identity-bound',
+  windowsNativeBuildOnly, async () => {
+    const launcher = await buildWindowsNativeLauncher();
+    const buildBootstrap = require(WINDOWS_NATIVE_BUILD_BOOTSTRAP);
+    const runtimeBootstrap = require(join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
+      'propr_windows_bootstrap.node'));
+    const policy = {
+      path: launcher.path,
+      size: launcher.size,
+      sha256: launcher.sha256,
+      production: false,
+      publisher: null,
+      signerCertificateSha256: null,
+      signerSpkiSha256: null,
+    };
+    assert.throws(() => runtimeBootstrap.loadVerifiedModule({
+      ...policy, authenticationMode: 'held-build-artifact',
+    }), error => error?.code === 'MODULE_ARGUMENT');
+    assert.throws(() => runtimeBootstrap.loadVerifiedModule({
+      ...policy, authenticationMode: 'runtime',
+    }), error => error?.code === 'MODULE_AUTHORITY', 'runtime rejects a current-owner authority module');
+
+    const root = await mkdtemp(join(tmpdir(), 'propr-build-owner-mode-'));
+    const broad = join(root, 'propr-windows-launcher.node');
+    try {
+      await copyFile(launcher.path, broad);
+      await execFileAsync(kernelIcacls, [broad, '/inheritance:r', '/grant:r', '*S-1-5-32-545:M', '/Q'], { env: {} });
+      assert.throws(() => buildBootstrap.loadVerifiedModule({
+        ...policy, path: broad, authenticationMode: 'held-build-artifact',
+      }), error => error?.code === 'MODULE_AUTHORITY');
+    } finally { await rm(root, { recursive: true, force: true }); }
+
+    const loaded = buildBootstrap.loadVerifiedModule({
+      ...policy,
+      authenticationMode: 'held-build-artifact',
+      fault: 'barrier-before-module-load-swap',
+    });
+    assert.equal(typeof loaded.compileHeld, 'function', 'the held no-write/delete/rename lease binds the loaded identity');
+  });
 
 test('native WinTrust catalog binding requires the exact retained SHA-256 admin and catalog pair',
   windowsNativeBuildOnly, async () => {
