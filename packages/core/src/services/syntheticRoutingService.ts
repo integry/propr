@@ -114,6 +114,7 @@ function resultFailure(result: AnalysisResult | AgentExecutionResult): Error {
 
 export class SyntheticRoutingSession {
   private current?: SyntheticPhysicalSelection;
+  private lastFailedSelection?: SyntheticPhysicalSelection;
   private readonly attemptedMemberIds = new Set<string>();
   private readonly attemptFailures = new Map<string, string>();
   private executionAttemptCount = 0;
@@ -144,8 +145,11 @@ export class SyntheticRoutingSession {
     return this.attemptedMemberIds;
   }
 
-  /** Metadata for the physical member currently selected by a synthetic call. */
-  get routingMetadata(): Record<string, unknown> | undefined { return this.current?.synthetic ? this.service.metadataFor(this.current) : undefined; }
+  /** Metadata for the current, or most recently failed, physical member of a synthetic call. */
+  get routingMetadata(): Record<string, unknown> | undefined {
+    const selection = this.current?.synthetic ? this.current : this.lastFailedSelection;
+    return selection ? this.service.metadataFor(selection) : undefined;
+  }
 
   isPhysicalAgentEligible(agent: Agent): boolean { return this.physicalAgentEligibility?.(agent) ?? true; }
 
@@ -158,6 +162,7 @@ export class SyntheticRoutingSession {
 
   private failCurrent(reason: string): void {
     if (this.current?.memberId) this.attemptFailures.set(this.current.memberId, reason);
+    if (this.current?.synthetic) this.lastFailedSelection = this.current;
     this.current = undefined;
   }
 

@@ -12,8 +12,9 @@ const {
 } = await import('../packages/core/src/index.js');
 const { processSingleBatch } = await import('../packages/core/src/services/relevance/summaryMinerBatch.js');
 const { processDirectoryBatch } = await import('../packages/core/src/services/relevance/summaryMinerDirectoryBatch.js');
+const { SyntheticRoutingService } = await import('../packages/core/src/services/syntheticRoutingService.js');
 
-function createAgent(alias: string, defaultModel: string, analyze: (prompt: string, options?: { model?: string }) => Promise<unknown>) {
+function createAgent(alias: string, defaultModel: string, analyze: (prompt: string, options?: { model?: string; suppressLlmLog?: boolean }) => Promise<unknown>) {
   return {
     config: {
       id: alias,
@@ -197,6 +198,80 @@ describe('summary miner batch fallback', () => {
     assert.equal(Object.keys(state.cooldowns).length, 1);
     assert.equal(state.warning?.mode, 'cooldown');
     assert.match(state.warning?.message || '', /unusable output/);
+  });
+
+  test('logs the last physical route when all synthetic summarization members fail', async () => {
+    const firstAgent = createAgent('route-large', 'claude-opus-4-6', async (_prompt, options) => {
+      assert.equal(options?.model, 'claude-opus-4-6');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'claude-opus-4-6',
+        executionTimeMs: 1,
+        error: 'primary provider unavailable'
+      };
+    });
+    const secondAgent = createAgent('route-small', 'gpt-5-mini', async (_prompt, options) => {
+      assert.equal(options?.model, 'gpt-5-mini');
+      assert.equal(options?.suppressLlmLog, true);
+      return {
+        success: false,
+        response: '',
+        modelUsed: 'gpt-5-mini',
+        executionTimeMs: 1,
+        error: 'secondary provider unavailable'
+      };
+    });
+    const agents = new Map([
+      [firstAgent.config.alias, firstAgent],
+      [secondAgent.config.alias, secondAgent]
+    ]);
+    const router = new SyntheticRoutingService({
+      database: db,
+      loadSyntheticConfigs: async () => [{
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        alias: 'summary-pool',
+        enabled: true,
+        defaultModel: 'smart',
+        models: [{
+          id: 'smart',
+          enabled: true,
+          strategy: 'round_robin',
+          members: [
+            { id: '33333333-3333-4333-8333-333333333333', directAgentAlias: 'route-large', model: 'claude-opus-4-6', enabled: true, priority: 100 },
+            { id: '44444444-4444-4444-8444-444444444444', directAgentAlias: 'route-small', model: 'gpt-5-mini', enabled: true, priority: 0 }
+          ]
+        }]
+      }],
+      getDirectAgent: alias => agents.get(alias) as never,
+      usageSnapshotProvider: { getSnapshot: async () => null }
+    });
+    const virtualAgent = createAgent('summary-pool', 'smart', async () => {
+      throw new Error('synthetic facade should not be invoked directly');
+    });
+
+    const result = await processSingleBatch({
+      fullName: 'integry/propr',
+      batch: [{ path: 'src/a.ts', content: 'export const a = 1;', blobHash: 'abc123' }],
+      agent: virtualAgent as never,
+      log: log as never,
+      modelUsed: 'smart',
+      primaryAgentAliasSetting: 'summary-pool',
+      branch: 'main',
+      routingSession: router.begin({ requestedAgentAlias: 'summary-pool', requestedModel: 'smart' })
+    });
+
+    assert.equal(result.success, false);
+    const llmLog = await db('llm_logs').orderBy('log_id', 'desc').first();
+    assert.equal(llmLog.agent_alias, 'route-small');
+    assert.equal(llmLog.model_name, 'gpt-5-mini');
+    const metadata = JSON.parse(llmLog.metadata);
+    assert.equal(metadata.syntheticRouting.virtualAgentAlias, 'summary-pool');
+    assert.equal(metadata.syntheticRouting.virtualModel, 'smart');
+    assert.equal(metadata.syntheticRouting.physicalAgentAlias, 'route-small');
+    assert.equal(metadata.syntheticRouting.physicalModel, 'gpt-5-mini');
+    assert.equal(metadata.syntheticRouting.attemptNumber, 2);
   });
 
   test('caps the fallback model to a single attempt on transient failure', async () => {

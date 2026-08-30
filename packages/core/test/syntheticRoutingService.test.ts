@@ -231,6 +231,21 @@ describe('SyntheticRoutingService', () => {
     assert.equal(small.analyzeCalls.length, 0);
   });
 
+  test('transport abort fails over to the next eligible member', async () => {
+    const db = await database();
+    const large = direct('large', 'claude-opus-4-6');
+    const small = direct('small', 'gpt-5-mini');
+    large.analysisResults.push({ response: '', modelUsed: 'claude-opus-4-6', executionTimeMs: 1, success: false, error: 'upstream stream aborted; connection canceled while reading response' });
+
+    const result = await service(db, config({ priorityB: 100 }), [large, small])
+      .begin({ requestedAgentAlias: 'pool', requestedModel: 'smart' }).analyze('hello');
+
+    assert.equal(result.success, true);
+    assert.equal(result.response, 'small');
+    assert.equal(large.analyzeCalls.length, 1);
+    assert.equal(small.analyzeCalls.length, 1);
+  });
+
   test('structured implementation cancellation is not retried when error text is absent', async () => {
     const db = await database();
     const large = direct('large', 'claude-opus-4-6');
