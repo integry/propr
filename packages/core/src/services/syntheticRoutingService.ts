@@ -146,10 +146,7 @@ export class SyntheticRoutingSession {
   }
 
   /** Metadata for the current, or most recently failed, physical member of a synthetic call. */
-  get routingMetadata(): Record<string, unknown> | undefined {
-    const selection = this.current?.synthetic ? this.current : this.lastFailedSelection;
-    return selection ? this.service.metadataFor(selection) : undefined;
-  }
+  get routingMetadata(): Record<string, unknown> | undefined { const selection = this.current?.synthetic ? this.current : this.lastFailedSelection; return selection ? this.service.metadataFor(selection) : undefined; }
 
   isPhysicalAgentEligible(agent: Agent): boolean { return this.physicalAgentEligibility?.(agent) ?? true; }
 
