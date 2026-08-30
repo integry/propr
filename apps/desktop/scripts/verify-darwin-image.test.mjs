@@ -51,7 +51,10 @@ test('Darwin image verification does not retry malformed/truncated images or acc
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('Darwin image verification holds a fixed hdiutil image behind a real mutation and replacement barrier', async () => {
+test('Darwin image verification holds a fixed hdiutil image behind a real mutation and replacement barrier', {
+  skip: process.platform !== 'darwin',
+}, async () => {
+  assert.equal(process.platform, 'darwin', 'the native image mutation barrier must run on Darwin');
   const root = await mkdtemp(join(tmpdir(), 'propr-dmg-lease-'));
   const image = join(await realpath(root), 'fixture.dmg');
   try {

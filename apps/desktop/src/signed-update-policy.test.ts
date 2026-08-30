@@ -42,7 +42,10 @@ test('Windows signed-update public boundary is fixed unsupported with zero exter
   assert.deepEqual(calls, { request: 0, signer: 0, authority: 0, install: 0 });
 });
 
-test('macOS signed-update check remains check-only and verifies its exact feed and artifact', async () => {
+test('macOS signed-update check remains check-only and verifies its exact feed and artifact', {
+  skip: process.platform !== 'darwin',
+}, async () => {
+  assert.equal(process.platform, 'darwin', 'the native macOS update filesystem adapter must run on Darwin');
   const artifact = Buffer.from('signed macOS application ZIP');
   const artifactUrl = 'https://updates.example.test/darwin/x64/ProPR-Desktop-1.2.4-macos-x64-zip';
   const feed = Buffer.from(`${JSON.stringify({ url: artifactUrl, name: '1.2.4' })}\n`);

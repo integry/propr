@@ -1,17 +1,23 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 
-const smokeDirectory = '/tmp/propr-desktop-smoke-a1b2c3';
+const smokeLeaf = 'propr-desktop-smoke-a1b2c3';
+const smokeDirectory = resolve(tmpdir(), smokeLeaf);
+const defaultUserDataDirectory = resolve(tmpdir(), 'ProPR Desktop');
+const nonSmokeDirectory = resolve(tmpdir(), 'not-a-smoke-profile');
+const duplicateSmokeDirectory = resolve(tmpdir(), 'propr-desktop-smoke-other');
 const authorize = (overrides: Partial<Parameters<typeof authorizePackagedSmokeTest>[0]> = {}) => (
   authorizePackagedSmokeTest({
     argv: ['propr-desktop', '--propr-smoke-test', `--user-data-dir=${smokeDirectory}`],
-    defaultUserDataDirectory: '/home/user/.config/ProPR Desktop',
+    defaultUserDataDirectory,
     environmentTriggered: false,
     isPackaged: true,
-    platform: 'linux',
+    platform: process.platform,
     ...overrides,
   })
 );
@@ -45,13 +51,13 @@ describe('packaged smoke profile authorization', () => {
     );
     assert.throws(
       () => authorize({
-        argv: ['propr-desktop', '--propr-smoke-test', '--user-data-dir=/home/user/.config/ProPR Desktop'],
+        argv: ['propr-desktop', '--propr-smoke-test', `--user-data-dir=${defaultUserDataDirectory}`],
       }),
       /cannot use the default profile store/,
     );
     assert.throws(
       () => authorize({
-        argv: ['propr-desktop', '--propr-smoke-test', '--user-data-dir=/tmp/not-a-smoke-profile'],
+        argv: ['propr-desktop', '--propr-smoke-test', `--user-data-dir=${nonSmokeDirectory}`],
       }),
       /must use propr-desktop-smoke-/,
     );
@@ -61,7 +67,7 @@ describe('packaged smoke profile authorization', () => {
           'propr-desktop',
           '--propr-smoke-test',
           `--user-data-dir=${smokeDirectory}`,
-          '--user-data-dir=/tmp/propr-desktop-smoke-other',
+          `--user-data-dir=${duplicateSmokeDirectory}`,
         ],
       }),
       /exactly one explicit --user-data-dir/,

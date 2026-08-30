@@ -73,7 +73,7 @@ describe('desktop release configuration', () => {
       PROPR_DESKTOP_UPDATE_PUBLIC_KEY: publicKey,
       PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY: 'Example Publisher',
     };
-    assert.throws(() => resolveTrustedUpdateBuildConfig(base), /CODE_SIGNED/);
+    assert.throws(() => resolveTrustedUpdateBuildConfig(base, 'darwin'), /CODE_SIGNED/);
     assert.deepEqual(resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1' }, 'darwin'), {
       enabled: true,
       manifestUrl: 'https://updates.example.test/stable/desktop-release.json',
@@ -82,11 +82,11 @@ describe('desktop release configuration', () => {
       windowsSignerPins: [],
     });
     assert.throws(
-      () => resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1', PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'http://example.test/update.json' }),
+      () => resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1', PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'http://example.test/update.json' }, 'darwin'),
       /HTTPS/,
     );
     assert.throws(
-      () => resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1', PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://example.test/update.json?channel=stable' }),
+      () => resolveTrustedUpdateBuildConfig({ ...base, PROPR_DESKTOP_CODE_SIGNED: '1', PROPR_DESKTOP_UPDATE_MANIFEST_URL: 'https://example.test/update.json?channel=stable' }, 'darwin'),
       /query/,
     );
   });
