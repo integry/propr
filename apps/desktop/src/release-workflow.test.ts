@@ -9,14 +9,14 @@ const workflow = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../../../.github/workflows/desktop-release-guard.yml', import.meta.url)),
   'utf8',
 ));
-const releaseArchitecture = readFileSync(
+const releaseArchitecture = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/release-architecture.mjs', import.meta.url)),
   'utf8',
-);
-const releaseArtifacts = readFileSync(
+));
+const releaseArtifacts = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/release-artifacts.mjs', import.meta.url)),
   'utf8',
-);
+));
 
 const job = (name: string, next?: string): string => {
   const start = workflow.indexOf(`\n  ${name}:`);
@@ -169,21 +169,26 @@ describe('desktop trusted release workflow', () => {
         /- name: Typecheck and test (?:unsigned|production) desktop runtime\n\s+shell: bash\n\s+run: \|\n\s+npm run desktop:typecheck\n\s+npm run desktop:test/,
         `${jobName} must run the complete desktop tests without a platform condition`,
       );
-      assert.match(section, /Prove descriptor-backed native DMG mounting is available/);
-      assert.match(section, /release-architecture\.mjs probe-dmg-descriptor/);
+      assert.match(section, /Prove private-snapshot native DMG mounting is available/);
+      assert.match(section, /release-artifacts\.mjs probe-dmg-private-snapshot-isolation/);
+      assert.match(section, /probe-dmg-private-snapshot-isolation[\s\S]*--arch "\$\{\{ matrix\.arch \}\}"/);
       assert.match(section, /Stage architecture(?:-verified| and signer verified) .* with native DMG mount evidence/);
       assert.match(section, /release-artifacts\.mjs stage[\s\S]*--platform "\$\{\{ matrix\.platform \}\}"[\s\S]*--arch "\$\{\{ matrix\.arch \}\}"/);
       assert.match(section, /Expected \$\{process\.env\.EXPECTED_PLATFORM\}-\$\{process\.env\.EXPECTED_ARCH\}/);
     }
-    assert.equal(workflow.match(/release-architecture\.mjs probe-dmg-descriptor/g)?.length, 2);
-    assert.match(releaseArchitecture, /'\/dev\/fd\/3'/);
-    assert.match(releaseArchitecture, /stdio: \['ignore', 'pipe', 'pipe', descriptor\]/);
-    assert.match(releaseArtifacts, /fsConstants\.O_RDONLY \| fsConstants\.O_NOFOLLOW \| fsConstants\.O_NONBLOCK/);
+    assert.equal(workflow.match(/release-artifacts\.mjs probe-dmg-private-snapshot-isolation/g)?.length, 2);
+    assert.ok(!releaseArchitecture.includes('probe-dmg-descriptor'));
+    assert.ok(!releaseArchitecture.includes("['attach', '-readonly', '-nobrowse', '-mountpoint', directory, '/dev/fd/3']"));
+    assert.match(releaseArtifacts, /fsConstants\.O_RDONLY \| fsConstants\.O_NOFOLLOW \| \(privateSnapshot \? 0 : fsConstants\.O_NONBLOCK\)/);
+    assert.match(releaseArtifacts, /mkdtemp\(join\(tmpdir\(\), 'propr-dmg-snapshot-'\)\)/);
+    assert.match(releaseArtifacts, /fsConstants\.O_WRONLY \| fsConstants\.O_CREAT \| fsConstants\.O_EXCL \| fsConstants\.O_NOFOLLOW/);
+    assert.match(releaseArtifacts, /\(pathStats\.mode & 0o777n\) !== 0o600n/);
+    assert.match(releaseArtifacts, /pathStats\.nlink !== 1n/);
     assert.ok(!releaseArtifacts.includes('modified: stats.mtimeNs'));
     assert.ok(!releaseArtifacts.includes('changed: stats.ctimeNs'));
-    assert.match(releaseArchitecture, /'hdiutil',\n\s+\['attach', '-readonly', '-nobrowse', '-mountpoint', directory, '\/dev\/fd\/3'\]/);
+    assert.match(releaseArchitecture, /'hdiutil', \['attach', '-readonly', '-nobrowse', '-mountpoint', directory, privatePath\]/);
     assert.ok(
-      releaseArchitecture.indexOf("['attach', '-readonly', '-nobrowse', '-mountpoint', directory, '/dev/fd/3']")
+      releaseArchitecture.indexOf("['attach', '-readonly', '-nobrowse', '-mountpoint', directory, privatePath]")
         < releaseArchitecture.indexOf('inspectDmgLayout({ root: directory'),
       'native DMG bytes must be mounted read-only before layout validation',
     );

@@ -36,6 +36,25 @@ const spkiSha256 = '2'.repeat(64);
 const windowsSignerPins = `certificate-sha256:${certificateSha256},spki-sha256:${spkiSha256}`;
 const execFile = promisify(execFileCallback);
 
+const privateDmgSnapshotPaths = async () => {
+  const entries = await readdir(tmpdir(), { withFileTypes: true });
+  const paths = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('propr-dmg-snapshot-')) continue;
+    const directory = join(tmpdir(), entry.name);
+    for (const name of await readdir(directory)) {
+      if (name.endsWith('.dmg')) paths.push(join(directory, name));
+    }
+  }
+  return paths;
+};
+
+const findNewPrivateDmgSnapshot = async previous => {
+  const paths = (await privateDmgSnapshotPaths()).filter(path => !previous.has(path));
+  assert.equal(paths.length, 1, 'inspection must create exactly one private DMG snapshot');
+  return paths[0];
+};
+
 const nativeDmgValidation = arch => ({
   schemaVersion: 1,
   tool: 'propr-desktop-release-architecture',
@@ -267,6 +286,7 @@ describe('desktop release artifacts', () => {
       await mkdir(makeDirectory);
       await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
       await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+      const previousSnapshots = new Set(await privateDmgSnapshotPaths());
       await assert.rejects(
         stageArtifacts({
           makeDirectory,
@@ -278,9 +298,9 @@ describe('desktop release artifacts', () => {
             const inspection = await architectureInspector(arguments_);
             if (arguments_.kind === 'dmg') {
               assert.equal(arguments_.path, undefined, 'DMG inspectors must not receive a mutable pathname');
-              const privateDirectory = (await readdir(outputDirectory)).find(name => name.startsWith('.dmg-stage-'));
-              assert.ok(privateDirectory);
-              const privatePath = join(outputDirectory, privateDirectory, 'artifact.dmg');
+              assert.deepEqual(Object.keys(arguments_.heldArtifact), ['description']);
+              const privatePath = await findNewPrivateDmgSnapshot(previousSnapshots);
+              assert.ok(!privatePath.startsWith(`${outputDirectory}/`), 'private snapshot must stay outside public output');
               if (operation === 'in-place-mutation') {
                 await writeFile(privatePath, 'darwin-arm64-dmg-mutated-during-native-validation');
               } else {
@@ -292,7 +312,7 @@ describe('desktop release artifacts', () => {
             return inspection;
           },
         }),
-        /Staged DMG identity or content changed during native validation|pathname no longer names the held exact artifact/,
+        /Staged DMG identity or content changed during native validation|pathname no longer names the held (?:exact artifact|owner-only single-link regular file)/,
         operation,
       );
       await assert.rejects(access(join(outputDirectory, 'release-fragment.json')), undefined, operation);
@@ -300,50 +320,49 @@ describe('desktop release artifacts', () => {
     }
   });
 
-  test('does not let a swap-to-B, inspect-B, restore-A pathname attack emit native evidence', async () => {
+  test('keeps held A bytes, evidence, and publication stable when original and public pathnames change during inspection', async () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-swap-restore-'));
     const makeDirectory = join(root, 'make');
     const outputDirectory = join(root, 'stage');
     await mkdir(makeDirectory);
-    await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg-A');
+    const originalPath = join(makeDirectory, 'desktop.dmg');
+    const destination = join(outputDirectory, 'ProPR-Desktop-1.2.3-macos-arm64-dmg');
+    await writeFile(originalPath, 'darwin-arm64-dmg-A');
     await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+    const expectedBytes = Buffer.from('darwin-arm64-dmg-A');
+    const fragment = await stageArtifacts({
+      makeDirectory,
+      outputDirectory,
+      platform: 'darwin',
+      arch: 'arm64',
+      version: '1.2.3',
+      inspectArchitecture: async arguments_ => {
+        if (arguments_.kind !== 'dmg') return architectureInspector(arguments_);
+        assert.equal(arguments_.path, undefined, 'the mutable private pathname must not enter the callback API');
+        assert.deepEqual(Object.keys(arguments_.heldArtifact), ['description']);
+        assert.deepEqual(await readHeldDmgArtifactBytes(arguments_.heldArtifact), expectedBytes);
+        const displaced = `${originalPath}.held-A`;
+        await rename(originalPath, displaced);
+        await writeFile(originalPath, 'darwin-arm64-dmg-B');
+        await writeFile(destination, 'attacker-controlled-public-B');
+        assert.equal(await readFile(destination, 'utf8'), 'attacker-controlled-public-B');
+        await rm(destination);
+        return architectureInspector(arguments_);
+      },
+    });
+    const artifact = fragment.artifacts.find(candidate => candidate.kind === 'dmg');
+    assert.equal(artifact.sha256, createHash('sha256').update(expectedBytes).digest('hex'));
+    assert.equal(artifact.nativeDmgValidationEvidence.artifact.sha256, artifact.sha256);
+    assert.ok(!JSON.stringify(fragment).includes('propr-dmg-snapshot-'), 'private snapshot path must not enter evidence');
+    assert.deepEqual(await readFile(destination), expectedBytes);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test('continues to reject a mutable pathname passed directly to DMG inspection', async () => {
     await assert.rejects(
-      stageArtifacts({
-        makeDirectory,
-        outputDirectory,
-        platform: 'darwin',
-        arch: 'arm64',
-        version: '1.2.3',
-        inspectArchitecture: async arguments_ => {
-          if (arguments_.kind !== 'dmg') return architectureInspector(arguments_);
-          assert.equal(arguments_.path, undefined, 'the legacy mutable-path contract must be unavailable');
-          const privateDirectory = (await readdir(outputDirectory)).find(name => name.startsWith('.dmg-stage-'));
-          assert.ok(privateDirectory);
-          const privatePath = join(outputDirectory, privateDirectory, 'artifact.dmg');
-          const displaced = `${privatePath}.held-A`;
-          await rename(privatePath, displaced);
-          await writeFile(privatePath, 'darwin-arm64-dmg-B');
-          const pathInspected = await readFile(privatePath, 'utf8');
-          const heldInspected = (await readHeldDmgArtifactBytes(arguments_.heldArtifact)).toString('utf8');
-          assert.equal(pathInspected, 'darwin-arm64-dmg-B');
-          assert.equal(heldInspected, 'darwin-arm64-dmg-A');
-          try {
-            return await inspectArtifactArchitecture({
-              path: privatePath,
-              kind: 'dmg',
-              platform: 'darwin',
-              arch: 'arm64',
-            });
-          } finally {
-            await rm(privatePath);
-            await rename(displaced, privatePath);
-          }
-        },
-      }),
+      inspectArtifactArchitecture({ path: '/tmp/public.dmg', kind: 'dmg', platform: 'darwin', arch: 'arm64' }),
       /DMG inspection rejects mutable pathnames/,
     );
-    await assert.rejects(access(join(outputDirectory, 'release-fragment.json')));
-    await rm(root, { recursive: true, force: true });
   });
 
   test('accepts native xattr/ctime-only change when held bytes and identity are unchanged', {
@@ -355,6 +374,7 @@ describe('desktop release artifacts', () => {
     await mkdir(makeDirectory);
     await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
     await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+    const previousSnapshots = new Set(await privateDmgSnapshotPaths());
     const fragment = await stageArtifacts({
       makeDirectory,
       outputDirectory,
@@ -364,9 +384,7 @@ describe('desktop release artifacts', () => {
       inspectArchitecture: async arguments_ => {
         const inspection = await architectureInspector(arguments_);
         if (arguments_.kind === 'dmg') {
-          const privateDirectory = (await readdir(outputDirectory)).find(name => name.startsWith('.dmg-stage-'));
-          assert.ok(privateDirectory);
-          const privatePath = join(outputDirectory, privateDirectory, 'artifact.dmg');
+          const privatePath = await findNewPrivateDmgSnapshot(previousSnapshots);
           const before = await lstat(privatePath, { bigint: true });
           await execFile('xattr', ['-w', 'com.propr.descriptor-validation', 'verified', privatePath]);
           const after = await lstat(privatePath, { bigint: true });

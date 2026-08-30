@@ -1,7 +1,8 @@
 import { createHash, createPrivateKey, createPublicKey, randomUUID, sign } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   createHeldDmgArtifact,
@@ -211,6 +212,39 @@ const assertDmgPathNamesHeldFile = async (path, held) => {
   }
 };
 
+const isCurrentOwner = stats => typeof process.getuid !== 'function' || stats.uid === BigInt(process.getuid());
+
+const lstatPrivateDmgPath = async (path, label) => {
+  try {
+    return await lstat(path, { bigint: true });
+  } catch {
+    throw new Error(`${label} could not be validated`);
+  }
+};
+
+const assertPrivateDmgDirectory = async (path, publicOutputDirectory) => {
+  const relationship = relative(resolve(publicOutputDirectory), resolve(path));
+  if (relationship === '' || (!isAbsolute(relationship) && relationship !== '..' && !relationship.startsWith(`..${sep}`))) {
+    throw new Error('Private DMG snapshot directory must be outside the public output path');
+  }
+  const stats = await lstatPrivateDmgPath(path, 'Private DMG snapshot directory');
+  if (!stats.isDirectory() || stats.isSymbolicLink() || !isCurrentOwner(stats)
+    || (process.platform !== 'win32' && (stats.mode & 0o777n) !== 0o700n)) {
+    throw new Error('Private DMG snapshot directory must be a real owner-only mode-0700 directory');
+  }
+};
+
+const assertPrivateDmgPathNamesHeldFile = async (path, held) => {
+  const pathStats = await lstatPrivateDmgPath(path, 'Private DMG snapshot pathname');
+  if (!pathStats.isFile() || pathStats.isSymbolicLink()
+    || !isCurrentOwner(pathStats)
+    || (process.platform !== 'win32' && (pathStats.mode & 0o777n) !== 0o600n)
+    || pathStats.nlink !== 1n
+    || !sameDmgFileState(dmgFileState(pathStats), held.state)) {
+    throw new Error('Private DMG snapshot pathname no longer names the held owner-only single-link regular file');
+  }
+};
+
 const assertStableDmgBytes = (before, after) => {
   if (!sameDmgFileState(before.state, after.state)
     || before.size !== after.size
@@ -225,10 +259,13 @@ const assertSameDmgContent = (expected, actual) => {
   }
 };
 
-const openHeldDmg = async path => {
+const openHeldDmg = async (path, { privateSnapshot = false } = {}) => {
   let handle;
   try {
-    handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    handle = await open(
+      path,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (privateSnapshot ? 0 : fsConstants.O_NONBLOCK),
+    );
   } catch (error) {
     if (error?.code === 'ELOOP') {
       throw new Error('Staged DMG must be a real regular file, not a symbolic link or special file');
@@ -237,7 +274,8 @@ const openHeldDmg = async path => {
   }
   try {
     const captured = await captureHeldDmgBytes(handle);
-    await assertDmgPathNamesHeldFile(path, captured);
+    if (privateSnapshot) await assertPrivateDmgPathNamesHeldFile(path, captured);
+    else await assertDmgPathNamesHeldFile(path, captured);
     return { handle, captured };
   } catch (error) {
     await handle.close();
@@ -248,7 +286,7 @@ const openHeldDmg = async path => {
 const copyHeldDmgToExclusivePath = async (handle, size, path) => {
   const output = await open(
     path,
-    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
     0o600,
   );
   try {
@@ -269,6 +307,56 @@ const copyHeldDmgToExclusivePath = async (handle, size, path) => {
     await output.sync();
   } finally {
     await output.close();
+  }
+};
+
+const createPrivateDmgSnapshot = async ({ sourcePath, publicOutputDirectory, description }) => {
+  const source = await openHeldDmg(sourcePath);
+  let privateDirectory;
+  let snapshot;
+  try {
+    privateDirectory = await mkdtemp(join(tmpdir(), 'propr-dmg-snapshot-'));
+    await assertPrivateDmgDirectory(privateDirectory, publicOutputDirectory);
+    const privatePath = join(privateDirectory, `${randomUUID()}.dmg`);
+    await copyHeldDmgToExclusivePath(source.handle, source.captured.size, privatePath);
+    const sourceAfterCopy = await captureHeldDmgBytes(source.handle);
+    assertStableDmgBytes(source.captured, sourceAfterCopy);
+    snapshot = await openHeldDmg(privatePath, { privateSnapshot: true });
+    assertSameDmgContent(sourceAfterCopy, snapshot.captured);
+    return {
+      privateDirectory,
+      privatePath,
+      held: snapshot,
+      heldArtifact: createHeldDmgArtifact(snapshot.handle, description, privatePath),
+    };
+  } catch (error) {
+    if (snapshot) await snapshot.handle.close();
+    if (privateDirectory) {
+      try {
+        await rm(privateDirectory, { recursive: true, force: true });
+      } catch {
+        throw new Error('Private DMG snapshot cleanup failed');
+      }
+    }
+    if (privateDirectory && error?.message?.includes(privateDirectory)) {
+      throw new Error('Private DMG snapshot creation or validation failed');
+    }
+    throw error;
+  } finally {
+    await source.handle.close();
+  }
+};
+
+const closePrivateDmgSnapshot = async snapshot => {
+  if (!snapshot) return;
+  try {
+    await snapshot.held.handle.close();
+  } finally {
+    try {
+      await rm(snapshot.privateDirectory, { recursive: true, force: true });
+    } catch {
+      throw new Error('Private DMG snapshot cleanup failed');
+    }
   }
 };
 
@@ -453,20 +541,19 @@ export const stageArtifacts = async ({
     const fileName = releaseFileName(version, platform, arch, kind);
     const destination = join(outputDirectory, fileName);
     if (kind === 'dmg') {
-      const privateDirectory = await mkdtemp(join(outputDirectory, '.dmg-stage-'));
-      const privatePath = join(privateDirectory, 'artifact.dmg');
-      let held;
+      let snapshot;
       try {
-        await copyFile(byKind.get(kind), privatePath, fsConstants.COPYFILE_EXCL);
-        await chmod(privatePath, 0o600);
-        held = await openHeldDmg(privatePath);
-        const heldArtifact = createHeldDmgArtifact(held.handle, fileName);
-        const inspection = await inspectArchitecture({ heldArtifact, kind, platform, arch });
-        const afterInspection = await captureHeldDmgBytes(held.handle);
-        assertStableDmgBytes(held.captured, afterInspection);
-        await assertDmgPathNamesHeldFile(privatePath, afterInspection);
+        snapshot = await createPrivateDmgSnapshot({
+          sourcePath: byKind.get(kind),
+          publicOutputDirectory: outputDirectory,
+          description: fileName,
+        });
+        const inspection = await inspectArchitecture({ heldArtifact: snapshot.heldArtifact, kind, platform, arch });
+        const afterInspection = await captureHeldDmgBytes(snapshot.held.handle);
+        assertStableDmgBytes(snapshot.held.captured, afterInspection);
+        await assertPrivateDmgPathNamesHeldFile(snapshot.privatePath, afterInspection);
         const details = await publishHeldDmg({
-          handle: held.handle,
+          handle: snapshot.held.handle,
           captured: afterInspection,
           destination,
         });
@@ -488,8 +575,7 @@ export const stageArtifacts = async ({
         });
         artifacts.push(artifact);
       } finally {
-        if (held) await held.handle.close();
-        await rm(privateDirectory, { recursive: true, force: true });
+        await closePrivateDmgSnapshot(snapshot);
       }
       continue;
     }
@@ -546,6 +632,59 @@ export const stageArtifacts = async ({
   };
   await writeFile(join(outputDirectory, 'release-fragment.json'), `${JSON.stringify(fragment, null, 2)}\n`);
   return fragment;
+};
+
+export const probePrivateDmgSnapshotIsolation = async ({ makeDirectory, arch, version, env = process.env }) => {
+  if (process.platform !== 'darwin') {
+    throw new Error('Private-snapshot DMG isolation probe is available only on native macOS');
+  }
+  const dmgPaths = (await recursiveFiles(makeDirectory)).filter(path => artifactKind(path, 'darwin') === 'dmg');
+  if (dmgPaths.length !== 1) throw new Error('Private-snapshot DMG isolation probe requires exactly one source DMG');
+  const sourcePath = dmgPaths[0];
+  const expected = await openHeldDmg(sourcePath);
+  const expectedSize = expected.captured.size;
+  const expectedSha256 = expected.captured.sha256;
+  await expected.handle.close();
+  const outputDirectory = await mkdtemp(join(tmpdir(), 'propr-dmg-isolation-output-'));
+  const destination = join(outputDirectory, releaseFileName(version, 'darwin', arch, 'dmg'));
+  const displaced = `${sourcePath}.private-snapshot-isolation-held`;
+  let sourceDisplaced = false;
+  try {
+    const fragment = await stageArtifacts({
+      makeDirectory,
+      outputDirectory,
+      platform: 'darwin',
+      arch,
+      version,
+      env,
+      inspectArchitecture: arguments_ => inspectArtifactArchitecture({
+        ...arguments_,
+        ...(arguments_.kind === 'dmg' ? {
+          onDmgMounted: async () => {
+            await rename(sourcePath, displaced);
+            sourceDisplaced = true;
+            await writeFile(sourcePath, 'hostile replacement of the original pathname');
+            await writeFile(destination, 'hostile replacement of the public pathname');
+          },
+        } : {}),
+      }),
+    });
+    const artifact = fragment.artifacts.find(candidate => candidate.kind === 'dmg');
+    if (!artifact
+      || artifact.size !== expectedSize
+      || artifact.sha256 !== expectedSha256
+      || artifact.nativeDmgValidationEvidence?.artifact?.sha256 !== expectedSha256
+      || await checksum(destination) !== expectedSha256) {
+      throw new Error('Private-snapshot isolation probe did not keep mounted, evidenced, and published DMG bytes bound to held A');
+    }
+    return { size: expectedSize, sha256: expectedSha256 };
+  } finally {
+    if (sourceDisplaced) {
+      await rm(sourcePath, { force: true });
+      await rename(displaced, sourcePath);
+    }
+    await rm(outputDirectory, { recursive: true, force: true });
+  }
 };
 
 const readFragments = async inputDirectory => {
@@ -893,9 +1032,22 @@ const argument = name => {
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const command = process.argv[2];
-  const version = argument('--version');
-  if (!version) throw new Error('--version is required');
-  if (command === 'stage') {
+  if (command === 'probe-dmg-private-snapshot-isolation') {
+    const makeDirectory = argument('--make-directory');
+    const arch = argument('--arch');
+    const version = argument('--version');
+    if (!makeDirectory || !arch || !version) {
+      throw new Error('Private-snapshot DMG isolation probe requires --make-directory, --arch, and --version');
+    }
+    const result = await probePrivateDmgSnapshotIsolation({
+      makeDirectory: resolve(makeDirectory),
+      arch,
+      version,
+    });
+    console.log(JSON.stringify({ privateSnapshotDmgIsolation: true, architecture: arch, ...result }));
+  } else if (command === 'stage') {
+    const version = argument('--version');
+    if (!version) throw new Error('--version is required');
     await stageArtifacts({
       makeDirectory: resolve(argument('--make-directory') || 'out/make'),
       outputDirectory: resolve(argument('--output') || 'release-staging'),
@@ -904,18 +1056,22 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       version,
     });
   } else if (command === 'finalize') {
+    const version = argument('--version');
+    if (!version) throw new Error('--version is required');
     await finalizeArtifacts({
       inputDirectory: resolve(argument('--input') || 'release-artifacts'),
       outputDirectory: resolve(argument('--output') || 'release-final'),
       version,
     });
   } else if (command === 'sign') {
+    const version = argument('--version');
+    if (!version) throw new Error('--version is required');
     await signReleaseMetadata({
       inputDirectory: resolve(argument('--input') || 'release-final'),
       outputDirectory: resolve(argument('--output') || 'release-signed'),
       version,
     });
   } else {
-    throw new Error('Expected release-artifacts.mjs stage, finalize, or sign command');
+    throw new Error('Expected release-artifacts.mjs private-snapshot probe, stage, finalize, or sign command');
   }
 }

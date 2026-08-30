@@ -169,12 +169,14 @@ jobs:
             unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
           fi
 
-      - name: Prove descriptor-backed native DMG mounting is available
+      - name: Prove private-snapshot native DMG mounting is available
         if: matrix.platform == 'darwin'
         shell: bash
         run: |
-          node apps/desktop/scripts/release-architecture.mjs probe-dmg-descriptor \
-            --path "$(find apps/desktop/out/make -type f -name '*.dmg' -print -quit)"
+          node apps/desktop/scripts/release-artifacts.mjs probe-dmg-private-snapshot-isolation \
+            --version "$PROPR_DESKTOP_VERSION" \
+            --make-directory apps/desktop/out/make \
+            --arch "${{ matrix.arch }}"
 
       - name: Stage architecture-verified validation artifacts with native DMG mount evidence
         shell: bash
@@ -588,12 +590,14 @@ jobs:
           rpm -qip "$(find apps/desktop/out/make -type f -name '*.rpm' -print -quit)" >/dev/null
           unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
 
-      - name: Prove descriptor-backed native DMG mounting is available
+      - name: Prove private-snapshot native DMG mounting is available
         if: matrix.platform == 'darwin'
         shell: bash
         run: |
-          node apps/desktop/scripts/release-architecture.mjs probe-dmg-descriptor \
-            --path "$(find apps/desktop/out/make -type f -name '*.dmg' -print -quit)"
+          node apps/desktop/scripts/release-artifacts.mjs probe-dmg-private-snapshot-isolation \
+            --version "$PROPR_DESKTOP_VERSION" \
+            --make-directory apps/desktop/out/make \
+            --arch "${{ matrix.arch }}"
 
       - name: Stage architecture and signer verified production artifacts with native DMG mount evidence
         shell: bash
