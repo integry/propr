@@ -54,6 +54,11 @@ interface BatchAnalysisResult {
   primaryAgentAlias?: string; fallbackAgentAlias?: string;
 }
 
+type BatchAnalysisOptions = ProcessSingleBatchOptions & {
+  prompt: string;
+  onFallbackAttempt: () => void;
+};
+
 class SummarizationCooldownRecordedError extends Error {
   constructor(error: unknown) {
     super((error as Error).message);
@@ -88,6 +93,7 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
   let fallbackPrimaryAgentAlias: string | undefined;
   let fallbackAgentAlias: string | undefined;
   let routingMetadata: Record<string, unknown> | undefined;
+  let fallbackAttempted = false;
 
   try {
     const summaries = await analyzeBatchWithFallback({
@@ -95,6 +101,7 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
       fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch,
       routingSession: options.routingSession,
       fallbackRoutingSession,
+      onFallbackAttempt: () => { fallbackAttempted = true; },
     });
     agentUsed = summaries.agentUsed;
     modelLogged = summaries.modelLogged;
@@ -108,8 +115,13 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
   } catch (error) {
     errorMessage = (error as Error).message;
     stopProcessing = error instanceof SummarizationCooldownRecordedError;
-    routingMetadata = fallbackRoutingSession?.routingMetadata ?? options.routingSession?.routingMetadata;
-    if (fallbackRoutingSession?.routingMetadata && fallbackAgent) agentUsed = fallbackAgent;
+    if (fallbackAttempted && fallbackAgent) {
+      agentUsed = fallbackAgent;
+      routingMetadata = fallbackRoutingSession?.routingMetadata;
+      modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent.config.defaultModel ?? 'unknown';
+    } else {
+      routingMetadata = options.routingSession?.routingMetadata;
+    }
     const physicalModel = routingMetadata?.physicalModel;
     if (typeof physicalModel === 'string') modelLogged = physicalModel;
     log.error({ error: errorMessage, fileCount: batch.length }, 'Failed to process batch');
@@ -130,7 +142,7 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
 }
 
 async function analyzeBatchWithFallback(
-  options: ProcessSingleBatchOptions & { prompt: string }
+  options: BatchAnalysisOptions
 ): Promise<BatchAnalysisResult> {
   const {
     prompt, batch, agent, log, modelUsed, primaryAgentAliasSetting, fullName, branch
@@ -166,7 +178,7 @@ async function analyzeBatchWithFallback(
 async function analyzeNonQuotaPrimaryFailure(
   primaryError: unknown,
   primaryAgentAlias: string,
-  options: ProcessSingleBatchOptions & { prompt: string }
+  options: BatchAnalysisOptions
 ): Promise<BatchAnalysisResult> {
   if (!isSummarizationInvalidResponseError(primaryError)) throw primaryError;
   if (options.fallbackAgent && options.fallbackAgentAliasSetting) {
@@ -184,7 +196,7 @@ async function analyzeNonQuotaPrimaryFailure(
 async function analyzeBatchAfterPrimaryFailure(
   primaryError: unknown,
   primaryAgentAlias: string,
-  options: ProcessSingleBatchOptions & { prompt: string }
+  options: BatchAnalysisOptions
 ): Promise<BatchAnalysisResult> {
   const {
     prompt, batch, agent, log, fallbackAgent, fallbackModelOverride,
@@ -225,6 +237,7 @@ async function analyzeBatchAfterPrimaryFailure(
   }, primaryFallbackWarning(syntheticRouteUnavailable));
 
   const fallbackRoutingSession = options.fallbackRoutingSession;
+  options.onFallbackAttempt();
   try {
     const results = await analyzeBatchWithAgent({
       prompt,
@@ -277,7 +290,7 @@ function primaryFallbackWarning(syntheticRouteUnavailable: boolean): string {
 async function analyzeBatchWithInvalidResponseFallback(
   primaryError: unknown,
   primaryAgentAlias: string,
-  options: ProcessSingleBatchOptions & { prompt: string }
+  options: BatchAnalysisOptions
 ): Promise<BatchAnalysisResult> {
   const {
     prompt, batch, fallbackAgent, fallbackModelOverride, fallbackModelUsed,
@@ -291,6 +304,7 @@ async function analyzeBatchWithInvalidResponseFallback(
   }, 'Primary summarization returned unusable output; retrying batch with fallback');
 
   const fallbackRoutingSession = options.fallbackRoutingSession;
+  options.onFallbackAttempt();
   const results = await analyzeBatchWithAgent({
     prompt,
     batch,

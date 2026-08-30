@@ -256,6 +256,9 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       : 'Primary directory summarization returned unusable output; retrying batch with fallback');
 
   const fallbackRoutingSession = options.fallbackRoutingSession;
+  state.agentUsed = fallbackAgent as Agent;
+  state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
+  state.routingMetadata = undefined;
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
       prompt,

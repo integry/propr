@@ -81,6 +81,20 @@ function routedAgentAlias(metadata: Record<string, unknown> | undefined, fallbac
   return typeof metadata?.physicalAgentAlias === 'string' ? metadata.physicalAgentAlias : fallback;
 }
 
+function resolvedSemanticModel(
+  actualModelUsed: string | undefined,
+  routedMetadata: Record<string, unknown> | undefined,
+  configuredModel: string | undefined,
+  defaultModel: string | undefined
+): string {
+  const routedModel = routedMetadata?.physicalModel;
+  return actualModelUsed
+    || (typeof routedModel === 'string' ? routedModel : undefined)
+    || configuredModel
+    || defaultModel
+    || 'unknown';
+}
+
 // --- Main Export ---
 
 /**
@@ -202,7 +216,7 @@ export async function scoreSemanticRelevance(
         const parsed = parseSemanticResponse(response);
 
         const chunkDurationMs = Date.now() - startTime;
-        const modelUsed = actualModelUsed || modelId || agent.config.defaultModel || 'unknown';
+        const modelUsed = resolvedSemanticModel(actualModelUsed, routedMetadata, modelId, agent.config.defaultModel);
         const physicalAgentAlias = routedAgentAlias(routedMetadata, agent.config.alias);
 
         // Log metrics for this chunk
@@ -247,7 +261,7 @@ export async function scoreSemanticRelevance(
       } catch (err) {
         routedMetadata ??= callRoute?.routingMetadata;
         const chunkDurationMs = Date.now() - startTime;
-        const modelUsed = actualModelUsed || modelId || agent.config.defaultModel || 'unknown';
+        const modelUsed = resolvedSemanticModel(actualModelUsed, routedMetadata, modelId, agent.config.defaultModel);
         const physicalAgentAlias = routedAgentAlias(routedMetadata, agent.config.alias);
         const errorMessage = (err as Error).message;
 
