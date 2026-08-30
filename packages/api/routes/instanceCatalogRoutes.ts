@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import {
   getRepositoriesIndexingStatus,
   loadAgents,
+  loadSyntheticAgents,
   loadMonitoredReposRaw,
   loadSettings,
   type AgentConfig,
@@ -12,10 +13,12 @@ import type {
   InstanceCatalogAgent,
   InstanceCatalogRepository,
   InstanceCatalogResponse,
+  SyntheticAgentConfig,
 } from '@propr/shared';
 
 interface InstanceCatalogServices {
   loadAgents: () => Promise<AgentConfig[]>;
+  loadSyntheticAgents: () => Promise<SyntheticAgentConfig[]>;
   loadIndexingStatuses: () => Promise<RepositoryIndexingStatus[]>;
   loadRepositories: () => Promise<RepoToMonitor[]>;
   loadSettings: () => Promise<Record<string, unknown>>;
@@ -33,6 +36,17 @@ function catalogAgent(agent: AgentConfig): InstanceCatalogAgent {
     enabled: true,
     supportedModels: [...agent.supportedModels],
     ...(agent.defaultModel ? { defaultModel: agent.defaultModel } : {}),
+  };
+}
+
+function catalogSyntheticAgent(agent: SyntheticAgentConfig): InstanceCatalogAgent {
+  return {
+    id: agent.id,
+    kind: 'synthetic',
+    alias: agent.alias,
+    enabled: true,
+    supportedModels: agent.models.filter(model => model.enabled).map(model => model.id),
+    defaultModel: agent.defaultModel,
   };
 }
 
@@ -76,22 +90,25 @@ function catalogIndexingStatus(status: RepositoryIndexingStatus): RepositoryInde
 export function createInstanceCatalogRoutes({ services: overrides }: InstanceCatalogRoutesDeps = {}) {
   const services: InstanceCatalogServices = {
     loadAgents,
+    loadSyntheticAgents,
     loadIndexingStatuses: getRepositoriesIndexingStatus,
     loadRepositories: loadMonitoredReposRaw,
     loadSettings,
     ...overrides,
   };
 
-  async function getCatalog(_req: Request, res: Response): Promise<void> {
+  async function sendCatalog(res: Response, includeSyntheticAgents: boolean): Promise<void> {
     try {
-      const [agents, repositories, settings] = await Promise.all([
+      const [agents, syntheticAgents, repositories, settings] = await Promise.all([
         services.loadAgents(),
+        includeSyntheticAgents ? services.loadSyntheticAgents() : Promise.resolve([]),
         services.loadRepositories(),
         services.loadSettings(),
       ]);
-      // Synthetic aliases are persisted configuration, but they are not runtime
-      // agents yet. Keep the operational catalog limited to executable entries.
-      const catalogAgents = agents.filter(agent => agent.enabled).map(catalogAgent);
+      const catalogAgents = [
+        ...agents.filter(agent => agent.enabled).map(catalogAgent),
+        ...syntheticAgents.filter(agent => agent.enabled).map(catalogSyntheticAgent),
+      ];
       const defaultAgentAlias = typeof settings.default_agent_alias === 'string'
         ? settings.default_agent_alias.trim()
         : '';
@@ -107,6 +124,14 @@ export function createInstanceCatalogRoutes({ services: overrides }: InstanceCat
       console.error('Failed to load the instance catalog:', error);
       res.status(500).json({ error: 'Failed to load the instance catalog' });
     }
+  }
+
+  async function getCatalog(_req: Request, res: Response): Promise<void> {
+    await sendCatalog(res, true);
+  }
+
+  async function getLegacyCatalog(_req: Request, res: Response): Promise<void> {
+    await sendCatalog(res, false);
   }
 
   async function getRepositoryIndexingStatus(_req: Request, res: Response): Promise<void> {
@@ -131,5 +156,5 @@ export function createInstanceCatalogRoutes({ services: overrides }: InstanceCat
     }
   }
 
-  return { getCatalog, getRepositoryIndexingStatus };
+  return { getCatalog, getLegacyCatalog, getRepositoryIndexingStatus };
 }

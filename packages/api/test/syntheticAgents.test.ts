@@ -16,6 +16,7 @@ import {
   type SyntheticAgentConfig,
 } from '@propr/shared';
 import { applyAgentsUpdate } from '../routes/configRoutesAgents.js';
+import { createConfigRoutes } from '../routes/configRoutes.js';
 import { createSyntheticAgentConfigRoutes } from '../routes/configRoutesSyntheticAgents.js';
 import { createInstanceCatalogRoutes } from '../routes/instanceCatalogRoutes.js';
 
@@ -261,19 +262,18 @@ describe('synthetic agent persistence and API', () => {
     assert.match((unknownResponse.record.body as { error: string }).error, /unsupported model/);
   });
 
-  test('rejects replacements while the configured default is synthetic', async () => {
-    const replacements: Array<[string, SyntheticAgentConfig[]]> = [
-      ['unchanged', [syntheticAgent()]],
-      ['removed', []],
-      ['disabled', [{ ...syntheticAgent(), enabled: false }]],
-      ['without an executable default model', (() => {
-        const replacement = syntheticAgent();
-        replacement.models[0].members[0].enabled = false;
-        return [replacement];
-      })()],
+  test('rejects replacements when the configured default is in the previous or proposed synthetic set', async () => {
+    const noEnabledMembers = syntheticAgent();
+    noEnabledMembers.models[0].members[0].enabled = false;
+    const replacements: Array<[string, SyntheticAgentConfig[], SyntheticAgentConfig[]]> = [
+      ['unchanged', [syntheticAgent()], [syntheticAgent()]],
+      ['newly introduced', [], [syntheticAgent()]],
+      ['removed', [syntheticAgent()], []],
+      ['disabled', [syntheticAgent()], [{ ...syntheticAgent(), enabled: false }]],
+      ['without an executable default model', [syntheticAgent()], [noEnabledMembers]],
     ];
 
-    for (const [name, replacement] of replacements) {
+    for (const [name, previous, replacement] of replacements) {
       let saved = false;
       let published = false;
       const routes = createSyntheticAgentConfigRoutes({
@@ -281,7 +281,7 @@ describe('synthetic agent persistence and API', () => {
         configStore: {
           loadAgents: async () => [directAgent()],
           loadSettings: async () => ({ default_agent_alias: 'balanced-pool' }),
-          loadSyntheticAgents: async () => [syntheticAgent()],
+          loadSyntheticAgents: async () => previous,
           saveSyntheticAgents: async value => {
             saved = true;
             return parseSyntheticAgentConfigs(value);
@@ -300,6 +300,41 @@ describe('synthetic agent persistence and API', () => {
       assert.match((response.record.body as { error: string }).error, /Select a direct default agent first/, name);
       assert.equal(saved, false, name);
       assert.equal(published, false, name);
+    }
+  });
+
+  test('rejects settings updates that select a synthetic default alias', async () => {
+    const database = await createConfigDatabase();
+    let published = false;
+    try {
+      const routes = createConfigRoutes({
+        redisClient: {
+          set: async () => 'OK',
+          eval: async () => 1,
+          publish: async () => { published = true; return 1; },
+          lPush: async () => 1,
+          lTrim: async () => 1,
+        } as never,
+        configStore: {
+          loadSyntheticAgents: async () => [syntheticAgent()],
+        },
+        database,
+      });
+      const response = responseRecorder();
+
+      await routes.postSettings({
+        body: { settings: { default_agent_alias: ' balanced-pool ' } },
+      } as Request, response.response);
+
+      assert.equal(response.record.status, 409);
+      assert.match((response.record.body as { error: string }).error, /cannot execute at runtime/i);
+      assert.equal(
+        await database('system_configs').where({ key: 'settings' }).first(),
+        undefined,
+      );
+      assert.equal(published, false);
+    } finally {
+      await database.destroy();
     }
   });
 });
@@ -383,13 +418,27 @@ describe('synthetic direct-agent integrity and catalog', () => {
     }
   });
 
-  test('does not advertise synthetic aliases as executable catalog agents', async () => {
+  test('projects enabled synthetic agents and models only in the instance catalog', async () => {
+    const config = syntheticAgent();
+    config.models.push({
+      ...structuredClone(config.models[0]),
+      id: 'disabled-model',
+      enabled: false,
+    });
+    let syntheticLoads = 0;
     const routes = createInstanceCatalogRoutes({
       services: {
         loadAgents: async () => [
           directAgent(),
           directAgent({ id: 'disabled', alias: 'codex-disabled', enabled: false }),
         ],
+        loadSyntheticAgents: async () => {
+          syntheticLoads += 1;
+          return [
+            config,
+            { ...syntheticAgent(), id: '44444444-4444-4444-8444-444444444444', alias: 'disabled-pool', enabled: false },
+          ];
+        },
         loadRepositories: async () => [],
         loadSettings: async () => ({ default_agent_alias: 'balanced-pool' }),
       },
@@ -408,8 +457,35 @@ describe('synthetic direct-agent integrity and catalog', () => {
           supportedModels: ['gpt-5.6-sol'],
           defaultModel: 'gpt-5.6-sol',
         },
+        {
+          id: AGENT_ID,
+          kind: 'synthetic',
+          alias: 'balanced-pool',
+          enabled: true,
+          supportedModels: ['balanced'],
+          defaultModel: 'balanced',
+        },
+      ],
+      repositories: [],
+      defaultAgentAlias: 'balanced-pool',
+    });
+
+    const legacy = responseRecorder();
+    await routes.getLegacyCatalog({} as Request, legacy.response);
+
+    assert.deepEqual(legacy.record.body, {
+      agents: [
+        {
+          id: 'direct-agent-id',
+          kind: 'direct',
+          alias: 'codex-primary',
+          enabled: true,
+          supportedModels: ['gpt-5.6-sol'],
+          defaultModel: 'gpt-5.6-sol',
+        },
       ],
       repositories: [],
     });
+    assert.equal(syntheticLoads, 1);
   });
 });

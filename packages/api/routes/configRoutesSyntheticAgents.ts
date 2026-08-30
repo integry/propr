@@ -81,9 +81,10 @@ export function createSyntheticAgentConfigRoutes({
       const configuredDefault = typeof settings.default_agent_alias === 'string'
         ? settings.default_agent_alias.trim()
         : '';
-      const wasSyntheticDefault = configuredDefault.length > 0
-        && previousSyntheticAgents.some(agent => agent.alias === configuredDefault);
-      if (wasSyntheticDefault) {
+      const isSyntheticDefault = configuredDefault.length > 0
+        && [...previousSyntheticAgents, ...parsed.syntheticAgents]
+          .some(agent => agent.alias === configuredDefault);
+      if (isSyntheticDefault) {
         throw new ConfigRouteError(409, {
           error: `Cannot update synthetic agents while configured default '${configuredDefault}' is synthetic and cannot execute at runtime. Select a direct default agent first.`,
         });

@@ -102,7 +102,7 @@ export function createMemberCatalogRouteEntries({
   instanceCatalogRoutes,
 }: MemberCatalogRouteDeps): RouteEntry[] {
   return [
-    ['get', '/api/catalog', instanceCatalogRoutes.getCatalog],
+    ['get', '/api/catalog', instanceCatalogRoutes.getLegacyCatalog],
     ['get', '/api/instance/catalog', instanceCatalogRoutes.getCatalog],
     ['get', '/api/repositories/indexing-status', instanceCatalogRoutes.getRepositoryIndexingStatus],
   ];
