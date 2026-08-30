@@ -43,6 +43,25 @@ if (requestedStep.startsWith('visibility:')) {
   };
   if (mode === 'pointer-rollback' && stateA) {
     await writeFile(join(desktop, 'profiles.json'), stateA);
+  } else if (mode === 'pointer-corruption' || mode === 'mirror-malformed') {
+    await writeFile(join(desktop, 'profiles.json'), '{corrupt');
+  } else if (mode === 'mirror-empty') {
+    await writeFile(join(desktop, 'profiles.json'), '');
+  } else if (mode === 'mirror-truncated') {
+    await writeFile(join(desktop, 'profiles.json'), '{"version":3');
+  } else if (mode === 'mirror-stale' && stateA) {
+    await writeFile(join(desktop, 'profiles.json'), stateA);
+  } else if (mode === 'mirror-future') {
+    const contents = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as Record<string, unknown>;
+    await writeFile(join(desktop, 'profiles.json'), JSON.stringify({
+      ...contents, generation: '9007199254740993123456789',
+    }));
+  } else if (mode === 'mirror-attacker') {
+    const contents = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as Record<string, unknown>;
+    const profiles = contents.profiles as Array<Record<string, unknown>>;
+    await writeFile(join(desktop, 'profiles.json'), JSON.stringify({
+      ...contents, profiles: profiles.map(profile => ({ ...profile, label: 'Attacker' })),
+    }));
   } else if (mode === 'missing-target') {
     await unlink(join(desktop, 'credentials', stateB.credentialSlots['profile-1']));
   } else if (mode === 'state-before-journal') {
@@ -51,6 +70,14 @@ if (requestedStep.startsWith('visibility:')) {
       if (bytes) await writeFile(path, bytes);
       else await unlink(path).catch(() => undefined);
     }
+  } else if (mode === 'alternate-slot-rollback') {
+    const state = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as { generation: string };
+    const newest = Number(BigInt(state.generation) % 2n);
+    const older = (newest + 1) % 2;
+    await writeFile(
+      join(desktop, `profiles.journal.${newest}`),
+      await readFile(join(desktop, `profiles.journal.${older}`)),
+    );
   } else {
     throw new Error(`Unknown visibility mode: ${mode}`);
   }

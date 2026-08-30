@@ -23,6 +23,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-windows-durability:
+    name: Native Windows durability (x64)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PROPR_NATIVE_WINDOWS_DURABILITY_REQUIRED: '1'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up x64 Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: '.nvmrc'
+          architecture: x64
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run production Windows child-process durability matrix
+        run: npm run test:native-durability -w @propr/desktop
+
   verify:
     name: Audit and package desktop app
     runs-on: ubuntu-latest

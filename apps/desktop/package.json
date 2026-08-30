@@ -20,6 +20,8 @@
     "typecheck": "tsc --noEmit",
     "pretest": "npm run prepare:renderer",
     "test": "tsx --test src/**/*.test.ts",
+    "pretest:native-durability": "npm run prepare:renderer",
+    "test:native-durability": "tsx --test src/profile-store.test.ts src/credential-service.test.ts",
     "prepackage": "npm run prepare:renderer",
     "package": "electron-forge package",
     "smoke:package": "node scripts/smoke-packaged.mjs",

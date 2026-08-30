@@ -960,7 +960,9 @@ describe('main-process desktop credential service', () => {
     assert.deepEqual(await store.readCredential(profile.id), credentialB);
   });
 
-  for (const crashMode of ['during-revoke', 'after-remote-success'] as const) {
+  const nativeRevocationCrashModes = ['during-revoke', 'after-remote-success'] as const;
+  assert.equal(nativeRevocationCrashModes.length, 2);
+  for (const crashMode of nativeRevocationCrashModes) {
     it(`recovers B and retries idempotently after a real process crash ${crashMode}`, async () => {
       const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
       temporaryDirectories.push(directory);
@@ -1404,8 +1406,11 @@ describe('main-process desktop credential service', () => {
     });
   }
 
-  for (const boundary of ['state-written', 'state-fsynced'] as const) {
-    for (const race of ['cancel', 'switch'] as const) {
+  const pairedPublishBoundaries = ['state-written', 'state-fsynced'] as const;
+  const pairedPublishRaces = ['cancel', 'switch'] as const;
+  assert.equal(pairedPublishBoundaries.length * pairedPublishRaces.length, 4);
+  for (const boundary of pairedPublishBoundaries) {
+    for (const race of pairedPublishRaces) {
       it(`keeps durable A when ${race} linearizes at paired ${boundary} before publish`, async () => {
         const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
         temporaryDirectories.push(directory);
