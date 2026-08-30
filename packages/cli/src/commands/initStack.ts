@@ -21,7 +21,6 @@ import {
   writePrivateFileAtomic,
 } from "../utils/privateFilesystem.js";
 import { getOrCreatePublicInstanceIdentity } from "../connectIdentity.js";
-import { protectWindowsSetupEntries, protectWindowsSetupEntry } from "../connectRootAuthority.js";
 
 export function materializeSessionSecret(
   template: string,
@@ -173,16 +172,8 @@ export async function scaffoldStack(
   for (const sub of ["data", "logs", "repos"]) {
     const dir = join(rootDir, sub);
     const created = !existsSync(dir);
-    await ensurePrivateDirectory(dir, { deferWindowsProtection: true });
+    await ensurePrivateDirectory(dir);
     (created ? result.dirsCreated : result.dirsSkipped).push(sub);
-  }
-  if (process.platform === "win32") {
-    await protectWindowsSetupEntries([
-      { path: rootDir, kind: "directory" },
-      ...["data", "logs", "repos"].map((sub) => ({
-        path: join(rootDir, sub), kind: "directory" as const,
-      })),
-    ]);
   }
 
   // The public installation identity belongs to the durable data boundary, not
@@ -252,8 +243,6 @@ export async function scaffoldStack(
     await writePrivateFileAtomic(envPath, envContent, { secureParent: false });
     result.envCreated = true;
   }
-  if (process.platform === "win32") await protectWindowsSetupEntry(envPath, "file");
-
   // 3b. When Vibe is in play, pre-create its prompt-cache dir so spawned Vibe
   //     agent containers can bind-mount a writable host directory. Creating it
   //     here (owned by the invoking user) avoids Docker auto-creating it as

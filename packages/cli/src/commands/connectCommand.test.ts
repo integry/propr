@@ -133,6 +133,32 @@ test("old discovery compatibility has an incompatible result", async () => {
   assert.deepEqual(status.reasonCodes, ["API_INCOMPATIBLE"]);
 });
 
+test("ready requires every desktop authentication capability", async () => {
+  for (const capability of [
+    "browserPairing",
+    "instanceBearerTokens",
+    "socketIoBearerAuthentication",
+  ] as const) {
+    const status = await resolveConnectStatus({
+      cfg: cfg(),
+      sidecarRunning: true,
+      publicInstanceIdentity: IDENTITY,
+      fetchImpl: jsonFetch(discovery({
+        desktopAuthentication: {
+          protocolVersion: 1,
+          browserPairing: capability !== "browserPairing",
+          instanceBearerTokens: capability !== "instanceBearerTokens",
+          socketIoBearerAuthentication: capability !== "socketIoBearerAuthentication",
+        },
+      })),
+    });
+
+    assert.equal(status.status, "incompatible", capability);
+    assert.equal(status.apiReady, false, capability);
+    assert.deepEqual(status.reasonCodes, ["DESKTOP_AUTHENTICATION_UNSUPPORTED"], capability);
+  }
+});
+
 test("probe distinguishes timeout, non-JSON, and capped output", async () => {
   const never = (() => new Promise<Response>(() => undefined)) as typeof fetch;
   assert.deepEqual(await probeConnectDiscovery(ENDPOINT, never, 10), { kind: "timeout" });

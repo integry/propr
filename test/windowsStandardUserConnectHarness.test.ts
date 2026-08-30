@@ -67,6 +67,13 @@ test('the disabled Windows scenario omits its token while enabled scenarios reta
   }
 });
 
+test('the ordinary-user Windows proof covers existing mutation paths', () => {
+  assert.match(harness, /await scaffoldStack\(/);
+  assert.match(harness, /await manager\.save\(\)/);
+  assert.match(harness, /public-instance-identity\.json/);
+  assert.match(harness, /config\.json/);
+});
+
 test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all other values', () => {
   const definitions = diagnosticDefinitions();
   assert.deepEqual([...definitions.scenarioAllowlist], [
@@ -84,6 +91,7 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
   assert.deepEqual([...definitions.reasonCodeAllowlist], [
     'NOT_CONFIGURED', 'TUNNEL_DISABLED', 'SIDECAR_NOT_RUNNING', 'API_UNREACHABLE', 'API_TIMEOUT',
     'DISCOVERY_UNSUPPORTED', 'DISCOVERY_INVALID', 'DISCOVERY_TOO_LARGE', 'API_INCOMPATIBLE',
+    'DESKTOP_AUTHENTICATION_UNSUPPORTED',
     'IDENTITY_MISMATCH', 'ENDPOINT_MISMATCH', 'RESTART_REQUIRED', 'INVALID_ROOT', 'INVALID_ENDPOINT',
     'IDENTITY_UNAVAILABLE', 'INTERNAL_FAILURE', 'ACL_DIAGNOSTIC_UNAVAILABLE',
   ]);

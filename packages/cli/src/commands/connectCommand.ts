@@ -36,6 +36,7 @@ export type ConnectStatusReasonCode =
   | "DISCOVERY_INVALID"
   | "DISCOVERY_TOO_LARGE"
   | "API_INCOMPATIBLE"
+  | "DESKTOP_AUTHENTICATION_UNSUPPORTED"
   | "IDENTITY_MISMATCH"
   | "ENDPOINT_MISMATCH"
   | "RESTART_REQUIRED"
@@ -315,6 +316,18 @@ export async function resolveConnectStatus({
       ...common,
       ...remoteMetadata,
       reasonCodes: ["API_INCOMPATIBLE"],
+    });
+  }
+  const authentication = probe.discovery.desktopAuthentication;
+  if (
+    !authentication.browserPairing
+    || !authentication.instanceBearerTokens
+    || !authentication.socketIoBearerAuthentication
+  ) {
+    return baseDocument("incompatible", {
+      ...common,
+      ...remoteMetadata,
+      reasonCodes: ["DESKTOP_AUTHENTICATION_UNSUPPORTED"],
     });
   }
   if (probe.discovery.publicInstanceIdentity !== publicInstanceIdentity) {

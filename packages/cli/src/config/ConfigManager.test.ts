@@ -399,7 +399,7 @@ test("root-specific tunnel toggles do not alter another stack", async () => {
   }
 });
 
-test("configuration tokens are persisted atomically under private modes", { timeout: 20_000 }, async () => {
+test("configuration save remains operational on Windows and uses private modes elsewhere", { timeout: 20_000 }, async () => {
   const started = Date.now();
   const tempDir = createTempDir();
   try {

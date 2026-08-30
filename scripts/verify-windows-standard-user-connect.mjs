@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -19,6 +19,8 @@ const cli = join(repo, "packages", "cli", "dist", "index.js");
 const fetchFixture = pathToFileURL(join(repo, "test", "fixtures", "connectFetchMock.mjs")).href;
 const processFixture = pathToFileURL(join(repo, "test", "fixtures", "windowsConnectProcessMock.mjs")).href;
 const authorityModule = pathToFileURL(join(repo, "packages", "cli", "dist", "connectRootAuthority.js")).href;
+const initStackModule = pathToFileURL(join(repo, "packages", "cli", "dist", "commands", "initStack.js")).href;
+const configManagerModule = pathToFileURL(join(repo, "packages", "cli", "dist", "config", "ConfigManager.js")).href;
 const fixtureNodeArgs = Object.freeze([
   "--no-warnings",
   "--import", processFixture,
@@ -59,6 +61,7 @@ const statusKindAllowlist = Object.freeze([
 const reasonCodeAllowlist = Object.freeze([
   "NOT_CONFIGURED", "TUNNEL_DISABLED", "SIDECAR_NOT_RUNNING", "API_UNREACHABLE", "API_TIMEOUT",
   "DISCOVERY_UNSUPPORTED", "DISCOVERY_INVALID", "DISCOVERY_TOO_LARGE", "API_INCOMPATIBLE",
+  "DESKTOP_AUTHENTICATION_UNSUPPORTED",
   "IDENTITY_MISMATCH", "ENDPOINT_MISMATCH", "RESTART_REQUIRED", "INVALID_ROOT", "INVALID_ENDPOINT",
   "IDENTITY_UNAVAILABLE", "INTERNAL_FAILURE", "ACL_DIAGNOSTIC_UNAVAILABLE",
 ]);
@@ -120,6 +123,25 @@ try {
       && /#1997/.test(error.message),
     "privileged Windows mutation did not return the actionable follow-up result",
   );
+
+  // Discovery authority remains unavailable, but it must not be invoked by
+  // the CLI mutation paths which existed before discovery was introduced.
+  const { scaffoldStack } = await import(initStackModule);
+  const mutationRoot = realpathSync.native(mkdtempSync(join(fixture, "stack-")));
+  writeFileSync(join(mutationRoot, ".env"), "SESSION_SECRET=existing\nNODE_ENV=production\n");
+  const scaffold = await scaffoldStack(
+    { root: mutationRoot },
+    { persistStackRoot: async () => undefined },
+  );
+  assert.equal(scaffold.envSkipped, true);
+  assert.ok(readFileSync(join(mutationRoot, "data", "public-instance-identity.json"), "utf8").length > 0);
+
+  const { ConfigManager } = await import(configManagerModule);
+  const configDirectory = join(fixture, "config");
+  const manager = new ConfigManager(configDirectory, { warn: () => undefined });
+  await manager.init();
+  await manager.save();
+  assert.deepEqual(JSON.parse(readFileSync(join(configDirectory, "config.json"), "utf8")), {});
 
   mkdirSync(data, { recursive: true });
   writeFileSync(join(data, "public-instance-identity.json"), `${JSON.stringify({

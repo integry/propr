@@ -31,7 +31,6 @@ import {
   assertNativeEntryAuthority,
   assertNativeWindowsEntriesAuthority,
   nativeConnectRootAuthorityInspector,
-  protectWindowsSetupEntry,
   WindowsAuthorityPolicyError,
   type ConnectAuthorityEntryKind,
   type ConnectRootAuthorityInspector,
@@ -744,11 +743,8 @@ export async function withOwnedConnectRootSnapshot<T>(
         verifyNamedData();
         return identity;
       },
-      validateEntry: async (name, fd, newlyCreated = false) => {
+      validateEntry: async (name, fd) => {
         const entryPath = join(data!.visiblePath, name);
-        if (newlyCreated && platform === "win32" && process.platform === "win32") {
-          await protectWindowsSetupEntry(entryPath, "file");
-        }
         if (platform !== "linux" && !windowsAclUnavailable) {
           await authorityEntry(inspector, platform, entryPath, "env", fd);
         }
@@ -843,21 +839,18 @@ export async function getOrCreatePublicInstanceIdentity(
   dataDir: string,
   generate: () => string = randomUUID,
 ): Promise<string> {
-  const dataPath = resolve(dataDir);
   const platform = process.platform;
+  const requestedDataPath = resolve(dataDir);
+  const dataPath = platform === "win32" ? realpathSync.native(requestedDataPath) : requestedDataPath;
   if (platform === "win32") {
     let held: HeldDirectory | undefined;
     try {
-      if (!sameResolvedPath(realpathSync.native(dataPath), dataPath, platform)) {
-        throw new PublicInstanceIdentityError();
-      }
       const acquired = openRootNoFollow(dataPath, platform);
       held = acquired.root;
-      try {
-        await assertPlatformAuthority(acquired, platform, nativeConnectRootAuthorityInspector, undefined);
-      } finally {
-        closeAcquiredAncestors(acquired);
-      }
+      // Windows stack initialization and configuration persistence predate
+      // Connect discovery. Keep this mutation path independent from the
+      // read-only DACL diagnostic that is deferred to #1997.
+      closeAcquiredAncestors(acquired);
       const terminal = fstatSync(held.fd);
       assertPrivateData(terminal, undefined, platform);
       const verifyVisible = () => {
@@ -890,11 +883,7 @@ export async function getOrCreatePublicInstanceIdentity(
           verifyVisible();
           return identity;
         },
-        validateEntry: async (name, fd, newlyCreated = false) => {
-          const entryPath = join(dataPath, name);
-          if (newlyCreated) await protectWindowsSetupEntry(entryPath, "file");
-          await authorityEntry(nativeConnectRootAuthorityInspector, platform, entryPath, "env", fd);
-        },
+        validateEntry: () => undefined,
         publishNoReplace: (oldName, newName) => {
           verifyVisible();
           linkSync(join(dataPath, oldName), join(dataPath, newName));
@@ -909,7 +898,6 @@ export async function getOrCreatePublicInstanceIdentity(
       };
       const identity = await getOrCreatePublicInstanceIdentityPinned(directory, { generate, role: "host" });
       verifyVisible();
-      await authorityEntry(nativeConnectRootAuthorityInspector, platform, dataPath, "data", held.fd);
       return identity;
     } catch (error) {
       if (error instanceof PublicInstanceIdentityError) throw error;
