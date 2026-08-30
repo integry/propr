@@ -9,10 +9,10 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, posix, resolve, win32 } from "node:path";
 import type { OrchestratorConfig, OrchestratorModule } from "./types.js";
 import type { ConfigManager } from "../config/index.js";
-import { createConfigManager } from "../config/index.js";
+import { readTrustedConnectTunnelOverride } from "../connectIdentity.js";
 
 export type {
   OrchestratorConfig,
@@ -142,53 +142,119 @@ export interface ConnectHostConfigSnapshotInput {
  * returned resolver is synchronous so authorized root bytes never cross an
  * await boundary.
  */
-const CONNECT_EXECUTION_ENV_ALLOWLIST = [
-  "PATH",
-  "PATHEXT",
-  "SYSTEMROOT",
-  "WINDIR",
-  "COMSPEC",
-  "TMPDIR",
-  "TMP",
-  "TEMP",
-] as const;
-
 const CONNECT_DOCKER_ENV_LIMITS = {
   DOCKER_HOST: 4096,
   DOCKER_CONTEXT: 255,
-  DOCKER_TLS: 16,
   DOCKER_TLS_VERIFY: 16,
   DOCKER_CERT_PATH: 4096,
   DOCKER_CONFIG: 4096,
 } as const;
+
+function environmentString(source: Readonly<Record<string, unknown>>, name: string, maximum = 4096): string | undefined {
+  const value = source[name];
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "string"
+    || value.length === 0
+    || value.includes("\0")
+    || /[\r\n]/.test(value)
+    || Buffer.byteLength(value, "utf8") > maximum
+  ) throw new Error("Connect process environment is invalid");
+  return value;
+}
+
+function platformPath(value: string, platform: NodeJS.Platform): boolean {
+  return platform === "win32" ? win32.isAbsolute(value) : posix.isAbsolute(value);
+}
+
+function validateSearchPath(value: string, platform: NodeJS.Platform): void {
+  const separator = platform === "win32" ? ";" : delimiter;
+  const entries = value.split(separator);
+  if (entries.length === 0 || entries.some((entry) => !entry || !platformPath(entry, platform))) {
+    throw new Error("Connect executable search environment is invalid");
+  }
+}
+
+function validateDockerHost(value: string, platform: NodeJS.Platform): void {
+  try {
+    const parsed = new URL(value);
+    if (parsed.password || parsed.search || parsed.hash) throw new Error();
+    if (parsed.protocol === "unix:") {
+      if (platform === "win32" || parsed.hostname || !posix.isAbsolute(parsed.pathname)) throw new Error();
+      return;
+    }
+    if (parsed.protocol === "npipe:") {
+      if (platform !== "win32" || !/^\/\/\.\/pipe\/[A-Za-z0-9_.-]+$/.test(parsed.pathname)) throw new Error();
+      return;
+    }
+    if (parsed.protocol === "tcp:" || parsed.protocol === "http:" || parsed.protocol === "https:") {
+      if (parsed.username || !parsed.hostname || (parsed.pathname !== "" && parsed.pathname !== "/")) throw new Error();
+      return;
+    }
+    if (parsed.protocol === "ssh:") {
+      if (!parsed.hostname || parsed.pathname !== "" && parsed.pathname !== "/") throw new Error();
+      return;
+    }
+  } catch {
+    // Fall through to the single fixed redacted validation error below.
+  }
+  throw new Error("Connect Docker transport environment is invalid");
+}
 
 /**
  * Discovery needs executable lookup, OS bootstrap variables, and the trusted
  * parent process's documented Docker transport selection. ProPR/configuration
  * variables remain absent: the explicit root snapshot is their sole authority.
  */
-export function connectExecutionEnvironment(source: Readonly<Record<string, unknown>>): NodeJS.ProcessEnv {
+export function connectExecutionEnvironment(
+  source: Readonly<Record<string, unknown>>,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {
+    throw new Error("Connect process environment is invalid");
+  }
   const allowed: NodeJS.ProcessEnv = {};
-  for (const name of CONNECT_EXECUTION_ENV_ALLOWLIST) {
-    const value = source[name];
+  const bootstrap = platform === "win32"
+    ? ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TMP", "TEMP", "USERPROFILE"] as const
+    : ["PATH", "TMPDIR", "TMP", "TEMP", "HOME"] as const;
+  for (const name of bootstrap) {
+    const value = environmentString(source, name);
     if (value === undefined) continue;
-    if (typeof value !== "string" || value.includes("\0") || Buffer.byteLength(value, "utf8") > 4096) {
-      throw new Error("Connect process environment is invalid");
+    if (name === "PATH") validateSearchPath(value, platform);
+    else if (name === "PATHEXT") {
+      if (!value.split(";").every((entry) => /^\.[A-Za-z0-9]{1,16}$/.test(entry))) {
+        throw new Error("Connect executable search environment is invalid");
+      }
+    } else if (!platformPath(value, platform)) {
+      throw new Error("Connect platform environment is invalid");
     }
     allowed[name] = value;
   }
   for (const [name, maximum] of Object.entries(CONNECT_DOCKER_ENV_LIMITS)) {
-    const value = source[name];
+    const value = environmentString(source, name, maximum);
     if (value === undefined) continue;
-    if (
-      typeof value !== "string"
-      || value.includes("\0")
-      || value.length === 0
-      || Buffer.byteLength(value, "utf8") > maximum
-    ) {
+    if (name === "DOCKER_HOST") validateDockerHost(value, platform);
+    else if (name === "DOCKER_CONTEXT" && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/.test(value)) {
+      throw new Error("Connect Docker transport environment is invalid");
+    } else if (name === "DOCKER_TLS_VERIFY" && value !== "0" && value !== "1") {
+      throw new Error("Connect Docker transport environment is invalid");
+    } else if ((name === "DOCKER_CERT_PATH" || name === "DOCKER_CONFIG") && !platformPath(value, platform)) {
       throw new Error("Connect Docker transport environment is invalid");
     }
     allowed[name] = value;
+  }
+  // A named context may itself select an ssh endpoint; without opening Docker's
+  // config here, preserving the socket when a context is explicit is the
+  // narrowest way to keep those documented contexts functional.
+  if (allowed.DOCKER_HOST?.startsWith("ssh://") || allowed.DOCKER_CONTEXT !== undefined) {
+    const socket = environmentString(source, "SSH_AUTH_SOCK");
+    if (socket !== undefined) {
+      const valid = platform === "win32"
+        ? win32.isAbsolute(socket) || /^\\\\\.\\pipe\\[A-Za-z0-9_.-]+$/.test(socket)
+        : posix.isAbsolute(socket);
+      if (!valid) throw new Error("Connect SSH transport environment is invalid");
+      allowed.SSH_AUTH_SOCK = socket;
+    }
   }
   return allowed;
 }
@@ -206,19 +272,11 @@ export async function prepareConnectHostConfig(): Promise<{
     throw new Error("Connect host configuration manifest is unavailable");
   }
   const executionEnv = connectExecutionEnvironment(process.env);
-  // Load persisted CLI intent before root acquisition. Only the boolean entry
-  // keyed by the subsequently authorized explicit root is ever consumed; no
-  // profile, ambient stack root, token, or other config value crosses into the
-  // snapshot resolver, and warnings are suppressed to keep stderr redacted.
-  const configManager = await createConfigManager(undefined, {
-    warn: () => undefined,
-    readOnly: true,
-  });
   return {
     orch,
     parseEnvFile: (contents) => orch.parseEnvFileContents(contents),
     resolveSnapshot: ({ requestedRoot, envFileValues }) => {
-      const tunnelOverride = configManager.getTunnelEnabled(requestedRoot);
+      const tunnelOverride = readTrustedConnectTunnelOverride(requestedRoot);
       return orch.resolveConfig(executionEnv, {
         envFileValues,
         stack: envFileValues.PROPR_STACK || "propr",

@@ -12,6 +12,7 @@ import {
 import type { Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
+import { protectWindowsSetupEntry } from "../connectRootAuthority.js";
 
 export const PRIVATE_DIRECTORY_MODE = 0o700;
 export const PRIVATE_FILE_MODE = 0o600;
@@ -39,7 +40,9 @@ export function secureExistingPrivateDirectory(directoryPath: string): boolean {
   if (stat.isSymbolicLink()) throw new Error(`Refusing to use symbolic-link directory ${directoryPath}`);
   if (!stat.isDirectory()) throw new Error(`Expected a directory at ${directoryPath}`);
   assertOwned(stat, directoryPath);
-  if (process.platform !== "win32" && (stat.mode & 0o777) !== PRIVATE_DIRECTORY_MODE) {
+  if (process.platform === "win32") {
+    protectWindowsSetupEntry(directoryPath, "directory");
+  } else if ((stat.mode & 0o777) !== PRIVATE_DIRECTORY_MODE) {
     chmodSync(directoryPath, PRIVATE_DIRECTORY_MODE);
   }
   return true;
@@ -75,7 +78,9 @@ export function secureExistingPrivateFile(filePath: string): boolean {
   if (stat.isSymbolicLink()) throw new Error(`Refusing to use symbolic-link file ${filePath}`);
   if (!stat.isFile()) throw new Error(`Expected a regular file at ${filePath}`);
   assertOwned(stat, filePath);
-  if (process.platform !== "win32" && (stat.mode & 0o777) !== PRIVATE_FILE_MODE) {
+  if (process.platform === "win32") {
+    protectWindowsSetupEntry(filePath, "file");
+  } else if ((stat.mode & 0o777) !== PRIVATE_FILE_MODE) {
     chmodSync(filePath, PRIVATE_FILE_MODE);
   }
   return true;
@@ -114,7 +119,8 @@ export function writePrivateFileAtomic(
     closeSync(descriptor);
     descriptor = undefined;
     renameSync(tempPath, filePath);
-    if (process.platform !== "win32") chmodSync(filePath, PRIVATE_FILE_MODE);
+    if (process.platform === "win32") protectWindowsSetupEntry(filePath, "file");
+    else chmodSync(filePath, PRIVATE_FILE_MODE);
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
     try { unlinkSync(tempPath); } catch { /* Best-effort cleanup after success or failure. */ }

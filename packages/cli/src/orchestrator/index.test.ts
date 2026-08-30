@@ -51,23 +51,28 @@ test("explicit new root does not inherit legacy tunnel intent during start prefl
 test("Connect forwards only validated Docker transport and process bootstrap variables", () => {
   const environment = connectExecutionEnvironment({
     PATH: "/trusted/bin",
-    DOCKER_HOST: "tcp://127.0.0.1:2376",
+    DOCKER_HOST: "ssh://docker.example.test",
     DOCKER_CONTEXT: "remote-context",
     DOCKER_TLS: "1",
     DOCKER_TLS_VERIFY: "1",
     DOCKER_CERT_PATH: "/private/certs",
     DOCKER_CONFIG: "/private/docker-config",
     PROPR_UI_TUNNEL_TOKEN: "must-not-cross",
-    HOME: "/must-not-cross",
+    HOME: "/trusted/home",
+    SSH_AUTH_SOCK: "/trusted/ssh-agent",
+    DOCKER_AUTH_CONFIG: "must-not-cross",
+    NODE_OPTIONS: "must-not-cross",
+    HTTPS_PROXY: "must-not-cross",
   });
   assert.deepEqual(environment, {
     PATH: "/trusted/bin",
-    DOCKER_HOST: "tcp://127.0.0.1:2376",
+    DOCKER_HOST: "ssh://docker.example.test",
     DOCKER_CONTEXT: "remote-context",
-    DOCKER_TLS: "1",
     DOCKER_TLS_VERIFY: "1",
     DOCKER_CERT_PATH: "/private/certs",
     DOCKER_CONFIG: "/private/docker-config",
+    HOME: "/trusted/home",
+    SSH_AUTH_SOCK: "/trusted/ssh-agent",
   });
   for (const invalid of [
     { DOCKER_HOST: "x".repeat(4097) },

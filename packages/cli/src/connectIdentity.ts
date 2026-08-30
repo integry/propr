@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import type { Stats } from "node:fs";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
+import { userInfo } from "node:os";
 import {
   getOrCreatePublicInstanceIdentityPinned,
   type PinnedPublicIdentityDirectory,
@@ -28,11 +29,14 @@ import {
 import {
   assertNativeEntryAuthority,
   nativeConnectRootAuthorityInspector,
+  protectWindowsSetupEntry,
   type ConnectAuthorityEntryKind,
   type ConnectRootAuthorityInspector,
 } from "./connectRootAuthority.js";
+import { canonicalRootKey } from "./config/rootKey.js";
 
 const MAX_ENV_FILE_BYTES = 1024 * 1024;
+const MAX_CONNECT_CONFIG_BYTES = 1024 * 1024;
 
 export class ConnectRootError extends Error {
   constructor() {
@@ -46,6 +50,21 @@ export class PublicInstanceIdentityError extends Error {
     super("the public instance identity is unavailable or invalid");
     this.name = "PublicInstanceIdentityError";
   }
+}
+
+export class TrustedConnectConfigError extends Error {
+  constructor() {
+    super("the persisted Connect configuration is unavailable or unsafe");
+    this.name = "TrustedConnectConfigError";
+  }
+}
+
+export interface TrustedConnectConfigOptions {
+  platform?: NodeJS.Platform;
+  authorityInspector?: ConnectRootAuthorityInspector;
+  /** Explicit only for deterministic/native tests; production uses OS userInfo. */
+  trustedHome?: string;
+  onBoundary?: (boundary: "config-opened" | "config-read") => void;
 }
 
 export type ConnectRootSnapshotBoundary = "acquired" | "env-read" | "before-identity" | "identity-read";
@@ -74,7 +93,7 @@ interface HeldDirectory {
 
 interface AcquiredRoot {
   root: HeldDirectory;
-  ancestry: Array<{ path: string; stat: Stats }>;
+  ancestry: Array<{ path: string; stat: Stats; fd: number }>;
 }
 
 class ConnectSnapshotOperationError extends Error {
@@ -162,25 +181,35 @@ function openRootNoFollow(rootDir: string, platform: NodeJS.Platform): AcquiredR
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   const parsed = parse(rootDir);
   let fd = openSync(parsed.root, flags);
-  const ancestry: Array<{ path: string; stat: Stats }> = [];
+  const ancestry: Array<{ path: string; stat: Stats; fd: number }> = [];
   let visible = parsed.root;
   try {
     for (const component of rootDir.slice(parsed.root.length).split(sep).filter(Boolean)) {
       const current = heldDirectory(fd, platform, visible);
       const next = current.openChild(component, flags);
-      closeSync(fd);
+      if (visible === parsed.root) closeSync(fd);
       fd = next;
       visible = join(visible, component);
       const named = lstatSync(visible);
       const pinned = fstatSync(fd);
       if (named.isSymbolicLink() || !sameIdentity(named, pinned)) throw new ConnectRootError();
-      ancestry.push({ path: visible, stat: named });
+      ancestry.push({ path: visible, stat: named, fd });
     }
     return { root: heldDirectory(fd, platform, visible), ancestry };
   } catch (error) {
-    closeSync(fd);
+    for (const descriptor of new Set([fd, ...ancestry.map((entry) => entry.fd)])) {
+      try { closeSync(descriptor); } catch { /* Preserve the authority error. */ }
+    }
     throw error;
   }
+}
+
+function closeAcquired(acquired: AcquiredRoot): void {
+  for (const descriptor of new Set([acquired.root.fd, ...acquired.ancestry.map((entry) => entry.fd)])) closeSync(descriptor);
+}
+
+function closeAcquiredAncestors(acquired: AcquiredRoot): void {
+  for (const entry of acquired.ancestry.slice(0, -1)) closeSync(entry.fd);
 }
 
 function readHeldEnv(fd: number, platform: NodeJS.Platform): string {
@@ -210,14 +239,179 @@ function readHeldEnv(fd: number, platform: NodeJS.Platform): string {
   }
 }
 
+function readBoundedPrivateFile(fd: number, maximum: number, validate: (stat: Stats) => void): string {
+  const before = fstatSync(fd);
+  validate(before);
+  if (before.size <= 0 || before.size > maximum) throw new TrustedConnectConfigError();
+  const bytes = Buffer.allocUnsafe(maximum + 1);
+  let length = 0;
+  while (length < bytes.byteLength) {
+    const count = readSync(fd, bytes, length, bytes.byteLength - length, null);
+    if (count === 0) break;
+    length += count;
+  }
+  const after = fstatSync(fd);
+  validate(after);
+  if (!sameIdentity(before, after) || before.size !== after.size || length !== before.size || length > maximum) {
+    throw new TrustedConnectConfigError();
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
+  } catch {
+    throw new TrustedConnectConfigError();
+  }
+}
+
+function parseTrustedTunnelOverride(contents: string, requestedRoot: string, platform: NodeJS.Platform): boolean | undefined {
+  let parsed: unknown;
+  try { parsed = JSON.parse(contents); } catch { throw new TrustedConnectConfigError(); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new TrustedConnectConfigError();
+  const data = parsed as Record<string, unknown>;
+  const states = new Map<string, boolean>();
+  if (data.tunnelEnabledByRoot !== undefined) {
+    if (!data.tunnelEnabledByRoot || typeof data.tunnelEnabledByRoot !== "object" || Array.isArray(data.tunnelEnabledByRoot)) {
+      throw new TrustedConnectConfigError();
+    }
+    for (const [root, enabled] of Object.entries(data.tunnelEnabledByRoot as Record<string, unknown>)) {
+      if (typeof enabled !== "boolean") throw new TrustedConnectConfigError();
+      let key: string;
+      try { key = canonicalRootKey(root, platform); } catch { throw new TrustedConnectConfigError(); }
+      const existing = states.get(key);
+      if (existing !== undefined && existing !== enabled) throw new TrustedConnectConfigError();
+      states.set(key, enabled);
+    }
+  }
+  if (data.tunnelEnabled !== undefined) {
+    if (typeof data.tunnelEnabled !== "boolean" || typeof data.stackRoot !== "string") {
+      throw new TrustedConnectConfigError();
+    }
+    let legacyKey: string;
+    try { legacyKey = canonicalRootKey(data.stackRoot, platform); } catch { throw new TrustedConnectConfigError(); }
+    const existing = states.get(legacyKey);
+    if (existing !== undefined && existing !== data.tunnelEnabled) throw new TrustedConnectConfigError();
+    if (existing === undefined) states.set(legacyKey, data.tunnelEnabled);
+  }
+  let requestedKey: string;
+  try { requestedKey = canonicalRootKey(requestedRoot, platform); } catch { throw new TrustedConnectConfigError(); }
+  return states.get(requestedKey);
+}
+
+/**
+ * Read only the root-specific tunnel intent from an OS-selected home. The
+ * directory and file stay pinned throughout a bounded synchronous read; no
+ * ambient HOME/cwd, profile, token, or unrelated setting is consumed.
+ */
+export function readTrustedConnectTunnelOverride(
+  requestedRoot: string,
+  options: TrustedConnectConfigOptions = {},
+): boolean | undefined {
+  const platform = options.platform ?? process.platform;
+  const ioPlatform = platform === process.platform ? platform : process.platform;
+  if (
+    (platform !== "linux" && platform !== "darwin" && platform !== "win32")
+    || (ioPlatform !== "linux" && ioPlatform !== "darwin" && ioPlatform !== "win32")
+  ) throw new TrustedConnectConfigError();
+  const inspector = options.authorityInspector ?? nativeConnectRootAuthorityInspector;
+  const callerUid = process.getuid?.();
+  const homePath = resolve(options.trustedHome ?? userInfo().homedir);
+  let home: AcquiredRoot | undefined;
+  let configDir: HeldDirectory | undefined;
+  let configFd: number | undefined;
+  try {
+    if (!sameResolvedPath(realpathSync.native(homePath), homePath, platform)) throw new TrustedConnectConfigError();
+    home = openRootNoFollow(homePath, ioPlatform);
+    try {
+      assertTrustedHomeAuthority(home, platform, inspector, callerUid);
+    } finally {
+      closeAcquiredAncestors(home);
+    }
+    assertPrivateRoot(fstatSync(home.root.fd), callerUid, platform);
+    const verifyNamedHome = () => {
+      const held = fstatSync(home!.root.fd);
+      const named = lstatSync(homePath);
+      if (named.isSymbolicLink() || !sameIdentity(named, held)) throw new TrustedConnectConfigError();
+      return held;
+    };
+
+    try {
+      verifyNamedHome();
+      const fd = home.root.openChild(".propr", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      configDir = heldDirectory(fd, ioPlatform, join(homePath, ".propr"));
+      verifyNamedHome();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    const directoryStat = fstatSync(configDir.fd);
+    assertPrivateData(directoryStat, callerUid, platform);
+    assertNamedEntry(homePath, ".propr", directoryStat);
+    if (platform !== "linux") authorityEntry(inspector, platform, configDir.visiblePath, "data", configDir.fd);
+    const verifyNamedConfigDirectory = () => {
+      verifyNamedHome();
+      const held = fstatSync(configDir!.fd);
+      assertNamedEntry(homePath, ".propr", held);
+      return held;
+    };
+
+    try {
+      verifyNamedConfigDirectory();
+      configFd = configDir.openChild("config.json", constants.O_RDONLY | constants.O_NOFOLLOW);
+      verifyNamedConfigDirectory();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    const validateConfig = (stat: Stats) => {
+      if (
+        !stat.isFile()
+        || stat.isSymbolicLink()
+        || stat.nlink !== 1
+        || (platform !== "win32" && (stat.uid !== callerUid || (stat.mode & 0o777) !== 0o600))
+      ) throw new TrustedConnectConfigError();
+    };
+    validateConfig(fstatSync(configFd));
+    assertNamedEntry(configDir.visiblePath, "config.json", fstatSync(configFd));
+    if (platform !== "linux") {
+      authorityEntry(inspector, platform, join(configDir.visiblePath, "config.json"), "env", configFd);
+    }
+    verifyNamedConfigDirectory();
+    options.onBoundary?.("config-opened");
+    const contents = readBoundedPrivateFile(configFd, MAX_CONNECT_CONFIG_BYTES, validateConfig);
+    options.onBoundary?.("config-read");
+
+    const fileAfter = fstatSync(configFd);
+    assertNamedEntry(configDir.visiblePath, "config.json", fileAfter);
+    const directoryAfter = fstatSync(configDir.fd);
+    assertPrivateData(directoryAfter, callerUid, platform);
+    assertNamedEntry(homePath, ".propr", directoryAfter);
+    const homeAfter = fstatSync(home.root.fd);
+    assertPrivateRoot(homeAfter, callerUid, platform);
+    const namedHome = lstatSync(homePath);
+    if (namedHome.isSymbolicLink() || !sameIdentity(namedHome, homeAfter)) throw new TrustedConnectConfigError();
+    if (platform !== "linux") {
+      authorityEntry(inspector, platform, configDir.visiblePath, "data", configDir.fd);
+      authorityEntry(inspector, platform, join(configDir.visiblePath, "config.json"), "env", configFd);
+    }
+    return parseTrustedTunnelOverride(contents, requestedRoot, platform);
+  } catch (error) {
+    if (error instanceof TrustedConnectConfigError) throw error;
+    throw new TrustedConnectConfigError();
+  } finally {
+    if (configFd !== undefined) closeSync(configFd);
+    if (configDir !== undefined) closeSync(configDir.fd);
+    if (home !== undefined) closeSync(home.root.fd);
+  }
+}
+
 function authorityEntry(
   inspector: ConnectRootAuthorityInspector,
   platform: NodeJS.Platform,
   path: string,
   kind: ConnectAuthorityEntryKind,
+  pinnedFd: number,
 ): void {
   try {
-    assertNativeEntryAuthority(inspector, platform, path, kind);
+    assertNativeEntryAuthority(inspector, platform, path, kind, pinnedFd);
   } catch {
     throw new ConnectRootError();
   }
@@ -231,9 +425,9 @@ function assertPlatformAuthority(
 ): void {
   if (platform === "win32") {
     for (const entry of acquired.ancestry.slice(0, -1)) {
-      authorityEntry(inspector, platform, entry.path, "ancestor");
+      authorityEntry(inspector, platform, entry.path, "ancestor", entry.fd);
     }
-    authorityEntry(inspector, platform, acquired.root.visiblePath, "root");
+    authorityEntry(inspector, platform, acquired.root.visiblePath, "root", acquired.root.fd);
     return;
   }
   if (callerUid === undefined) throw new ConnectRootError();
@@ -241,9 +435,33 @@ function assertPlatformAuthority(
   assertPrivateRoot(fstatSync(acquired.root.fd), callerUid, platform);
   if (platform === "darwin") {
     for (const entry of acquired.ancestry.slice(0, -1)) {
-      authorityEntry(inspector, platform, entry.path, "ancestor");
+      authorityEntry(inspector, platform, entry.path, "ancestor", entry.fd);
     }
-    authorityEntry(inspector, platform, acquired.root.visiblePath, "root");
+    authorityEntry(inspector, platform, acquired.root.visiblePath, "root", acquired.root.fd);
+  }
+}
+
+function assertTrustedHomeAuthority(
+  acquired: AcquiredRoot,
+  platform: NodeJS.Platform,
+  inspector: ConnectRootAuthorityInspector,
+  callerUid: number | undefined,
+): void {
+  if (platform === "win32") {
+    for (const entry of acquired.ancestry.slice(0, -1)) {
+      authorityEntry(inspector, platform, entry.path, "ancestor", entry.fd);
+    }
+    authorityEntry(inspector, platform, acquired.root.visiblePath, "home", acquired.root.fd);
+    return;
+  }
+  if (callerUid === undefined) throw new TrustedConnectConfigError();
+  assertSafeAncestry(acquired.ancestry.slice(0, -1).map((entry) => entry.stat), callerUid);
+  assertPrivateRoot(fstatSync(acquired.root.fd), callerUid, platform);
+  if (platform === "darwin") {
+    for (const entry of acquired.ancestry.slice(0, -1)) {
+      authorityEntry(inspector, platform, entry.path, "ancestor", entry.fd);
+    }
+    authorityEntry(inspector, platform, acquired.root.visiblePath, "home", acquired.root.fd);
   }
 }
 
@@ -308,21 +526,35 @@ export function withOwnedConnectRootSnapshot<T>(
   try {
     const acquired = openRootNoFollow(requestedRoot, ioPlatform);
     root = acquired.root;
-    assertPlatformAuthority(acquired, platform, inspector, callerUid);
+    try {
+      assertPlatformAuthority(acquired, platform, inspector, callerUid);
+    } finally {
+      closeAcquiredAncestors(acquired);
+    }
     assertPrivateRoot(fstatSync(root.fd), callerUid, platform);
 
     const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+    const verifyNamedRoot = () => {
+      const held = fstatSync(root!.fd);
+      const named = lstatSync(requestedRoot);
+      if (named.isSymbolicLink() || !sameIdentity(named, held)) throw new ConnectRootError();
+      return held;
+    };
+    verifyNamedRoot();
     const dataFd = root.openChild("data", directoryFlags);
     data = heldDirectory(dataFd, ioPlatform, join(requestedRoot, "data"));
+    verifyNamedRoot();
     const initialDataStat = fstatSync(data.fd);
     assertPrivateData(initialDataStat, callerUid, platform);
     assertNamedEntry(requestedRoot, "data", initialDataStat);
-    if (platform !== "linux") authorityEntry(inspector, platform, data.visiblePath, "data");
+    if (platform !== "linux") authorityEntry(inspector, platform, data.visiblePath, "data", data.fd);
+    verifyNamedRoot();
     envFd = root.openChild(".env", constants.O_RDONLY | constants.O_NOFOLLOW);
+    verifyNamedRoot();
     const initialEnvStat = fstatSync(envFd);
     assertPrivateEnv(initialEnvStat, callerUid, platform);
     assertNamedEntry(requestedRoot, ".env", initialEnvStat);
-    if (platform !== "linux") authorityEntry(inspector, platform, join(requestedRoot, ".env"), "env");
+    if (platform !== "linux") authorityEntry(inspector, platform, join(requestedRoot, ".env"), "env", envFd);
     options.onBoundary?.("acquired");
 
     const envFileValues = options.parseEnvFile(readHeldEnv(envFd, platform));
@@ -336,7 +568,7 @@ export function withOwnedConnectRootSnapshot<T>(
       // therefore prove the visible data identity before every use.
       if (platform === "win32") {
         assertNamedEntry(requestedRoot, "data", held);
-        authorityEntry(inspector, platform, data!.visiblePath, "data");
+        authorityEntry(inspector, platform, data!.visiblePath, "data", data!.fd);
       }
       return held;
     };
@@ -348,9 +580,11 @@ export function withOwnedConnectRootSnapshot<T>(
         const childFd = data!.openChild(name, flags, mode);
         if (platform === "win32") {
           try {
+            verifyNamedData();
             const child = fstatSync(childFd);
             const named = lstatSync(join(data!.visiblePath, name));
             if (named.isSymbolicLink() || !sameIdentity(named, child)) throw new ConnectRootError();
+            verifyNamedData();
           } catch (error) {
             closeSync(childFd);
             throw error;
@@ -358,7 +592,19 @@ export function withOwnedConnectRootSnapshot<T>(
         }
         return childFd;
       },
-      identify: (name) => identifyHeldChild(data!, ioPlatform, name),
+      identify: (name) => {
+        verifyNamedData();
+        const identity = identifyHeldChild(data!, ioPlatform, name);
+        verifyNamedData();
+        return identity;
+      },
+      validateEntry: (name, fd, newlyCreated = false) => {
+        const entryPath = join(data!.visiblePath, name);
+        if (newlyCreated && platform === "win32" && process.platform === "win32") {
+          protectWindowsSetupEntry(entryPath, "file");
+        }
+        if (platform !== "linux") authorityEntry(inspector, platform, entryPath, "env", fd);
+      },
       publishNoReplace: (oldName, newName) => {
         verifyNamedData();
         if (platform === "win32") {
@@ -401,8 +647,8 @@ export function withOwnedConnectRootSnapshot<T>(
     assertNamedEntry(requestedRoot, "data", heldDataStat);
     assertNamedEntry(requestedRoot, ".env", heldEnvStat);
     if (platform !== "linux") {
-      authorityEntry(inspector, platform, data.visiblePath, "data");
-      authorityEntry(inspector, platform, join(requestedRoot, ".env"), "env");
+      authorityEntry(inspector, platform, data.visiblePath, "data", data.fd);
+      authorityEntry(inspector, platform, join(requestedRoot, ".env"), "env", envFd);
     }
     const reacquired = openRootNoFollow(requestedRoot, ioPlatform);
     try {
@@ -414,7 +660,7 @@ export function withOwnedConnectRootSnapshot<T>(
       ) throw new ConnectRootError();
       assertPlatformAuthority(reacquired, platform, inspector, callerUid);
     } finally {
-      closeSync(reacquired.root.fd);
+      closeAcquired(reacquired);
     }
     if (operationError !== undefined) throw new ConnectSnapshotOperationError(operationError);
     return result as T;
@@ -445,7 +691,11 @@ export function getOrCreatePublicInstanceIdentity(
       }
       const acquired = openRootNoFollow(dataPath, platform);
       held = acquired.root;
-      assertPlatformAuthority(acquired, platform, nativeConnectRootAuthorityInspector, undefined);
+      try {
+        assertPlatformAuthority(acquired, platform, nativeConnectRootAuthorityInspector, undefined);
+      } finally {
+        closeAcquiredAncestors(acquired);
+      }
       const terminal = fstatSync(held.fd);
       assertPrivateData(terminal, undefined, platform);
       const verifyVisible = () => {
@@ -453,7 +703,7 @@ export function getOrCreatePublicInstanceIdentity(
         const pinned = fstatSync(held!.fd);
         if (visible.isSymbolicLink() || !sameIdentity(visible, pinned)) throw new PublicInstanceIdentityError();
         assertPrivateData(pinned, undefined, platform);
-        authorityEntry(nativeConnectRootAuthorityInspector, platform, dataPath, "data");
+        authorityEntry(nativeConnectRootAuthorityInspector, platform, dataPath, "data", held!.fd);
       };
       const directory: PinnedPublicIdentityDirectory = {
         fd: held.fd,
@@ -462,16 +712,28 @@ export function getOrCreatePublicInstanceIdentity(
           verifyVisible();
           const fd = held!.openChild(name, flags, mode);
           try {
+            verifyVisible();
             const opened = fstatSync(fd);
             const named = lstatSync(join(dataPath, name));
             if (named.isSymbolicLink() || !sameIdentity(opened, named)) throw new PublicInstanceIdentityError();
+            verifyVisible();
             return fd;
           } catch (error) {
             closeSync(fd);
             throw error;
           }
         },
-        identify: (name) => identifyHeldChild(held!, platform, name),
+        identify: (name) => {
+          verifyVisible();
+          const identity = identifyHeldChild(held!, platform, name);
+          verifyVisible();
+          return identity;
+        },
+        validateEntry: (name, fd, newlyCreated = false) => {
+          const entryPath = join(dataPath, name);
+          if (newlyCreated) protectWindowsSetupEntry(entryPath, "file");
+          authorityEntry(nativeConnectRootAuthorityInspector, platform, entryPath, "env", fd);
+        },
         publishNoReplace: (oldName, newName) => {
           verifyVisible();
           linkSync(join(dataPath, oldName), join(dataPath, newName));
@@ -507,7 +769,11 @@ export function getOrCreatePublicInstanceIdentity(
       if (callerUid === undefined) throw new PublicInstanceIdentityError();
       const acquiredParent = openRootNoFollow(parentPath, platform);
       try {
-        assertPlatformAuthority(acquiredParent, platform, nativeConnectRootAuthorityInspector, callerUid);
+        try {
+          assertPlatformAuthority(acquiredParent, platform, nativeConnectRootAuthorityInspector, callerUid);
+        } finally {
+          closeAcquiredAncestors(acquiredParent);
+        }
         assertPrivateRoot(fstatSync(acquiredParent.root.fd), callerUid, platform);
         try {
           mkdirAt(acquiredParent.root.fd, basename(dataPath), 0o700);
@@ -532,13 +798,22 @@ export function getOrCreatePublicInstanceIdentity(
     if (callerUid === undefined) throw new PublicInstanceIdentityError();
     const acquired = openRootNoFollow(dataPath, platform);
     held = acquired.root;
-    assertPlatformAuthority(acquired, platform, nativeConnectRootAuthorityInspector, callerUid);
+    try {
+      assertPlatformAuthority(acquired, platform, nativeConnectRootAuthorityInspector, callerUid);
+    } finally {
+      closeAcquiredAncestors(acquired);
+    }
     assertPrivateData(fstatSync(held.fd), callerUid, platform);
     const directory: PinnedPublicIdentityDirectory = {
       fd: held.fd,
       ownerUid: callerUid,
       open: (name, flags, mode = 0) => held!.openChild(name, flags, mode),
       identify: (name) => identifyHeldChild(held!, platform, name),
+      validateEntry: (name, fd) => {
+        if (platform === "darwin") {
+          authorityEntry(nativeConnectRootAuthorityInspector, platform, join(dataPath, name), "env", fd);
+        }
+      },
       publishNoReplace: (oldName, newName) => renameAt(held!.fd, oldName, newName),
       unlink: (name) => unlinkAt(held!.fd, name),
     };

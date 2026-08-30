@@ -69,6 +69,10 @@ if (fs.existsSync(expectationsPath)) {
   const expected = JSON.parse(fs.readFileSync(expectationsPath, 'utf8'));
   if (Object.entries(expected).some(([name, value]) => process.env[name] !== value)) process.exit(8);
 }
+const denied = ['DOCKER_AUTH_CONFIG', 'REGISTRY_PASSWORD', 'PROPR_CONNECTOR_TOKEN', 'PROPR_RELAY_TOKEN', 'GITHUB_TOKEN', 'NODE_OPTIONS', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'UNTRUSTED_AMBIENT'];
+if (denied.some((name) => process.env[name] !== undefined)) process.exit(8);
+const expectedArgs = ['ps', '-a', '--filter', 'label=propr.stack=authorized', '--format', '{{.Names}}\\t{{.State}}\\t{{.Status}}\\t{{.Ports}}'];
+const exactFilter = JSON.stringify(process.argv.slice(2)) === JSON.stringify(expectedArgs);
 const replacementPath = path.join(__dirname, 'replace-root');
 if (fs.existsSync(replacementPath)) {
   const root = fs.readFileSync(replacementPath, 'utf8');
@@ -83,7 +87,10 @@ process.stderr.write('docker-private-output-SENTINEL\\n');
 if (behavior === 'nonzero') process.exit(9);
 if (behavior === 'timeout') setInterval(() => {}, 60_000);
 if (behavior === 'signal') process.kill(process.pid, 'SIGTERM');
-if (behavior === 'malformed') process.stdout.write('authorized-tunnel running malformed-output-SENTINEL\\n');
+if (behavior === 'large-unrelated') process.stdout.write(exactFilter ? 'authorized-tunnel\\trunning\\tUp 1 second\\t\\n' : 'unrelated-api\\trunning\\tUp\\t\\n'.repeat(5000));
+else if (behavior === 'duplicate') process.stdout.write('authorized-tunnel\\trunning\\tUp\\t\\nauthorized-tunnel\\trunning\\tUp\\t\\n');
+else if (behavior === 'unknown') process.stdout.write('authorized-hostile\\trunning\\tUp\\t\\n');
+else if (behavior === 'malformed') process.stdout.write('authorized-tunnel running malformed-output-SENTINEL\\n');
 else if (behavior === 'truncated') process.stdout.write('x'.repeat(70 * 1024));
 else if (behavior === 'absent') process.stdout.write('');
 else if (behavior === 'stopped') process.stdout.write('authorized-tunnel\\texited\\tExited (0) 1 second ago\\t\\n');
@@ -95,7 +102,7 @@ else process.stdout.write('authorized-tunnel\\trunning\\tUp 1 second\\t\\n');
 
 interface InvocationOptions {
   cli?: string;
-  dockerBehavior?: 'ready' | 'absent' | 'stopped' | 'nonzero' | 'timeout' | 'signal' | 'malformed' | 'truncated';
+  dockerBehavior?: 'ready' | 'absent' | 'stopped' | 'nonzero' | 'timeout' | 'signal' | 'malformed' | 'truncated' | 'large-unrelated' | 'duplicate' | 'unknown';
   replaceRoot?: boolean;
   windowsSemantics?: boolean;
   arguments?: string[];
@@ -155,6 +162,13 @@ function invoke(
       GITHUB_TOKEN: 'github-token-SENTINEL',
       GH_PRIVATE_KEY_PATH: credentialPath,
       UNTRUSTED_RAW_URL: 'https://userinfo:secret@raw-url-SENTINEL.invalid/path',
+      DOCKER_AUTH_CONFIG: 'docker-auth-SENTINEL',
+      REGISTRY_PASSWORD: 'registry-password-SENTINEL',
+      NODE_OPTIONS: '--no-warnings',
+      HTTP_PROXY: 'http://proxy-SENTINEL.invalid',
+      HTTPS_PROXY: 'http://proxy-SENTINEL.invalid',
+      NO_PROXY: 'no-proxy-SENTINEL',
+      UNTRUSTED_AMBIENT: 'ambient-SENTINEL',
       ...options.environment,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -214,18 +228,26 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(ready.document.canonicalEndpoint, ENDPOINT);
 
     const dockerTransport = {
-      DOCKER_HOST: 'tcp://127.0.0.1:2376',
+      DOCKER_HOST: 'ssh://docker.example.test',
       DOCKER_CONTEXT: 'trusted-context',
-      DOCKER_TLS: '1',
       DOCKER_TLS_VERIFY: '1',
       DOCKER_CERT_PATH: join(parent, 'private-cert-path-SENTINEL'),
       DOCKER_CONFIG: join(parent, 'private-docker-config-SENTINEL'),
+      HOME: join(parent, 'docker-home-SENTINEL'),
+      SSH_AUTH_SOCK: join(parent, 'ssh-agent-SENTINEL'),
     };
     const customDocker = invoke(readyRoot, 'ready', bin, parent, {
       environment: dockerTransport,
       dockerEnvironmentExpectations: dockerTransport,
     });
     assert.equal(customDocker.status, 0);
+    const unrelatedInventory = invoke(readyRoot, 'ready', bin, parent, { dockerBehavior: 'large-unrelated' });
+    assert.equal(unrelatedInventory.status, 0);
+    for (const dockerBehavior of ['duplicate', 'unknown'] as const) {
+      const hostile = invoke(readyRoot, 'ready', bin, parent, { dockerBehavior });
+      assert.equal(hostile.status, 1, dockerBehavior);
+      assert.deepEqual(hostile.document.reasonCodes, ['INTERNAL_FAILURE']);
+    }
     const oversizedDocker = invoke(readyRoot, 'ready', bin, parent, {
       environment: { DOCKER_HOST: 'x'.repeat(4097) },
     });
@@ -233,12 +255,10 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.deepEqual(oversizedDocker.document.reasonCodes, ['INTERNAL_FAILURE']);
 
     persistTunnelOverride(join(parent, 'home-private-SENTINEL'), readyRoot, false);
-    const explicitlyOff = invoke(readyRoot, 'ready', bin, parent);
-    assert.equal(explicitlyOff.status, 2);
-    assert.deepEqual(explicitlyOff.document.reasonCodes, ['TUNNEL_DISABLED']);
+    const hostileAmbientHomeIgnored = invoke(readyRoot, 'ready', bin, parent);
+    assert.equal(hostileAmbientHomeIgnored.status, 0);
     persistTunnelOverride(join(parent, 'home-private-SENTINEL'), readyRoot, true);
-    const explicitlyOn = invoke(readyRoot, 'ready', bin, parent);
-    assert.equal(explicitlyOn.status, 0);
+    assert.equal(invoke(readyRoot, 'ready', bin, parent).status, 0);
 
     const tokenlessRoot = makeRoot(parent, 'tokenless-root', ENDPOINT, {});
     assert.equal(getOrCreatePublicInstanceIdentity(join(tokenlessRoot, 'data'), () => IDENTITY), IDENTITY);
@@ -254,7 +274,7 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
 
     for (const dockerBehavior of ['absent', 'stopped'] as const) {
       const notReady = invoke(readyRoot, 'ready', bin, parent, { dockerBehavior });
-      assert.equal(notReady.status, 2, dockerBehavior);
+      assert.equal(notReady.status, 0, dockerBehavior);
       assert.equal(notReady.document.status, 'notReady', dockerBehavior);
       assert.deepEqual(notReady.document.reasonCodes, ['SIDECAR_NOT_RUNNING'], dockerBehavior);
     }
@@ -275,33 +295,33 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     }
 
     const unreachable = invoke(readyRoot, 'unreachable', bin, parent);
-    assert.equal(unreachable.status, 2);
+    assert.equal(unreachable.status, 0);
     assert.deepEqual(unreachable.document.reasonCodes, ['API_UNREACHABLE']);
 
     for (const mode of ['unsupported', 'invalid', 'invalid-utf8']) {
       const incompatible = invoke(readyRoot, mode, bin, parent);
-      assert.equal(incompatible.status, 3, mode);
+      assert.equal(incompatible.status, 2, mode);
       assert.equal(incompatible.document.status, 'incompatible');
     }
 
     const invalidEndpointRoot = makeRoot(parent, 'invalid-endpoint-root', `${ENDPOINT}/path`);
     assert.equal(getOrCreatePublicInstanceIdentity(join(invalidEndpointRoot, 'data'), () => IDENTITY), IDENTITY);
     const invalidEndpoint = invoke(invalidEndpointRoot, 'ready', bin, parent);
-    assert.equal(invalidEndpoint.status, 4);
+    assert.equal(invalidEndpoint.status, 1);
     assert.deepEqual(invalidEndpoint.document.reasonCodes, ['INVALID_ENDPOINT']);
 
     const missingRoot = invoke(join(parent, 'missing-private-root'), 'ready', bin, parent);
-    assert.equal(missingRoot.status, 4, JSON.stringify(missingRoot.document));
+    assert.equal(missingRoot.status, 1, JSON.stringify(missingRoot.document));
     assert.deepEqual(missingRoot.document.reasonCodes, ['INVALID_ROOT']);
 
     const timeout = invoke(readyRoot, 'timeout', bin, parent);
-    assert.equal(timeout.status, 5);
+    assert.equal(timeout.status, 0);
     assert.equal(timeout.document.status, 'timeout');
 
     const replacedRoot = makeRoot(parent, 'replaced-private-root');
     assert.equal(getOrCreatePublicInstanceIdentity(join(replacedRoot, 'data'), () => IDENTITY), IDENTITY);
     const replaced = invoke(replacedRoot, 'ready', bin, parent, { replaceRoot: true });
-    assert.equal(replaced.status, 4);
+    assert.equal(replaced.status, 1);
     assert.deepEqual(replaced.document.reasonCodes, ['INVALID_ROOT']);
 
     const copiedPackage = join(parent, 'copied-built-cli');
@@ -334,17 +354,17 @@ test('the built CLI rejects malformed roots under Unix and fail-closed Windows s
     const alias = join(parent, 'root-alias');
     symlinkSync(root, alias, 'dir');
     const symlink = invoke(alias, 'ready', bin, parent);
-    assert.equal(symlink.status, 4);
+    assert.equal(symlink.status, 1);
     assert.deepEqual(symlink.document.reasonCodes, ['INVALID_ROOT']);
 
     chmodSync(join(root, 'data'), 0o777);
     const unsafe = invoke(root, 'ready', bin, parent);
-    assert.equal(unsafe.status, 4);
+    assert.equal(unsafe.status, 1);
     assert.deepEqual(unsafe.document.reasonCodes, ['INVALID_ROOT']);
 
     chmodSync(join(root, 'data'), 0o700);
     const windows = invoke(root, 'ready', bin, parent, { windowsSemantics: true });
-    assert.equal(windows.status, 4);
+    assert.equal(windows.status, 1);
     assert.deepEqual(windows.document.reasonCodes, ['INVALID_ROOT']);
   } finally {
     rmSync(parent, { recursive: true, force: true });

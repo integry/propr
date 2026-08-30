@@ -1488,7 +1488,7 @@ export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache } = {}
 
 /** Async mirror of getStackStatus. */
 export async function getStackStatusAsync(cfg) {
-    const res = await dockerAsync(STACK_STATUS_PS_ARGS);
+    const res = await dockerAsync(stackStatusPsArgs(cfg));
     return parseStackStatus(cfg, res.stdout);
 }
 
@@ -1579,8 +1579,24 @@ export function parseStackStatus(cfg, stdout) {
     return { stack: cfg.stack, network: cfg.network, running: anyRunning, services };
 }
 
-const STACK_STATUS_PS_ARGS = ['ps', '-a', '--format', '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}'];
 const STACK_STATUS_MAX_BYTES = 64 * 1024;
+
+function stackStatusPsArgs(cfg) {
+    // `cfg.stack` has already passed the Docker-name validation before Connect
+    // reaches this boundary. Keep the label expression in one argv element so
+    // neither a shell nor Docker's fuzzy name matching can broaden discovery.
+    if (typeof cfg?.stack !== 'string' || cfg.stack.length > 128 || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(cfg.stack)) {
+        throw new Error('Docker stack status scope is invalid');
+    }
+    return [
+        'ps',
+        '-a',
+        '--filter',
+        `label=propr.stack=${cfg.stack}`,
+        '--format',
+        '{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}',
+    ];
+}
 
 /**
  * Run and strictly validate one bounded Docker status inspection. The command
@@ -1589,7 +1605,13 @@ const STACK_STATUS_MAX_BYTES = 64 * 1024;
  * truncated/malformed output.
  */
 export function inspectStackStatus(cfg, { timeout, env } = {}) {
-    const result = docker(STACK_STATUS_PS_ARGS, {
+    let args;
+    try {
+        args = stackStatusPsArgs(cfg);
+    } catch (error) {
+        return { result: { status: null, stdout: '', stderr: '', error } };
+    }
+    const result = docker(args, {
         capture: true,
         timeout,
         env,
@@ -1610,17 +1632,18 @@ export function inspectStackStatus(cfg, { timeout, env } = {}) {
         if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) || !validStates.has(state) || status.length === 0) {
             return { result };
         }
-        if (expectedNames.has(name)) {
-            if (seenExpectedNames.has(name)) return { result };
-            seenExpectedNames.add(name);
-        }
+        // The daemon-side label filter is a scope reduction, not an authority
+        // assertion. Every row returned for the target label must still be one
+        // of this stack's canonical service containers, exactly once.
+        if (!expectedNames.has(name) || seenExpectedNames.has(name)) return { result };
+        seenExpectedNames.add(name);
     }
     return { result, status: parseStackStatus(cfg, result.stdout) };
 }
 
 /** Per-service state for the whole stack, discovered by canonical container name. */
 export function getStackStatus(cfg, { timeout } = {}) {
-    const res = docker(STACK_STATUS_PS_ARGS, { capture: true, timeout });
+    const res = docker(stackStatusPsArgs(cfg), { capture: true, timeout });
     return parseStackStatus(cfg, res.stdout);
 }
 

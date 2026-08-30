@@ -19,10 +19,10 @@ import {
 export const CONNECT_STATUS_EXIT = {
   ready: 0,
   internalFailure: 1,
-  notReady: 2,
-  incompatible: 3,
-  invalidConfig: 4,
-  timeout: 5,
+  notReady: 0,
+  incompatible: 2,
+  invalidConfig: 1,
+  timeout: 0,
 } as const;
 
 export type ConnectStatusKind = keyof typeof CONNECT_STATUS_EXIT;

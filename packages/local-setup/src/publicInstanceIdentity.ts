@@ -52,6 +52,8 @@ export interface PinnedPublicIdentityDirectory {
   readonly ownerUid: number;
   open(name: string, flags: number, mode?: number): number;
   identify(name: string): { dev: number; ino: number; kind: "file" | "directory" | "symbolic-link" | "other" };
+  /** Validate native owner/ACL/no-reparse authority for this exact open file. */
+  validateEntry(name: string, fd: number, newlyCreated?: boolean): void;
   publishNoReplace(oldName: string, newName: string): void;
   unlink(name: string): void;
 }
@@ -109,6 +111,7 @@ function readIdentity(
     fd = directory.open(name, constants.O_RDONLY | constants.O_NOFOLLOW);
     const before = fstatSync(fd);
     validateFileStat(before, directory.ownerUid, allowedLinks);
+    directory.validateEntry(name, fd);
     options.onBoundary?.("identity-read-statted");
     const bytes = Buffer.allocUnsafe(PUBLIC_IDENTITY_MAX_BYTES + 1);
     let length = 0;
@@ -119,6 +122,7 @@ function readIdentity(
     }
     const after = fstatSync(fd);
     validateFileStat(after, directory.ownerUid, allowedLinks);
+    directory.validateEntry(name, fd);
     const namedAfter = directory.identify(name);
     if (
       !sameIdentity(before, after)
@@ -185,6 +189,8 @@ function recoverPublishedLinkRemnant(
     const recoveryStat = fstatSync(recoveryFd);
     validateFileStat(finalStat, directory.ownerUid, 2);
     validateFileStat(recoveryStat, directory.ownerUid, 2);
+    directory.validateEntry(PUBLIC_INSTANCE_IDENTITY_FILENAME, finalFd);
+    directory.validateEntry(READY_NAME, recoveryFd);
     if (!sameIdentity(finalStat, recoveryStat)) {
       throw new Error("public identity hardlink state is ambiguous");
     }
@@ -241,6 +247,7 @@ function publishRecovery(
       const stat = fstatSync(recoveryFd);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw error;
       if (!publicIdentityFilePermissionsAllowed(stat, directory.ownerUid)) throw error;
+      directory.validateEntry(READY_NAME, recoveryFd);
     } finally {
       if (recoveryFd !== undefined) closeSync(recoveryFd);
     }
@@ -272,14 +279,28 @@ export function getOrCreatePublicInstanceIdentityPinned(
   options: PublicIdentityOptions = {},
 ): string {
   for (let attempt = 0; attempt < 8; attempt += 1) {
+    let recoveryEntryBusy = false;
+    try {
+      // READY is public state in the same authority boundary as the final
+      // identity. Validate it even when a healthy final file already exists;
+      // otherwise a hostile stale entry could remain outside the policy.
+      readIdentityIfPresent(directory, READY_NAME, options);
+    } catch (error) {
+      if (!(error instanceof IdentityBusyError)) throw error;
+      recoveryEntryBusy = true;
+    }
     try {
       const existing = readIdentityIfPresent(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options);
-      if (existing) return existing;
+      if (existing) {
+        if (recoveryEntryBusy) throw new Error("public identity recovery state is ambiguous");
+        return existing;
+      }
     } catch (error) {
       if (!(error instanceof IdentityBusyError)) throw error;
       const repaired = recoverPublishedLinkRemnant(directory, options);
       if (repaired) return repaired;
     }
+    if (recoveryEntryBusy) throw new Error("public identity recovery state is ambiguous");
 
     const recovered = publishRecovery(directory, options.onBoundary);
     if (recovered) return recovered;
@@ -312,6 +333,7 @@ export function getOrCreatePublicInstanceIdentityPinned(
         fchmodSync(temporaryFd, PUBLIC_IDENTITY_FILE_MODE);
         fsyncSync(temporaryFd);
       }
+      directory.validateEntry(temporaryName, temporaryFd, true);
       options.onBoundary?.("temporary-synced");
       closeSync(temporaryFd);
       temporaryFd = undefined;
@@ -428,6 +450,7 @@ function openPinnedDataDirectory(dataDir: string, role: PublicIdentityRole): {
                 : "other",
         };
       },
+      validateEntry: () => undefined,
       publishNoReplace: (oldName, newName) => {
         linkSync(join(anchor, oldName), join(anchor, newName));
         unlinkSync(join(anchor, oldName));

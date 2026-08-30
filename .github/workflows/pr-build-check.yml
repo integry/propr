@@ -146,6 +146,35 @@ jobs:
           test ! -e "$skill_fixture/home/.gemini/antigravity-cli/skills/propr"
           test ! -e "$skill_fixture/xdg/opencode/skills/propr"
 
+  connect-authority-native:
+    name: Connect Authority (${{ matrix.os }}, Node 22)
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run real native Connect authority tests
+        run: |
+          npm run build -w @propr/shared
+          npm run build -w @propr/local-setup
+          npm run typecheck -w @propr/cli
+          npx tsx --test test/nativeConnectAuthority.test.ts
+
   validate:
     name: Validate Changes
     runs-on: ubuntu-latest

@@ -23,6 +23,7 @@ import {
   validateExistingPrivateFile,
   writePrivateFileAtomic,
 } from "../utils/privateFilesystem.js";
+import { canonicalRootKey } from "./rootKey.js";
 
 /**
  * Default configuration directory name.
@@ -220,7 +221,7 @@ export class ConfigManager {
     ) {
       for (const [root, enabled] of Object.entries(data.tunnelEnabledByRoot as Record<string, unknown>)) {
         if (path.isAbsolute(root) && typeof enabled === "boolean") {
-          tunnelEnabledByRoot[path.resolve(root)] = enabled;
+          tunnelEnabledByRoot[canonicalRootKey(root)] = enabled;
         }
       }
     }
@@ -231,7 +232,7 @@ export class ConfigManager {
     // If no stackRoot was recorded, there is no safe root to associate with the
     // flag, so leave it unset and fall back to that stack's own .env default.
     if (typeof data.tunnelEnabled === "boolean" && typeof data.stackRoot === "string") {
-      const legacyRoot = path.resolve(data.stackRoot);
+      const legacyRoot = canonicalRootKey(path.resolve(data.stackRoot));
       if (!(legacyRoot in tunnelEnabledByRoot)) {
         tunnelEnabledByRoot[legacyRoot] = data.tunnelEnabled;
       }
@@ -529,7 +530,7 @@ export class ConfigManager {
    * it to false.
    */
   getTunnelEnabled(root: string): boolean | undefined {
-    return this.config.tunnelEnabledByRoot?.[path.resolve(root)];
+    return this.config.tunnelEnabledByRoot?.[canonicalRootKey(path.resolve(root))];
   }
 
   /**
@@ -538,7 +539,7 @@ export class ConfigManager {
    * applies again (used to roll back a failed toggle).
    */
   async setTunnelEnabled(root: string, enabled: boolean | undefined): Promise<void> {
-    const normalizedRoot = path.resolve(root);
+    const normalizedRoot = canonicalRootKey(path.resolve(root));
     const states = { ...(this.config.tunnelEnabledByRoot ?? {}) };
     if (enabled === undefined) {
       delete states[normalizedRoot];
