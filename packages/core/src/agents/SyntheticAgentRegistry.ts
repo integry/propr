@@ -32,6 +32,10 @@ export class SyntheticAgentRegistry {
         logger.error({ syntheticAgentAlias: config.alias }, 'Synthetic agent alias conflicts with a registered direct agent');
         continue;
       }
+      if (this.agents.has(config.id)) {
+        logger.error({ syntheticAgentId: config.id, syntheticAgentAlias: config.alias }, 'Synthetic agent ID conflicts with a registered direct agent');
+        continue;
+      }
       const agent = new SyntheticAgent(config, this.routingService);
       this.agents.set(config.id, agent);
       this.agentsByAlias.set(config.alias, agent);

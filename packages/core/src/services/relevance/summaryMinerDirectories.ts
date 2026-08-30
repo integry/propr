@@ -16,6 +16,7 @@ import {
 } from './summaryMinerDirectoryHelpers.js';
 import { processDirectoryBatch } from './summaryMinerDirectoryBatch.js';
 import { getSummarizationBatchLimitOverride } from './summaryMinerBatchLimits.js';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
 const BATCH_TOKEN_RATIO = 0.5;
@@ -68,6 +69,7 @@ interface ProcessDepthOptions {
   getCurrentConfig: () => Promise<SummarizationAgentConfig>;
   initialConfig: SummarizationAgentConfig;
   log: Logger;
+  takeRoutingSession: (agent: Agent, model: string) => Promise<SyntheticRoutingSession | undefined>;
 }
 
 /** Aggregates file summaries into directory summaries (bottom-up), batching multiple directories per API call. */
@@ -95,7 +97,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   await startDirectoryPhase(fullName, branch, totalDirs);
 
   const dirSummaryCache = new Map<string, string>();
-  const { modelId, maxBatchTokens, maxDirsPerBatch } = await computeDirectoryBatchBudget(agent, modelOverride, log);
+  const { modelId, maxBatchTokens, maxDirsPerBatch, routingSession: firstRoutingSession } = await computeDirectoryBatchBudget(agent, modelOverride, log);
 
   const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   const initialConfig: SummarizationAgentConfig = {
@@ -109,6 +111,18 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
     fallbackAgentAliasSetting
   };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
+  let availableRoutingSession = firstRoutingSession;
+  const takeRoutingSession = async (currentAgent: Agent, currentModel: string): Promise<SyntheticRoutingSession | undefined> => {
+    if (!(currentAgent instanceof SyntheticAgent)) return undefined;
+    const route = availableRoutingSession
+      && availableRoutingSession.requestedAgentAlias === currentAgent.config.alias
+      && availableRoutingSession.requestedModel === currentModel
+      ? availableRoutingSession
+      : AgentRegistry.getInstance().beginRoutingSession({ requestedAgentAlias: currentAgent.config.alias, requestedModel: currentModel });
+    availableRoutingSession = route.fork();
+    await route.select();
+    return route;
+  };
 
   for (const depth of depths) {
     const depthResult = await processDirectoryDepth({
@@ -121,7 +135,8 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
       maxDirsPerBatch,
       getCurrentConfig,
       initialConfig,
-      log
+      log,
+      takeRoutingSession,
     });
     mergeDirectoryAggregationResult(state, depthResult);
     if (state.stopProcessing) break;
@@ -170,16 +185,27 @@ async function computeDirectoryBatchBudget(
   agent: Agent,
   modelOverride: string | undefined,
   log: Logger
-): Promise<{ modelId: string; maxBatchTokens: number; maxDirsPerBatch: number }> {
+): Promise<{ modelId: string; maxBatchTokens: number; maxDirsPerBatch: number; routingSession?: SyntheticRoutingSession }> {
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   let budgetModelId = modelId;
+  let routingSession: SyntheticRoutingSession | undefined;
   if (agent instanceof SyntheticAgent) {
-    const route = AgentRegistry.getInstance().beginRoutingSession({
+    routingSession = AgentRegistry.getInstance().beginRoutingSession({
       requestedAgentAlias: agent.config.alias,
       requestedModel: modelId,
     });
-    const selection = await route.select();
+    const selection = await routingSession.select();
     budgetModelId = `${selection.physicalAgentAlias}:${selection.physicalModel}`;
+    const model = agent.syntheticConfig.models.find(item => item.id === modelId);
+    const enabledMembers = model?.members.filter(member => member.enabled) ?? [];
+    if (enabledMembers.length > 0) {
+      const conservativeMember = enabledMembers.reduce((smallest, member) =>
+        getModelHardLimit(`${member.directAgentAlias}:${member.model}`)
+          < getModelHardLimit(`${smallest.directAgentAlias}:${smallest.model}`)
+          ? member
+          : smallest);
+      budgetModelId = `${conservativeMember.directAgentAlias}:${conservativeMember.model}`;
+    }
   }
   const maxTokens = getModelHardLimit(budgetModelId);
   const budgetModelName = budgetModelId.includes(':') ? budgetModelId.slice(budgetModelId.indexOf(':') + 1) : budgetModelId;
@@ -199,7 +225,7 @@ async function computeDirectoryBatchBudget(
     model: budgetModelId,
     modelBatchLimitOverride: modelBatchLimitOverride ? { maxBatchTokens: modelBatchLimitOverride.maxBatchTokens, maxItemsPerBatch: modelBatchLimitOverride.maxItemsPerBatch } : null
   }, 'Calculated directory batch budget');
-  return { modelId, maxBatchTokens, maxDirsPerBatch };
+  return { modelId, maxBatchTokens, maxDirsPerBatch, routingSession };
 }
 
 function mergeDirectoryAggregationResult(state: DirectoryAggregationState, result: DirectoryAggregationState): void {
@@ -218,17 +244,20 @@ async function processDirectoryAggregationBatch(batch: DirectoryInfo[], options:
   const { getCurrentConfig, initialConfig, log, fullName, branch, dirSummaryCache } = options;
   const currentConfig = await getCurrentConfig();
   logDirectoryBatchAgentIfChanged(log, initialConfig, currentConfig);
+  const currentModel = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+  const routingSession = await options.takeRoutingSession(currentConfig.agent, currentModel);
   const results = await processDirectoryBatch({
     directories: batch, agent: currentConfig.agent, log,
     modelOverride: currentConfig.modelOverride,
-    modelUsed: currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel,
+    modelUsed: currentModel,
     primaryAgentAliasSetting: currentConfig.agentAliasSetting || currentConfig.agent.config.alias,
     fallbackAgent: currentConfig.fallbackAgent,
     fallbackModelOverride: currentConfig.fallbackModelOverride,
     fallbackModelUsed: currentConfig.fallbackEffectiveModel || currentConfig.fallbackModelOverride || currentConfig.fallbackAgent?.config.defaultModel,
     fallbackAgentAliasSetting: currentConfig.fallbackAgentAliasSetting,
     fullName,
-    branch
+    branch,
+    routingSession,
   });
   const failedBatches = results.some(r => r.summary) ? 0 : 1;
   let dirsProcessed = 0;

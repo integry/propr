@@ -12,6 +12,7 @@ import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
 import type { Knex } from 'knex';
 import { normalizeRepoConfig } from './configRepoValidation.js';
+import { validateExecutableSyntheticDefault } from '@propr/shared';
 
 interface ConfigRoutesDeps {
   redisClient: RedisClientType;
@@ -328,6 +329,18 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
+      const [currentSettings, syntheticAgents, directAgents] = await Promise.all([
+        configStore.loadSettings(),
+        configStore.loadSyntheticAgents(),
+        configStore.loadAgents(),
+      ]);
+      const effectiveDefault = typeof settingsValidation.value.default_agent_alias === 'string'
+        ? settingsValidation.value.default_agent_alias
+        : typeof (currentSettings as Record<string, unknown>).default_agent_alias === 'string'
+          ? ((currentSettings as Record<string, unknown>).default_agent_alias as string).trim()
+          : '';
+      const defaultError = validateExecutableSyntheticDefault(effectiveDefault, syntheticAgents, directAgents);
+      if (defaultError) throw new ConfigRouteError(409, { error: defaultError });
       return saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock });
     });
     if (result.status === 200 && result.body.noop !== true) {

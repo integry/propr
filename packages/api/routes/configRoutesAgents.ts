@@ -7,6 +7,7 @@ import type { Knex } from 'knex';
 import {
   findSyntheticReferencesToDirectAgent,
   validateSyntheticAgentReferences,
+  validateExecutableSyntheticDefault,
   type SyntheticAgentConfig,
 } from '@propr/shared';
 import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
@@ -245,6 +246,14 @@ export async function applyAgentsUpdate({
   if (integrityError) return integrityError;
   const settings = await configStore.loadSettings();
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
+  const syntheticDefaultError = validateExecutableSyntheticDefault(
+    currentDefault?.trim() || '',
+    syntheticAgents,
+    processedAgents,
+  );
+  if (syntheticDefaultError) {
+    return { status: 409, body: { error: syntheticDefaultError } };
+  }
   const newDefault = resolveUpdatedDefaultAgent(processedAgents, syntheticAgents, currentDefault);
   const defaultChanged = newDefault !== currentDefault;
 

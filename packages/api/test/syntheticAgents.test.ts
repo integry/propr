@@ -193,6 +193,24 @@ describe('synthetic agent persistence and API', () => {
       assert.equal(saved, expectedStatus === 200, name);
       assert.equal(published, expectedStatus === 200, name);
     }
+
+    const routes = createSyntheticAgentConfigRoutes({
+      redisClient: redisLockClient(),
+      configStore: {
+        loadAgents: async () => [directAgent({ enabled: false })],
+        loadSettings: async () => ({ default_agent_alias: 'balanced-pool' }),
+        loadSyntheticAgents: async () => [syntheticAgent()],
+        saveSyntheticAgents: async value => parseSyntheticAgentConfigs(value),
+      },
+      publishConfigUpdate: async () => undefined,
+      logActivityHelper: async () => undefined,
+    });
+    const unusableBackingAgent = responseRecorder();
+    await routes.postSyntheticAgents({
+      body: { synthetic_agents: [syntheticAgent()] },
+    } as Request, unusableBackingAgent.response);
+    assert.equal(unusableBackingAgent.record.status, 409);
+    assert.match((unusableBackingAgent.record.body as { error: string }).error, /enabled direct agent/);
   });
 
   test('allows settings updates that select a synthetic default alias', async () => {
@@ -208,6 +226,8 @@ describe('synthetic agent persistence and API', () => {
           lTrim: async () => 1,
         } as never,
         configStore: {
+          loadAgents: async () => [directAgent()],
+          loadSettings: async () => ({}),
           loadSyntheticAgents: async () => [syntheticAgent()],
         },
         database,
@@ -222,6 +242,32 @@ describe('synthetic agent persistence and API', () => {
       const settingsRow = await database('system_configs').where({ key: 'settings' }).first();
       assert.deepEqual(JSON.parse(settingsRow.value), { default_agent_alias: 'balanced-pool' });
       assert.equal(published, true);
+    } finally {
+      await database.destroy();
+    }
+  });
+
+  test('rejects selecting a synthetic default without a usable physical member', async () => {
+    const database = await createConfigDatabase();
+    try {
+      const routes = createConfigRoutes({
+        redisClient: redisLockClient() as never,
+        configStore: {
+          loadAgents: async () => [directAgent({ enabled: false })],
+          loadSettings: async () => ({}),
+          loadSyntheticAgents: async () => [syntheticAgent()],
+        },
+        database,
+      });
+      const response = responseRecorder();
+
+      await routes.postSettings({
+        body: { settings: { default_agent_alias: 'balanced-pool' } },
+      } as Request, response.response);
+
+      assert.equal(response.record.status, 409);
+      assert.match((response.record.body as { error: string }).error, /no enabled member backed by an enabled direct agent/);
+      assert.equal(await database('system_configs').where({ key: 'settings' }).first(), undefined);
     } finally {
       await database.destroy();
     }
@@ -265,13 +311,13 @@ describe('synthetic direct-agent integrity and catalog', () => {
     }
   });
 
-  test('blocks deletion of a referenced direct alias but permits disabling it', async () => {
+  test('blocks deletion of a referenced direct alias and disabling the last member of a synthetic default', async () => {
     const database = await createConfigDatabase();
     const previous = directAgent();
     const configStore = {
       loadAgents: async () => [previous],
       loadSyntheticAgents: async () => [syntheticAgent()],
-      loadSettings: async () => ({}),
+      loadSettings: async () => ({ default_agent_alias: 'balanced-pool' }),
       handleSettingsSaveSideEffects: async () => undefined,
     };
     const common = {
@@ -300,7 +346,8 @@ describe('synthetic direct-agent integrity and catalog', () => {
         processedAgents: [disabled],
         ...common,
       });
-      assert.equal(disable.status, 200);
+      assert.equal(disable.status, 409);
+      assert.match((disable.body as { error: string }).error, /no enabled member backed by an enabled direct agent/);
     } finally {
       await database.destroy();
     }

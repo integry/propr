@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import { Agent } from '../../agents/types.js';
+import { Agent, type AnalyzeOptions } from '../../agents/types.js';
 import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
@@ -13,6 +13,7 @@ import {
   recordPrimarySummarizationResponseFailure,
   recordSummarizationCooldown
 } from '../../config/configManager.js';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 import {
   type DirectoryInfo, type DirectoryResult,
   buildBatchDirectoryPrompt, parseBatchDirectoryResponse
@@ -66,6 +67,7 @@ interface ProcessDirectoryBatchOptions {
   fallbackAgentAliasSetting?: string;
   fullName: string;
   branch: string;
+  routingSession?: SyntheticRoutingSession;
 }
 
 class SummarizationCooldownRecordedError extends Error {
@@ -142,7 +144,8 @@ async function analyzeDirectoryBatchWithFallback(options: ProcessDirectoryBatchO
   const { prompt, directories, agent, modelOverride, modelUsed, fullName, branch, primaryAgentAliasSetting, log, state } = options;
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
-      prompt, directories, agent, model: modelUsed ?? modelOverride, context: `directory_aggregation:${fullName}`, fullName
+      prompt, directories, agent, model: modelUsed ?? modelOverride, context: `directory_aggregation:${fullName}`, fullName,
+      routingSession: options.routingSession,
     });
     // Best-effort bookkeeping: a transient runtime-state error here must not
     // discard a directory batch the LLM aggregated successfully.
@@ -317,18 +320,22 @@ async function analyzeDirectoryBatchWithAgent(options: {
   context: string;
   fullName: string;
   retryOptions?: RetryOptions;
+  routingSession?: SyntheticRoutingSession;
 }): Promise<DirectoryResult[]> {
-  const { prompt, directories, agent, model, context, fullName, retryOptions = SUMMARIZATION_RETRY } = options;
+  const { prompt, directories, agent, model, context, fullName, retryOptions = SUMMARIZATION_RETRY, routingSession } = options;
   return withRetry(
     async () => {
-      const analysisResult = await agent.analyze(prompt, {
+      const analyzeOptions: AnalyzeOptions = {
         model,
         responseFormat: 'json',
         executionType: 'summarization',
         repository: fullName,
         metadata: { phase: 'directory_aggregation', directoryCount: directories.length },
         suppressLlmLog: !(agent instanceof SyntheticAgent)
-      });
+      };
+      const analysisResult = routingSession
+        ? await routingSession.analyze(prompt, analyzeOptions)
+        : await agent.analyze(prompt, analyzeOptions);
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Directory summarization agent analysis failed');
       }

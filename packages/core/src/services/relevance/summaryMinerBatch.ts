@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import logger from '../../utils/logger.js';
-import { Agent } from '../../agents/types.js';
+import { Agent, type AnalyzeOptions } from '../../agents/types.js';
 import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
 import { resolveExpectedSummaryPath } from './summaryMinerDirectoryHelpers.js';
@@ -14,6 +14,7 @@ import {
   recordPrimarySummarizationResponseFailure,
   recordSummarizationCooldown
 } from '../../config/configManager.js';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
 const SUMMARIZATION_RETRY_BASE_DELAY_MS = process.env.NODE_ENV === 'test' ? 0 : 2000;
@@ -55,6 +56,7 @@ interface ProcessSingleBatchOptions {
   fallbackModelUsed?: string;
   fallbackAgentAliasSetting?: string;
   branch: string;
+  routingSession?: SyntheticRoutingSession;
 }
 
 export interface ProcessSingleBatchResult {
@@ -163,7 +165,8 @@ async function analyzeBatchWithFallback(options: ProcessSingleBatchOptions & { p
 
   try {
     const results = await analyzeBatchWithAgent({
-      prompt, batch, agent, model: modelUsed, context: `batch_summarization:${fullName}`, fullName
+      prompt, batch, agent, model: modelUsed, context: `batch_summarization:${fullName}`, fullName,
+      routingSession: options.routingSession,
     });
     // Clearing quota-failure bookkeeping is best-effort: a transient runtime-state
     // read/write error here must not discard a batch the LLM summarized successfully.
@@ -335,18 +338,22 @@ async function analyzeBatchWithAgent(options: {
   context: string;
   fullName: string;
   retryOptions?: RetryOptions;
+  routingSession?: SyntheticRoutingSession;
 }): Promise<SummaryResult[]> {
-  const { prompt, batch, agent, model, context, fullName, retryOptions = SUMMARIZATION_RETRY } = options;
+  const { prompt, batch, agent, model, context, fullName, retryOptions = SUMMARIZATION_RETRY, routingSession } = options;
   return withRetry(
     async () => {
-      const analysisResult = await agent.analyze(prompt, {
+      const analyzeOptions: AnalyzeOptions = {
         model,
         responseFormat: 'json',
         executionType: 'summarization',
         repository: fullName,
         metadata: { phase: 'batch_summarization', fileCount: batch.length },
         suppressLlmLog: !(agent instanceof SyntheticAgent)
-      });
+      };
+      const analysisResult = routingSession
+        ? await routingSession.analyze(prompt, analyzeOptions)
+        : await agent.analyze(prompt, analyzeOptions);
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Summarization agent analysis failed');
       }

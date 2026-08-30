@@ -13,6 +13,7 @@ import { isIndexingCancelled, IndexingCancelledError, updateIndexingProgress, pu
 import { isProcessableFile } from './summaryFileFilter.js';
 import { processSingleBatch, type BatchFile } from './summaryMinerBatch.js';
 import { getSummarizationBatchLimitOverride } from './summaryMinerBatchLimits.js';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 // Re-export metrics types and functions for backwards compatibility
 export { getSummarizationMetricsSummary, getSummarizationCallHistory };
@@ -94,13 +95,24 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   let budgetModelId = modelId;
+  let firstRoutingSession: SyntheticRoutingSession | undefined;
   if (agent instanceof SyntheticAgent) {
-    const route = AgentRegistry.getInstance().beginRoutingSession({
+    firstRoutingSession = AgentRegistry.getInstance().beginRoutingSession({
       requestedAgentAlias: agent.config.alias,
       requestedModel: modelId,
     });
-    const selection = await route.select();
+    const selection = await firstRoutingSession.select();
     budgetModelId = `${selection.physicalAgentAlias}:${selection.physicalModel}`;
+    const model = agent.syntheticConfig.models.find(item => item.id === modelId);
+    const enabledMembers = model?.members.filter(member => member.enabled) ?? [];
+    if (enabledMembers.length > 0) {
+      const conservativeMember = enabledMembers.reduce((smallest, member) =>
+        getModelHardLimit(`${member.directAgentAlias}:${member.model}`)
+          < getModelHardLimit(`${smallest.directAgentAlias}:${smallest.model}`)
+          ? member
+          : smallest);
+      budgetModelId = `${conservativeMember.directAgentAlias}:${conservativeMember.model}`;
+    }
   }
   const maxTokens = getModelHardLimit(budgetModelId);
   const budgetModelName = budgetModelId.includes(':') ? budgetModelId.slice(budgetModelId.indexOf(':') + 1) : budgetModelId;
@@ -145,6 +157,18 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     fallbackAgentAliasSetting
   };
   const getCurrentConfig = resolveSummarizationConfig ?? (async () => initialConfig);
+  let availableRoutingSession = firstRoutingSession;
+  const takeRoutingSession = async (currentAgent: Agent, currentModel: string): Promise<SyntheticRoutingSession | undefined> => {
+    if (!(currentAgent instanceof SyntheticAgent)) return undefined;
+    const route = availableRoutingSession
+      && availableRoutingSession.requestedAgentAlias === currentAgent.config.alias
+      && availableRoutingSession.requestedModel === currentModel
+      ? availableRoutingSession
+      : AgentRegistry.getInstance().beginRoutingSession({ requestedAgentAlias: currentAgent.config.alias, requestedModel: currentModel });
+    availableRoutingSession = route.fork();
+    await route.select();
+    return route;
+  };
 
   for (const file of files) {
     // Check for cancellation before processing each file
@@ -179,6 +203,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       const currentConfig = await getCurrentConfig();
       logBatchAgentIfChanged(log, initialConfig, currentConfig);
       const currentModelId = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+      const routingSession = await takeRoutingSession(currentConfig.agent, currentModelId);
       const batchResult = await processSingleBatch({
         fullName,
         batch: currentBatch,
@@ -191,7 +216,8 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
         fallbackModelOverride: currentConfig.fallbackModelOverride,
         fallbackModelUsed: currentConfig.fallbackEffectiveModel || currentConfig.fallbackModelOverride || currentConfig.fallbackAgent?.config.defaultModel,
         fallbackAgentAliasSetting: currentConfig.fallbackAgentAliasSetting,
-        branch
+        branch,
+        routingSession,
       });
       const batchFileCount = currentBatch.length;
       const batchInputTokens = currentTokens;
@@ -260,6 +286,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     const currentConfig = await getCurrentConfig();
     logBatchAgentIfChanged(log, initialConfig, currentConfig);
     const currentModelId = currentConfig.effectiveModel || currentConfig.modelOverride || currentConfig.agent.config.defaultModel || 'default';
+    const routingSession = await takeRoutingSession(currentConfig.agent, currentModelId);
     const batchResult = await processSingleBatch({
       fullName,
       batch: currentBatch,
@@ -272,7 +299,8 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       fallbackModelOverride: currentConfig.fallbackModelOverride,
       fallbackModelUsed: currentConfig.fallbackEffectiveModel || currentConfig.fallbackModelOverride || currentConfig.fallbackAgent?.config.defaultModel,
       fallbackAgentAliasSetting: currentConfig.fallbackAgentAliasSetting,
-      branch
+      branch,
+      routingSession,
     });
     const batchFileCount = currentBatch.length;
     const batchInputTokens = currentTokens;

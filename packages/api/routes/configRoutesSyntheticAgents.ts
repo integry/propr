@@ -4,6 +4,7 @@ import * as configManager from '@propr/core';
 import {
   syntheticAgentConfigsSchema,
   validateSyntheticAgentReferences,
+  validateExecutableSyntheticDefault,
   type SyntheticAgentConfig,
 } from '@propr/shared';
 import { ConfigRouteError, SETTINGS_CONFIG_LOCK_KEY, withConfigLock } from './configHelpers.js';
@@ -84,11 +85,15 @@ export function createSyntheticAgentConfigRoutes({
         ? settings.default_agent_alias.trim()
         : '';
       const wasSyntheticDefault = previousSyntheticAgents.some(agent => agent.alias === configuredDefault);
-      const proposedDefault = parsed.syntheticAgents.find(agent => agent.alias === configuredDefault);
-      const proposedDefaultModel = proposedDefault?.models.find(model => model.id === proposedDefault.defaultModel);
-      if (wasSyntheticDefault && (!proposedDefault?.enabled || !proposedDefaultModel?.enabled || !proposedDefaultModel.members.some(member => member.enabled))) {
+      const defaultError = validateExecutableSyntheticDefault(
+        configuredDefault,
+        parsed.syntheticAgents,
+        directAgents,
+        wasSyntheticDefault,
+      );
+      if (defaultError) {
         throw new ConfigRouteError(409, {
-          error: `Cannot remove or disable configured synthetic default '${configuredDefault}'. Select another default agent first.`,
+          error: defaultError,
         });
       }
 

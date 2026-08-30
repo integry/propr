@@ -5,6 +5,7 @@ import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { MODEL_INFO_MAP } from '../../config/modelDefinitions.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
+import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
 
 // --- Types ---
 
@@ -27,6 +28,7 @@ export interface SemanticScoringOptions {
   repoName?: string;
   /** Branch to filter summaries (e.g., "HEAD", "main", "dev") */
   branch?: string;
+  routingSession?: SyntheticRoutingSession;
 }
 
 export interface SemanticLLMFile {
@@ -90,7 +92,7 @@ export async function scoreSemanticRelevance(
   userPrompt: string,
   options: SemanticScoringOptions
 ): Promise<SemanticFileScore[]> {
-  const { agent, correlationId, repoName, branch, modelId } = options;
+  const { agent, correlationId, repoName, branch, modelId, routingSession } = options;
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
 
   try {
@@ -170,7 +172,7 @@ export async function scoreSemanticRelevance(
 
       try {
         // Pass modelId to use the configured context analysis model
-        const analysisResult = await agent.analyze(prompt, {
+        const analyzeOptions = {
           model: modelId,
           timeoutMs: resolveContextAnalysisTimeoutMs(),
           executionType: 'context-analysis',
@@ -178,7 +180,13 @@ export async function scoreSemanticRelevance(
           repository: repoName,
           metadata: { callType: 'semantic_scoring', chunkIndex: index },
           suppressLlmLog: true
-        });
+        };
+        const callRoute = routingSession
+          ? (index === 0 ? routingSession : routingSession.fork())
+          : undefined;
+        const analysisResult = callRoute
+          ? await callRoute.analyze(prompt, analyzeOptions)
+          : await agent.analyze(prompt, analyzeOptions);
         if (!analysisResult.success) {
           throw new Error(analysisResult.error || `Semantic scoring chunk ${index} failed`);
         }

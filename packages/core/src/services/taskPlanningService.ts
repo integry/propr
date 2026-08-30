@@ -119,7 +119,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Plan> 
 
   await checkoutBaseBranch(worktreePath, config.baseBranch, correlatedLogger);
 
-  const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel });
+  const relevantFilePaths = await findFilesForPlan({ draftId, worktreePath, draft, manualFiles: config.manualFiles, autoFiles: config.autoFiles, correlationId, contextModel, routingSession: contextRoute });
 
   // Calculate estimated duration for context gathering based on file count
   const estimatedContextDuration = Math.min(5000 + (relevantFilePaths.length * 50), 30000);
