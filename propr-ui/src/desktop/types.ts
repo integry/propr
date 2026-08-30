@@ -23,6 +23,8 @@ export interface DesktopProfileAdapter {
 }
 
 export interface DesktopDiscoveryAdapter {
+  /** Whether this host has a real network-wide discovery provider. */
+  supported: boolean;
   discover(): Promise<DesktopProfile[]>;
 }
 
@@ -33,7 +35,7 @@ export interface DesktopAuthenticationAdapter {
    * Opening the system browser alone is not successful authentication.
    */
   authenticate(profile: DesktopProfile): Promise<void>;
-  cancel?(profileId: string): void;
+  cancel?(profileId: string): Promise<void>;
 }
 
 export const DESKTOP_AUTHENTICATION_COMPLETE_EVENT = 'propr:desktop-authentication-complete';

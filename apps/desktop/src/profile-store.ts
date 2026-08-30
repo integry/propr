@@ -412,12 +412,18 @@ export class ProfileStore {
     return this.saveAndDetachCredential(input).then(result => result.profile);
   }
 
-  saveAndDetachCredential(input: DesktopProfileInput): Promise<SavedProfileTransaction> {
+  saveAndDetachCredential(
+    input: DesktopProfileInput,
+    beforeOriginChangeCommit?: (previousOrigin: string, nextOrigin: string) => Promise<void>,
+  ): Promise<SavedProfileTransaction> {
     return this.#mutate(async () => {
       const normalized = normalizedProfileInput(input);
       const state = await this.#readState();
       const existing = state.profiles.find(profile => profile.id === normalized.id);
       const originChanged = existing !== undefined && existing.apiBaseUrl !== normalized.apiBaseUrl;
+      if (originChanged) {
+        await beforeOriginChangeCommit?.(existing.apiBaseUrl, normalized.apiBaseUrl);
+      }
       let detachedCredential: StoredCredential | null = null;
       if (!existing || originChanged) {
         detachedCredential = (await this.#moveCredentialToPending(state, normalized.id))?.credential ?? null;

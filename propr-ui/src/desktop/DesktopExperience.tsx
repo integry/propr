@@ -34,6 +34,14 @@ const mergeProfiles = (current: DesktopProfile[], incoming: DesktopProfile[]): D
 };
 
 const recoverableError = (message: string, error: unknown): string => `${message}${error instanceof Error && error.message ? ` ${error.message}` : ''} Try again.`;
+const settleAuthenticationCancellation = (adapters: DesktopAdapters, profileId: string): void => {
+  // Back/navigation must remain synchronous. Cancellation is best effort and
+  // its rejection is deliberately consumed so shutdown cannot create an
+  // unhandled promise containing host-specific IPC details.
+  void Promise.resolve()
+    .then(() => adapters.authentication.cancel?.(profileId))
+    .catch(() => undefined);
+};
 export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, children }) => {
   const [profiles, setProfiles] = useState<DesktopProfile[]>([]);
   const [state, setState] = useState<ExperienceState>({ phase: 'loading' });
@@ -218,7 +226,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
   };
 
   const choose = () => {
-    if ('profile' in state) adapters.authentication.cancel?.(state.profile.id);
+    if ('profile' in state) settleAuthenticationCancellation(adapters, state.profile.id);
     adapters.connection.deactivate?.();
     const attempt = ++connectionAttempt.current;
     void enqueueProfileMutation(async () => {
@@ -255,7 +263,7 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
     if (state.phase === 'connecting') return <ConnectionPanel profile={state.profile} onBack={choose} onRetry={retry} onAuthenticate={() => undefined} onHelp={() => undefined} />;
     if (state.phase === 'blocked') return <ConnectionPanel profile={state.profile} result={state.result} onBack={choose} onRetry={retry} onAuthenticate={() => void runBlockedAction(state.profile, () => adapters.authentication.authenticate(state.profile), 'ProPR Desktop could not open sign in.', () => connect(state.profile))} onHelp={() => void runBlockedAction(state.profile, () => adapters.externalBrowser.open('https://propr.dev'), 'ProPR Desktop could not open connection help.')} />;
     if (editing) return <main className="desktop-welcome-card"><DesktopBrand /><ProfileEditor initial={editing === 'new' ? undefined : editing} operationError={operationError} onCancel={() => setEditing(null)} onSave={profile => void saveProfile(profile)} /></main>;
-    return <InstanceChooser profiles={profiles} busy={busy} error={operationError} localSetupSupported={adapters.localSetup.supported} onLocalSetup={() => void setupLocal()} onConnectNew={() => openEditor('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />;
+    return <InstanceChooser profiles={profiles} busy={busy} error={operationError} localSetupSupported={adapters.localSetup.supported} networkDiscoverySupported={adapters.discovery.supported} onLocalSetup={() => void setupLocal()} onConnectNew={() => openEditor('new')} onDiscover={() => void discover()} onConnect={profile => void connect(profile)} onEdit={openEditor} onRemove={profile => void removeProfile(profile)} />;
   };
 
   if (state.phase !== 'connected') return <div className={`desktop-entry desktop-platform-${adapters.platform}`}>{content()}</div>;

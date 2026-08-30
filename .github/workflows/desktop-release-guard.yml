@@ -57,6 +57,9 @@ jobs:
       - name: Package Windows x64 desktop app
         run: npm run desktop:package
 
+      - name: Launch packaged Windows desktop transport smoke
+        run: npm run desktop:smoke
+
   verify:
     name: Audit and package desktop app
     runs-on: ubuntu-latest

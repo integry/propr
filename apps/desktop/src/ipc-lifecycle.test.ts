@@ -16,6 +16,56 @@ const deferred = <T>() => {
 };
 
 describe('desktop IPC shutdown gate', () => {
+  it('clears old and new origin storage through the real save IPC before a same-ID URL commit', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const cleared: Array<Parameters<Session['clearStorageData']>[0]> = [];
+    let cleanupObservedBeforeSave = false;
+    const credentials = {
+      saveProfile: async (
+        input: { id: string; label: string; apiBaseUrl: string },
+        beforeCommit: (previousOrigin: string, nextOrigin: string) => Promise<void>,
+      ) => {
+        await beforeCommit('https://old.example.test', input.apiBaseUrl);
+        cleanupObservedBeforeSave = cleared.length === 2;
+        return input;
+      },
+    } as unknown as DesktopCredentialService;
+    registerIpcHandlers({
+      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+      ipcMain: {
+        handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+        removeHandler: (channel: string) => { handlers.delete(channel); },
+      } as unknown as IpcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession: {
+        clearStorageData: async (options: Parameters<Session['clearStorageData']>[0]) => { cleared.push(options); },
+      } as unknown as Session,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+    });
+    const event = { senderFrame: { url: 'propr-renderer://app/index.html' } } as unknown as IpcMainInvokeEvent;
+
+    await Promise.resolve(handlers.get(IPC_CHANNELS.profilesSave)!(event, {
+      id: 'profile-a', label: 'A edited', apiBaseUrl: 'https://new.example.test',
+    }));
+
+    assert.equal(cleanupObservedBeforeSave, true);
+    assert.deepEqual(cleared, [
+      {
+        origin: 'https://old.example.test',
+        storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'],
+      },
+      {
+        origin: 'https://new.example.test',
+        storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'],
+      },
+    ]);
+  });
+
   it('clears both origins when activation edits the active profile URL without changing its ID', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
     const ipcMain = {

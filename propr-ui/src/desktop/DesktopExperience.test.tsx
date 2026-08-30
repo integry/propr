@@ -37,7 +37,7 @@ const adaptersFor = (
     getActiveId: vi.fn(async () => activeId),
     setActiveId: vi.fn(async () => undefined),
   },
-  discovery: { discover: vi.fn(async () => []) },
+  discovery: { supported: true, discover: vi.fn(async () => []) },
   authentication: { authenticate: vi.fn(async () => undefined) },
   externalBrowser: { open: vi.fn(async () => undefined) },
   localSetup: { supported: true, setup: vi.fn(async () => localProfile) },
@@ -58,6 +58,24 @@ describe('DesktopExperience', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('offers network search only when the adapter has a real discovery provider', async () => {
+    const capable = adaptersFor();
+    const { unmount } = render(
+      <DesktopExperience adapters={capable}><div>Capable app</div></DesktopExperience>
+    );
+    const search = await screen.findByRole('button', { name: /Search for instances on this network/i });
+    fireEvent.click(search);
+    await waitFor(() => expect(capable.discovery.discover).toHaveBeenCalledOnce());
+    unmount();
+
+    const incapable = adaptersFor();
+    incapable.discovery.supported = false;
+    render(<DesktopExperience adapters={incapable}><div>Incapable app</div></DesktopExperience>);
+    expect(await screen.findByRole('heading', { name: 'Let’s set up this computer' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Search for instances on this network/i })).not.toBeInTheDocument();
+    expect(incapable.discovery.discover).not.toHaveBeenCalled();
   });
 
   it('runs first-time local setup through adapters before mounting the shared app', async () => {
@@ -245,6 +263,28 @@ describe('DesktopExperience', () => {
     expect(adapters.profiles.setActiveId).toHaveBeenCalledWith(null);
   });
 
+  it('settles a rejected fire-and-forget authentication cancellation during shutdown', async () => {
+    const adapters = adaptersFor([localProfile], null, async () => ({
+      status: 'authentication-required', message: 'Sign in required.',
+    }));
+    adapters.authentication.cancel = vi.fn(async () => { throw new Error('private IPC cancellation failure'); });
+    const unhandled = vi.fn();
+    window.addEventListener('unhandledrejection', unhandled);
+    const { unmount } = render(
+      <DesktopExperience adapters={adapters}><div>Cancelled app</div></DesktopExperience>
+    );
+
+    fireEvent.click((await screen.findByText('This computer')).closest('button')!);
+    expect(await screen.findByText('Sign in required.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Choose another instance' }));
+    unmount();
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(adapters.authentication.cancel).toHaveBeenCalledWith(localProfile.id);
+    expect(unhandled).not.toHaveBeenCalled();
+    window.removeEventListener('unhandledrejection', unhandled);
+  });
+
   it('ignores a delayed access-invalid event from A after B has connected', async () => {
     const probe = vi.fn(async (profile: DesktopProfile): Promise<DesktopConnectionResult> => ({
       status: 'ready',
@@ -284,6 +324,24 @@ describe('DesktopExperience', () => {
       id: 'local',
       name: 'Office ProPR',
       baseUrl: 'https://office.example.com',
+      kind: 'remote',
+    }));
+  });
+
+  it('derives a remote-to-loopback edit kind from the normalized submitted URL', async () => {
+    const adapters = adaptersFor([remoteProfile]);
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByText('Recent instances')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Team server' }));
+    fireEvent.change(screen.getByLabelText('Instance URL'), { target: { value: 'HTTP://LOCALHOST:3000/' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(await screen.findByText('Connected app')).toBeInTheDocument();
+    expect(adapters.profiles.save).toHaveBeenCalledWith(expect.objectContaining({
+      id: remoteProfile.id,
+      baseUrl: 'http://localhost:3000',
+      kind: 'local',
     }));
   });
 

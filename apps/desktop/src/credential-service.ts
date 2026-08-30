@@ -422,7 +422,10 @@ export class DesktopCredentialService {
     return this.#disposePromise;
   }
 
-  async saveProfile(input: DesktopProfileInput) {
+  async saveProfile(
+    input: DesktopProfileInput,
+    beforeOriginChangeCommit?: (previousOrigin: string, nextOrigin: string) => Promise<void>,
+  ) {
     const operation = this.#beginOperation();
     try {
     await this.#waitForPairPublish();
@@ -437,7 +440,7 @@ export class DesktopCredentialService {
       this.#invalidateProfileOperations(before.id);
       invalidatedBeforeSave = true;
     }
-    const transaction = await this.#profiles.saveAndDetachCredential(input);
+    const transaction = await this.#profiles.saveAndDetachCredential(input, beforeOriginChangeCommit);
     if (transaction.originChanged && !invalidatedBeforeSave) {
       this.#invalidateProfileOperations(transaction.profile.id);
     }

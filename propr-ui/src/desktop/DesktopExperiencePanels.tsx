@@ -49,12 +49,13 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operation
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     try {
-      const hostname = new URL(baseUrl).hostname;
+      const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+      const hostname = new URL(normalizedBaseUrl).hostname;
       onSave({
         id: initial?.id || createProfileId(),
         name: name.trim() || 'My ProPR',
-        baseUrl: normalizeBaseUrl(baseUrl),
-        kind: initial?.kind || (isProprLoopbackHostname(hostname) ? 'local' : 'remote'),
+        baseUrl: normalizedBaseUrl,
+        kind: isProprLoopbackHostname(hostname) ? 'local' : 'remote',
         lastConnectedAt: initial?.lastConnectedAt,
       });
     } catch (caught) {
@@ -114,13 +115,15 @@ interface ChooserProps extends ProfileListProps {
   busy: boolean;
   error: string | null;
   localSetupSupported: boolean;
+  networkDiscoverySupported: boolean;
   onLocalSetup(): void;
   onConnectNew(): void;
   onDiscover(): void;
 }
 
 export const InstanceChooser: React.FC<ChooserProps> = ({
-  profiles, busy, error, localSetupSupported, onLocalSetup, onConnectNew, onDiscover, ...listProps
+  profiles, busy, error, localSetupSupported, networkDiscoverySupported,
+  onLocalSetup, onConnectNew, onDiscover, ...listProps
 }) => (
   <main className="desktop-welcome-card">
     <DesktopBrand />
@@ -147,9 +150,11 @@ export const InstanceChooser: React.FC<ChooserProps> = ({
     </div>
     {error && <div className="desktop-inline-error" role="alert">{error}</div>}
     {profiles.length > 0 && <ProfileList profiles={profiles} {...listProps} />}
-    <button type="button" className="desktop-discover-button" onClick={onDiscover} disabled={busy}>
-      <Search aria-hidden="true" /> Search for instances on this network
-    </button>
+    {networkDiscoverySupported && (
+      <button type="button" className="desktop-discover-button" onClick={onDiscover} disabled={busy}>
+        <Search aria-hidden="true" /> Search for instances on this network
+      </button>
+    )}
   </main>
 );
 

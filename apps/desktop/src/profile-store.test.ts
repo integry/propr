@@ -407,7 +407,7 @@ describe('desktop profile store', () => {
     assert.deepEqual(await store.readCredential(profile.id), storedCredential);
   });
 
-  it('preserves the complete profile and credential when pre-removal origin cleanup fails', async () => {
+  it('preserves the complete profile and credential when precommit origin cleanup fails', async () => {
     const directory = await createDirectory();
     const store = new ProfileStore(directory, encryption());
     const profile = await store.save({ id: 'profile-1', label: 'Remote', apiBaseUrl: 'https://propr.example.com' });
@@ -425,6 +425,18 @@ describe('desktop profile store', () => {
 
     assert.deepEqual(await store.list(), { profiles: [profile], activeProfileId: profile.id });
     assert.deepEqual(await store.readCredential(profile.id), storedCredential);
+
+    const observed: string[][] = [];
+    await assert.rejects(store.saveAndDetachCredential({
+      id: profile.id, label: 'Edited', apiBaseUrl: 'https://edited.example.com',
+    }, async (previousOrigin, nextOrigin) => {
+      observed.push([previousOrigin, nextOrigin]);
+      throw new Error('origin edit storage clear failed');
+    }), /origin edit storage clear failed/);
+    assert.deepEqual(observed, [[profile.apiBaseUrl, 'https://edited.example.com']]);
+    assert.deepEqual(await store.list(), { profiles: [profile], activeProfileId: profile.id });
+    assert.deepEqual(await store.readCredential(profile.id), storedCredential);
+    assert.deepEqual(await store.pendingRevocations(), []);
   });
 
   it('keeps A authoritative across every injected pre-commit paired replacement failure', async () => {
@@ -1029,4 +1041,5 @@ describe('desktop profile store', () => {
     assert.equal(recreated.id, 'profile-1');
     assert.equal(await store.readCredential('profile-1'), null);
   });
+
 });

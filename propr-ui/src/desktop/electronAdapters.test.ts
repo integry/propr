@@ -81,6 +81,16 @@ describe('Electron remote instance adapters', () => {
     const adapters = createElectronDesktopAdapters(bridgeFixture().bridge);
 
     expect(adapters.localSetup.supported).toBe(false);
+    expect(adapters.discovery.supported).toBe(false);
+  });
+
+  it('returns authentication cancellation rejection to the explicit UI settlement path', async () => {
+    const fixture = bridgeFixture();
+    vi.mocked(fixture.bridge.authentication.cancel).mockRejectedValueOnce(new Error('private IPC detail'));
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+
+    await expect(adapters.authentication.cancel?.('profile-1')).rejects.toThrow('private IPC detail');
+    expect(fixture.bridge.authentication.cancel).toHaveBeenCalledWith('profile-1');
   });
   it('matches the shared canonical origin parity table before profile IPC', async () => {
     const fixture = bridgeFixture();

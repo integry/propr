@@ -91,6 +91,7 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
     },
   },
   discovery: {
+    supported: false,
     async discover() {
       // URL discovery is performed by the main-process probe. Network-wide mDNS
       // remains an optional host concern; never scan arbitrary LAN addresses here.
@@ -104,7 +105,7 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
       await bridge.authentication.pair(toStoredProfile(profile));
     },
     cancel(profileId) {
-      void bridge.authentication.cancel(profileId);
+      return bridge.authentication.cancel(profileId);
     },
   },
   externalBrowser: { open: url => bridge.external.open(url) },

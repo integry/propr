@@ -77,7 +77,13 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   });
   handle(IPC_CHANNELS.storageSecurity, () => options.credentials.storageSecurity());
   handle(IPC_CHANNELS.profilesList, () => options.credentials.listProfiles());
-  handle(IPC_CHANNELS.profilesSave, (_event, input) => options.credentials.saveProfile(input));
+  handle(IPC_CHANNELS.profilesSave, (_event, input) => options.credentials.saveProfile(
+    input,
+    (previousOrigin, nextOrigin) => clearDesktopInstanceCookies(
+      options.desktopSession,
+      [previousOrigin, nextOrigin],
+    ),
+  ));
   handle(IPC_CHANNELS.profilesRemove, async (_event, profileId) => {
     await options.credentials.removeProfile(
       profileId,
