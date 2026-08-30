@@ -77,6 +77,11 @@ describe('Electron remote instance adapters', () => {
     desktopConnectionState.scope = null;
     setDesktopConnectionScope.mockClear();
   });
+  it('reports local setup as unavailable in the production Electron adapter', () => {
+    const adapters = createElectronDesktopAdapters(bridgeFixture().bridge);
+
+    expect(adapters.localSetup.supported).toBe(false);
+  });
   it('matches the shared canonical origin parity table before profile IPC', async () => {
     const fixture = bridgeFixture();
     const adapters = createElectronDesktopAdapters(fixture.bridge);

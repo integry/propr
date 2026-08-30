@@ -109,6 +109,7 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
   },
   externalBrowser: { open: url => bridge.external.open(url) },
   localSetup: {
+    supported: false,
     async setup() {
       throw new Error('Local setup is not available in this desktop build. Connect to a running local instance instead.');
     },

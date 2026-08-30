@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setDesktopConnectionScope } from '../../api/apiClient';
 import { AuthenticatedAttachmentImage } from './AuthenticatedAttachmentImage';
@@ -10,9 +10,17 @@ describe('AuthenticatedAttachmentImage', () => {
     vi.restoreAllMocks();
   });
 
-  it('revokes its object URL and clears the image when the captured scope rotates', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('image', { status: 200 }));
-    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:attachment-a');
+  it('clears the previous image and fetches it again under the new scope', async () => {
+    let fetchCalls = 0;
+    let resolveSecondFetch!: (response: Response) => void;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) return Promise.resolve(new Response('image-a', { status: 200 }));
+      return new Promise(resolve => { resolveSecondFetch = resolve; });
+    });
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL')
+      .mockReturnValueOnce('blob:attachment-a')
+      .mockReturnValueOnce('blob:attachment-b');
     const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
     setDesktopConnectionScope({
       bridge: {} as never,
@@ -23,24 +31,31 @@ describe('AuthenticatedAttachmentImage', () => {
 
     expect(await screen.findByRole('img', { name: 'attachment' })).toHaveAttribute('src', 'blob:attachment-a');
     expect(createObjectURL).toHaveBeenCalledOnce();
-    setDesktopConnectionScope({
-      bridge: {} as never,
-      profileId: 'profile-b',
-      transportScope: 'BBBBBBBBBBBBBBBBBBBBBB',
+    await act(async () => {
+      setDesktopConnectionScope({
+        bridge: {} as never,
+        profileId: 'profile-b',
+        transportScope: 'BBBBBBBBBBBBBBBBBBBBBB',
+      });
     });
 
-    await waitFor(() => expect(screen.queryByRole('img', { name: 'attachment' })).not.toBeInTheDocument());
+    await waitFor(() => expect(fetchCalls).toBe(2));
+    expect(screen.queryByRole('img', { name: 'attachment' })).not.toBeInTheDocument();
     expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:attachment-a');
+    await act(async () => { resolveSecondFetch(new Response('image-b', { status: 200 })); });
+    expect(await screen.findByRole('img', { name: 'attachment' })).toHaveAttribute('src', 'blob:attachment-b');
     unmount();
-    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenNthCalledWith(2, 'blob:attachment-b');
+    expect(revokeObjectURL).toHaveBeenCalledTimes(2);
+    expect(createObjectURL).toHaveBeenCalledTimes(2);
   });
 
-  it('aborts a pending attachment request on scope change and revokes on unmount', async () => {
+  it('aborts the old request on scope change and the replacement request on unmount', async () => {
     const requestSignals: AbortSignal[] = [];
-    let resolveFetch!: (response: Response) => void;
+    const resolveFetches: Array<(response: Response) => void> = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
       if (init?.signal) requestSignals.push(init.signal);
-      return new Promise(resolve => { resolveFetch = resolve; });
+      return new Promise(resolve => { resolveFetches.push(resolve); });
     });
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:late');
     const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
@@ -54,16 +69,21 @@ describe('AuthenticatedAttachmentImage', () => {
     const requestSignal = requestSignals[0];
     if (!requestSignal) throw new Error('Expected attachment fetch to capture an AbortSignal');
 
-    setDesktopConnectionScope({
-      bridge: {} as never,
-      profileId: 'profile-b',
-      transportScope: 'BBBBBBBBBBBBBBBBBBBBBB',
+    await act(async () => {
+      setDesktopConnectionScope({
+        bridge: {} as never,
+        profileId: 'profile-b',
+        transportScope: 'BBBBBBBBBBBBBBBBBBBBBB',
+      });
     });
+    await waitFor(() => expect(requestSignals).toHaveLength(2));
     expect(requestSignal.aborted).toBe(true);
-    resolveFetch(new Response('late', { status: 200 }));
+    expect(requestSignals[1]?.aborted).toBe(false);
+    resolveFetches[0]?.(new Response('late', { status: 200 }));
     await Promise.resolve();
     expect(screen.queryByRole('img', { name: 'attachment' })).not.toBeInTheDocument();
     unmount();
+    expect(requestSignals[1]?.aborted).toBe(true);
     expect(revokeObjectURL).not.toHaveBeenCalled();
   });
 });

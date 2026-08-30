@@ -80,6 +80,96 @@ describe('desktop IPC shutdown gate', () => {
     assert.deepEqual(discarded, [{ profileId: 'profile-b', transportScope: 'scope-b' }]);
   });
 
+  it('discards the exact activation when the post-commit profile read fails', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const ipcMain = {
+      handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+      removeHandler: (channel: string) => { handlers.delete(channel); },
+    } as unknown as IpcMain;
+    let listCalls = 0;
+    let discardCalls = 0;
+    const discardActivation = async (scope: { profileId: string; transportScope: string }) => {
+      discardCalls += 1;
+      assert.deepEqual(scope, { profileId: 'profile-b', transportScope: 'scope-b' });
+      return { discarded: true };
+    };
+    const credentials = {
+      listProfiles: async () => {
+        listCalls += 1;
+        if (listCalls === 2) throw new Error('post-activation profile read failed');
+        return { profiles: [], activeProfileId: null };
+      },
+      activate: async () => ({
+        status: 'ready', profileId: 'profile-b', transportScope: 'scope-b', identityEpoch: 'B'.repeat(22),
+      }),
+      discardActivation,
+    } as unknown as DesktopCredentialService;
+    const desktopSession = {
+      clearStorageData: async () => { throw new Error('storage clearing should not start'); },
+    } as unknown as Session;
+    registerIpcHandlers({
+      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+      ipcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+    });
+    const event = { senderFrame: { url: 'propr-renderer://app/index.html' } } as unknown as IpcMainInvokeEvent;
+
+    await assert.rejects(
+      Promise.resolve(handlers.get(IPC_CHANNELS.connectionActivate)!(event, 'T'.repeat(43))),
+      /post-activation profile read failed/,
+    );
+    assert.equal(listCalls, 2);
+    assert.equal(discardCalls, 1);
+  });
+
+  it('clears a profile origin before committing removal and retains it when cleanup fails', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const ipcMain = {
+      handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+      removeHandler: (channel: string) => { handlers.delete(channel); },
+    } as unknown as IpcMain;
+    let removalCommitted = false;
+    const credentials = {
+      removeProfile: async (
+        _profileId: string,
+        beforeCommit: (origin: string) => Promise<void>,
+      ) => {
+        await beforeCommit('https://a.example.test');
+        removalCommitted = true;
+        return 'https://a.example.test';
+      },
+    } as unknown as DesktopCredentialService;
+    const desktopSession = {
+      clearStorageData: async () => { throw new Error('origin storage clear failed'); },
+    } as unknown as Session;
+    registerIpcHandlers({
+      app: { getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true } as unknown as App,
+      ipcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+    });
+    const event = { senderFrame: { url: 'propr-renderer://app/index.html' } } as unknown as IpcMainInvokeEvent;
+
+    await assert.rejects(
+      Promise.resolve(handlers.get(IPC_CHANNELS.profilesRemove)!(event, 'profile-a')),
+      /origin storage clear failed/,
+    );
+    assert.equal(removalCommitted, false);
+  });
+
   it('replaces every handler with a fixed closing failure and drains admitted work before disposal', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
     const ipcMain = {

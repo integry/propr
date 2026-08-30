@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useSyncExternalStore } from 'react';
 import { PlannerAttachment, getAttachmentUrl } from '../../api/proprApi';
 import { X, FileText, Loader2, Paperclip } from 'lucide-react';
 import { resizeImage } from './imageUtils';
@@ -14,18 +14,22 @@ interface AttachmentPreviewProps {
 const AttachmentPreview: React.FC<AttachmentPreviewProps> = ({ file, draftId, onRemove }) => {
   const [textPreview, setTextPreview] = useState<string | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
+  const desktopScopeKey = useSyncExternalStore(
+    subscribeDesktopConnectionScope,
+    () => {
+      const scope = getDesktopConnectionScope();
+      return `${scope?.profileId ?? ''}\u0000${scope?.transportScope ?? ''}`;
+    },
+    () => '',
+  );
   const isImage = file.type === 'image' || file.mimeType?.startsWith('image/') ||
     /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(file.originalName);
 
   useEffect(() => {
     if (isImage) return;
     const controller = new AbortController();
-    const capturedScope = getDesktopConnectionScope()?.transportScope ?? null;
     setTextPreview(null);
     setIsLoadingPreview(true);
-    const unsubscribe = subscribeDesktopConnectionScope(() => {
-      if ((getDesktopConnectionScope()?.transportScope ?? null) !== capturedScope) controller.abort();
-    });
     void apiFetch(getAttachmentUrl(draftId, file.id), { credentials: 'include', signal: controller.signal })
       .then(res => res.text())
       .then(text => {
@@ -36,10 +40,11 @@ const AttachmentPreview: React.FC<AttachmentPreviewProps> = ({ file, draftId, on
       .catch(() => { if (!controller.signal.aborted) setTextPreview('Unable to load preview'); })
       .finally(() => { if (!controller.signal.aborted) setIsLoadingPreview(false); });
     return () => {
-      unsubscribe();
       controller.abort();
+      setTextPreview(null);
+      setIsLoadingPreview(false);
     };
-  }, [file.id, draftId, isImage]);
+  }, [file.id, draftId, isImage, desktopScopeKey]);
 
   return (
     <div className="inline-flex items-center gap-2 bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 text-sm group relative">

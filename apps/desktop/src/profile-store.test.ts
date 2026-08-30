@@ -407,6 +407,26 @@ describe('desktop profile store', () => {
     assert.deepEqual(await store.readCredential(profile.id), storedCredential);
   });
 
+  it('preserves the complete profile and credential when pre-removal origin cleanup fails', async () => {
+    const directory = await createDirectory();
+    const store = new ProfileStore(directory, encryption());
+    const profile = await store.save({ id: 'profile-1', label: 'Remote', apiBaseUrl: 'https://propr.example.com' });
+    const storedCredential = credential(profile.id);
+    await store.writeCredential(storedCredential);
+    await store.setActive(profile.id);
+
+    await assert.rejects(
+      store.detachProfile(profile.id, async origin => {
+        assert.equal(origin, profile.apiBaseUrl);
+        throw new Error('origin storage clear failed');
+      }),
+      /origin storage clear failed/,
+    );
+
+    assert.deepEqual(await store.list(), { profiles: [profile], activeProfileId: profile.id });
+    assert.deepEqual(await store.readCredential(profile.id), storedCredential);
+  });
+
   it('keeps A authoritative across every injected pre-commit paired replacement failure', async () => {
     const directory = await createDirectory();
     let failure: string | null = null;

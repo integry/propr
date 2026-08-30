@@ -54,6 +54,7 @@ export interface DesktopExternalBrowserAdapter {
 }
 
 export interface DesktopLocalSetupAdapter {
+  supported: boolean;
   setup(): Promise<DesktopProfile>;
 }
 

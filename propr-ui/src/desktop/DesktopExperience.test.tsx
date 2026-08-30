@@ -40,7 +40,7 @@ const adaptersFor = (
   discovery: { discover: vi.fn(async () => []) },
   authentication: { authenticate: vi.fn(async () => undefined) },
   externalBrowser: { open: vi.fn(async () => undefined) },
-  localSetup: { setup: vi.fn(async () => localProfile) },
+  localSetup: { supported: true, setup: vi.fn(async () => localProfile) },
   connection: { probe: vi.fn(probe) },
 });
 

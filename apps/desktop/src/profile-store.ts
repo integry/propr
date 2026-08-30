@@ -521,11 +521,15 @@ export class ProfileStore {
     return this.detachProfile(profileId).then(() => undefined);
   }
 
-  detachProfile(profileId: string): Promise<DetachedProfile | null> {
+  detachProfile(
+    profileId: string,
+    beforeCommit?: (origin: string) => Promise<void>,
+  ): Promise<DetachedProfile | null> {
     assertProfileId(profileId);
     return this.#mutate(async () => {
       const state = await this.#readState();
       const profile = state.profiles.find(item => item.id === profileId);
+      if (profile) await beforeCommit?.(profile.apiBaseUrl);
       const previousSlot = state.credentialSlots[profileId];
       const credential = (await this.#moveCredentialToPending(state, profileId))?.credential ?? null;
       if (!profile && !previousSlot) return null;

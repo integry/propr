@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import {
   apiFetch,
   getDesktopConnectionScope,
@@ -12,12 +12,20 @@ interface AuthenticatedAttachmentImageProps extends Omit<React.ImgHTMLAttributes
 
 export const AuthenticatedAttachmentImage: React.FC<AuthenticatedAttachmentImageProps> = ({ src, ...props }) => {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const desktopScopeKey = useSyncExternalStore(
+    subscribeDesktopConnectionScope,
+    () => {
+      const scope = getDesktopConnectionScope();
+      return `${scope?.profileId ?? ''}\u0000${scope?.transportScope ?? ''}`;
+    },
+    () => '',
+  );
 
   useEffect(() => {
     const controller = new AbortController();
-    const capturedScope = getDesktopConnectionScope()?.transportScope ?? null;
     let disposed = false;
     let loadedObjectUrl: string | null = null;
+    setObjectUrl(null);
     const release = (): void => {
       controller.abort();
       if (loadedObjectUrl) {
@@ -26,10 +34,6 @@ export const AuthenticatedAttachmentImage: React.FC<AuthenticatedAttachmentImage
       }
       if (!disposed) setObjectUrl(null);
     };
-    const unsubscribe = subscribeDesktopConnectionScope(() => {
-      if ((getDesktopConnectionScope()?.transportScope ?? null) !== capturedScope) release();
-    });
-
     void apiFetch(src, { credentials: 'include', signal: controller.signal })
       .then(handleApiResponse)
       .then(response => response.blob())
@@ -43,11 +47,10 @@ export const AuthenticatedAttachmentImage: React.FC<AuthenticatedAttachmentImage
       });
 
     return () => {
-      disposed = true;
-      unsubscribe();
       release();
+      disposed = true;
     };
-  }, [src]);
+  }, [src, desktopScopeKey]);
 
   return objectUrl ? <img {...props} src={objectUrl} /> : null;
 };

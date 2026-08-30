@@ -158,6 +158,7 @@ const createBrowserAdapters = (fixture: DesktopFixture | null): DesktopAdapters 
     authenticate: authenticateBrowserFixture,
   },
   localSetup: {
+    supported: true,
     async setup() {
       if (fixture) return fixtureProfile;
       throw new Error('Local setup will be available when the desktop host adapter is connected.');

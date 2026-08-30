@@ -79,8 +79,10 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   handle(IPC_CHANNELS.profilesList, () => options.credentials.listProfiles());
   handle(IPC_CHANNELS.profilesSave, (_event, input) => options.credentials.saveProfile(input));
   handle(IPC_CHANNELS.profilesRemove, async (_event, profileId) => {
-    const removedOrigin = await options.credentials.removeProfile(profileId);
-    if (removedOrigin) await clearDesktopInstanceCookies(options.desktopSession, [removedOrigin]);
+    await options.credentials.removeProfile(
+      profileId,
+      origin => clearDesktopInstanceCookies(options.desktopSession, [origin]),
+    );
   });
   handle(IPC_CHANNELS.profilesSetActive, async (_event, profileId) => {
     const current = await options.credentials.listProfiles();
@@ -99,13 +101,14 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
   handle(IPC_CHANNELS.connectionActivate, async (_event, activationTicket) => {
     const before = await options.credentials.listProfiles();
     const activated = await options.credentials.activate(activationTicket);
-    const after = await options.credentials.listProfiles();
-    const origins = [before.activeProfileId, after.activeProfileId]
-      .flatMap(profileId => after.profiles.find(profile => profile.id === profileId)?.apiBaseUrl
-        ?? before.profiles.find(profile => profile.id === profileId)?.apiBaseUrl
-        ?? []);
     try {
+      const after = await options.credentials.listProfiles();
+      const origins = [before.activeProfileId, after.activeProfileId]
+        .flatMap(profileId => after.profiles.find(profile => profile.id === profileId)?.apiBaseUrl
+          ?? before.profiles.find(profile => profile.id === profileId)?.apiBaseUrl
+          ?? []);
       await clearDesktopInstanceCookies(options.desktopSession, origins);
+      return activated;
     } catch (error) {
       await options.credentials.discardActivation({
         profileId: activated.profileId,
@@ -113,7 +116,6 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
       });
       throw error;
     }
-    return activated;
   });
   handle(IPC_CHANNELS.connectionDiscard, (_event, value) => options.credentials.discardActivation(value));
   handle(IPC_CHANNELS.connectionInvalidate, (_event, value) => options.credentials.invalidate(value));

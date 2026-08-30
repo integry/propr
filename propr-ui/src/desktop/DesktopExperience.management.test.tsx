@@ -48,7 +48,7 @@ const adaptersFor = (
   discovery: { discover: vi.fn(async () => []) },
   authentication: { authenticate: vi.fn(async () => undefined) },
   externalBrowser: { open: vi.fn(async () => undefined) },
-  localSetup: { setup: vi.fn(async () => localProfile) },
+  localSetup: { supported: true, setup: vi.fn(async () => localProfile) },
   connection: { probe: vi.fn(probe) },
 });
 
@@ -181,12 +181,23 @@ describe('DesktopExperience profile management', () => {
   it.each(['macos', 'windows'] as const)('offers remote connection guidance instead of local setup on %s', async platform => {
     const adapters = adaptersFor();
     adapters.platform = platform;
+    adapters.localSetup.supported = false;
     render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
 
     expect(await screen.findByRole('heading', { name: 'Connect to ProPR' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Set up this computer/i })).not.toBeInTheDocument();
     expect(screen.getByText(/local setup is currently available on Linux/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Connect to an existing instance/i })).toBeInTheDocument();
+  });
+
+  it('hides unsupported local setup when the adapter reports Linux', async () => {
+    const adapters = adaptersFor();
+    adapters.localSetup.supported = false;
+    render(<DesktopExperience adapters={adapters}><div>Connected app</div></DesktopExperience>);
+
+    expect(await screen.findByRole('heading', { name: 'Connect to ProPR' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Set up this computer/i })).not.toBeInTheDocument();
+    expect(adapters.localSetup.setup).not.toHaveBeenCalled();
   });
 
   it('keeps management ready after out-of-order profile loading and a concurrent status refresh', async () => {

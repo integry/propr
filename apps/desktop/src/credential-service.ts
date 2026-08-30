@@ -450,13 +450,16 @@ export class DesktopCredentialService {
     }
   }
 
-  async removeProfile(profileId: string): Promise<string | null> {
+  async removeProfile(
+    profileId: string,
+    beforeCommit?: (origin: string) => Promise<void>,
+  ): Promise<string | null> {
     const operation = this.#beginOperation();
     try {
     if (this.#publishingPair) await this.#waitForPairPublish();
     this.#invalidateProfileOperations(profileId);
     this.#schedulePendingRevocationRetry();
-    const detached = await this.#profiles.detachProfile(profileId);
+    const detached = await this.#profiles.detachProfile(profileId, beforeCommit);
     if (!detached) return null;
     if (detached.credential) this.#clearActiveIfCredential(detached.credential);
     this.#schedulePendingRevocationRetry();
