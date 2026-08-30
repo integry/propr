@@ -101,9 +101,9 @@ for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {
   if (actual !== expected) throw new Error(`${platformArch} directory-operations artifact failed integrity verification`);
 }
 const authorityArtifacts = {
-  "darwin-arm64/connect-authority-broker": "f457676befb7640261a4b7aab45f2e4631199e647871aa70f5c148e6f1f6f168",
-  "darwin-x64/connect-authority-broker": "de74da6d8f5afcbaa8012e246525775d1a3b8d8f6a1e053727cb4d4c1df578fa",
-  "win32-x64/connect-authority-broker.exe": "7e92f1b8c54e7e2665249dc2598edbf261c99f383e36201e59743d7a20d0506c",
+  "darwin-arm64/connect-authority-broker": "75fda2624bf093555e726b968401321fef61ea7ae0479f4c1892be0dfc6554c0",
+  "darwin-x64/connect-authority-broker": "e5a49be0db85655b9ff1d0614de9d61defd41a0a1b2eff8f11571407f10d809b",
+  "win32-x64/connect-authority-broker.exe": "d6ab19e1fd775a5271cbf16f22851b895c9db8b8730cbbb884c6a30f34c68ff3",
 };
 for (const [relativeArtifact, expected] of Object.entries(authorityArtifacts)) {
   const artifact = join(stageDir, "dist", "native", "prebuilds", relativeArtifact);

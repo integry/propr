@@ -6,6 +6,7 @@
 #include <sddl.h>
 
 #include <stdint.h>
+#include <io.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -78,7 +79,7 @@ static int sid_text(PSID sid, char *destination, size_t capacity) {
   return length > 1 && (size_t)length <= capacity;
 }
 
-static HANDLE open_pinned(const wchar_t *path, DWORD access) {
+static HANDLE open_path(const wchar_t *path, DWORD access) {
   return CreateFileW(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                      NULL, OPEN_EXISTING,
                      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
@@ -93,7 +94,17 @@ static int same_file_id(const PROPR_FILE_ID_INFO *left, const PROPR_FILE_ID_INFO
          memcmp(left->FileId.Identifier, right->FileId.Identifier, 16) == 0;
 }
 
-static int inspect_entry(output_buffer *output, HANDLE handle, const char *current_sid) {
+static const char *authority_kind_text(const wchar_t *kind) {
+  if (wcscmp(kind, L"ancestor") == 0) return "ancestor";
+  if (wcscmp(kind, L"home") == 0) return "home";
+  if (wcscmp(kind, L"root") == 0) return "root";
+  if (wcscmp(kind, L"data") == 0) return "data";
+  if (wcscmp(kind, L"env") == 0) return "env";
+  return NULL;
+}
+
+static int inspect_entry(output_buffer *output, HANDLE handle, const char *current_sid,
+                         int index, const wchar_t *kind) {
   int result = 0;
   PSECURITY_DESCRIPTOR descriptor = NULL;
   PSID owner = NULL;
@@ -105,6 +116,10 @@ static int inspect_entry(output_buffer *output, HANDLE handle, const char *curre
   DWORD revision = 0;
 
   if (!get_file_id(handle, &before) || !GetFileInformationByHandle(handle, &legacy)) goto cleanup;
+  int expected_directory = wcscmp(kind, L"env") != 0;
+  int actual_directory = (legacy.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+  const char *kind_text = authority_kind_text(kind);
+  if (kind_text == NULL || expected_directory != actual_directory) goto cleanup;
   DWORD status = GetSecurityInfo(handle, SE_FILE_OBJECT,
     OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
     &owner, NULL, &dacl, NULL, &descriptor);
@@ -113,7 +128,13 @@ static int inspect_entry(output_buffer *output, HANDLE handle, const char *curre
 
   char owner_sid[192];
   if (!sid_text(owner, owner_sid, sizeof(owner_sid))) goto cleanup;
-  if (!append_literal(output, "{\"currentUserSid\":\"") ||
+  if (!append_literal(output, "{\"index\":") ||
+      !append_u32(output, (DWORD)index) ||
+      !append_literal(output, ",\"kind\":\"") ||
+      !append(output, actual_directory ? "directory" : "file", actual_directory ? 9 : 4) ||
+      !append_literal(output, "\",\"authorityKind\":\"") ||
+      !append_literal(output, kind_text) ||
+      !append_literal(output, "\",\"currentUserSid\":\"") ||
       !append_literal(output, current_sid) ||
       !append_literal(output, "\",\"ownerSid\":\"") ||
       !append_literal(output, owner_sid) ||
@@ -125,8 +146,6 @@ static int inspect_entry(output_buffer *output, HANDLE handle, const char *curre
       !append_u64(output, before.VolumeSerialNumber) ||
       !append_literal(output, "\",\"fileId\":\"") ||
       !append_file_id(output, before.FileId.Identifier) ||
-      !append_literal(output, "\",\"nodeFileId\":\"") ||
-      !append_u64(output, ((ULONGLONG)legacy.nFileIndexHigh << 32) | legacy.nFileIndexLow) ||
       !append_literal(output, "\",\"rules\":[")) goto cleanup;
 
   if (dacl->AceCount > 256) goto cleanup;
@@ -166,7 +185,11 @@ static int inspect_entry(output_buffer *output, HANDLE handle, const char *curre
         !append_literal(output, "\"}")) goto cleanup;
   }
   if (!get_file_id(handle, &after) || !same_file_id(&before, &after) ||
-      !append_literal(output, "]}")) goto cleanup;
+      !append_literal(output, "],\"verifiedVolumeSerialNumber\":\"") ||
+      !append_u64(output, after.VolumeSerialNumber) ||
+      !append_literal(output, "\",\"verifiedFileId\":\"") ||
+      !append_file_id(output, after.FileId.Identifier) ||
+      !append_literal(output, "\"}")) goto cleanup;
   result = 1;
 
 cleanup:
@@ -237,35 +260,40 @@ static int write_output(const output_buffer *output) {
 }
 
 int wmain(int argc, wchar_t **argv) {
-  if (argc < 4 || ((argc - 2) % 2) != 0 || (argc - 2) / 2 > PROPR_MAX_ENTRIES) return 10;
+  if (argc < 3) return 10;
   int inspect = wcscmp(argv[1], L"inspect") == 0;
   int protect = wcscmp(argv[1], L"protect") == 0;
   if (!inspect && !protect) return 11;
+  if ((inspect && argc - 2 > PROPR_MAX_ENTRIES) ||
+      (protect && (((argc - 2) % 2) != 0 || (argc - 2) / 2 > PROPR_MAX_ENTRIES))) return 10;
   BYTE *token_buffer = NULL;
   PSID user_sid = NULL;
   char user_sid_text[192];
   if (!current_user_sid(&token_buffer, &user_sid, user_sid_text, sizeof(user_sid_text))) return 12;
 
   output_buffer output = {{0}, 0};
-  int count = (argc - 2) / 2;
+  int count = inspect ? argc - 2 : (argc - 2) / 2;
   HANDLE handles[PROPR_MAX_ENTRIES];
   for (int index = 0; index < count; index += 1) handles[index] = INVALID_HANDLE_VALUE;
 
-  /* Open the complete set before inspecting or protecting any entry. Keeping
-     every handle pinned through completion prevents a later pathname swap from
-     changing the authority set represented by this one broker document. */
+  /* Inspection never receives or resolves an authority pathname. Node passes
+     each already-open pinned object as child fd 3+index; the CRT descriptor
+     table exposes the exact inherited HANDLE through _get_osfhandle. */
   for (int index = 0; index < count; index += 1) {
-    const wchar_t *kind = argv[2 + index * 2];
-    const wchar_t *path = argv[3 + index * 2];
-    if (path[0] == L'\0') goto failure;
     if (inspect) {
+      const wchar_t *kind = argv[2 + index];
       if (wcscmp(kind, L"ancestor") != 0 && wcscmp(kind, L"home") != 0 &&
           wcscmp(kind, L"root") != 0 && wcscmp(kind, L"data") != 0 &&
           wcscmp(kind, L"env") != 0) goto failure;
-      handles[index] = open_pinned(path, READ_CONTROL);
+      intptr_t inherited = _get_osfhandle(3 + index);
+      if (inherited == -1) goto failure;
+      handles[index] = (HANDLE)inherited;
     } else {
+      const wchar_t *kind = argv[2 + index * 2];
+      const wchar_t *path = argv[3 + index * 2];
+      if (path[0] == L'\0') goto failure;
       if (wcscmp(kind, L"directory") != 0 && wcscmp(kind, L"file") != 0) goto failure;
-      handles[index] = open_pinned(path, READ_CONTROL | WRITE_DAC | WRITE_OWNER);
+      handles[index] = open_path(path, READ_CONTROL | WRITE_DAC | WRITE_OWNER);
     }
     if (handles[index] == INVALID_HANDLE_VALUE) goto failure;
   }
@@ -274,7 +302,7 @@ int wmain(int argc, wchar_t **argv) {
     if (!append_literal(&output, "{\"version\":1,\"entries\":[")) goto failure;
     for (int index = 0; index < count; index += 1) {
       if ((index != 0 && !append_literal(&output, ",")) ||
-          !inspect_entry(&output, handles[index], user_sid_text)) goto failure;
+          !inspect_entry(&output, handles[index], user_sid_text, index, argv[2 + index])) goto failure;
     }
     if (!append_literal(&output, "]}\n")) goto failure;
   } else {
@@ -286,13 +314,15 @@ int wmain(int argc, wchar_t **argv) {
     if (!append_literal(&output, "{\"version\":1,\"protected\":") ||
         !append_u32(&output, (DWORD)count) || !append_literal(&output, "}\n")) goto failure;
   }
-  for (int index = 0; index < count; index += 1) CloseHandle(handles[index]);
+  if (protect) {
+    for (int index = 0; index < count; index += 1) CloseHandle(handles[index]);
+  }
   LocalFree(token_buffer);
   return write_output(&output) ? 0 : 14;
 
 failure:
   for (int index = 0; index < count; index += 1) {
-    if (handles[index] != INVALID_HANDLE_VALUE) CloseHandle(handles[index]);
+    if (protect && handles[index] != INVALID_HANDLE_VALUE) CloseHandle(handles[index]);
   }
   LocalFree(token_buffer);
   return 13;

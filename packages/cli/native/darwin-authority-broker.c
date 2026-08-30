@@ -2,6 +2,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -51,23 +52,34 @@ int main(void) {
   struct stat after;
   if (fstat(PROPR_AUTHORITY_FD, &before) != 0) return 10;
 
-  acl_t acl = acl_get_fd_np(PROPR_AUTHORITY_FD, ACL_TYPE_EXTENDED);
-  if (acl == NULL) return 11;
-  ssize_t acl_length = 0;
-  char *acl_text = acl_to_text(acl, &acl_length);
-  if (acl_text == NULL) {
-    acl_free(acl);
-    return 12;
+  /* Apple's descriptor implementation reports an absent FILESEC_ACL property
+     as NULL/ENOENT. Every other NULL/errno pair is a real allocation,
+     descriptor, filesystem, or inspection failure and remains fatal. */
+  errno = 0;
+  acl_t acl = NULL;
+  char *allocated_acl_text = NULL;
+  const char *acl_text = "!#acl 1\n";
+  ssize_t acl_length = 8;
+  acl = acl_get_fd_np(PROPR_AUTHORITY_FD, ACL_TYPE_EXTENDED);
+  if (acl == NULL) {
+    if (errno != ENOENT) return 11;
+  } else {
+    allocated_acl_text = acl_to_text(acl, &acl_length);
+    if (allocated_acl_text == NULL) {
+      acl_free(acl);
+      return 12;
+    }
+    acl_text = allocated_acl_text;
   }
   if (acl_length < 0 || acl_length > PROPR_MAX_ACL_TEXT ||
       memchr(acl_text, '\0', (size_t)acl_length) != NULL) {
-    acl_free(acl_text);
-    acl_free(acl);
+    if (allocated_acl_text != NULL) acl_free(allocated_acl_text);
+    if (acl != NULL) acl_free(acl);
     return 13;
   }
   if (fstat(PROPR_AUTHORITY_FD, &after) != 0 || !same_identity(&before, &after)) {
-    acl_free(acl_text);
-    acl_free(acl);
+    if (allocated_acl_text != NULL) acl_free(allocated_acl_text);
+    if (acl != NULL) acl_free(acl);
     return 14;
   }
 
@@ -77,8 +89,8 @@ int main(void) {
   int file_length = snprintf(file, sizeof(file), "%llu", (unsigned long long)(uint64_t)before.st_ino);
   if (device_length <= 0 || (size_t)device_length >= sizeof(device) ||
       file_length <= 0 || (size_t)file_length >= sizeof(file)) {
-    acl_free(acl_text);
-    acl_free(acl);
+    if (allocated_acl_text != NULL) acl_free(allocated_acl_text);
+    if (acl != NULL) acl_free(acl);
     return 15;
   }
 
@@ -91,12 +103,12 @@ int main(void) {
       append_bytes(output, &length, ",\"acl\":", 7) != 0 ||
       append_json_string(output, &length, acl_text, (size_t)acl_length) != 0 ||
       append_bytes(output, &length, "}\n", 2) != 0) {
-    acl_free(acl_text);
-    acl_free(acl);
+    if (allocated_acl_text != NULL) acl_free(allocated_acl_text);
+    if (acl != NULL) acl_free(acl);
     return 16;
   }
-  acl_free(acl_text);
-  acl_free(acl);
+  if (allocated_acl_text != NULL) acl_free(allocated_acl_text);
+  if (acl != NULL) acl_free(acl);
 
   size_t written = 0;
   while (written < length) {

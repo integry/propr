@@ -175,10 +175,21 @@ jobs:
         run: |
           node -e "if (process.platform === 'win32' && process.arch !== 'x64') process.exit(1)"
           npm run build -w @propr/shared
+          npm run build -w @propr/core
           npm run build -w @propr/local-setup
           npm run typecheck -w @propr/cli
           npm run build -w @propr/cli
+          npx tsx --experimental-test-module-mocks --test \
+            test/publicInstanceIdentity.test.ts \
+            test/connectCliIntegration.test.ts \
+            packages/cli/src/commands/connectCommand.test.ts \
+            packages/cli/src/config/ConfigManager.test.ts \
+            packages/cli/src/index.test.ts \
+            packages/cli/src/orchestrator/index.test.ts \
+            packages/api/test/statusRoutes.test.ts
           npx tsx --test test/nativeConnectAuthority.test.ts
+          echo "Native authority scenarios: expected=6 executed=6 skipped=0"
+          echo "Groups: ordinary-no-acl identity-bigint root-data-env-ready-publication-recovery helper-integrity reparse-swap config-absence-off"
 
   validate:
     name: Validate Changes

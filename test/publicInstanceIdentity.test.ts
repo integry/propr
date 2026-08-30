@@ -3,10 +3,13 @@ import { spawn } from 'node:child_process';
 import {
   appendFileSync,
   chmodSync,
+  closeSync,
+  constants,
   linkSync,
   lstatSync,
   mkdtempSync,
   mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -36,6 +39,7 @@ import {
 } from '../packages/local-setup/src/publicInstanceIdentity.js';
 import { PUBLIC_INSTANCE_IDENTITY_FILENAME } from '@propr/shared';
 import {
+  assertNativeWindowsEntriesAuthority,
   assertSafeDarwinAclOutput,
   assertSafeWindowsAuthority,
   type ConnectRootAuthorityInspector,
@@ -374,14 +378,22 @@ test('Connect root authority rejects symlinks, unsafe modes, and Windows pathnam
 });
 
 const WINDOWS_USER_SID = 'S-1-5-21-1000-1000-1000-1001';
-const safeWindowsAuthority = (identity = { device: '1', file: '1' }): WindowsAuthorityInspection => ({
+const safeWindowsAuthority = (
+  identity = { device: '1', file: '1' },
+  kind: 'ancestor' | 'home' | 'root' | 'data' | 'env' = 'root',
+  index = 0,
+): WindowsAuthorityInspection => ({
+  index,
+  kind: kind === 'env' ? 'file' : 'directory',
+  authorityKind: kind,
   currentUserSid: WINDOWS_USER_SID,
   ownerSid: WINDOWS_USER_SID,
   daclProtected: true,
   reparsePoint: false,
   volumeSerialNumber: identity.device,
   fileId: identity.file,
-  nodeFileId: identity.file,
+  verifiedVolumeSerialNumber: identity.device,
+  verifiedFileId: identity.file,
   rules: [
     { identitySid: WINDOWS_USER_SID, inherited: false, accessType: 'allow', appliesToSelf: true, rights: '2032127' },
     { identitySid: 'S-1-5-18', inherited: false, accessType: 'allow', appliesToSelf: true, rights: '2032127' },
@@ -416,6 +428,56 @@ test('Windows DACL policy accepts only explicit narrow mutators and rejects inhe
   }, 'root'), /authority/);
 });
 
+test('Windows batch binding keeps adjacent full 128-bit identities, indexes, and types exact', () => {
+  const parent = temporaryRoot('propr-windows-full-identity-');
+  const firstPath = join(parent, 'first');
+  const secondPath = join(parent, 'second');
+  writeFileSync(firstPath, 'A', { mode: 0o600 });
+  writeFileSync(secondPath, 'B', { mode: 0o600 });
+  const firstFd = openSync(firstPath, constants.O_RDONLY);
+  const secondFd = openSync(secondPath, constants.O_RDONLY);
+  const entries = [
+    { path: firstPath, kind: 'env' as const, pinnedFd: firstFd },
+    { path: secondPath, kind: 'env' as const, pinnedFd: secondFd },
+  ];
+  const exactInspector: ConnectRootAuthorityInspector = {
+    inspectDarwinAcl: (_path, _fd, identity) => ({ version: 1, ...identity, acl: '!#acl 1\n' }),
+    inspectWindowsAcl: (_path, identity, _fd, kind = 'env') => safeWindowsAuthority(identity, kind),
+    inspectWindowsAcls: () => [
+      safeWindowsAuthority({ device: '18446744073709551614', file: '9007199254740992' }, 'env', 0),
+      safeWindowsAuthority({ device: '18446744073709551614', file: '9007199254740993' }, 'env', 1),
+    ],
+  };
+  try {
+    assert.doesNotThrow(() => assertNativeWindowsEntriesAuthority(exactInspector, entries));
+    assert.throws(() => assertNativeWindowsEntriesAuthority({
+      ...exactInspector,
+      inspectWindowsAcls: () => [
+        safeWindowsAuthority({ device: '9', file: '9007199254740993' }, 'env', 1),
+        safeWindowsAuthority({ device: '9', file: '9007199254740992' }, 'env', 0),
+      ],
+    }, entries), /pinned object/);
+    assert.throws(() => assertNativeWindowsEntriesAuthority({
+      ...exactInspector,
+      inspectWindowsAcls: () => [{
+        ...safeWindowsAuthority({ device: '9', file: '9007199254740992' }, 'env', 0),
+        verifiedFileId: '9007199254740993',
+      }, safeWindowsAuthority({ device: '9', file: '4' }, 'env', 1)],
+    }, entries), /pinned object/);
+    assert.throws(() => assertNativeWindowsEntriesAuthority({
+      ...exactInspector,
+      inspectWindowsAcls: () => [{
+        ...safeWindowsAuthority({ device: '9', file: '1' }, 'env', 0),
+        unexpected: 'unbounded-schema-extension',
+      } as WindowsAuthorityInspection, safeWindowsAuthority({ device: '9', file: '2' }, 'env', 1)],
+    }, entries), /malformed/);
+  } finally {
+    closeSync(secondFd);
+    closeSync(firstFd);
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test('Darwin ACL parser accepts absent/read-only ACLs and rejects write or unknown authority', () => {
   const uuid = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA';
   assert.doesNotThrow(() => assertSafeDarwinAclOutput('!#acl 1\n'));
@@ -441,9 +503,9 @@ test('injected Windows and Darwin inspectors exercise the real root policy path'
       calls.push(`darwin:${path}`);
       return { version: 1, ...expectedIdentity, acl: '!#acl 1\n' };
     },
-    inspectWindowsAcl: (path, expectedIdentity) => {
+    inspectWindowsAcl: (path, expectedIdentity, _fd, kind = 'env') => {
       calls.push(`win32:${path}`);
-      return safeWindowsAuthority(expectedIdentity);
+      return safeWindowsAuthority(expectedIdentity, kind);
     },
   };
   try {
@@ -461,8 +523,8 @@ test('injected Windows and Darwin inspectors exercise the real root policy path'
 
     const rejecting: ConnectRootAuthorityInspector = {
       ...inspector,
-      inspectWindowsAcl: (_path, expectedIdentity) => ({
-        ...safeWindowsAuthority(expectedIdentity),
+      inspectWindowsAcl: (_path, expectedIdentity, _fd, kind = 'env') => ({
+        ...safeWindowsAuthority(expectedIdentity, kind),
         rules: [{ identitySid: 'S-1-1-0', inherited: true, accessType: 'allow', appliesToSelf: true, rights: '2' }],
       }),
     };
@@ -499,7 +561,7 @@ test('trusted Connect config read is bounded, root-specific, replacement-safe, a
     writeConfig({ tunnelEnabledByRoot: { 'C:\\Work\\Stack': false, 'c:\\work\\stack': false } });
     const inspector: ConnectRootAuthorityInspector = {
       inspectDarwinAcl: (_path, _fd, identity) => ({ version: 1, ...identity, acl: '!#acl 1\n' }),
-      inspectWindowsAcl: (_path, identity) => safeWindowsAuthority(identity),
+      inspectWindowsAcl: (_path, identity, _fd, kind = 'env') => safeWindowsAuthority(identity, kind),
     };
     assert.equal(readTrustedConnectTunnelOverride('c:\\WORK\\STACK', {
       platform: 'win32', trustedHome: home, authorityInspector: inspector,
