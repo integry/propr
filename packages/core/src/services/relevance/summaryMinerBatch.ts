@@ -29,41 +29,26 @@ const SUMMARIZATION_FALLBACK_RETRY: RetryOptions = {
   retryableErrors: ['SUMMARIZATION_INVALID_RESPONSE'],
 };
 
-export interface BatchFile {
-  path: string;
-  content: string;
-  blobHash: string;
-}
+export interface BatchFile { path: string; content: string; blobHash: string }
 
 interface ProcessSingleBatchOptions {
-  fullName: string;
-  batch: BatchFile[];
-  agent: Agent;
-  log: Logger;
-  modelUsed: string;
-  customPrompt?: string;
-  primaryAgentAliasSetting?: string;
-  fallbackAgent?: Agent;
-  fallbackModelOverride?: string;
-  fallbackModelUsed?: string;
-  fallbackAgentAliasSetting?: string;
-  branch: string;
+  fullName: string; batch: BatchFile[];
+  agent: Agent; log: Logger;
+  modelUsed: string; customPrompt?: string;
+  primaryAgentAliasSetting?: string; fallbackAgent?: Agent;
+  fallbackModelOverride?: string; fallbackModelUsed?: string;
+  fallbackAgentAliasSetting?: string; branch: string;
   routingSession?: SyntheticRoutingSession;
 }
 
 export interface ProcessSingleBatchResult {
-  success: boolean;
-  fallbackUsed: boolean;
-  stopProcessing: boolean;
-  primaryAgentAlias?: string;
-  fallbackAgentAlias?: string;
+  success: boolean; fallbackUsed: boolean; stopProcessing: boolean;
+  primaryAgentAlias?: string; fallbackAgentAlias?: string;
 }
 
 interface BatchAnalysisResult {
-  results: SummaryResult[]; agentUsed: Agent;
-  modelLogged: string;
-  routingMetadata?: Record<string, unknown>;
-  fallbackUsed: boolean;
+  results: SummaryResult[]; agentUsed: Agent; modelLogged: string;
+  routingMetadata?: Record<string, unknown>; fallbackUsed: boolean;
   primaryAgentAlias?: string; fallbackAgentAlias?: string;
 }
 
