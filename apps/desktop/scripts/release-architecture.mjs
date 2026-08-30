@@ -17,6 +17,13 @@ const DMG_HELPER_BUNDLES = new Set([
 ]);
 const DMG_HELPER_EXECUTABLES = new Set([...DMG_HELPER_BUNDLES]
   .map(name => name.slice(0, -'.app'.length).toLocaleLowerCase('en-US')));
+export const NATIVE_DMG_VALIDATOR = Object.freeze({
+  schemaVersion: 1,
+  tool: 'propr-desktop-release-architecture',
+  toolVersion: '1.0.0',
+  nativePlatform: 'darwin',
+  mountMethod: 'hdiutil-attach-readonly',
+});
 const LINUX_APP_DIRECTORY = join('usr', 'lib', EXECUTABLE_NAME);
 const LINUX_PAYLOAD = join(LINUX_APP_DIRECTORY, EXECUTABLE_NAME);
 const LINUX_LAUNCHER = join('usr', 'bin', EXECUTABLE_NAME);
@@ -668,15 +675,72 @@ const inspectDmg = async (path, platform, arch) => {
     if (process.platform === 'darwin') {
       await execFile('hdiutil', ['attach', '-readonly', '-nobrowse', '-mountpoint', directory, path]);
       mounted = true;
+      const executable = await inspectDmgLayout({ root: directory, platform, arch, artifact: path });
+      return {
+        format: 'dmg',
+        executable,
+        nativeValidation: nativeDmgLayoutEvidence(arch),
+      };
     } else {
       await execFile('7z', ['x', '-y', '-bso0', '-bsp0', `-o${directory}`, path]);
+      const executable = await inspectExtractedDmgArchitecture({ root: directory, platform, arch, artifact: path });
+      return { format: 'dmg', executable };
     }
-    const executable = await inspectDmgLayout({ root: directory, platform, arch, artifact: path });
-    return { format: 'dmg', executable };
   } finally {
     if (mounted) await execFile('hdiutil', ['detach', directory]);
     await rm(directory, { recursive: true, force: true });
   }
+};
+
+const dmgExecutableLayout = arch => ({
+  topLevelApplication: `${EXECUTABLE_NAME}.app`,
+  installLink: {
+    path: DMG_INSTALL_LINK,
+    type: 'symbolic-link',
+    target: '/Applications',
+  },
+  mainExecutable: {
+    path: `${EXECUTABLE_NAME}.app/Contents/MacOS/${EXECUTABLE_NAME}`,
+    format: 'mach-o',
+    architectures: [arch],
+  },
+  helperExecutables: [...DMG_HELPER_BUNDLES].map(bundle => {
+    const executable = bundle.slice(0, -'.app'.length);
+    return {
+      bundle,
+      path: `${EXECUTABLE_NAME}.app/Contents/Frameworks/${bundle}/Contents/MacOS/${executable}`,
+      format: 'mach-o',
+      architectures: [arch],
+    };
+  }),
+});
+
+const nativeDmgLayoutEvidence = arch => ({
+  ...NATIVE_DMG_VALIDATOR,
+  layout: dmgExecutableLayout(arch),
+});
+
+export const inspectExtractedDmgArchitecture = async ({ root, platform, arch, artifact }) => {
+  if (platform !== 'darwin') throw new Error(`${artifact} DMG is only valid for macOS targets`);
+  const rootPath = resolve(root);
+  const layout = dmgExecutableLayout(arch);
+  const executablePaths = [layout.mainExecutable, ...layout.helperExecutables];
+  let mainInspection;
+  for (const entry of executablePaths) {
+    const path = join(rootPath, ...entry.path.split('/'));
+    let stats;
+    try { stats = await lstat(path); } catch (error) {
+      if (error?.code === 'ENOENT') throw new Error(`DMG is missing canonical executable ${entry.path}`);
+      throw error;
+    }
+    if (!stats.isFile() || stats.isSymbolicLink()) {
+      throw new Error(`DMG canonical executable ${entry.path} must be a real regular file`);
+    }
+    const inspection = inspectExecutableBytes(await readPrefix(path));
+    assertExecutableArchitecture(inspection, platform, arch, artifact);
+    if (entry === layout.mainExecutable) mainInspection = inspection;
+  }
+  return mainInspection;
 };
 
 export const inspectDmgLayout = async ({ root, platform, arch, artifact }) => {
@@ -769,6 +833,8 @@ export const inspectDmgLayout = async ({ root, platform, arch, artifact }) => {
     if (!helperStats.isFile() || helperStats.isSymbolicLink()) {
       throw new Error(`DMG Electron helper executable ${helperName} must be a real regular file`);
     }
+    const helperInspection = inspectExecutableBytes(await readPrefix(helperExecutable));
+    assertExecutableArchitecture(helperInspection, platform, arch, artifact);
   }
   if (sameNameExecutables.length !== 1 || sameNameExecutables[0] !== executable) {
     throw new Error(`DMG contains a missing or alternate same-name executable outside the canonical application bundle path`);

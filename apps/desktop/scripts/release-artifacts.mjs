@@ -2,7 +2,7 @@ import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto
 import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { inspectArtifactArchitecture } from './release-architecture.mjs';
+import { inspectArtifactArchitecture, NATIVE_DMG_VALIDATOR } from './release-architecture.mjs';
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -17,6 +17,130 @@ const TARGETS = new Map([
   ['win32-x64', ['setup', 'nupkg', 'releases']],
   ['win32-arm64', ['setup', 'nupkg', 'releases']],
 ]);
+const DMG_HELPERS = [
+  'propr-desktop Helper.app',
+  'propr-desktop Helper (GPU).app',
+  'propr-desktop Helper (Plugin).app',
+  'propr-desktop Helper (Renderer).app',
+];
+
+const requireExactKeys = (value, keys, label) => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const actual = Object.keys(value);
+  if (actual.length !== keys.length || actual.some(key => !keys.includes(key))) {
+    throw new Error(`${label} has missing or unknown keys`);
+  }
+};
+
+const expectedDmgLayout = arch => ({
+  topLevelApplication: 'propr-desktop.app',
+  installLink: { path: 'Applications', type: 'symbolic-link', target: '/Applications' },
+  mainExecutable: {
+    path: 'propr-desktop.app/Contents/MacOS/propr-desktop',
+    format: 'mach-o',
+    architectures: [arch],
+  },
+  helperExecutables: DMG_HELPERS.map(bundle => ({
+    bundle,
+    path: `propr-desktop.app/Contents/Frameworks/${bundle}/Contents/MacOS/${bundle.slice(0, -'.app'.length)}`,
+    format: 'mach-o',
+    architectures: [arch],
+  })),
+});
+
+const validateExecutableLayoutEvidence = (value, expected, label, { helper = false } = {}) => {
+  requireExactKeys(value, helper
+    ? ['bundle', 'path', 'format', 'architectures']
+    : ['path', 'format', 'architectures'], label);
+  if ((helper && value.bundle !== expected.bundle)
+    || value.path !== expected.path
+    || value.format !== 'mach-o'
+    || !Array.isArray(value.architectures)
+    || value.architectures.length !== 1
+    || value.architectures[0] !== expected.architectures[0]) {
+    throw new Error(`${label} does not match the canonical native Mach-O layout`);
+  }
+};
+
+const validateDmgLayoutEvidence = (value, arch, label) => {
+  requireExactKeys(value, ['topLevelApplication', 'installLink', 'mainExecutable', 'helperExecutables'], label);
+  const expected = expectedDmgLayout(arch);
+  if (value.topLevelApplication !== expected.topLevelApplication) {
+    throw new Error(`${label} has a noncanonical top-level application`);
+  }
+  requireExactKeys(value.installLink, ['path', 'type', 'target'], `${label}.installLink`);
+  if (value.installLink.path !== expected.installLink.path
+    || value.installLink.type !== expected.installLink.type
+    || value.installLink.target !== expected.installLink.target) {
+    throw new Error(`${label} does not claim the exact native /Applications symbolic link`);
+  }
+  validateExecutableLayoutEvidence(value.mainExecutable, expected.mainExecutable, `${label}.mainExecutable`);
+  if (!Array.isArray(value.helperExecutables) || value.helperExecutables.length !== expected.helperExecutables.length) {
+    throw new Error(`${label}.helperExecutables must contain the exact canonical helper set`);
+  }
+  value.helperExecutables.forEach((helper, index) => {
+    validateExecutableLayoutEvidence(helper, expected.helperExecutables[index], `${label}.helperExecutables[${index}]`, { helper: true });
+  });
+};
+
+const createNativeDmgEvidence = ({ target, version, arch, artifact, nativeValidation }) => {
+  requireExactKeys(
+    nativeValidation,
+    ['schemaVersion', 'tool', 'toolVersion', 'nativePlatform', 'mountMethod', 'layout'],
+    'Native DMG validation marker',
+  );
+  for (const key of ['schemaVersion', 'tool', 'toolVersion', 'nativePlatform', 'mountMethod']) {
+    if (nativeValidation[key] !== NATIVE_DMG_VALIDATOR[key]) {
+      throw new Error(`Native DMG validation marker has an unsupported ${key}`);
+    }
+  }
+  validateDmgLayoutEvidence(nativeValidation.layout, arch, 'Native DMG validation marker layout');
+  return {
+    schemaVersion: NATIVE_DMG_VALIDATOR.schemaVersion,
+    tool: NATIVE_DMG_VALIDATOR.tool,
+    toolVersion: NATIVE_DMG_VALIDATOR.toolVersion,
+    nativePlatform: NATIVE_DMG_VALIDATOR.nativePlatform,
+    mountMethod: NATIVE_DMG_VALIDATOR.mountMethod,
+    validatedNatively: true,
+    target,
+    version,
+    architecture: arch,
+    artifact: {
+      fileName: artifact.fileName,
+      size: artifact.size,
+      sha256: artifact.sha256,
+    },
+    layout: nativeValidation.layout,
+  };
+};
+
+const validateNativeDmgEvidence = (value, { target, version, arch, artifact }) => {
+  const label = `Native DMG evidence for ${target}`;
+  requireExactKeys(value, [
+    'schemaVersion', 'tool', 'toolVersion', 'nativePlatform', 'mountMethod', 'validatedNatively',
+    'target', 'version', 'architecture', 'artifact', 'layout',
+  ], label);
+  for (const key of ['schemaVersion', 'tool', 'toolVersion', 'nativePlatform', 'mountMethod']) {
+    if (value[key] !== NATIVE_DMG_VALIDATOR[key]) throw new Error(`${label} has an unsupported ${key}`);
+  }
+  if (value.validatedNatively !== true) throw new Error(`${label} lacks the native-validation marker`);
+  if (typeof value.target !== 'string' || value.target.length > 32 || value.target !== target
+    || typeof value.version !== 'string' || value.version.length > 64 || value.version !== version
+    || typeof value.architecture !== 'string' || value.architecture.length > 16 || value.architecture !== arch) {
+    throw new Error(`${label} has mixed, stale, or cross-target metadata`);
+  }
+  requireExactKeys(value.artifact, ['fileName', 'size', 'sha256'], `${label}.artifact`);
+  if (typeof value.artifact.fileName !== 'string' || value.artifact.fileName.length > 255
+    || value.artifact.fileName !== artifact.fileName
+    || !Number.isSafeInteger(value.artifact.size) || value.artifact.size <= 0 || value.artifact.size !== artifact.size
+    || typeof value.artifact.sha256 !== 'string' || !SHA256_PATTERN.test(value.artifact.sha256)
+    || value.artifact.sha256 !== artifact.sha256) {
+    throw new Error(`${label} does not bind the exact canonical DMG bytes`);
+  }
+  validateDmgLayoutEvidence(value.layout, arch, `${label}.layout`);
+};
 
 const recursiveFiles = async directory => {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -200,22 +324,34 @@ export const stageArtifacts = async ({
     } else {
       await copyFile(byKind.get(kind), destination);
     }
-    const architectureEvidence = await inspectArchitecture({
+    const inspection = await inspectArchitecture({
       path: destination,
       kind,
       platform,
       arch,
     });
     const details = await stat(destination);
-    artifacts.push({
+    const artifact = {
       platform,
       arch,
       kind,
       fileName,
       size: details.size,
       sha256: await checksum(destination),
-      architectureEvidence,
-    });
+      architectureEvidence: kind === 'dmg'
+        ? { format: inspection.format, executable: inspection.executable }
+        : inspection,
+    };
+    if (kind === 'dmg') {
+      artifact.nativeDmgValidationEvidence = createNativeDmgEvidence({
+        target,
+        version,
+        arch,
+        artifact,
+        nativeValidation: inspection.nativeValidation,
+      });
+    }
+    artifacts.push(artifact);
   }
   const nativeSigner = readNativeSigner(platform, env);
   if (env.PROPR_DESKTOP_REQUIRE_SIGNED_ARTIFACTS === '1' && platform !== 'linux' && !nativeSigner) {
@@ -307,16 +443,29 @@ export const finalizeArtifacts = async ({
       ) {
         throw new Error(`Release fragment ${value.target} has an invalid or duplicate artifact`);
       }
+      if (artifact.kind === 'dmg') {
+        validateNativeDmgEvidence(artifact.nativeDmgValidationEvidence, {
+          target: value.target,
+          version,
+          arch: targetArch,
+          artifact,
+        });
+      } else if (artifact.nativeDmgValidationEvidence !== undefined) {
+        throw new Error(`Release fragment ${value.target} attaches native DMG evidence to a non-DMG artifact`);
+      }
       const source = join(dirname(path), artifact.fileName);
       if (await checksum(source) !== artifact.sha256 || (await stat(source)).size !== artifact.size) {
         throw new Error(`Release artifact integrity does not match its fragment: ${artifact.fileName}`);
       }
-      const architectureEvidence = await inspectArchitecture({
+      const inspection = await inspectArchitecture({
         path: source,
         kind: artifact.kind,
         platform: targetPlatform,
         arch: targetArch,
       });
+      const architectureEvidence = artifact.kind === 'dmg'
+        ? { format: inspection.format, executable: inspection.executable }
+        : inspection;
       if (JSON.stringify(architectureEvidence) !== JSON.stringify(artifact.architectureEvidence)) {
         throw new Error(`Release artifact architecture evidence does not match its fragment: ${artifact.fileName}`);
       }

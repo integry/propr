@@ -27,13 +27,45 @@ const certificateSha256 = '1'.repeat(64);
 const spkiSha256 = '2'.repeat(64);
 const windowsSignerPins = `certificate-sha256:${certificateSha256},spki-sha256:${spkiSha256}`;
 
+const nativeDmgValidation = arch => ({
+  schemaVersion: 1,
+  tool: 'propr-desktop-release-architecture',
+  toolVersion: '1.0.0',
+  nativePlatform: 'darwin',
+  mountMethod: 'hdiutil-attach-readonly',
+  layout: {
+    topLevelApplication: 'propr-desktop.app',
+    installLink: { path: 'Applications', type: 'symbolic-link', target: '/Applications' },
+    mainExecutable: {
+      path: 'propr-desktop.app/Contents/MacOS/propr-desktop',
+      format: 'mach-o',
+      architectures: [arch],
+    },
+    helperExecutables: [
+      'propr-desktop Helper.app',
+      'propr-desktop Helper (GPU).app',
+      'propr-desktop Helper (Plugin).app',
+      'propr-desktop Helper (Renderer).app',
+    ].map(bundle => ({
+      bundle,
+      path: `propr-desktop.app/Contents/Frameworks/${bundle}/Contents/MacOS/${bundle.slice(0, -'.app'.length)}`,
+      format: 'mach-o',
+      architectures: [arch],
+    })),
+  },
+});
+
 const architectureInspector = async ({ path, kind, platform, arch }) => {
   if (kind === 'releases') return { format: 'squirrel-releases', target: `${platform}-${arch}` };
   const contents = await readFile(path, 'utf8');
   if (!contents.includes(`${platform}-${arch}-${kind}`)) {
     throw new Error(`${kind} packaged executable architecture mismatch for ${platform}-${arch}`);
   }
-  return { format: kind, executable: { platform, architectures: [arch] } };
+  return {
+    format: kind,
+    executable: { platform, architectures: [arch] },
+    ...(kind === 'dmg' ? { nativeValidation: nativeDmgValidation(arch) } : {}),
+  };
 };
 
 const signerEnvironment = platform => platform === 'darwin'
@@ -171,6 +203,141 @@ describe('desktop release artifacts', () => {
     assert.match(
       await readFile(join(output, 'ProPR-Desktop-1.2.3-windows-x64-RELEASES'), 'utf8'),
       /ProPR-Desktop-1\.2\.3-windows-x64-full\.nupkg/,
+    );
+    const dmg = manifest.artifacts.find(artifact => artifact.kind === 'dmg' && artifact.arch === 'arm64');
+    assert.deepEqual(dmg.nativeDmgValidationEvidence.artifact, {
+      fileName: dmg.fileName,
+      size: dmg.size,
+      sha256: dmg.sha256,
+    });
+    assert.equal(dmg.nativeDmgValidationEvidence.validatedNatively, true);
+    assert.deepEqual(dmg.nativeDmgValidationEvidence.layout.installLink, {
+      path: 'Applications',
+      type: 'symbolic-link',
+      target: '/Applications',
+    });
+  });
+
+  test('rejects altered DMG bytes even when fragment artifact metadata is rewritten', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-altered-'));
+    const fragments = await createFragments(root);
+    const fragmentPath = join(fragments, 'darwin-arm64', 'release-fragment.json');
+    const fragment = JSON.parse(await readFile(fragmentPath, 'utf8'));
+    const dmg = fragment.artifacts.find(artifact => artifact.kind === 'dmg');
+    const dmgPath = join(fragments, 'darwin-arm64', dmg.fileName);
+    const altered = Buffer.from('darwin-arm64-dmg-altered-after-native-validation');
+    await writeFile(dmgPath, altered);
+    dmg.size = altered.length;
+    dmg.sha256 = createHash('sha256').update(altered).digest('hex');
+    await writeFile(fragmentPath, `${JSON.stringify(fragment, null, 2)}\n`);
+    await assert.rejects(
+      finalizeArtifacts({
+        inputDirectory: fragments,
+        outputDirectory: join(root, 'final'),
+        version: '1.2.3',
+        inspectArchitecture: architectureInspector,
+      }),
+      /does not bind the exact canonical DMG bytes/,
+    );
+  });
+
+  test('does not emit claimed DMG layout evidence without the native-validation marker', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-no-native-marker-'));
+    const makeDirectory = join(root, 'make');
+    await mkdir(makeDirectory);
+    await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
+    await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+    await assert.rejects(
+      stageArtifacts({
+        makeDirectory,
+        outputDirectory: join(root, 'stage'),
+        platform: 'darwin',
+        arch: 'arm64',
+        version: '1.2.3',
+        inspectArchitecture: async arguments_ => {
+          const inspection = await architectureInspector(arguments_);
+          delete inspection.nativeValidation;
+          return inspection;
+        },
+      }),
+      /Native DMG validation marker must be an object/,
+    );
+  });
+
+  test('strictly rejects missing, mixed, stale, malformed, or fabricated native DMG evidence', async () => {
+    const cases = [
+      ['missing evidence', artifact => { delete artifact.nativeDmgValidationEvidence; }, /must be an object/],
+      ['wrong filename', artifact => { artifact.nativeDmgValidationEvidence.artifact.fileName = 'foreign.dmg'; }, /exact canonical DMG bytes/],
+      ['wrong version', artifact => { artifact.nativeDmgValidationEvidence.version = '1.2.4'; }, /mixed, stale, or cross-target/],
+      ['wrong target', artifact => { artifact.nativeDmgValidationEvidence.target = 'darwin-x64'; }, /mixed, stale, or cross-target/],
+      ['wrong architecture', artifact => { artifact.nativeDmgValidationEvidence.architecture = 'x64'; }, /mixed, stale, or cross-target/],
+      ['wrong hash', artifact => { artifact.nativeDmgValidationEvidence.artifact.sha256 = '0'.repeat(64); }, /exact canonical DMG bytes/],
+      ['wrong size', artifact => { artifact.nativeDmgValidationEvidence.artifact.size += 1; }, /exact canonical DMG bytes/],
+      ['wrong size type', artifact => { artifact.nativeDmgValidationEvidence.artifact.size = `${artifact.size}`; }, /exact canonical DMG bytes/],
+      ['missing layout field', artifact => { delete artifact.nativeDmgValidationEvidence.layout.mainExecutable; }, /missing or unknown keys/],
+      ['unknown layout key', artifact => { artifact.nativeDmgValidationEvidence.layout.untrusted = true; }, /missing or unknown keys/],
+      ['unknown record key', artifact => { artifact.nativeDmgValidationEvidence.untrusted = true; }, /missing or unknown keys/],
+      ['unknown schema', artifact => { artifact.nativeDmgValidationEvidence.schemaVersion = 2; }, /unsupported schemaVersion/],
+      ['symlink claim without native marker', artifact => { artifact.nativeDmgValidationEvidence.validatedNatively = false; }, /lacks the native-validation marker/],
+    ];
+    for (const [name, mutate, expected] of cases) {
+      const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-evidence-'));
+      const fragments = await createFragments(root);
+      const fragmentPath = join(fragments, 'darwin-arm64', 'release-fragment.json');
+      const fragment = JSON.parse(await readFile(fragmentPath, 'utf8'));
+      const artifact = fragment.artifacts.find(candidate => candidate.kind === 'dmg');
+      mutate(artifact);
+      await writeFile(fragmentPath, `${JSON.stringify(fragment, null, 2)}\n`);
+      await assert.rejects(
+        finalizeArtifacts({
+          inputDirectory: fragments,
+          outputDirectory: join(root, 'final'),
+          version: '1.2.3',
+          inspectArchitecture: architectureInspector,
+        }),
+        expected,
+        name,
+      );
+    }
+  });
+
+  test('rejects native DMG evidence copied between x64 and arm64 fragments', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-cross-label-'));
+    const fragments = await createFragments(root);
+    const x64Fragment = JSON.parse(await readFile(join(fragments, 'darwin-x64', 'release-fragment.json'), 'utf8'));
+    const arm64Path = join(fragments, 'darwin-arm64', 'release-fragment.json');
+    const arm64Fragment = JSON.parse(await readFile(arm64Path, 'utf8'));
+    arm64Fragment.artifacts.find(artifact => artifact.kind === 'dmg').nativeDmgValidationEvidence =
+      x64Fragment.artifacts.find(artifact => artifact.kind === 'dmg').nativeDmgValidationEvidence;
+    await writeFile(arm64Path, `${JSON.stringify(arm64Fragment, null, 2)}\n`);
+    await assert.rejects(
+      finalizeArtifacts({
+        inputDirectory: fragments,
+        outputDirectory: join(root, 'final'),
+        version: '1.2.3',
+        inspectArchitecture: architectureInspector,
+      }),
+      /mixed, stale, or cross-target|exact canonical DMG bytes/,
+    );
+  });
+
+  test('rejects duplicate target fragments before aggregation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-duplicate-fragment-'));
+    const fragments = await createFragments(root);
+    const duplicate = join(fragments, 'duplicate');
+    await mkdir(duplicate);
+    await writeFile(
+      join(duplicate, 'release-fragment.json'),
+      await readFile(join(fragments, 'darwin-x64', 'release-fragment.json')),
+    );
+    await assert.rejects(
+      finalizeArtifacts({
+        inputDirectory: fragments,
+        outputDirectory: join(root, 'final'),
+        version: '1.2.3',
+        inspectArchitecture: architectureInspector,
+      }),
+      /Expected 6 release fragments, found 7/,
     );
   });
 

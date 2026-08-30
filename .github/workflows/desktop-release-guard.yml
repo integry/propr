@@ -169,7 +169,7 @@ jobs:
             unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
           fi
 
-      - name: Stage architecture-verified validation artifacts
+      - name: Stage architecture-verified validation artifacts with native DMG mount evidence
         shell: bash
         run: |
           node apps/desktop/scripts/release-artifacts.mjs stage \
@@ -581,7 +581,7 @@ jobs:
           rpm -qip "$(find apps/desktop/out/make -type f -name '*.rpm' -print -quit)" >/dev/null
           unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
 
-      - name: Stage architecture and signer verified production artifacts
+      - name: Stage architecture and signer verified production artifacts with native DMG mount evidence
         shell: bash
         run: |
           node apps/desktop/scripts/release-artifacts.mjs stage \

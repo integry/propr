@@ -9,6 +9,14 @@ const workflow = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../../../.github/workflows/desktop-release-guard.yml', import.meta.url)),
   'utf8',
 ));
+const releaseArchitecture = readFileSync(
+  fileURLToPath(new URL('../scripts/release-architecture.mjs', import.meta.url)),
+  'utf8',
+);
+const releaseArtifacts = readFileSync(
+  fileURLToPath(new URL('../scripts/release-artifacts.mjs', import.meta.url)),
+  'utf8',
+);
 
 const job = (name: string, next?: string): string => {
   const start = workflow.indexOf(`\n  ${name}:`);
@@ -128,6 +136,8 @@ describe('desktop trusted release workflow', () => {
     assert.equal(workflow.match(platformArchitecturePattern)?.length, 12);
     assert.equal(workflow.match(/release-artifacts\.mjs stage/g)?.length, 2);
     assert.equal(workflow.match(/release-artifacts\.mjs finalize/g)?.length, 2);
+    assert.match(job('finalize', 'preflight'), /needs: \[validation-version, package\]/);
+    assert.match(job('release-finalize', 'sign'), /needs: \[preflight, release-package\]/);
     assert.match(workflow, /p7zip-full rpm/);
     const publish = job('publish');
     assert.match(publish, /test -s desktop-release-final\/desktop-release\.json\.sig/);
@@ -151,6 +161,7 @@ describe('desktop trusted release workflow', () => {
       ['unsigned validation', job('package', 'finalize')],
       ['trusted production', job('release-package', 'release-finalize')],
     ] as const) {
+      assert.equal(section.match(platformArchitecturePattern)?.length, 6, `${jobName} must retain all six native jobs`);
       assert.match(section, /- platform: darwin\n\s+arch: x64\n\s+runner: macos-15-intel/, `${jobName} is missing native macOS x64`);
       assert.match(section, /- platform: darwin\n\s+arch: arm64\n\s+runner: macos-15/, `${jobName} is missing native macOS arm64`);
       assert.match(
@@ -158,7 +169,25 @@ describe('desktop trusted release workflow', () => {
         /- name: Typecheck and test (?:unsigned|production) desktop runtime\n\s+shell: bash\n\s+run: \|\n\s+npm run desktop:typecheck\n\s+npm run desktop:test/,
         `${jobName} must run the complete desktop tests without a platform condition`,
       );
+      assert.match(section, /Stage architecture(?:-verified| and signer verified) .* with native DMG mount evidence/);
+      assert.match(section, /release-artifacts\.mjs stage[\s\S]*--platform "\$\{\{ matrix\.platform \}\}"[\s\S]*--arch "\$\{\{ matrix\.arch \}\}"/);
       assert.match(section, /Expected \$\{process\.env\.EXPECTED_PLATFORM\}-\$\{process\.env\.EXPECTED_ARCH\}/);
     }
+    assert.match(releaseArchitecture, /hdiutil', \['attach', '-readonly', '-nobrowse', '-mountpoint'/);
+    assert.ok(
+      releaseArchitecture.indexOf("hdiutil', ['attach', '-readonly'")
+        < releaseArchitecture.indexOf('inspectDmgLayout({ root: directory'),
+      'native DMG bytes must be mounted read-only before layout validation',
+    );
+    assert.ok(
+      releaseArchitecture.indexOf('inspectDmgLayout({ root: directory')
+        < releaseArchitecture.indexOf('nativeValidation: nativeDmgLayoutEvidence'),
+      'native layout evidence must be produced only after the real layout validator succeeds',
+    );
+    assert.ok(
+      releaseArtifacts.indexOf('const inspection = await inspectArchitecture')
+        < releaseArtifacts.indexOf('createNativeDmgEvidence({'),
+      'staging must inspect the copied canonical DMG before binding native evidence',
+    );
   });
 });

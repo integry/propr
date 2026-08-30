@@ -4,7 +4,11 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { inspectDmgLayout, inspectLinuxPackageLayout } from './release-architecture.mjs';
+import {
+  inspectDmgLayout,
+  inspectExtractedDmgArchitecture,
+  inspectLinuxPackageLayout,
+} from './release-architecture.mjs';
 
 const elfFixture = machine => {
   const bytes = Buffer.alloc(64);
@@ -164,6 +168,22 @@ describe('DMG application layout', { skip: process.platform === 'win32' }, () =>
     await createDmgLayout(root);
     assert.deepEqual(
       await inspectDmgLayout({ root, platform: 'darwin', arch: 'arm64', artifact: 'DMG fixture' }),
+      { format: 'mach-o', architectures: ['arm64'] },
+    );
+  });
+
+  test('never treats Linux 7z sanitized install-link output as native layout evidence', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-dmg-sanitized-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    await createDmgLayout(root);
+    await rm(join(root, 'Applications'));
+    await writeFile(join(root, 'Applications'), '/Applications');
+    await assert.rejects(
+      inspectDmgLayout({ root, platform: 'darwin', arch: 'arm64', artifact: '7z DMG fixture' }),
+      /exact \/Applications symbolic link/,
+    );
+    assert.deepEqual(
+      await inspectExtractedDmgArchitecture({ root, platform: 'darwin', arch: 'arm64', artifact: '7z DMG fixture' }),
       { format: 'mach-o', architectures: ['arm64'] },
     );
   });
