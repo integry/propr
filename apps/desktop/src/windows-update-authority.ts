@@ -81,8 +81,51 @@ export const WINDOWS_AUTHORITY_COMPILE_STAGES = Object.freeze([
   'HELPER_HASH',
   'PROTOCOL_INIT',
   'READY',
+  'TRANSPORT_HELPER_OPEN',
+  'TRANSPORT_HELPER_AUTHORITY',
+  'TRANSPORT_PIPE_CREATE',
+  'TRANSPORT_PROCESS_CREATE',
+  'TRANSPORT_JOB_CREATE',
+  'TRANSPORT_JOB_LIMIT',
+  'TRANSPORT_JOB_ASSIGN',
+  'TRANSPORT_IMAGE_QUERY',
+  'TRANSPORT_IMAGE_OPEN',
+  'TRANSPORT_IMAGE_AUTH',
+  'TRANSPORT_PROCESS_RESUME',
+  'TRANSPORT_PIPE_EXPORT',
 ] as const);
 export type WindowsAuthorityCompileStage = typeof WINDOWS_AUTHORITY_COMPILE_STAGES[number];
+
+export const WINDOWS_NATIVE_LAUNCH_FAILURE_CODES = Object.freeze([
+  'HELPER_OPEN',
+  'HELPER_AUTHORITY',
+  'PIPE_CREATE',
+  'PROCESS_CREATE',
+  'JOB_CREATE',
+  'JOB_LIMIT',
+  'JOB_ASSIGN',
+  'IMAGE_QUERY',
+  'IMAGE_OPEN',
+  'IMAGE_AUTH',
+  'PROCESS_RESUME',
+  'PIPE_EXPORT',
+] as const);
+export type WindowsNativeLaunchFailureCode = typeof WINDOWS_NATIVE_LAUNCH_FAILURE_CODES[number];
+
+const NATIVE_LAUNCH_COMPILE_STAGE = Object.freeze({
+  HELPER_OPEN: 'TRANSPORT_HELPER_OPEN',
+  HELPER_AUTHORITY: 'TRANSPORT_HELPER_AUTHORITY',
+  PIPE_CREATE: 'TRANSPORT_PIPE_CREATE',
+  PROCESS_CREATE: 'TRANSPORT_PROCESS_CREATE',
+  JOB_CREATE: 'TRANSPORT_JOB_CREATE',
+  JOB_LIMIT: 'TRANSPORT_JOB_LIMIT',
+  JOB_ASSIGN: 'TRANSPORT_JOB_ASSIGN',
+  IMAGE_QUERY: 'TRANSPORT_IMAGE_QUERY',
+  IMAGE_OPEN: 'TRANSPORT_IMAGE_OPEN',
+  IMAGE_AUTH: 'TRANSPORT_IMAGE_AUTH',
+  PROCESS_RESUME: 'TRANSPORT_PROCESS_RESUME',
+  PIPE_EXPORT: 'TRANSPORT_PIPE_EXPORT',
+} as const satisfies Record<WindowsNativeLaunchFailureCode, WindowsAuthorityCompileStage>);
 
 const BROKER_TIMEOUT_MS = 10_000;
 const BROKER_STARTUP_TIMEOUT_MS = 60_000;
@@ -1589,6 +1632,19 @@ interface StartBrokerOptions {
   allowUnsignedBootstrapForValidation?: boolean;
 }
 
+const compileStageFromNativeLaunchError = (error: unknown): WindowsAuthorityCompileStage => {
+  try {
+    if (typeof error !== 'object' || error === null || !Object.hasOwn(error, 'code')) return 'TRANSPORT_SPAWN';
+    const code = (error as { code?: unknown }).code;
+    if (typeof code !== 'string' || !Object.hasOwn(NATIVE_LAUNCH_COMPILE_STAGE, code)) return 'TRANSPORT_SPAWN';
+    return NATIVE_LAUNCH_COMPILE_STAGE[code as WindowsNativeLaunchFailureCode];
+  } catch {
+    return 'TRANSPORT_SPAWN';
+  }
+};
+
+export const compileStageFromNativeLaunchErrorForTest = compileStageFromNativeLaunchError;
+
 const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAuthoritySession> => {
   if (options.injectedStage && WINDOWS_AUTHORITY_COMPILE_STAGES.slice(0, 4).includes(options.injectedStage)) {
     throw helperError(options.injectedStage);
@@ -1604,12 +1660,13 @@ const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAut
   let child: BrokerChild;
   try {
     child = spawnBroker(helper, options.injectedStage, options.transportFault, options.imageFault, options.nativeFault);
-  } catch {
+  } catch (error) {
     await helper.executableHandle.close().catch(() => undefined);
     await helper.launcherHandle.close().catch(() => undefined);
     await helper.bootstrapHandle.close().catch(() => undefined);
     await helper.manifestHandle.close().catch(() => undefined);
-    throw new WindowsAuthorityBootstrapError('SPAWN_ERROR', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf('TRANSPORT_SPAWN'));
+    const stage = compileStageFromNativeLaunchError(error);
+    throw new WindowsAuthorityBootstrapError('SPAWN_ERROR', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf(stage));
   }
   if (options.countCompilation !== false) {
     compileCount++;
@@ -1697,8 +1754,22 @@ export const probeWindowsAuthorityCompileFailureForTest = (): Promise<WindowsAut
   Promise.resolve('BUILD_OUTPUT');
 
 /** Native-test-only failure injection at each fixed startup boundary. */
-export const probeWindowsAuthorityBootstrapStageForTest = (stage: WindowsAuthorityCompileStage): Promise<WindowsAuthorityCompileStage> =>
-  runWindowsAuthorityCompileProbe({ injectedStage: stage });
+export const probeWindowsAuthorityBootstrapStageForTest = (
+  stage: WindowsAuthorityCompileStage,
+): Promise<WindowsAuthorityCompileStage> => {
+  const nativeCode = WINDOWS_NATIVE_LAUNCH_FAILURE_CODES.find(code => NATIVE_LAUNCH_COMPILE_STAGE[code] === stage);
+  return runWindowsAuthorityCompileProbe({
+    injectedStage: nativeCode ? undefined : stage,
+    nativeFault: nativeCode ? `launch-stage-${nativeCode}` : undefined,
+  });
+};
+
+export const probeWindowsAuthorityNativeLaunchStageForTest = (
+  code: WindowsNativeLaunchFailureCode,
+): Promise<WindowsAuthorityCompileStage> => runWindowsAuthorityCompileProbe({ nativeFault: `launch-stage-${code}` });
+
+export const probeWindowsAuthorityUnknownNativeLaunchStageForTest = (): Promise<WindowsAuthorityCompileStage> =>
+  runWindowsAuthorityCompileProbe({ nativeFault: 'launch-stage-UNKNOWN' });
 
 export const probeWindowsAuthorityProcessImageMismatchForTest = (): Promise<WindowsAuthorityCompileStage> =>
   runWindowsAuthorityCompileProbe({ imageFault: 'process-image' });

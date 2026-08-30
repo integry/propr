@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import {
   crashWindowsLockedArtifactForTest,
   authenticateWindowsAuthorityHelperForTest,
+  compileStageFromNativeLaunchErrorForTest,
   decodeWindowsAuthorityFramesForTest,
   encodeWindowsAuthorityFrameForTest,
   inspectWindowsAuthorityHelperPeForTest,
@@ -26,6 +27,8 @@ import {
   probeWindowsAuthorityBootstrapStageForTest,
   probeWindowsAuthorityProcessImageMismatchForTest,
   probeWindowsAuthorityNativeBoundaryForTest,
+  probeWindowsAuthorityNativeLaunchStageForTest,
+  probeWindowsAuthorityUnknownNativeLaunchStageForTest,
   probeWindowsAuthorityStartupFailureForTest,
   protectWindowsPrivateFile,
   shutdownWindowsAuthorityBrokerForTest,
@@ -33,6 +36,7 @@ import {
   validateBootstrapIdentityRecordForTest,
   windowsAuthorityBrokerStatsForTest,
   WINDOWS_AUTHORITY_COMPILE_STAGES,
+  WINDOWS_NATIVE_LAUNCH_FAILURE_CODES,
 } from './windows-update-authority';
 import {
   invokeWindowsAclTool,
@@ -52,6 +56,44 @@ test('native Windows exact production C# compile probe reaches ready', windowsOn
 test('native Windows compile probe bounds startup failure to an enumerated non-secret stage', windowsOnly, async () => {
   assert.equal(await probeWindowsAuthorityCompileFailureForTest(), 'BUILD_OUTPUT');
   assert.equal(await probeWindowsAuthorityStartupFailureForTest(), 'ready_protocol');
+});
+
+test('native launch errors map only the fixed code allowlist to redacted transport stages', () => {
+  assert.deepEqual(WINDOWS_NATIVE_LAUNCH_FAILURE_CODES, [
+    'HELPER_OPEN',
+    'HELPER_AUTHORITY',
+    'PIPE_CREATE',
+    'PROCESS_CREATE',
+    'JOB_CREATE',
+    'JOB_LIMIT',
+    'JOB_ASSIGN',
+    'IMAGE_QUERY',
+    'IMAGE_OPEN',
+    'IMAGE_AUTH',
+    'PROCESS_RESUME',
+    'PIPE_EXPORT',
+  ]);
+  for (const code of WINDOWS_NATIVE_LAUNCH_FAILURE_CODES) {
+    assert.equal(compileStageFromNativeLaunchErrorForTest({
+      code,
+      message: 'forbidden-raw-message',
+      errno: 1234,
+      path: 'forbidden-path',
+      sid: 'forbidden-sid',
+      hash: 'forbidden-hash',
+      acl: 'forbidden-acl',
+      process: 'forbidden-process-data',
+      secret: 'forbidden-secret',
+    }), `TRANSPORT_${code}`);
+  }
+  for (const error of [
+    { code: 'PROCESS_IMAGE' },
+    { code: 'NATIVE_TEST_UNKNOWN', message: 'forbidden-raw-message' },
+    { message: 'JOB_CREATE' },
+    Object.create({ code: 'JOB_CREATE' }) as object,
+    Object.defineProperty({}, 'code', { get: () => { throw new Error('forbidden-raw-message'); } }),
+    null,
+  ]) assert.equal(compileStageFromNativeLaunchErrorForTest(error), 'TRANSPORT_SPAWN');
 });
 
 const helperManifest = (overrides: Record<string, unknown> = {}): Buffer => Buffer.from(`${JSON.stringify({
@@ -568,6 +610,15 @@ test('native Windows bootstrap reports every injected real boundary including ea
   assert.equal(await probeWindowsAuthorityProcessImageMismatchForTest(), 'HELPER_IDENTITY');
 });
 
+test('native Windows launcher injects every fixed redacted transport stage and cleans up', windowsOnly, async () => {
+  for (const code of WINDOWS_NATIVE_LAUNCH_FAILURE_CODES) {
+    assert.equal(await probeWindowsAuthorityNativeLaunchStageForTest(code), `TRANSPORT_${code}`);
+    assert.equal(windowsAuthorityBrokerStatsForTest().activeProcessCount, 0);
+  }
+  assert.equal(await probeWindowsAuthorityUnknownNativeLaunchStageForTest(), 'TRANSPORT_SPAWN');
+  assert.equal(windowsAuthorityBrokerStatsForTest().activeProcessCount, 0);
+});
+
 test('native Windows helper authentication rejects manifest/output/compiler, link, reparse, and same-name ABA faults', windowsOnly, async t => {
   const source = await authenticateWindowsAuthorityHelperForTest();
   const sourceDirectory = dirname(source.executable);
@@ -676,8 +727,12 @@ test('native Windows parent boundary denies post-hash and post-create mutation a
     }
     assert.equal(await probeWindowsAuthorityNativeBoundaryForTest('extra-child'), 'READY');
     assert.equal(windowsAuthorityBrokerStatsForTest().activeProcessCount, 0);
-    for (const fault of ['job-assignment', 'parent-image-proof', 'pipe-substitution'] as const) {
-      assert.equal(await probeWindowsAuthorityNativeBoundaryForTest(fault), 'TRANSPORT_SPAWN');
+    for (const [fault, stage] of [
+      ['job-assignment', 'TRANSPORT_JOB_ASSIGN'],
+      ['parent-image-proof', 'TRANSPORT_IMAGE_AUTH'],
+      ['pipe-substitution', 'TRANSPORT_IMAGE_AUTH'],
+    ] as const) {
+      assert.equal(await probeWindowsAuthorityNativeBoundaryForTest(fault), stage);
       assert.equal(windowsAuthorityBrokerStatsForTest().activeProcessCount, 0);
     }
   });

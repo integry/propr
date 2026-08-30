@@ -365,7 +365,35 @@ describe('desktop trusted release workflow', () => {
       'HELPER_HASH',
       'PROTOCOL_INIT',
       'READY',
+      'TRANSPORT_HELPER_OPEN',
+      'TRANSPORT_HELPER_AUTHORITY',
+      'TRANSPORT_PIPE_CREATE',
+      'TRANSPORT_PROCESS_CREATE',
+      'TRANSPORT_JOB_CREATE',
+      'TRANSPORT_JOB_LIMIT',
+      'TRANSPORT_JOB_ASSIGN',
+      'TRANSPORT_IMAGE_QUERY',
+      'TRANSPORT_IMAGE_OPEN',
+      'TRANSPORT_IMAGE_AUTH',
+      'TRANSPORT_PROCESS_RESUME',
+      'TRANSPORT_PIPE_EXPORT',
     ]) assert.match(windowsAuthority, new RegExp(`'${stage}'`));
+    for (const stage of [
+      'HELPER_OPEN',
+      'HELPER_AUTHORITY',
+      'PIPE_CREATE',
+      'PROCESS_CREATE',
+      'JOB_CREATE',
+      'JOB_LIMIT',
+      'JOB_ASSIGN',
+      'IMAGE_QUERY',
+      'IMAGE_OPEN',
+      'IMAGE_AUTH',
+      'PROCESS_RESUME',
+      'PIPE_EXPORT',
+    ]) assert.match(windowsNativeLauncher, new RegExp(`"${stage}"`));
+    assert.doesNotMatch(windowsNativeLauncher, /Throw\(env, "PROCESS_IMAGE"\)/);
+    assert.match(windowsAuthority, /!Object\.hasOwn\(error, 'code'\)/);
     assert.match(windowsAuthorityBuild, /Microsoft\.NET', layout, 'v4\.0\.30319'/);
     assert.match(windowsAuthorityBuild, /await invoke\(compiler, args, \{/);
     assert.match(windowsAuthorityBuild, /'\/platform:anycpu'/);
