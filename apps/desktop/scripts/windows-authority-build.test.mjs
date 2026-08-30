@@ -19,6 +19,7 @@ import {
   WINDOWS_AUTHORITY_EXECUTABLE,
   WINDOWS_AUTHORITY_MANIFEST,
   WINDOWS_AUTHORITY_SOURCE,
+  WINDOWS_BUILD_CHILD_EVIDENCE,
 } from './build-windows-authority-helper.mjs';
 import {
   buildWindowsNativeLauncher,
@@ -27,7 +28,6 @@ import {
   invokeWindowsAclTool,
   prepareWindowsAuthorityBuildDirectory,
   resolveWindowsAclTool,
-  WINDOWS_NATIVE_BUILD_BOOTSTRAP,
   WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY,
   WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY,
 } from './build-windows-native-launcher.mjs';
@@ -44,6 +44,8 @@ const windowsNativeBuildOnly = {
   skip: process.platform !== 'win32' || process.env.PROPR_WINDOWS_AUTHORITY_NATIVE_BUILD_TESTS !== '1',
 };
 const require = createRequire(import.meta.url);
+const nativeBuildBootstrapPath = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
+  'propr_windows_build_bootstrap.node');
 const execFileAsync = promisify(execFile);
 const kernelTakeown = String.raw`\\?\GLOBALROOT\SystemRoot\System32\takeown.exe`;
 const kernelIcacls = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
@@ -184,6 +186,26 @@ test('native rebuild has one bounded hosted deadline, fixed progress evidence, a
   assert.match(source, /rm\(nativeBuildDirectory, \{ recursive: true, force: true \}\)/);
   assert.match(source, /finally \{ clearInterval\(progress\); \}/);
   assert.doesNotMatch(source, /nativeRebuildEvidence\([^\n]*(?:stdout|stderr|process\.env)/);
+});
+
+test('build module authentication uses one six-minute reaped child and fixed bounded records', async () => {
+  const [source, workflow] = await Promise.all([
+    readFile(new URL('./build-windows-authority-helper.mjs', import.meta.url), 'utf8'),
+    readFile(new URL('../../../.github/workflows/desktop-release-guard.yml', import.meta.url), 'utf8'),
+  ]);
+  assert.match(source, /WINDOWS_BUILD_CHILD_TIMEOUT_MS = 6 \* 60_000/);
+  assert.match(source, /fork\(fileURLToPath\(import\.meta\.url\), \[WINDOWS_BUILD_CHILD_ARGUMENT\]/);
+  assert.match(source, /stdio: \['ignore', 'ignore', 'ignore', 'ipc'\]/);
+  assert.match(source, /child\.kill\('SIGKILL'\)/);
+  assert.match(source, /child\.once\('close'/);
+  assert.match(source, /WINDOWS_BUILD_CHILD_MAX_MESSAGES = 6/);
+  assert.match(source, /WINDOWS_BUILD_CHILD_MAX_MESSAGE_BYTES = 2 \* 1024/);
+  assert.doesNotMatch(source, /buildChildRequest\s*=\s*launcher\s*=>\s*\(\{[\s\S]{0,500}\bpath:/);
+  assert.ok(source.indexOf('await cleanupWindowsAuthorityBuildStaging') < source.indexOf('await sealWindowsAuthorityDirectory'));
+  assert.match(source, /if \(primaryFailure\) throw cleanupFailure \? addCleanupDiagnostic\(primaryFailure\) : primaryFailure/);
+  assert.match(workflow, /platform: win32\s+arch: x64\s+runner: windows-2025/);
+  assert.match(workflow, /platform: win32\s+arch: arm64\s+runner: windows-11-arm/);
+  assert.ok((workflow.match(/PROPR_WINDOWS_AUTHORITY_NATIVE_BUILD_TESTS=1 npx tsx --test apps\/desktop\/scripts\/windows-authority-build\.test\.mjs/g) ?? []).length >= 2);
 });
 
 test('ACL tool launch maps synchronous throws and asynchronous rejections to one bounded spawn diagnostic', async () => {
@@ -425,7 +447,7 @@ test('absent Windows build roots are created before their DACL is protected', wi
 test('protected build staging removes hostile explicit and inherited ACEs and rejects a swapped root',
   windowsNativeBuildOnly, async () => {
     const launcher = await buildWindowsNativeLauncher();
-    const buildBootstrap = require(WINDOWS_NATIVE_BUILD_BOOTSTRAP);
+    const buildBootstrap = require(nativeBuildBootstrapPath);
     const parent = await mkdtemp(join(tmpdir(), 'propr-hostile-precreated-root-'));
     const root = join(parent, 'staging');
     const artifact = join(root, 'propr-windows-launcher.node');
@@ -475,7 +497,7 @@ test('real filtered current token can read and authenticate exact build staging'
     return;
   }
   const launcher = await buildWindowsNativeLauncher();
-  const buildBootstrap = require(WINDOWS_NATIVE_BUILD_BOOTSTRAP);
+  const buildBootstrap = require(nativeBuildBootstrapPath);
   assert.equal(typeof buildBootstrap.loadVerifiedModule({
     path: launcher.path,
     size: launcher.size,
@@ -491,7 +513,7 @@ test('real filtered current token can read and authenticate exact build staging'
 test('build-owner module authentication is compile-time-only, ACL-strict, and held-identity-bound',
   windowsNativeBuildOnly, async () => {
     const launcher = await buildWindowsNativeLauncher();
-    const buildBootstrap = require(WINDOWS_NATIVE_BUILD_BOOTSTRAP);
+    const buildBootstrap = require(nativeBuildBootstrapPath);
     const runtimeBootstrap = require(join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
       'propr_windows_bootstrap.node'));
     const policy = {
@@ -546,6 +568,34 @@ test('build-owner module authentication is compile-time-only, ACL-strict, and he
         fault: `barrier-before-module-load-${mutation}`,
       });
       assert.equal(typeof held.compileHeld, 'function', `${mutation} is denied across the held load boundary`);
+    }
+  });
+
+test('bounded build child unloads staging modules before cleanup and preserves authentication failures',
+  windowsNativeBuildOnly, async () => {
+    const exact = await buildWindowsAuthorityHelper(process.env);
+    assert.deepEqual(exact.buildChildEvidence, WINDOWS_BUILD_CHILD_EVIDENCE);
+    await assert.rejects(lstat(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY), error => error?.code === 'ENOENT');
+
+    for (const primary of ['BOOTSTRAP_AUTH', 'LAUNCHER_AUTH', 'SAME_IMAGE']) {
+      await assert.rejects(
+        buildWindowsAuthorityHelper({
+          ...process.env,
+          PROPR_WINDOWS_AUTHORITY_TEST_AUTH_FAILURE: primary,
+          PROPR_WINDOWS_AUTHORITY_TEST_CLEANUP_FAULT: 'after-remove',
+        }),
+        error => {
+          assert.equal(error?.stage, 'BUILD_COMPILER');
+          assert.equal(error?.substage, primary);
+          assert.equal(error?.message,
+            `Windows authority helper build failed [win-authority:BUILD_COMPILER:${primary}]`);
+          assert.deepEqual(error?.buildChildEvidence,
+            WINDOWS_BUILD_CHILD_EVIDENCE.slice(0, 3), 'both authenticated native modules loaded in the child');
+          assert.deepEqual(error?.cleanupDiagnostics, ['BUILD_COMPILER:LEASE']);
+          return true;
+        },
+      );
+      await assert.rejects(lstat(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY), error => error?.code === 'ENOENT');
     }
   });
 

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { fork } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import { chmod, lstat, mkdir, mkdtemp, open, realpath, rename, rm, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -8,8 +9,10 @@ import {
   buildWindowsNativeLauncher,
   cleanupWindowsAuthorityBuildStaging,
   inspectWindowsNativeLauncherPe,
-  prepareWindowsAuthorityBuildDirectory,
   sealWindowsAuthorityDirectory,
+  WINDOWS_NATIVE_BOOTSTRAP,
+  WINDOWS_NATIVE_BUILD_BOOTSTRAP,
+  WINDOWS_NATIVE_LAUNCHER,
 } from './build-windows-native-launcher.mjs';
 
 const desktopRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -28,6 +31,17 @@ export const WINDOWS_AUTHORITY_COMPILER_SUBSTAGES = Object.freeze([
 const MAX_SOURCE_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAX_BUILD_INPUT_BYTES = 32 * 1024 * 1024;
+const MAX_MANIFEST_BYTES = 64 * 1024;
+const WINDOWS_BUILD_CHILD_TIMEOUT_MS = 6 * 60_000;
+const WINDOWS_BUILD_CHILD_ARGUMENT = '--windows-authority-build-child-v1';
+const WINDOWS_BUILD_CHILD_SCHEMA_VERSION = 1;
+const WINDOWS_BUILD_CHILD_MAX_MESSAGES = 6;
+const WINDOWS_BUILD_CHILD_MAX_MESSAGE_BYTES = 2 * 1024;
+export const WINDOWS_BUILD_CHILD_EVIDENCE = Object.freeze([
+  'STARTED', 'BOOTSTRAP_AUTHENTICATED', 'LAUNCHER_AUTHENTICATED', 'COMPILER_STARTED', 'PUBLISHED',
+]);
+const WINDOWS_BUILD_AUTH_FAILURES = Object.freeze(['BOOTSTRAP_AUTH', 'LAUNCHER_AUTH', 'SAME_IMAGE']);
+const WINDOWS_CLEANUP_DIAGNOSTIC = 'BUILD_COMPILER:LEASE';
 const SYSTEM_DIRECTORY_RECORD_BYTES = 2 + (520 * 2);
 const MICROSOFT_COMPILER_CATALOG_POLICY = Object.freeze([
   'csc.exe', 'System.dll', 'System.Web.Extensions.dll',
@@ -52,14 +66,25 @@ const boundedCompilerDiagnostics = diagnostics => Array.isArray(diagnostics)
   )).slice(0, 8)
   : [];
 
-const fail = (stage, substage, diagnostics = []) => {
+const windowsAuthorityFailure = (stage, substage, diagnostics = []) => {
   const boundedSubstage = stage === 'BUILD_COMPILER' && WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(substage)
     ? `:${substage}` : '';
   const error = new Error(`Windows authority helper build failed [win-authority:${stage}${boundedSubstage}]`);
   error.stage = stage;
   if (boundedSubstage) error.substage = substage;
   error.diagnostics = Object.freeze(stage === 'BUILD_COMPILER' ? boundedCompilerDiagnostics(diagnostics) : []);
-  throw error;
+  error.cleanupDiagnostics = Object.freeze([]);
+  return error;
+};
+
+const fail = (stage, substage, diagnostics = []) => {
+  throw windowsAuthorityFailure(stage, substage, diagnostics);
+};
+
+const addCleanupDiagnostic = error => {
+  const primary = error instanceof Error ? error : windowsAuthorityFailure('BUILD_COMPILER', 'EXIT');
+  primary.cleanupDiagnostics = Object.freeze([WINDOWS_CLEANUP_DIAGNOSTIC]);
+  return primary;
 };
 
 export const preserveWindowsAuthorityCompilerFailure = (error, fallback = 'DIRECTORY_PROBE') => {
@@ -138,7 +163,7 @@ export const decodeWindowsSystemDirectoryRecord = record => {
 export const nativeLauncherAuthenticationSubstage = error => error?.code === 'MODULE_IMAGE'
   ? 'SAME_IMAGE' : 'LAUNCHER_AUTH';
 
-const loadAuthenticatedNativeLauncher = async launcher => {
+const loadAuthenticatedNativeLauncher = async (launcher, evidence = () => undefined) => {
   const buildBootstrapBytes = await readHeldBuildOutput(
     WINDOWS_AUTHORITY_BUILD_DIRECTORY, launcher.buildBootstrap.path,
   ).catch(() => fail('BUILD_COMPILER', 'BOOTSTRAP_READ'));
@@ -151,8 +176,9 @@ const loadAuthenticatedNativeLauncher = async launcher => {
   try { bootstrap = require(launcher.buildBootstrap.path); }
   catch { fail('BUILD_COMPILER', 'BOOTSTRAP_AUTH'); }
   if (!bootstrap || typeof bootstrap.loadVerifiedModule !== 'function') fail('BUILD_COMPILER', 'BOOTSTRAP_AUTH');
+  evidence('BOOTSTRAP_AUTHENTICATED');
   try {
-    return bootstrap.loadVerifiedModule({
+    const nativeLauncher = bootstrap.loadVerifiedModule({
       path: launcher.path,
       size: launcher.size,
       sha256: launcher.sha256,
@@ -162,6 +188,8 @@ const loadAuthenticatedNativeLauncher = async launcher => {
       signerCertificateSha256: null,
       signerSpkiSha256: null,
     });
+    evidence('LAUNCHER_AUTHENTICATED');
+    return nativeLauncher;
   } catch (error) { return fail('BUILD_COMPILER', nativeLauncherAuthenticationSubstage(error)); }
 };
 
@@ -318,12 +346,14 @@ const writeAtomic = async (target, bytes) => {
   await rename(temporary, target);
 };
 
-const buildWindowsAuthorityHelperInner = async (env = process.env) => {
+const buildWindowsAuthorityHelperInner = async (env, launcher, evidence = () => undefined) => {
   if (process.platform !== 'win32') return { skipped: true };
-  await prepareWindowsAuthorityBuildDirectory();
-  const launcher = await buildWindowsNativeLauncher().catch(error => preserveWindowsAuthorityCompilerFailure(error));
   if (launcher.skipped) fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
-  const nativeLauncher = await loadAuthenticatedNativeLauncher(launcher);
+  evidence('STARTED');
+  const nativeLauncher = await loadAuthenticatedNativeLauncher(launcher, evidence);
+  if (WINDOWS_BUILD_AUTH_FAILURES.includes(env.PROPR_WINDOWS_AUTHORITY_TEST_AUTH_FAILURE)) {
+    fail('BUILD_COMPILER', env.PROPR_WINDOWS_AUTHORITY_TEST_AUTH_FAILURE);
+  }
   const { systemRoot, compiler, framework, systemReference, webReference } = await resolveWindowsCompilerLayout(
     env,
     probeEnv => {
@@ -346,7 +376,8 @@ const buildWindowsAuthorityHelperInner = async (env = process.env) => {
   await chmod(privateOutputDirectory, 0o700).catch(() => fail('BUILD_OUTPUT'));
   const temporaryOutput = join(privateOutputDirectory, 'propr-windows-authority.exe');
   const buildInputs = [];
-  let publicationComplete = false;
+  let result;
+  let primaryFailure;
   try {
     try { buildInputs.push(await holdBuildInput(systemRoot, compiler, 'csc.exe')); }
     catch { fail('BUILD_COMPILER', 'COMPILER_OPEN'); }
@@ -361,6 +392,7 @@ const buildWindowsAuthorityHelperInner = async (env = process.env) => {
       : 'Framework-v4.0.30319';
     if (!nativeLauncher || typeof nativeLauncher.compileHeld !== 'function') fail('BUILD_COMPILER', 'SPAWN');
     let compileProof;
+    evidence('COMPILER_STARTED');
     try {
       compileProof = nativeLauncher.compileHeld({
         systemRoot,
@@ -466,29 +498,293 @@ const buildWindowsAuthorityHelperInner = async (env = process.env) => {
       },
     };
     await writeAtomic(WINDOWS_AUTHORITY_MANIFEST, Buffer.from(`${JSON.stringify(manifest)}\n`, 'utf8'));
-    publicationComplete = true;
-    return { skipped: false, executable: WINDOWS_AUTHORITY_EXECUTABLE, manifest: WINDOWS_AUTHORITY_MANIFEST, ...manifest };
-  } finally {
-    await Promise.all(buildInputs.map(input => input.handle.close().catch(() => undefined)));
-    await sourceInput.handle.close().catch(() => undefined);
-    await rm(privateOutputDirectory, { recursive: true, force: true });
-    await cleanupWindowsAuthorityBuildStaging();
-    if (publicationComplete) await sealWindowsAuthorityDirectory();
+    evidence('PUBLISHED');
+    result = { skipped: false, executable: WINDOWS_AUTHORITY_EXECUTABLE, manifest: WINDOWS_AUTHORITY_MANIFEST, ...manifest };
+  } catch (error) { primaryFailure = error; }
+  await Promise.all(buildInputs.map(input => input.handle.close().catch(() => undefined)));
+  await sourceInput.handle.close().catch(() => undefined);
+  let cleanupFailed = false;
+  await rm(privateOutputDirectory, { recursive: true, force: true }).catch(() => { cleanupFailed = true; });
+  if (primaryFailure) throw cleanupFailed ? addCleanupDiagnostic(primaryFailure) : primaryFailure;
+  if (cleanupFailed) fail('BUILD_COMPILER', 'LEASE');
+  return result;
+};
+
+const hasExactKeys = (value, keys) => typeof value === 'object' && value !== null && !Array.isArray(value)
+  && Object.keys(value).sort().join('\0') === [...keys].sort().join('\0');
+const validNativeDescriptor = value => hasExactKeys(value, ['architecture', 'format', 'machine', 'sha256', 'size'])
+  && Number.isSafeInteger(value.size) && value.size > 0 && value.size <= MAX_OUTPUT_BYTES
+  && /^[a-f0-9]{64}$/.test(value.sha256) && value.format === 'PE'
+  && value.architecture === process.arch
+  && value.machine === (process.arch === 'arm64' ? 'ARM64' : process.arch === 'x64' ? 'AMD64' : '');
+
+const nativeDescriptor = value => ({
+  architecture: value.architecture,
+  format: value.format,
+  machine: value.machine,
+  sha256: value.sha256,
+  size: value.size,
+});
+
+const buildChildRequest = launcher => ({
+  schemaVersion: WINDOWS_BUILD_CHILD_SCHEMA_VERSION,
+  type: 'build',
+  launcher: nativeDescriptor(launcher),
+  bootstrap: nativeDescriptor(launcher.bootstrap),
+  buildBootstrap: nativeDescriptor(launcher.buildBootstrap),
+});
+
+const decodeBuildChildRequest = message => {
+  if (!hasExactKeys(message, ['bootstrap', 'buildBootstrap', 'launcher', 'schemaVersion', 'type'])
+      || message.schemaVersion !== WINDOWS_BUILD_CHILD_SCHEMA_VERSION || message.type !== 'build'
+      || !validNativeDescriptor(message.launcher) || !validNativeDescriptor(message.bootstrap)
+      || !validNativeDescriptor(message.buildBootstrap)) fail('BUILD_COMPILER', 'EXIT');
+  return {
+    skipped: false,
+    path: WINDOWS_NATIVE_LAUNCHER,
+    name: 'propr-windows-launcher.node',
+    ...message.launcher,
+    bootstrap: {
+      path: WINDOWS_NATIVE_BOOTSTRAP,
+      name: 'propr-windows-bootstrap.node',
+      ...message.bootstrap,
+    },
+    buildBootstrap: {
+      path: WINDOWS_NATIVE_BUILD_BOOTSTRAP,
+      ...message.buildBootstrap,
+    },
+  };
+};
+
+const boundedIpcRecord = message => {
+  try { return Buffer.byteLength(JSON.stringify(message), 'utf8') <= WINDOWS_BUILD_CHILD_MAX_MESSAGE_BYTES; }
+  catch { return false; }
+};
+
+const validEvidenceRecord = message => hasExactKeys(message, ['schemaVersion', 'type', 'value'])
+  && message.schemaVersion === WINDOWS_BUILD_CHILD_SCHEMA_VERSION && message.type === 'evidence'
+  && WINDOWS_BUILD_CHILD_EVIDENCE.includes(message.value);
+
+const validResultRecord = message => {
+  if (message?.schemaVersion !== WINDOWS_BUILD_CHILD_SCHEMA_VERSION || message?.type !== 'result') return false;
+  if (message.status === 'success') {
+    return hasExactKeys(message, ['schemaVersion', 'status', 'type']);
   }
+  return message.status === 'failure'
+    && hasExactKeys(message, [
+      'cleanupDiagnostics', 'diagnostics', 'schemaVersion', 'stage', 'status', 'substage', 'type',
+    ])
+    && WINDOWS_AUTHORITY_BUILD_STAGES.includes(message.stage)
+    && (message.stage === 'BUILD_COMPILER'
+      ? WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(message.substage) : message.substage === null)
+    && Array.isArray(message.diagnostics)
+    && message.diagnostics.length <= 8
+    && boundedCompilerDiagnostics(message.diagnostics).length === message.diagnostics.length
+    && Array.isArray(message.cleanupDiagnostics) && message.cleanupDiagnostics.length <= 1
+    && message.cleanupDiagnostics.every(value => value === WINDOWS_CLEANUP_DIAGNOSTIC);
+};
+
+const normalizeWindowsAuthorityFailure = (error, fallback = 'EXIT') => {
+  if (error instanceof Error && WINDOWS_AUTHORITY_BUILD_STAGES.includes(error.stage)) {
+    const normalized = error.stage === 'BUILD_COMPILER'
+      && WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(error.substage)
+      ? windowsAuthorityFailure(error.stage, error.substage, error.diagnostics)
+      : error.stage !== 'BUILD_COMPILER' ? windowsAuthorityFailure(error.stage) : windowsAuthorityFailure('BUILD_COMPILER', fallback);
+    if (Array.isArray(error.buildChildEvidence)
+        && error.buildChildEvidence.every(value => WINDOWS_BUILD_CHILD_EVIDENCE.includes(value))) {
+      normalized.buildChildEvidence = Object.freeze([...error.buildChildEvidence]);
+    }
+    return Array.isArray(error.cleanupDiagnostics) && error.cleanupDiagnostics.includes(WINDOWS_CLEANUP_DIAGNOSTIC)
+      ? addCleanupDiagnostic(normalized) : normalized;
+  }
+  return windowsAuthorityFailure('BUILD_COMPILER', fallback);
+};
+
+const failureRecord = error => {
+  const failure = normalizeWindowsAuthorityFailure(error);
+  return {
+    schemaVersion: WINDOWS_BUILD_CHILD_SCHEMA_VERSION,
+    type: 'result',
+    status: 'failure',
+    stage: failure.stage,
+    substage: failure.substage ?? null,
+    diagnostics: failure.diagnostics,
+    cleanupDiagnostics: failure.cleanupDiagnostics,
+  };
+};
+
+const failureFromRecord = record => {
+  const failure = windowsAuthorityFailure(record.stage, record.substage, record.diagnostics);
+  return record.cleanupDiagnostics.length > 0 ? addCleanupDiagnostic(failure) : failure;
+};
+
+const buildChildEnvironment = env => {
+  const childEnvironment = {};
+  for (const name of ['SystemRoot', 'windir']) {
+    const value = env[name];
+    if (typeof value === 'string' && value.length <= 520 && !value.includes('\0')) childEnvironment[name] = value;
+  }
+  for (const name of [
+    'PROPR_WINDOWS_AUTHORITY_TEST_AUTH_FAILURE',
+    'PROPR_WINDOWS_AUTHORITY_TEST_COMPILER_FAULT',
+    'PROPR_WINDOWS_AUTHORITY_TEST_DIRECTORY_PROBE_FAULT',
+  ]) {
+    const value = env[name];
+    if (typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value)) childEnvironment[name] = value;
+  }
+  return childEnvironment;
+};
+
+const sendBuildChildRecord = record => new Promise((resolveSend, rejectSend) => {
+  if (typeof process.send !== 'function' || !boundedIpcRecord(record)) {
+    rejectSend(windowsAuthorityFailure('BUILD_COMPILER', 'EXIT'));
+    return;
+  }
+  process.send(record, error => { if (error) rejectSend(error); else resolveSend(); });
+});
+
+const runWindowsBuildChild = (env, launcher) => new Promise((resolveChild, rejectChild) => {
+  let child;
+  try {
+    child = fork(fileURLToPath(import.meta.url), [WINDOWS_BUILD_CHILD_ARGUMENT], {
+      cwd: desktopRoot,
+      env: buildChildEnvironment(env),
+      execArgv: [],
+      serialization: 'json',
+      windowsHide: true,
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+  } catch {
+    rejectChild(windowsAuthorityFailure('BUILD_COMPILER', 'SPAWN'));
+    return;
+  }
+  const evidence = [];
+  let resultRecord;
+  let protocolFailed = false;
+  let spawnFailed = false;
+  let timedOut = false;
+  let messageCount = 0;
+  const terminate = () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  };
+  const timer = setTimeout(() => { timedOut = true; terminate(); }, WINDOWS_BUILD_CHILD_TIMEOUT_MS);
+  child.on('message', message => {
+    messageCount += 1;
+    if (messageCount > WINDOWS_BUILD_CHILD_MAX_MESSAGES || !boundedIpcRecord(message)) {
+      protocolFailed = true;
+      terminate();
+      return;
+    }
+    if (validEvidenceRecord(message)) {
+      if (resultRecord || message.value !== WINDOWS_BUILD_CHILD_EVIDENCE[evidence.length]) {
+        protocolFailed = true;
+        terminate();
+        return;
+      }
+      evidence.push(message.value);
+      process.stderr.write(`[win-authority:BUILD_CHILD:${message.value}]\n`);
+      return;
+    }
+    if (!resultRecord && validResultRecord(message)) {
+      resultRecord = message;
+      if (message.status === 'failure') terminate();
+    } else { protocolFailed = true; terminate(); }
+  });
+  child.once('error', () => { spawnFailed = true; terminate(); });
+  child.once('close', (code, signal) => {
+    clearTimeout(timer);
+    if (timedOut) rejectChild(windowsAuthorityFailure('BUILD_COMPILER', 'TIMEOUT'));
+    else if (spawnFailed) rejectChild(windowsAuthorityFailure('BUILD_COMPILER', 'SPAWN'));
+    else if (protocolFailed || !resultRecord) rejectChild(windowsAuthorityFailure('BUILD_COMPILER', 'EXIT'));
+    else if (resultRecord.status === 'failure') {
+      const failure = failureFromRecord(resultRecord);
+      failure.buildChildEvidence = Object.freeze(evidence);
+      rejectChild(failure);
+    }
+    else if (code !== 0 || signal !== null
+      || evidence.length !== WINDOWS_BUILD_CHILD_EVIDENCE.length) rejectChild(windowsAuthorityFailure('BUILD_COMPILER', 'EXIT'));
+    else resolveChild(Object.freeze(evidence));
+  });
+  child.send(buildChildRequest(launcher), error => {
+    if (error) { spawnFailed = true; terminate(); }
+  });
+});
+
+const readPublishedWindowsAuthorityResult = async launcher => {
+  const [output, manifestBytes] = await Promise.all([
+    readHeldBuildOutput(WINDOWS_AUTHORITY_BUILD_DIRECTORY, WINDOWS_AUTHORITY_EXECUTABLE),
+    readHeldBuildOutput(WINDOWS_AUTHORITY_BUILD_DIRECTORY, WINDOWS_AUTHORITY_MANIFEST),
+  ]).catch(() => fail('BUILD_OUTPUT'));
+  if (manifestBytes.length > MAX_MANIFEST_BYTES || manifestBytes.at(-1) !== 0x0a
+      || Buffer.from(manifestBytes.toString('utf8'), 'utf8').compare(manifestBytes) !== 0) fail('BUILD_OUTPUT');
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestBytes.subarray(0, -1).toString('utf8'));
+  } catch { fail('BUILD_OUTPUT'); }
+  if (`${JSON.stringify(manifest)}\n` !== manifestBytes.toString('utf8')
+      || manifest?.schemaVersion !== 1 || manifest.name !== 'propr-windows-authority.exe'
+      || manifest.size !== output.length || manifest.sha256 !== sha256(output)
+      || manifest.launcher?.size !== launcher.size || manifest.launcher?.sha256 !== launcher.sha256
+      || manifest.bootstrap?.size !== launcher.bootstrap.size
+      || manifest.bootstrap?.sha256 !== launcher.bootstrap.sha256) fail('BUILD_OUTPUT');
+  inspectAnyCpuPe(output);
+  return { skipped: false, executable: WINDOWS_AUTHORITY_EXECUTABLE, manifest: WINDOWS_AUTHORITY_MANIFEST, ...manifest };
 };
 
 export const buildWindowsAuthorityHelper = async (env = process.env) => {
-  try { return await buildWindowsAuthorityHelperInner(env); }
-  finally { await cleanupWindowsAuthorityBuildStaging(); }
+  if (process.platform !== 'win32') return { skipped: true };
+  let primaryFailure;
+  let result;
+  let childEvidence;
+  try {
+    const launcher = await buildWindowsNativeLauncher({ restage: true });
+    childEvidence = await runWindowsBuildChild(env, launcher);
+    result = await readPublishedWindowsAuthorityResult(launcher);
+  } catch (error) { primaryFailure = normalizeWindowsAuthorityFailure(error); }
+
+  let cleanupFailure;
+  await cleanupWindowsAuthorityBuildStaging({
+    fault: env.PROPR_WINDOWS_AUTHORITY_TEST_CLEANUP_FAULT === 'after-remove' ? 'after-remove' : null,
+  }).catch(error => { cleanupFailure = normalizeWindowsAuthorityFailure(error, 'LEASE'); });
+  if (primaryFailure) throw cleanupFailure ? addCleanupDiagnostic(primaryFailure) : primaryFailure;
+  if (cleanupFailure) throw cleanupFailure;
+  await sealWindowsAuthorityDirectory();
+  return { ...result, buildChildEvidence: childEvidence };
+};
+
+const runBuildChildEntrypoint = async () => {
+  let handled = false;
+  process.once('message', async message => {
+    if (handled) return;
+    handled = true;
+    let record;
+    try {
+      const launcher = decodeBuildChildRequest(message);
+      const evidence = value => {
+        const evidenceRecord = { schemaVersion: WINDOWS_BUILD_CHILD_SCHEMA_VERSION, type: 'evidence', value };
+        if (typeof process.send === 'function' && validEvidenceRecord(evidenceRecord)) process.send(evidenceRecord);
+      };
+      await buildWindowsAuthorityHelperInner(process.env, launcher, evidence);
+      record = { schemaVersion: WINDOWS_BUILD_CHILD_SCHEMA_VERSION, type: 'result', status: 'success' };
+    } catch (error) { record = failureRecord(error); }
+    try { await sendBuildChildRecord(record); }
+    catch { process.exitCode = 1; }
+    if (record.status === 'failure') process.exitCode = 1;
+    process.disconnect();
+  });
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  buildWindowsAuthorityHelper().then(result => {
+  if (process.argv[2] === WINDOWS_BUILD_CHILD_ARGUMENT) await runBuildChildEntrypoint();
+  else buildWindowsAuthorityHelper().then(result => {
     if (!result.skipped) process.stdout.write('Windows authority helper built and verified\n');
   }).catch(error => {
     process.stderr.write(`${error instanceof Error ? error.message : 'Windows authority helper build failed'}\n`);
     for (const diagnostic of error?.diagnostics ?? []) {
       process.stderr.write(`Windows native build diagnostic [win-authority-build:${diagnostic}]\n`);
+    }
+    for (const diagnostic of error?.cleanupDiagnostics ?? []) {
+      process.stderr.write(`Windows authority cleanup diagnostic [win-authority:${diagnostic}]\n`);
     }
     process.exitCode = 1;
   });

@@ -324,43 +324,20 @@ const publishHeldArtifact = async (target, bytes, expectedArchitecture) => {
   inspectWindowsNativeLauncherPe(published, expectedArchitecture);
 };
 
-export const cleanupWindowsAuthorityBuildStaging = async () => {
+export const cleanupWindowsAuthorityBuildStaging = async (options = {}) => {
   if (process.platform !== 'win32') return;
   await rm(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY, { recursive: true, force: true })
     .catch(() => fail('LEASE'));
+  await lstat(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY).then(
+    () => fail('LEASE'),
+    error => { if (error?.code !== 'ENOENT') fail('LEASE'); },
+  );
+  if (options.fault === 'after-remove') fail('LEASE');
 };
 
 let launcherBuild;
 
-const buildWindowsNativeLauncherOnce = async () => {
-  if (process.platform !== 'win32') return { skipped: true };
-  if (process.arch !== 'x64' && process.arch !== 'arm64') fail('OUTPUT_VALIDATION');
-  await prepareWindowsAuthorityBuildDirectory();
-  const nodeGyp = join(repositoryRoot, 'node_modules', 'node-gyp', 'bin', 'node-gyp.js');
-  const nativeBuildDirectory = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build');
-  let progressBucket = 0;
-  nativeRebuildEvidence('STARTED');
-  const progress = setInterval(() => {
-    if (progressBucket >= WINDOWS_NATIVE_REBUILD_PROGRESS_BUCKETS) return;
-    progressBucket += 1;
-    nativeRebuildEvidence(`ACTIVE_${progressBucket}`);
-  }, WINDOWS_NATIVE_REBUILD_PROGRESS_INTERVAL_MS);
-  try {
-    await execFileAsync(process.execPath, [nodeGyp, 'rebuild', '--directory', WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY,
-      `--arch=${process.arch}`], {
-      cwd: repositoryRoot,
-      windowsHide: true,
-      timeout: WINDOWS_NATIVE_REBUILD_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-      maxBuffer: WINDOWS_NATIVE_REBUILD_MAX_BUFFER_BYTES,
-    });
-    nativeRebuildEvidence('PROCESS_COMPLETE');
-  } catch (error) {
-    await rm(nativeBuildDirectory, { recursive: true, force: true })
-      .then(() => nativeRebuildEvidence('FAILED_CLEANED'), () => undefined);
-    const diagnostics = sanitizeWindowsNativeBuildDiagnostics(`${error?.stdout ?? ''}\n${error?.stderr ?? ''}`);
-    fail(classifyWindowsNativeBuildFailure(error), diagnostics);
-  } finally { clearInterval(progress); }
+const stageWindowsNativeLauncher = async (expected, options = {}) => {
   const built = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_launcher.node');
   const builtBootstrap = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_bootstrap.node');
   const builtBuildBootstrap = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
@@ -371,11 +348,22 @@ const buildWindowsNativeLauncherOnce = async () => {
   const pe = inspectWindowsNativeLauncherPe(bytes, process.arch);
   const bootstrapPe = inspectWindowsNativeLauncherPe(bootstrapBytes, process.arch);
   const buildBootstrapPe = inspectWindowsNativeLauncherPe(buildBootstrapBytes, process.arch);
+  if (expected && (expected.size !== bytes.length || expected.sha256 !== sha256(bytes)
+      || expected.bootstrap.size !== bootstrapBytes.length || expected.bootstrap.sha256 !== sha256(bootstrapBytes)
+      || expected.buildBootstrap.size !== buildBootstrapBytes.length
+      || expected.buildBootstrap.sha256 !== sha256(buildBootstrapBytes))) fail('OUTPUT_VALIDATION');
   nativeRebuildEvidence('OUTPUT_VERIFIED');
   await prepareWindowsAuthorityBuildDirectory(WINDOWS_NATIVE_AUTHORITY_DIRECTORY);
   await prepareWindowsAuthorityBuildDirectory(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY);
-  await publishHeldArtifact(WINDOWS_NATIVE_LAUNCHER, bytes, process.arch);
-  await publishHeldArtifact(WINDOWS_NATIVE_BOOTSTRAP, bootstrapBytes, process.arch);
+  if (options.buildBootstrapOnly === true) {
+    const [publishedLauncher, publishedBootstrap] = await Promise.all([
+      heldBytes(WINDOWS_NATIVE_LAUNCHER), heldBytes(WINDOWS_NATIVE_BOOTSTRAP),
+    ]);
+    if (!publishedLauncher.equals(bytes) || !publishedBootstrap.equals(bootstrapBytes)) fail('OUTPUT_VALIDATION');
+  } else {
+    await publishHeldArtifact(WINDOWS_NATIVE_LAUNCHER, bytes, process.arch);
+    await publishHeldArtifact(WINDOWS_NATIVE_BOOTSTRAP, bootstrapBytes, process.arch);
+  }
   await publishHeldArtifact(WINDOWS_NATIVE_BUILD_BOOTSTRAP, buildBootstrapBytes, process.arch);
   // Newly created children must themselves carry protected DACLs; a protected
   // parent alone does not make a child's security descriptor authoritative.
@@ -408,13 +396,49 @@ const buildWindowsNativeLauncherOnce = async () => {
   };
 };
 
-export const buildWindowsNativeLauncher = async () => {
+const buildWindowsNativeLauncherOnce = async () => {
   if (process.platform !== 'win32') return { skipped: true };
-  launcherBuild ??= buildWindowsNativeLauncherOnce().catch(error => {
-    launcherBuild = undefined;
-    throw error;
-  });
-  return launcherBuild;
+  if (process.arch !== 'x64' && process.arch !== 'arm64') fail('OUTPUT_VALIDATION');
+  await prepareWindowsAuthorityBuildDirectory();
+  const nodeGyp = join(repositoryRoot, 'node_modules', 'node-gyp', 'bin', 'node-gyp.js');
+  const nativeBuildDirectory = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build');
+  let progressBucket = 0;
+  nativeRebuildEvidence('STARTED');
+  const progress = setInterval(() => {
+    if (progressBucket >= WINDOWS_NATIVE_REBUILD_PROGRESS_BUCKETS) return;
+    progressBucket += 1;
+    nativeRebuildEvidence(`ACTIVE_${progressBucket}`);
+  }, WINDOWS_NATIVE_REBUILD_PROGRESS_INTERVAL_MS);
+  try {
+    await execFileAsync(process.execPath, [nodeGyp, 'rebuild', '--directory', WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY,
+      `--arch=${process.arch}`], {
+      cwd: repositoryRoot,
+      windowsHide: true,
+      timeout: WINDOWS_NATIVE_REBUILD_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+      maxBuffer: WINDOWS_NATIVE_REBUILD_MAX_BUFFER_BYTES,
+    });
+    nativeRebuildEvidence('PROCESS_COMPLETE');
+  } catch (error) {
+    await rm(nativeBuildDirectory, { recursive: true, force: true })
+      .then(() => nativeRebuildEvidence('FAILED_CLEANED'), () => undefined);
+    const diagnostics = sanitizeWindowsNativeBuildDiagnostics(`${error?.stdout ?? ''}\n${error?.stderr ?? ''}`);
+    fail(classifyWindowsNativeBuildFailure(error), diagnostics);
+  } finally { clearInterval(progress); }
+  return stageWindowsNativeLauncher();
+};
+
+export const buildWindowsNativeLauncher = async (options = {}) => {
+  if (process.platform !== 'win32') return { skipped: true };
+  if (!launcherBuild) {
+    launcherBuild = buildWindowsNativeLauncherOnce().catch(error => {
+      launcherBuild = undefined;
+      throw error;
+    });
+    return launcherBuild;
+  }
+  const built = await launcherBuild;
+  return options.restage === true ? stageWindowsNativeLauncher(built, { buildBootstrapOnly: true }) : built;
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
