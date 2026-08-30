@@ -820,7 +820,8 @@ const attachPrivateDmg = async (heldArtifact, directory) => {
     || pathStats.nlink !== 1n
     || heldStats.size !== pathStats.size
     || (pathStats.mode & 0o777n) !== 0o600n
-    || (typeof process.getuid === 'function' && pathStats.uid !== BigInt(process.getuid()))) {
+    || typeof process.getuid !== 'function'
+    || pathStats.uid !== BigInt(process.getuid())) {
     throw new Error('Native DMG inspection rejected an invalid private-snapshot pathname capability');
   }
   try {

@@ -1,22 +1,30 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { access, chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { describe, test } from 'node:test';
 import {
   applySignedUpdate,
+  canonicalPosixFileIdentity,
   checkForSignedUpdates,
   downloadBoundedUpdateFile,
   fetchBoundedUpdateBytes,
   parseSquirrelReleaseEntry,
+  posixAuthorityIsPrivate,
   SIGNED_UPDATE_CACHE_POLICY,
   SIGNED_UPDATE_DOWNLOAD_LIMITS,
+  sameExactFileIdentity,
   type SignedUpdateManifest,
   type SignedUpdateRequest,
   validateMacOSUpdateApplicationLayout,
   verifySignedUpdateManifest,
 } from './signed-updates';
+import { ensureWindowsPrivateDirectory } from './windows-update-authority';
+
+const execFileAsync = promisify(execFile);
 
 const keys = generateKeyPairSync('ed25519');
 const publicKey = keys.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
@@ -105,6 +113,18 @@ const windowsSigner = async () => ({
   identity: 'CN=Example Publisher',
   certificateSha256,
   spkiSha256,
+});
+
+test('security identities preserve adjacent device/inode values above Number precision', () => {
+  const adjacent = 2n ** 53n;
+  const first = canonicalPosixFileIdentity(adjacent, adjacent + 1n);
+  const second = canonicalPosixFileIdentity(adjacent, adjacent + 2n);
+  assert.notEqual(first.inode, second.inode);
+  assert.equal(sameExactFileIdentity(first, first), true);
+  assert.equal(sameExactFileIdentity(first, second), false);
+  assert.equal(posixAuthorityIsPrivate(1000n, 0o100600n, undefined), false);
+  assert.equal(posixAuthorityIsPrivate(1000n, 0o100600n, 1000n), true);
+  assert.equal(posixAuthorityIsPrivate(1000n, 0o100644n, 1000n), false);
 });
 
 describe('runtime Squirrel RELEASES binding', () => {
@@ -517,15 +537,40 @@ describe('verified update artifact cache', () => {
       assert.equal(counted.count(), 1);
       assert.equal(await applySignedUpdate({
         ...makeOptions(cacheDirectory, counted.request),
-        installVerifiedArtifact: async ({ packagePath, feedBytes }) => {
+        applyHeldArtifact: async source => {
           installs += 1;
-          assert.deepEqual(await readFile(packagePath), artifact);
-          assert.deepEqual(feedBytes, feed);
+          assert.deepEqual(await source.read(0, artifact.length), artifact);
+          assert.deepEqual(source.feedBytes, feed);
+        },
+        installVerifiedArtifact: verified => {
+          assert.deepEqual(Object.keys(verified).sort(), ['apply', 'artifact', 'feedBytes']);
+          assert.equal('packagePath' in verified, false);
+          return verified.apply();
         },
       }), 'applied');
       assert.equal(installs, 1);
       assert.equal(counted.count(), 1);
       await assert.rejects(access(join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName)));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('fails automatic apply closed when no held-capability platform adapter exists', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-update-cache-test-'));
+    const cacheDirectory = join(directory, 'cache');
+    const counted = countingFetcher(signed());
+    try {
+      const options = makeOptions(cacheDirectory, counted.request);
+      await checkForSignedUpdates(options);
+      await assert.rejects(
+        applySignedUpdate({
+          ...options,
+          installVerifiedArtifact: async () => assert.fail('an unavailable platform adapter must not receive a path'),
+        }),
+        /Automatic update apply is unavailable/,
+      );
+      assert.equal(counted.count(), 1);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -548,7 +593,8 @@ describe('verified update artifact cache', () => {
           );
           await applySignedUpdate({
             ...options,
-            installVerifiedArtifact: async ({ packagePath }) => assert.deepEqual(await readFile(packagePath), artifact),
+            applyHeldArtifact: async source => assert.deepEqual(await source.read(0, artifact.length), artifact),
+            installVerifiedArtifact: verified => verified.apply(),
           });
           assert.equal(counted.count(), 2);
         } finally {
@@ -577,7 +623,8 @@ describe('verified update artifact cache', () => {
           await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`, { mode: 0o600 });
           await applySignedUpdate({
             ...options,
-            installVerifiedArtifact: async ({ packagePath }) => assert.deepEqual(await readFile(packagePath), artifact),
+            applyHeldArtifact: async source => assert.deepEqual(await source.read(0, artifact.length), artifact),
+            installVerifiedArtifact: verified => verified.apply(),
           });
           assert.equal(counted.count(), 2);
         } finally {
@@ -608,6 +655,7 @@ describe('verified update artifact cache', () => {
         try {
           const options = makeOptions(cacheDirectory, counted.request, { verifyNativeSigner: signer });
           if (scenario === 'partial') {
+            if (process.platform === 'win32') await ensureWindowsPrivateDirectory(cacheDirectory);
             await mkdir(join(cacheDirectory, '.partial-crash'), { recursive: true, mode: 0o700 });
             await writeFile(join(cacheDirectory, '.partial-crash', 'artifact'), 'partial');
           }
@@ -625,13 +673,16 @@ describe('verified update artifact cache', () => {
           } else if (scenario === 'hardlink') {
             await link(artifactPath, join(directory, 'hardlink'));
           } else if (scenario === 'permissions') {
-            await chmod(artifactPath, 0o644);
+            if (process.platform === 'win32') {
+              await execFileAsync('icacls.exe', [artifactPath, '/grant', '*S-1-5-32-545:M']);
+            } else await chmod(artifactPath, 0o644);
           } else if (scenario === 'aba') {
             attack = true;
           }
           await applySignedUpdate({
             ...options,
-            installVerifiedArtifact: async ({ packagePath }) => assert.deepEqual(await readFile(packagePath), artifact),
+            applyHeldArtifact: async source => assert.deepEqual(await source.read(0, artifact.length), artifact),
+            installVerifiedArtifact: verified => verified.apply(),
           });
           assert.equal(counted.count(), scenario === 'partial' ? 1 : 2);
           await assert.rejects(access(join(cacheDirectory, '.partial-crash')));
@@ -660,6 +711,119 @@ describe('verified update artifact cache', () => {
       );
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('enforces the whole-cache one-entry and byte quota during concurrent cleanup', async t => {
+    for (const scenario of ['unknown', 'many-small', 'oversized', 'nested', 'case-collision'] as const) {
+      await t.test(scenario, async context => {
+        const directory = await mkdtemp(join(tmpdir(), 'propr-update-cache-quota-test-'));
+        const cacheDirectory = join(directory, 'cache');
+        const counted = countingFetcher(signed());
+        try {
+          const options = makeOptions(cacheDirectory, counted.request);
+          await checkForSignedUpdates(options);
+          const entry = join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName);
+          if (scenario === 'unknown') {
+            await writeFile(join(cacheDirectory, 'unknown'), 'x');
+          } else if (scenario === 'many-small') {
+            await Promise.all(Array.from({ length: 32 }, (_, index) =>
+              writeFile(join(cacheDirectory, `unknown-${index}`), 'x')));
+          } else if (scenario === 'oversized') {
+            await truncate(
+              join(entry, SIGNED_UPDATE_CACHE_POLICY.artifactName),
+              SIGNED_UPDATE_CACHE_POLICY.namespaceBytes + 1,
+            );
+          } else if (scenario === 'nested') {
+            await mkdir(join(entry, 'nested'));
+            await writeFile(join(entry, 'nested', 'unknown'), 'x');
+          } else {
+            const collision = join(cacheDirectory, SIGNED_UPDATE_CACHE_POLICY.entryName.toUpperCase());
+            try {
+              await mkdir(collision);
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+                context.skip('filesystem does not permit distinct case-colliding names');
+                return;
+              }
+              throw error;
+            }
+          }
+          assert.deepEqual(await Promise.all([
+            checkForSignedUpdates(options),
+            checkForSignedUpdates(options),
+          ]), ['available', 'available']);
+          assert.equal(counted.count(), 2);
+          assert.deepEqual(await readdir(cacheDirectory), [SIGNED_UPDATE_CACHE_POLICY.entryName]);
+          assert.deepEqual((await readdir(entry)).sort(), [
+            SIGNED_UPDATE_CACHE_POLICY.artifactName,
+            SIGNED_UPDATE_CACHE_POLICY.metadataName,
+          ].sort());
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
+    }
+  });
+
+  test('never consumes attacker B across post-verify swap/delete/link/reparse/ABA barriers', async t => {
+    for (const scenario of ['swap', 'delete', 'hardlink', 'symlink', 'aba'] as const) {
+      await t.test(scenario, async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'propr-update-handoff-test-'));
+        const cacheDirectory = join(directory, 'cache');
+        const counted = countingFetcher(signed());
+        const consumed: Buffer[] = [];
+        let attackBlocked = false;
+        try {
+          const options = makeOptions(cacheDirectory, counted.request);
+          await checkForSignedUpdates(options);
+          const artifactPath = join(
+            cacheDirectory,
+            SIGNED_UPDATE_CACHE_POLICY.entryName,
+            SIGNED_UPDATE_CACHE_POLICY.artifactName,
+          );
+          const displaced = join(directory, 'held-A');
+          const attacker = join(directory, 'attacker-B');
+          await writeFile(attacker, Buffer.alloc(artifact.length, 0x42), { mode: 0o600 });
+          const mutate = async (): Promise<void> => {
+            try {
+              if (scenario === 'delete') await rm(artifactPath);
+              else if (scenario === 'hardlink') await link(artifactPath, join(directory, 'extra-link'));
+              else {
+                await rename(artifactPath, displaced);
+                if (scenario === 'symlink') await symlink(attacker, artifactPath);
+                else await writeFile(artifactPath, Buffer.alloc(artifact.length, 0x42), { mode: 0o600 });
+              }
+            } catch { attackBlocked = true; }
+          };
+          const applying = applySignedUpdate({
+            ...options,
+            applyHeldArtifact: async source => {
+              const split = Math.floor(artifact.length / 2);
+              const first = await source.read(0, split);
+              if (scenario === 'aba') {
+                await mutate();
+                if (!attackBlocked) {
+                  await rm(artifactPath);
+                  await rename(displaced, artifactPath);
+                }
+              }
+              const second = await source.read(split, artifact.length - split);
+              consumed.push(Buffer.concat([first, second]));
+            },
+            installVerifiedArtifact: async verified => {
+              if (scenario !== 'aba') await mutate();
+              await verified.apply();
+            },
+          });
+          if (attackBlocked) assert.equal(await applying, 'applied');
+          else await assert.rejects(applying);
+          assert.deepEqual(consumed, [artifact]);
+          assert.equal(counted.count(), 1);
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
     }
   });
 

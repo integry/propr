@@ -174,4 +174,5 @@ Windows requires the identical valid, timestamped signer on the installer, packa
 `lib/net45/propr-desktop.exe` from the validated NUPKG; the runtime also requires its signed fingerprint evidence to
 match the allowlist embedded in the installed build. Electron's `autoUpdater` is not initialized,
 because it would re-fetch mutable URLs instead of installing the already verified bytes. Unsigned developer packages
-remain update-disabled.
+remain update-disabled. The internal apply API exposes only a one-shot held-byte capability, never a verified mutable
+pathname; without a platform adapter that can consume that held/locked capability, automatic apply fails closed.

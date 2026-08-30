@@ -212,7 +212,7 @@ const assertDmgPathNamesHeldFile = async (path, held) => {
   }
 };
 
-const isCurrentOwner = stats => typeof process.getuid !== 'function' || stats.uid === BigInt(process.getuid());
+const isCurrentOwner = stats => typeof process.getuid === 'function' && stats.uid === BigInt(process.getuid());
 
 const lstatPrivateDmgPath = async (path, label) => {
   try {
