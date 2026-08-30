@@ -138,12 +138,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     database,
     preparationDeps: deps.agentPreparationDeps,
   });
-  const syntheticAgentRoutes = createSyntheticAgentConfigRoutes({
-    redisClient,
-    configStore,
-    publishConfigUpdate,
-    logActivityHelper,
-  });
+  const syntheticAgentRoutes = createSyntheticAgentConfigRoutes(
+    { redisClient, configStore, publishConfigUpdate, logActivityHelper },
+  );
   const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, committedErrorMessage, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
     if (!bodyValidation.ok) {
@@ -332,13 +329,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
           });
         }
       }
-      return saveSettingsWithRollback({
-        settings: settingsValidation.value,
-        publishConfigUpdate,
-        configStore,
-        database,
-        lock,
-      });
+      return saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock });
     });
     if (result.status === 200 && result.body.noop !== true) {
       try {
@@ -419,8 +410,7 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   return {
     getFollowupKeywords, postFollowupKeywords, getFollowupIgnoreKeywords, postFollowupIgnoreKeywords, getRepos, postRepos, getSettings, postSettings,
     getPrLabel, postPrLabel, getAiPrimaryTag, postAiPrimaryTag, getPrimaryProcessingLabels, postPrimaryProcessingLabels,
-    getAgents: agentsRoutes.getAgents, postAgents: agentsRoutes.postAgents,
-    getSyntheticAgents: syntheticAgentRoutes.getSyntheticAgents,
+    getAgents: agentsRoutes.getAgents, postAgents: agentsRoutes.postAgents, getSyntheticAgents: syntheticAgentRoutes.getSyntheticAgents,
     postSyntheticAgents: syntheticAgentRoutes.postSyntheticAgents,
     getSummarizationSettings,
     postSummarizationSettings: indexingRoutes.postSummarizationSettings, getRepositoriesIndexingStatus: indexingRoutes.getRepositoriesIndexingStatus,
