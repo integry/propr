@@ -13,7 +13,7 @@ export interface DesktopLocalHost {
   actions: SetupActions;
   config: ConfigManager;
   lifecycle: LocalLifecycleHost;
-  resolveApiBaseUrl(rootDir: string): Promise<string>;
+  resolveApiBaseUrl(rootDir: string, signal?: AbortSignal): Promise<string>;
 }
 
 /** Bind the portable setup engine to the same launcher used by the CLI. */
@@ -35,6 +35,21 @@ export async function createDesktopLocalHost(resourcesPath?: string, defaultRoot
       if (!result.ok) onLog?.(result.message);
       return result.ok;
     },
+    async startStack(params) {
+      params.signal?.throwIfAborted();
+      params.assertRootAuthority?.();
+      const { orch, cfg } = await getHostConfig({ configManager: config, root: params.rootDir, readRoot: params.rootOperationsDir });
+      params.assertRootAuthority?.();
+      const recovered = await orch.recoverStackAsync(cfg, {
+        ui: params.ui ?? config.getUiEnabled() ?? true,
+        docs: params.docs ?? cfg.docsEnabled,
+        signal: params.signal,
+        onLog: params.onLog,
+        assertRootAuthority: params.assertRootAuthority,
+      });
+      params.assertRootAuthority?.();
+      if (!recovered.recovered) await defaultActions.startStack(params);
+    },
   };
 
   const root = (): string => {
@@ -51,24 +66,39 @@ export async function createDesktopLocalHost(resourcesPath?: string, defaultRoot
   return {
     actions,
     config,
-    async resolveApiBaseUrl(rootDir) {
-      const { cfg } = await getHostConfig({ configManager: config, root: rootDir });
-      return localhostServiceUrl(cfg.apiPort);
+    async resolveApiBaseUrl(rootDir, signal) {
+      return withFixedRoot(async (authority, displayRoot) => {
+        if (resolve(rootDir) !== displayRoot) throw new Error('The local profile root is not the fixed desktop runtime root');
+        signal?.throwIfAborted();
+        authority.validate();
+        const { cfg } = await getHostConfig({ configManager: config, root: displayRoot, readRoot: authority.operationPath() });
+        authority.validate();
+        signal?.throwIfAborted();
+        return localhostServiceUrl(cfg.apiPort);
+      });
     },
     lifecycle: {
-      async running() {
-        return withFixedRoot((authority, displayRoot) => bindRootOperations(actions, displayRoot, authority).isStackRunning(displayRoot));
+      async running(signal) {
+        return withFixedRoot(async (authority, displayRoot) => {
+          signal?.throwIfAborted();
+          authority.validate();
+          const { orch, cfg } = await getHostConfig({ configManager: config, root: displayRoot, readRoot: authority.operationPath() });
+          authority.validate();
+          return orch.isLifecycleStackRunningAsync(cfg, { signal, assertRootAuthority: () => authority.validate() });
+        });
       },
-      async start() {
-        await withFixedRoot((authority, displayRoot) => bindRootOperations(actions, displayRoot, authority).startStack({ rootDir: displayRoot }));
+      async start(signal) {
+        await withFixedRoot((authority, displayRoot) => bindRootOperations(actions, displayRoot, authority).startStack({ rootDir: displayRoot, signal }));
       },
-      async stop() {
+      async stop(signal) {
         await withFixedRoot(async (authority, displayRoot) => {
+          signal?.throwIfAborted();
           authority.validate();
-          const { orch, cfg } = await getHostConfig({ configManager: config, root: displayRoot });
+          const { orch, cfg } = await getHostConfig({ configManager: config, root: displayRoot, readRoot: authority.operationPath() });
           authority.validate();
-          const { failed } = orch.stopStack(cfg, { remove: false, removeNetwork: false });
+          const { failed } = await orch.stopLifecycleStackAsync(cfg, { signal, assertRootAuthority: () => authority.validate() });
           authority.validate();
+          signal?.throwIfAborted();
           if (failed.length) throw new Error(`Could not stop ${failed.join(', ')}`);
         });
       },

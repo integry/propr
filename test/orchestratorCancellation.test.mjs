@@ -63,7 +63,16 @@ const fs = require('node:fs');
 const args = process.argv.slice(2); if (args[0] === '--') args.shift();
 const statePath = process.env.PROPR_FAKE_STATE;
 const load = () => JSON.parse(fs.readFileSync(statePath, 'utf8'));
-const save = value => fs.writeFileSync(statePath, JSON.stringify(value));
+const save = value => { const temporary = statePath + '.' + process.pid; fs.writeFileSync(temporary, JSON.stringify(value)); fs.renameSync(temporary, statePath); };
+const lockPath = statePath + '.lock';
+const mutate = operation => {
+  for (;;) {
+    try { fs.mkdirSync(lockPath); break; }
+    catch (error) { if (error.code !== 'EEXIST') throw error; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2); }
+  }
+  try { const state = load(); const result = operation(state); save(state); return result; }
+  finally { fs.rmdirSync(lockPath); }
+};
 const option = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
 if (args[0] === 'images') { console.log('image-id'); process.exit(0); }
 if (args[0] === 'image' && args[1] === 'inspect') { console.log('[]'); process.exit(0); }
@@ -101,26 +110,23 @@ if (args[0] === 'run') {
   for (let i = 0; i < args.length; i += 1) if (args[i] === '--label') { const [key, ...rest] = args[++i].split('='); labels[key] = rest.join('='); }
   labels.__hostConfig = { Binds: args.flatMap((value, index) => value === '-v' ? [args[index + 1]] : []) };
   labels.__running = true;
-  const state = load(); state[name] = labels; save(state);
+  mutate(state => { state[name] = labels; if (args.includes('--rm')) delete state[name]; });
   fs.writeFileSync(process.env.PROPR_FAKE_MARKER, name);
   if (name === process.env.PROPR_FAKE_ABORT_TARGET) setTimeout(() => {}, 30_000);
-  else { if (args.includes('--rm')) { delete state[name]; save(state); } console.log(name); process.exit(0); }
+  else { console.log(name); process.exit(0); }
 } else if (args[0] === 'stop') {
   const name = args[args.length - 1];
-  const state = load();
   if (name === 'propr-redis' && process.env.PROPR_FAKE_STOP_MODE === 'owned-remains') {
-    if (state[name]) state[name].__running = false;
-    save(state);
+    mutate(state => { if (state[name]) state[name].__running = false; });
     process.exit(42);
   }
   if (name === 'propr-redis' && process.env.PROPR_FAKE_STOP_MODE === 'foreign-replacement') {
-    state[name] = { foreign: 'replacement', __running: false };
-    save(state);
+    mutate(state => { state[name] = { foreign: 'replacement', __running: false }; });
     process.exit(42);
   }
   process.exit(0);
 }
-else if (args[0] === 'rm') { const name = args[args.length - 1]; const state = load(); delete state[name]; save(state); process.exit(0); }
+else if (args[0] === 'rm') { const name = args[args.length - 1]; mutate(state => { delete state[name]; }); process.exit(0); }
 else process.exit(0);
 PROPR_FAKE_NODE
 `, { mode: 0o700 });

@@ -37,10 +37,14 @@ function assertStableDockerHandoff(
 
 export function createDefaultActions(configManager?: ConfigManager): SetupActions {
   /** A client pointed at the local stack's API port (not the saved remote URL). */
-  const localApiClient = async (rootDir: string): Promise<import("../../api/client.js").ApiClient> => {
+  const localApiClient = async (rootDir: string, rootOperationsDir?: string, assertRootAuthority?: () => void): Promise<import("../../api/client.js").ApiClient> => {
+    assertRootAuthority?.();
     const { getHostConfig } = await import("../../orchestrator/index.js");
-    const { cfg } = await getHostConfig({ configManager, root: rootDir });
+    assertRootAuthority?.();
+    const { cfg } = await getHostConfig({ configManager, root: rootDir, readRoot: rootOperationsDir });
+    assertRootAuthority?.();
     const { createApiClient, createApiClientWithConfig } = await import("../../api/client.js");
+    assertRootAuthority?.();
     const options = { baseUrl: localhostServiceUrl(cfg.apiPort) };
     // Keep the local client on setup's active profile and, importantly, the
     // token that an in-progress setup login just stored. Creating an unrelated
@@ -81,9 +85,12 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       assertSafeAgentCredentialDir(path);
       mkdirSync(path, { recursive: true, mode: 0o700 });
     },
-    async pullImages({ rootDir, agentTypes, onLog, signal }) {
+    async pullImages({ rootDir, rootOperationsDir, assertRootAuthority, agentTypes, onLog, signal }) {
+      assertRootAuthority?.();
       const { getHostConfig } = await import("../../orchestrator/index.js");
-      const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
+      assertRootAuthority?.();
+      const { orch, cfg } = await getHostConfig({ configManager, root: rootDir, readRoot: rootOperationsDir });
+      assertRootAuthority?.();
       const selected = new Set(agentTypes);
       const result: PullImagesResult = { pulledCore: [], pulledAgents: [], failedCore: [], failedAgents: [] };
 
@@ -97,12 +104,18 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
         onLog?.(`pulling ${tag}…`);
         // Async exec keeps the event loop free so the wizard's Ink spinner keeps
         // animating while the (often slow) pull runs, instead of freezing.
+        signal?.throwIfAborted();
+        assertRootAuthority?.();
         const pulled = await orch.dockerAsync(["pull", tag], { signal });
+        assertRootAuthority?.();
+        signal?.throwIfAborted();
         if (pulled.status === 0) {
           try {
             await orch.tagAgentLatestAsync(key, tag, signal);
+            assertRootAuthority?.();
           } catch (error) {
             rethrowCancellation(error);
+            assertRootAuthority?.();
             /* best-effort local retag; the pull itself succeeded */
           }
           (isAgent ? result.pulledAgents : result.pulledCore).push(tag);
@@ -112,14 +125,23 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       }
       return result;
     },
-    async isStackRunning(rootDir, signal) {
+    async isStackRunning(rootDir, signal, root) {
+      root?.assertRootAuthority?.();
       const { getHostConfig } = await import("../../orchestrator/index.js");
-      const { orch, cfg } = await getHostConfig({ configManager, root: rootDir });
-      return orch.isStackRunningAsync(cfg, signal);
+      root?.assertRootAuthority?.();
+      const { orch, cfg } = await getHostConfig({ configManager, root: rootDir, readRoot: root?.rootOperationsDir });
+      root?.assertRootAuthority?.();
+      const running = await orch.isStackRunningAsync(cfg, signal);
+      root?.assertRootAuthority?.();
+      return running;
     },
     async startStack({ rootDir, rootOperationsDir, ui, docs, onLog, signal, assertRootAuthority }) {
+      signal?.throwIfAborted();
+      assertRootAuthority?.();
       const { getHostConfig } = await import("../../orchestrator/index.js");
+      assertRootAuthority?.();
       const { orch, cfg } = await getHostConfig({ configManager, root: rootDir, readRoot: rootOperationsDir });
+      assertRootAuthority?.();
       if (assertRootAuthority) {
         assertStableDockerHandoff(rootDir);
         assertRootAuthority();
@@ -128,11 +150,18 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       // does not auto-create it as root on first bind-mount — a root-owned dir
       // would fail the writability check and block future `propr start` runs.
       try {
+        assertRootAuthority?.();
         const { ensureVibePromptCacheDir } = await import("../initStack.js");
+        assertRootAuthority?.();
         ensureVibePromptCacheDir(cfg.hostVibePromptCacheDir);
-      } catch {
+        assertRootAuthority?.();
+      } catch (error) {
+        signal?.throwIfAborted();
+        assertRootAuthority?.();
+        rethrowCancellation(error);
         /* best-effort: startup validation will surface an actionable error */
       }
+      assertRootAuthority?.();
       const validation = orch.validateEnv(cfg);
       for (const warning of validation.warnings) onLog?.(`warning: ${warning}`);
       if (!validation.ok) {
@@ -141,7 +170,9 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       // Use the async start path: `propr setup` drives this from behind a live
       // Ink TUI, so the blocking synchronous startStack would freeze the spinner
       // and swallow keystrokes for the seconds-to-minutes a cold start takes.
-      await orch.ensureNetworkAsync(cfg, onLog, { signal });
+      assertRootAuthority?.();
+      await orch.ensureNetworkAsync(cfg, onLog, { signal, beforeMutation: assertRootAuthority });
+      assertRootAuthority?.();
       await orch.startStackAsync(cfg, {
         ui: ui ?? configManager?.getUiEnabled() ?? true,
         docs: docs ?? cfg.docsEnabled,
@@ -150,22 +181,28 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
         beforeLaunch: assertRootAuthority,
       });
     },
-    async checkBackendHealth({ rootDir, timeoutMs = 60_000, signal }) {
+    async checkBackendHealth({ rootDir, rootOperationsDir, assertRootAuthority, timeoutMs = 60_000, signal }) {
+      assertRootAuthority?.();
       const { getSystemStatus } = await import("../../api/system.js");
-      const client = await localApiClient(rootDir);
+      assertRootAuthority?.();
+      const client = await localApiClient(rootDir, rootOperationsDir, assertRootAuthority);
+      assertRootAuthority?.();
       const deadline = Date.now() + timeoutMs;
       let lastError = "no response";
       // Containers take a few seconds to report healthy; poll until the deadline.
       do {
         signal?.throwIfAborted();
         try {
+          assertRootAuthority?.();
           const status = await getSystemStatus(client, signal);
+          assertRootAuthority?.();
           if (String(status.api).toLowerCase() === "healthy") {
             return { healthy: true, detail: `API healthy (daemon ${status.daemon}, worker ${status.worker})` };
           }
           lastError = `API reports "${status.api}"`;
         } catch (error) {
           rethrowCancellation(error);
+          assertRootAuthority?.();
           // A 401/403 is not an unhealthy backend — the API answered but denied
           // this protected request. Return immediately so setup does not stall
           // on a running backend, while preserving whether remediation requires
@@ -182,15 +219,24 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
       } while (Date.now() < deadline);
       return { healthy: false, detail: `backend not healthy within ${Math.round(timeoutMs / 1000)}s (${lastError})` };
     },
-    async addRepository({ fullName, alias, baseBranch }, rootDir, signal) {
+    async addRepository({ fullName, alias, baseBranch }, rootDir, signal, root) {
+      root?.assertRootAuthority?.();
       const { addRepo } = await import("../../api/repos.js");
       // Point the client at this stack's API port rather than the saved remote.
-      const client = await localApiClient(rootDir);
+      root?.assertRootAuthority?.();
+      const client = await localApiClient(rootDir, root?.rootOperationsDir, root?.assertRootAuthority);
+      root?.assertRootAuthority?.();
       await addRepo(fullName, { alias, baseBranch }, client, signal);
+      root?.assertRootAuthority?.();
     },
-    async resolveUiUrl(rootDir) {
+    async resolveUiUrl(rootDir, signal, root) {
+      signal?.throwIfAborted();
+      root?.assertRootAuthority?.();
       const { getHostConfig } = await import("../../orchestrator/index.js");
-      const { cfg } = await getHostConfig({ configManager, root: rootDir });
+      root?.assertRootAuthority?.();
+      const { cfg } = await getHostConfig({ configManager, root: rootDir, readRoot: root?.rootOperationsDir });
+      root?.assertRootAuthority?.();
+      signal?.throwIfAborted();
       return localhostServiceUrl(cfg.uiPort);
     },
     async openUrl(url, signal) {
@@ -229,11 +275,15 @@ export function createDefaultActions(configManager?: ConfigManager): SetupAction
         });
       });
     },
-    async saveWhitelistSetting(rootDir, users, signal) {
+    async saveWhitelistSetting(rootDir, users, signal, root) {
+      root?.assertRootAuthority?.();
       const { updateSetting } = await import("../../api/settings.js");
       // Point the client at this stack's API port rather than the saved remote.
-      const client = await localApiClient(rootDir);
+      root?.assertRootAuthority?.();
+      const client = await localApiClient(rootDir, root?.rootOperationsDir, root?.assertRootAuthority);
+      root?.assertRootAuthority?.();
       await updateSetting("github_user_whitelist", users, client, signal);
+      root?.assertRootAuthority?.();
     },
     hasGithubToken() {
       return Boolean(configManager?.getGithubToken());

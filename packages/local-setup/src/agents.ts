@@ -24,6 +24,11 @@
 import { AGENT_DEFAULTS, type AgentType } from "@propr/shared";
 import { rethrowCancellation } from "./cancellation.js";
 
+export interface RootOperationBoundary {
+  rootOperationsDir?: string;
+  assertRootAuthority?(): void;
+}
+
 /** Minimal backend agent shape needed by the setup engine. */
 export interface AgentConfig {
   type: AgentType;
@@ -60,15 +65,15 @@ export interface AgentConnectivityResult {
  */
 export interface AgentSetupActions {
   /** List the agents currently configured in the running backend. */
-  listAgents(rootDir: string, signal?: AbortSignal): Promise<AgentConfig[]>;
+  listAgents(rootDir: string, signal?: AbortSignal, root?: RootOperationBoundary): Promise<AgentConfig[]>;
   /** Add a new agent to the backend configuration. */
-  addAgent(rootDir: string, options: AddAgentOptions, signal?: AbortSignal): Promise<void>;
+  addAgent(rootDir: string, options: AddAgentOptions, signal?: AbortSignal, root?: RootOperationBoundary): Promise<void>;
   /** Agent types that support an interactive image login (have a login plan). */
   loginableAgents(signal?: AbortSignal): Promise<string[]>;
   /** Authenticate one agent through its image; interactive (inherits stdio). */
-  loginAgent(rootDir: string, type: string, signal?: AbortSignal): Promise<AgentLoginResult>;
+  loginAgent(rootDir: string, type: string, signal?: AbortSignal, root?: RootOperationBoundary): Promise<AgentLoginResult>;
   /** Run a live, image-only request that mirrors the worker credential mount. */
-  validateAgents(rootDir: string, types: string[], signal?: AbortSignal): Promise<AgentConnectivityResult[]>;
+  validateAgents(rootDir: string, types: string[], signal?: AbortSignal, root?: RootOperationBoundary): Promise<AgentConnectivityResult[]>;
 }
 
 /** Inputs for {@link runAgentSetup}. */

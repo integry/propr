@@ -1386,6 +1386,33 @@ test("whitelist abort is cancellation and never falls back to an env commit", as
   assert.equal(envCommitted, false);
 });
 
+test("relay boundary abort never writes the minted token or continues classification", async () => {
+  const controller = new AbortController();
+  let wroteRelayToken = false;
+  let started = false;
+  const result = await runSetup({
+    root: "/stack",
+    signal: controller.signal,
+    prompts: { configureGithubAuth: async () => ({ mode: "relay", enrollRelay: { relayUrl: DEFAULT_PROPR_GH_RELAY_URL } }) },
+    actions: mockActions({
+      hasGithubToken: () => true,
+      fetchRelayInstallations: async () => ({ username: "octocat", installations: [{ installation_id: 42, account_login: "octocat", account_type: "User" }] }),
+      enrollRelay: async () => {
+        controller.abort();
+        return { relayUrl: DEFAULT_PROPR_GH_RELAY_URL, token: "must-not-be-written" };
+      },
+      applyEnvSelection: (_root, vars) => {
+        if (vars.PROPR_GH_RELAY_TOKEN) wroteRelayToken = true;
+        return { written: Object.keys(vars), skipped: [] };
+      },
+      startStack: async () => { started = true; },
+    }),
+  });
+  assert.equal(result.cancelled, true);
+  assert.equal(wroteRelayToken, false);
+  assert.equal(started, false);
+});
+
 test("prompts drive a full unattended run to completion", async () => {
   const seen: string[] = [];
   const prompts: SetupPrompts = {

@@ -1,4 +1,5 @@
 import type {
+  DesktopConnectionResult,
   DesktopBridge,
   DesktopPlatformView,
   DesktopProfile,
@@ -7,6 +8,7 @@ import type {
   DesktopSetupSnapshot,
 } from './shared/contract';
 import { IPC_CHANNELS } from './shared/contract';
+import { evaluateProprApiCompatibility } from '@propr/shared';
 
 export interface PreloadIpc {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>;
@@ -84,10 +86,42 @@ const profileView = (profile: DesktopProfile): DesktopProfileView => ({
   lastConnectedAt: profile.updatedAt,
 });
 
+const bounded = (value: string, maximum = 512): string => value.slice(0, maximum);
+
+/** Local-only probe seam; PR #1977 owns remote authentication and transport. */
+export const probeLocalDesktopProfile = async (
+  profile: DesktopProfileView,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<DesktopConnectionResult> => {
+  if (profile.kind !== 'local' || !isLoopback(profile.baseUrl)) {
+    return { status: 'offline', message: 'Remote connections are not included in local setup.' };
+  }
+  try {
+    const response = await fetchImpl(`${profile.baseUrl}/api/compatibility`, {
+      credentials: 'include',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (response.status === 401 || response.status === 403) {
+      return { status: 'authentication-required', message: 'Sign in to continue to this local instance.' };
+    }
+    if (response.status === 404) return { status: 'ready' };
+    if (!response.ok) return { status: 'offline', message: `The local instance returned HTTP ${response.status}.` };
+    const metadata = await response.json() as { apiCompatibility?: string; version?: string };
+    const compatibility = evaluateProprApiCompatibility(metadata);
+    const version = compatibility.apiVersion ? bounded(compatibility.apiVersion, 64) : undefined;
+    if (compatibility.compatible || compatibility.reason === 'missing') return { status: 'ready', version };
+    return { status: 'incompatible', message: bounded(compatibility.message), version };
+  } catch {
+    return { status: 'offline', message: 'ProPR Desktop could not reach this local instance. Check that it is running and try again.' };
+  }
+};
+
 /** Build the shared renderer adapter without exposing raw IPC or credentials. */
 export const createDesktopRendererBridge = (
   ipc: PreloadIpc,
   platform: NodeJS.Platform = process.platform,
+  connectionProbe: (profile: DesktopProfileView) => Promise<DesktopConnectionResult> = probeLocalDesktopProfile,
 ): DesktopRendererBridge => {
   const progressListeners = new Set<(snapshot: DesktopSetupSnapshot) => void>();
   ipc.on(IPC_CHANNELS.setupProgress, (_event, snapshot: DesktopSetupSnapshot) => {
@@ -128,7 +162,7 @@ export const createDesktopRendererBridge = (
         return () => progressListeners.delete(listener);
       },
     },
-    connection: { probe: async () => ({ status: 'offline', message: 'Remote connections are not included in local setup.' }) },
+    connection: { probe: connectionProbe },
   };
   Object.values(bridge).filter(value => typeof value === 'object').forEach(Object.freeze);
   return Object.freeze(bridge);

@@ -51,6 +51,7 @@ import {
 import {
   runAgentSetup,
   type AgentSetupActions,
+  type RootOperationBoundary,
 } from "./agents.js";
 import { isSetupCancellation } from "./cancellation.js";
 import {
@@ -341,6 +342,10 @@ export interface InitStackResult {
 
 export interface PullImagesParams {
   rootDir: string;
+  /** Descriptor-anchored root used only to read configuration. */
+  rootOperationsDir?: string;
+  /** Revalidate fixed-root identity at every external mutation boundary. */
+  assertRootAuthority?(): void;
   /** Agent types whose images should be pulled (in addition to core images). */
   agentTypes: string[];
   onLog?: (line: string) => void;
@@ -370,6 +375,8 @@ export interface StartStackParams {
 
 export interface BackendHealthParams {
   rootDir: string;
+  rootOperationsDir?: string;
+  assertRootAuthority?(): void;
   timeoutMs?: number;
   signal?: AbortSignal;
 }
@@ -426,11 +433,11 @@ export interface SetupActions extends AgentSetupActions {
   /** Ensure a selected agent's host credential path is a directory, creating it securely when absent. */
   prepareAgentCredentialDir(path: string, signal?: AbortSignal): void;
   pullImages(params: PullImagesParams): Promise<PullImagesResult>;
-  isStackRunning(rootDir: string, signal?: AbortSignal): Promise<boolean>;
+  isStackRunning(rootDir: string, signal?: AbortSignal, root?: RootOperationBoundary): Promise<boolean>;
   startStack(params: StartStackParams): Promise<void>;
   checkBackendHealth(params: BackendHealthParams): Promise<BackendHealth>;
-  addRepository(selection: RepoSelection, rootDir: string, signal?: AbortSignal): Promise<void>;
-  resolveUiUrl(rootDir: string, signal?: AbortSignal): Promise<string>;
+  addRepository(selection: RepoSelection, rootDir: string, signal?: AbortSignal, root?: RootOperationBoundary): Promise<void>;
+  resolveUiUrl(rootDir: string, signal?: AbortSignal, root?: RootOperationBoundary): Promise<string>;
   /** Open `url` in the host's default browser (best-effort; may reject). */
   openUrl(url: string, signal?: AbortSignal): Promise<void>;
   /**
@@ -438,7 +445,7 @@ export interface SetupActions extends AgentSetupActions {
    * partial update — only the whitelist key is sent, so unrelated settings are
    * left intact.
    */
-  saveWhitelistSetting(rootDir: string, users: string[], signal?: AbortSignal): Promise<void>;
+  saveWhitelistSetting(rootDir: string, users: string[], signal?: AbortSignal, root?: RootOperationBoundary): Promise<void>;
   /** True when a GitHub user token is stored (relay enrollment and protected local API calls need it). */
   hasGithubToken(signal?: AbortSignal): boolean;
   /**
@@ -574,6 +581,13 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     }
   };
   const rethrowIfCancelled = (error: unknown): void => {
+    // A cancelled startup with residual run-owned containers is not a clean
+    // cancellation. Preserve the orchestrator's explicit failure so callers
+    // can require operator attention instead of reporting cancellation done.
+    if (error && typeof error === "object"
+      && (error as { code?: unknown }).code === "PROPR_SETUP_CLEANUP_INCOMPLETE") {
+      throw error;
+    }
     if (!isSetupCancellation(error)) return;
     checkCancelled();
     throw error;

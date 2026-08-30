@@ -2,6 +2,7 @@ import type { App, IpcMain, IpcMainInvokeEvent, Session } from 'electron';
 import { shell } from 'electron';
 import { logoutDesktopSession } from './desktop-session';
 import type { DesktopLogger } from './logger';
+import type { DesktopOperationCoordinator } from './operation-coordinator';
 import type { LocalLifecycleController } from './lifecycle';
 import type { ProfileStore } from './profile-store';
 import type { DesktopSetupController } from './setup-controller';
@@ -18,6 +19,7 @@ interface RegisterIpcOptions {
   desktopSession: Session;
   devServerUrl: string | undefined;
   packagedRendererUrl: string;
+  coordinator: DesktopOperationCoordinator;
 }
 
 type Handler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown;
@@ -37,7 +39,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
         return await handler(event, ...args);
       } catch (error) {
         options.logger.log('error', 'desktop.ipc.failed', { channel, error });
-        throw error;
+        throw new Error('Desktop operation failed. Review the protected desktop log for details.');
       }
     });
   };
@@ -59,10 +61,10 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
   handle(IPC_CHANNELS.profilesSave, (_event, input) => options.profiles.save(input));
   handle(IPC_CHANNELS.profilesRemove, (_event, profileId) => options.profiles.remove(profileId));
   handle(IPC_CHANNELS.profilesSetActive, (_event, profileId) => options.profiles.setActive(profileId));
-  handle(IPC_CHANNELS.lifecycleStatus, () => options.lifecycle.status());
-  handle(IPC_CHANNELS.lifecycleStart, () => options.lifecycle.start());
-  handle(IPC_CHANNELS.lifecycleStop, () => options.lifecycle.stop());
-  handle(IPC_CHANNELS.lifecycleRestart, () => options.lifecycle.restart());
+  handle(IPC_CHANNELS.lifecycleStatus, () => options.coordinator.run('status', signal => options.lifecycle.status(signal)));
+  handle(IPC_CHANNELS.lifecycleStart, () => options.coordinator.run('start', signal => options.lifecycle.start(signal)));
+  handle(IPC_CHANNELS.lifecycleStop, () => options.coordinator.run('stop', signal => options.lifecycle.stop(signal)));
+  handle(IPC_CHANNELS.lifecycleRestart, () => options.coordinator.run('restart', signal => options.lifecycle.restart(signal)));
   handle(IPC_CHANNELS.discovery, () => []);
   handle(IPC_CHANNELS.setupStatus, (_event, ...args) => {
     if (args.length) throw new Error('Invalid local setup status request');
@@ -70,22 +72,22 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
   });
   handle(IPC_CHANNELS.setupStart, (_event, ...args) => {
     if (args.length !== 1) throw new Error('Invalid local setup start request');
-    return options.setup.start(args[0]);
+    return options.coordinator.run('setup', signal => options.setup.start(args[0], signal));
   });
   handle(IPC_CHANNELS.setupRetry, (_event, ...args) => {
     if (args.length > 1) throw new Error('Invalid local setup retry request');
-    return options.setup.retry(args[0]);
+    return options.coordinator.run('setup', signal => options.setup.retry(args[0], signal));
   });
   handle(IPC_CHANNELS.setupCancel, (_event, ...args) => {
     if (args.length) throw new Error('Invalid local setup cancellation request');
-    return options.setup.cancel();
+    return options.coordinator.cancel(() => options.setup.cancel());
   });
   handle(IPC_CHANNELS.setupSelectPrivateKey, (_event, ...args) => {
     if (args.length) throw new Error('Invalid private-key selection request');
-    return options.setup.selectPrivateKey();
+    return options.coordinator.run('setup', signal => options.setup.selectPrivateKey(signal));
   });
   handle(IPC_CHANNELS.setupAcquireWebhookSecret, (_event, ...args) => {
     if (args.length) throw new Error('Invalid webhook-secret acquisition request');
-    return options.setup.acquireWebhookSecret();
+    return options.coordinator.run('setup', signal => options.setup.acquireWebhookSecret(signal));
   });
 };

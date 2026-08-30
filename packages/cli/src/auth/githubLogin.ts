@@ -10,6 +10,7 @@
 
 import type { ConfigManager } from "../config/index.js";
 import { spawn } from "node:child_process";
+import { rethrowCancellation } from "@propr/local-setup";
 
 /** Scopes requested when launching the interactive `gh auth login`. */
 const GH_LOGIN_SCOPES = "repo,read:org";
@@ -51,8 +52,11 @@ export async function loginWithGithubCli(
   // Require the gh CLI up front — every path below shells out to it.
   try {
     const version = await runGh(["--version"], false, signal);
+    signal?.throwIfAborted();
     if (version.status !== 0) throw version.error;
-  } catch {
+  } catch (error) {
+    signal?.throwIfAborted();
+    rethrowCancellation(error);
     return {
       ok: false,
       message:
@@ -64,7 +68,8 @@ export async function loginWithGithubCli(
   const existing = await readGhToken(signal);
   if (existing) {
     signal?.throwIfAborted();
-    await configManager.setGithubToken(existing);
+    await configManager.setGithubToken(existing, signal);
+    signal?.throwIfAborted();
     return { ok: true, token: existing, message: "Authenticated using your existing gh CLI session." };
   }
 
@@ -79,6 +84,7 @@ export async function loginWithGithubCli(
   // complete the gh prompts directly.
   onLog?.("No existing gh session found. Starting interactive login…");
   const result = await runGh(["auth", "login", "-s", GH_LOGIN_SCOPES], false, signal, true);
+  signal?.throwIfAborted();
   if (result.status !== 0) {
     return { ok: false, message: "GitHub login failed or was cancelled." };
   }
@@ -88,7 +94,8 @@ export async function loginWithGithubCli(
     return { ok: false, message: "Could not retrieve a token after login." };
   }
   signal?.throwIfAborted();
-  await configManager.setGithubToken(token);
+  await configManager.setGithubToken(token, signal);
+  signal?.throwIfAborted();
   return { ok: true, token, message: "Authentication successful." };
 }
 
@@ -96,9 +103,12 @@ export async function loginWithGithubCli(
 async function readGhToken(signal?: AbortSignal): Promise<string | null> {
   try {
     const result = await runGh(["auth", "token"], true, signal);
+    signal?.throwIfAborted();
     const token = result.status === 0 ? result.stdout.trim() : "";
     return token || null;
-  } catch {
+  } catch (error) {
+    signal?.throwIfAborted();
+    rethrowCancellation(error);
     return null;
   }
 }

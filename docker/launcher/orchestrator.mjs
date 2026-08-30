@@ -655,7 +655,13 @@ function imagePresentLocally(tag) {
 
 async function imagePresentLocallyAsync(tag, signal) {
     const res = await dockerAsync(['images', '-q', tag], { signal });
+    throwIfCancelledResult(res, signal);
     return res.stdout.trim().length > 0;
+}
+
+function throwIfCancelledResult(result, signal) {
+    signal?.throwIfAborted();
+    if (result?.error?.code === 'ABORT_ERR' || result?.error?.name === 'AbortError') throw result.error;
 }
 
 function firstLine(value) {
@@ -682,11 +688,14 @@ function localRepoDigests(tag) {
 
 async function localRepoDigestsAsync(tag, signal) {
     const res = await dockerAsync(['image', 'inspect', '--format', '{{json .RepoDigests}}', tag], { signal });
+    throwIfCancelledResult(res, signal);
     if (res.status !== 0) return null;
     try {
         const parsed = JSON.parse(res.stdout.trim() || '[]');
         return Array.isArray(parsed) ? parsed.map(normalizeDigest).filter(Boolean) : [];
-    } catch {
+    } catch (error) {
+        signal?.throwIfAborted();
+        if (error?.code === 'ABORT_ERR' || error?.name === 'AbortError') throw error;
         return [];
     }
 }
@@ -821,6 +830,7 @@ export function inspectImageFreshness(tag, { skipRemoteCheck = false } = {}) {
 /** Async mirror of remoteManifestDigest using non-blocking docker exec. */
 async function remoteManifestDigestAsync(tag, signal) {
     const res = await dockerAsync(['manifest', 'inspect', '--verbose', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS, signal });
+    throwIfCancelledResult(res, signal);
     if (res.status !== 0) {
         return { ok: false, error: dockerError(res, 'docker manifest inspect failed') };
     }
@@ -830,12 +840,14 @@ async function remoteManifestDigestAsync(tag, signal) {
             let allDigests = digests;
             if (res.stdout.trim().startsWith('[')) {
                 const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS, signal });
+                throwIfCancelledResult(buildx, signal);
                 if (buildx.status === 0) allDigests = appendDigest(allDigests, remoteDigestFromImagetoolsInspectOutput(buildx.stdout));
             }
             return { ok: true, digests: allDigests, digest: allDigests[0] };
         }
 
         const buildx = await dockerAsync(['buildx', 'imagetools', 'inspect', tag], { timeout: REMOTE_IMAGE_CHECK_TIMEOUT_MS, signal });
+        throwIfCancelledResult(buildx, signal);
         if (buildx.status !== 0) {
             return { ok: false, error: dockerError(buildx, 'docker buildx imagetools inspect failed') };
         }
@@ -843,7 +855,9 @@ async function remoteManifestDigestAsync(tag, signal) {
         if (buildxDigest) return { ok: true, digests: [buildxDigest], digest: buildxDigest };
 
         return { ok: false, error: 'remote manifest digest was not available from docker manifest inspect or docker buildx imagetools inspect' };
-    } catch {
+    } catch (error) {
+        signal?.throwIfAborted();
+        if (error?.code === 'ABORT_ERR' || error?.name === 'AbortError') throw error;
         return { ok: false, error: 'could not parse docker manifest inspect output' };
     }
 }
@@ -1414,11 +1428,18 @@ async function dockerRunDetachedAsync(cfg, name, service, args, networkMode = cf
 }
 
 /** Async mirror of ensureNetwork. */
-export async function ensureNetworkAsync(cfg, onLog, { signal } = {}) {
+export async function ensureNetworkAsync(cfg, onLog, { signal, beforeMutation } = {}) {
+    beforeMutation?.();
     const res = await dockerAsync(['network', 'inspect', cfg.network], { signal });
+    throwIfCancelledResult(res, signal);
+    beforeMutation?.();
     if (res.status !== 0) {
         onLog?.(`creating network ${cfg.network}`);
-        await dockerAsync(['network', 'create', cfg.network], { signal });
+        beforeMutation?.();
+        const created = await dockerAsync(['network', 'create', cfg.network], { signal });
+        throwIfCancelledResult(created, signal);
+        beforeMutation?.();
+        if (created.status !== 0) throw new Error(`Could not create Docker network ${cfg.network}.`);
     }
 }
 
@@ -1431,11 +1452,12 @@ async function cachedImageFreshnessAsync(cache, tag, opts) {
 }
 
 /** Async mirror of ensureServiceImage — pulls a missing/stale image, awaited. */
-async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, signal } = {}) {
+async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, signal, beforeMutation } = {}) {
     const tag = imageTagForService(cfg, service);
     if (!tag) return;
     const skipFreshness = skipRemoteImageCheck() || !isProprPublishedImage(cfg, tag);
     const freshness = await cachedImageFreshnessAsync(freshnessCache, tag, { skipRemoteCheck: skipFreshness, signal });
+    beforeMutation?.();
     if (freshness.status === 'current') return;
     if (freshness.status === 'unknown') {
         if (freshness.skipped) return;
@@ -1448,7 +1470,9 @@ async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, si
     } else {
         onLog?.(`  · pulling ${tag}`);
     }
+    beforeMutation?.();
     const res = await dockerAsync(['pull', tag], { signal });
+    beforeMutation?.();
     if (res.status !== 0) {
         throw new Error(`Failed to pull ${tag}: ${(res.stderr || '').trim()}`);
     }
@@ -1458,12 +1482,15 @@ async function ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, si
 export async function startServiceAsync(cfg, service, { onLog, pull = true, freshnessCache, migrationHandoff, signal, setupRunId, beforeLaunch, returnStatus = true } = {}) {
     const name = `${cfg.stack}-${service}`;
     await assertDatabaseServiceCanStartAsync(cfg, service, migrationHandoff, signal);
-    if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, signal });
+    beforeLaunch?.();
+    if (pull) await ensureServiceImageAsync(cfg, service, onLog, { freshnessCache, signal, beforeMutation: beforeLaunch });
+    beforeLaunch?.();
     const spec = withMigrationPolicy(buildServiceSpec(cfg, service), service, migrationHandoff);
     if (setupRunId) {
         if (await containerExistsAsync(cfg, name, signal)) {
             throw new Error(`Refusing to replace preexisting container ${name} during setup; it was left untouched.`);
         }
+        beforeLaunch?.();
     } else {
         await removeIfExistsAsync(cfg, name, onLog, signal);
     }
@@ -1471,6 +1498,7 @@ export async function startServiceAsync(cfg, service, { onLog, pull = true, fres
     signal?.throwIfAborted();
     beforeLaunch?.();
     await dockerRunDetachedAsync(cfg, name, service, runArgs, spec.networkMode, signal, setupRunId);
+    beforeLaunch?.();
     onLog?.(`  [ok] started ${name}`);
     return returnStatus ? getServiceStateAsync(cfg, service, signal) : undefined;
 }
@@ -1503,7 +1531,9 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
     const journal = [];
     const freshnessCache = new Map();
     const recordBeforeLaunch = async (name, service) => {
+        beforeLaunch?.();
         const preexisting = await containerExistsAsync(cfg, name, signal);
+        beforeLaunch?.();
         journal.push({ name, service, preexisting });
         if (preexisting) throw new Error(`Refusing to replace preexisting container ${name} during setup; it was left untouched.`);
     };
@@ -1532,7 +1562,16 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
         return status;
     } catch (err) {
         onLog?.(`  ! startup failed (${err.message}) — cleaning up run-owned containers`);
-        await cleanupSetupRunContainers(cfg, setupRunId, journal, onLog);
+        try {
+            await cleanupSetupRunContainers(cfg, setupRunId, journal, onLog);
+        } catch (cleanupError) {
+            const failure = new AggregateError(
+                [err, cleanupError],
+                `Stack startup failed and run-owned container cleanup is incomplete: ${cleanupError.message}`,
+            );
+            failure.code = 'PROPR_SETUP_CLEANUP_INCOMPLETE';
+            throw failure;
+        }
         throw err;
     }
 }
@@ -1540,7 +1579,9 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
 /** Async mirror of runMigrationPhase for the interactive setup UI. */
 export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal, setupRunId, beforeLaunch } = {}) {
     await assertMigrationCanStartAsync(cfg, signal);
-    await ensureServiceImageAsync(cfg, 'daemon', onLog, { freshnessCache, signal });
+    beforeLaunch?.();
+    await ensureServiceImageAsync(cfg, 'daemon', onLog, { freshnessCache, signal, beforeMutation: beforeLaunch });
+    beforeLaunch?.();
     if (setupRunId) {
         const migrationName = `${cfg.stack}-migrate`;
         if (await containerExistsAsync(cfg, migrationName, signal)) {
@@ -1553,43 +1594,82 @@ export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signa
     signal?.throwIfAborted();
     beforeLaunch?.();
     const res = await dockerAsync(migrationDockerArgs(cfg, setupRunId), { signal });
+    beforeLaunch?.();
     if (res.status !== 0) throw migrationFailure(res);
     onLog?.('  [ok] database migrations completed');
 }
 
-async function inspectSetupRunOwnership(cfg, name, service, setupRunId, signal) {
-    const inspected = await dockerAsync(['inspect', '--format', '{{json .Config.Labels}}', name], { signal });
-    if (inspected.status !== 0) return false;
-    try {
-        const labels = JSON.parse(inspected.stdout.trim());
-        return labels?.['propr.stack'] === cfg.stack
-            && labels?.['propr.service'] === service
-            && labels?.['propr.setup-run'] === setupRunId;
-    } catch {
-        return false;
-    }
-}
+const SETUP_CLEANUP_INSPECT_TIMEOUT_MS = 3_000;
+// `docker stop -t 2` gets its full grace plus three seconds of daemon overhead.
+const SETUP_CLEANUP_STOP_TIMEOUT_MS = 5_000;
+const SETUP_CLEANUP_REMOVE_TIMEOUT_MS = 4_000;
+const SETUP_CLEANUP_WIDE_TIMEOUT_MS = 20_000;
 
-/** Cleanup uses a fresh bounded signal because the setup signal is already aborted. */
+/**
+ * Cleanup uses a fresh signal because the setup signal is already aborted.
+ * Journal entries are independent exact names, so clean them concurrently: the
+ * wide deadline covers one bounded inspect/stop/reinspect/rm/reinspect chain,
+ * rather than multiplying the two-second stop grace by up to nine services.
+ */
 async function cleanupSetupRunContainers(cfg, setupRunId, journal, onLog) {
     const cleanup = new AbortController();
-    const timer = setTimeout(() => cleanup.abort(), 15_000);
+    const timer = setTimeout(() => cleanup.abort(new Error('setup cleanup deadline exceeded')), SETUP_CLEANUP_WIDE_TIMEOUT_MS);
+    const entries = [...journal].reverse().filter((entry) => !entry.preexisting);
+    const command = (args, timeout) => dockerAsync(args, { signal: cleanup.signal, timeout });
+    const assertCommand = (result, description) => {
+        cleanup.signal.throwIfAborted();
+        if (result.error) throw new Error(`${description}: ${result.error.message}`);
+        return result;
+    };
+    const owns = async (entry) => {
+        const inspected = assertCommand(
+            await command(['inspect', '--format', '{{json .Config.Labels}}', entry.name], SETUP_CLEANUP_INSPECT_TIMEOUT_MS),
+            `could not inspect ${entry.name}`,
+        );
+        if (inspected.status !== 0) return false;
+        try {
+            const labels = JSON.parse(inspected.stdout.trim());
+            return labels?.['propr.stack'] === cfg.stack
+                && labels?.['propr.service'] === entry.service
+                && labels?.['propr.setup-run'] === setupRunId;
+        } catch (error) {
+            throw new Error(`could not parse ownership labels for ${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    };
     try {
-        for (const entry of [...journal].reverse()) {
-            if (entry.preexisting) continue;
-            try {
-                if (!(await inspectSetupRunOwnership(cfg, entry.name, entry.service, setupRunId, cleanup.signal))) continue;
-                const stopped = await dockerAsync(['stop', '-t', '2', entry.name], { signal: cleanup.signal });
-                // A nonzero stop can mean the owned container exited between
-                // inspect and stop while its stopped record still exists. The
-                // second exact-label inspection, not the stop status, decides
-                // whether it remains safe to force-remove that same record.
-                if (!(await inspectSetupRunOwnership(cfg, entry.name, entry.service, setupRunId, cleanup.signal))) continue;
-                const removed = await dockerAsync(['rm', '-f', entry.name], { signal: cleanup.signal });
-                if (removed.status === 0) onLog?.(`  [ok] removed run-owned ${entry.name}`);
-            } catch (cleanupError) {
-                onLog?.(`  ! rollback: ${cleanupError.message}`);
+        const settled = await Promise.allSettled(entries.map(async (entry) => {
+            if (!(await owns(entry))) return;
+            await command(['stop', '-t', '2', entry.name], SETUP_CLEANUP_STOP_TIMEOUT_MS);
+            cleanup.signal.throwIfAborted();
+            // A nonzero stop can mean the owned container exited between
+            // inspect and stop while its stopped record still exists. The
+            // second exact-label inspection, not the stop status, decides
+            // whether it remains safe to force-remove that same record.
+            if (!(await owns(entry))) return;
+            const removed = assertCommand(
+                await command(['rm', '-f', entry.name], SETUP_CLEANUP_REMOVE_TIMEOUT_MS),
+                `could not remove ${entry.name}`,
+            );
+            if (removed.status === 0) onLog?.(`  [ok] removed run-owned ${entry.name}`);
+        }));
+        const failures = settled.flatMap((result, index) => result.status === 'rejected'
+            ? [`${entries[index].name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`]
+            : []);
+
+        // Await every entry, then independently prove no exact same-run record
+        // remains. Foreign replacements deliberately fail the label match and
+        // are therefore preserved and not reported as residual run ownership.
+        const residual = await Promise.all(entries.map(async (entry) => {
+            try { return await owns(entry) ? entry.name : null; } catch (error) {
+                failures.push(`${entry.name}: final ownership inspection failed (${error instanceof Error ? error.message : String(error)})`);
+                return null;
             }
+        }));
+        const remaining = residual.filter(Boolean);
+        if (remaining.length) failures.push(`run-owned containers remain: ${remaining.join(', ')}`);
+        if (failures.length) {
+            for (const failure of failures) onLog?.(`  ! rollback: ${failure}`);
+            throw new Error(failures.join('; '));
         }
     } finally {
         clearTimeout(timer);
@@ -1617,6 +1697,132 @@ async function getServiceStateAsync(cfg, service, signal) {
 export async function isStackRunningAsync(cfg, signal) {
     const status = await getStackStatusAsync(cfg, signal);
     return status.services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
+}
+
+function expectedServiceBinds(cfg, service) {
+    const args = buildServiceSpec(cfg, service).args;
+    const binds = [];
+    for (let index = 0; index < args.length; index += 1) {
+        if (args[index] === '-v') {
+            const bind = args[index + 1];
+            const source = bind.split(':', 1)[0];
+            if ((source.startsWith('/') && /(?:^|\/)(?:proc\/(?:[0-9]+|self|thread-self)\/fd|dev\/fd)(?:\/|$)/.test(source))
+                || (!source.startsWith('/') && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(source))) {
+                throw new Error(`Lifecycle recovery requires stable Docker bind sources for ${service}.`);
+            }
+            binds.push(bind);
+        }
+    }
+    return binds.sort();
+}
+
+function assertStableLifecycleConfig(cfg) {
+    for (const path of [cfg.envFileHost, cfg.hostData, cfg.hostLogs, cfg.hostRepos]) {
+        if (!isAbsolute(path) || /(?:^|\/)(?:proc\/(?:[0-9]+|self|thread-self)\/fd|dev\/fd)(?:\/|$)/.test(path)) {
+            throw new Error('Lifecycle recovery requires stable fixed-root Docker bind paths.');
+        }
+    }
+}
+
+async function inspectLifecycleContainer(cfg, service, signal, assertRootAuthority) {
+    const name = `${cfg.stack}-${service}`;
+    assertRootAuthority?.();
+    const inspected = await dockerAsync(['inspect', name], { signal });
+    throwIfCancelledResult(inspected, signal);
+    assertRootAuthority?.();
+    if (inspected.status !== 0) {
+        const detail = firstLine(inspected.stderr || inspected.error?.message);
+        if (/no such (?:object|container)/i.test(detail)) return { name, service, exists: false, running: false };
+        throw new Error(`Could not safely inspect ${name}; no lifecycle mutation was attempted.`);
+    }
+    let value;
+    try {
+        const parsed = JSON.parse(inspected.stdout);
+        value = Array.isArray(parsed) ? parsed[0] : parsed;
+    } catch {
+        throw new Error(`Refusing lifecycle recovery for ${name}: its Docker inspection was malformed; it was left untouched.`);
+    }
+    const labels = value?.Config?.Labels;
+    const containerId = typeof value?.Id === 'string' && value.Id.length > 0 ? value.Id : null;
+    const inspectedName = typeof value?.Name === 'string' ? value.Name.replace(/^\//, '') : null;
+    const actualBinds = Array.isArray(value?.HostConfig?.Binds) ? [...value.HostConfig.Binds].sort() : [];
+    const expectedBinds = expectedServiceBinds(cfg, service);
+    if (!containerId || inspectedName !== name
+        || labels?.['propr.stack'] !== cfg.stack || labels?.['propr.service'] !== service
+        || JSON.stringify(actualBinds) !== JSON.stringify(expectedBinds)) {
+        throw new Error(`Refusing lifecycle recovery for ${name}: ownership or fixed-root binds do not match; it was left untouched.`);
+    }
+    return { id: containerId, name, service, exists: true, running: value?.State?.Running === true };
+}
+
+/**
+ * Resume only an already-created, exactly owned lifecycle stack. Setup-run
+ * creation remains transactional and uses startStackAsync; this path never
+ * adopts or replaces a same-name container with mismatched labels or binds.
+ */
+export async function recoverStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled, signal, onLog, assertRootAuthority } = {}) {
+    assertStableLifecycleConfig(cfg);
+    assertRootAuthority?.();
+    const services = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
+    const inspected = [];
+    for (const service of services) inspected.push(await inspectLifecycleContainer(cfg, service, signal, assertRootAuthority));
+    const existing = inspected.filter((entry) => entry.exists);
+    if (existing.length === 0) return { recovered: false };
+    if (existing.length !== inspected.length) {
+        throw new Error('Refusing partial lifecycle recreation: expected service containers are missing; existing containers were left untouched.');
+    }
+    for (const entry of inspected) {
+        signal?.throwIfAborted();
+        if (entry.running) continue;
+        const current = await inspectLifecycleContainer(cfg, entry.service, signal, assertRootAuthority);
+        if (!current.exists || current.running) continue;
+        assertRootAuthority?.();
+        const started = await dockerAsync(['start', current.id], { signal });
+        throwIfCancelledResult(started, signal);
+        assertRootAuthority?.();
+        if (started.status !== 0) throw new Error(`Could not restart ${entry.name}; remaining containers were left untouched.`);
+        const verified = await inspectLifecycleContainer(cfg, entry.service, signal, assertRootAuthority);
+        if (!verified.exists || !verified.running) throw new Error(`Could not verify ${entry.name} after restart.`);
+        onLog?.(`  [ok] restarted ${entry.name}`);
+    }
+    return { recovered: true };
+}
+
+/** Report desktop lifecycle state only after every same-name service is verified. */
+export async function isLifecycleStackRunningAsync(cfg, { signal, assertRootAuthority } = {}) {
+    assertStableLifecycleConfig(cfg);
+    assertRootAuthority?.();
+    const inspected = [];
+    for (const service of SERVICES) inspected.push(await inspectLifecycleContainer(cfg, service, signal, assertRootAuthority));
+    return inspected.some((entry) => CORE_SERVICES.includes(entry.service) && entry.running);
+}
+
+/** Stop only exact expected service names after labels and binds are verified. */
+export async function stopLifecycleStackAsync(cfg, { signal, onLog, assertRootAuthority } = {}) {
+    assertStableLifecycleConfig(cfg);
+    assertRootAuthority?.();
+    const inspected = [];
+    for (const service of SERVICES) inspected.push(await inspectLifecycleContainer(cfg, service, signal, assertRootAuthority));
+    const failed = [];
+    for (const entry of inspected.filter((value) => value.exists && value.running).reverse()) {
+        try {
+            const current = await inspectLifecycleContainer(cfg, entry.service, signal, assertRootAuthority);
+            if (!current.exists || !current.running) continue;
+            assertRootAuthority?.();
+            const stopped = await dockerAsync(['stop', '-t', '10', current.id], { signal });
+            assertRootAuthority?.();
+            // Always re-inspect after the stop result. A replacement is never
+            // removed or retried; exact ownership is required on every pass.
+            await inspectLifecycleContainer(cfg, entry.service, signal, assertRootAuthority);
+            if (stopped.status !== 0) throw new Error(`Could not stop ${entry.name}.`);
+            onLog?.(`  [ok] stopped ${entry.name}`);
+        } catch (error) {
+            signal?.throwIfAborted();
+            failed.push(entry.name);
+            onLog?.(`  ! ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    return { failed };
 }
 
 /**

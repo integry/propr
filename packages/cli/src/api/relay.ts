@@ -10,6 +10,12 @@
 
 const FETCH_TIMEOUT_MS = 15_000;
 
+function rethrowRequestCancellation(error: unknown, signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+  if ((error as { name?: unknown; code?: unknown } | null)?.name === "AbortError"
+    || (error as { code?: unknown } | null)?.code === "ABORT_ERR") throw error;
+}
+
 export interface RelayClientOptions {
   /** Relay base URL, including the version prefix (e.g. https://relay.example/v1). */
   baseUrl: string;
@@ -78,7 +84,9 @@ async function relayRequest<T>(
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
+    options.signal?.throwIfAborted();
   } catch (error) {
+    rethrowRequestCancellation(error, options.signal);
     throw new Error(`Cannot reach the relay at ${options.baseUrl}: ${(error as Error).message}`);
   }
 
@@ -86,8 +94,10 @@ async function relayRequest<T>(
     let code = "";
     try {
       const parsed = (await response.json()) as { error?: { code?: string } };
+      options.signal?.throwIfAborted();
       code = parsed?.error?.code ?? "";
-    } catch {
+    } catch (error) {
+      rethrowRequestCancellation(error, options.signal);
       /* non-JSON error body */
     }
     if (response.status === 401) {
@@ -105,8 +115,11 @@ async function relayRequest<T>(
   }
 
   try {
-    return (await response.json()) as T;
-  } catch {
+    const result = (await response.json()) as T;
+    options.signal?.throwIfAborted();
+    return result;
+  } catch (error) {
+    rethrowRequestCancellation(error, options.signal);
     throw new Error("The relay returned a malformed JSON response.");
   }
 }

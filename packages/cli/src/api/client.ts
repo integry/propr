@@ -164,13 +164,18 @@ export class ApiClient {
       try {
         const response = await fetch(url, fetchOptions);
         clearTimeout(timeoutId);
+        signal?.throwIfAborted();
 
         // Handle error responses
         if (!response.ok) {
           let errorResponse: ApiErrorResponse | undefined;
           try {
             errorResponse = await response.json() as ApiErrorResponse;
-          } catch {
+            signal?.throwIfAborted();
+          } catch (error) {
+            if (signal?.aborted) throw signal.reason;
+            if ((error as { name?: unknown; code?: unknown } | null)?.name === "AbortError"
+              || (error as { code?: unknown } | null)?.code === "ABORT_ERR") throw error;
             // Response body is not JSON or empty
           }
           throw createApiError(response.status, errorResponse);
@@ -185,6 +190,7 @@ export class ApiClient {
           // Handle non-JSON responses
           data = await response.text() as unknown as T;
         }
+        signal?.throwIfAborted();
 
         return {
           data,

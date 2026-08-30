@@ -7,6 +7,7 @@ import { createDesktopLocalHost } from './desktop-host';
 import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
+import { DesktopOperationCoordinator } from './operation-coordinator';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
 import { DesktopSetupController } from './setup-controller';
 import { promptForWebhookSecret } from './secure-secret-prompt';
@@ -39,6 +40,7 @@ const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
 let logger: DesktopLogger | null = null;
 let shutdownStarted = false;
 let setupController: DesktopSetupController | null = null;
+const operationCoordinator = new DesktopOperationCoordinator();
 
 const log = (level: 'debug' | 'info' | 'warn' | 'error', event: string, fields?: Record<string, unknown>) =>
   logger
@@ -225,7 +227,10 @@ if (!hasSingleInstanceLock) {
     const profiles = new ProfileStore(app.getPath('userData'), encryption);
     const defaultRootDir = join(app.getPath('userData'), 'desktop', 'local-stack');
     const localHost = await createDesktopLocalHost(app.isPackaged ? process.resourcesPath : undefined, defaultRootDir, app.getPath('userData'));
-    const lifecycle = new LocalLifecycleController(process.platform === 'linux' ? localHost.lifecycle : undefined);
+    const lifecycle = new LocalLifecycleController(
+      process.platform === 'linux' ? localHost.lifecycle : undefined,
+      (event, fields) => log('error', event, fields),
+    );
     setupController = new DesktopSetupController({
       actions: localHost.actions,
       platform: process.platform,
@@ -274,6 +279,7 @@ if (!hasSingleInstanceLock) {
       desktopSession: session.defaultSession,
       devServerUrl,
       packagedRendererUrl,
+      coordinator: operationCoordinator,
     });
     mainWindow = await createMainWindow();
     deepLinkDelivery.setWindow(mainWindow);
@@ -291,7 +297,9 @@ if (!hasSingleInstanceLock) {
       if (shutdownStarted) return;
       event.preventDefault();
       shutdownStarted = true;
-      void Promise.all([lifecycle.shutdown(), setupController?.shutdown()]).finally(() => {
+      void operationCoordinator.shutdown(async () => {
+        await Promise.all([lifecycle.shutdown(), setupController?.shutdown()]);
+      }).finally(() => {
         log('info', 'desktop.app.shutdown');
         app.quit();
       });

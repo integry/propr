@@ -154,7 +154,7 @@ export interface OrchestratorModule {
   tagAgentLatest(key: string, imageTag: string): void;
   tagAgentLatestAsync(key: string, imageTag: string, signal?: AbortSignal): Promise<void>;
   ensureNetwork(cfg: OrchestratorConfig, onLog?: (line: string) => void): void;
-  ensureNetworkAsync(cfg: OrchestratorConfig, onLog?: (line: string) => void, opts?: { signal?: AbortSignal }): Promise<void>;
+  ensureNetworkAsync(cfg: OrchestratorConfig, onLog?: (line: string) => void, opts?: { signal?: AbortSignal; beforeMutation?: () => void }): Promise<void>;
   ensureServiceImage(
     cfg: OrchestratorConfig,
     service: string,
@@ -172,6 +172,9 @@ export interface OrchestratorModule {
 
   isStackRunning(cfg: OrchestratorConfig): boolean;
   isStackRunningAsync(cfg: OrchestratorConfig, signal?: AbortSignal): Promise<boolean>;
+  isLifecycleStackRunningAsync(cfg: OrchestratorConfig, opts?: { signal?: AbortSignal; assertRootAuthority?: () => void }): Promise<boolean>;
+  recoverStackAsync(cfg: OrchestratorConfig, opts?: { ui?: boolean; docs?: boolean; tunnel?: boolean; signal?: AbortSignal; onLog?: (line: string) => void; assertRootAuthority?: () => void }): Promise<{ recovered: boolean }>;
+  stopLifecycleStackAsync(cfg: OrchestratorConfig, opts?: { signal?: AbortSignal; onLog?: (line: string) => void; assertRootAuthority?: () => void }): Promise<{ failed: string[] }>;
 
   startService(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): ServiceState | undefined;
   startServiceAsync(cfg: OrchestratorConfig, service: string, opts?: OnLogOption): Promise<ServiceState | undefined>;

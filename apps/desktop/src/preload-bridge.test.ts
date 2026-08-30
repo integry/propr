@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createDesktopBridge, createDesktopRendererBridge, type PreloadIpc } from './preload-bridge';
+import { createDesktopBridge, createDesktopRendererBridge, probeLocalDesktopProfile, type PreloadIpc } from './preload-bridge';
 import { IPC_CHANNELS } from './shared/contract';
+import { PROPR_API_COMPATIBILITY } from '@propr/shared';
 
 class FakeIpc implements PreloadIpc {
   readonly invocations: Array<{ channel: string; args: unknown[] }> = [];
@@ -76,6 +77,37 @@ describe('desktop preload bridge', () => {
     assert.deepEqual(received, ['propr://open?path=%2Ftasks']);
     unsubscribe();
     assert.equal(ipc.listeners.has(IPC_CHANNELS.deepLink), true);
+  });
+
+  it('probes completed local profiles through the injectable connection boundary', async () => {
+    const profile = { id: 'local', name: 'This computer', baseUrl: 'http://127.0.0.1:4000', kind: 'local' as const };
+    const requests: string[] = [];
+    const result = await probeLocalDesktopProfile(profile, async input => {
+      requests.push(input.toString());
+      return new Response(JSON.stringify({ apiCompatibility: PROPR_API_COMPATIBILITY, version: '0.8.15' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    assert.deepEqual(requests, ['http://127.0.0.1:4000/api/compatibility']);
+    assert.equal(result.status, 'ready');
+
+    const injected = async () => ({ status: 'ready' as const, version: 'injected' });
+    const bridge = createDesktopRendererBridge(new FakeIpc(), 'linux', injected);
+    assert.deepEqual(await bridge.connection.probe(profile), { status: 'ready', version: 'injected' });
+  });
+
+  it('keeps remote probing out of the local setup lane and bounds local failures', async () => {
+    const remote = await probeLocalDesktopProfile({ id: 'remote', name: 'Remote', baseUrl: 'https://example.com', kind: 'remote' }, async () => {
+      throw new Error('must not fetch');
+    });
+    assert.deepEqual(remote, { status: 'offline', message: 'Remote connections are not included in local setup.' });
+    const local = await probeLocalDesktopProfile({ id: 'local', name: 'Local', baseUrl: 'http://localhost:4000', kind: 'local' }, async () => {
+      throw new Error(`/home/alice/secret ${'x'.repeat(10_000)}`);
+    });
+    assert.equal(local.status, 'offline');
+    assert.ok((local.message?.length ?? 0) < 200);
+    assert.doesNotMatch(local.message ?? '', /alice|secret|home/);
   });
 
   it('buffers startup and second-instance deep links until the renderer subscribes', () => {

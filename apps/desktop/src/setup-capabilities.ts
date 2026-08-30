@@ -9,6 +9,7 @@ import {
   openSync,
   readFileSync,
   realpathSync,
+  unlinkSync,
   type BigIntStats,
 } from 'node:fs';
 import { lstat, realpath, stat } from 'node:fs/promises';
@@ -231,6 +232,17 @@ export function bindRootOperations(
     'detectGithubAuthMode',
     'prepareAgentCredentialDir',
   ]);
+  const rootedObjectActions = new Set(['pullImages', 'checkBackendHealth']);
+  const rootedTrailingOptionIndex = new Map<string, number>([
+    ['isStackRunning', 2],
+    ['addRepository', 3],
+    ['resolveUiUrl', 2],
+    ['saveWhitelistSetting', 3],
+    ['listAgents', 2],
+    ['addAgent', 3],
+    ['loginAgent', 3],
+    ['validateAgents', 3],
+  ]);
   const toOperation = (value: unknown) => transform(value, displayRoot, operationRoot);
   const toDisplay = (value: unknown) => transform(value, operationRoot, displayRoot);
   return new Proxy(actions, {
@@ -241,12 +253,22 @@ export function bindRootOperations(
         guard();
         const descriptorRelative = typeof property === 'string' && descriptorActions.has(property);
         const operationArgs = descriptorRelative ? args.map(toOperation) : args;
+        if (typeof property === 'string' && rootedObjectActions.has(property) && operationArgs[0] && typeof operationArgs[0] === 'object') {
+          operationArgs[0] = { ...(operationArgs[0] as Record<string, unknown>), rootOperationsDir: operationRoot, assertRootAuthority: guard };
+        }
+        const trailingIndex = typeof property === 'string' ? rootedTrailingOptionIndex.get(property) : undefined;
+        if (trailingIndex !== undefined) {
+          operationArgs[trailingIndex] = { ...((operationArgs[trailingIndex] as Record<string, unknown> | undefined) ?? {}), rootOperationsDir: operationRoot, assertRootAuthority: guard };
+        }
         if (property === 'startStack' && operationArgs[0] && typeof operationArgs[0] === 'object') {
           operationArgs[0] = { ...(operationArgs[0] as Record<string, unknown>), rootOperationsDir: operationRoot, assertRootAuthority: guard };
         }
         const result = Reflect.apply(value, target, operationArgs);
         if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-          return Promise.resolve(result).then(output => { guard(); return toDisplay(output); });
+          return Promise.resolve(result).then(
+            output => { guard(); return toDisplay(output); },
+            error => { guard(); throw error; },
+          );
         }
         guard();
         return toDisplay(result);
@@ -289,19 +311,24 @@ export class SetupFilesystemCapabilities {
 
   constructor(now: () => number = Date.now) { this.#now = now; }
 
-  async issue(kind: SelectionKind, sessionId: string, selectedPath: string): Promise<DesktopFilesystemSelection> {
+  async issue(kind: SelectionKind, sessionId: string, selectedPath: string, signal?: AbortSignal): Promise<DesktopFilesystemSelection> {
+    signal?.throwIfAborted();
     const originalPath = safePath(selectedPath);
     const before = await lstat(originalPath, { bigint: true });
+    signal?.throwIfAborted();
     if (before.isSymbolicLink()) throw new SetupCapabilityError('Symbolic-link selections are not allowed.');
     if (!before.isFile()) throw new SetupCapabilityError();
     assertOwner(before.uid);
     if ((before.mode & 0o077n) !== 0n) throw new SetupCapabilityError('The private-key file must not be accessible by group or other users.');
     if (before.nlink !== 1n || before.size <= 0n || before.size > BigInt(MAX_KEY_BYTES)) throw new SetupCapabilityError('The private-key file size or link count is invalid.');
     const canonicalPath = await realpath(originalPath);
+    signal?.throwIfAborted();
     if (canonicalPath !== originalPath) throw new SetupCapabilityError('Selections containing symbolic links are not allowed.');
     const canonical = await stat(canonicalPath, { bigint: true });
+    signal?.throwIfAborted();
     if (canonical.dev !== before.dev || canonical.ino !== before.ino) throw new SetupCapabilityError();
     const capability = randomBytes(32).toString('base64url');
+    signal?.throwIfAborted();
     this.#records.set(capability, { kind, sessionId, originalPath, canonicalPath, device: before.dev, inode: before.ino, expiresAt: this.#now() + TTL_MS });
     return { capability, label: basename(canonicalPath) };
   }
@@ -324,9 +351,12 @@ export class SetupFilesystemCapabilities {
     return record.canonicalPath;
   }
 
-  async consumePrivateKey(capability: string, sessionId: string, keyStorageDir: string): Promise<string> {
+  async consumePrivateKey(capability: string, sessionId: string, keyStorageDir: string, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     const record = this.#take(capability, 'private-key', sessionId);
+    signal?.throwIfAborted();
     ensurePrivateDirectory(keyStorageDir);
+    signal?.throwIfAborted();
     const descriptor = openSync(record.originalPath, constants.O_RDONLY | constants.O_NOFOLLOW | O_CLOEXEC);
     try {
       const current = fstatSync(descriptor, { bigint: true });
@@ -335,7 +365,14 @@ export class SetupFilesystemCapabilities {
         || current.size <= 0n || current.size > BigInt(MAX_KEY_BYTES)) throw new SetupCapabilityError();
       const bytes = readFileSync(descriptor);
       const ownedPath = join(resolve(keyStorageDir), `${randomBytes(24).toString('hex')}.pem`);
-      writePrivateFileAtomic(ownedPath, bytes);
+      signal?.throwIfAborted();
+      writePrivateFileAtomic(ownedPath, bytes, { signal });
+      try {
+        signal?.throwIfAborted();
+      } catch (error) {
+        unlinkSync(ownedPath);
+        throw error;
+      }
       return ownedPath;
     } finally {
       closeSync(descriptor);

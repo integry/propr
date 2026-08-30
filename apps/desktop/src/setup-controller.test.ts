@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -145,6 +145,51 @@ describe('desktop local setup controller', () => {
     assert.equal(registered, false);
   });
 
+  it('does not consume or copy a key or secret for an already-aborted setup boundary', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-pre-abort-'));
+    const keyPath = join(directory, 'selected.pem');
+    const keyStorageDir = join(directory, 'owned-keys');
+    await writeFile(keyPath, 'private-key-sentinel', { mode: 0o600 });
+    let hostActions = 0;
+    const actions = fakeActions();
+    actions.runChecks = async ({ root }) => { hostActions += 1; return { rootDir: root!, anyFail: false, results: [] }; };
+    const controller = new DesktopSetupController({
+      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'stack'), keyStorageDir,
+      selectPrivateKey: async () => keyPath, promptWebhookSecret: async () => 'webhook-secret-sentinel',
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
+    });
+    const status = await controller.status();
+    const key = await controller.selectPrivateKey();
+    const secret = await controller.acquireWebhookSecret();
+    assert.ok(key && secret);
+    const abort = new AbortController();
+    abort.abort();
+    await assert.rejects(controller.start({
+      sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [],
+      github: { mode: 'app', appId: '123', installationId: '456', privateKeyCapability: key.capability },
+      intake: { mode: 'direct_webhook', secretCapability: secret.capability }, whitelist: null, repository: null,
+    }, abort.signal), error => (error as Error).name === 'AbortError');
+    assert.equal(hostActions, 0);
+    assert.deepEqual(await readdir(keyStorageDir).catch(error => (error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : Promise.reject(error)), []);
+    assert.equal(await readFile(keyPath, 'utf8'), 'private-key-sentinel');
+  });
+
+  it('does not issue a key or secret capability across an abort boundary', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-selection-abort-'));
+    const keyPath = join(directory, 'selected.pem');
+    await writeFile(keyPath, 'private-key-sentinel', { mode: 0o600 });
+    const selectionAbort = new AbortController();
+    const secretAbort = new AbortController();
+    const controller = new DesktopSetupController({
+      actions: fakeActions(), platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'stack'),
+      selectPrivateKey: async () => { selectionAbort.abort(); return keyPath; },
+      promptWebhookSecret: async () => { secretAbort.abort(); return 'webhook-secret-sentinel'; },
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
+    });
+    await assert.rejects(controller.selectPrivateKey(selectionAbort.signal), error => (error as Error).name === 'AbortError');
+    await assert.rejects(controller.acquireWebhookSecret(secretAbort.signal), error => (error as Error).name === 'AbortError');
+  });
+
   it('pins relay enrollment to the official relay and rejects attacker-controlled URL fields', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-relay-'));
     const seen: unknown[] = [];
@@ -218,6 +263,36 @@ describe('desktop local setup controller', () => {
     assert.equal(result.phase, 'cancelled');
     assert.equal((await run).phase, 'cancelled');
     assert.equal(registered, false);
+  });
+
+  it('reports residual rollback as a fixed failure even when startup was cancelled', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-residual-cleanup-'));
+    const external = new AbortController();
+    const diagnostics: unknown[] = [];
+    const actions = fakeActions();
+    actions.startStack = async () => {
+      external.abort();
+      throw Object.assign(
+        new AggregateError([new Error('cancelled'), new Error('residual propr-ui at /host/private')], 'raw cleanup detail'),
+        { code: 'PROPR_SETUP_CLEANUP_INCOMPLETE' },
+      );
+    };
+    const controller = new DesktopSetupController({
+      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: join(directory, 'stack'),
+      selectPrivateKey: async () => null,
+      resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => { throw new Error('not called'); }, emit() {},
+      diagnose: (_event, fields) => diagnostics.push(fields),
+    });
+    const status = await controller.status();
+    const result = await controller.start({
+      sessionId: status.sessionId, root: { mode: 'default' }, reinitialize: false, agents: [],
+      github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: null, repository: null,
+    }, external.signal);
+    assert.equal(result.phase, 'failed');
+    assert.match(result.error ?? '', /cleanup is incomplete/);
+    assert.doesNotMatch(JSON.stringify(result), /propr-ui|host\/private|raw cleanup detail/);
+    assert.match(JSON.stringify(diagnostics), /REDACTED/);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /host\/private/);
   });
 
   it('persists every non-secret choice and requires secret reconfiguration after restart', async () => {
@@ -362,7 +437,7 @@ describe('desktop local setup controller', () => {
       resolveApiBaseUrl: async () => 'http://127.0.0.1:4000', registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
     });
     const resumed = await restarted.status();
-    assert.equal(resumed.rootDir, root);
+    assert.equal(resumed.rootDir, '[REDACTED_PATH]');
     assert.equal(resumed.resume?.reconfigurationStage, undefined);
     assert.equal((await restarted.retry()).phase, 'completed');
     assert.ok(actions > 0);
@@ -516,6 +591,51 @@ describe('desktop local setup controller', () => {
     assert.match(operationsRoot, new RegExp(`^/proc/${process.pid}/fd/[0-9]+$`));
     assert.equal(readFileSync(join(selectedRoot, '.env'), 'utf8'), sentinel);
     assert.equal((await controller.retry()).phase, 'failed', 'retry starts only after the failed run settled');
+    await controller.shutdown();
+  });
+
+  it('threads the descriptor read root and authority guard through every config consumer', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-root-consumers-'));
+    const stableRoot = join(directory, 'stack');
+    const seen = new Map<string, { stable: string; read?: string; guarded: boolean }>();
+    const record = (name: string, stable: string, boundary?: { rootOperationsDir?: string; assertRootAuthority?(): void }) => {
+      boundary?.assertRootAuthority?.();
+      seen.set(name, { stable, read: boundary?.rootOperationsDir, guarded: Boolean(boundary?.assertRootAuthority) });
+    };
+    const actions = fakeActions();
+    actions.pullImages = async params => {
+      record('pull', params.rootDir, params);
+      return { pulledCore: ['api'], pulledAgents: ['agent'], failedCore: [], failedAgents: [] };
+    };
+    let statusCalls = 0;
+    actions.isStackRunning = async (rootDir, _signal, boundary) => { record('status', rootDir, boundary); return statusCalls++ > 0; };
+    actions.checkBackendHealth = async params => { record('health', params.rootDir, params); return { healthy: true, detail: 'healthy' }; };
+    actions.resolveUiUrl = async (rootDir, _signal, boundary) => { record('ui', rootDir, boundary); return 'http://127.0.0.1:5173'; };
+    actions.saveWhitelistSetting = async (rootDir, _users, _signal, boundary) => { record('settings', rootDir, boundary); };
+    actions.addRepository = async (_selection, rootDir, _signal, boundary) => { record('repo', rootDir, boundary); };
+    actions.listAgents = async (rootDir, _signal, boundary) => { record('agents-list', rootDir, boundary); return []; };
+    actions.addAgent = async (rootDir, _options, _signal, boundary) => { record('agents-add', rootDir, boundary); };
+    actions.validateAgents = async (rootDir, _types, _signal, boundary) => { record('agents-validate', rootDir, boundary); return []; };
+    const controller = new DesktopSetupController({
+      actions, platform: 'linux', statePath: join(directory, 'state.json'), defaultRootDir: stableRoot,
+      selectPrivateKey: async () => null,
+      resolveApiBaseUrl: async rootDir => { assert.equal(rootDir, stableRoot); return 'http://127.0.0.1:4000'; },
+      registerProfile: async () => ({ id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:4000', kind: 'local' }), emit() {},
+    });
+    const { sessionId } = await controller.status();
+    const result = await controller.start({
+      sessionId, root: { mode: 'default' }, reinitialize: false, agents: ['claude'],
+      github: { mode: 'demo' }, intake: { mode: 'keep' }, whitelist: ['octocat'],
+      repository: { fullName: 'integry/propr' },
+    });
+    assert.equal(result.phase, 'completed');
+    for (const name of ['pull', 'status', 'health', 'ui', 'settings', 'repo', 'agents-list', 'agents-add', 'agents-validate']) {
+      const value = seen.get(name);
+      assert.ok(value, `${name} was not called`);
+      assert.equal(value.stable, stableRoot);
+      assert.match(value.read ?? '', new RegExp(`^/proc/${process.pid}/fd/[0-9]+$`));
+      assert.equal(value.guarded, true);
+    }
     await controller.shutdown();
   });
 

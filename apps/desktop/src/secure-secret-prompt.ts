@@ -10,10 +10,17 @@ const commands: PromptCommand[] = [
   { command: 'kdialog', args: ['--password', 'Enter the GitHub webhook signing secret', '--title', 'ProPR Desktop'] },
 ];
 
-const runPrompt = ({ command, args }: PromptCommand): Promise<{ unavailable: boolean; value: string | null }> =>
+const runPrompt = ({ command, args }: PromptCommand, signal?: AbortSignal): Promise<{ unavailable: boolean; value: string | null }> =>
   new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
     let output = Buffer.alloc(0);
+    const abort = () => {
+      child.kill('SIGKILL');
+      reject(signal?.reason instanceof Error ? signal.reason : Object.assign(new Error('The native secret prompt was cancelled.'), { name: 'AbortError' }));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    child.once('close', () => signal?.removeEventListener('abort', abort));
     child.stdout.on('data', (chunk: Buffer) => {
       output = Buffer.concat([output, chunk]);
       if (output.length > 2048) child.kill('SIGKILL');
@@ -32,9 +39,11 @@ const runPrompt = ({ command, args }: PromptCommand): Promise<{ unavailable: boo
   });
 
 /** Acquire a one-shot secret in Electron main without sending its bytes through renderer IPC. */
-export async function promptForWebhookSecret(): Promise<string | null> {
+export async function promptForWebhookSecret(signal?: AbortSignal): Promise<string | null> {
+  signal?.throwIfAborted();
   for (const command of commands) {
-    const result = await runPrompt(command);
+    const result = await runPrompt(command, signal);
+    signal?.throwIfAborted();
     if (!result.unavailable) return result.value;
   }
   throw new Error('No supported native secret prompt is installed. Install zenity or kdialog and try again.');

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import {
   readPrivateFile,
+  rethrowCancellation,
   writePrivateFileAtomic,
   getLocalSetupCapability,
   retrySetup,
@@ -48,8 +49,8 @@ export interface DesktopSetupControllerOptions {
   appDataDir?: string;
   defaultRootDir: string;
   keyStorageDir?: string;
-  selectPrivateKey(): Promise<string | null>;
-  promptWebhookSecret?(): Promise<string | null>;
+  selectPrivateKey(signal?: AbortSignal): Promise<string | null>;
+  promptWebhookSecret?(signal?: AbortSignal): Promise<string | null>;
   resolveApiBaseUrl(rootDir: string, signal?: AbortSignal): Promise<string>;
   registerProfile(profile: { name: string; apiBaseUrl: string }, signal?: AbortSignal): Promise<DesktopProfileView>;
   emit(snapshot: DesktopSetupSnapshot): void;
@@ -61,6 +62,13 @@ const PHASES = new Set(['idle', 'running', 'interrupted', 'cancelled', 'failed',
 const STEPS = new Set(['check', 'init-stack', 'pull-images', 'configure-agents', 'github-auth', 'intake', 'start-stack', 'enable-agents', 'whitelist', 'repo', 'launch-ui']);
 
 const terminalPhase = (result: SetupRunResult): DesktopSetupSnapshot['phase'] => result.completed ? 'completed' : result.cancelled ? 'cancelled' : 'failed';
+
+const isCleanupIncomplete = (error: unknown): boolean => Boolean(
+  error && typeof error === 'object'
+  && (error as { code?: unknown }).code === 'PROPR_SETUP_CLEANUP_INCOMPLETE',
+);
+
+const cleanupIncompleteRendererError = 'Setup stopped, but local runtime cleanup is incomplete. Review the protected desktop log before retrying.';
 
 const assertPath = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 4_096 && isAbsolute(value) && !value.includes('\0');
 
@@ -165,45 +173,64 @@ export class DesktopSetupController {
     return this.#copy();
   }
 
-  async selectPrivateKey(): Promise<DesktopFilesystemSelection | null> {
+  async selectPrivateKey(signal?: AbortSignal): Promise<DesktopFilesystemSelection | null> {
+    signal?.throwIfAborted();
     await this.#load();
+    signal?.throwIfAborted();
     this.#enforceCapability(true);
     try {
-      const selected = await this.#options.selectPrivateKey();
-      return selected ? await this.#filesystem.issue('private-key', this.#sessionId, selected) : null;
+      const selected = await this.#options.selectPrivateKey(signal);
+      signal?.throwIfAborted();
+      const issued = selected ? await this.#filesystem.issue('private-key', this.#sessionId, selected, signal) : null;
+      signal?.throwIfAborted();
+      return issued;
     } catch (error) {
+      if (signal?.aborted) signal.throwIfAborted();
+      rethrowCancellation(error);
       this.#diagnose('desktop.setup.private_key_selection_failed', { error });
       throw new Error(safeRendererError);
     }
   }
 
-  async acquireWebhookSecret(): Promise<DesktopSecretSelection | null> {
+  async acquireWebhookSecret(signal?: AbortSignal): Promise<DesktopSecretSelection | null> {
+    signal?.throwIfAborted();
     await this.#load();
+    signal?.throwIfAborted();
     this.#enforceCapability(true);
     try {
       if (!this.#options.promptWebhookSecret) throw new SetupRequestError('A secure native secret prompt is unavailable.');
-      const value = await this.#options.promptWebhookSecret();
+      const value = await this.#options.promptWebhookSecret(signal);
+      signal?.throwIfAborted();
       return value === null ? null : this.#secrets.issue(this.#sessionId, value);
     } catch (error) {
+      if (signal?.aborted) signal.throwIfAborted();
+      rethrowCancellation(error);
       this.#diagnose('desktop.setup.webhook_secret_prompt_failed', { error });
       throw new Error(safeRendererError);
     }
   }
 
-  start(input: unknown): Promise<DesktopSetupSnapshot> {
-    return this.#begin(parseDesktopSetupRequest(input), false);
+  start(input: unknown, externalSignal?: AbortSignal): Promise<DesktopSetupSnapshot> {
+    return this.#begin(parseDesktopSetupRequest(input), false, externalSignal);
   }
 
-  async retry(input?: unknown): Promise<DesktopSetupSnapshot> {
+  async retry(input?: unknown, externalSignal?: AbortSignal): Promise<DesktopSetupSnapshot> {
+    externalSignal?.throwIfAborted();
     await this.#load();
+    externalSignal?.throwIfAborted();
     this.#enforceCapability(true);
-    if (input !== undefined) return this.#begin(parseDesktopSetupRequest(input), true);
+    if (input !== undefined) return this.#begin(parseDesktopSetupRequest(input), true, externalSignal);
     if (this.#resume?.reconfigurationStage === 'github' || this.#resume?.reconfigurationStage === 'intake') {
       throw new SetupRequestError(`Re-enter the ${this.#resume.reconfigurationStage} configuration before retrying.`);
     }
     if (this.#runtimeRetry) {
       const rootAuthority = RootDirectoryAuthority.open(this.#options.defaultRootDir, true, this.#appDataDir());
-      return this.#beginResolved({ ...this.#runtimeRetry, rootDir: resolve(this.#options.defaultRootDir), rootAuthority }, true);
+      try {
+        externalSignal?.throwIfAborted();
+        return await this.#beginResolved({ ...this.#runtimeRetry, rootDir: resolve(this.#options.defaultRootDir), rootAuthority }, true, externalSignal);
+      } finally {
+        if (this.#runtimeRetry?.rootAuthority !== rootAuthority) rootAuthority.close();
+      }
     }
     if (!this.#resume) throw new SetupRequestError('There is no local setup to resume');
     if (this.#resume.reconfigurationStage) throw new SetupRequestError(`Re-enter the ${this.#resume.reconfigurationStage} configuration before retrying.`);
@@ -217,7 +244,7 @@ export class DesktopSetupController {
       whitelist: this.#resume.whitelist,
       repository: this.#resume.repository,
     });
-    return this.#begin(request, true);
+    return this.#begin(request, true, externalSignal);
   }
 
   async cancel(): Promise<DesktopSetupSnapshot> {
@@ -235,44 +262,61 @@ export class DesktopSetupController {
     this.#runtimeRetry?.rootAuthority.close();
   }
 
-  async #begin(request: DesktopSetupRequest, retry: boolean): Promise<DesktopSetupSnapshot> {
+  async #begin(request: DesktopSetupRequest, retry: boolean, externalSignal?: AbortSignal): Promise<DesktopSetupSnapshot> {
+    externalSignal?.throwIfAborted();
     await this.#load();
+    externalSignal?.throwIfAborted();
     this.#enforceCapability(true);
     if (this.#busy || this.#currentRun) throw new SetupRequestError('Local setup is already running');
     this.#busy = true;
+    let openedAuthority: RootDirectoryAuthority | undefined;
     try {
       if (request.sessionId !== this.#sessionId) throw new SetupRequestError('The setup session expired. Start again.');
-      if (request.github.mode === 'app') await this.#filesystem.validate(request.github.privateKeyCapability, 'private-key', this.#sessionId);
+      if (request.github.mode === 'app') {
+        await this.#filesystem.validate(request.github.privateKeyCapability, 'private-key', this.#sessionId);
+        externalSignal?.throwIfAborted();
+      }
       if (request.intake.mode === 'direct_webhook') this.#secrets.validate(request.intake.secretCapability, this.#sessionId);
       if (request.root.mode === 'resume' && !this.#resume) throw new SetupRequestError('There is no local setup to resume.');
       const rootDir = resolve(this.#options.defaultRootDir);
       const rootAuthority = RootDirectoryAuthority.open(rootDir, true, this.#appDataDir());
+      openedAuthority = rootAuthority;
       let privateKeyPath: string | undefined;
       if (request.github.mode === 'app') {
         privateKeyPath = await this.#filesystem.consumePrivateKey(
           request.github.privateKeyCapability,
           this.#sessionId,
           this.#options.keyStorageDir ?? `${this.#options.statePath}.keys`,
+          externalSignal,
         );
       }
+      externalSignal?.throwIfAborted();
       const webhookSecret = request.intake.mode === 'direct_webhook'
         ? this.#secrets.consume(request.intake.secretCapability, this.#sessionId)
         : undefined;
-      return await this.#beginResolved({ publicRequest: request, rootDir, rootAuthority, privateKeyPath, webhookSecret }, retry);
+      externalSignal?.throwIfAborted();
+      return await this.#beginResolved({ publicRequest: request, rootDir, rootAuthority, privateKeyPath, webhookSecret }, retry, externalSignal);
     } finally {
-      if (!this.#currentRun) this.#busy = false;
+      if (!this.#currentRun) {
+        if (openedAuthority && this.#runtimeRetry?.rootAuthority !== openedAuthority) openedAuthority.close();
+        this.#busy = false;
+      }
     }
   }
 
-  async #beginResolved(resolved: ResolvedRequest, retry: boolean): Promise<DesktopSetupSnapshot> {
+  async #beginResolved(resolved: ResolvedRequest, retry: boolean, externalSignal?: AbortSignal): Promise<DesktopSetupSnapshot> {
     this.#enforceCapability(true);
     if (this.#currentRun) throw new SetupRequestError('Local setup is already running');
+    const runController = new AbortController();
+    if (externalSignal?.aborted) runController.abort(externalSignal.reason);
+    else externalSignal?.addEventListener('abort', () => runController.abort(externalSignal.reason), { once: true });
+    runController.signal.throwIfAborted();
     this.#busy = true;
     if (this.#runtimeRetry && this.#runtimeRetry.rootAuthority !== resolved.rootAuthority) this.#runtimeRetry.rootAuthority.close();
     this.#resume = this.#resumePlan(resolved);
     this.#runtimeRetry = resolved;
     this.#activeSecrets = [resolved.privateKeyPath, resolved.webhookSecret].filter((value): value is string => Boolean(value));
-    this.#abortController = new AbortController();
+    this.#abortController = runController;
     this.#snapshot = {
       phase: 'running',
       capability: this.#capability(),
@@ -324,9 +368,14 @@ export class DesktopSetupController {
       }
       this.#snapshot = { ...this.#snapshot, phase: terminalPhase(result), rootDir: result.rootDir, state: result.state, errors: result.errors, profile };
     } catch (error) {
-      const cancelled = signal.aborted;
+      const cleanupIncomplete = isCleanupIncomplete(error);
+      const cancelled = signal.aborted && !cleanupIncomplete;
       if (!cancelled) this.#diagnose('desktop.setup.run_failed', { error });
-      this.#snapshot = { ...this.#snapshot, phase: cancelled ? 'cancelled' : 'failed', error: cancelled ? 'Setup was cancelled.' : safeRendererError };
+      this.#snapshot = {
+        ...this.#snapshot,
+        phase: cancelled ? 'cancelled' : 'failed',
+        error: cancelled ? 'Setup was cancelled.' : cleanupIncomplete ? cleanupIncompleteRendererError : safeRendererError,
+      };
     }
     this.#publish();
     await this.#persistQueue;
@@ -448,7 +497,10 @@ export class DesktopSetupController {
     this.#persistQueue = this.#persistQueue.then(async () => {
       const signal = this.#abortController?.signal;
       signal?.throwIfAborted();
-      writePrivateFileAtomic(this.#options.statePath, `${JSON.stringify(redactDesktopValue(persisted), null, 2)}\n`, { signal });
+      // PersistedSetupState is an allowlisted, secret-free main-process schema.
+      // Keep its fixed root usable for hydration; renderer copies and desktop
+      // diagnostics apply path redaction independently.
+      writePrivateFileAtomic(this.#options.statePath, `${JSON.stringify(persisted, null, 2)}\n`, { signal });
       this.#snapshot = { ...this.#snapshot, resumeAvailable: true };
     }).catch(error => {
       if ((error as Error).name === 'AbortError' || (error as NodeJS.ErrnoException).code === 'ABORT_ERR') return;

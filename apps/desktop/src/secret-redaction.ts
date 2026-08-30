@@ -1,4 +1,5 @@
 const REDACTED = '[REDACTED]';
+const REDACTED_PATH = '[REDACTED_PATH]';
 
 const redactString = (value: string): string => value
   .replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi, REDACTED)
@@ -6,7 +7,10 @@ const redactString = (value: string): string => value
   .replace(/\bgh[pousr]_[A-Za-z0-9_]{8,}\b/g, REDACTED)
   .replace(/\b((?:authorization|token|secret|password|private[_-]?key|webhook[_-]?secret)\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, `$1${REDACTED}`)
   .replace(/\b((?:GH|GITHUB|PROPR|HOST)_[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s]+)/g, `$1${REDACTED}`)
-  .replace(/(?:\/[A-Za-z0-9._~ -]+)+\/(?:[^\s"']*?(?:private[-_]?key|github[-_]?app)[^\s"']*|[^\s"']+\.(?:pem|key))\b/gi, REDACTED);
+  .replace(/\b([A-Z][A-Z0-9_]{1,63}\s*=\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/g, `$1${REDACTED}`)
+  .replace(/(?:\/[A-Za-z0-9._~ -]+)+\/(?:[^\s"']*?(?:private[-_]?key|github[-_]?app)[^\s"']*|[^\s"']+\.(?:pem|key))\b/gi, REDACTED)
+  .replace(/(^|[\s"'(=:[,{])\/(?!\/)[^\s"'(),;\]}]+/g, `$1${REDACTED_PATH}`)
+  .replace(/(^|[\s"'(=])[A-Za-z]:\\(?:[^\s"')]+\\)*[^\s"')]+/g, `$1${REDACTED_PATH}`);
 
 export const redactDesktopText = (value: string, secrets: readonly string[] = []): string => {
   let redacted = value;
