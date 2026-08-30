@@ -28,8 +28,10 @@ import {
   assertModernRoslynVersion,
   authorizeWindowsBuildToolDependencies,
   authorizeWindowsBuildToolSigner,
+  awaitWindowsBuildLeaseReadiness,
   canonicalWindowsBuildSourceBytes,
   fixedBuildDiagnostic,
+  planWindowsBuildLeaseReadiness,
   publishWindowsBuildArtifactNoReplace,
   runBoundedBuildTool,
   validateNativeWindowsDirectories,
@@ -55,7 +57,7 @@ const evidenceStage = evidenceArguments.length === 1 ? evidenceArguments[0].slic
 const nonce = randomBytes(32).toString("hex");
 const protocolVersion = 2;
 const sourceSha256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
-const launcherSourceSha256 = "30347ad0d3bc382b115977439db72538afab176d34e59a68426060d7ba51c071";
+const launcherSourceSha256 = "7ccb346248aac0a452c2db7d87cb7b9504a3da9c5201e937bc7c49e6b0539379";
 const bootstrapSourceSha256 = "1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e";
 const bootstrapSha256 = "a633479040f27b4a8fab4fb982167803d05ecfdbb9063c3b76e25116575d8087";
 const smokeFixtureSourceSha256 = "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c";
@@ -193,30 +195,64 @@ async function runAuthorityLeasedBuildTool(command, args, options, rawInputs) {
   if (unique.size < 1 || unique.size > 30_000) {
     throw new WindowsHelperBuildError(options.stage, "OVERSIZED_OUTPUT");
   }
-  const body = Buffer.from(`PROPR_BUILD_LEASE_V1\n${[...unique.values()]
-    .map((input) => input.tool === true && options.allowUnsignedTool !== true
-      ? `T ${input.sha256} ${input.signatureKind} ${input.authenticodeLeafSha256} ${input.authenticodeSpkiSha256} ${input.path}\n`
-      : `F ${input.sha256} ${input.path}\n`).join("")}`, "utf8");
-  if (body.byteLength > 64 * 1024 * 1024) throw new WindowsHelperBuildError(options.stage, "OVERSIZED_OUTPUT");
-  const manifest = join(buildWorkspace, `.lease-${bootstrapLeaseSequence += 1}.txt`);
-  writeFileSync(manifest, body, { flag: "wx", mode: 0o600 });
-  const manifestDigest = sha256(body);
-  const authority = spawn(bootstrapOutput, ["lease-build-inputs-v1", manifest, manifestDigest], {
-    shell: false,
-    windowsHide: true,
-    env: {},
-    stdio: ["pipe", "pipe", "pipe", bootstrapAuthority.fd],
+  const inventory = [...unique.values()].map((input) => {
+    const named = lstatSync(input.path, { bigint: true });
+    if (!named.isFile() || named.isSymbolicLink() || named.size < 0n || named.size > 1024n * 1024n * 1024n) {
+      throw new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT");
+    }
+    return { ...input, bytes: Number(named.size) };
   });
-  authority.stdin.on("error", () => {});
-  let ready = Buffer.alloc(0);
-  let stderrBytes = 0;
-  const readiness = new Promise((resolveReady, rejectReady) => {
-    const timer = setTimeout(() => rejectReady(new WindowsHelperBuildError(options.stage, "STALLED")), 10_000);
+  const plan = planWindowsBuildLeaseReadiness(inventory);
+  const prepared = [];
+  try {
+    for (const batch of plan.batches) {
+      const body = Buffer.from(`PROPR_BUILD_LEASE_V1\n${batch
+        .map((input) => input.tool === true && options.allowUnsignedTool !== true
+          ? `T ${input.sha256} ${input.signatureKind} ${input.authenticodeLeafSha256} ${input.authenticodeSpkiSha256} ${input.path}\n`
+          : `F ${input.sha256} ${input.path}\n`).join("")}`, "utf8");
+      if (body.byteLength > 64 * 1024 * 1024) throw new WindowsHelperBuildError(options.stage, "OVERSIZED_OUTPUT");
+      const manifest = join(buildWorkspace, `.lease-${bootstrapLeaseSequence += 1}.txt`);
+      writeFileSync(manifest, body, { flag: "wx", mode: 0o600 });
+      prepared.push({ body, manifest });
+    }
+  } catch (error) {
+    for (const { manifest } of prepared) rmSync(manifest, { force: true });
+    throw error;
+  }
+  const authorities = [];
+  try {
+    for (const { body, manifest } of prepared) {
+      const authority = spawn(bootstrapOutput, ["lease-build-inputs-v1", manifest, sha256(body)], {
+        shell: false,
+        windowsHide: true,
+        env: {},
+        stdio: ["pipe", "pipe", "pipe", bootstrapAuthority.fd],
+      });
+      authority.stdin.on("error", () => {});
+      authorities.push({ authority, manifest });
+    }
+  } catch (error) {
+    for (const { authority } of authorities) {
+      try { authority.kill(); } catch { /* The fixed spawn diagnostic owns cleanup failure. */ }
+    }
+    for (const { manifest } of prepared) rmSync(manifest, { force: true });
+    throw new WindowsHelperBuildError(options.stage, "SPAWN_ERROR", error);
+  }
+  let completedBatches = 0;
+  const readiness = authorities.map(({ authority }) => new Promise((resolveReady, rejectReady) => {
+    let settled = false;
+    let ready = Buffer.alloc(0);
+    let stderrBytes = 0;
     const finish = (error) => {
-      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
       authority.removeAllListeners("error");
       authority.removeAllListeners("exit");
-      if (error) rejectReady(error); else resolveReady();
+      if (error) rejectReady(error);
+      else {
+        completedBatches += 1;
+        resolveReady();
+      }
     };
     authority.once("error", () => finish(new WindowsHelperBuildError(options.stage, "SPAWN_ERROR")));
     authority.once("exit", () => finish(new WindowsHelperBuildError(options.stage, "NONZERO_EMPTY_OUTPUT")));
@@ -230,9 +266,13 @@ async function runAuthorityLeasedBuildTool(command, args, options, rawInputs) {
         finish(new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT"));
       } else if (ready.byteLength === 2) finish();
     });
-  });
+  }));
+  let primaryFailure;
   try {
-    await readiness;
+    await awaitWindowsBuildLeaseReadiness(readiness, plan, { stage: options.stage });
+    if (completedBatches !== plan.batches.length) {
+      throw new WindowsHelperBuildError(options.stage, "STALLED");
+    }
     if (options.evidenceLeaseTarget) {
       let denied = 0;
       for (const mutate of [
@@ -245,21 +285,28 @@ async function runAuthorityLeasedBuildTool(command, args, options, rawInputs) {
       if (denied !== 3) throw new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT");
       // A malformed release byte makes the real native lease authority fail
       // closed. No compiler child is created after the evidence mutation.
-      authority.stdin.end(Buffer.from("!"));
+      for (const { authority } of authorities) authority.stdin.end(Buffer.from("!"));
       return undefined;
     }
     return runBoundedBuildTool(command, args, options);
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
   } finally {
-    if (!authority.stdin.writableEnded) authority.stdin.end(Buffer.from("X"));
-    const authorityReleased = await new Promise((resolveExit) => {
+    for (const { authority } of authorities) {
+      if (!authority.stdin.writableEnded) authority.stdin.end(Buffer.from("X"));
+    }
+    const released = await Promise.all(authorities.map(({ authority }) => new Promise((resolveExit) => {
       if (authority.exitCode !== null) resolveExit(authority.exitCode === 0);
       else {
         const timer = setTimeout(() => { authority.kill(); resolveExit(false); }, 5_000);
         authority.once("exit", (code) => { clearTimeout(timer); resolveExit(code === 0); });
       }
-    });
-    rmSync(manifest, { force: true });
-    if (!authorityReleased) throw new WindowsHelperBuildError(options.stage, "NONZERO_EMPTY_OUTPUT");
+    })));
+    for (const { manifest } of authorities) rmSync(manifest, { force: true });
+    if (released.some((value) => !value) && primaryFailure === undefined) {
+      throw new WindowsHelperBuildError(options.stage, "NONZERO_EMPTY_OUTPUT");
+    }
   }
 }
 
@@ -673,7 +720,7 @@ try {
   ]);
   const nativeLinkArgs = [
     "/NOLOGO", "/Brepro", "/SUBSYSTEM:CONSOLE", "/MANIFEST:EMBED", `/OUT:${temporaryLauncher}`,
-    temporaryLauncherObject, "kernel32.lib", "advapi32.lib", "bcrypt.lib", "wintrust.lib", "user32.lib",
+    temporaryLauncherObject, "kernel32.lib", "advapi32.lib", "bcrypt.lib", "crypt32.lib", "wintrust.lib", "user32.lib",
   ];
   await runAuthorityLeasedBuildTool(nativeLinker, nativeLinkArgs, nativeOptions, [
     ...nativeLinkerInputs, { path: temporaryLauncherObject, sha256: sha256(heldIdentity(temporaryLauncherObject).bytes) },

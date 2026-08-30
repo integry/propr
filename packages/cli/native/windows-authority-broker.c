@@ -7,6 +7,7 @@
 #include <bcrypt.h>
 #include <wintrust.h>
 #include <softpub.h>
+#include <wincrypt.h>
 
 #include <stdint.h>
 #include <errno.h>
@@ -17,6 +18,7 @@
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "wintrust.lib")
 
 #define PROPR_MAX_ENTRIES 64
@@ -472,6 +474,264 @@ static int verify_authenticode(const wchar_t *path) {
   return status == ERROR_SUCCESS;
 }
 
+static int sha256_bytes(const BYTE *bytes, DWORD length, BYTE output[32]) {
+  BCRYPT_ALG_HANDLE algorithm = NULL;
+  BCRYPT_HASH_HANDLE hash = NULL;
+  BYTE *object = NULL;
+  DWORD object_size = 0;
+  DWORD received = 0;
+  int result = 0;
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, 0) < 0 ||
+      BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, (PUCHAR)&object_size,
+        sizeof(object_size), &received, 0) < 0 || object_size == 0 || object_size > 65536) goto cleanup;
+  object = (BYTE *)HeapAlloc(GetProcessHeap(), 0, object_size);
+  if (object == NULL || BCryptCreateHash(algorithm, &hash, object, object_size, NULL, 0, 0) < 0 ||
+      BCryptHashData(hash, (PUCHAR)bytes, length, 0) < 0 || BCryptFinishHash(hash, output, 32, 0) < 0) goto cleanup;
+  result = 1;
+cleanup:
+  if (hash != NULL) BCryptDestroyHash(hash);
+  if (object != NULL) HeapFree(GetProcessHeap(), 0, object);
+  if (algorithm != NULL) BCryptCloseAlgorithmProvider(algorithm, 0);
+  return result;
+}
+
+static void digest_hex(const BYTE digest[32], char output[65]) {
+  static const char hex[] = "0123456789abcdef";
+  for (size_t index = 0; index < 32; index += 1) {
+    output[index * 2] = hex[digest[index] >> 4];
+    output[index * 2 + 1] = hex[digest[index] & 15];
+  }
+  output[64] = '\0';
+}
+
+/* WinVerifyTrust resolves either the embedded signature or an applicable OS
+   catalog, after which the exact reviewed leaf and SPKI still have to match. */
+static int verify_authenticode_pins(const wchar_t *path, const char *expected_leaf, const char *expected_spki) {
+  WINTRUST_FILE_INFO file;
+  WINTRUST_DATA data;
+  ZeroMemory(&file, sizeof(file));
+  ZeroMemory(&data, sizeof(data));
+  file.cbStruct = sizeof(file);
+  file.pcwszFilePath = path;
+  data.cbStruct = sizeof(data);
+  data.dwUIChoice = WTD_UI_NONE;
+  data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+  data.dwUnionChoice = WTD_CHOICE_FILE;
+  data.pFile = &file;
+  data.dwStateAction = WTD_STATEACTION_VERIFY;
+  data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN;
+  GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+  int result = 0;
+  if (hex_digest(expected_leaf) && hex_digest(expected_spki) &&
+      WinVerifyTrust(INVALID_HANDLE_VALUE, &policy, &data) == ERROR_SUCCESS) {
+    CRYPT_PROVIDER_DATA *provider = WTHelperProvDataFromStateData(data.hWVTStateData);
+    CRYPT_PROVIDER_SGNR *signer = provider == NULL ? NULL : WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0);
+    PCCERT_CONTEXT certificate = signer == NULL || signer->csCertChain == 0 ? NULL : signer->pasCertChain[0].pCert;
+    BYTE leaf_digest[32];
+    BYTE spki_digest[32];
+    BYTE *encoded_spki = NULL;
+    DWORD encoded_size = 0;
+    char leaf[65];
+    char spki[65];
+    if (certificate != NULL && sha256_bytes(certificate->pbCertEncoded, certificate->cbCertEncoded, leaf_digest) &&
+        CryptEncodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
+          &certificate->pCertInfo->SubjectPublicKeyInfo, CRYPT_ENCODE_ALLOC_FLAG, NULL,
+          &encoded_spki, &encoded_size) && encoded_spki != NULL && encoded_size > 0 &&
+        sha256_bytes(encoded_spki, encoded_size, spki_digest)) {
+      digest_hex(leaf_digest, leaf);
+      digest_hex(spki_digest, spki);
+      result = strcmp(leaf, expected_leaf) == 0 && strcmp(spki, expected_spki) == 0;
+    }
+    if (encoded_spki != NULL) LocalFree(encoded_spki);
+  }
+  data.dwStateAction = WTD_STATEACTION_CLOSE;
+  WinVerifyTrust(INVALID_HANDLE_VALUE, &policy, &data);
+  return result;
+}
+
+static int strict_package_file_acl(HANDLE handle, PSID current_user) {
+  BY_HANDLE_FILE_INFORMATION information;
+  PSECURITY_DESCRIPTOR descriptor = NULL;
+  PSID owner = NULL;
+  PACL dacl = NULL;
+  PSID system_sid = NULL;
+  PSID administrators_sid = NULL;
+  SECURITY_DESCRIPTOR_CONTROL control = 0;
+  DWORD revision = 0;
+  int result = 0;
+  if (!GetFileInformationByHandle(handle, &information) || information.nNumberOfLinks != 1 ||
+      (information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+      !ConvertStringSidToSidW(L"S-1-5-18", &system_sid) ||
+      !ConvertStringSidToSidW(L"S-1-5-32-544", &administrators_sid) ||
+      GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        &owner, NULL, &dacl, NULL, &descriptor) != ERROR_SUCCESS || owner == NULL || dacl == NULL ||
+      !EqualSid(owner, current_user) || !GetSecurityDescriptorControl(descriptor, &control, &revision) ||
+      (control & SE_DACL_PROTECTED) == 0 || dacl->AceCount != 3) goto cleanup;
+  for (DWORD index = 0; index < dacl->AceCount; index += 1) {
+    void *raw = NULL;
+    if (!GetAce(dacl, index, &raw)) goto cleanup;
+    ACE_HEADER *header = (ACE_HEADER *)raw;
+    if (header->AceType != ACCESS_ALLOWED_ACE_TYPE || (header->AceFlags & INHERITED_ACE) != 0) goto cleanup;
+    ACCESS_ALLOWED_ACE *ace = (ACCESS_ALLOWED_ACE *)raw;
+    PSID sid = (PSID)&ace->SidStart;
+    if (ace->Mask != FILE_ALL_ACCESS || (!EqualSid(sid, current_user) && !EqualSid(sid, system_sid)
+        && !EqualSid(sid, administrators_sid))) goto cleanup;
+  }
+  result = 1;
+cleanup:
+  if (descriptor != NULL) LocalFree(descriptor);
+  if (administrators_sid != NULL) LocalFree(administrators_sid);
+  if (system_sid != NULL) LocalFree(system_sid);
+  return result;
+}
+
+static int quote_launch_argument(wchar_t *output, size_t capacity, size_t *offset, const wchar_t *argument) {
+  if (*offset + 2 >= capacity) return 0;
+  output[(*offset)++] = L'"';
+  size_t slashes = 0;
+  for (const wchar_t *cursor = argument;; cursor += 1) {
+    if (*cursor == L'\\') { slashes += 1; continue; }
+    size_t repeats = slashes;
+    if (*cursor == L'"' || *cursor == L'\0') repeats *= 2;
+    if (*cursor == L'"') repeats += 1;
+    if (*offset + repeats + 2 >= capacity) return 0;
+    while (repeats-- > 0) output[(*offset)++] = L'\\';
+    slashes = 0;
+    if (*cursor == L'\0') break;
+    output[(*offset)++] = *cursor;
+  }
+  output[(*offset)++] = L'"';
+  output[*offset] = L'\0';
+  return 1;
+}
+
+/*
+ * Outer bootstrap launch authority. fd 6 is the already hash/manifest-bound
+ * packaged authority, fd 8 is the exact bootstrap object, and fd 9 is a
+ * dedicated pre-CreateProcess barrier. This proof is intentionally distinct
+ * from fd 7, which belongs to the bootstrap's packaged-broker child barrier.
+ */
+static int secure_launch_bootstrap(int argc, wchar_t **argv) {
+  int status = PROPR_LAUNCH_FAILURE;
+  if (argc < 10 || argv[2] == NULL || argv[2][0] == L'\0' || wcschr(argv[2], L'"') != NULL) {
+    return PROPR_LAUNCH_FAILURE;
+  }
+  int production = wcscmp(argv[4], L"production") == 0;
+  int validation = wcscmp(argv[4], L"validation") == 0;
+  char target_expected[65];
+  char authority_expected[65];
+  char expected_leaf[65];
+  char expected_spki[65];
+  if ((!production && !validation) ||
+      WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[3], -1, target_expected,
+        sizeof(target_expected), NULL, NULL) != 65 ||
+      WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[5], -1, authority_expected,
+        sizeof(authority_expected), NULL, NULL) != 65 ||
+      WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[6], -1, expected_leaf,
+        sizeof(expected_leaf), NULL, NULL) != 65 ||
+      WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[7], -1, expected_spki,
+        sizeof(expected_spki), NULL, NULL) != 65 ||
+      !hex_digest(target_expected) || !hex_digest(authority_expected) ||
+      (production && (!hex_digest(expected_leaf) || !hex_digest(expected_spki)))) return PROPR_LAUNCH_FAILURE;
+
+  intptr_t authority_value = _get_osfhandle(6);
+  intptr_t target_value = _get_osfhandle(8);
+  intptr_t barrier_value = _get_osfhandle(9);
+  if (authority_value == -1 || target_value == -1 || barrier_value == -1) return PROPR_LAUNCH_FAILURE;
+  HANDLE inherited_authority = (HANDLE)authority_value;
+  HANDLE inherited_target = (HANDLE)target_value;
+  HANDLE barrier = (HANDLE)barrier_value;
+  wchar_t self_path[32768];
+  DWORD self_length = GetModuleFileNameW(NULL, self_path, sizeof(self_path) / sizeof(self_path[0]));
+  HANDLE self_lease = self_length == 0 || self_length >= sizeof(self_path) / sizeof(self_path[0])
+    ? INVALID_HANDLE_VALUE : CreateFileW(self_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  HANDLE target_lease = CreateFileW(argv[2], GENERIC_READ | READ_CONTROL | WRITE_DAC | WRITE_OWNER,
+    FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  BYTE *token_buffer = NULL;
+  PSID user_sid = NULL;
+  char user_sid_text[192];
+  PROPR_FILE_ID_INFO self_id;
+  PROPR_FILE_ID_INFO authority_id;
+  PROPR_FILE_ID_INFO target_id;
+  PROPR_FILE_ID_INFO inherited_target_id;
+  char self_hash[65];
+  char authority_hash[65];
+  char target_hash[65];
+  char inherited_target_hash[65];
+  int authenticated = ordinary_file(self_lease) && ordinary_file(inherited_authority) &&
+    ordinary_file(target_lease) && ordinary_file(inherited_target) &&
+    current_user_sid(&token_buffer, &user_sid, user_sid_text, sizeof(user_sid_text)) &&
+    harden_current_process(user_sid) && protect_entry(target_lease, 0, user_sid) &&
+    strict_package_file_acl(target_lease, user_sid) &&
+    get_file_id(self_lease, &self_id) && get_file_id(inherited_authority, &authority_id) &&
+    same_file_id(&self_id, &authority_id) && get_file_id(target_lease, &target_id) &&
+    get_file_id(inherited_target, &inherited_target_id) && same_file_id(&target_id, &inherited_target_id) &&
+    sha256_handle(self_lease, self_hash) && sha256_handle(inherited_authority, authority_hash) &&
+    sha256_handle(target_lease, target_hash) && sha256_handle(inherited_target, inherited_target_hash) &&
+    strcmp(self_hash, authority_expected) == 0 && strcmp(authority_hash, authority_expected) == 0 &&
+    strcmp(target_hash, target_expected) == 0 && strcmp(inherited_target_hash, target_expected) == 0 &&
+    (!production || verify_authenticode_pins(self_path, expected_leaf, expected_spki));
+  if (!authenticated) goto bootstrap_cleanup;
+
+  BYTE ready = 'R';
+  BYTE go = 0;
+  DWORD transferred = 0;
+  if (!WriteFile(barrier, &ready, 1, &transferred, NULL) || transferred != 1 ||
+      !ReadFile(barrier, &go, 1, &transferred, NULL) || transferred != 1 || go != 'G' ||
+      !SetHandleInformation(barrier, HANDLE_FLAG_INHERIT, 0) ||
+      !SetHandleInformation(inherited_authority, HANDLE_FLAG_INHERIT, 0)) goto bootstrap_cleanup;
+
+  wchar_t command[32768];
+  size_t command_offset = 0;
+  for (int index = 8; index < argc; index += 1) {
+    if (index != 8) command[command_offset++] = L' ';
+    if (!quote_launch_argument(command, sizeof(command) / sizeof(command[0]), &command_offset, argv[index])) {
+      goto bootstrap_cleanup;
+    }
+  }
+  STARTUPINFOW startup;
+  PROCESS_INFORMATION child;
+  ZeroMemory(&startup, sizeof(startup));
+  ZeroMemory(&child, sizeof(child));
+  startup.cb = sizeof(startup);
+  GetStartupInfoW(&startup);
+  HANDLE job = NULL;
+  if (!CreateProcessW(argv[2], command, NULL, NULL, TRUE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
+      NULL, NULL, &startup, &child)) goto bootstrap_child_cleanup;
+  job = CreateJobObjectW(NULL, NULL);
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+  ZeroMemory(&limits, sizeof(limits));
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (job == NULL || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+      !AssignProcessToJobObject(job, child.hProcess)) goto bootstrap_child_cleanup;
+  wchar_t loaded_path[32768];
+  DWORD loaded_length = sizeof(loaded_path) / sizeof(loaded_path[0]);
+  if (!QueryFullProcessImageNameW(child.hProcess, 0, loaded_path, &loaded_length)) goto bootstrap_child_cleanup;
+  HANDLE loaded = CreateFileW(loaded_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+  PROPR_FILE_ID_INFO loaded_id;
+  char loaded_hash[65];
+  int loaded_ok = ordinary_file(loaded) && get_file_id(loaded, &loaded_id) &&
+    same_file_id(&target_id, &loaded_id) && sha256_handle(loaded, loaded_hash) &&
+    strcmp(loaded_hash, target_expected) == 0;
+  if (loaded != INVALID_HANDLE_VALUE) CloseHandle(loaded);
+  if (!loaded_ok || ResumeThread(child.hThread) == (DWORD)-1 ||
+      WaitForSingleObject(child.hProcess, INFINITE) != WAIT_OBJECT_0) goto bootstrap_child_cleanup;
+  DWORD exit_code = PROPR_LAUNCH_FAILURE;
+  if (GetExitCodeProcess(child.hProcess, &exit_code)) status = (int)exit_code;
+bootstrap_child_cleanup:
+  if (status == PROPR_LAUNCH_FAILURE && child.hProcess != NULL) TerminateProcess(child.hProcess, PROPR_LAUNCH_FAILURE);
+  if (child.hThread != NULL) CloseHandle(child.hThread);
+  if (child.hProcess != NULL) CloseHandle(child.hProcess);
+  if (job != NULL) CloseHandle(job);
+bootstrap_cleanup:
+  if (target_lease != INVALID_HANDLE_VALUE) CloseHandle(target_lease);
+  if (self_lease != INVALID_HANDLE_VALUE) CloseHandle(self_lease);
+  if (token_buffer != NULL) LocalFree(token_buffer);
+  return authenticated ? status : PROPR_LAUNCH_FAILURE;
+}
+
 /*
  * The packaged broker is the native launch authority for the private staged
  * broker.  Node never calls CreateProcess on the staged pathname.  Both the
@@ -750,6 +1010,7 @@ static int print_system_paths(void) {
 
 int wmain(int argc, wchar_t **argv) {
   if (argc == 2 && wcscmp(argv[1], L"system-paths-v1") == 0) return print_system_paths();
+  if (argc >= 10 && wcscmp(argv[1], L"launch-bootstrap-v1") == 0) return secure_launch_bootstrap(argc, argv);
   if (argc >= 2 && wcscmp(argv[1], L"launch-staged-broker-v1") == 0) return secure_launch_staged_broker(argc, argv);
   if (argc >= 2 && wcscmp(argv[1], L"launch-supervisor-v2") == 0) return secure_launch_supervisor(argc, argv);
   if (argc == 2 && (wcscmp(argv[1], L"ping") == 0 || wcscmp(argv[1], L"ping-hold") == 0)) {

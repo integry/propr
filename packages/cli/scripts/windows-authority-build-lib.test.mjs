@@ -8,11 +8,51 @@ import {
   WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY,
   authorizeWindowsBuildToolDependencies,
   authorizeWindowsBuildToolSigner,
+  awaitWindowsBuildLeaseReadiness,
   canonicalWindowsBuildSourceBytes,
   fixedBuildDiagnostic,
+  planWindowsBuildLeaseReadiness,
   runBoundedBuildTool,
   validateNativeWindowsDirectories,
 } from "./windows-authority-build-lib.mjs";
+
+test("x64 and arm64 slow-host lease readiness is inventory-sized and hard bounded", async () => {
+  for (const architecture of ["x64", "arm64"]) {
+    const plan = planWindowsBuildLeaseReadiness(Array.from({ length: 1537 }, (_, index) => ({
+      architecture,
+      path: `input-${index}`,
+      bytes: index === 0 ? 256 * 1024 * 1024 : 4096,
+    })));
+    assert.deepEqual(plan.stages, ["INVENTORY", "LEASE_BATCH", "READY"]);
+    assert.equal(plan.files, 1537);
+    assert.ok(plan.batches.length >= 4);
+    assert.ok(plan.batches.every((batch) => batch.length <= 512));
+    assert.ok(plan.deadlineMs > 10_000, `${architecture} retained the obsolete ten-second deadline`);
+    assert.ok(plan.deadlineMs <= 180_000, `${architecture} readiness lost its hard deadline`);
+    await awaitWindowsBuildLeaseReadiness(plan.batches.map(() => Promise.resolve()), plan);
+  }
+});
+
+test("intentional lease-readiness stall remains BUILD_COMPILER diagnostic 4", async () => {
+  const plan = planWindowsBuildLeaseReadiness([{ path: "stalled", bytes: 1 }]);
+  let fire;
+  const timer = { unref() {} };
+  await assert.rejects(awaitWindowsBuildLeaseReadiness([new Promise(() => {})], plan, {
+    setTimeoutImpl: (callback, delay) => {
+      assert.equal(delay, plan.deadlineMs);
+      fire = callback;
+      queueMicrotask(callback);
+      return timer;
+    },
+    clearTimeoutImpl: (value) => assert.equal(value, timer),
+  }), (error) => {
+    assert.equal(error instanceof WindowsHelperBuildError, true);
+    assert.equal(error.diagnostic, "STALLED");
+    assert.equal(fixedBuildDiagnostic(error), "[win-authority-stage:BUILD_COMPILER:4]");
+    assert.equal(typeof fire, "function");
+    return true;
+  });
+});
 
 test("security-pinned source bytes are canonical across clean LF and CRLF checkouts", () => {
   const lf = Buffer.from("first\nsecond\n", "utf8");
@@ -36,7 +76,7 @@ test("canonical source binding rejects ambiguous bytes and stages only canonical
 test("every pinned Windows and fixture source hashes the same canonical bytes that are compiled", () => {
   const pins = new Map([
     ["../native/windows-authority-bootstrap.c", "1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e"],
-    ["../native/windows-authority-broker.c", "30347ad0d3bc382b115977439db72538afab176d34e59a68426060d7ba51c071"],
+    ["../native/windows-authority-broker.c", "7ccb346248aac0a452c2db7d87cb7b9504a3da9c5201e937bc7c49e6b0539379"],
     ["../native/windows-authority-supervisor.cs", "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff"],
     ["../../../scripts/fixtures/windows-connect-docker-fixture.c", "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c"],
     ["../../../test/fixtures/windowsAuthorityReplacementAttacker.c", "01ccc521cf6784f92cc33bbc4846b218625d61cb3b7dcbd9ed9366f50d12f6fa"],
@@ -174,6 +214,8 @@ test("production signer pins cannot be copied from environment claims", () => {
   assert.doesNotMatch(buildSource, /Test-AuthorizedMicrosoftFile/u);
   assert.match(buildSource, /Test-AuthorizedResolverFile/u);
   assert.match(buildSource, /runAuthorityLeasedBuildTool\(nativeLinker, nativeLinkArgs/u);
+  assert.match(buildSource, /planWindowsBuildLeaseReadiness/u);
+  assert.match(buildSource, /awaitWindowsBuildLeaseReadiness/u);
   assert.match(buildSource, /lease-build-inputs-v1/u);
   assert.match(buildSource, /input\.tool === true \|\| prior\.tool !== true/u);
   assert.match(buildSource, /signer-pins-v1/u);
@@ -182,6 +224,13 @@ test("production signer pins cannot be copied from environment claims", () => {
   assert.match(buildSource, /toolSigners/u);
   assert.doesNotMatch(bootstrapSource, /verify_authenticode_pins\(path, NULL, NULL\)/u);
   assert.match(bootstrapSource, /bytes\[offset \+ 67\] != 'E'/u);
+  const brokerSource = readFileSync(new URL("../native/windows-authority-broker.c", import.meta.url), "utf8");
+  assert.match(brokerSource, /launch-bootstrap-v1/u);
+  assert.match(brokerSource, /_get_osfhandle\(9\)/u);
+  assert.match(brokerSource, /CREATE_SUSPENDED \| CREATE_NO_WINDOW/u);
+  assert.match(brokerSource, /verify_authenticode_pins\(self_path, expected_leaf, expected_spki\)/u);
+  assert.match(brokerSource, /same_file_id\(&target_id, &loaded_id\)/u);
+  assert.match(buildSource, /"crypt32\.lib"/u);
   assert.match(buildSource, /nativeInputInventories\.slice/u);
   assert.doesNotMatch(buildSource, /PATH: `\$\{dirname\(nativeCompiler\)\}/u);
   assert.match(buildSource, /connect-authority-bootstrap\.exe/u);

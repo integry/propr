@@ -25,6 +25,93 @@ export const WINDOWS_HELPER_DIAGNOSTICS = Object.freeze([
 const MAX_COMPILER_DIAGNOSTIC_BYTES = 64 * 1024;
 const COMPILER_TIMEOUT_MS = 30_000;
 
+export const WINDOWS_BUILD_LEASE_LIMITS = Object.freeze({
+  maxFiles: 30_000,
+  maxBytes: 1024 * 1024 * 1024,
+  batchFiles: 512,
+  batchBytes: 64 * 1024 * 1024,
+  maxBatches: 128,
+  baseDeadlineMs: 30_000,
+  maxDeadlineMs: 180_000,
+  minimumBytesPerSecond: 8 * 1024 * 1024,
+  perFileMs: 2,
+});
+
+/**
+ * Partition an already hash-validated inventory into a fixed bounded lease
+ * protocol. A file is never split between authorities, so every READY token
+ * still means that one native process owns a deny-write/delete lease over
+ * complete file objects. The returned counters are the only readiness
+ * progress exposed to the parent; no path or diagnostic text crosses the
+ * channel.
+ */
+export function planWindowsBuildLeaseReadiness(inputs) {
+  if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > WINDOWS_BUILD_LEASE_LIMITS.maxFiles) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "OVERSIZED_OUTPUT");
+  }
+  let totalBytes = 0;
+  const batches = [];
+  let batch = [];
+  let batchBytes = 0;
+  for (const input of inputs) {
+    if (!input || typeof input !== "object" || !Number.isSafeInteger(input.bytes) || input.bytes < 0
+      || input.bytes > WINDOWS_BUILD_LEASE_LIMITS.maxBytes) {
+      throw new WindowsHelperBuildError("BUILD_COMPILER", "OVERSIZED_OUTPUT");
+    }
+    totalBytes += input.bytes;
+    if (!Number.isSafeInteger(totalBytes) || totalBytes > WINDOWS_BUILD_LEASE_LIMITS.maxBytes) {
+      throw new WindowsHelperBuildError("BUILD_COMPILER", "OVERSIZED_OUTPUT");
+    }
+    if (batch.length > 0 && (batch.length >= WINDOWS_BUILD_LEASE_LIMITS.batchFiles
+      || batchBytes + input.bytes > WINDOWS_BUILD_LEASE_LIMITS.batchBytes)) {
+      batches.push(Object.freeze(batch));
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(input);
+    batchBytes += input.bytes;
+  }
+  if (batch.length > 0) batches.push(Object.freeze(batch));
+  if (batches.length < 1 || batches.length > WINDOWS_BUILD_LEASE_LIMITS.maxBatches) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "OVERSIZED_OUTPUT");
+  }
+  const deadlineMs = Math.min(WINDOWS_BUILD_LEASE_LIMITS.maxDeadlineMs,
+    WINDOWS_BUILD_LEASE_LIMITS.baseDeadlineMs
+      + inputs.length * WINDOWS_BUILD_LEASE_LIMITS.perFileMs
+      + Math.ceil(totalBytes * 1000 / WINDOWS_BUILD_LEASE_LIMITS.minimumBytesPerSecond));
+  return Object.freeze({
+    stages: Object.freeze(["INVENTORY", "LEASE_BATCH", "READY"]),
+    files: inputs.length,
+    bytes: totalBytes,
+    deadlineMs,
+    batches: Object.freeze(batches),
+  });
+}
+
+export async function awaitWindowsBuildLeaseReadiness(readiness, plan, options = {}) {
+  if (!Array.isArray(readiness) || readiness.length !== plan?.batches?.length
+    || !Number.isSafeInteger(plan?.deadlineMs) || plan.deadlineMs < 1
+    || plan.deadlineMs > WINDOWS_BUILD_LEASE_LIMITS.maxDeadlineMs) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+  const setTimer = options.setTimeoutImpl ?? setTimeout;
+  const clearTimer = options.clearTimeoutImpl ?? clearTimeout;
+  let timer;
+  try {
+    await Promise.race([
+      Promise.all(readiness),
+      new Promise((_, reject) => {
+        timer = setTimer(() => reject(new WindowsHelperBuildError(
+          options.stage ?? "BUILD_COMPILER", "STALLED",
+        )), plan.deadlineMs);
+        timer?.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimer(timer);
+  }
+}
+
 // Reviewed leaf-certificate and SubjectPublicKeyInfo SHA-256 policy for the
 // exact VS 17.14 / Roslyn 4.14 toolchain selected by the hosted build. These
 // values come from the signed Microsoft distribution payloads, not from a

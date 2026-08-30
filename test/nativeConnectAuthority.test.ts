@@ -679,6 +679,27 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       }
       rmSync(bootstrapMarker, { force: true });
     }
+    let postVerificationAttackObserved = false;
+    const postVerificationDetached = `${packagedBootstrapPath}.post-verification-detached`;
+    try {
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
+        onBootstrapCreateProcess: (bootstrapPath) => {
+          postVerificationAttackObserved = true;
+          assert.throws(() => renameSync(bootstrapPath, postVerificationDetached));
+          assert.throws(() => copyFileSync(replacementAttacker, bootstrapPath));
+          assert.throws(() => lstatSync(bootstrapMarker), /ENOENT/);
+          throw new Error('bootstrap post-verification pre-CreateProcess lease observed');
+        },
+      }), /capability|authority|lease observed/);
+      assert.equal(postVerificationAttackObserved, true);
+      assert.throws(() => lstatSync(bootstrapMarker), /ENOENT/);
+    } finally {
+      if (existsSync(postVerificationDetached)) {
+        rmSync(packagedBootstrapPath, { force: true });
+        renameSync(postVerificationDetached, packagedBootstrapPath);
+      }
+      rmSync(bootstrapMarker, { force: true });
+    }
     completeScenario('bootstrap-first-launch');
 
     const packagedSupervisorPath = join(process.cwd(), 'packages', 'cli', 'dist', 'native', 'prebuilds',
@@ -909,7 +930,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         assert.equal(environmentKeys.includes(stagedPath), false);
         assert.deepEqual(constantArgv, ['--lease-validation-v2']);
         assert.notEqual(executable, stagedPath);
-        assert.match(executable, /prebuilds[\\/]win32-x64[\\/]connect-authority-bootstrap\.exe$/i);
+        assert.match(executable, /prebuilds[\\/]win32-x64[\\/]connect-authority-broker\.exe$/i);
         assert.match(packagedBrokerPath, /prebuilds[\\/]win32-x64[\\/]connect-authority-broker\.exe$/i);
         assert.equal(manifest.protocolVersion, 2);
         assert.equal(manifest.pe.architecture, 'anycpu');
