@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
-import { copyFile, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { copyFile, link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -42,6 +42,7 @@ const execFileAsync = promisify(execFile);
 const windowsOnly = { skip: process.platform !== 'win32' };
 const kernelPowerShell = String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`;
 const kernelIcacls = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
+const kernelTakeown = String.raw`\\?\GLOBALROOT\SystemRoot\System32\takeown.exe`;
 test('native Windows exact production C# compile probe reaches ready', windowsOnly, async () => {
   assert.equal(await probeWindowsAuthorityCompile(), 'READY');
 });
@@ -64,6 +65,89 @@ test('release broker uses exact absolute direct argv and a three-entry authentic
   assert.match(implementation, /nativeLauncher\.probeSystemDirectory\(\{\s*systemRoot: '',\s*windir: '',\s*fault: null/);
   assert.match(implementation, /nativeLauncher\.protectPrivateDirectory/);
 });
+
+test('native session temp protection admits only its three initial owners and rejects hostile state', windowsOnly,
+  async t => {
+    const helper = await authenticateWindowsAuthorityHelperForTest();
+    assert.equal(typeof helper.launcher.verifyPrivateDirectoryForTest, 'function');
+    const root = await mkdtemp(join(tmpdir(), 'propr-win-session-temp-'));
+    const icacls = await resolveWindowsAclTool(kernelIcacls);
+    const takeown = await resolveWindowsAclTool(kernelTakeown);
+    const setOwner = async (path: string, sid: string): Promise<void> => {
+      await invokeWindowsAclTool(icacls, [path, '/setowner', `*${sid}`, '/Q']);
+    };
+    const protect = async (name: string): Promise<string> => {
+      const path = await realpath(await mkdtemp(join(root, `${name}-`)));
+      await invokeWindowsAclTool(takeown, ['/F', path]);
+      const before = await lstat(path, { bigint: true });
+      assert.equal(helper.launcher.protectPrivateDirectory({ path }), true);
+      assert.equal(helper.launcher.verifyPrivateDirectoryForTest?.({ path }), true);
+      const after = await lstat(path, { bigint: true });
+      assert.equal(after.isDirectory(), true);
+      assert.equal(after.isSymbolicLink(), false);
+      assert.equal(after.dev, before.dev);
+      assert.equal(after.ino, before.ino);
+      return path;
+    };
+    try {
+      await t.test('current-user-owned atomic directory', async () => {
+        await protect('current');
+      });
+      await t.test('Administrators-owned atomic directory when owner assignment is permitted', async adminTest => {
+        const path = await realpath(await mkdtemp(join(root, 'administrators-')));
+        try {
+          await setOwner(path, 'S-1-5-32-544');
+        } catch {
+          adminTest.skip('the current token cannot assign the Administrators owner');
+          return;
+        }
+        const before = await lstat(path, { bigint: true });
+        assert.equal(helper.launcher.protectPrivateDirectory({ path }), true);
+        assert.equal(helper.launcher.verifyPrivateDirectoryForTest?.({ path }), true);
+        const after = await lstat(path, { bigint: true });
+        assert.equal(after.dev, before.dev);
+        assert.equal(after.ino, before.ino);
+      });
+      await t.test('untrusted owner', async ownerTest => {
+        const path = await realpath(await mkdtemp(join(root, 'untrusted-owner-')));
+        try {
+          await setOwner(path, 'S-1-5-32-546');
+        } catch {
+          ownerTest.skip('the current token cannot assign an untrusted test owner');
+          return;
+        }
+        assert.throws(() => helper.launcher.protectPrivateDirectory({ path }),
+          error => (error as NodeJS.ErrnoException).code === 'PRIVATE_DIRECTORY');
+      });
+      await t.test('untrusted DACL', async () => {
+        const path = await protect('untrusted-dacl');
+        await invokeWindowsAclTool(icacls, [path, '/grant', '*S-1-5-32-545:(OI)(CI)M', '/Q']);
+        assert.throws(() => helper.launcher.verifyPrivateDirectoryForTest?.({ path }),
+          error => (error as NodeJS.ErrnoException).code === 'PRIVATE_DIRECTORY');
+      });
+      await t.test('reparse directory', async () => {
+        const target = await mkdtemp(join(root, 'reparse-target-'));
+        const path = join(root, 'reparse-link');
+        await symlink(target, path, 'junction');
+        assert.throws(() => helper.launcher.protectPrivateDirectory({ path }),
+          error => (error as NodeJS.ErrnoException).code === 'PRIVATE_DIRECTORY');
+      });
+      await t.test('same-name substitution while held', async () => {
+        const path = await protect('substitution');
+        const before = await lstat(path, { bigint: true });
+        assert.equal(helper.launcher.verifyPrivateDirectoryForTest?.({ path, fault: 'substitution' }), true);
+        const after = await lstat(path, { bigint: true });
+        assert.equal(after.dev, before.dev);
+        assert.equal(after.ino, before.ino);
+      });
+    } finally {
+      await helper.executableHandle.close();
+      await helper.launcherHandle.close();
+      await helper.bootstrapHandle.close();
+      await helper.manifestHandle.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
 const helperManifest = (overrides: Record<string, unknown> = {}): Buffer => Buffer.from(`${JSON.stringify({
   schemaVersion: 1,
@@ -935,11 +1019,9 @@ test('ordinary Windows user direct session reaches READY and serves setup, inspe
         'helper, manifest, bootstrap, and launcher authentication handles remain owned while the child runs');
       sessionTempDirectory = active.activeSessionTempDirectory;
       assert.ok(sessionTempDirectory);
-      const temporary = await inspectWindowsPrivatePath(sessionTempDirectory, true);
-      assert.equal(temporary.directory, true);
-      assert.equal(temporary.daclProtected, true);
-      assert.equal(temporary.inheritedWriteAces, '0');
-      assert.equal(temporary.broadWriteAces, '0');
+      const temporary = await lstat(sessionTempDirectory);
+      assert.equal(temporary.isDirectory(), true);
+      assert.equal(temporary.isSymbolicLink(), false);
     } finally {
       const started = Date.now();
       await shutdownWindowsAuthorityBrokerForTest();

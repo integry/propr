@@ -170,6 +170,7 @@ interface AuthenticatedWindowsAuthorityHelper {
 interface WindowsNativeLauncher {
   probeSystemDirectory(policy: { systemRoot: ''; windir: ''; fault: null }): Buffer;
   protectPrivateDirectory(policy: { path: string }): boolean;
+  verifyPrivateDirectoryForTest?(policy: { path: string; fault?: 'substitution' }): boolean;
   compileHeld?(policy: Record<string, unknown>): Record<string, unknown>;
   dangerousAclForTest?(policy: { sddl: string }): boolean;
 }

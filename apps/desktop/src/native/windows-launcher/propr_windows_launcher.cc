@@ -926,15 +926,134 @@ bool ProtectPrivateBuildDirectory(const std::wstring& path) {
   return valid && CanonicalDirectory(path, true);
 }
 
+bool PrivateSessionDirectoryOwner(PSID owner) {
+  // This exception is only consumed by the atomically created random session
+  // temp entry below. Build, helper, package, and artifact authentication keep
+  // their existing owner policies.
+  return owner != nullptr && (CurrentUserSid(owner) || SameSid(owner, L"S-1-5-18")
+    || SameSid(owner, L"S-1-5-32-544"));
+}
+
+bool HeldPrivateSessionDirectory(HANDLE directory, FileIdInfo* identity) {
+  AttributeTagInfo tag{};
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  PSID owner = nullptr;
+  const bool valid = directory != INVALID_HANDLE_VALUE
+    && GetFileInformationByHandleEx(directory, static_cast<FILE_INFO_BY_HANDLE_CLASS>(kFileAttributeTagInfo),
+      &tag, sizeof(tag)) && FileIdentity(directory, identity)
+    && (tag.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+    && (tag.attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 && tag.reparse_tag == 0
+    && GetSecurityInfo(directory, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr,
+      &descriptor) == ERROR_SUCCESS && PrivateSessionDirectoryOwner(owner);
+  if (descriptor) LocalFree(descriptor);
+  return valid;
+}
+
+bool ExactPrivateDirectoryDacl(HANDLE directory, const std::wstring& user_sid_text) {
+  PSID user_sid = nullptr;
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  PACL dacl = nullptr;
+  const DWORD status = GetSecurityInfo(directory, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+    nullptr, nullptr, &dacl, nullptr, &descriptor);
+  SECURITY_DESCRIPTOR_CONTROL control = 0;
+  DWORD revision = 0;
+  bool current = false, system = false, administrators = false;
+  bool valid = ConvertStringSidToSidW(user_sid_text.c_str(), &user_sid)
+    && status == ERROR_SUCCESS && descriptor != nullptr && dacl != nullptr && dacl->AceCount == 3
+    && GetSecurityDescriptorControl(descriptor, &control, &revision)
+    && (control & SE_DACL_PROTECTED) != 0;
+  for (DWORD index = 0; valid && index < dacl->AceCount; ++index) {
+    void* raw = nullptr;
+    valid = GetAce(dacl, index, &raw) != FALSE;
+    if (!valid) break;
+    auto* header = static_cast<ACE_HEADER*>(raw);
+    ACCESS_MASK mask = 0;
+    PSID sid = nullptr;
+    bool allowed = false;
+    const BYTE expected_flags = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+    valid = QualifiedAceSidAndMask(header, &mask, &sid, &allowed) && allowed
+      && header->AceType == ACCESS_ALLOWED_ACE_TYPE && header->AceFlags == expected_flags && mask == FILE_ALL_ACCESS;
+    if (!valid) break;
+    if (EqualSid(sid, user_sid)) {
+      valid = !current;
+      current = true;
+    } else if (SameSid(sid, L"S-1-5-18")) {
+      valid = !system;
+      system = true;
+    } else if (SameSid(sid, L"S-1-5-32-544")) {
+      valid = !administrators;
+      administrators = true;
+    } else {
+      valid = false;
+    }
+  }
+  if (user_sid) LocalFree(user_sid);
+  if (descriptor) LocalFree(descriptor);
+  return valid && current && system && administrators;
+}
+
+bool ProtectPrivateSessionDirectory(const std::wstring& path) {
+  HANDLE directory = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC, FILE_SHARE_READ,
+    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  FileIdInfo before{}, after{};
+  std::wstring user_sid;
+  bool valid = HeldPrivateSessionDirectory(directory, &before) && CurrentUserSidText(&user_sid);
+  PSECURITY_DESCRIPTOR replacement = nullptr;
+  PACL dacl = nullptr;
+  BOOL present = FALSE, defaulted = FALSE;
+  if (valid) {
+    const std::wstring sddl = L"D:P(A;OICI;FA;;;" + user_sid
+      + L")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+    valid = ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1,
+      &replacement, nullptr) && GetSecurityDescriptorDacl(replacement, &present, &dacl, &defaulted)
+      && present && dacl && SetSecurityInfo(directory, SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, dacl, nullptr) == ERROR_SUCCESS;
+  }
+  valid = valid && HeldPrivateSessionDirectory(directory, &after)
+    && SameIdentity(before, after) && ExactPrivateDirectoryDacl(directory, user_sid);
+  if (replacement) LocalFree(replacement);
+  if (directory != INVALID_HANDLE_VALUE) CloseHandle(directory);
+  return valid;
+}
+
+bool MutationWasDenied(const std::wstring& path, const std::string& fault);
+
 napi_value ProtectPrivateDirectory(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
   std::wstring path;
   if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 1
       || !StringValue(env, args[0], "path", &path) || path.size() < 3 || path.size() >= 32768
-      || path[0] == L'\\' || path[1] != L':' || !ProtectPrivateBuildDirectory(path)) {
+      || path[0] == L'\\' || path[1] != L':' || !ProtectPrivateSessionDirectory(path)) {
     Throw(env, "PRIVATE_DIRECTORY"); return nullptr;
   }
+  napi_value result;
+  napi_get_boolean(env, true, &result);
+  return result;
+}
+
+napi_value VerifyPrivateDirectoryForTest(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  std::wstring path;
+  std::string fault;
+  if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 1
+      || !StringValue(env, args[0], "path", &path) || path.size() < 3 || path.size() >= 32768
+      || path[0] == L'\\' || path[1] != L':') {
+    Throw(env, "PRIVATE_DIRECTORY"); return nullptr;
+  }
+  Utf8Value(env, args[0], "fault", &fault, true);
+  HANDLE directory = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL, FILE_SHARE_READ,
+    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  FileIdInfo before{}, after{};
+  std::wstring user_sid;
+  bool valid = HeldPrivateSessionDirectory(directory, &before) && CurrentUserSidText(&user_sid)
+    && ExactPrivateDirectoryDacl(directory, user_sid);
+  if (valid && fault == "substitution") valid = MutationWasDenied(path, "swap");
+  valid = valid && HeldPrivateSessionDirectory(directory, &after) && SameIdentity(before, after)
+    && ExactPrivateDirectoryDacl(directory, user_sid);
+  if (directory != INVALID_HANDLE_VALUE) CloseHandle(directory);
+  if (!valid) { Throw(env, "PRIVATE_DIRECTORY"); return nullptr; }
   napi_value result;
   napi_get_boolean(env, true, &result);
   return result;
@@ -1998,6 +2117,8 @@ napi_value Init(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
     {"probeSystemDirectory", nullptr, ProbeSystemDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"protectPrivateDirectory", nullptr, ProtectPrivateDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"verifyPrivateDirectoryForTest", nullptr, VerifyPrivateDirectoryForTest,
+      nullptr, nullptr, nullptr, napi_default, nullptr},
     {"launch", nullptr, Launch, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"status", nullptr, Status, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"closeInput", nullptr, CloseInput, nullptr, nullptr, nullptr, napi_default, nullptr},
