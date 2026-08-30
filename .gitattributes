@@ -1,12 +1,2 @@
-# Security-pinned native, managed, and fixture sources are hashed as canonical
-# LF bytes.  Keep checkout bytes identical on Windows, macOS, and Linux.
-*.c text eol=lf
-*.cs text eol=lf
-*.wxs text eol=lf
-test/fixtures/*.mjs text eol=lf
-test/fixtures/*.ts text eol=lf
-test/fixtures/*.json text eol=lf
-scripts/fixtures/*.c text eol=lf
-
-# Prebuilt Windows evidence fixtures are opaque binaries.
-*.exe binary
+# The packaged Darwin ACL helper is hash-pinned; keep its source canonical.
+packages/cli/native/darwin-authority-broker.c text eol=lf

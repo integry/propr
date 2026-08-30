@@ -15,13 +15,10 @@ import {
   readSnapshotPublicInstanceIdentity,
   withOwnedConnectRootSnapshot,
 } from "../connectIdentity.js";
-import { WindowsInstalledAuthorityError } from "../windowsInstalledAuthority.js";
 
 export const CONNECT_STATUS_EXIT = {
   ready: 0,
   internalFailure: 1,
-  authorityMissing: 1,
-  repairRequired: 1,
   notReady: 0,
   incompatible: 2,
   invalidConfig: 1,
@@ -46,8 +43,6 @@ export type ConnectStatusReasonCode =
   | "INVALID_ENDPOINT"
   | "IDENTITY_UNAVAILABLE"
   | "INTERNAL_FAILURE"
-  | "AUTHORITY_MISSING"
-  | "REPAIR_REQUIRED"
   | "ACL_DIAGNOSTIC_UNAVAILABLE";
 
 export interface ConnectStatusDocument {
@@ -384,11 +379,6 @@ export async function getLocalConnectStatus(root: string | undefined): Promise<C
     }
     if (error instanceof PublicInstanceIdentityError) {
       return baseDocument("invalidConfig", { reasonCodes: ["IDENTITY_UNAVAILABLE"] });
-    }
-    if (error instanceof WindowsInstalledAuthorityError) {
-      return baseDocument(error.state, {
-        reasonCodes: [error.state === "authorityMissing" ? "AUTHORITY_MISSING" : "REPAIR_REQUIRED"],
-      });
     }
     return baseDocument("internalFailure", { reasonCodes: ["INTERNAL_FAILURE"] });
   }

@@ -49,8 +49,6 @@ jobs:
           test -f packages/cli/dist/native/prebuilds/linux-x64/directory-operations.node
           test -f packages/cli/dist/native/prebuilds/darwin-arm64/connect-authority-broker
           test -f packages/cli/dist/native/prebuilds/darwin-x64/connect-authority-broker
-          test -f packages/cli/dist/native/prebuilds/win32-x64/connect-authority-broker.exe
-          test -f packages/cli/dist/native/prebuilds/win32-x64/connect-authority-bootstrap.exe
 
   cli-agent-skill-glibc-231:
     name: CLI Agent Skill (Linux x64, glibc 2.31, Node 22)
@@ -150,8 +148,8 @@ jobs:
           test ! -e "$skill_fixture/home/.gemini/antigravity-cli/skills/propr"
           test ! -e "$skill_fixture/xdg/opencode/skills/propr"
 
-  windows-authority-helper:
-    name: Windows Authority Helper (AnyCPU)
+  windows-connect-discovery:
+    name: Windows Connect Discovery (ordinary user, Node 22)
     runs-on: windows-2025
     permissions:
       contents: read
@@ -168,36 +166,47 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify bounded helper build diagnostics
-        run: node --test packages/cli/scripts/windows-authority-build-lib.test.mjs
+      - name: Build discovery workspaces
+        shell: bash
+        run: |
+          npm run build -w @propr/shared
+          npm run build -w @propr/core
+          npm run build -w @propr/local-setup
+          npm run typecheck -w @propr/cli
+          npm run build -w @propr/cli
 
-      - name: Require real production build-stage mutation evidence
-        run: node scripts/verify-windows-authority-build-evidence.mjs
+      - name: Run CLI and API discovery as a non-administrator
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $userName = 'propr-discovery'
+          $plainPassword = [Guid]::NewGuid().ToString('N') + 'aA1!'
+          $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+          New-LocalUser -Name $userName -Password $securePassword -PasswordNeverExpires | Out-Null
+          $administrators = Get-LocalGroupMember -Group 'Administrators' | ForEach-Object { $_.Name }
+          if ($administrators -contains "$env:COMPUTERNAME\$userName") { throw 'discovery test user is an administrator' }
+          $credential = [PSCredential]::new("$env:COMPUTERNAME\$userName", $securePassword)
+          $stdout = Join-Path $env:RUNNER_TEMP 'propr-discovery.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'propr-discovery.stderr'
+          try {
+            $node = (Get-Command node.exe).Source
+            $process = Start-Process -FilePath $node -ArgumentList @('scripts/verify-windows-standard-user-connect.mjs', $userName) -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            Get-Content -LiteralPath $stdout
+            if ($process.ExitCode -ne 0) {
+              Get-Content -LiteralPath $stderr
+              throw "ordinary-user discovery proof exited $($process.ExitCode)"
+            }
+            if ((Get-Content -Raw -LiteralPath $stderr).Length -ne 0) { throw 'ordinary-user discovery proof wrote stderr' }
+          } finally {
+            Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
+          }
 
-      - name: Build audited AnyCPU authority helper
-        run: npm run build:windows-authority-validation -w @propr/cli
-
-      - name: Upload exact helper set
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: windows-authority-helper-${{ github.run_id }}
-          path: |
-            packages/cli/native/prebuilds/win32-anycpu
-            packages/cli/native/prebuilds/win32-x64/connect-authority-broker.exe
-            packages/cli/native/prebuilds/win32-x64/connect-authority-bootstrap.exe
-            packages/cli/native/prebuilds/win32-service
-          if-no-files-found: error
-          overwrite: true
-
-  connect-authority-native:
-    name: Connect Authority (${{ matrix.os }}, Node 22)
-    runs-on: ${{ matrix.os }}
+  connect-authority-darwin:
+    name: Connect Discovery and Darwin ACL (Node 22)
+    runs-on: macos-15
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2025, macos-15]
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -211,93 +220,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build native Connect authority dependencies
+      - name: Build Connect discovery dependencies
         shell: bash
-        env:
-          MSYS2_ARG_CONV_EXCL: '*'
         run: |
           set -euo pipefail
-          if [ "$(node -p process.platform)" = win32 ]; then
-            build_evidence_receipt="$RUNNER_TEMP/propr-windows-build-evidence-${GITHUB_RUN_ID}.json"
-            node scripts/verify-windows-authority-build-evidence.mjs --receipt="$build_evidence_receipt"
-            echo "PROPR_WINDOWS_BUILD_EVIDENCE_RECEIPT=$build_evidence_receipt" >> "$GITHUB_ENV"
-            npm run build:windows-authority-validation -w @propr/cli
-            msiexec.exe /i "packages/cli/native/prebuilds/win32-service/ProPRConnectAuthority.msi" /qn /norestart
-            msiexec.exe /fa "packages/cli/native/prebuilds/win32-service/ProPRConnectAuthority.msi" /qn /norestart
-          fi
           npm run build -w @propr/shared
           npm run build -w @propr/core
           npm run build -w @propr/local-setup
           npm run typecheck -w @propr/cli
           npm run build -w @propr/cli
 
-      - name: Require hosted Windows supervisor smoke
-        if: runner.os == 'Windows'
-        shell: bash
-        env:
-          PROPR_WINDOWS_AUTHORITY_VALIDATION: '1'
-        run: node scripts/verify-windows-authority-smoke.mjs
-
-      - name: Require real standard-user status and installed-service client
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $userName = 'propr-standard'
-          $plainPassword = [Guid]::NewGuid().ToString('N') + 'aA1!'
-          $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
-          New-LocalUser -Name $userName -Password $securePassword -PasswordNeverExpires | Out-Null
-          $administrators = Get-LocalGroupMember -Group 'Administrators' | ForEach-Object { $_.Name }
-          if ($administrators -contains "$env:COMPUTERNAME\$userName") { throw 'limited test user is an administrator' }
-          $credential = [PSCredential]::new("$env:COMPUTERNAME\$userName", $securePassword)
-          $stdout = Join-Path $env:RUNNER_TEMP 'propr-standard-user.stdout'
-          $stderr = Join-Path $env:RUNNER_TEMP 'propr-standard-user.stderr'
-          try {
-            $node = (Get-Command node.exe).Source
-            $process = Start-Process -FilePath $node -ArgumentList @('scripts/verify-windows-standard-user-connect.mjs', $userName) -WorkingDirectory $env:GITHUB_WORKSPACE -Credential $credential -LoadUserProfile -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-            Get-Content -LiteralPath $stdout
-            if ($process.ExitCode -ne 0) {
-              Get-Content -LiteralPath $stderr
-              throw "standard-user Connect proof exited $($process.ExitCode)"
-            }
-            if ((Get-Content -Raw -LiteralPath $stderr).Length -ne 0) { throw 'standard-user Connect proof wrote stderr' }
-          } finally {
-            Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
-          }
-
       - name: Run platform-safe focused Connect suites
         shell: bash
-        env:
-          PROPR_WINDOWS_AUTHORITY_VALIDATION: ${{ runner.os == 'Windows' && '1' || '' }}
         run: node scripts/verify-platform-safe-connect.mjs
 
       - name: Require complete native Connect authority proof
         shell: bash
-        env:
-          PROPR_WINDOWS_AUTHORITY_VALIDATION: ${{ runner.os == 'Windows' && '1' || '' }}
         run: node scripts/verify-native-connect-authority.mjs
-
-      - name: Require packed-install Connect auto-discovery smoke
-        if: runner.os == 'Windows'
-        shell: bash
-        env:
-          PROPR_WINDOWS_AUTHORITY_VALIDATION: '1'
-          PROPR_WINDOWS_AUTHORITY_PACKAGE_VALIDATION: '1'
-        run: |
-          npm run cli:pack
-          node scripts/verify-packed-windows-connect.mjs
-
-      - name: Uninstall machine Connect authority
-        if: runner.os == 'Windows' && always()
-        shell: bash
-        env:
-          MSYS2_ARG_CONV_EXCL: '*'
-        run: msiexec.exe /x "packages/cli/native/prebuilds/win32-service/ProPRConnectAuthority.msi" /qn /norestart
 
   validate:
     name: Validate Changes
-    needs: windows-authority-helper
     runs-on: ubuntu-latest
     env:
       ACTIONLINT_IMAGE: rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
@@ -409,12 +351,6 @@ jobs:
             npm ci
           } > >(tee -a build_log.txt) 2>&1
 
-      - name: Download audited Windows authority helper
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
-        with:
-          name: windows-authority-helper-${{ github.run_id }}
-          path: packages/cli/native/prebuilds
-
       - name: Verify release-candidate metadata
         env:
           RELEASE_CANDIDATE: 'true'
@@ -464,8 +400,6 @@ jobs:
 
       - name: Verify CLI Release Package
         id: cli_pack
-        env:
-          PROPR_WINDOWS_AUTHORITY_PACKAGE_VALIDATION: '1'
         run: |
           set -euo pipefail
           {

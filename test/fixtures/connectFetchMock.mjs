@@ -36,6 +36,19 @@ globalThis.fetch = async () => {
   switch (process.env.PROPR_TEST_DISCOVERY_MODE) {
     case 'ready':
       return new Response(JSON.stringify(discovery), { headers: { 'content-type': 'application/json' } });
+    case 'restart-required':
+      return new Response(JSON.stringify({ ...discovery, canonicalEndpoint: null }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    case 'identity-mismatch':
+      return new Response(JSON.stringify({
+        ...discovery,
+        publicInstanceIdentity: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      }), { headers: { 'content-type': 'application/json' } });
+    case 'oversized':
+      return new Response('{}', {
+        headers: { 'content-type': 'application/json', 'content-length': '9000' },
+      });
     case 'invalid':
       return new Response(JSON.stringify({ ...discovery, desktopAuthentication: {} }), {
         headers: { 'content-type': 'application/json' },
@@ -48,6 +61,8 @@ globalThis.fetch = async () => {
       return endless(404);
     case 'unreachable':
       throw new Error('transport-SENTINEL must remain private');
+    case 'secret-sentinel':
+      throw new Error('connector-token-SENTINEL relay-token-SENTINEL private-path-SENTINEL');
     case 'timeout':
       return endless(200);
     default:
