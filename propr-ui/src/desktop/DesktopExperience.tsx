@@ -66,7 +66,9 @@ export const DesktopExperience: React.FC<DesktopExperienceProps> = ({ adapters, 
         if (!isCurrentAttempt()) return;
         await adapters.profiles.save(connectedProfile);
         if (!isCurrentAttempt()) return;
-        if (adapters.connection.activate) result = await adapters.connection.activate(connectedProfile, probeResult);
+        if (adapters.connection.activate) {
+          result = await adapters.connection.activate(connectedProfile, probeResult, isCurrentAttempt);
+        }
         else if (activeProfileId.current !== profile.id) await adapters.profiles.setActiveId(profile.id);
         if (result.status === 'ready') activeProfileId.current = profile.id;
       });

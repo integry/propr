@@ -62,6 +62,7 @@ export interface DesktopConnectionAdapter {
   activate?(
     profile: DesktopProfile,
     result: Extract<DesktopConnectionResult, { status: 'ready' }>,
+    isCurrent?: () => boolean,
   ): Promise<DesktopConnectionResult>;
   publishActivation?(profile: DesktopProfile, result: Extract<DesktopConnectionResult, { status: 'ready' }>): void;
   deactivate?(): void;

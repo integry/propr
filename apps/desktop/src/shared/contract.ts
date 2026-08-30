@@ -13,6 +13,7 @@ export const IPC_CHANNELS = Object.freeze({
   authenticationCancel: 'desktop:authentication-cancel',
   connectionProbe: 'desktop:connection-probe',
   connectionActivate: 'desktop:connection-activate',
+  connectionDiscard: 'desktop:connection-discard',
   connectionInvalidate: 'desktop:connection-invalidate',
   lifecycleStatus: 'desktop:lifecycle-status',
   lifecycleStart: 'desktop:lifecycle-start',
@@ -117,6 +118,7 @@ export interface DesktopBridge {
   connection: {
     probe(profile: DesktopProfileInput): Promise<DesktopConnectionResult>;
     activate(activationTicket: string): Promise<DesktopActivatedConnection>;
+    discard(value: DesktopConnectionScope): Promise<{ discarded: boolean }>;
     invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }>;
   };
   lifecycle: {

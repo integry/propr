@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   DesktopProfile,
@@ -42,10 +42,17 @@ export interface ProfileCredentialSnapshot {
   activeProfileId: string | null;
 }
 
-interface PersistedState {
+interface LegacyPersistedState {
   version: 1;
   activeProfileId: string | null;
   profiles: DesktopProfile[];
+}
+
+interface PersistedState {
+  version: 2;
+  activeProfileId: string | null;
+  profiles: DesktopProfile[];
+  credentialSlots: Record<string, string>;
 }
 
 export interface EncryptionProvider {
@@ -55,10 +62,27 @@ export interface EncryptionProvider {
   decrypt(value: Buffer): string;
 }
 
+export type ProfileStoreDurabilityStep =
+  | 'credential-encrypted'
+  | 'credential-written'
+  | 'credential-fsynced'
+  | 'credential-renamed'
+  | 'credential-directory-fsynced'
+  | 'state-written'
+  | 'state-fsynced'
+  | 'state-renamed'
+  | 'state-directory-fsynced'
+  | 'old-credential-removed';
+
+export interface ProfileStoreOptions {
+  afterDurabilityStep?(step: ProfileStoreDurabilityStep): void | Promise<void>;
+}
+
 const emptyState = (): PersistedState => ({
-  version: 1,
+  version: 2,
   activeProfileId: null,
   profiles: [],
+  credentialSlots: {},
 });
 
 const validDate = (value: unknown): value is string =>
@@ -78,11 +102,12 @@ const validProfile = (value: unknown): value is DesktopProfile => {
     && validDate(profile.updatedAt);
 };
 
-const parseState = (contents: string): PersistedState => {
+const parseState = (contents: string): PersistedState | LegacyPersistedState => {
   const value = JSON.parse(contents) as unknown;
   if (!value || typeof value !== 'object') throw new Error('Desktop profile store is invalid');
   const state = value as Record<string, unknown>;
-  if (state.version !== 1 || !Array.isArray(state.profiles) || !state.profiles.every(validProfile)) {
+  if ((state.version !== 1 && state.version !== 2)
+    || !Array.isArray(state.profiles) || !state.profiles.every(validProfile)) {
     throw new Error('Desktop profile store is invalid');
   }
   if (state.activeProfileId !== null && (
@@ -91,7 +116,19 @@ const parseState = (contents: string): PersistedState => {
   )) {
     throw new Error('Desktop active profile is invalid');
   }
-  return state as unknown as PersistedState;
+  if (state.version === 2) {
+    if (!state.credentialSlots || typeof state.credentialSlots !== 'object'
+      || Array.isArray(state.credentialSlots)) throw new Error('Desktop credential state is invalid');
+    const entries = Object.entries(state.credentialSlots as Record<string, unknown>);
+    const slots = new Set<string>();
+    for (const [profileId, slot] of entries) {
+      if (!PROFILE_ID_PATTERN.test(profileId) || typeof slot !== 'string'
+        || !new RegExp(`^${profileId}\\.[0-9a-f-]{36}\\.bin$`, 'i').test(slot)
+        || slots.has(slot)) throw new Error('Desktop credential state is invalid');
+      slots.add(slot);
+    }
+  }
+  return state as unknown as PersistedState | LegacyPersistedState;
 };
 
 const encryptionStatus = (encryption: EncryptionProvider): StorageSecurity => {
@@ -127,13 +164,15 @@ export class ProfileStore {
   readonly #statePath: string;
   readonly #credentialsDirectory: string;
   readonly #encryption: EncryptionProvider;
+  readonly #options: ProfileStoreOptions;
   #mutation = Promise.resolve();
 
-  constructor(userDataPath: string, encryption: EncryptionProvider) {
+  constructor(userDataPath: string, encryption: EncryptionProvider, options: ProfileStoreOptions = {}) {
     this.#directory = join(userDataPath, 'desktop');
     this.#statePath = join(this.#directory, 'profiles.json');
     this.#credentialsDirectory = join(this.#directory, 'credentials');
     this.#encryption = encryption;
+    this.#options = options;
   }
 
   security(): StorageSecurity {
@@ -161,11 +200,11 @@ export class ProfileStore {
       const existing = state.profiles.find(profile => profile.id === normalized.id);
       const originChanged = existing !== undefined && existing.apiBaseUrl !== normalized.apiBaseUrl;
       let detachedCredential: StoredCredential | null = null;
+      let detachedSlot: string | undefined;
       if (!existing || originChanged) {
-        detachedCredential = await this.#captureCredentialFile(normalized.id);
-        // Credential deletion precedes state publication. A failed unlink leaves
-        // the old profile intact; a failed state write leaves it safely unpaired.
-        await this.#removeCredentialFile(normalized.id);
+        detachedCredential = await this.#captureCredentialFile(state, normalized.id);
+        detachedSlot = state.credentialSlots[normalized.id];
+        delete state.credentialSlots[normalized.id];
         if (originChanged && state.activeProfileId === normalized.id) state.activeProfileId = null;
       }
       const now = new Date().toISOString();
@@ -175,8 +214,9 @@ export class ProfileStore {
         updatedAt: now,
       };
       state.profiles = [...state.profiles.filter(item => item.id !== profile.id), profile];
-      await this.#writeState(state);
-      return { profile: { ...profile }, detachedCredential, originChanged };
+      const durable = await this.#writeState(state);
+      if (durable && detachedSlot) await this.#unlinkSlot(detachedSlot).catch(() => undefined);
+      return { profile: { ...profile }, detachedCredential: durable ? detachedCredential : null, originChanged };
     });
   }
 
@@ -200,7 +240,7 @@ export class ProfileStore {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const existing = state.profiles.find(profile => profile.id === normalized.id) ?? null;
-      const existingCredential = await this.#readCredentialFile(normalized.id);
+      const existingCredential = await this.#readCredentialFile(state, normalized.id);
       if (!isCurrent()
         || state.activeProfileId !== expected.activeProfileId
         || !this.#sameProfile(existing, expected.profile)
@@ -213,72 +253,32 @@ export class ProfileStore {
         updatedAt: now,
       };
       const originChanged = existing !== null && existing.apiBaseUrl !== profile.apiBaseUrl;
-      const previousState: PersistedState = {
-        ...state,
-        profiles: state.profiles.map(item => ({ ...item })),
-      };
       state.profiles = [...state.profiles.filter(item => item.id !== profile.id), profile];
       if (originChanged && state.activeProfileId === profile.id) state.activeProfileId = null;
 
-      await this.#ensureDirectories();
-      const target = this.#credentialPath(profile.id);
-      const suffix = `${process.pid}.${randomUUID()}.pair`;
-      const credentialTemporary = `${target}.${suffix}.tmp`;
-      const stateTemporary = `${this.#statePath}.${suffix}.tmp`;
-      let credentialReplaced = false;
-      let stateReplaced = false;
-      const previousCredentialBytes = await readFile(target).catch(error => {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-        throw error;
-      });
-
+      const previousSlot = state.credentialSlots[profile.id];
+      const stagedSlot = await this.#stageCredential(credential);
+      let committed = false;
       try {
-        // Stage both encrypted credential and profile state before replacing
-        // either visible file. In particular, keychain/encryption and write
-        // failures leave the working profile and credential untouched.
-        await writeFile(
-          credentialTemporary,
-          this.#encryption.encrypt(JSON.stringify(credential)),
-          { mode: 0o600 },
-        );
-        await writeFile(
-          stateTemporary,
-          `${JSON.stringify(state, null, 2)}\n`,
-          { encoding: 'utf8', mode: 0o600 },
-        );
         if (!isCurrent()) return null;
-
-        await rename(credentialTemporary, target);
-        credentialReplaced = true;
-        if (!isCurrent()) {
-          await this.#restoreCredential(target, previousCredentialBytes);
-          credentialReplaced = false;
-          return null;
+        // The staged slot is durable while the old state still names A. This
+        // single atomic state-file rename is the only A -> B commit point.
+        state.credentialSlots[profile.id] = stagedSlot;
+        const durable = await this.#writeState(state);
+        committed = true;
+        if (durable && previousSlot) {
+          await this.#unlinkSlot(previousSlot).catch(() => undefined);
+          await this.#step('old-credential-removed').catch(() => undefined);
         }
-        await rename(stateTemporary, this.#statePath);
-        stateReplaced = true;
-        if (!isCurrent()) {
-          await this.#writeState(previousState);
-          stateReplaced = false;
-          await this.#restoreCredential(target, previousCredentialBytes);
-          credentialReplaced = false;
-          return null;
-        }
-        await chmod(target, 0o600).catch(() => undefined);
-        await chmod(this.#statePath, 0o600).catch(() => undefined);
         return {
           profile: { ...profile },
-          replacedCredential: existingCredential,
+          replacedCredential: durable ? existingCredential : null,
           originChanged,
         };
-      } catch (error) {
-        if (!stateReplaced && credentialReplaced) {
-          await this.#restoreCredential(target, previousCredentialBytes);
-        }
-        throw error;
       } finally {
-        await unlink(credentialTemporary).catch(() => undefined);
-        await unlink(stateTemporary).catch(() => undefined);
+        if (!committed) {
+          await this.#unlinkSlot(stagedSlot).catch(() => undefined);
+        }
       }
     });
   }
@@ -292,16 +292,16 @@ export class ProfileStore {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const profile = state.profiles.find(item => item.id === profileId);
-      const credential = await this.#captureCredentialFile(profileId);
-      // Always remove an app-owned credential, even if profile state is absent,
-      // so a later same-ID profile cannot inherit an orphan. Unlink failures are
-      // reported before any visible state mutation.
-      await this.#removeCredentialFile(profileId);
-      if (!profile) return null;
+      const credential = await this.#captureCredentialFile(state, profileId);
+      const previousSlot = state.credentialSlots[profileId];
+      delete state.credentialSlots[profileId];
+      if (!profile && !previousSlot) return null;
       state.profiles = state.profiles.filter(profile => profile.id !== profileId);
       if (state.activeProfileId === profileId) state.activeProfileId = null;
-      await this.#writeState(state);
-      return { profile: { ...profile }, credential };
+      const durable = await this.#writeState(state);
+      if (durable && previousSlot) await this.#unlinkSlot(previousSlot).catch(() => undefined);
+      if (!profile) return null;
+      return { profile: { ...profile }, credential: durable ? credential : null };
     });
   }
 
@@ -320,7 +320,7 @@ export class ProfileStore {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const profile = state.profiles.find(item => item.id === profileId);
-      const credential = await this.#readCredentialFile(profileId);
+      const credential = await this.#readCredentialFile(state, profileId);
       if (!isCurrent()
         || state.activeProfileId !== expectedActiveProfileId
         || profile?.apiBaseUrl !== expectedProfileOrigin
@@ -353,10 +353,10 @@ export class ProfileStore {
     });
   }
 
-  async readCredential(profileId: string): Promise<StoredCredential | null> {
+  readCredential(profileId: string): Promise<StoredCredential | null> {
     assertProfileId(profileId);
-    if (!this.security().available) return null;
-    return this.#readCredentialFile(profileId);
+    if (!this.security().available) return Promise.resolve(null);
+    return this.#mutate(async () => this.#readCredentialFile(await this.#readState(), profileId));
   }
 
   readProfileCredential(profileId: string): Promise<ProfileCredentialSnapshot> {
@@ -365,7 +365,7 @@ export class ProfileStore {
       const state = await this.#readState();
       const profile = state.profiles.find(item => item.id === profileId) ?? null;
       const credential = this.security().available
-        ? await this.#readCredentialFile(profileId)
+        ? await this.#readCredentialFile(state, profileId)
         : null;
       return {
         profile: profile ? { ...profile } : null,
@@ -375,9 +375,11 @@ export class ProfileStore {
     });
   }
 
-  async #readCredentialFile(profileId: string): Promise<StoredCredential | null> {
+  async #readCredentialFile(state: PersistedState, profileId: string): Promise<StoredCredential | null> {
+    const slot = state.credentialSlots[profileId];
+    if (!slot) return null;
     try {
-      const encrypted = await readFile(this.#credentialPath(profileId));
+      const encrypted = await readFile(join(this.#credentialsDirectory, slot));
       const value = JSON.parse(this.#encryption.decrypt(encrypted)) as unknown;
       if (!value || typeof value !== 'object') return null;
       const credential = value as Record<string, unknown>;
@@ -394,9 +396,9 @@ export class ProfileStore {
     }
   }
 
-  async #captureCredentialFile(profileId: string): Promise<StoredCredential | null> {
+  async #captureCredentialFile(state: PersistedState, profileId: string): Promise<StoredCredential | null> {
     try {
-      return await this.#readCredentialFile(profileId);
+      return await this.#readCredentialFile(state, profileId);
     } catch {
       // Removal is the security boundary. Decrypt/keychain/read failures only
       // prevent the optional remote revoke, never explicit local detachment.
@@ -425,23 +427,6 @@ export class ProfileStore {
       && actual.updatedAt === expected.updatedAt;
   }
 
-  async #restoreCredential(target: string, contents: Buffer | null): Promise<void> {
-    if (contents === null) {
-      await unlink(target).catch(error => {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      });
-      return;
-    }
-    const temporary = `${target}.${process.pid}.${randomUUID()}.restore.tmp`;
-    try {
-      await writeFile(temporary, contents, { mode: 0o600 });
-      await rename(temporary, target);
-      await chmod(target, 0o600).catch(() => undefined);
-    } finally {
-      await unlink(temporary).catch(() => undefined);
-    }
-  }
-
   async writeCredential(credential: StoredCredential): Promise<{ stored: true } | { stored: false; reason: 'encryption-unavailable' }> {
     const profileId = credential?.profileId;
     assertProfileId(profileId);
@@ -452,19 +437,38 @@ export class ProfileStore {
     }
     if (!this.security().available) return { stored: false, reason: 'encryption-unavailable' };
     return this.#mutate(async () => {
-      await this.#ensureDirectories();
-      const target = this.#credentialPath(profileId);
-      const temporary = `${target}.${process.pid}.tmp`;
-      await writeFile(temporary, this.#encryption.encrypt(JSON.stringify(credential)), { mode: 0o600 });
-      await rename(temporary, target);
-      await chmod(target, 0o600).catch(() => undefined);
+      const state = await this.#readState();
+      const previousSlot = state.credentialSlots[profileId];
+      const stagedSlot = await this.#stageCredential(credential);
+      let committed = false;
+      try {
+        state.credentialSlots[profileId] = stagedSlot;
+        const durable = await this.#writeState(state);
+        committed = true;
+        if (!durable) return { stored: true };
+      } finally {
+        if (!committed) {
+          await this.#unlinkSlot(stagedSlot).catch(() => undefined);
+        }
+      }
+      if (previousSlot) {
+        await this.#unlinkSlot(previousSlot).catch(() => undefined);
+        await this.#step('old-credential-removed').catch(() => undefined);
+      }
       return { stored: true };
     });
   }
 
   removeCredential(profileId: string): Promise<void> {
     assertProfileId(profileId);
-    return this.#mutate(() => this.#removeCredentialFile(profileId));
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      const previousSlot = state.credentialSlots[profileId];
+      if (!previousSlot) return;
+      delete state.credentialSlots[profileId];
+      const durable = await this.#writeState(state);
+      if (durable) await this.#unlinkSlot(previousSlot).catch(() => undefined);
+    });
   }
 
   removeCredentialIfCurrent(
@@ -480,7 +484,7 @@ export class ProfileStore {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const profile = state.profiles.find(item => item.id === profileId);
-      const credential = await this.#readCredentialFile(profileId);
+      const credential = await this.#readCredentialFile(state, profileId);
       if (!isCurrent()
         || profile?.apiBaseUrl !== expectedProfileOrigin
         || !credential
@@ -488,32 +492,171 @@ export class ProfileStore {
         || credential.profileId !== expected.profileId
         || credential.origin !== expected.origin
         || credential.token !== expected.token) return false;
-      await this.#removeCredentialFile(profileId);
+      const previousSlot = state.credentialSlots[profileId];
+      delete state.credentialSlots[profileId];
+      const durable = await this.#writeState(state);
+      if (durable && previousSlot) await this.#unlinkSlot(previousSlot).catch(() => undefined);
       return true;
-    });
-  }
-
-  async #removeCredentialFile(profileId: string): Promise<void> {
-    await unlink(this.#credentialPath(profileId)).catch(error => {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     });
   }
 
   async #readState(): Promise<PersistedState> {
     try {
-      return parseState(await readFile(this.#statePath, 'utf8'));
+      const state = parseState(await readFile(this.#statePath, 'utf8'));
+      if (state.version !== 2) throw new Error('Desktop profile store recovery was not completed');
+      return state;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyState();
       throw error;
     }
   }
 
-  async #writeState(state: PersistedState): Promise<void> {
+  async #writeState(state: PersistedState): Promise<boolean> {
     await this.#ensureDirectories();
-    const temporary = `${this.#statePath}.${process.pid}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    await rename(temporary, this.#statePath);
-    await chmod(this.#statePath, 0o600).catch(() => undefined);
+    const temporary = `${this.#statePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      await this.#step('state-written');
+      await this.#fsyncFile(temporary);
+      await this.#step('state-fsynced');
+      await rename(temporary, this.#statePath);
+      await this.#step('state-renamed').catch(() => undefined);
+      // Once rename succeeds the new state is authoritative. A directory fsync
+      // failure must not trigger a logical rollback or revoke B: after a crash,
+      // the filesystem can expose either complete state, and both slots remain.
+      const durable = await this.#fsyncDirectory(this.#directory).then(() => true, () => false);
+      if (durable) await this.#step('state-directory-fsynced').catch(() => undefined);
+      await chmod(this.#statePath, 0o600).catch(() => undefined);
+      return durable;
+    } finally {
+      await unlink(temporary).catch(() => undefined);
+    }
+  }
+
+  async #stageCredential(credential: StoredCredential): Promise<string> {
+    await this.#ensureDirectories();
+    const slot = `${credential.profileId}.${randomUUID()}.bin`;
+    const target = join(this.#credentialsDirectory, slot);
+    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      const encrypted = this.#encryption.encrypt(JSON.stringify(credential));
+      await this.#step('credential-encrypted');
+      await writeFile(temporary, encrypted, { mode: 0o600 });
+      await this.#step('credential-written');
+      await this.#fsyncFile(temporary);
+      await this.#step('credential-fsynced');
+      await rename(temporary, target);
+      await this.#step('credential-renamed');
+      await this.#fsyncDirectory(this.#credentialsDirectory);
+      await this.#step('credential-directory-fsynced');
+      await chmod(target, 0o600).catch(() => undefined);
+      return slot;
+    } finally {
+      await unlink(temporary).catch(() => undefined);
+    }
+  }
+
+  async #recover(): Promise<void> {
+    await this.#ensureDirectories();
+    let parsed: PersistedState | LegacyPersistedState;
+    try {
+      parsed = parseState(await readFile(this.#statePath, 'utf8'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      parsed = { version: 1, activeProfileId: null, profiles: [] };
+    }
+
+    let state: PersistedState;
+    if (parsed.version === 1) {
+      state = {
+        version: 2,
+        activeProfileId: parsed.activeProfileId,
+        profiles: parsed.profiles.map(profile => ({ ...profile })),
+        credentialSlots: {},
+      };
+      const entries = await readdir(this.#credentialsDirectory, { withFileTypes: true });
+      for (const entry of entries) {
+        const match = /^([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})\.bin$/.exec(entry.name);
+        if (!match || !entry.isFile()) continue;
+        const profileId = match[1];
+        const bytes = await readFile(join(this.#credentialsDirectory, entry.name));
+        const slot = `${profileId}.${randomUUID()}.bin`;
+        const slotPath = join(this.#credentialsDirectory, slot);
+        await writeFile(slotPath, bytes, { mode: 0o600 });
+        await this.#fsyncFile(slotPath);
+        state.credentialSlots[profileId] = slot;
+      }
+      await this.#fsyncDirectory(this.#credentialsDirectory);
+      const durable = await this.#writeState(state);
+      if (!durable) return;
+    } else {
+      state = parsed;
+    }
+
+    // Make the state pointer durable before deleting any slot it does not name.
+    // This also completes a prior rename whose directory fsync failed in-process.
+    await this.#fsyncDirectory(this.#directory);
+    const referenced = new Set(Object.values(state.credentialSlots));
+    const entries = await readdir(this.#credentialsDirectory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.tmp')) {
+        await unlink(join(this.#credentialsDirectory, entry.name));
+      }
+    }
+    const stateEntries = await readdir(this.#directory, { withFileTypes: true });
+    for (const entry of stateEntries) {
+      if (entry.isFile() && /^profiles\.json\..+\.tmp$/.test(entry.name)) {
+        await unlink(join(this.#directory, entry.name));
+      }
+    }
+    await this.#fsyncDirectory(this.#credentialsDirectory);
+    await this.#fsyncDirectory(this.#directory);
+    for (const slot of referenced) {
+      try {
+        await readFile(join(this.#credentialsDirectory, slot));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw new Error('Desktop credential state is incomplete');
+        }
+        throw error;
+      }
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || referenced.has(entry.name)) continue;
+      if (/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}(?:\.[0-9a-f-]{36})?\.bin$/i.test(entry.name)) {
+        await unlink(join(this.#credentialsDirectory, entry.name));
+      }
+    }
+    await this.#fsyncDirectory(this.#credentialsDirectory).catch(() => undefined);
+    await this.#fsyncDirectory(this.#directory).catch(() => undefined);
+  }
+
+  async #fsyncFile(path: string): Promise<void> {
+    const handle = await open(path, 'r');
+    try { await handle.sync(); } finally { await handle.close(); }
+  }
+
+  async #fsyncDirectory(path: string): Promise<void> {
+    try {
+      const handle = await open(path, 'r');
+      try { await handle.sync(); } finally { await handle.close(); }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Node/Windows does not expose a directory handle that FlushFileBuffers
+      // accepts. The file itself is synced before the atomic NTFS rename.
+      if (process.platform === 'win32' && ['EACCES', 'EBADF', 'EINVAL', 'EPERM'].includes(code ?? '')) return;
+      throw error;
+    }
+  }
+
+  async #unlinkSlot(slot: string): Promise<void> {
+    await unlink(join(this.#credentialsDirectory, slot)).catch(error => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    });
+  }
+
+  #step(step: ProfileStoreDurabilityStep): Promise<void> {
+    return Promise.resolve(this.#options.afterDurabilityStep?.(step));
   }
 
   async #ensureDirectories(): Promise<void> {
@@ -522,12 +665,12 @@ export class ProfileStore {
     await chmod(this.#credentialsDirectory, 0o700).catch(() => undefined);
   }
 
-  #credentialPath(profileId: string): string {
-    return join(this.#credentialsDirectory, `${profileId}.bin`);
-  }
-
   #mutate<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.#mutation.then(operation, operation);
+    const recoveredOperation = async () => {
+      await this.#recover();
+      return operation();
+    };
+    const result = this.#mutation.then(recoveredOperation, recoveredOperation);
     this.#mutation = result.then(() => undefined, () => undefined);
     return result;
   }

@@ -38,6 +38,7 @@ describe('desktop preload bridge', () => {
     await bridge.profiles.save({ label: 'Local', apiBaseUrl: 'http://localhost:4000' });
     await bridge.authentication.pair({ id: 'profile-1', label: 'Local', apiBaseUrl: 'http://localhost:4000' });
     await bridge.connection.activate('activation-ticket');
+    await bridge.connection.discard({ profileId: 'profile-1', transportScope: 'transport-scope' });
     await bridge.lifecycle.start();
     assert.deepEqual(ipc.invocations, [
       { channel: IPC_CHANNELS.authLogout, args: ['http://localhost:4000'] },
@@ -50,6 +51,10 @@ describe('desktop preload bridge', () => {
         args: [{ id: 'profile-1', label: 'Local', apiBaseUrl: 'http://localhost:4000' }],
       },
       { channel: IPC_CHANNELS.connectionActivate, args: ['activation-ticket'] },
+      {
+        channel: IPC_CHANNELS.connectionDiscard,
+        args: [{ profileId: 'profile-1', transportScope: 'transport-scope' }],
+      },
       { channel: IPC_CHANNELS.lifecycleStart, args: [] },
     ]);
   });

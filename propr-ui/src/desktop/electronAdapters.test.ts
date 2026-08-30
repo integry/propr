@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesktopBridge, DesktopProfile as StoredProfile } from '../../../apps/desktop/src/shared/contract';
 import { createElectronDesktopAdapters } from './electronAdapters';
 
@@ -27,6 +27,7 @@ const bridgeFixture = () => {
     profileId: storedProfile.id,
     transportScope: 'scope-7',
   }));
+  const discard = vi.fn(async () => ({ discarded: true }));
   const bridge: DesktopBridge = {
     app: {
       getMetadata: async () => ({
@@ -48,7 +49,7 @@ const bridgeFixture = () => {
       setActive: async profileId => { activeProfileId = profileId; },
     },
     authentication: { pair, cancel: vi.fn(async () => undefined) },
-    connection: { probe, activate, invalidate: vi.fn(async () => ({ invalidated: false })) },
+    connection: { probe, activate, discard, invalidate: vi.fn(async () => ({ invalidated: false })) },
     lifecycle: {
       status: async () => ({ state: 'disconnected' }),
       start: async () => ({ ok: false, code: 'not-implemented', status: { state: 'disconnected' } }),
@@ -56,14 +57,21 @@ const bridgeFixture = () => {
       restart: async () => ({ ok: false, code: 'not-implemented', status: { state: 'disconnected' } }),
     },
   };
-  return { bridge, pair, probe, activate, profiles: () => profiles };
+  return { bridge, pair, probe, activate, discard, profiles: () => profiles };
 };
 
 describe('Electron remote instance adapters', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+    setDesktopConnectionScope.mockClear();
+  });
   it('uses status-only main-process pairing and probe APIs', async () => {
     const fixture = bridgeFixture();
     const adapters = createElectronDesktopAdapters(fixture.bridge);
     const profile = (await adapters.profiles.list())[0];
+    window.localStorage.setItem('profile-state', 'A');
+    window.sessionStorage.setItem('profile-session', 'A');
 
     await adapters.authentication.authenticate(profile);
     const result = await adapters.connection.probe(profile);
@@ -102,6 +110,8 @@ describe('Electron remote instance adapters', () => {
     });
     const adapters = createElectronDesktopAdapters(fixture.bridge);
     const profile = (await adapters.profiles.list())[0];
+    window.localStorage.setItem('profile-state', 'A');
+    window.sessionStorage.setItem('profile-session', 'A');
     const probe = await adapters.connection.probe(profile);
     if (probe.status !== 'ready') return;
 
@@ -115,15 +125,24 @@ describe('Electron remote instance adapters', () => {
     expect(setDesktopConnectionScope).not.toHaveBeenCalledWith(expect.objectContaining({
       profileId: 'profile-2',
     }), expect.anything());
+    expect(window.localStorage.getItem('profile-state')).toBe('A');
+    expect(window.sessionStorage.getItem('profile-session')).toBe('A');
+    expect(fixture.discard).toHaveBeenCalledWith({
+      profileId: 'profile-2', transportScope: 'wrong-profile-scope',
+    });
   });
 
   it('clears renderer storage after a successful same-origin profile switch', async () => {
     const fixture = bridgeFixture();
+    await fixture.bridge.profiles.save({
+      id: 'profile-a', label: 'Profile A', apiBaseUrl: storedProfile.apiBaseUrl,
+    });
     await fixture.bridge.profiles.setActive('profile-a');
     const adapters = createElectronDesktopAdapters(fixture.bridge);
     const profile = (await adapters.profiles.list())[0];
-    window.localStorage.setItem('profile-state', 'from-profile-a');
-    window.sessionStorage.setItem('profile-session', 'from-profile-a');
+    window.localStorage.setItem('profile-state', 'profile-a-local-sentinel');
+    window.sessionStorage.setItem('profile-session', 'profile-a-session-sentinel');
+    const clear = vi.spyOn(Storage.prototype, 'clear');
 
     const activated = await adapters.connection.activate?.(profile, {
       status: 'ready',
@@ -134,6 +153,10 @@ describe('Electron remote instance adapters', () => {
     expect(activated?.status).toBe('ready');
     expect(window.localStorage.getItem('profile-state')).toBeNull();
     expect(window.sessionStorage.getItem('profile-session')).toBeNull();
+    expect(clear).toHaveBeenCalledTimes(2);
+    if (activated?.status === 'ready') adapters.connection.publishActivation?.(profile, activated);
+    expect(clear.mock.invocationCallOrder.at(-1)).toBeLessThan(setDesktopConnectionScope.mock.invocationCallOrder[0]);
+    clear.mockRestore();
   });
 
   it('cancels pairing and removes profiles entirely through main-process IPC', async () => {
@@ -146,7 +169,7 @@ describe('Electron remote instance adapters', () => {
     expect(fixture.profiles()).toEqual([]);
   });
 
-  it('clears renderer state before probing an edited profile origin', async () => {
+  it('leaves renderer state untouched while probing an edited profile origin', async () => {
     const fixture = bridgeFixture();
     const adapters = createElectronDesktopAdapters(fixture.bridge);
     window.localStorage.setItem('profile-state', 'A');
@@ -157,9 +180,78 @@ describe('Electron remote instance adapters', () => {
       baseUrl: 'https://attacker.example.test',
     });
 
-    expect(window.localStorage.getItem('profile-state')).toBeNull();
-    expect(window.sessionStorage.getItem('profile-session')).toBeNull();
+    expect(window.localStorage.getItem('profile-state')).toBe('A');
+    expect(window.sessionStorage.getItem('profile-session')).toBe('A');
+    expect(setDesktopConnectionScope).not.toHaveBeenCalled();
+  });
+
+  it('leaves renderer state untouched when an origin edit save or pairing fails', async () => {
+    const fixture = bridgeFixture();
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+    const edited = { ...fromProfile(storedProfile), baseUrl: 'https://edited.example.test' };
+    window.localStorage.setItem('profile-state', 'A-local');
+    window.sessionStorage.setItem('profile-session', 'A-session');
+    vi.spyOn(fixture.bridge.profiles, 'save').mockRejectedValueOnce(new Error('save failed'));
+    await expect(adapters.profiles.save(edited)).rejects.toThrow('save failed');
+    fixture.pair.mockRejectedValueOnce(new Error('pairing cancelled'));
+    await expect(adapters.authentication.authenticate(edited)).rejects.toThrow('pairing cancelled');
+    expect(window.localStorage.getItem('profile-state')).toBe('A-local');
+    expect(window.sessionStorage.getItem('profile-session')).toBe('A-session');
+  });
+
+  it('does not clear on thrown or stale activation and discards only a stale main result', async () => {
+    const fixture = bridgeFixture();
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+    const profile = (await adapters.profiles.list())[0];
+    window.localStorage.setItem('profile-state', 'A');
+    window.sessionStorage.setItem('profile-session', 'A');
+    fixture.activate.mockRejectedValueOnce(new Error('activation failed'));
+
+    await expect(adapters.connection.activate?.(profile, {
+      status: 'ready', activationTicket: 'ticket-throw',
+    })).rejects.toThrow('activation failed');
+    expect(window.localStorage.getItem('profile-state')).toBe('A');
+    expect(window.sessionStorage.getItem('profile-session')).toBe('A');
+
+    fixture.activate.mockResolvedValueOnce({
+      status: 'ready', profileId: profile.id, transportScope: 'stale-scope',
+    });
+    const stale = await adapters.connection.activate?.(profile, {
+      status: 'ready', activationTicket: 'ticket-stale',
+    }, () => false);
+    expect(stale?.status).toBe('authentication-required');
+    expect(window.localStorage.getItem('profile-state')).toBe('A');
+    expect(window.sessionStorage.getItem('profile-session')).toBe('A');
+    expect(fixture.discard).toHaveBeenCalledWith({ profileId: profile.id, transportScope: 'stale-scope' });
+  });
+
+  it('publishes no B scope and restores sentinels when storage clearing fails', async () => {
+    const fixture = bridgeFixture();
+    await fixture.bridge.profiles.setActive('profile-a');
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+    const profile = (await adapters.profiles.list())[0];
+    window.localStorage.setItem('profile-state', 'A-local');
+    window.sessionStorage.setItem('profile-session', 'A-session');
+    const clear = vi.spyOn(Storage.prototype, 'clear').mockImplementationOnce(() => {
+      throw new Error('storage disabled');
+    });
+
+    const activated = await adapters.connection.activate?.(profile, {
+      status: 'ready', activationTicket: 'ticket-7',
+    });
+
+    expect(activated).toEqual({
+      status: 'offline',
+      message: 'Desktop storage isolation failed. Restart ProPR Desktop before connecting again.',
+    });
+    expect(window.localStorage.getItem('profile-state')).toBe('A-local');
+    expect(window.sessionStorage.getItem('profile-session')).toBe('A-session');
+    expect(fixture.discard).toHaveBeenCalledWith({ profileId: profile.id, transportScope: 'scope-7' });
     expect(setDesktopConnectionScope).toHaveBeenCalledWith(null);
+    expect(setDesktopConnectionScope).not.toHaveBeenCalledWith(expect.objectContaining({
+      transportScope: 'scope-7',
+    }), expect.anything());
+    clear.mockRestore();
   });
 });
 

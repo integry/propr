@@ -30,35 +30,65 @@ const toStoredProfile = (profile: DesktopProfile) => ({
   apiBaseUrl: normalizeApiBaseUrl(profile.baseUrl),
 });
 
-const clearRendererProfileState = (): void => {
-  try { window.localStorage.clear(); } catch { /* unavailable storage is already isolated */ }
-  try { window.sessionStorage.clear(); } catch { /* unavailable storage is already isolated */ }
+const snapshotStorage = (storage: Storage): [string, string][] => {
+  const snapshot: [string, string][] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key !== null) snapshot.push([key, storage.getItem(key) ?? '']);
+  }
+  return snapshot;
 };
 
-export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAdapters => ({
+const restoreStorage = (storage: Storage, snapshot: [string, string][]): void => {
+  const expected = new Set(snapshot.map(([key]) => key));
+  for (let index = storage.length - 1; index >= 0; index -= 1) {
+    const key = storage.key(index);
+    if (key !== null && !expected.has(key)) storage.removeItem(key);
+  }
+  snapshot.forEach(([key, value]) => storage.setItem(key, value));
+};
+
+const clearRendererProfileState = (): boolean => {
+  let localSnapshot: [string, string][] = [];
+  let sessionSnapshot: [string, string][] = [];
+  try {
+    localSnapshot = snapshotStorage(window.localStorage);
+    sessionSnapshot = snapshotStorage(window.sessionStorage);
+    window.localStorage.clear();
+    if (window.localStorage.length !== 0) throw new Error('Local storage was not cleared');
+    window.sessionStorage.clear();
+    if (window.sessionStorage.length !== 0) throw new Error('Session storage was not cleared');
+    return true;
+  } catch {
+    try { restoreStorage(window.localStorage, localSnapshot); } catch { /* fail closed below */ }
+    try { restoreStorage(window.sessionStorage, sessionSnapshot); } catch { /* fail closed below */ }
+    return false;
+  }
+};
+
+export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAdapters => {
+  let publishedProfile: { id: string; origin: string } | null = null;
+  return {
   platform: platform(navigator.platform || navigator.userAgent),
   profiles: {
     async list() {
       return (await bridge.profiles.list()).profiles.map(fromStoredProfile);
     },
     async save(profile) {
-      const current = (await bridge.profiles.list()).profiles.find(item => item.id === profile.id);
-      if (current && current.apiBaseUrl !== normalizeApiBaseUrl(profile.baseUrl)) clearRendererProfileState();
       await bridge.profiles.save(toStoredProfile(profile));
     },
     async remove(profileId) {
       await bridge.authentication.cancel(profileId);
       await bridge.profiles.remove(profileId);
-      clearRendererProfileState();
     },
     async getActiveId() {
       return (await bridge.profiles.list()).activeProfileId;
     },
     async setActiveId(profileId) {
-      const previousProfileId = (await bridge.profiles.list()).activeProfileId;
       await bridge.profiles.setActive(profileId);
-      if (previousProfileId !== profileId) clearRendererProfileState();
-      if (profileId === null) setDesktopConnectionScope(null);
+      if (profileId === null) {
+        setDesktopConnectionScope(null);
+      }
     },
   },
   discovery: {
@@ -72,8 +102,6 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
     async authenticate(profile) {
       const security = await bridge.storage.security();
       if (!security.available) throw new Error('OS-backed secure storage is required for desktop pairing.');
-      const current = (await bridge.profiles.list()).profiles.find(item => item.id === profile.id);
-      if (current && current.apiBaseUrl !== normalizeApiBaseUrl(profile.baseUrl)) clearRendererProfileState();
       await bridge.authentication.pair(toStoredProfile(profile));
     },
     cancel(profileId) {
@@ -88,25 +116,38 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
   },
   connection: {
     async probe(profile) {
-      const current = (await bridge.profiles.list()).profiles.find(item => item.id === profile.id);
-      if (current && current.apiBaseUrl !== normalizeApiBaseUrl(profile.baseUrl)) {
-        clearRendererProfileState();
-        setDesktopConnectionScope(null);
-      }
       return bridge.connection.probe(toStoredProfile(profile));
     },
-    async activate(profile, result) {
+    async activate(profile, result, isCurrent = () => true) {
       if (result.activationTicket === undefined) throw new Error('Desktop activation ticket is missing.');
       const previousProfileId = (await bridge.profiles.list()).activeProfileId;
       const activated = await bridge.connection.activate(result.activationTicket);
-      if (previousProfileId !== activated.profileId) clearRendererProfileState();
-      if (activated.profileId !== profile.id) {
+      const discard = async () => {
+        await bridge.connection.discard({
+          profileId: activated.profileId,
+          transportScope: activated.transportScope,
+        }).catch(() => undefined);
         setDesktopConnectionScope(null);
+      };
+      if (activated.profileId !== profile.id || !isCurrent()) {
+        await discard();
         return {
           status: 'authentication-required',
           message: 'This connection changed while it was being activated. Check it again to continue.',
           version: result.version,
           authentication: result.authentication,
+        };
+      }
+      const intendedOrigin = normalizeApiBaseUrl(profile.baseUrl);
+      const isReplacement = publishedProfile === null
+        || previousProfileId !== profile.id
+        || publishedProfile.id !== profile.id
+        || publishedProfile.origin !== intendedOrigin;
+      if (isReplacement && !clearRendererProfileState()) {
+        await discard();
+        return {
+          status: 'offline',
+          message: 'Desktop storage isolation failed. Restart ProPR Desktop before connecting again.',
         };
       }
       return {
@@ -128,9 +169,11 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
         profileId: result.profileId,
         transportScope: result.transportScope,
       }, profile.baseUrl);
+      publishedProfile = { id: profile.id, origin: normalizeApiBaseUrl(profile.baseUrl) };
     },
     deactivate() {
       setDesktopConnectionScope(null);
     },
   },
-});
+  };
+};

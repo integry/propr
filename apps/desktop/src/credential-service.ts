@@ -6,6 +6,7 @@ import {
   type DesktopConnectionResult,
   type DesktopActivatedConnection,
   type DesktopAccessInvalidation,
+  type DesktopConnectionScope,
 } from './shared/contract';
 import { normalizeApiBaseUrl } from './security';
 import type { ProfileStore, StoredCredential } from './profile-store';
@@ -443,6 +444,20 @@ export class DesktopCredentialService {
       () => this.#generation(active.profileId) === invalidationGeneration,
     );
     return { invalidated: removed };
+  }
+
+  async discardActivation(value: DesktopConnectionScope): Promise<{ discarded: boolean }> {
+    const active = this.#active;
+    if (!active || typeof value?.profileId !== 'string' || typeof value?.transportScope !== 'string'
+      || active.profileId !== value.profileId || active.transportScope !== value.transportScope
+      || this.#generation(active.profileId) !== active.profileGeneration
+      || this.#selectionGeneration !== active.selectionGeneration) return { discarded: false };
+    this.#active = null;
+    this.#selectionGeneration += 1;
+    this.#latestProbeTicket += 1;
+    this.#pendingActivation = null;
+    await this.#profiles.setActive(null);
+    return { discarded: true };
   }
 
   prepareRequest(

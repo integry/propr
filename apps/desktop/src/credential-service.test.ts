@@ -127,6 +127,15 @@ describe('main-process desktop credential service', () => {
     assert.deepEqual(service.sanitizeResponseHeaders('wss://inactive.example.test/socket.io/', {
       'SET-COOKIE': ['socket=session'],
     }), {});
+    assert.deepEqual(await service.discardActivation({
+      profileId: profile.id, transportScope: 'wrong-scope',
+    }), { discarded: false });
+    assert.deepEqual(await service.discardActivation(activated), { discarded: true });
+    assert.equal((await store.list()).activeProfileId, null);
+    assert.deepEqual(await store.readCredential(profile.id), credential(profile.id, profile.apiBaseUrl, 'A'));
+    assert.deepEqual(service.prepareRequest(
+      profile.apiBaseUrl + '/api/tasks', transportHeaders(activated.transportScope),
+    ), { cancel: true });
   });
 
   it('uses only the active bearer when profiles share an origin and never a cookie identity', async () => {
@@ -325,7 +334,12 @@ describe('main-process desktop credential service', () => {
   it('keeps A active while B is only probed and if B selection persistence fails', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
     temporaryDirectories.push(directory);
-    const store = new ProfileStore(directory, encryption);
+    let failActivationState = false;
+    const store = new ProfileStore(directory, encryption, {
+      afterDurabilityStep: step => {
+        if (failActivationState && step === 'state-fsynced') throw new Error('injected activation persistence failure');
+      },
+    });
     const profileA = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://same.example.test' });
     const profileB = await store.save({ id: 'profile-b', label: 'B', apiBaseUrl: 'https://same.example.test' });
     await store.writeCredential(credential(profileA.id, profileA.apiBaseUrl, 'A'));
@@ -351,8 +365,9 @@ describe('main-process desktop credential service', () => {
       profileA.apiBaseUrl + '/api/tasks', transportHeaders(activeA.transportScope),
     ).requestHeaders, { Authorization: `Bearer ${token('A')}` });
 
-    await mkdir(join(directory, 'desktop', `profiles.json.${process.pid}.tmp`));
+    failActivationState = true;
     await assert.rejects(service.activate(probeB.activationTicket));
+    failActivationState = false;
     assert.notEqual((await store.list()).activeProfileId, profileB.id);
     assert.deepEqual(service.prepareRequest(
       profileA.apiBaseUrl + '/api/tasks', transportHeaders(activeA.transportScope),

@@ -86,6 +86,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): void => {
     await clearDesktopInstanceCookies(options.desktopSession, origins).catch(() => undefined);
     return activated;
   });
+  handle(IPC_CHANNELS.connectionDiscard, (_event, value) => options.credentials.discardActivation(value));
   handle(IPC_CHANNELS.connectionInvalidate, (_event, value) => options.credentials.invalidate(value));
   handle(IPC_CHANNELS.lifecycleStatus, () => options.lifecycle.status());
   handle(IPC_CHANNELS.lifecycleStart, () => options.lifecycle.start());
