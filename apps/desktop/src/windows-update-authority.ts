@@ -150,25 +150,8 @@ interface WindowsAuthorityHelperManifest {
   launcher: WindowsNativeLauncherPolicy;
   bootstrap: WindowsNativeLauncherPolicy;
   compiler: {
-    kind: 'windows-catalog-authorized-dotnet-framework-csc-v1';
+    kind: 'windows-fixed-system-dotnet-framework-csc-v1';
     framework: string;
-    signerCertificateSha256: string;
-    signerSpkiSha256: string;
-    signerRootSpkiSha256: string;
-    volumeSerial: string;
-    fileId128: string;
-    inputs: readonly {
-      name: string;
-      size: number;
-      sha256: string;
-      signerCertificateSha256: string;
-      signerSpkiSha256: string;
-      signerRootSpkiSha256: string;
-      catalogName: string;
-      catalogSha256: string;
-      catalogVolumeSerial: string;
-      catalogFileId128: string;
-    }[];
   };
 }
 
@@ -816,10 +799,7 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
     || typeof compiler !== 'object' || compiler === null || Array.isArray(compiler)
     || typeof launcher !== 'object' || launcher === null || Array.isArray(launcher)
     || typeof bootstrap !== 'object' || bootstrap === null || Array.isArray(bootstrap)
-    || !exactRecordKeys(compiler as Record<string, unknown>, [
-      'kind', 'framework', 'signerCertificateSha256', 'signerSpkiSha256', 'signerRootSpkiSha256',
-      'volumeSerial', 'fileId128', 'inputs',
-    ])
+    || !exactRecordKeys(compiler as Record<string, unknown>, ['kind', 'framework'])
     || !exactRecordKeys(launcher as Record<string, unknown>, [
       'name', 'format', 'architecture', 'machine', 'size', 'sha256', 'trust', 'publisher', 'signerPins',
       'signerCertificateSha256', 'signerSpkiSha256',
@@ -880,38 +860,8 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
     || JSON.stringify((bootstrap as Record<string, unknown>).signerPins) !== JSON.stringify(manifest.signerPins)
     || (bootstrap as Record<string, unknown>).signerCertificateSha256 !== manifest.signerCertificateSha256
     || (bootstrap as Record<string, unknown>).signerSpkiSha256 !== manifest.signerSpkiSha256
-    || (compiler as Record<string, unknown>).kind !== 'windows-catalog-authorized-dotnet-framework-csc-v1'
-    || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String((compiler as Record<string, unknown>).framework))
-    || !/^[a-f0-9]{64}$/.test(String((compiler as Record<string, unknown>).signerCertificateSha256))
-    || !/^[a-f0-9]{64}$/.test(String((compiler as Record<string, unknown>).signerSpkiSha256))
-    || !/^[a-f0-9]{64}$/.test(String((compiler as Record<string, unknown>).signerRootSpkiSha256))
-    || !/^[a-f0-9]{16}$/.test(String((compiler as Record<string, unknown>).volumeSerial))
-    || !/^[a-f0-9]{32}$/.test(String((compiler as Record<string, unknown>).fileId128))
-    || !Array.isArray((compiler as Record<string, unknown>).inputs)
-    || ((compiler as Record<string, unknown>).inputs as unknown[]).length !== 3
-    || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])
-      .map(input => input?.name).join(',') !== 'csc.exe,System.dll,System.Web.Extensions.dll'
-    || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[]).some(input =>
-      typeof input !== 'object' || input === null || Array.isArray(input)
-      || !exactRecordKeys(input, [
-        'name', 'size', 'sha256', 'signerCertificateSha256', 'signerSpkiSha256', 'signerRootSpkiSha256',
-        'catalogName', 'catalogSha256', 'catalogVolumeSerial', 'catalogFileId128',
-      ]) || !Number.isSafeInteger(input.size)
-      || Number(input.size) <= 0 || Number(input.size) > 32 * 1024 * 1024
-      || !/^[a-f0-9]{64}$/.test(String(input.sha256))
-      || !/^[a-f0-9]{64}$/.test(String(input.signerCertificateSha256))
-      || !/^[a-f0-9]{64}$/.test(String(input.signerSpkiSha256))
-      || !/^[a-f0-9]{64}$/.test(String(input.signerRootSpkiSha256))
-      || !/^[A-Za-z0-9_.~-]{1,176}\.cat$/.test(String(input.catalogName))
-      || !/^[a-f0-9]{64}$/.test(String(input.catalogSha256))
-      || !/^[a-f0-9]{16}$/.test(String(input.catalogVolumeSerial))
-      || !/^[a-f0-9]{32}$/.test(String(input.catalogFileId128)))
-    || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])[0].signerCertificateSha256
-      !== (compiler as Record<string, unknown>).signerCertificateSha256
-    || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])[0].signerSpkiSha256
-      !== (compiler as Record<string, unknown>).signerSpkiSha256
-    || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])[0].signerRootSpkiSha256
-      !== (compiler as Record<string, unknown>).signerRootSpkiSha256) {
+    || (compiler as Record<string, unknown>).kind !== 'windows-fixed-system-dotnet-framework-csc-v1'
+    || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String((compiler as Record<string, unknown>).framework))) {
     throw helperError('MANIFEST');
   }
   return manifest as unknown as WindowsAuthorityHelperManifest;

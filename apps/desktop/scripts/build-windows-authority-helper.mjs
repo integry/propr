@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
-import { fork } from 'node:child_process';
+import { execFile, fork } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
 import { chmod, lstat, mkdir, mkdtemp, open, realpath, rename, rm, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { promisify } from 'node:util';
 import {
   buildWindowsNativeLauncher,
   cleanupWindowsAuthorityBuildStaging,
@@ -31,9 +32,9 @@ export const WINDOWS_AUTHORITY_COMPILER_SUBSTAGES = Object.freeze([
 ]);
 const MAX_SOURCE_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
-const MAX_BUILD_INPUT_BYTES = 32 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024;
-const WINDOWS_BUILD_CHILD_TIMEOUT_MS = 6 * 60_000;
+const WINDOWS_COMPILER_TIMEOUT_MS = 6 * 60_000;
+const WINDOWS_BUILD_CHILD_TIMEOUT_MS = WINDOWS_COMPILER_TIMEOUT_MS + 30_000;
 const WINDOWS_BUILD_CHILD_ARGUMENT = '--windows-authority-build-child-v1';
 const WINDOWS_BUILD_CHILD_SCHEMA_VERSION = 1;
 const WINDOWS_BUILD_CHILD_MAX_MESSAGES = 6;
@@ -50,9 +51,11 @@ const WINDOWS_BUILD_AUTH_FAILURES = Object.freeze([
 const WINDOWS_CLEANUP_DIAGNOSTIC = 'BUILD_COMPILER:LEASE';
 const SYSTEM_DIRECTORY_RECORD_BYTES = 2 + (520 * 2);
 const require = createRequire(import.meta.url);
+const execFileAsync = promisify(execFile);
 const boundedCompilerDiagnostics = diagnostics => Array.isArray(diagnostics)
   ? diagnostics.filter(value => typeof value === 'string' && (
     /^(?:propr_windows_launcher\.(?:cc|obj)|link):\d+:(?:C|LNK)\d{4}$/.test(value)
+      || /^CS\d{4}$/.test(value)
       || /^member:[A-Za-z0-9_.~-]{1,64}$/.test(value)
       || /^catalog:[A-Za-z0-9_.~-]{1,176}\.cat$/.test(value)
       || /^catalog-sha256:[a-f0-9]{64}$/.test(value)
@@ -93,8 +96,6 @@ export const preserveWindowsAuthorityCompilerFailure = (error, fallback = 'DIREC
 };
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-const isProofArray = (value, pattern) => Array.isArray(value) && value.length === 3
-  && value.every(entry => typeof entry === 'string' && pattern.test(entry));
 const samePath = (left, right) => process.platform === 'win32'
   ? left.toLowerCase() === right.toLowerCase()
   : left === right;
@@ -225,35 +226,6 @@ export const resolveWindowsCompilerLayout = async (env, probe) => {
   return fail('BUILD_COMPILER', compilerFound ? 'REFERENCE_OPEN' : 'COMPILER_OPEN');
 };
 
-const holdBuildInput = async (root, path, name) => {
-  const canonical = await validateTree(root, path, 'BUILD_COMPILER');
-  const pathStats = await lstat(canonical, { bigint: true }).catch(() => fail('BUILD_COMPILER'));
-  if (!pathStats.isFile() || pathStats.isSymbolicLink() || pathStats.nlink < 1n || pathStats.size <= 0n
-    || pathStats.size > BigInt(MAX_BUILD_INPUT_BYTES)) fail('BUILD_COMPILER');
-  const handle = await open(canonical, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
-    .catch(() => fail('BUILD_COMPILER'));
-  try {
-    const before = await handle.stat({ bigint: true });
-    const bytes = await handle.readFile();
-    if (before.dev !== pathStats.dev || before.ino !== pathStats.ino || before.size !== pathStats.size
-      || before.nlink < 1n || before.nlink !== pathStats.nlink || BigInt(bytes.length) !== before.size) fail('BUILD_COMPILER');
-    return { name, path: canonical, handle, before, bytes, sha256: sha256(bytes) };
-  } catch (error) {
-    await handle.close().catch(() => undefined);
-    throw error;
-  }
-};
-
-const reverifyBuildInput = async input => {
-  const after = await input.handle.stat({ bigint: true }).catch(() => fail('BUILD_COMPILER'));
-  const pathStats = await lstat(input.path, { bigint: true }).catch(() => fail('BUILD_COMPILER'));
-  if (after.dev !== input.before.dev || after.ino !== input.before.ino || after.size !== input.before.size
-    || after.nlink < 1n || after.nlink !== input.before.nlink || pathStats.dev !== after.dev || pathStats.ino !== after.ino
-    || pathStats.size !== after.size || pathStats.nlink !== after.nlink) fail('BUILD_COMPILER');
-  const bytes = await readHeldExactlyForBuild(input.handle, Number(after.size));
-  if (sha256(bytes) !== input.sha256) fail('BUILD_COMPILER');
-};
-
 const readHeldExactlyForBuild = async (handle, size, stage = 'BUILD_COMPILER') => {
   const bytes = Buffer.alloc(size);
   let offset = 0;
@@ -297,6 +269,82 @@ const reverifySourceInput = async source => {
 const compilerSubstage = error => {
   const code = typeof error === 'object' && error !== null && typeof error.code === 'string' ? error.code : '';
   return WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(code) ? code : 'SPAWN';
+};
+
+const DIRECT_COMPILER_MAX_BUFFER_BYTES = 64 * 1024;
+const DIRECT_COMPILER_DIAGNOSTIC_LIMIT = 8;
+
+export const sanitizeWindowsCompilerDiagnostics = output => {
+  const text = Buffer.isBuffer(output) ? output.toString('utf8') : typeof output === 'string' ? output : '';
+  const diagnostics = [];
+  const seen = new Set();
+  for (const match of text.matchAll(/\bCS\d{4}\b/gi)) {
+    const code = match[0].toUpperCase();
+    if (!seen.has(code)) {
+      seen.add(code);
+      diagnostics.push(code);
+    }
+    if (diagnostics.length === DIRECT_COMPILER_DIAGNOSTIC_LIMIT) break;
+  }
+  return Object.freeze(diagnostics);
+};
+
+const directCompilerFailure = error => {
+  if (error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+      || error?.name === 'RangeError' && /maxBuffer/i.test(String(error?.message ?? ''))) return 'OUTPUT_LIMIT';
+  if (error?.killed === true) return 'TIMEOUT';
+  if (['EINVAL', 'ENOENT', 'EACCES', 'EPERM'].includes(error?.code)) return 'SPAWN';
+  const diagnostics = sanitizeWindowsCompilerDiagnostics(`${error?.stdout ?? ''}\n${error?.stderr ?? ''}`);
+  return diagnostics.length > 0 ? 'COMPILE' : 'EXIT';
+};
+
+export const compileWindowsAuthorityDirect = async (layout, privatePaths, invoke = execFileAsync) => {
+  const { compiler, framework, systemReference, systemRoot, webReference } = layout;
+  const { cwd, output, source } = privatePaths;
+  const paths = [compiler, framework, systemReference, systemRoot, webReference, cwd, output, source];
+  if (!paths.every(value => typeof value === 'string' && isAbsolute(value) && !value.includes('\0'))) {
+    fail('BUILD_COMPILER', 'SPAWN');
+  }
+  const fixedFrameworks = ['Framework64', 'Framework']
+    .map(name => join(systemRoot, 'Microsoft.NET', name, 'v4.0.30319'));
+  if (!fixedFrameworks.some(candidate => samePath(framework, candidate))
+    || !samePath(compiler, join(framework, 'csc.exe'))
+    || !samePath(systemReference, join(framework, 'System.dll'))
+    || !samePath(webReference, join(framework, 'System.Web.Extensions.dll'))
+    || !samePath(output, join(cwd, 'propr-windows-authority.exe'))
+    || !samePath(source, join(cwd, 'propr-windows-authority.cs'))) fail('BUILD_COMPILER', 'SPAWN');
+  const args = [
+    '/nologo', '/noconfig', '/target:exe', '/platform:anycpu', '/optimize+', '/checked+', '/warnaserror+',
+    `/out:${output}`, `/reference:${systemReference}`, `/reference:${webReference}`, source,
+  ];
+  try {
+    await invoke(compiler, args, {
+      cwd,
+      env: { SystemRoot: systemRoot, TEMP: cwd, TMP: cwd },
+      shell: false,
+      windowsHide: true,
+      timeout: WINDOWS_COMPILER_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+      maxBuffer: DIRECT_COMPILER_MAX_BUFFER_BYTES,
+      encoding: 'utf8',
+    });
+  } catch (error) {
+    const diagnostics = sanitizeWindowsCompilerDiagnostics(`${error?.stdout ?? ''}\n${error?.stderr ?? ''}`);
+    fail('BUILD_COMPILER', directCompilerFailure(error), diagnostics);
+  }
+};
+
+const writePrivateSource = async (target, bytes) => {
+  const handle = await open(target, fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600)
+    .catch(() => fail('BUILD_SOURCE'));
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+    const stats = await handle.stat({ bigint: true });
+    const copied = await readHeldExactlyForBuild(handle, Number(stats.size), 'BUILD_SOURCE');
+    if (!stats.isFile() || stats.nlink !== 1n || BigInt(bytes.length) !== stats.size
+        || !copied.equals(bytes)) fail('BUILD_SOURCE');
+  } finally { await handle.close().catch(() => undefined); }
 };
 
 export const inspectAnyCpuPe = bytes => {
@@ -348,7 +396,7 @@ const buildWindowsAuthorityHelperInner = async (env, launcher, evidence = () => 
   if (WINDOWS_BUILD_AUTH_FAILURES.includes(env.PROPR_WINDOWS_AUTHORITY_TEST_AUTH_FAILURE)) {
     fail('BUILD_COMPILER', env.PROPR_WINDOWS_AUTHORITY_TEST_AUTH_FAILURE);
   }
-  const { systemRoot, compiler, framework, systemReference, webReference } = await resolveWindowsCompilerLayout(
+  const compilerLayout = await resolveWindowsCompilerLayout(
     env,
     probeEnv => {
       if (!nativeLauncher || typeof nativeLauncher.probeSystemDirectory !== 'function') {
@@ -363,63 +411,33 @@ const buildWindowsAuthorityHelperInner = async (env, launcher, evidence = () => 
       catch { return fail('BUILD_COMPILER', 'DIRECTORY_PROBE'); }
     },
   );
+  const { framework } = compilerLayout;
   const sourceInput = await holdSourceInput();
   const sourceSha256 = sourceInput.sha256;
   await mkdir(WINDOWS_AUTHORITY_BUILD_DIRECTORY, { recursive: true });
   const privateOutputDirectory = await mkdtemp(join(WINDOWS_AUTHORITY_BUILD_DIRECTORY, 'compile-'));
   await chmod(privateOutputDirectory, 0o700).catch(() => fail('BUILD_OUTPUT'));
   const temporaryOutput = join(privateOutputDirectory, 'propr-windows-authority.exe');
-  const buildInputs = [];
+  const privateSource = join(privateOutputDirectory, 'propr-windows-authority.cs');
   let result;
   let primaryFailure;
   try {
-    try { buildInputs.push(await holdBuildInput(systemRoot, compiler, 'csc.exe')); }
-    catch { fail('BUILD_COMPILER', 'COMPILER_OPEN'); }
-    try {
-      buildInputs.push(await holdBuildInput(systemRoot, systemReference, 'System.dll'));
-      buildInputs.push(await holdBuildInput(systemRoot, webReference, 'System.Web.Extensions.dll'));
-    } catch { fail('BUILD_COMPILER', 'REFERENCE_OPEN'); }
-    await Promise.all(buildInputs.map(reverifyBuildInput)).catch(() => fail('BUILD_COMPILER', 'LEASE'));
     await reverifySourceInput(sourceInput);
+    await writePrivateSource(privateSource, sourceInput.bytes);
     const frameworkIdentity = framework.toLowerCase().endsWith(`${sep}framework64${sep}v4.0.30319`.toLowerCase())
       ? 'Framework64-v4.0.30319'
       : 'Framework-v4.0.30319';
-    if (!nativeLauncher || typeof nativeLauncher.compileHeld !== 'function') fail('BUILD_COMPILER', 'SPAWN');
-    let compileProof;
     evidence('COMPILER_STARTED');
-    try {
-      compileProof = nativeLauncher.compileHeld({
-        systemRoot,
-        paths: buildInputs.map(input => input.path),
-        sizes: buildInputs.map(input => Number(input.before.size)),
-        sha256: buildInputs.map(input => input.sha256),
-        source: sourceInput.bytes,
-        output: temporaryOutput,
-        cwd: privateOutputDirectory,
-        fault: env.PROPR_WINDOWS_AUTHORITY_TEST_COMPILER_FAULT ?? null,
-      });
-    } catch (error) { fail('BUILD_COMPILER', compilerSubstage(error), error?.diagnostics); }
-    await Promise.all(buildInputs.map(reverifyBuildInput)).catch(() => fail('BUILD_COMPILER', 'LEASE'));
+    await compileWindowsAuthorityDirect(compilerLayout, {
+      cwd: privateOutputDirectory, output: temporaryOutput, source: privateSource,
+    });
     await reverifySourceInput(sourceInput);
+    const compiledSource = await readHeldBuildOutput(privateOutputDirectory, privateSource)
+      .catch(() => fail('BUILD_SOURCE'));
+    if (!compiledSource.equals(sourceInput.bytes) || sha256(compiledSource) !== sourceSha256) fail('BUILD_SOURCE');
     const output = await readHeldBuildOutput(privateOutputDirectory, temporaryOutput);
     const pe = inspectAnyCpuPe(output);
-    if (output.length <= 0 || output.length > MAX_OUTPUT_BYTES
-      || compileProof.size !== output.length || compileProof.sha256 !== sha256(output)
-      || !/^[a-f0-9]{64}$/.test(String(compileProof.compilerCertificateSha256))
-      || !/^[a-f0-9]{64}$/.test(String(compileProof.compilerSpkiSha256))
-      || !/^[a-f0-9]{64}$/.test(String(compileProof.compilerRootSpkiSha256))
-      || !/^[a-f0-9]{16}$/.test(String(compileProof.compilerVolumeSerial))
-      || !/^[a-f0-9]{32}$/.test(String(compileProof.compilerFileId128))
-      || !isProofArray(compileProof.inputCertificateSha256, /^[a-f0-9]{64}$/)
-      || !isProofArray(compileProof.inputSpkiSha256, /^[a-f0-9]{64}$/)
-      || !isProofArray(compileProof.inputRootSpkiSha256, /^[a-f0-9]{64}$/)
-      || !isProofArray(compileProof.inputCatalogName, /^[A-Za-z0-9_.~-]{1,176}\.cat$/)
-      || !isProofArray(compileProof.inputCatalogSha256, /^[a-f0-9]{64}$/)
-      || !isProofArray(compileProof.inputCatalogVolumeSerial, /^[a-f0-9]{16}$/)
-      || !isProofArray(compileProof.inputCatalogFileId128, /^[a-f0-9]{32}$/)
-      || compileProof.compilerCertificateSha256 !== compileProof.inputCertificateSha256[0]
-      || compileProof.compilerSpkiSha256 !== compileProof.inputSpkiSha256[0]
-      || compileProof.compilerRootSpkiSha256 !== compileProof.inputRootSpkiSha256[0]) fail('BUILD_OUTPUT');
+    if (output.length <= 0 || output.length > MAX_OUTPUT_BYTES) fail('BUILD_OUTPUT');
     await writeAtomic(WINDOWS_AUTHORITY_EXECUTABLE, output);
     const publishedOutput = await readHeldBuildOutput(WINDOWS_AUTHORITY_BUILD_DIRECTORY, WINDOWS_AUTHORITY_EXECUTABLE);
     if (!publishedOutput.equals(output)) fail('BUILD_OUTPUT');
@@ -466,32 +484,14 @@ const buildWindowsAuthorityHelperInner = async (env, launcher, evidence = () => 
         signerSpkiSha256: null,
       },
       compiler: {
-        kind: 'windows-catalog-authorized-dotnet-framework-csc-v1',
+        kind: 'windows-fixed-system-dotnet-framework-csc-v1',
         framework: frameworkIdentity,
-        signerCertificateSha256: compileProof.compilerCertificateSha256,
-        signerSpkiSha256: compileProof.compilerSpkiSha256,
-        signerRootSpkiSha256: compileProof.compilerRootSpkiSha256,
-        volumeSerial: compileProof.compilerVolumeSerial,
-        fileId128: compileProof.compilerFileId128,
-        inputs: buildInputs.map((input, index) => ({
-          name: input.name,
-          size: Number(input.before.size),
-          sha256: input.sha256,
-          signerCertificateSha256: compileProof.inputCertificateSha256[index],
-          signerSpkiSha256: compileProof.inputSpkiSha256[index],
-          signerRootSpkiSha256: compileProof.inputRootSpkiSha256[index],
-          catalogName: compileProof.inputCatalogName[index],
-          catalogSha256: compileProof.inputCatalogSha256[index],
-          catalogVolumeSerial: compileProof.inputCatalogVolumeSerial[index],
-          catalogFileId128: compileProof.inputCatalogFileId128[index],
-        })),
       },
     };
     await writeAtomic(WINDOWS_AUTHORITY_MANIFEST, Buffer.from(`${JSON.stringify(manifest)}\n`, 'utf8'));
     evidence('PUBLISHED');
     result = { skipped: false, executable: WINDOWS_AUTHORITY_EXECUTABLE, manifest: WINDOWS_AUTHORITY_MANIFEST, ...manifest };
   } catch (error) { primaryFailure = error; }
-  await Promise.all(buildInputs.map(input => input.handle.close().catch(() => undefined)));
   await sourceInput.handle.close().catch(() => undefined);
   let cleanupFailed = false;
   await rm(privateOutputDirectory, { recursive: true, force: true }).catch(() => { cleanupFailed = true; });
@@ -616,7 +616,6 @@ const buildChildEnvironment = env => {
   }
   for (const name of [
     'PROPR_WINDOWS_AUTHORITY_TEST_AUTH_FAILURE',
-    'PROPR_WINDOWS_AUTHORITY_TEST_COMPILER_FAULT',
     'PROPR_WINDOWS_AUTHORITY_TEST_DIRECTORY_PROBE_FAULT',
   ]) {
     const value = env[name];

@@ -367,9 +367,11 @@ describe('desktop trusted release workflow', () => {
       'READY',
     ]) assert.match(windowsAuthority, new RegExp(`'${stage}'`));
     assert.match(windowsAuthorityBuild, /Microsoft\.NET', layout, 'v4\.0\.30319'/);
-    assert.match(windowsAuthorityBuild, /nativeLauncher\.compileHeld\(\{/);
-    assert.match(windowsNativeLauncher, /\/platform:anycpu/);
-    assert.doesNotMatch(windowsAuthorityBuild, /execFileAsync\(compiler/);
+    assert.match(windowsAuthorityBuild, /await invoke\(compiler, args, \{/);
+    assert.match(windowsAuthorityBuild, /'\/platform:anycpu'/);
+    assert.match(windowsAuthorityBuild, /shell: false/);
+    assert.match(windowsAuthorityBuild, /env: \{ SystemRoot: systemRoot, TEMP: cwd, TMP: cwd \}/);
+    assert.doesNotMatch(windowsAuthorityBuild, /nativeLauncher\.compileHeld\(\{/);
     assert.doesNotMatch(windowsAuthorityBuild, /require\(launcher\.path\)/);
     assert.doesNotMatch(windowsAuthority, /require\(launcherProof\.path\)/);
     assert.match(windowsAuthority, /require\(bootstrapProof\.path\)/);

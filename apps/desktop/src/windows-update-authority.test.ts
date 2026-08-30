@@ -45,19 +45,6 @@ const execFileAsync = promisify(execFile);
 const windowsOnly = { skip: process.platform !== 'win32' };
 const kernelPowerShell = String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`;
 const kernelIcacls = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
-const compilerInputEvidence = (name: string, sha256: string) => ({
-  name,
-  size: 1,
-  sha256,
-  signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-  signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-  signerRootSpkiSha256: '3'.repeat(64),
-  catalogName: 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
-  catalogSha256: 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
-  catalogVolumeSerial: '5'.repeat(16),
-  catalogFileId128: '6'.repeat(32),
-});
-
 test('native Windows exact production C# compile probe reaches ready', windowsOnly, async () => {
   assert.equal(await probeWindowsAuthorityCompile(), 'READY');
 });
@@ -110,18 +97,8 @@ const helperManifest = (overrides: Record<string, unknown> = {}): Buffer => Buff
     signerSpkiSha256: null,
   },
   compiler: {
-    kind: 'windows-catalog-authorized-dotnet-framework-csc-v1',
+    kind: 'windows-fixed-system-dotnet-framework-csc-v1',
     framework: 'Framework64-v4.0.30319',
-    signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-    signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-    signerRootSpkiSha256: '3'.repeat(64),
-    volumeSerial: '6'.repeat(16),
-    fileId128: '7'.repeat(32),
-    inputs: [
-      compilerInputEvidence('csc.exe', 'c'.repeat(64)),
-      compilerInputEvidence('System.dll', 'd'.repeat(64)),
-      compilerInputEvidence('System.Web.Extensions.dll', 'e'.repeat(64)),
-    ],
   },
   ...overrides,
 })}\n`);
@@ -175,59 +152,34 @@ test('Windows helper manifest is fatal-UTF8, exact, architecture-bound, and dist
   assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest({
     compiler: {
       ...base.compiler,
-      inputs: [{ ...base.compiler.inputs[0], signerSpkiSha256: '8'.repeat(64) }, ...base.compiler.inputs.slice(1)],
+      catalogSha256: '8'.repeat(64),
     },
-  })), /compile_load:4/, 'mutable manifest replacement cannot rotate observed compiler authorization evidence');
+  })), /compile_load:4/, 'deferred compiler provenance fields cannot be injected into the fixed build record');
   assert.throws(() => parseWindowsAuthorityHelperManifestForTest(Buffer.from([0xc3, 0x28, 0x0a])), /compile_load:4/);
   assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest().subarray(0, -1)), /compile_load:4/);
 });
 
-test('Windows build proof retains and accepts distinct dynamically authenticated servicing catalog evidence', () => {
+test('Windows build record accepts only the fixed framework layouts on x64 and ARM64', () => {
   const base = JSON.parse(helperManifest().toString()) as {
     launcher: Record<string, unknown>;
     bootstrap: Record<string, unknown>;
-    compiler: Record<string, unknown> & { inputs: Record<string, unknown>[] };
+    compiler: Record<string, unknown>;
   };
   const cases = [
-    {
-      architecture: 'x64', machine: 'AMD64', framework: 'Framework64-v4.0.30319',
-      catalogName: '10.0.26100.33296.cat', catalogSha256: '8'.repeat(64),
-      certificateSha256: '1'.repeat(64), spkiSha256: '2'.repeat(64),
-      rootSpkiSha256: '02376d0908ac23041cc7d666d9daf192554f7fc36317aa9cb800908616b28af8',
-    },
-    {
-      architecture: 'arm64', machine: 'ARM64', framework: 'Framework-v4.0.30319',
-      catalogName: '10.0.26100.9168.cat', catalogSha256: '9'.repeat(64),
-      certificateSha256: '4'.repeat(64), spkiSha256: '5'.repeat(64),
-      rootSpkiSha256: 'c9905b0ee01202293ca026e64f08412442c5504c06e44ca7e9726d61f20e4089',
-    },
+    { architecture: 'x64', machine: 'AMD64', framework: 'Framework64-v4.0.30319' },
+    { architecture: 'arm64', machine: 'ARM64', framework: 'Framework-v4.0.30319' },
   ];
   for (const evidence of cases) {
-    const inputs = base.compiler.inputs.map((input: Record<string, unknown>) => ({
-      ...input,
-      signerCertificateSha256: evidence.certificateSha256,
-      signerSpkiSha256: evidence.spkiSha256,
-      signerRootSpkiSha256: evidence.rootSpkiSha256,
-      catalogName: evidence.catalogName,
-      catalogSha256: evidence.catalogSha256,
-    }));
     const parsed = parseWindowsAuthorityHelperManifestForTest(helperManifest({
       launcher: { ...base.launcher, architecture: evidence.architecture, machine: evidence.machine },
       bootstrap: { ...base.bootstrap, architecture: evidence.architecture, machine: evidence.machine },
       compiler: {
         ...base.compiler,
         framework: evidence.framework,
-        signerCertificateSha256: evidence.certificateSha256,
-        signerSpkiSha256: evidence.spkiSha256,
-        signerRootSpkiSha256: evidence.rootSpkiSha256,
-        inputs,
       },
     }));
-    assert.equal(parsed.compiler.inputs[0].catalogName, evidence.catalogName);
-    assert.equal(parsed.compiler.inputs[0].catalogSha256, evidence.catalogSha256);
-    assert.equal(parsed.compiler.inputs[0].signerCertificateSha256, evidence.certificateSha256);
-    assert.equal(parsed.compiler.inputs[0].signerSpkiSha256, evidence.spkiSha256);
-    assert.equal(parsed.compiler.inputs[0].signerRootSpkiSha256, evidence.rootSpkiSha256);
+    assert.equal(parsed.compiler.framework, evidence.framework);
+    assert.equal(parsed.compiler.kind, 'windows-fixed-system-dotnet-framework-csc-v1');
   }
 });
 

@@ -32,8 +32,7 @@ const parseManifest = bytes => {
     || !manifest.compiler || typeof manifest.compiler !== 'object' || Array.isArray(manifest.compiler)
     || !manifest.launcher || typeof manifest.launcher !== 'object' || Array.isArray(manifest.launcher)
     || !manifest.bootstrap || typeof manifest.bootstrap !== 'object' || Array.isArray(manifest.bootstrap)
-    || !exactKeys(manifest.compiler, ['kind', 'framework', 'signerCertificateSha256', 'signerSpkiSha256',
-      'signerRootSpkiSha256', 'volumeSerial', 'fileId128', 'inputs']) || manifest.schemaVersion !== 1
+    || !exactKeys(manifest.compiler, ['kind', 'framework']) || manifest.schemaVersion !== 1
     || !exactKeys(manifest.launcher, ['name', 'format', 'architecture', 'machine', 'size', 'sha256', 'trust',
       'publisher', 'signerPins', 'signerCertificateSha256', 'signerSpkiSha256'])
     || !exactKeys(manifest.bootstrap, ['name', 'format', 'architecture', 'machine', 'size', 'sha256', 'trust',
@@ -78,30 +77,8 @@ const parseManifest = bytes => {
     || JSON.stringify(manifest.bootstrap.signerPins) !== JSON.stringify(manifest.signerPins)
     || manifest.bootstrap.signerCertificateSha256 !== manifest.signerCertificateSha256
     || manifest.bootstrap.signerSpkiSha256 !== manifest.signerSpkiSha256
-    || manifest.compiler.kind !== 'windows-catalog-authorized-dotnet-framework-csc-v1'
-    || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(manifest.compiler.framework)
-    || !/^[a-f0-9]{64}$/.test(manifest.compiler.signerCertificateSha256)
-    || !/^[a-f0-9]{64}$/.test(manifest.compiler.signerSpkiSha256)
-    || !/^[a-f0-9]{64}$/.test(manifest.compiler.signerRootSpkiSha256)
-    || !/^[a-f0-9]{16}$/.test(manifest.compiler.volumeSerial)
-    || !/^[a-f0-9]{32}$/.test(manifest.compiler.fileId128)
-    || !Array.isArray(manifest.compiler.inputs) || manifest.compiler.inputs.length !== 3
-    || manifest.compiler.inputs.map(input => input?.name).join(',') !== 'csc.exe,System.dll,System.Web.Extensions.dll'
-    || manifest.compiler.inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input)
-      || !exactKeys(input, ['name', 'size', 'sha256', 'signerCertificateSha256', 'signerSpkiSha256',
-        'signerRootSpkiSha256', 'catalogName', 'catalogSha256', 'catalogVolumeSerial', 'catalogFileId128'])
-      || !Number.isSafeInteger(input.size) || input.size <= 0 || input.size > 32 * 1024 * 1024
-      || !/^[a-f0-9]{64}$/.test(input.sha256)
-      || !/^[a-f0-9]{64}$/.test(input.signerCertificateSha256)
-      || !/^[a-f0-9]{64}$/.test(input.signerSpkiSha256)
-      || !/^[a-f0-9]{64}$/.test(input.signerRootSpkiSha256)
-      || !/^[A-Za-z0-9_.~-]{1,176}\.cat$/.test(input.catalogName)
-      || !/^[a-f0-9]{64}$/.test(input.catalogSha256)
-      || !/^[a-f0-9]{16}$/.test(input.catalogVolumeSerial)
-      || !/^[a-f0-9]{32}$/.test(input.catalogFileId128))
-    || manifest.compiler.inputs[0].signerCertificateSha256 !== manifest.compiler.signerCertificateSha256
-    || manifest.compiler.inputs[0].signerSpkiSha256 !== manifest.compiler.signerSpkiSha256
-    || manifest.compiler.inputs[0].signerRootSpkiSha256 !== manifest.compiler.signerRootSpkiSha256) fail();
+    || manifest.compiler.kind !== 'windows-fixed-system-dotnet-framework-csc-v1'
+    || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(manifest.compiler.framework)) fail();
   return manifest;
 };
 

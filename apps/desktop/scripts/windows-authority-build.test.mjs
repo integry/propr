@@ -1,19 +1,21 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   inspectAnyCpuPe,
+  compileWindowsAuthorityDirect,
   nativeLauncherAuthenticationSubstage,
   preserveWindowsAuthorityCompilerFailure,
   buildWindowsAuthorityHelper,
   decodeWindowsSystemDirectoryRecord,
   resolveWindowsCompilerLayout,
+  sanitizeWindowsCompilerDiagnostics,
   validateWindowsAuthoritySource,
   WINDOWS_AUTHORITY_COMPILER_SUBSTAGES,
   WINDOWS_AUTHORITY_EXECUTABLE,
@@ -50,27 +52,6 @@ const execFileAsync = promisify(execFile);
 const kernelTakeown = String.raw`\\?\GLOBALROOT\SystemRoot\System32\takeown.exe`;
 const kernelIcacls = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
 const kernelWhoami = String.raw`\\?\GLOBALROOT\SystemRoot\System32\whoami.exe`;
-const microsoftWindowsSubjectRdns = [
-  '310b3009060355040613025553',
-  '311330110603550408130a57617368696e67746f6e',
-  '3110300e060355040713075265646d6f6e64',
-  '311e301c060355040a13154d6963726f736f667420436f72706f726174696f6e',
-  '311a3018060355040313114d6963726f736f66742057696e646f7773',
-];
-const microsoftWindowsSubjectDer = `3070${microsoftWindowsSubjectRdns.join('')}`;
-const compilerInputEvidence = (name, sha256) => ({
-  name,
-  size: 1,
-  sha256,
-  signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-  signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-  signerRootSpkiSha256: '3'.repeat(64),
-  catalogName: '10.0.26100.33296.cat',
-  catalogSha256: '7'.repeat(64),
-  catalogVolumeSerial: '5'.repeat(16),
-  catalogFileId128: '6'.repeat(32),
-});
-
 const managedPe = () => {
   const bytes = Buffer.alloc(1024);
   bytes.writeUInt16LE(0x5a4d, 0);
@@ -191,12 +172,13 @@ test('native rebuild has one bounded hosted deadline, fixed progress evidence, a
   assert.doesNotMatch(source, /nativeRebuildEvidence\([^\n]*(?:stdout|stderr|process\.env)/);
 });
 
-test('build module authentication uses one six-minute reaped child and fixed bounded records', async () => {
+test('build module authentication uses one bounded reaped child with compiler-cleanup grace and fixed records', async () => {
   const [source, workflow] = await Promise.all([
     readFile(new URL('./build-windows-authority-helper.mjs', import.meta.url), 'utf8'),
     readFile(new URL('../../../.github/workflows/desktop-release-guard.yml', import.meta.url), 'utf8'),
   ]);
-  assert.match(source, /WINDOWS_BUILD_CHILD_TIMEOUT_MS = 6 \* 60_000/);
+  assert.match(source, /WINDOWS_COMPILER_TIMEOUT_MS = 6 \* 60_000/);
+  assert.match(source, /WINDOWS_BUILD_CHILD_TIMEOUT_MS = WINDOWS_COMPILER_TIMEOUT_MS \+ 30_000/);
   assert.match(source, /fork\(fileURLToPath\(import\.meta\.url\), \[WINDOWS_BUILD_CHILD_ARGUMENT\]/);
   assert.match(source, /stdio: \['ignore', 'ignore', 'ignore', 'ipc'\]/);
   assert.match(source, /child\.kill\('SIGKILL'\)/);
@@ -357,72 +339,6 @@ test('the current-owner exception exists only in the unshipped build bootstrap',
   assert.doesNotMatch(runtime, /held-build-artifact/);
 });
 
-test('dynamic build catalog authority is standalone, cache-only, held, and independent of servicing tuples', async () => {
-  const [source, builder, runtime, broker, packagedInspector, releaseArchitecture] = await Promise.all([
-    readFile(new URL('../src/native/windows-launcher/propr_windows_launcher.cc', import.meta.url), 'utf8'),
-    readFile(new URL('./build-windows-authority-helper.mjs', import.meta.url), 'utf8'),
-    readFile(new URL('../src/windows-update-authority.ts', import.meta.url), 'utf8'),
-    readFile(new URL('../src/native/propr-windows-authority.cs', import.meta.url), 'utf8'),
-    readFile(new URL('./inspect-packaged-windows-authority.mjs', import.meta.url), 'utf8'),
-    readFile(new URL('./release-architecture.mjs', import.meta.url), 'utf8'),
-  ]);
-  assert.equal(createHash('sha256').update(Buffer.from(microsoftWindowsSubjectDer, 'hex')).digest('hex'),
-    'bd68f19a09e1bdede787648ed1d0fde5b77d7bece7b1f9430bcfba4d10ec058e');
-  assert.match(source, /SignerContent::StandaloneCatalog/);
-  assert.match(source, /WTD_CACHE_ONLY_URL_RETRIEVAL/);
-  assert.match(source, /CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY/);
-  assert.match(source, /CERT_TRUST_IS_REVOKED/);
-  assert.match(source, /SameHeldCatalog\(catalogs\[index\], catalog_identities\[index\], catalog_hashes\[index\]\)/);
-  assert.match(source, /const CERT_NAME_BLOB& subject = certificate->pCertInfo->Subject;/);
-  assert.match(source, /subject_der == kMicrosoftWindowsSubjectDer/);
-  assert.match(source, new RegExp(microsoftWindowsSubjectDer));
-  assert.match(source, /MicrosoftSystemComponentAuthority\(wrong_subject, wrong_root\)/);
-  assert.doesNotMatch(source, /kMicrosoftCatalogPolicy|ApprovedMicrosoftCatalog|NamedMicrosoftCatalog/);
-  assert.doesNotMatch(builder, /MICROSOFT_COMPILER_CATALOG_POLICY|KB5066128/);
-  assert.doesNotMatch(runtime, /MICROSOFT_COMPILER_CATALOG_POLICY/);
-  assert.doesNotMatch(broker, /MICROSOFT_COMPILER_CATALOG|KB5066128/);
-  assert.doesNotMatch(packagedInspector, /KB5066128|f447c801fde63f35|fd4c63e1001a8281/);
-  assert.doesNotMatch(releaseArchitecture, /KB5066128|f447c801fde63f35|fd4c63e1001a8281/);
-  assert.match(runtime, /MICROSOFT_SYSTEM_CATALOG_POLICY/,
-    'the runtime bootstrap authority remains independently pinned');
-  assert.doesNotMatch(source, /ExactMicrosoftSystemPublisher/);
-  assert.match(source, /GUID driver_action = DRIVER_ACTION_VERIFY/);
-  assert.match(source, /member\.pcCatalogContext = nullptr;/);
-  assert.match(source, /member\.hCatAdmin = admin;/);
-  assert.match(source, /ExactCatalogBinding\(acquired_admin, enumerated_catalog, supplied_admin, supplied_catalog,/);
-  assert.doesNotMatch(source, /&DRIVER_ACTION_VERIFY/);
-  assert.doesNotMatch(source, /compiler-(?:wrong-signer|same-root-wrong-certificate|same-root-wrong-signer|subject-spoof|wrong-spki|manifest-replacement)/);
-  assert.doesNotMatch(source, /\(void\)presented/);
-  assert.match(source, /certificate->size\(\) != 64 \|\| spki->size\(\) != 64/,
-    'rotating leaf evidence remains exact and bounded in the proof');
-  for (const code of WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.slice(1, 12)) {
-    assert.match(source, new RegExp(`"${code}"`));
-  }
-});
-
-test('catalog signer authority pins Microsoft system-component publisher and root independent of servicing tuple',
-  windowsNativeBuildOnly, async () => {
-    await buildWindowsNativeLauncher();
-    const native = require(join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
-      'propr_windows_launcher.node'));
-    assert.equal(typeof native.microsoftSystemComponentForTest, 'function');
-    const policy = {
-      subjectDer: microsoftWindowsSubjectDer,
-      rootSpkiSha256: '02376d0908ac23041cc7d666d9daf192554f7fc36317aa9cb800908616b28af8',
-    };
-    assert.equal(native.microsoftSystemComponentForTest(policy), true);
-    const reorderedDer = `3070${[...microsoftWindowsSubjectRdns].reverse().join('')}`;
-    assert.equal(native.microsoftSystemComponentForTest({ ...policy, subjectDer: reorderedDer }), false);
-    assert.equal(native.microsoftSystemComponentForTest({
-      ...policy,
-      subjectDer: `${microsoftWindowsSubjectDer.slice(0, -2)}74`,
-    }), false, 'a Microsoft-looking subject under the same root is not authority');
-    assert.equal(native.microsoftSystemComponentForTest({
-      ...policy,
-      rootSpkiSha256: '0'.repeat(64),
-    }), false, 'an exact-looking publisher under a different chain is not authority');
-  });
-
 test('absent Windows build roots are created before their DACL is protected', windowsNativeBuildOnly, async () => {
   const parent = await mkdtemp(join(tmpdir(), 'propr-absent-build-root-'));
   const root = join(parent, 'private', 'staging');
@@ -461,7 +377,7 @@ test('protected build staging removes hostile explicit and inherited ACEs and re
       await copyFile(launcher.path, artifact);
       await invokeWindowsAclTool(canonicalIcacls, [root, '/grant', '*S-1-5-32-546:(OI)(CI)M', '/T', '/C', '/Q']);
       await prepareWindowsAuthorityBuildDirectory(root);
-      assert.equal(typeof buildBootstrap.loadVerifiedModule(policy).compileHeld, 'function',
+      assert.equal(typeof buildBootstrap.loadVerifiedModule(policy).probeSystemDirectory, 'function',
         'reset plus inheritance removal leaves only the exact build identities');
 
       await rename(root, displaced);
@@ -498,7 +414,7 @@ test('real filtered current token can read and authenticate exact build staging'
     publisher: null,
     signerCertificateSha256: null,
     signerSpkiSha256: null,
-  }).compileHeld, 'function');
+  }).probeSystemDirectory, 'function');
 });
 
 test('hosted x64 and ARM64 stage the exact launcher predicate before compilation',
@@ -517,11 +433,11 @@ test('hosted x64 and ARM64 stage the exact launcher predicate before compilation
       signerCertificateSha256: null,
       signerSpkiSha256: null,
     });
-    assert.equal(typeof authenticated.compileHeld, 'function',
+    assert.equal(typeof authenticated.probeSystemDirectory, 'function',
       `${process.arch} staged launcher passes OPEN, FILE_META, OWNER, DACL, DACL_PROTECTED, ARCH, and HASH`);
   });
 
-test('build-owner module authentication is compile-time-only, ACL-strict, and held-identity-bound',
+test('build-owner module authentication is compile-time-only and ACL-strict',
   windowsNativeBuildOnly, async () => {
     const launcher = await buildWindowsNativeLauncher();
     const buildBootstrap = require(nativeBuildBootstrapPath);
@@ -566,26 +482,18 @@ test('build-owner module authentication is compile-time-only, ACL-strict, and he
       }), error => error?.code === 'DACL', 'a different user SID cannot gain staging write authority');
     } finally { await rm(root, { recursive: true, force: true }); }
 
-    const loaded = buildBootstrap.loadVerifiedModule({
-      ...policy,
-      authenticationMode: 'held-build-artifact',
-      fault: 'barrier-before-module-load-swap',
-    });
-    assert.equal(typeof loaded.compileHeld, 'function', 'the held no-write/delete/rename lease binds the loaded identity');
-    for (const mutation of ['delete', 'swap', 'rename']) {
-      const held = buildBootstrap.loadVerifiedModule({
-        ...policy,
-        authenticationMode: 'held-build-artifact',
-        fault: `barrier-before-module-load-${mutation}`,
-      });
-      assert.equal(typeof held.compileHeld, 'function', `${mutation} is denied across the held load boundary`);
-    }
   });
 
 test('bounded build child unloads staging modules before cleanup and preserves authentication failures',
   windowsNativeBuildOnly, async () => {
     const exact = await buildWindowsAuthorityHelper(process.env);
     assert.deepEqual(exact.buildChildEvidence, WINDOWS_BUILD_CHILD_EVIDENCE);
+    assert.equal(exact.compiler.kind, 'windows-fixed-system-dotnet-framework-csc-v1');
+    assert.deepEqual(Object.keys(exact.compiler).sort(), ['framework', 'kind']);
+    assert.match(exact.sourceSha256, /^[a-f0-9]{64}$/);
+    assert.equal((await readdir(join(WINDOWS_AUTHORITY_EXECUTABLE, '..')))
+      .some(name => name.startsWith('compile-') || name === '.build-staging'), false,
+    'verified private compiler input/output and native staging leave no residue');
     await assert.rejects(lstat(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY), error => error?.code === 'ENOENT');
 
     for (const primary of ['BOOTSTRAP_AUTH', 'LAUNCHER_AUTH', 'OPEN', 'FILE_META', 'OWNER', 'DACL',
@@ -611,41 +519,6 @@ test('bounded build child unloads staging modules before cleanup and preserves a
     }
   });
 
-test('native WinTrust catalog binding requires the exact retained SHA-256 admin and catalog pair',
-  windowsNativeBuildOnly, async () => {
-    for (const fault of [
-      'catalog-binding-null-admin',
-      'catalog-binding-mismatched-admin',
-      'catalog-binding-released-early',
-      'catalog-binding-wrong-hash-algorithm',
-      'catalog-binding-foreign-catalog-context',
-    ]) {
-      await prepareWindowsAuthorityBuildDirectory();
-      await Promise.all([
-        rm(WINDOWS_AUTHORITY_EXECUTABLE, { force: true }),
-        rm(WINDOWS_AUTHORITY_MANIFEST, { force: true }),
-      ]);
-      await assert.rejects(
-        buildWindowsAuthorityHelper({
-          ...process.env,
-          PROPR_WINDOWS_AUTHORITY_TEST_DIRECTORY_PROBE_FAULT: fault,
-        }),
-        error => error instanceof Error
-          && error.message === 'Windows authority helper build failed [win-authority:BUILD_COMPILER:WINTRUST_POLICY]'
-          && !error.message.includes('\\') && !error.message.includes('C:'),
-        `${fault} must fail before the production C# compiler is spawned`,
-      );
-    }
-    const exact = await buildWindowsAuthorityHelper({
-      ...process.env,
-      PROPR_WINDOWS_AUTHORITY_TEST_DIRECTORY_PROBE_FAULT: 'catalog-binding-exact-held-pair',
-    });
-    assert.equal(exact.skipped, false);
-    assert.match(exact.sourceSha256, /^[a-f0-9]{64}$/);
-    assert.equal(exact.compiler.inputs.length, 3);
-    await assert.rejects(lstat(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY), error => error?.code === 'ENOENT');
-  });
-
 test('compiler layout treats SystemRoot and windir as disagreement checks and rejects reparse references', async () => {
   const canonicalTempRoot = await realpath(tmpdir());
   const root = await realpath(await mkdtemp(join(canonicalTempRoot, 'propr-system-directory-')));
@@ -664,85 +537,76 @@ test('compiler layout treats SystemRoot and windir as disagreement checks and re
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('x64 and ARM64 hosted builds use one fixed-path compiler argv with no shell or inherited environment', async () => {
+  assert.ok(['x64', 'arm64'].includes(process.arch) || process.platform !== 'win32');
+  const systemRoot = resolve('fixed-windows-root');
+  const framework = join(systemRoot, 'Microsoft.NET', process.arch === 'arm64' ? 'Framework' : 'Framework64',
+    'v4.0.30319');
+  const cwd = join(resolve('private-build-root'), 'compile-fixed');
+  const layout = {
+    systemRoot,
+    framework,
+    compiler: join(framework, 'csc.exe'),
+    systemReference: join(framework, 'System.dll'),
+    webReference: join(framework, 'System.Web.Extensions.dll'),
+  };
+  const privatePaths = {
+    cwd,
+    output: join(cwd, 'propr-windows-authority.exe'),
+    source: join(cwd, 'propr-windows-authority.cs'),
+  };
+  let invocation;
+  await compileWindowsAuthorityDirect(layout, privatePaths, async (...args) => { invocation = args; });
+  assert.deepEqual(invocation[0], layout.compiler);
+  assert.deepEqual(invocation[1], [
+    '/nologo', '/noconfig', '/target:exe', '/platform:anycpu', '/optimize+', '/checked+', '/warnaserror+',
+    `/out:${privatePaths.output}`, `/reference:${layout.systemReference}`, `/reference:${layout.webReference}`,
+    privatePaths.source,
+  ]);
+  assert.deepEqual(invocation[2].env, { SystemRoot: systemRoot, TEMP: cwd, TMP: cwd });
+  assert.equal(invocation[2].shell, false);
+  assert.equal(invocation[2].timeout, 6 * 60_000);
+  assert.equal(invocation[2].maxBuffer, 64 * 1024);
+  assert.equal(Object.hasOwn(invocation[2].env, 'PATH'), false);
+});
+
+test('direct compiler failures expose only an exit class and bounded CS codes', async () => {
+  assert.deepEqual(sanitizeWindowsCompilerDiagnostics(
+    'C:\\private\\source.cs(1): error cs0123 secret\nENV=value CS0456 CS0123'), ['CS0123', 'CS0456']);
+  const systemRoot = resolve('fixed-windows-root');
+  const framework = join(systemRoot, 'Microsoft.NET', 'Framework64', 'v4.0.30319');
+  const cwd = join(resolve('private-build-root'), 'compile-fixed');
+  await assert.rejects(compileWindowsAuthorityDirect({
+    systemRoot,
+    framework,
+    compiler: join(framework, 'csc.exe'),
+    systemReference: join(framework, 'System.dll'),
+    webReference: join(framework, 'System.Web.Extensions.dll'),
+  }, {
+    cwd,
+    output: join(cwd, 'propr-windows-authority.exe'),
+    source: join(cwd, 'propr-windows-authority.cs'),
+  }, async () => {
+    const error = new Error('C:\\private\\compiler path and environment secret');
+    error.code = 1;
+    error.stdout = 'C:\\private\\source.cs(7): error CS0123: source secret';
+    error.stderr = 'SystemRoot=C:\\private error CS0456';
+    throw error;
+  }), error => {
+    assert.equal(error?.substage, 'COMPILE');
+    assert.deepEqual(error?.diagnostics, ['CS0123', 'CS0456']);
+    assert.equal(error?.message, 'Windows authority helper build failed [win-authority:BUILD_COMPILER:COMPILE]');
+    assert.doesNotMatch(`${error?.message}\n${error?.diagnostics?.join('\n')}`, /private|source\.cs|SystemRoot|ENV=/i);
+    return true;
+  });
+});
+
 test('committed Windows broker source is nonempty strict UTF-8 with a real executable entrypoint', async () => {
   const source = await readFile(WINDOWS_AUTHORITY_SOURCE);
   assert.match(validateWindowsAuthoritySource(source), /^[a-f0-9]{64}$/);
   assert.throws(() => validateWindowsAuthoritySource(Buffer.alloc(0)), /BUILD_SOURCE/);
   assert.throws(() => validateWindowsAuthoritySource(Buffer.from([0xc3, 0x28])), /BUILD_SOURCE/);
   assert.throws(() => validateWindowsAuthoritySource(Buffer.from('public class SourceOnly {}')), /BUILD_SOURCE/);
-});
-
-test('native compiler leases defeat compiler, reference, and exact-source substitution barriers', windowsNativeBuildOnly, async () => {
-  for (const fault of [
-    'compiler-swap-after-open', 'reference-swap-after-open', 'compiler-swap-before-create',
-    'reference-swap-before-create', 'compiler-swap-after-process', 'source-swap-after-copy', 'source-rename',
-    'source-hardlink', 'source-reparse', 'source-truncate', 'source-replace',
-  ]) {
-    const result = await buildWindowsAuthorityHelper({
-      ...process.env,
-      PROPR_WINDOWS_AUTHORITY_TEST_COMPILER_FAULT: fault,
-    });
-    assert.equal(result.skipped, false);
-    assert.match(result.sourceSha256, /^[a-f0-9]{64}$/);
-    assert.match(result.compiler.fileId128, /^[a-f0-9]{32}$/);
-    assert.match(result.compiler.signerCertificateSha256, /^[a-f0-9]{64}$/);
-    assert.match(result.compiler.signerSpkiSha256, /^[a-f0-9]{64}$/);
-    for (const input of result.compiler.inputs) {
-      assert.match(input.catalogSha256, /^[a-f0-9]{64}$/);
-      assert.match(input.catalogVolumeSerial, /^[a-f0-9]{16}$/);
-      assert.match(input.catalogFileId128, /^[a-f0-9]{32}$/);
-    }
-  }
-});
-
-test('native compiler signer, image, job, exit, and output failures stay bounded and clean', windowsNativeBuildOnly, async () => {
-  const cases = [
-    ['compiler-nonmember', 'CATALOG_ENUMERATION'],
-    ['compiler-wrong-catalog', 'CATALOG_LEASE'],
-    ['compiler-unsigned-catalog', 'SIGNER_PARSE'],
-    ['compiler-swapped-catalog', 'CATALOG_LEASE'],
-    ['compiler-member-replacement', 'CATALOG_LEASE'],
-    ['compiler-held-member-identity-mismatch', 'IMAGE'],
-    ['compiler-held-catalog-identity-mismatch', 'LEASE'],
-    ['compiler-job', 'IMAGE'],
-    ['compiler-image', 'IMAGE'],
-    ['compiler-exit', 'EXIT'],
-    ['compiler-output', 'OUTPUT_VALIDATION'],
-  ];
-  for (const [fault, substage] of cases) {
-    await prepareWindowsAuthorityBuildDirectory();
-    await Promise.all([
-      rm(WINDOWS_AUTHORITY_EXECUTABLE, { force: true }),
-      rm(WINDOWS_AUTHORITY_MANIFEST, { force: true }),
-    ]);
-    await assert.rejects(
-      buildWindowsAuthorityHelper({ ...process.env, PROPR_WINDOWS_AUTHORITY_TEST_COMPILER_FAULT: fault }),
-      error => error instanceof Error
-        && error.message === `Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`
-        && !error.message.includes('\\') && !error.message.includes('C:'),
-    );
-    for (const unpublished of [WINDOWS_AUTHORITY_EXECUTABLE, WINDOWS_AUTHORITY_MANIFEST]) {
-      await assert.rejects(readFile(unpublished), error => error?.code === 'ENOENT',
-        `${fault} must not publish a compiler/helper artifact`);
-    }
-  }
-});
-
-test('native directory catalog failures expose their exact bounded offline-policy substage', windowsNativeBuildOnly, async () => {
-  for (const substage of [
-    'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY', 'REVOCATION', 'CATALOG_LEASE',
-    'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN', 'SPKI_PIN',
-  ]) {
-    await assert.rejects(
-      buildWindowsAuthorityHelper({
-        ...process.env,
-        PROPR_WINDOWS_AUTHORITY_TEST_DIRECTORY_PROBE_FAULT: `directory-${substage}`,
-      }),
-      error => error instanceof Error
-        && error.message === `Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`
-        && !error.message.includes('\\') && !error.message.includes('C:'),
-    );
-  }
 });
 
 test('compiled helper output gate rejects corrupt, native-only, and wrong-machine PE files', () => {
@@ -818,18 +682,8 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
         signerSpkiSha256: null,
       },
       compiler: {
-        kind: 'windows-catalog-authorized-dotnet-framework-csc-v1',
+        kind: 'windows-fixed-system-dotnet-framework-csc-v1',
         framework: 'Framework64-v4.0.30319',
-        signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-        signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-        signerRootSpkiSha256: '3'.repeat(64),
-        volumeSerial: '4'.repeat(16),
-        fileId128: '5'.repeat(32),
-        inputs: [
-          compilerInputEvidence('csc.exe', 'b'.repeat(64)),
-          compilerInputEvidence('System.dll', 'c'.repeat(64)),
-          compilerInputEvidence('System.Web.Extensions.dll', 'd'.repeat(64)),
-        ],
       },
     })}\n`);
     await refreshPackagedWindowsAuthorityManifest(executable, manifestPath, {

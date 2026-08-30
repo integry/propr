@@ -34,23 +34,6 @@ const spkiSha256 = '2'.repeat(64);
 const windowsSignerPins = `certificate-sha256:${certificateSha256},spki-sha256:${spkiSha256}`;
 const execFile = promisify(execFileCallback);
 const nativeDarwinArch = process.arch === 'arm64' ? 'arm64' : 'x64';
-const compilerInputEvidence = (name, sha256, architecture = 'x64') => ({
-  name,
-  size: 1,
-  sha256,
-  signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-  signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-  signerRootSpkiSha256: '3'.repeat(64),
-  catalogName: architecture === 'arm64'
-    ? '10.0.26100.9168.cat'
-    : '10.0.26100.33296.cat',
-  catalogSha256: architecture === 'arm64'
-    ? '8'.repeat(64)
-    : '9'.repeat(64),
-  catalogVolumeSerial: '5'.repeat(16),
-  catalogFileId128: '6'.repeat(32),
-});
-
 const privateDmgSnapshotPaths = async () => {
   const entries = await readdir(tmpdir(), { withFileTypes: true });
   const paths = [];
@@ -252,18 +235,8 @@ const windowsAuthorityFixtureEntries = (executablePath, executable) => {
       signerSpkiSha256: null,
     },
     compiler: {
-      kind: 'windows-catalog-authorized-dotnet-framework-csc-v1',
+      kind: 'windows-fixed-system-dotnet-framework-csc-v1',
       framework: 'Framework64-v4.0.30319',
-      signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-      signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-      signerRootSpkiSha256: '3'.repeat(64),
-      volumeSerial: '4'.repeat(16),
-      fileId128: '5'.repeat(32),
-      inputs: [
-        compilerInputEvidence('csc.exe', 'b'.repeat(64), launcherArchitecture),
-        compilerInputEvidence('System.dll', 'c'.repeat(64), launcherArchitecture),
-        compilerInputEvidence('System.Web.Extensions.dll', 'd'.repeat(64), launcherArchitecture),
-      ],
     },
   })}\n`);
   return [
