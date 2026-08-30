@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { linkSync, unlinkSync } from "node:fs";
 import { win32 } from "node:path";
 
 export const WINDOWS_HELPER_BUILD_STAGES = Object.freeze([
@@ -139,6 +140,13 @@ export function assertModernRoslynVersion(version) {
   if (!match || Number(match[1]) !== 4 || Number(match[2]) < 8 || Number(match[2]) > 20) {
     throw new WindowsHelperBuildError("BUILD_COMPILER", "BAD_FLAG");
   }
+}
+
+/** The production build's no-replace publication primitive. */
+export function publishWindowsBuildArtifactNoReplace(temporaryPath, finalPath, options = {}) {
+  options.beforePublish?.();
+  linkSync(temporaryPath, finalPath);
+  unlinkSync(temporaryPath);
 }
 
 /**

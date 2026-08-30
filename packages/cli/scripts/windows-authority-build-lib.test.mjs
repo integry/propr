@@ -89,14 +89,28 @@ test("invalid UTF-8 compiler output is rejected before classification", () => {
 
 test("production signer pins cannot be copied from environment claims", () => {
   const buildSource = readFileSync(new URL("./build-windows-authority-helper.mjs", import.meta.url), "utf8");
+  const bootstrapSource = readFileSync(new URL("../native/windows-authority-bootstrap.c", import.meta.url), "utf8");
   assert.equal(buildSource.includes("PROPR_WINDOWS_AUTHENTICODE_LEAF_SHA256"), false);
   assert.equal(buildSource.includes("PROPR_WINDOWS_AUTHENTICODE_SPKI_SHA256"), false);
   assert.match(buildSource, /--print-signing-pins-v1/u);
   assert.match(buildSource, /Propr\.WindowsAuthority\.SigningPins/u);
   assert.doesNotMatch(buildSource, /SignerCertificate\.Subject-notmatch/u);
   assert.match(buildSource, /Test-AuthorizedMicrosoftFile/u);
-  assert.match(buildSource, /runBoundedBuildTool\(nativeLinker, nativeLinkArgs/u);
+  assert.match(buildSource, /runAuthorityLeasedBuildTool\(nativeLinker, nativeLinkArgs/u);
+  assert.match(buildSource, /lease-build-inputs-v1/u);
+  assert.match(buildSource, /signer-pins-v1/u);
+  assert.match(buildSource, /authenticodeLeafSha256/u);
+  assert.match(buildSource, /authenticodeSpkiSha256/u);
+  assert.match(buildSource, /toolSigners/u);
+  assert.doesNotMatch(bootstrapSource, /verify_authenticode_pins\(path, NULL, NULL\)/u);
+  assert.match(bootstrapSource, /bytes\[offset \+ 67\] != 'E'/u);
+  assert.match(buildSource, /nativeInputInventories\.slice/u);
   assert.doesNotMatch(buildSource, /PATH: `\$\{dirname\(nativeCompiler\)\}/u);
+  assert.match(buildSource, /connect-authority-bootstrap\.exe/u);
+  assert.match(buildSource, /bootstrapSourceSha256/u);
+  assert.match(buildSource, /bootstrapSha256/u);
+  assert.doesNotMatch(buildSource, /runBoundedBuildTool\(launcherOutput, \["system-paths-v1"\]/u);
+  assert.match(buildSource, /publishWindowsBuildArtifactNoReplace\(temporaryOutput, output\)/u);
 });
 
 test("native Windows directory authority accepts hosted and alternate-drive layouts", () => {

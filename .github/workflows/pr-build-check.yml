@@ -50,6 +50,7 @@ jobs:
           test -f packages/cli/dist/native/prebuilds/darwin-arm64/connect-authority-broker
           test -f packages/cli/dist/native/prebuilds/darwin-x64/connect-authority-broker
           test -f packages/cli/dist/native/prebuilds/win32-x64/connect-authority-broker.exe
+          test -f packages/cli/dist/native/prebuilds/win32-x64/connect-authority-bootstrap.exe
 
   cli-agent-skill-glibc-231:
     name: CLI Agent Skill (Linux x64, glibc 2.31, Node 22)
@@ -180,6 +181,7 @@ jobs:
           path: |
             packages/cli/native/prebuilds/win32-anycpu
             packages/cli/native/prebuilds/win32-x64/connect-authority-broker.exe
+            packages/cli/native/prebuilds/win32-x64/connect-authority-bootstrap.exe
           if-no-files-found: error
           overwrite: true
 
@@ -209,7 +211,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node -e "if (process.platform === 'win32' && process.arch !== 'x64') process.exit(1)"
           if [ "$(node -p process.platform)" = win32 ]; then
             npm run build:windows-authority-validation -w @propr/cli
           fi

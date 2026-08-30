@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, constants, copyFileSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -26,9 +27,13 @@ import {
 } from '../packages/cli/dist/connectRootAuthority.js';
 import { PUBLIC_INSTANCE_IDENTITY_FILENAME } from '@propr/shared';
 import { getOrCreatePublicInstanceIdentityPinned } from '@propr/local-setup';
+import { publishWindowsBuildArtifactNoReplace } from '../packages/cli/scripts/windows-authority-build-lib.mjs';
 
 const ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const READY = `.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.ready-v1`;
+const WINDOWS_REPLACEMENT_ATTACKER_SOURCE_SHA256 = '01ccc521cf6784f92cc33bbc4846b218625d61cb3b7dcbd9ed9366f50d12f6fa';
+const WINDOWS_REPLACEMENT_ATTACKER_SHA256 = 'd2c8cdc127ff1e44f5207b437337223f01e9266c4a2ab375a43ffde09df296cf';
+const sha256Digest = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 const completedScenarios = new Map<string, number>();
 const expectedScenarios = [
   'ordinary-directory', 'ordinary-file', 'distinct-identity',
@@ -545,7 +550,7 @@ test('native root/env/data/identity authority accepts the protected object and r
 
 test('native helper replacement is rejected before attacker bytes can execute', { timeout: 75_000 }, async (t) => {
   if (!nativeOnly(t)) return;
-  const platformArch = `${process.platform}-${process.arch}`;
+  const platformArch = process.platform === 'win32' ? 'win32-x64' : `${process.platform}-${process.arch}`;
   const executableName = process.platform === 'win32' ? 'connect-authority-broker.exe' : 'connect-authority-broker';
   const artifact = join(process.cwd(), 'packages', 'cli', 'dist', 'native', 'prebuilds', platformArch, executableName);
   const backup = `${artifact}.trusted-test-backup-${process.pid}`;
@@ -611,15 +616,39 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     const preLockControl = nativeFixtureParent('propr-bootstrap-before-lock-');
     try {
       await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
-        onStaged: (stagedPath) => {
-          renameSync(stagedPath, `${stagedPath}.trusted-detached`);
-          copyFileSync(command, stagedPath);
+        onPackagedBrokerLocked: (packagedBrokerPath) => {
+          const attacker = join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityReplacementAttacker.exe');
+          const attackerSource = join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityReplacementAttacker.c');
+          const marker = join(dirname(packagedBrokerPath), 'packaged-broker-attacker-executed');
+          assert.equal(sha256Digest(readFileSync(attackerSource)), WINDOWS_REPLACEMENT_ATTACKER_SOURCE_SHA256);
+          assert.equal(sha256Digest(readFileSync(attacker)), WINDOWS_REPLACEMENT_ATTACKER_SHA256);
+          assert.throws(() => renameSync(packagedBrokerPath, `${packagedBrokerPath}.trusted-detached`));
+          assert.throws(() => copyFileSync(attacker, packagedBrokerPath));
+          assert.throws(() => lstatSync(marker), /ENOENT/);
+          throw new Error('packaged broker pre-CreateProcess lease observed');
         },
-      }), /capability|authority/);
+      }), /capability|authority|lease observed/);
       completeScenario('packaged-helper-integrity');
-      completeScenario('atomic-publication');
     } finally {
       rmSync(preLockControl, { recursive: true, force: true });
+    }
+
+    const publicationDirectory = nativeFixtureParent('propr-build-publication-');
+    const publicationTemporary = join(publicationDirectory, 'broker.building');
+    const publicationFinal = join(publicationDirectory, 'broker.exe');
+    try {
+      writeFileSync(publicationTemporary, 'trusted build output', { mode: 0o600 });
+      assert.throws(() => publishWindowsBuildArtifactNoReplace(publicationTemporary, publicationFinal, {
+        beforePublish: () => writeFileSync(publicationFinal, 'same-user collision', { flag: 'wx', mode: 0o600 }),
+      }));
+      assert.equal(readFileSync(publicationFinal, 'utf8'), 'same-user collision');
+      assert.equal(readFileSync(publicationTemporary, 'utf8'), 'trusted build output');
+      unlinkSync(publicationTemporary);
+      unlinkSync(publicationFinal);
+      assert.deepEqual(readdirSync(publicationDirectory), []);
+      completeScenario('atomic-publication');
+    } finally {
+      rmSync(publicationDirectory, { recursive: true, force: true });
     }
 
     const startupControl = nativeFixtureParent('propr-supervisor-startup-swap-');
@@ -667,15 +696,106 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     assert.match(provenance.launcherSourceSha256, /^[0-9a-f]{64}$/);
     assert.match(provenance.helperSha256, /^[0-9a-f]{64}$/);
     assert.match(provenance.launcherSha256, /^[0-9a-f]{64}$/);
+    assert.match(provenance.bootstrapSourceSha256, /^[0-9a-f]{64}$/);
+    assert.match(provenance.bootstrapSha256, /^[0-9a-f]{64}$/);
     assert.equal(provenance.signerPinsBound, provenance.trustMode === 'production-signed');
     assert.equal(provenance.noRuntimeCompilerWorkspace, true);
+
+    const buildLeaseDirectory = nativeFixtureParent('propr-build-input-leases-');
+    const bootstrapPath = join(process.cwd(), 'packages', 'cli', 'dist', 'native', 'prebuilds',
+      'win32-x64', 'connect-authority-bootstrap.exe');
+    const bootstrapFd = openSync(bootstrapPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const buildInputs = ['compiler.exe', 'linker.exe', 'reference.dll', 'source.cs', 'include.h', 'library.lib']
+      .map((name) => join(buildLeaseDirectory, name));
+    const leaseManifest = join(buildLeaseDirectory, 'inputs.lease');
+    const writeLeaseManifest = (tool = false) => {
+      const body = `PROPR_BUILD_LEASE_V1\n${buildInputs.map((path, index) =>
+        tool && index === 0
+          ? `T ${sha256Digest(readFileSync(path))} E ${'0'.repeat(64)} ${'0'.repeat(64)} ${path}\n`
+          : `F ${sha256Digest(readFileSync(path))} ${path}\n`).join('')}`;
+      writeFileSync(leaseManifest, body, { mode: 0o600 });
+      return sha256Digest(body);
+    };
+    try {
+      for (const path of buildInputs) writeFileSync(path, `trusted:${basename(path)}\n`, { mode: 0o600 });
+      await protectWindowsSetupEntries([
+        { path: buildLeaseDirectory, kind: 'directory' },
+        ...buildInputs.map((path) => ({ path, kind: 'file' as const })),
+      ]);
+      await closeWindowsAuthorityCapability();
+      let manifestDigest = writeLeaseManifest();
+      let leaseResult = spawnSync(bootstrapPath, ['lease-build-inputs-v1', leaseManifest, manifestDigest], {
+        shell: false, windowsHide: true, env: {}, encoding: 'buffer', input: Buffer.from('X'),
+        stdio: ['pipe', 'pipe', 'pipe', bootstrapFd],
+      });
+      assert.equal(leaseResult.status, 0);
+      assert.deepEqual(leaseResult.stdout, Buffer.from('R\n'));
+      assert.deepEqual(leaseResult.stderr, Buffer.alloc(0));
+
+      manifestDigest = writeLeaseManifest();
+      writeFileSync(buildInputs[3], 'same-user source replacement\n');
+      leaseResult = spawnSync(bootstrapPath, ['lease-build-inputs-v1', leaseManifest, manifestDigest], {
+        shell: false, windowsHide: true, env: {}, encoding: 'buffer', input: Buffer.from('X'),
+        stdio: ['pipe', 'pipe', 'pipe', bootstrapFd],
+      });
+      assert.equal(leaseResult.status, 23);
+      assert.deepEqual(leaseResult.stdout, Buffer.alloc(0));
+      assert.deepEqual(leaseResult.stderr, Buffer.alloc(0));
+
+      writeFileSync(buildInputs[3], `trusted:${basename(buildInputs[3])}\n`);
+      await protectWindowsSetupEntry(buildInputs[3], 'file');
+      copyFileSync(join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityReplacementAttacker.exe'), buildInputs[0]);
+      await protectWindowsSetupEntry(buildInputs[0], 'file');
+      manifestDigest = writeLeaseManifest(true);
+      leaseResult = spawnSync(bootstrapPath, ['lease-build-inputs-v1', leaseManifest, manifestDigest], {
+        shell: false, windowsHide: true, env: {}, encoding: 'buffer', input: Buffer.from('X'),
+        stdio: ['pipe', 'pipe', 'pipe', bootstrapFd],
+      });
+      assert.equal(leaseResult.status, 23, 'unsigned wrong-signer tool passed the catalog/signature rule');
+
+      writeFileSync(buildInputs[0], `trusted:${basename(buildInputs[0])}\n`);
+      await protectWindowsSetupEntry(buildInputs[0], 'file');
+      grantBroadWrite(buildInputs[2], false);
+      manifestDigest = writeLeaseManifest();
+      leaseResult = spawnSync(bootstrapPath, ['lease-build-inputs-v1', leaseManifest, manifestDigest], {
+        shell: false, windowsHide: true, env: {}, encoding: 'buffer', input: Buffer.from('X'),
+        stdio: ['pipe', 'pipe', 'pipe', bootstrapFd],
+      });
+      assert.equal(leaseResult.status, 23, 'arbitrary writable input ACL passed the native rule');
+      await protectWindowsSetupEntry(buildInputs[2], 'file');
+
+      manifestDigest = writeLeaseManifest();
+      const leaseChild = spawn(bootstrapPath, ['lease-build-inputs-v1', leaseManifest, manifestDigest], {
+        shell: false, windowsHide: true, env: {}, stdio: ['pipe', 'pipe', 'pipe', bootstrapFd],
+      });
+      await new Promise<void>((resolveReady, rejectReady) => {
+        const timer = setTimeout(() => rejectReady(new Error('build lease barrier timed out')), 5_000);
+        leaseChild.once('error', rejectReady);
+        leaseChild.stdout.once('data', (chunk) => {
+          clearTimeout(timer);
+          if (!Buffer.from(chunk).equals(Buffer.from('R\n'))) rejectReady(new Error('build lease readiness malformed'));
+          else resolveReady();
+        });
+      });
+      for (const path of buildInputs) {
+        assert.throws(() => writeFileSync(path, 'ABA attacker'));
+        assert.throws(() => unlinkSync(path));
+        assert.throws(() => renameSync(path, `${path}.attacker`));
+      }
+      leaseChild.stdin.end(Buffer.from('X'));
+      const leaseExit = await new Promise<number | null>((resolveExit) => leaseChild.once('exit', resolveExit));
+      assert.equal(leaseExit, 0);
+    } finally {
+      closeSync(bootstrapFd);
+      rmSync(buildLeaseDirectory, { recursive: true, force: true });
+    }
 
     const attackerResultPath = join(tmpdir(), `propr-control-handle-attacker-${process.pid}.json`);
     rmSync(attackerResultPath, { force: true });
     let concurrentRequest: Promise<Awaited<ReturnType<typeof exerciseWindowsAuthorityCapabilityForNativeTest>>> | undefined;
     const locked = await exerciseWindowsAuthorityCapabilityForNativeTest({
       onSupervisorStarting: ({
-        stagedPath, helperPath, environmentKeys, executable, constantArgv, manifest,
+        stagedPath, helperPath, environmentKeys, executable, packagedBrokerPath, constantArgv, manifest,
       }) => {
         heldHelperPath = helperPath;
         assert.deepEqual(environmentKeys, []);
@@ -683,10 +803,18 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         assert.equal(environmentKeys.includes(stagedPath), false);
         assert.deepEqual(constantArgv, ['--lease-validation-v2']);
         assert.notEqual(executable, stagedPath);
-        assert.match(executable, /prebuilds[\\/]win32-x64[\\/]connect-authority-broker\.exe$/i);
+        assert.match(executable, /prebuilds[\\/]win32-x64[\\/]connect-authority-bootstrap\.exe$/i);
+        assert.match(packagedBrokerPath, /prebuilds[\\/]win32-x64[\\/]connect-authority-broker\.exe$/i);
         assert.equal(manifest.protocolVersion, 2);
         assert.equal(manifest.pe.architecture, 'anycpu');
         assert.equal(manifest.pe.managed, true);
+        assert.deepEqual(manifest.build.toolSigners.map((item) => [item.name, item.signatureKind]), [
+          ['compiler', 'E'], ['native-compiler', 'E'], ['native-linker', 'E'],
+        ]);
+        for (const signer of manifest.build.toolSigners) {
+          assert.match(signer.authenticodeLeafSha256, /^[0-9a-f]{64}$/);
+          assert.match(signer.authenticodeSpkiSha256, /^[0-9a-f]{64}$/);
+        }
         completeScenario('encoded-loader');
         completeScenario('direct-helper-spawn');
       },

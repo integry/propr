@@ -8,12 +8,14 @@ import {
   fsyncSync,
   fstatSync,
   lstatSync,
+  linkSync,
   mkdtempSync,
   openSync,
   readFileSync,
   readSync,
   realpathSync,
   rmSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
@@ -141,6 +143,8 @@ const DARWIN_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
 const WINDOWS_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
   x64: "2ba903761156ef39235347998201710335ebe4fc97e51420ed1d117d384ce1d7",
 };
+const WINDOWS_AUTHORITY_BOOTSTRAP_SHA256 = "a633479040f27b4a8fab4fb982167803d05ecfdbb9063c3b76e25116575d8087";
+const WINDOWS_AUTHORITY_BOOTSTRAP_SOURCE_SHA256 = "1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e";
 
 const WINDOWS_AUTHORITY_PROTOCOL_VERSION = 2;
 const WINDOWS_AUTHORITY_SUPERVISOR_SOURCE_SHA256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
@@ -227,6 +231,42 @@ function authorityBrokerArtifact(platform: "darwin" | "win32", arch: string, exp
   throw new Error(`packaged native authority broker is missing for ${platform}-${arch}`);
 }
 
+function windowsBootstrapArtifact(): ReturnType<typeof authorityBrokerArtifact> {
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const relative = join("prebuilds", "win32-x64", "connect-authority-bootstrap.exe");
+  const candidates = [
+    join(moduleDirectory, "native", relative),
+    join(moduleDirectory, "..", "native", relative),
+    join(moduleDirectory, "..", "..", "native", relative),
+  ];
+  for (const path of candidates) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const stat = fstatSync(fd, { bigint: true });
+      const named = lstatSync(path, { bigint: true });
+      if (!stat.isFile() || named.isSymbolicLink() || stat.dev !== named.dev || stat.ino !== named.ino
+        || stat.nlink !== 1n || stat.size < 1024n || stat.size > BigInt(512 * 1024)) {
+        throw new WindowsSupervisorStartupError("HELPER_IDENTITY");
+      }
+      const bytes = readExactDescriptor(fd, Number(stat.size));
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      if (digest !== WINDOWS_AUTHORITY_BOOTSTRAP_SHA256) throw new WindowsSupervisorStartupError("HELPER_HASH");
+      return {
+        path,
+        fd,
+        identity: { device: stat.dev.toString(10), file: stat.ino.toString(10) },
+        digest,
+        bytes,
+      };
+    } catch (error) {
+      if (fd !== undefined) closeSync(fd);
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  throw new WindowsSupervisorStartupError("HELPER_OPEN");
+}
+
 interface WindowsSupervisorManifest {
   readonly format: "propr-windows-authority-helper-v2";
   readonly protocolVersion: 2;
@@ -239,7 +279,15 @@ interface WindowsSupervisorManifest {
     readonly compilerSha256: string;
     readonly launcherCompilerSha256: string;
     readonly launcherLinkerSha256: string;
+    readonly bootstrapSourceSha256: string;
+    readonly bootstrapSha256: string;
     readonly compilerRelativePath: string;
+    readonly toolSigners: readonly {
+      readonly name: "compiler" | "native-compiler" | "native-linker";
+      readonly signatureKind: "E";
+      readonly authenticodeLeafSha256: string;
+      readonly authenticodeSpkiSha256: string;
+    }[];
     readonly references: readonly { readonly name: string; readonly sha256: string }[];
     readonly nativeInputs: readonly { readonly name: string; readonly sha256: string; readonly files: number; readonly bytes: string }[];
   };
@@ -266,11 +314,21 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
   const trust = manifest.trust as Record<string, unknown> | undefined;
   if (!pe || Array.isArray(pe) || !exactKeys(pe, ["architecture", "managed", "deterministic"])
     || pe.architecture !== "anycpu" || pe.managed !== true || pe.deterministic !== true
-    || !build || Array.isArray(build) || !exactKeys(build, ["compilerSha256", "launcherCompilerSha256", "launcherLinkerSha256", "compilerRelativePath", "references", "nativeInputs"])
+    || !build || Array.isArray(build) || !exactKeys(build, ["compilerSha256", "launcherCompilerSha256", "launcherLinkerSha256", "bootstrapSourceSha256", "bootstrapSha256", "compilerRelativePath", "toolSigners", "references", "nativeInputs"])
     || typeof build.compilerRelativePath !== "string" || build.compilerRelativePath.length < 1 || build.compilerRelativePath.length > 160
     || !/^[0-9a-f]{64}$/.test(String(build.compilerSha256))
     || !/^[0-9a-f]{64}$/.test(String(build.launcherCompilerSha256))
     || !/^[0-9a-f]{64}$/.test(String(build.launcherLinkerSha256))
+    || build.bootstrapSourceSha256 !== WINDOWS_AUTHORITY_BOOTSTRAP_SOURCE_SHA256
+    || build.bootstrapSha256 !== WINDOWS_AUTHORITY_BOOTSTRAP_SHA256
+    || !Array.isArray(build.toolSigners) || build.toolSigners.length !== 3
+    || build.toolSigners.map((item) => item && typeof item === "object" && !Array.isArray(item)
+      && exactKeys(item as Record<string, unknown>, ["name", "signatureKind", "authenticodeLeafSha256", "authenticodeSpkiSha256"])
+      && (item as Record<string, unknown>).name
+      && (item as Record<string, unknown>).signatureKind === "E"
+      && /^[0-9a-f]{64}$/.test(String((item as Record<string, unknown>).authenticodeLeafSha256))
+      && /^[0-9a-f]{64}$/.test(String((item as Record<string, unknown>).authenticodeSpkiSha256)))
+      .join("\0") !== "compiler\0native-compiler\0native-linker"
     || !Array.isArray(build.references) || build.references.length < 1 || build.references.length > 16
     || !build.references.every((item) => item && typeof item === "object" && !Array.isArray(item)
       && exactKeys(item as Record<string, unknown>, ["name", "sha256"])
@@ -489,6 +547,7 @@ function stageWindowsAuthorityBroker(artifact: ReturnType<typeof authorityBroker
 }
 
 interface WindowsAuthorityCapability {
+  readonly bootstrap: ReturnType<typeof windowsBootstrapArtifact>;
   readonly artifact: ReturnType<typeof authorityBrokerArtifact>;
   readonly helper: ReturnType<typeof windowsSupervisorArtifact>;
   readonly staged: ReturnType<typeof stageWindowsAuthorityBroker>;
@@ -506,11 +565,13 @@ interface WindowsAuthorityCapability {
 export interface WindowsAuthorityCapabilityProbe {
   readonly args?: readonly string[];
   readonly onStaged?: (stagedPath: string) => void;
+  readonly onPackagedBrokerLocked?: (packagedBrokerPath: string) => void;
   readonly onSupervisorStarting?: (details: {
     readonly stagedPath: string;
     readonly helperPath: string;
     readonly environmentKeys: readonly string[];
     readonly executable: string;
+    readonly packagedBrokerPath: string;
     readonly constantArgv:
       | readonly ["--lease-v2", string, string]
       | readonly ["--lease-validation-v2"]
@@ -570,6 +631,7 @@ function revalidateWindowsCapabilityFiles(capability: WindowsAuthorityCapability
   });
   atWindowsCapabilityStage(capability, "HELPER_IDENTITY", () => {
     const staged = fstatSync(capability.staged.fd, { bigint: true });
+    const bootstrap = fstatSync(capability.bootstrap.fd, { bigint: true });
     const artifact = fstatSync(capability.artifact.fd, { bigint: true });
     const helper = fstatSync(capability.helper.fd, { bigint: true });
     if (
@@ -577,6 +639,9 @@ function revalidateWindowsCapabilityFiles(capability: WindowsAuthorityCapability
       || staged.dev !== named.dev
       || staged.ino !== named.ino
       || staged.size !== BigInt(capability.artifact.bytes.byteLength)
+      || !bootstrap.isFile()
+      || bootstrap.dev.toString(10) !== capability.bootstrap.identity.device
+      || bootstrap.ino.toString(10) !== capability.bootstrap.identity.file
       || !artifact.isFile()
       || artifact.dev.toString(10) !== capability.artifact.identity.device
       || artifact.ino.toString(10) !== capability.artifact.identity.file
@@ -591,6 +656,9 @@ function revalidateWindowsCapabilityFiles(capability: WindowsAuthorityCapability
       createHash("sha256")
         .update(readExactDescriptor(capability.staged.fd, capability.artifact.bytes.byteLength))
         .digest("hex") !== capability.artifact.digest
+      || createHash("sha256")
+        .update(readExactDescriptor(capability.bootstrap.fd, capability.bootstrap.bytes.byteLength))
+        .digest("hex") !== capability.bootstrap.digest
       || createHash("sha256")
         .update(readExactDescriptor(capability.artifact.fd, capability.artifact.bytes.byteLength))
         .digest("hex") !== capability.artifact.digest
@@ -1029,6 +1097,7 @@ function closeWindowsCapabilityFiles(capability: WindowsAuthorityCapability): vo
   try { closeSync(capability.staged.directoryFd); } catch { /* Already closed during failed acquisition. */ }
   try { closeSync(capability.artifact.fd); } catch { /* Already closed during failed acquisition. */ }
   try { closeSync(capability.helper.fd); } catch { /* Already closed during failed acquisition. */ }
+  try { closeSync(capability.bootstrap.fd); } catch { /* Already closed during failed acquisition. */ }
   try { rmSync(capability.staged.directory, { recursive: true, force: true }); } catch { /* Best effort after native close. */ }
 }
 
@@ -1074,7 +1143,7 @@ async function destroyWindowsAuthorityCapability(
 }
 
 async function acquireWindowsAuthorityCapability(
-  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName" | "testWorkspaceMode">,
+  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onPackagedBrokerLocked" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName" | "testWorkspaceMode">,
   signal?: AbortSignal,
 ): Promise<WindowsAuthorityCapability> {
   if (windowsAuthorityCapability) {
@@ -1094,6 +1163,7 @@ async function acquireWindowsAuthorityCapability(
     }
   }
   let artifact: ReturnType<typeof authorityBrokerArtifact>;
+  let bootstrap: ReturnType<typeof windowsBootstrapArtifact>;
   let helper: ReturnType<typeof windowsSupervisorArtifact>;
   try {
     helper = windowsSupervisorArtifact();
@@ -1101,8 +1171,17 @@ async function acquireWindowsAuthorityCapability(
     throw error;
   }
   try {
-    artifact = authorityBrokerArtifact("win32", process.arch, helper.manifest.launcherSha256);
+    bootstrap = windowsBootstrapArtifact();
   } catch (error) {
+    closeSync(helper.fd);
+    throw error;
+  }
+  try {
+    // Windows on Arm64 provides the audited x64 emulation boundary; the
+    // managed supervisor remains AnyCPU and executes natively after launch.
+    artifact = authorityBrokerArtifact("win32", "x64", helper.manifest.launcherSha256);
+  } catch (error) {
+    closeSync(bootstrap.fd);
     closeSync(helper.fd);
     throw error instanceof WindowsSupervisorStartupError ? error : new WindowsSupervisorStartupError("HELPER_OPEN");
   }
@@ -1118,7 +1197,7 @@ async function acquireWindowsAuthorityCapability(
     // The packaged, checksum-bound native broker is the initial launch
     // authority.  It acquires the staged path with FILE_SHARE_READ only and
     // performs the actual suspended CreateProcess after the barrier below.
-    const executable = artifact.path;
+    const executable = bootstrap.path;
     const constantArgv = probe?.testFailureStage === "JOB_ASSIGN"
       ? ["--lease-validation-job-failure-v2"] as const
       : helper.manifest.trust.mode === "production-signed"
@@ -1133,6 +1212,7 @@ async function acquireWindowsAuthorityCapability(
       helperPath: helper.path,
       environmentKeys: Object.freeze(Object.keys(supervisorEnvironment)),
       executable,
+      packagedBrokerPath: artifact.path,
       constantArgv,
       manifest: helper.manifest,
     });
@@ -1140,7 +1220,7 @@ async function acquireWindowsAuthorityCapability(
     const launchMode = probe?.testFailureStage === "JOB_ASSIGN"
       ? "validation-job-failure"
       : helper.manifest.trust.mode === "production-signed" ? "production" : "validation";
-    const launcherArgv = [
+    const brokerArgv = [
       "launch-staged-broker-v1",
       staged.path,
       launchMode,
@@ -1151,25 +1231,41 @@ async function acquireWindowsAuthorityCapability(
       helper.manifest.trust.authenticodeLeafSha256 ?? zeroPin,
       helper.manifest.trust.authenticodeSpkiSha256 ?? zeroPin,
     ];
+    const launcherArgv = [
+      "launch-packaged-broker-v1",
+      artifact.path,
+      artifact.digest,
+      helper.manifest.trust.mode === "production-signed" ? "production" : "validation",
+      helper.manifest.trust.authenticodeLeafSha256 ?? zeroPin,
+      helper.manifest.trust.authenticodeSpkiSha256 ?? zeroPin,
+      artifact.path,
+      ...brokerArgv,
+    ];
     supervisor = spawn(executable, launcherArgv, {
       shell: false,
       windowsHide: true,
       env: supervisorEnvironment,
-      stdio: ["pipe", "pipe", "pipe", staged.fd, helper.fd, "pipe", artifact.fd],
+      // fd 5 is the staged-broker barrier retained by the packaged broker;
+      // fd 7 is the earlier packaged-broker barrier owned by the immutable
+      // bootstrap authority. fd 8 binds the executing bootstrap to held bytes.
+      stdio: ["pipe", "pipe", "pipe", staged.fd, helper.fd, "pipe", artifact.fd, "pipe", bootstrap.fd],
     });
     if (!supervisor.pid) throw new WindowsSupervisorStartupError("TRANSPORT_SPAWN");
     const launchBarrier = (supervisor.stdio as unknown as Array<NodeJS.ReadWriteStream | null>)[5];
-    if (!launchBarrier || typeof (launchBarrier as NodeJS.ReadWriteStream).write !== "function") {
+    const packagedBarrier = (supervisor.stdio as unknown as Array<NodeJS.ReadWriteStream | null>)[7];
+    if (!launchBarrier || !packagedBarrier
+      || typeof (launchBarrier as NodeJS.ReadWriteStream).write !== "function"
+      || typeof (packagedBarrier as NodeJS.ReadWriteStream).write !== "function") {
       throw new WindowsSupervisorStartupError("TRANSPORT_SPAWN");
     }
-    await new Promise<void>((resolve, reject) => {
+    const awaitLeaseBarrier = (barrier: NodeJS.ReadWriteStream) => new Promise<void>((resolve, reject) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout>;
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        launchBarrier.off("data", onData);
+        barrier.off("data", onData);
         supervisor!.off("error", onError);
         supervisor!.off("exit", onExit);
         if (error) reject(error); else resolve();
@@ -1182,10 +1278,19 @@ async function acquireWindowsAuthorityCapability(
       const onError = () => finish(new WindowsSupervisorStartupError("TRANSPORT_SPAWN"));
       const onExit = () => finish(new WindowsSupervisorStartupError("TRANSPORT_SPAWN"));
       timer = setTimeout(() => finish(new WindowsSupervisorStartupError("TRANSPORT_SPAWN")), WINDOWS_CAPABILITY_STARTUP_TIMEOUT_MS);
-      launchBarrier.once("data", onData);
+      barrier.once("data", onData);
       supervisor!.once("error", onError);
       supervisor!.once("exit", onExit);
     });
+    await awaitLeaseBarrier(packagedBarrier as NodeJS.ReadWriteStream);
+    try {
+      probe?.onPackagedBrokerLocked?.(artifact.path);
+      (packagedBarrier as NodeJS.ReadWriteStream).end(Buffer.from("G"));
+    } catch (error) {
+      (packagedBarrier as NodeJS.ReadWriteStream).end(Buffer.from("X"));
+      throw error;
+    }
+    await awaitLeaseBarrier(launchBarrier as NodeJS.ReadWriteStream);
     // This is the real pre-CreateProcess mutation barrier: the native parent
     // already owns its deny-write/delete/rename lease, and will not create the
     // staged process until the hook has attempted its attack.
@@ -1202,6 +1307,7 @@ async function acquireWindowsAuthorityCapability(
     (supervisor.stdout as typeof supervisor.stdout & { unref?: () => void } | null)?.unref?.();
     (supervisor.stderr as typeof supervisor.stderr & { unref?: () => void } | null)?.unref?.();
     capability = {
+      bootstrap,
       artifact,
       helper,
       staged,
@@ -1305,6 +1411,7 @@ async function acquireWindowsAuthorityCapability(
         try { rmSync(staged.directory, { recursive: true, force: true }); } catch { /* Acquisition cleanup. */ }
       }
       closeSync(artifact.fd);
+      closeSync(bootstrap.fd);
       closeSync(helper.fd);
     }
     if (error instanceof WindowsSupervisorStartupError) throw error;
@@ -1517,8 +1624,47 @@ export function exerciseWindowsAuthorityStageFailureForNativeTest(
       directoryFd = openSync(fixture, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       fileFd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
-        if (requestedStage === "BUILD_COMPILER" || requestedStage === "BUILD_SOURCE"
-          || requestedStage === "BUILD_OUTPUT" || requestedStage === "MANIFEST") {
+        if (requestedStage === "BUILD_COMPILER" || requestedStage === "BUILD_SOURCE") {
+          const bootstrap = windowsBootstrapArtifact();
+          const leaseManifest = join(fixture, "build-inputs.lease");
+          const original = Buffer.from(requestedStage === "BUILD_COMPILER" ? "trusted compiler\n" : "trusted source\n");
+          writeFileSync(file, original);
+          const body = Buffer.from(`PROPR_BUILD_LEASE_V1\nF ${createHash("sha256").update(original).digest("hex")} ${file}\n`);
+          writeFileSync(leaseManifest, body, { flag: "wx", mode: 0o600 });
+          // The named mutation occurs after authorization bytes exist but at
+          // the exact native lease barrier used by production tool launches.
+          writeFileSync(file, requestedStage === "BUILD_COMPILER" ? "same-user compiler swap\n" : "same-user source swap\n");
+          try {
+            const result = spawnSync(bootstrap.path, [
+              "lease-build-inputs-v1", leaseManifest, createHash("sha256").update(body).digest("hex"),
+            ], {
+              shell: false, windowsHide: true, env: {}, input: Buffer.from("X"), encoding: "buffer",
+              stdio: ["pipe", "pipe", "pipe", bootstrap.fd],
+            });
+            if (result.status !== 23 || result.error || result.signal
+              || Buffer.byteLength(result.stdout) !== 0 || Buffer.byteLength(result.stderr) !== 0) {
+              throw new Error("build input mutation was not rejected");
+            }
+          } finally {
+            closeSync(bootstrap.fd);
+          }
+          throw new WindowsSupervisorStartupError(requestedStage);
+        }
+        if (requestedStage === "BUILD_OUTPUT") {
+          const temporary = join(fixture, "supervisor.building");
+          const final = join(fixture, "supervisor.exe");
+          writeFileSync(temporary, "trusted output", { flag: "wx", mode: 0o600 });
+          writeFileSync(final, "same-user publication collision", { flag: "wx", mode: 0o600 });
+          try {
+            linkSync(temporary, final);
+          } catch {
+            if (readFileSync(final, "utf8") !== "same-user publication collision"
+              || readFileSync(temporary, "utf8") !== "trusted output") throw new Error("publication collision mutated output");
+            throw new WindowsSupervisorStartupError(requestedStage);
+          }
+          throw new Error("build publication collision replaced an existing name");
+        }
+        if (requestedStage === "MANIFEST") {
           const helper = windowsSupervisorArtifact();
           closeSync(helper.fd);
           throw new WindowsSupervisorStartupError(requestedStage);
@@ -1567,6 +1713,8 @@ export function exerciseWindowsHelperProvenanceForNativeTest(): {
   readonly launcherSourceSha256: string;
   readonly helperSha256: string;
   readonly launcherSha256: string;
+  readonly bootstrapSourceSha256: string;
+  readonly bootstrapSha256: string;
   readonly trustMode: "unsigned-validation" | "production-signed";
   readonly signerPinsBound: boolean;
   readonly noRuntimeCompilerWorkspace: true;
@@ -1581,6 +1729,8 @@ export function exerciseWindowsHelperProvenanceForNativeTest(): {
       launcherSourceSha256: helper.manifest.launcherSourceSha256,
       helperSha256: helper.digest,
       launcherSha256: helper.manifest.launcherSha256,
+      bootstrapSourceSha256: helper.manifest.build.bootstrapSourceSha256,
+      bootstrapSha256: helper.manifest.build.bootstrapSha256,
       trustMode: helper.manifest.trust.mode,
       signerPinsBound: helper.manifest.trust.mode === "unsigned-validation"
         ? false
@@ -1730,9 +1880,13 @@ export function exerciseWindowsAuthorityCapabilityForNativeTest(
 }> {
   if (process.platform !== "win32") throw new Error("Windows capability probe requires Windows");
   return enqueueWindowsAuthority(async () => {
-  if (probe.onStaged || probe.onSupervisorStarting || probe.onSupervisorSpawned) await destroyWindowsAuthorityCapability();
+  if (probe.onStaged || probe.onPackagedBrokerLocked || probe.onSupervisorStarting || probe.onSupervisorSpawned) {
+    await destroyWindowsAuthorityCapability();
+  }
   const capability = await acquireWindowsAuthorityCapability(
-    probe.onStaged || probe.onSupervisorStarting || probe.onSupervisorSpawned ? probe : undefined,
+    probe.onStaged || probe.onPackagedBrokerLocked || probe.onSupervisorStarting || probe.onSupervisorSpawned
+      ? probe
+      : undefined,
     probe.signal,
   );
   if (!capability.supervisor.pid) throw new Error("Windows capability probe is unavailable");

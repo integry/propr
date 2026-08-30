@@ -107,6 +107,7 @@ try {
   assert.equal(paths.includes("dist/native/prebuilds/win32-anycpu/connect-authority-supervisor.manifest.json"), true);
   assert.equal(paths.includes("dist/native/prebuilds/win32-anycpu/connect-authority-supervisor.manifest.sig"), true);
   assert.equal(paths.includes("dist/native/prebuilds/win32-x64/connect-authority-broker.exe"), true);
+  assert.equal(paths.includes("dist/native/prebuilds/win32-x64/connect-authority-bootstrap.exe"), true);
   assert.equal(paths.every((path) => path === "README.md" || path === "package.json" || path.startsWith("dist/")), true);
   assert.equal(paths.some((path) => path.endsWith(".map") || path.endsWith(".d.ts")), false);
   const tarball = join(packDirectory, packed.filename);
@@ -120,6 +121,7 @@ try {
   const manifest = JSON.parse(readFileSync(join(stage, "dist", "native", "prebuilds", "win32-anycpu", "connect-authority-supervisor.manifest.json"), "utf8"));
   assert.equal(createHash("sha256").update(readFileSync(join(stage, "dist", "native", "prebuilds", "win32-anycpu", "connect-authority-supervisor.exe"))).digest("hex"), manifest.helperSha256);
   assert.equal(createHash("sha256").update(readFileSync(join(stage, "dist", "native", "prebuilds", "win32-x64", "connect-authority-broker.exe"))).digest("hex"), manifest.launcherSha256);
+  assert.equal(createHash("sha256").update(readFileSync(join(stage, "dist", "native", "prebuilds", "win32-x64", "connect-authority-bootstrap.exe"))).digest("hex"), manifest.build.bootstrapSha256);
 
   run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", installDirectory, tarball], {
     cwd: runtimeDirectory,
@@ -134,6 +136,9 @@ try {
   assert.equal(createHash("sha256").update(readFileSync(installedPath(
     "dist", "native", "prebuilds", "win32-x64", "connect-authority-broker.exe",
   ))).digest("hex"), manifest.launcherSha256);
+  assert.equal(createHash("sha256").update(readFileSync(installedPath(
+    "dist", "native", "prebuilds", "win32-x64", "connect-authority-bootstrap.exe",
+  ))).digest("hex"), manifest.build.bootstrapSha256);
   const authority = await import(pathToFileURL(installedPath("dist", "connectRootAuthority.js")).href);
   await authority.protectWindowsSetupEntries([
     { path: runtimeDirectory, kind: "directory" },

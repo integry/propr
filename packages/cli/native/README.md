@@ -38,6 +38,41 @@ only inside the packaged CLI native directory and reads them through a held
 non-symlink descriptor. After a hard-coded SHA-256 check, broker execution uses
 only held bytes staged into a randomized private capability.
 
+`windows-authority-bootstrap.c` is a separately committed immutable bootstrap
+authority. Its source and x64 PE carry independent hard-coded SHA-256 pins and
+are not outputs of the helper build. It obtains Windows, system-Windows and
+System32 paths directly from `GetWindowsDirectoryW`,
+`GetSystemWindowsDirectoryW` and `GetSystemDirectoryW`, removing the circular
+dependency on a newly built broker. At runtime it retains a `FILE_SHARE_READ`
+lease over the packaged broker, binds full volume/`FILE_ID_128`/SHA-256,
+ordinary-file and protected owner/DACL state, and in production binds the exact
+Authenticode leaf and SPKI from the WinVerifyTrust provider chain. It creates
+the packaged broker suspended, assigns a kill-on-close job,
+reopens and revalidates the loaded image, and retains all leases through exit.
+The Windows-only helper build also uses its `lease-build-inputs-v1` boundary:
+an independently hash-bound manifest names every exact compiler, linker,
+reference, staged source, include, library and generated object byte sequence.
+The bootstrap opens each input with `FILE_SHARE_READ` only, rejects reparse,
+foreign-owner or broadly writable ACL state, and requires each invoked tool's
+pre-authorized exact embedded-signature leaf/SPKI pair. Signature kind is part
+of the lease record: catalog-only, unsigned, wrong-leaf and wrong-key images
+fail rather than changing trust modes. It signals readiness only after all
+leases exist and retains them until the explicitly named tool has exited.
+Unsigned freshly built validation images are marked as data inputs and never
+produce or claim signer pins.
+
+The bootstrap provenance is independently reproducible: source SHA-256
+`1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e`,
+PE SHA-256
+`a633479040f27b4a8fab4fb982167803d05ecfdbb9063c3b76e25116575d8087`,
+and Zig 0.13.0 Linux x86_64 archive SHA-256
+`d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea`.
+From the repository root, the exact build is
+`SOURCE_DATE_EPOCH=0 zig cc -target x86_64-windows-gnu -O2 -s -municode packages/cli/native/windows-authority-bootstrap.c -ladvapi32 -lbcrypt -lcrypt32 -lwintrust -o packages/cli/native/prebuilds/win32-x64/connect-authority-bootstrap.exe`.
+The fixed epoch plus stripped output makes two clean invocations byte-for-byte
+identical; package verification also cross-checks this PE hash against the
+generated authority manifest after both `npm pack` and `npm install`.
+
 `windows-authority-supervisor.cs` is the complete persistent Windows authority
 source. It is compiled in an explicit Windows-only build step into a
 deterministic AnyCPU PE and is never compiled at runtime. The build emits a
