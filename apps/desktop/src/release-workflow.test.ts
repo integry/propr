@@ -297,6 +297,12 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(windowsMachineInstaller, /<CustomAction|<ServiceInstall|RollbackProbe|icacls\.exe/);
     assert.match(installedWindowsAppTest, /-Credential \$credential/);
     assert.match(installedWindowsAppTest, /--propr-smoke-test/);
+    assert.match(installedWindowsAppTest, /--user-data-dir=\$smokeUserDataDirectory/);
+    assert.match(installedWindowsAppTest, /propr-desktop-smoke-/);
+    assert.match(installedWindowsAppTest, /SetAccessRuleProtection\(\$true, \$false\)/);
+    assert.match(installedWindowsAppTest, /S-1-5-18/);
+    assert.match(installedWindowsAppTest, /S-1-5-32-544/);
+    assert.match(installedWindowsAppTest, /Remove-SmokeUserDataDirectory \$smokeUserDataDirectory/);
     assert.match(installedWindowsAppTest, /propr:\/\/connect/);
     assert.match(installedWindowsAppTest, /deferred Windows update authority resource/);
   });

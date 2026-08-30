@@ -1,3 +1,4 @@
+import { lstatSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, ipcMain, net, protocol, safeStorage, session, shell } from 'electron';
@@ -18,6 +19,7 @@ import {
 } from './security';
 import { DESKTOP_PROTOCOL, IPC_CHANNELS } from './shared/contract';
 import { checkForSignedUpdates } from './signed-updates';
+import { authorizePackagedSmokeTest } from './smoke-test-authorization';
 import { createBrowserWindowOptions } from './window-options';
 
 const devServerUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL === 'string'
@@ -28,9 +30,21 @@ const PACKAGED_RENDERER_HOST = 'renderer';
 const PACKAGED_LAYOUT_READY_EVENT = 'desktop.renderer.layout.ready';
 const packagedRendererRoot = join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}`);
 const packagedRendererUrl = `${DESKTOP_RENDERER_ORIGIN}/renderer.html`;
-const packagedSmokeTest = app.isPackaged && (
-  process.env.PROPR_DESKTOP_SMOKE_TEST === '1' || process.argv.includes('--propr-smoke-test')
-);
+const packagedSmokeUserDataDirectory = authorizePackagedSmokeTest({
+  argv: process.argv,
+  defaultUserDataDirectory: join(app.getPath('appData'), app.name),
+  environmentTriggered: process.env.PROPR_DESKTOP_SMOKE_TEST === '1',
+  isPackaged: app.isPackaged,
+  platform: process.platform,
+});
+if (packagedSmokeUserDataDirectory) {
+  const smokeDirectoryStats = lstatSync(packagedSmokeUserDataDirectory);
+  if (!smokeDirectoryStats.isDirectory() || smokeDirectoryStats.isSymbolicLink()) {
+    throw new Error('Packaged desktop smoke --user-data-dir must be an existing non-link directory');
+  }
+  app.setPath('userData', packagedSmokeUserDataDirectory);
+}
+const packagedSmokeTest = packagedSmokeUserDataDirectory !== null;
 let mainWindow: BrowserWindow | null = null;
 const initialDeepLink = deepLinkFromArguments(process.argv);
 const deepLinkDelivery = new DeepLinkDelivery<BrowserWindow>(
