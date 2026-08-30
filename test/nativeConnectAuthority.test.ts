@@ -17,6 +17,7 @@ import {
   closeWindowsAuthorityCapability,
   exerciseWindowsAuthorityCapabilityControlForNativeTest,
   exerciseWindowsAuthorityCapabilityForNativeTest,
+  exerciseWindowsCompilerWorkspacePublicationForNativeTest,
   protectWindowsSetupEntries,
   protectWindowsSetupEntry,
   stableAuthorityIdentity,
@@ -38,7 +39,7 @@ const expectedScenarios = [
   ...(process.platform === 'win32' ? ['foreign-owner'] : []),
   'packaged-helper-integrity',
   ...(process.platform === 'win32'
-    ? ['bootstrap-after-lock', 'bootstrap-during-launch', 'bootstrap-aba', 'bootstrap-restart']
+    ? ['atomic-publication', 'bootstrap-after-lock', 'bootstrap-aba', 'settling-race']
     : []),
   'reparse', 'replacement-barrier', 'inspection-handle-swap',
   'config-off', 'config-on', 'config-absence', 'config-disappearance',
@@ -533,7 +534,7 @@ test('native root/env/data/identity authority accepts the protected object and r
   }
 });
 
-test('native helper replacement is rejected before attacker bytes can execute', { timeout: 45_000 }, async (t) => {
+test('native helper replacement is rejected before attacker bytes can execute', { timeout: 75_000 }, async (t) => {
   if (!nativeOnly(t)) return;
   const platformArch = `${process.platform}-${process.arch}`;
   const executableName = process.platform === 'win32' ? 'connect-authority-broker.exe' : 'connect-authority-broker';
@@ -624,13 +625,21 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         },
       }), /capability|IMAGE_IDENTITY|LOCK/);
       assert.equal(swapFired, true, 'startup swap hook did not execute');
-      completeScenario('bootstrap-during-launch');
     } finally {
       await closeWindowsAuthorityCapability();
       rmSync(startupControl, { recursive: true, force: true });
     }
 
     const deniedHooks = { write: false, delete: false, rename: false, replace: false };
+
+    assert.deepEqual(await exerciseWindowsCompilerWorkspacePublicationForNativeTest(), {
+      version: 1,
+      status: 'failed-closed',
+      stage: 'TEMP_WORKSPACE_DACL_APPLY',
+      observerContents: 'unchanged',
+    });
+    completeScenario('atomic-publication');
+
     const attackerResultPath = join(tmpdir(), `propr-control-handle-attacker-${process.pid}.json`);
     rmSync(attackerResultPath, { force: true });
     let concurrentRequest: Promise<Awaited<ReturnType<typeof exerciseWindowsAuthorityCapabilityForNativeTest>>> | undefined;
@@ -755,13 +764,26 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     assert.notEqual(protocolRestarted.stagedPath, afterRejectedCommand.stagedPath);
     assert.deepEqual(JSON.parse(protocolRestarted.output.toString('utf8')), { version: 1, ready: true });
 
-    for (const mode of [
-      'replay', 'wrong-request-id', 'wrong-identity', 'malformed', 'extra-frame', 'partial-frame', 'eof',
-    ] as const) {
-      await assert.rejects(exerciseWindowsAuthorityCapabilityControlForNativeTest({ mode }), /capability|malformed|extra output/);
+    for (const mode of ['replay', 'wrong-request-id', 'wrong-identity', 'malformed', 'partial-frame', 'eof'] as const) {
+      await assert.rejects(
+        exerciseWindowsAuthorityCapabilityControlForNativeTest({ mode }),
+        /capability|malformed|extra output/,
+      );
       const recovered = await exerciseWindowsAuthorityCapabilityForNativeTest();
       assert.deepEqual(JSON.parse(recovered.output.toString('utf8')), { version: 1, ready: true });
     }
+    for (const mode of [
+      'extra-frame', 'stderr', 'stdout-error', 'stdin-error', 'process-error',
+      'unexpected-eof', 'unexpected-exit', 'timeout', 'abort',
+    ] as const) {
+      const poisoned = exerciseWindowsAuthorityCapabilityControlForNativeTest({ mode });
+      const queued = exerciseWindowsAuthorityCapabilityForNativeTest();
+      await assert.rejects(poisoned, /capability|malformed|extra output|timed out|aborted|settling/);
+      await assert.rejects(queued, /capability/);
+      const recovered = await exerciseWindowsAuthorityCapabilityForNativeTest();
+      assert.deepEqual(JSON.parse(recovered.output.toString('utf8')), { version: 1, ready: true });
+    }
+    completeScenario('settling-race');
     const afterFramingRecovery = await exerciseWindowsAuthorityCapabilityForNativeTest();
 
     process.kill(afterFramingRecovery.supervisorPid);
@@ -777,7 +799,6 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     ]);
     assert.equal(queuedSecond.stagedPath, queuedFirst.stagedPath);
     assert.equal(queuedSecond.supervisorPid, queuedFirst.supervisorPid);
-    completeScenario('bootstrap-restart');
 
     await closeWindowsAuthorityCapability();
     assert.throws(() => lstatSync(queuedSecond.directory), /ENOENT/);

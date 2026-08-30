@@ -10,6 +10,7 @@ import {
   lstatSync,
   mkdtempSync,
   openSync,
+  readFileSync,
   readSync,
   realpathSync,
   rmSync,
@@ -336,33 +337,63 @@ public static class ProprSupervisorNative {
 `;
 const WINDOWS_SUPERVISOR_SOURCE_MAX_BYTES = 64 * 1024;
 const WINDOWS_SUPERVISOR_LOADER = String.raw`
-$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$global:ProprStage='TEMP_WORKSPACE_CREATE';$global:ProprTestFailureStage=$null;$compilerWorkspace=$null;$workspaceVerified=$false;$workspaceRemoved=$false
+using namespace System
+using namespace System.IO
+using namespace System.Numerics
+using namespace System.Reflection
+using namespace System.Reflection.Emit
+using namespace System.Runtime.InteropServices
+using namespace System.Security.AccessControl
+using namespace System.Security.Principal
+$ErrorActionPreference='Stop';$global:ProprStage='TEMP_WORKSPACE_CREATE';$global:ProprTestFailureStage=$null;$workspace=$null;$h=[IntPtr]::Zero;$id=$null;$removed=$false
 function EnterStage([string]$value){$global:ProprStage=$value;if($global:ProprTestFailureStage -ceq $value){throw 'injected-stage-failure'}}
-function WriteStartupFailure(){try{$body=[Text.Encoding]::UTF8.GetBytes(('{"version":1,"kind":"startup-error","requestId":"00000000000000000000000000000000","stage":"'+$global:ProprStage+'"}'));if($body.Length -gt 256){return};$out=[Console]::OpenStandardOutput();$header=[BitConverter]::GetBytes([uint32]$body.Length);$out.Write($header,0,4);$out.Write($body,0,$body.Length);$out.Flush()}catch{}}
-function WorkspaceRule($sid){return [Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::FullControl,[Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)}
-function RequireWorkspaceOrdinary([string]$path){$attributes=[IO.File]::GetAttributes($path);if(($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or ($attributes -band [IO.FileAttributes]::Directory) -eq 0){throw 'workspace'}}
-function VerifyWorkspace([string]$path,$owner){RequireWorkspaceOrdinary $path;$security=[IO.Directory]::GetAccessControl($path);if(!$security.AreAccessRulesProtected -or $security.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $owner.Value){throw 'workspace-acl'};$rules=@($security.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));if($rules.Count -ne 3){throw 'workspace-acl'};$expected=@($owner.Value,'S-1-5-18','S-1-5-32-544');foreach($rule in $rules){if($rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or [int64]$rule.FileSystemRights -ne 2032127 -or [int]$rule.InheritanceFlags -ne 3 -or $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None -or $expected -cnotcontains $rule.IdentityReference.Value){throw 'workspace-acl'}}}
-function CloseCompilerWorkspace(){if($script:workspaceRemoved -or $null -eq $script:compilerWorkspace){return};EnterStage 'TEMP_WORKSPACE_CLEANUP';if(!$script:workspaceVerified){throw 'workspace-unverified'};[GC]::Collect();[GC]::WaitForPendingFinalizers();RequireWorkspaceOrdinary $script:compilerWorkspace;[IO.Directory]::Delete($script:compilerWorkspace,$true);$script:workspaceRemoved=$true}
-function FinalCompilerWorkspaceCleanup(){if($script:workspaceRemoved -or $null -eq $script:compilerWorkspace -or ![IO.Directory]::Exists($script:compilerWorkspace)){return};$attributes=[IO.File]::GetAttributes($script:compilerWorkspace);if(($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or !$script:workspaceVerified){[IO.Directory]::Delete($script:compilerWorkspace,$false)}else{[IO.Directory]::Delete($script:compilerWorkspace,$true)};$script:workspaceRemoved=$true}
-function ReadExact($stream,[int]$count,$watch){$bytes=New-Object byte[] $count;$offset=0;while($offset -lt $count){$pending=$stream.BeginRead($bytes,$offset,$count-$offset,$null,$null);try{while(!$pending.AsyncWaitHandle.WaitOne(25)){if($watch.ElapsedMilliseconds -ge 10000){throw 'deadline'}};$read=$stream.EndRead($pending);if($read -le 0){throw 'eof'};$offset+=$read}finally{try{$pending.AsyncWaitHandle.Close()}catch{}}};return $bytes}
+function WriteStartupFailure(){try{$body=[Text.Encoding]::UTF8.GetBytes(('{"version":1,"kind":"startup-error","requestId":"00000000000000000000000000000000","stage":"'+$global:ProprStage+'"}'));$out=[Console]::OpenStandardOutput();$header=[BitConverter]::GetBytes([uint32]$body.Length);$out.Write($header,0,4);$out.Write($body,0,$body.Length);$out.Flush()}catch{}}
+function R($sid){return [FileSystemAccessRule]::new($sid,[FileSystemRights]2032127,[InheritanceFlags]3,[PropagationFlags]0,[AccessControlType]0)}
+function O([string]$path){$attributes=[File]::GetAttributes($path);if(($attributes-band[FileAttributes]::ReparsePoint)-ne 0-or($attributes-band[FileAttributes]::Directory)-eq 0){throw 'w'}}
+function N(){
+  $a=[AppDomain]::CurrentDomain.DefineDynamicAssembly([AssemblyName]::new('PWN'),[AssemblyBuilderAccess]::Run);$m=$a.DefineDynamicModule('PWN');$b=$m.DefineType('PWN','Public,Sealed,Abstract')
+  function P($name,$dll,$return,[Type[]]$parameters){$x=$b.DefinePInvokeMethod($name,$dll,'Public,Static,PinvokeImpl',[CallingConventions]::Standard,$return,$parameters,[CallingConvention]::Winapi,[CharSet]::Unicode);$x.SetImplementationFlags($x.GetMethodImplementationFlags()-bor[MethodImplAttributes]::PreserveSig)}
+  P 'CreateDirectoryW' 'kernel32.dll' ([bool]) @([string],[IntPtr]);P 'CreateFileW' 'kernel32.dll' ([IntPtr]) @([string],[uint32],[uint32],[IntPtr],[uint32],[uint32],[IntPtr]);P 'GetFileInformationByHandleEx' 'kernel32.dll' ([bool]) @([IntPtr],[int],[IntPtr],[uint32]);P 'GetSecurityInfo' 'advapi32.dll' ([uint32]) @([IntPtr],[int],[uint32],[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType(),[IntPtr].MakeByRefType());P 'GetSecurityDescriptorLength' 'advapi32.dll' ([uint32]) @([IntPtr]);P 'LocalFree' 'kernel32.dll' ([IntPtr]) @([IntPtr]);P 'SetFileInformationByHandle' 'kernel32.dll' ([bool]) @([IntPtr],[int],[IntPtr],[uint32]);P 'CloseHandle' 'kernel32.dll' ([bool]) @([IntPtr]);$script:N=$b.CreateType()
+}
+function I([IntPtr]$handle){$info=[Marshal]::AllocHGlobal(24);try{if(!$script:N::GetFileInformationByHandleEx($handle,18,$info,24)){throw 'i'};$bytes=New-Object byte[] 24;[Marshal]::Copy($info,$bytes,0,24);$volume=[BitConverter]::ToUInt64($bytes,0);$low=[BitConverter]::ToUInt64($bytes,8);$high=[BitConverter]::ToUInt64($bytes,16);$number=([BigInteger]$high*[BigInteger]::Pow(2,64))+[BigInteger]$low;return @($volume.ToString([Globalization.CultureInfo]::InvariantCulture),$number.ToString([Globalization.CultureInfo]::InvariantCulture))}finally{[Marshal]::FreeHGlobal($info)}}
+function V([IntPtr]$handle,[string]$sddl,[string[]]$identity){
+  $tag=[Marshal]::AllocHGlobal(8);try{if(!$script:N::GetFileInformationByHandleEx($handle,9,$tag,8)-or([Marshal]::ReadInt32($tag)-band 0x400)-ne 0){throw 'r'}}finally{[Marshal]::FreeHGlobal($tag)}
+  $actual=I $handle;if($actual[0]-cne$identity[0]-or$actual[1]-cne$identity[1]){throw 'i'};$op=[IntPtr]::Zero;$gp=[IntPtr]::Zero;$dp=[IntPtr]::Zero;$sp=[IntPtr]::Zero;$sd=[IntPtr]::Zero;if($script:N::GetSecurityInfo($handle,1,5,[ref]$op,[ref]$gp,[ref]$dp,[ref]$sp,[ref]$sd)-ne 0-or$sd-eq[IntPtr]::Zero){throw 'a'};try{$length=$script:N::GetSecurityDescriptorLength($sd);if($length-lt 20-or$length-gt 4096){throw 'a'};$bytes=New-Object byte[] $length;[Marshal]::Copy($sd,$bytes,0,$length);$raw=[RawSecurityDescriptor]::new($bytes,0);if($raw.GetSddlForm([AccessControlSections]'Owner,Access')-cne$sddl){throw 'a'}}finally{if($sd-ne[IntPtr]::Zero){[void]$script:N::LocalFree($sd)}}
+}
+function CloseCompilerWorkspace(){if($script:removed-or$script:h-eq[IntPtr]::Zero){return};EnterStage 'TEMP_WORKSPACE_CLEANUP';V $script:h $script:sddl $script:id;[GC]::Collect();[GC]::WaitForPendingFinalizers();$flag=[Marshal]::AllocHGlobal(1);try{[Marshal]::WriteByte($flag,1);if(!$script:N::SetFileInformationByHandle($script:h,13,$flag,1)){throw 'c'}}finally{[Marshal]::FreeHGlobal($flag)};[void]$script:N::CloseHandle($script:h);$script:h=[IntPtr]::Zero;$script:removed=$true}
+function F(){if($script:removed-or$script:h-eq[IntPtr]::Zero){return};try{CloseCompilerWorkspace}finally{if($script:h-ne[IntPtr]::Zero){[void]$script:N::CloseHandle($script:h);$script:h=[IntPtr]::Zero}}}
+function ReadExact($stream,[int]$count,$watch){$bytes=New-Object byte[] $count;$offset=0;while($offset-lt$count){$pending=$stream.BeginRead($bytes,$offset,$count-$offset,$null,$null);try{while(!$pending.AsyncWaitHandle.WaitOne(25)){if($watch.ElapsedMilliseconds-ge 10000){throw 'deadline'}};$read=$stream.EndRead($pending);if($read-le 0){throw 'eof'};$offset+=$read}finally{try{$pending.AsyncWaitHandle.Close()}catch{}}};return $bytes}
 try{
-  EnterStage 'TEMP_WORKSPACE_CREATE';$systemRoot=[IO.Path]::GetFullPath($env:SystemRoot);$tempRoot=[IO.Path]::GetFullPath([IO.Path]::Combine($systemRoot,'Temp'));if($tempRoot -cne [IO.Path]::Combine($systemRoot,'Temp') -or ![IO.Directory]::Exists($tempRoot)){throw 'temp-root'};RequireWorkspaceOrdinary $tempRoot
-  $random=New-Object byte[] 32;$rng=[Security.Cryptography.RandomNumberGenerator]::Create();try{$rng.GetBytes($random)}finally{$rng.Dispose()};$name='propr-supervisor-'+$PID.ToString([Globalization.CultureInfo]::InvariantCulture)+'-'+([BitConverter]::ToString($random)).Replace('-','').ToLowerInvariant();$compilerWorkspace=[IO.Path]::Combine($tempRoot,$name);[void][IO.Directory]::CreateDirectory($compilerWorkspace);RequireWorkspaceOrdinary $compilerWorkspace
-  EnterStage 'TEMP_WORKSPACE_DACL_APPLY';$owner=[Security.Principal.WindowsIdentity]::GetCurrent().User;$security=[Security.AccessControl.DirectorySecurity]::new();$security.SetOwner($owner);$security.SetAccessRuleProtection($true,$false);foreach($text in @($owner.Value,'S-1-5-18','S-1-5-32-544')){[void]$security.AddAccessRule((WorkspaceRule ([Security.Principal.SecurityIdentifier]::new($text)))};[IO.Directory]::SetAccessControl($compilerWorkspace,$security)
-  EnterStage 'TEMP_WORKSPACE_DACL_VERIFY';VerifyWorkspace $compilerWorkspace $owner;$script:workspaceVerified=$true;[Environment]::SetEnvironmentVariable('TEMP',$compilerWorkspace,[EnvironmentVariableTarget]::Process);[Environment]::SetEnvironmentVariable('TMP',$compilerWorkspace,[EnvironmentVariableTarget]::Process);if($env:TEMP -cne $compilerWorkspace -or $env:TMP -cne $compilerWorkspace){throw 'workspace-env'}
-  $stream=[Console]::OpenStandardInput();$watch=[Diagnostics.Stopwatch]::StartNew();EnterStage 'SOURCE_READ';$header=ReadExact $stream 4 $watch;$length=[BitConverter]::ToUInt32($header,0);if($length -lt 2 -or $length -gt ${WINDOWS_SUPERVISOR_SOURCE_MAX_BYTES}){throw 'source-length'};$sourceBytes=ReadExact $stream ([int]$length) $watch
-  EnterStage 'SOURCE_UTF8';$source=([Text.UTF8Encoding]::new($false,$true)).GetString($sourceBytes)
-  EnterStage 'SCRIPT_PARSE';$entrypoint=[ScriptBlock]::Create($source);if($null -eq $entrypoint){throw 'script'}
-  &$entrypoint
-}catch{WriteStartupFailure;exit 23}finally{$global:ProprTestFailureStage=$null;try{FinalCompilerWorkspaceCleanup}catch{};[Environment]::SetEnvironmentVariable('TEMP',$null,[EnvironmentVariableTarget]::Process);[Environment]::SetEnvironmentVariable('TMP',$null,[EnvironmentVariableTarget]::Process);Remove-Variable ProprStage,ProprTestFailureStage -Scope Global -ErrorAction SilentlyContinue}
+  EnterStage 'TEMP_WORKSPACE_CREATE';$systemRoot=[Path]::GetFullPath($env:SystemRoot);$tempRoot=[Path]::GetFullPath([Path]::Combine($systemRoot,'Temp'));if($tempRoot-cne[Path]::Combine($systemRoot,'Temp')-or![Directory]::Exists($tempRoot)){throw 'temp-root'};O $tempRoot;N;$owner=[WindowsIdentity]::GetCurrent().User;$security=[DirectorySecurity]::new();$security.SetOwner($owner);$security.SetAccessRuleProtection($true,$false);foreach($text in @($owner.Value,'S-1-5-18')){[void]$security.AddAccessRule((R ([SecurityIdentifier]::new($text)))}
+  $random=New-Object byte[] 32;$rng=[Security.Cryptography.RandomNumberGenerator]::Create();try{$rng.GetBytes($random)}finally{$rng.Dispose()};$name='propr-supervisor-'+$PID.ToString([Globalization.CultureInfo]::InvariantCulture)+'-'+([BitConverter]::ToString($random)).Replace('-','').ToLowerInvariant();$workspace=[Path]::Combine($tempRoot,$name)
+  EnterStage 'TEMP_WORKSPACE_DACL_APPLY';$descriptor=$security.GetSecurityDescriptorBinaryForm();$pin=[GCHandle]::Alloc($descriptor,[GCHandleType]::Pinned);$size=if([IntPtr]::Size-eq 8){24}else{12};$attributes=[Marshal]::AllocHGlobal($size);try{for($i=0;$i-lt$size;$i++){[Marshal]::WriteByte($attributes,$i,0)};[Marshal]::WriteInt32($attributes,0,$size);[Marshal]::WriteIntPtr($attributes,($(if([IntPtr]::Size-eq 8){8}else{4})),$pin.AddrOfPinnedObject());if(!$script:N::CreateDirectoryW($workspace,$attributes)){throw 'workspace-create'}}finally{[Marshal]::FreeHGlobal($attributes);$pin.Free()}
+  EnterStage 'TEMP_WORKSPACE_DACL_VERIFY';$h=$script:N::CreateFileW($workspace,0x00030080,7,[IntPtr]::Zero,3,0x02200000,[IntPtr]::Zero);if($h-eq[IntPtr](-1)-or$h-eq[IntPtr]::Zero){throw 'workspace-open'};$id=I $h;$sddl=$security.GetSecurityDescriptorSddlForm([AccessControlSections]'Owner,Access');V $h $sddl $id;[Environment]::SetEnvironmentVariable('TEMP',$workspace,[EnvironmentVariableTarget]::Process);[Environment]::SetEnvironmentVariable('TMP',$workspace,[EnvironmentVariableTarget]::Process);if($env:TEMP-cne$workspace-or$env:TMP-cne$workspace){throw 'workspace-env'}
+  $stream=[Console]::OpenStandardInput();$watch=[Diagnostics.Stopwatch]::StartNew();EnterStage 'SOURCE_READ';$header=ReadExact $stream 4 $watch;$length=[BitConverter]::ToUInt32($header,0);if($length-lt 2-or$length-gt ${WINDOWS_SUPERVISOR_SOURCE_MAX_BYTES}){throw 'source-length'};$sourceBytes=ReadExact $stream ([int]$length) $watch;EnterStage 'SOURCE_UTF8';$source=([Text.UTF8Encoding]::new($false,$true)).GetString($sourceBytes);EnterStage 'SCRIPT_PARSE';$entrypoint=[ScriptBlock]::Create($source);if($null-eq$entrypoint){throw 'script'};&$entrypoint
+}catch{WriteStartupFailure;exit 23}finally{$global:ProprTestFailureStage=$null;try{F}catch{};[Environment]::SetEnvironmentVariable('TEMP',$null,[EnvironmentVariableTarget]::Process);[Environment]::SetEnvironmentVariable('TMP',$null,[EnvironmentVariableTarget]::Process);Remove-Variable ProprStage,ProprTestFailureStage -Scope Global -ErrorAction SilentlyContinue}
 `;
 
-function windowsSupervisorLoader(testFailureStage?: WindowsSupervisorStage): string {
-  if (!testFailureStage) return WINDOWS_SUPERVISOR_LOADER;
-  return WINDOWS_SUPERVISOR_LOADER.replace(
-    "$global:ProprTestFailureStage=$null",
-    `$global:ProprTestFailureStage='${testFailureStage}'`,
-  );
+function windowsSupervisorLoader(
+  testFailureStage?: WindowsSupervisorStage,
+  testWorkspaceCollisionName?: string,
+): string {
+  let loader = WINDOWS_SUPERVISOR_LOADER;
+  if (testFailureStage) {
+    loader = loader.replace(
+      "$global:ProprTestFailureStage=$null",
+      `$global:ProprTestFailureStage='${testFailureStage}'`,
+    );
+  }
+  if (testWorkspaceCollisionName) {
+    if (!/^propr-supervisor-race-[0-9a-f]{32}$/.test(testWorkspaceCollisionName)) {
+      throw new Error("invalid Windows compiler workspace collision probe");
+    }
+    loader = loader.replace(
+      "$workspace=[Path]::Combine($tempRoot,$name)",
+      `$name='${testWorkspaceCollisionName}';$workspace=[Path]::Combine($tempRoot,$name);`
+        + "[void][Directory]::CreateDirectory($workspace);[File]::WriteAllText([Path]::Combine($workspace,'observer'),'unchanged')",
+    );
+  }
+  return loader;
 }
 
 function encodeWindowsSupervisorSource(): Buffer {
@@ -611,6 +642,8 @@ export interface WindowsAuthorityCapabilityProbe {
   readonly signal?: AbortSignal;
   /** Native-test-only failure injection; never set by production callers. */
   readonly testFailureStage?: WindowsSupervisorStage;
+  /** Native-test-only collision injected immediately before the atomic CreateDirectoryW call. */
+  readonly testWorkspaceCollisionName?: string;
 }
 
 let windowsAuthorityCapability: WindowsAuthorityCapability | undefined;
@@ -710,17 +743,48 @@ interface PendingSupervisorFrame {
   readonly reject: (error: Error) => void;
   readonly timer: NodeJS.Timeout;
   readonly signal?: AbortSignal;
+  readonly expectedExit?: {
+    readonly code: number;
+    readonly authenticate: (frame: Buffer) => boolean;
+  };
+  onTimeout?: () => void;
   onAbort?: () => void;
+}
+
+type WindowsChannelInvalidationClass =
+  | "protocol-extra-output"
+  | "protocol-malformed"
+  | "protocol-frame-limit"
+  | "stderr-output"
+  | "stdout-error"
+  | "stdin-error"
+  | "stderr-error"
+  | "process-error"
+  | "unexpected-eof"
+  | "unexpected-exit"
+  | "timeout"
+  | "abort"
+  | "write-error"
+  | "authority-failure"
+  | "shutdown";
+
+interface SettlingSupervisorFrame {
+  readonly pending: PendingSupervisorFrame;
+  readonly frame: Buffer;
+  readonly immediate: NodeJS.Immediate;
+  readonly expectedExitCode?: number;
 }
 
 class WindowsSupervisorChannel {
   private buffered = Buffer.alloc(0);
   private expectedLength: number | undefined;
   private pending: PendingSupervisorFrame | undefined;
-  private settling: { readonly pending: PendingSupervisorFrame; readonly frame: Buffer; readonly immediate: NodeJS.Immediate } | undefined;
+  private settling: SettlingSupervisorFrame | undefined;
   private frameCount = 0;
   private invalidError: Error | undefined;
+  private invalidationClass: WindowsChannelInvalidationClass | undefined;
   private closing = false;
+  private settlingProbe: ((pending: PendingSupervisorFrame) => void) | undefined;
 
   constructor(readonly supervisor: ChildProcess) {
     if (!supervisor.stdin || !supervisor.stdout || !supervisor.stderr) {
@@ -728,44 +792,70 @@ class WindowsSupervisorChannel {
     }
     supervisor.stdout.on("data", (chunk: Buffer | string) => this.receive(Buffer.from(chunk)));
     supervisor.stdout.once("end", () => {
-      if (!this.closing) this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE"));
+      if (this.settling?.expectedExitCode !== undefined) {
+        return;
+      }
+      this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE"), "unexpected-eof");
     });
-    supervisor.stdout.once("error", () => this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE")));
-    supervisor.stdin.once("error", () => this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE")));
+    supervisor.stdout.once("error", () => this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE"), "stdout-error"));
+    supervisor.stdin.once("error", () => this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE"), "stdin-error"));
     supervisor.stderr.on("data", (chunk: Buffer | string) => {
-      if (Buffer.byteLength(chunk) > 0) this.invalidate(new WindowsSupervisorStartupError("SCRIPT_PARSE"));
+      if (Buffer.byteLength(chunk) > 0) this.invalidate(new WindowsSupervisorStartupError("SCRIPT_PARSE"), "stderr-output");
     });
-    supervisor.stderr.once("error", () => this.invalidate(new WindowsSupervisorStartupError("SCRIPT_PARSE")));
-    supervisor.once("error", () => this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE")));
-    supervisor.once("exit", () => this.invalidate(new WindowsSupervisorStartupError(this.closing ? "SHUTDOWN" : "CHANNEL_CREATE")));
+    supervisor.stderr.once("error", () => this.invalidate(new WindowsSupervisorStartupError("SCRIPT_PARSE"), "stderr-error"));
+    supervisor.once("error", () => this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE"), "process-error"));
+    supervisor.once("exit", (code, signal) => {
+      const settling = this.settling;
+      if (settling?.expectedExitCode === code && signal === null) {
+        this.acceptExpectedExit(settling);
+        return;
+      }
+      this.invalidate(
+        new WindowsSupervisorStartupError(this.closing ? "SHUTDOWN" : "CHANNEL_CREATE"),
+        "unexpected-exit",
+      );
+    });
+  }
+
+  private clearPending(pending: PendingSupervisorFrame): void {
+    clearTimeout(pending.timer);
+    if (pending.signal && pending.onAbort) pending.signal.removeEventListener("abort", pending.onAbort);
+  }
+
+  private acceptExpectedExit(settling: SettlingSupervisorFrame): void {
+    if (this.settling !== settling) return;
+    clearImmediate(settling.immediate);
+    this.settling = undefined;
+    this.clearPending(settling.pending);
+    settling.pending.resolve(settling.frame);
   }
 
   private receive(chunk: Buffer): void {
     if (this.invalidError || chunk.byteLength === 0) return;
     if (!this.pending || this.settling) {
-      this.invalidate(new Error("Windows system authority capability emitted extra output"));
+      this.invalidate(new Error("Windows system authority capability emitted extra output"), "protocol-extra-output");
       return;
     }
     if (this.buffered.byteLength + chunk.byteLength > WINDOWS_CAPABILITY_RESPONSE_MAX_BYTES + 4) {
-      this.invalidate(new Error("Windows system authority capability was malformed"));
+      this.invalidate(new Error("Windows system authority capability was malformed"), "protocol-malformed");
       return;
     }
     this.buffered = Buffer.concat([this.buffered, chunk]);
     if (this.expectedLength === undefined && this.buffered.byteLength >= 4) {
       this.expectedLength = this.buffered.readUInt32LE(0);
       if (this.expectedLength < 2 || this.expectedLength > WINDOWS_CAPABILITY_RESPONSE_MAX_BYTES) {
-        this.invalidate(new Error("Windows system authority capability was malformed"));
+        this.invalidate(new Error("Windows system authority capability was malformed"), "protocol-malformed");
         return;
       }
     }
     if (this.expectedLength === undefined || this.buffered.byteLength < this.expectedLength + 4) return;
     if (this.buffered.byteLength !== this.expectedLength + 4) {
-      this.invalidate(new Error("Windows system authority capability emitted extra output"));
+      this.invalidate(new Error("Windows system authority capability emitted extra output"), "protocol-extra-output");
       return;
     }
     this.frameCount += 1;
     if (this.frameCount > WINDOWS_CAPABILITY_MAX_MESSAGES + 1) {
-      this.invalidate(new Error("Windows system authority capability exceeded its frame limit"));
+      this.invalidate(new Error("Windows system authority capability exceeded its frame limit"), "protocol-frame-limit");
       return;
     }
     const frame = this.buffered.subarray(4);
@@ -773,36 +863,56 @@ class WindowsSupervisorChannel {
     this.expectedLength = undefined;
     const pending = this.pending;
     this.pending = undefined;
-    clearTimeout(pending.timer);
-    if (pending.signal && pending.onAbort) pending.signal.removeEventListener("abort", pending.onAbort);
     const immediate = setImmediate(() => {
       if (this.settling?.pending !== pending) return;
       this.settling = undefined;
+      this.clearPending(pending);
       pending.resolve(frame);
     });
-    this.settling = { pending, frame, immediate };
+    let expectedExitCode: number | undefined;
+    try {
+      if (pending.expectedExit?.authenticate(frame)) expectedExitCode = pending.expectedExit.code;
+    } catch { /* Authentication failure is an ordinary non-expected frame. */ }
+    this.settling = { pending, frame, immediate, expectedExitCode };
+    const probe = this.settlingProbe;
+    this.settlingProbe = undefined;
+    probe?.(pending);
   }
 
-  invalidate(error: Error, poisonQueued = !this.closing): void {
+  invalidate(
+    error: Error,
+    invalidationClass: WindowsChannelInvalidationClass = "authority-failure",
+    poisonQueued = !this.closing,
+  ): void {
     if (this.invalidError) return;
     this.invalidError = error;
+    this.invalidationClass = invalidationClass;
     if (poisonQueued) windowsAuthorityFailureGeneration += 1;
     const pending = this.pending;
     this.pending = undefined;
     if (pending) {
-      clearTimeout(pending.timer);
-      if (pending.signal && pending.onAbort) pending.signal.removeEventListener("abort", pending.onAbort);
+      this.clearPending(pending);
       pending.reject(error);
     }
-    // A complete bounded frame already received from stdout wins the race with
-    // the child's exit event. This is required for a startup-error frame to
-    // carry its exact stage through the documented asynchronous stream.
+    const settling = this.settling;
+    this.settling = undefined;
+    if (settling) {
+      clearImmediate(settling.immediate);
+      this.clearPending(settling.pending);
+      settling.pending.reject(error);
+    }
     this.supervisor.stdin?.destroy();
     this.supervisor.stdout?.destroy();
     this.supervisor.stderr?.destroy();
   }
 
-  async exchange(value: unknown, timeout: number, signal?: AbortSignal, prefix?: Buffer): Promise<Buffer> {
+  async exchange(
+    value: unknown,
+    timeout: number,
+    signal?: AbortSignal,
+    prefix?: Buffer,
+    expectedExit?: PendingSupervisorFrame["expectedExit"],
+  ): Promise<Buffer> {
     if (this.invalidError) throw this.invalidError;
     if (this.pending || this.settling) throw new Error("Windows system authority capability request ordering failed");
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Windows authority request aborted");
@@ -811,11 +921,18 @@ class WindowsSupervisorChannel {
         resolve,
         reject,
         signal,
-        timer: setTimeout(() => this.invalidate(new Error("Windows system authority capability timed out")), timeout),
+        expectedExit,
+        timer: undefined as unknown as NodeJS.Timeout,
       };
+      pending.onTimeout = () => this.invalidate(
+        new Error("Windows system authority capability timed out"),
+        "timeout",
+      );
+      (pending as { timer: NodeJS.Timeout }).timer = setTimeout(pending.onTimeout, timeout);
       if (signal) {
         pending.onAbort = () => this.invalidate(
           signal.reason instanceof Error ? signal.reason : new Error("Windows authority request aborted"),
+          "abort",
         );
         signal.addEventListener("abort", pending.onAbort, { once: true });
       }
@@ -825,7 +942,10 @@ class WindowsSupervisorChannel {
       const control = encodeControlFrame(value);
       await this.write(prefix ? Buffer.concat([prefix, control]) : control);
     } catch (error) {
-      this.invalidate(error instanceof Error ? error : new Error("Windows system authority capability is unavailable"));
+      this.invalidate(
+        error instanceof Error ? error : new Error("Windows system authority capability is unavailable"),
+        "write-error",
+      );
     }
     return response;
   }
@@ -853,6 +973,15 @@ class WindowsSupervisorChannel {
   beginShutdown(): void {
     this.closing = true;
   }
+
+  installSettlingProbeForNativeTest(probe: (pending: PendingSupervisorFrame) => void): void {
+    if (this.settlingProbe) throw new Error("Windows channel settling probe is already active");
+    this.settlingProbe = probe;
+  }
+
+  invalidationClassForNativeTest(): WindowsChannelInvalidationClass | undefined {
+    return this.invalidationClass;
+  }
 }
 
 function encodeControlFrame(value: unknown): Buffer {
@@ -866,6 +995,18 @@ function encodeControlFrame(value: unknown): Buffer {
   return frame;
 }
 
+function isAuthenticatedWindowsStartupError(frame: Buffer, requestId: string): boolean {
+  const document = parseWindowsCapabilityDocument(frame);
+  if (!document || !exactKeys(document, ["version", "kind", "requestId", "stage"])) return false;
+  const stage = document.stage;
+  return document.version === 1
+    && document.kind === "startup-error"
+    && typeof stage === "string"
+    && WINDOWS_SUPERVISOR_STAGES.has(stage as WindowsSupervisorStage)
+    && (document.requestId === requestId
+      || (document.requestId === "0".repeat(32) && WINDOWS_PRE_PROTOCOL_STAGES.has(stage as WindowsSupervisorStage)));
+}
+
 async function exchangeWindowsCapability(
   capability: WindowsAuthorityCapability,
   requestId: string,
@@ -876,7 +1017,60 @@ async function exchangeWindowsCapability(
   if (!capability.alive || !supervisorExists(capability.supervisor)) {
     throw new Error("Windows system authority capability is unavailable");
   }
-  return capability.channel.exchange({ version: 1, kind: operation, requestId }, timeout, signal);
+  const expectedExit = operation === "stop" ? {
+    code: 0,
+    authenticate: (frame: Buffer) => isAuthenticatedWindowsCapabilityResponse(
+      capability,
+      "stop",
+      requestId,
+      frame,
+    ),
+  } : undefined;
+  return capability.channel.exchange(
+    { version: 1, kind: operation, requestId },
+    timeout,
+    signal,
+    undefined,
+    expectedExit,
+  );
+}
+
+function parseWindowsCapabilityDocument(output: Buffer): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(decodeBoundedUtf8(output));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isAuthenticatedWindowsCapabilityResponse(
+  capability: WindowsAuthorityCapability,
+  operation: "challenge" | "stop",
+  requestId: string,
+  output: Buffer,
+): boolean {
+  const document = parseWindowsCapabilityDocument(output);
+  const heldIdentity = capability.heldIdentity;
+  return document !== undefined
+    && exactKeys(document, [
+      "version", "kind", "requestId", "supervisorPid", "sequence",
+      "volumeSerialNumber", "fileId", "sha256",
+    ])
+    && document.version === 1
+    && document.kind === (operation === "stop" ? "stopped" : "ready")
+    && document.requestId === requestId
+    && document.supervisorPid === String(capability.supervisor.pid)
+    && Number.isInteger(document.sequence)
+    && document.sequence === capability.sequence + 1
+    && canonicalUint64(document.volumeSerialNumber)
+    && canonicalUint128(document.fileId)
+    && heldIdentity !== undefined
+    && document.volumeSerialNumber === heldIdentity.volumeSerialNumber
+    && document.fileId === heldIdentity.fileId
+    && document.sha256 === capability.artifact.digest;
 }
 
 function validateWindowsCapabilityResponse(
@@ -885,15 +1079,9 @@ function validateWindowsCapabilityResponse(
   requestId: string,
   output: Buffer,
 ): void {
-  const text = decodeBoundedUtf8(output);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new Error("Windows system authority capability was malformed");
-  }
+  const parsed = parseWindowsCapabilityDocument(output);
   const heldIdentity = capability.heldIdentity;
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+  if (parsed) {
     const failure = parsed as Record<string, unknown>;
     if (exactKeys(failure, [
       "version", "kind", "requestId", "supervisorPid", "sequence",
@@ -909,14 +1097,12 @@ function validateWindowsCapabilityResponse(
   }
   if (
     !parsed
-    || typeof parsed !== "object"
-    || Array.isArray(parsed)
     || !exactKeys(parsed, [
       "version", "kind", "requestId", "supervisorPid", "sequence",
       "volumeSerialNumber", "fileId", "sha256",
     ])
   ) throw new Error("Windows system authority capability was malformed");
-  const document = parsed as Record<string, unknown>;
+  const document = parsed;
   if (
     document.version !== 1
     || document.kind !== (operation === "stop" ? "stopped" : "ready")
@@ -990,7 +1176,7 @@ async function destroyWindowsAuthorityCapability(
     try { capability.supervisor.kill(); } catch { /* The OS also closes the lock when the parent exits. */ }
     exited = await waitForSupervisorExit(capability.supervisor, WINDOWS_CAPABILITY_STOP_TIMEOUT_MS);
   }
-  capability.channel.invalidate(new WindowsSupervisorStartupError("SHUTDOWN"), false);
+  capability.channel.invalidate(new WindowsSupervisorStartupError("SHUTDOWN"), "shutdown", false);
   closeWindowsCapabilityFiles(capability);
   if (requireGracefulShutdown && (!gracefulShutdown || !exited)) {
     throw new WindowsSupervisorStartupError("SHUTDOWN");
@@ -998,7 +1184,7 @@ async function destroyWindowsAuthorityCapability(
 }
 
 async function acquireWindowsAuthorityCapability(
-  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage">,
+  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName">,
   signal?: AbortSignal,
 ): Promise<WindowsAuthorityCapability> {
   if (windowsAuthorityCapability) {
@@ -1038,6 +1224,7 @@ async function acquireWindowsAuthorityCapability(
       probe?.testFailureStage && WINDOWS_PRE_PROTOCOL_STAGES.has(probe.testFailureStage)
         ? probe.testFailureStage
         : undefined,
+      probe?.testWorkspaceCollisionName,
     );
     probe?.onSupervisorStarting?.({
       stagedPath: staged.path,
@@ -1083,7 +1270,10 @@ async function acquireWindowsAuthorityCapability(
       sha256: artifact.digest,
       parentPid: String(process.pid),
       ...(probe?.testFailureStage === undefined ? {} : { testFailureStage: probe.testFailureStage }),
-    }, WINDOWS_CAPABILITY_STARTUP_TIMEOUT_MS, signal, encodeWindowsSupervisorSource());
+    }, WINDOWS_CAPABILITY_STARTUP_TIMEOUT_MS, signal, encodeWindowsSupervisorSource(), {
+      code: 23,
+      authenticate: (frame) => isAuthenticatedWindowsStartupError(frame, requestId),
+    });
     let parsed: unknown;
     try {
       parsed = JSON.parse(decodeBoundedUtf8(output));
@@ -1401,10 +1591,68 @@ export function exerciseWindowsAuthorityStageFailureForNativeTest(
   });
 }
 
+/**
+ * Native-test seam placed immediately before the production CreateDirectoryW
+ * publication. A pre-existing inherited-ACL object must make the atomic call
+ * fail without consuming, modifying, or deleting the observer's contents.
+ */
+export function exerciseWindowsCompilerWorkspacePublicationForNativeTest(): Promise<{
+  readonly version: 1;
+  readonly status: "failed-closed";
+  readonly stage: "TEMP_WORKSPACE_DACL_APPLY";
+  readonly observerContents: "unchanged";
+}> {
+  if (process.platform !== "win32") throw new Error("Windows workspace publication probe requires Windows");
+  return enqueueWindowsAuthority(async () => {
+    await destroyWindowsAuthorityCapability();
+    const name = `propr-supervisor-race-${randomBytes(16).toString("hex")}`;
+    const path = join(trustedWindowsSystemRoot(), "Temp", name);
+    try {
+      let failedStage: WindowsSupervisorStage | undefined;
+      try {
+        await acquireWindowsAuthorityCapability({ testWorkspaceCollisionName: name });
+      } catch (error) {
+        failedStage = windowsAuthorityStageFromError(error);
+      }
+      if (failedStage !== "TEMP_WORKSPACE_DACL_APPLY") {
+        throw new Error("Windows compiler workspace collision did not fail at atomic publication");
+      }
+      if (readFileSync(join(path, "observer"), "utf8") !== "unchanged") {
+        throw new Error("Windows compiler workspace collision probe was mutated");
+      }
+      return {
+        version: 1,
+        status: "failed-closed",
+        stage: "TEMP_WORKSPACE_DACL_APPLY",
+        observerContents: "unchanged",
+      };
+    } finally {
+      await destroyWindowsAuthorityCapability();
+      rmSync(path, { recursive: true, force: true });
+    }
+  });
+}
+
 /** Native-test seam for replay, framing, EOF, and response-binding failures. */
 export function exerciseWindowsAuthorityCapabilityControlForNativeTest(
   probe: {
-    readonly mode: "replay" | "wrong-request-id" | "wrong-identity" | "malformed" | "extra-frame" | "partial-frame" | "eof" | "unparsed-response";
+    readonly mode:
+      | "replay"
+      | "wrong-request-id"
+      | "wrong-identity"
+      | "malformed"
+      | "extra-frame"
+      | "stderr"
+      | "stdout-error"
+      | "stdin-error"
+      | "process-error"
+      | "unexpected-eof"
+      | "unexpected-exit"
+      | "timeout"
+      | "abort"
+      | "partial-frame"
+      | "eof"
+      | "unparsed-response";
   },
 ): Promise<Buffer> {
   if (process.platform !== "win32") throw new Error("Windows capability control probe requires Windows");
@@ -1437,13 +1685,47 @@ export function exerciseWindowsAuthorityCapabilityControlForNativeTest(
     throw new Error("Windows system authority capability was malformed");
   }
   const requestId = randomBytes(16).toString("hex");
-  if (probe.mode === "extra-frame") {
-    const first = encodeControlFrame({ version: 1, kind: "challenge", requestId });
-    const second = encodeControlFrame({ version: 1, kind: "challenge", requestId: randomBytes(16).toString("hex") });
-    await capability.channel.write(Buffer.concat([first, second]));
-    await destroyWindowsAuthorityCapability(capability);
-    const output = Buffer.alloc(0);
-    throw new Error(`Windows system authority capability emitted extra output (${output.byteLength})`);
+  if ([
+    "extra-frame", "stderr", "stdout-error", "stdin-error", "process-error",
+    "unexpected-eof", "unexpected-exit", "timeout", "abort",
+  ].includes(probe.mode)) {
+    const controller = new AbortController();
+    capability.channel.installSettlingProbeForNativeTest((pending) => {
+      const streamError = new Error("Windows authority settling probe");
+      switch (probe.mode) {
+        case "extra-frame": {
+          const extra = encodeControlFrame({
+            version: 1,
+            kind: "ready",
+            requestId: randomBytes(16).toString("hex"),
+          });
+          capability.supervisor.stdout!.emit("data", extra.subarray(0, 1));
+          capability.supervisor.stdout!.emit("data", extra.subarray(1));
+          break;
+        }
+        case "stderr": capability.supervisor.stderr!.emit("data", Buffer.from("x")); break;
+        case "stdout-error": capability.supervisor.stdout!.emit("error", streamError); break;
+        case "stdin-error": capability.supervisor.stdin!.emit("error", streamError); break;
+        case "process-error": capability.supervisor.emit("error", streamError); break;
+        case "unexpected-eof": capability.supervisor.stdout!.emit("end"); break;
+        case "unexpected-exit": capability.supervisor.emit("exit", 1, null); break;
+        case "timeout": pending.onTimeout?.(); break;
+        case "abort": controller.abort(new Error("Windows authority request aborted")); break;
+      }
+    });
+    try {
+      return await exchangeWindowsCapability(
+        capability,
+        requestId,
+        "challenge",
+        WINDOWS_CAPABILITY_EXCHANGE_TIMEOUT_MS,
+        controller.signal,
+      );
+    } finally {
+      const invalidationClass = capability.channel.invalidationClassForNativeTest();
+      await destroyWindowsAuthorityCapability(capability);
+      if (!invalidationClass) throw new Error("Windows settling invalidation probe did not fire");
+    }
   }
   const output = await exchangeWindowsCapability(capability, requestId, "challenge");
   if (probe.mode === "unparsed-response") {
