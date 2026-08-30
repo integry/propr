@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -11,6 +11,7 @@ import {
   SIGNED_UPDATE_DOWNLOAD_LIMITS,
   type SignedUpdateManifest,
   type SignedUpdateRequest,
+  validateMacOSUpdateApplicationLayout,
   verifySignedUpdateManifest,
 } from './signed-updates';
 
@@ -95,6 +96,44 @@ const config = {
 };
 
 describe('signed desktop updates', () => {
+  test('accepts only the real canonical macOS application at the ZIP root', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-macos-update-layout-test-'));
+    try {
+      const valid = join(directory, 'valid');
+      await mkdir(join(valid, 'propr-desktop.app'), { recursive: true });
+      assert.equal(
+        await validateMacOSUpdateApplicationLayout(valid),
+        join(valid, 'propr-desktop.app'),
+      );
+
+      const decoy = join(directory, 'decoy');
+      await mkdir(join(decoy, 'propr-desktop.app'), { recursive: true });
+      await mkdir(join(decoy, 'signed-decoy.app'));
+      await assert.rejects(
+        validateMacOSUpdateApplicationLayout(decoy),
+        /ambiguous application layout/,
+      );
+
+      const linked = join(directory, 'linked');
+      await mkdir(linked);
+      await mkdir(join(directory, 'real.app'));
+      await symlink('../real.app', join(linked, 'propr-desktop.app'));
+      await assert.rejects(
+        validateMacOSUpdateApplicationLayout(linked),
+        /must be a real directory/,
+      );
+
+      const missing = join(directory, 'missing');
+      await mkdir(missing);
+      await assert.rejects(
+        validateMacOSUpdateApplicationLayout(missing),
+        /missing the canonical propr-desktop\.app bundle/,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test('verifies the exact published manifest bytes', () => {
     const release = signed();
     assert.equal(verifySignedUpdateManifest(release.payload, release.signature, publicKey).version, '1.2.4');

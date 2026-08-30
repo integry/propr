@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, verify, X509Certificate } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, open, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, open, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -441,6 +441,28 @@ const verifyFeedReferencesArtifact = (
   if (!referenced) throw new Error('Signed Windows update feed does not reference the bound package bytes');
 };
 
+export const validateMacOSUpdateApplicationLayout = async (extracted: string): Promise<string> => {
+  const application = join(extracted, 'propr-desktop.app');
+  let applicationStats;
+  try {
+    applicationStats = await lstat(application);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error('macOS update ZIP is missing the canonical propr-desktop.app bundle');
+    }
+    throw error;
+  }
+  if (!applicationStats.isDirectory() || applicationStats.isSymbolicLink()) {
+    throw new Error('macOS update ZIP canonical propr-desktop.app bundle must be a real directory');
+  }
+
+  const topLevel = await readdir(extracted);
+  if (topLevel.length !== 1 || topLevel[0] !== 'propr-desktop.app') {
+    throw new Error('macOS update ZIP has an ambiguous application layout');
+  }
+  return application;
+};
+
 export const verifyNativeUpdateSigner = async (
   packagePath: string,
   artifact: SignedUpdateArtifact,
@@ -451,9 +473,7 @@ export const verifyNativeUpdateSigner = async (
     const extracted = join(directory, 'extracted');
     if (expected.type === 'apple-team-id') {
       await execFileAsync('/usr/bin/ditto', ['-x', '-k', packagePath, extracted]);
-      const { stdout: appPath } = await execFileAsync('/usr/bin/find', [extracted, '-type', 'd', '-name', '*.app', '-print', '-quit']);
-      const application = appPath.trim();
-      if (!application) throw new Error('macOS update ZIP contains no application bundle');
+      const application = await validateMacOSUpdateApplicationLayout(extracted);
       await execFileAsync('/usr/bin/codesign', ['--verify', '--deep', '--strict', application]);
       const details = await execFileAsync('/usr/bin/codesign', ['-d', '--verbose=4', application]);
       const output = `${details.stdout}\n${details.stderr}`;
