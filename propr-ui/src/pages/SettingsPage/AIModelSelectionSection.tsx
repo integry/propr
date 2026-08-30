@@ -3,6 +3,7 @@ import React from 'react';
 import { Brain, ClipboardCheck, Cpu } from 'lucide-react';
 import { DEFAULT_REVIEW_GUIDANCE } from '@propr/shared';
 import { AgentConfig, SummarizationSettings } from '../../api/proprApi';
+import type { InstanceCatalogAgent } from '@propr/shared';
 import {
   buildAllModelOptions,
   buildSummarizationOptions,
@@ -32,6 +33,8 @@ interface AIModelSelectionSectionProps {
   settings: AIModelSelectionSettings;
   summarizationSettings: SummarizationSettings;
   agents: AgentConfig[];
+  /** Operational direct and synthetic agents exposed by the instance catalog. */
+  catalogAgents?: InstanceCatalogAgent[];
   onSettingChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
   onReviewPromptChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onReviewPromptBlur: () => void;
@@ -84,6 +87,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   settings,
   summarizationSettings,
   agents,
+  catalogAgents,
   onSettingChange,
   onReviewPromptChange,
   onReviewPromptBlur,
@@ -95,25 +99,29 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
   onDefaultAgentChange,
   className
 }) => {
-  const enabledAgents = agents.filter(a => a.enabled);
-  const modelOptions = buildAllModelOptions(agents);
+  // Older servers do not expose the instance catalog. Keep the direct-agent
+  // list as a compatibility fallback, but prefer the catalog so virtual
+  // models are selectable anywhere a routed model is accepted.
+  const modelAgents = catalogAgents?.length ? catalogAgents : agents;
+  const enabledModelAgents = modelAgents.filter(a => a.enabled);
+  const modelOptions = buildAllModelOptions(modelAgents);
   const enabledOptions = modelOptions.filter(opt => opt.enabled);
   const disabledOptions = modelOptions.filter(opt => !opt.enabled);
-  const summarizationOptions = buildSummarizationOptions(enabledAgents);
+  const summarizationOptions = buildSummarizationOptions(enabledModelAgents);
   const fallbackValue = summarizationSettings.fallback_agent_alias || '';
   const fallbackSummarizationOptions = buildFallbackSummarizationOptions(
     summarizationOptions.filter(opt => opt.value !== summarizationSettings.agent_alias),
     summarizationOptions,
     fallbackValue
   );
-  const contextAnalysisOptions = buildContextAnalysisOptions(enabledAgents);
-  const planGenerationOptions = buildPlanGenerationOptions(enabledAgents);
-  const prReviewOptions = buildPrReviewOptions(enabledAgents);
-  const implementationAgentOptions = buildImplementationAgentOptions(enabledAgents);
+  const contextAnalysisOptions = buildContextAnalysisOptions(enabledModelAgents);
+  const planGenerationOptions = buildPlanGenerationOptions(enabledModelAgents);
+  const prReviewOptions = buildPrReviewOptions(enabledModelAgents);
+  const implementationAgentOptions = buildImplementationAgentOptions(enabledModelAgents);
   const reasoningLevelOptions = buildReasoningLevelSelectOptions(settings.model_reasoning_level);
 
-  const hasAgents = agents.length > 0;
-  const hasEnabledAgents = enabledAgents.length > 0;
+  const hasAgents = modelAgents.length > 0;
+  const hasEnabledAgents = enabledModelAgents.length > 0;
   const summarizationWarning = summarizationSettings.runtime?.warning?.message;
 
   return (
@@ -321,7 +329,7 @@ const AIModelSelectionSection: React.FC<AIModelSelectionSectionProps> = ({
 
             <ReviewContextSettings
               settings={settings}
-              agents={agents}
+              agents={modelAgents}
               onSettingChange={onSettingChange}
               onEnabledChange={onReviewContextEnabledChange}
               onMaxContextTokensChange={onReviewMaxContextTokensChange}

@@ -3,18 +3,24 @@ import { AgentConfig, chatWithAgents, ChatResult, ChatQuery } from '../../api/pr
 import { MODEL_INFO_MAP, AgentType } from '../../config/modelDefinitions';
 import { ProviderLogo } from '../ui/ProviderLogo';
 import { Bot, User, Send } from 'lucide-react';
+import { Layers3 } from 'lucide-react';
+import type { SyntheticAgentConfig } from '@propr/shared';
 
 // Enhanced badge colors for selected state - more visually prominent
-const selectedBadgeColors: Record<AgentType, string> = {
+type AgentVisualType = AgentType | 'synthetic';
+
+const selectedBadgeColors: Record<AgentVisualType, string> = {
   claude: 'bg-orange-500 text-white border-orange-600 shadow-md ring-2 ring-orange-300',
   codex: 'bg-green-500 text-white border-green-600 shadow-md ring-2 ring-green-300',
   antigravity: 'bg-violet-500 text-white border-violet-600 shadow-md ring-2 ring-violet-300',
   opencode: 'bg-cyan-500 text-white border-cyan-600 shadow-md ring-2 ring-cyan-300',
-  vibe: 'bg-pink-500 text-white border-pink-600 shadow-md ring-2 ring-pink-300'
+  vibe: 'bg-pink-500 text-white border-pink-600 shadow-md ring-2 ring-pink-300',
+  synthetic: 'bg-slate-600 text-white border-slate-700 shadow-md ring-2 ring-slate-300'
 };
 
 interface ChatPanelProps {
   agents: AgentConfig[];
+  syntheticAgents?: SyntheticAgentConfig[];
   selectedModels: AgentModelSelection[];
   onSelectedModelsChange: (selectedModels: AgentModelSelection[]) => void;
   disabled?: boolean;
@@ -36,7 +42,8 @@ interface Message {
 interface AgentModelOption {
   agentId: string;
   agentAlias: string;
-  agentType: AgentType;
+  agentType: AgentVisualType;
+  syntheticConfigId?: string;
   modelId: string;
   modelName: string;
 }
@@ -56,6 +63,7 @@ const haveSameSelections = (
 
 const ChatPanel: React.FC<ChatPanelProps> = ({
   agents,
+  syntheticAgents = [],
   selectedModels,
   onSelectedModelsChange,
   disabled = false
@@ -80,8 +88,20 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         });
       });
     });
+    syntheticAgents.filter(pool => pool.enabled).forEach(pool => {
+      pool.models.filter(model => model.enabled).forEach(model => {
+        options.push({
+          agentId: pool.id,
+          syntheticConfigId: pool.id,
+          agentAlias: pool.alias,
+          agentType: 'synthetic',
+          modelId: model.id,
+          modelName: model.displayName || model.id,
+        });
+      });
+    });
     return options;
-  }, [agents]);
+  }, [agents, syntheticAgents]);
 
   // Keep selections limited to combinations exposed by the Playground. If an
   // agent is disabled or removed, fall back to the first available option.
@@ -124,10 +144,14 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
       ).join('\n');
 
       // Build queries with agent+model combinations
-      const queries: ChatQuery[] = selectedModels.map(selection => ({
-        agentId: selection.agentId,
-        model: selection.modelId
-      }));
+      const queries: ChatQuery[] = selectedModels.map(selection => {
+        const option = agentModelOptions.find(candidate => isSameAgentModel(candidate, selection));
+        return {
+          agentId: selection.agentId,
+          ...(option?.syntheticConfigId ? { syntheticConfigId: option.syntheticConfigId } : {}),
+          model: selection.modelId,
+        };
+      });
 
       const { results } = await chatWithAgents(queries, userMsg.content!, context);
 
@@ -209,7 +233,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                       : 'bg-white/70 border-gray-200 text-gray-400 hover:bg-white hover:border-gray-300 hover:text-gray-600'
                   }`}
                 >
-                  <ProviderLogo provider={option.agentAlias} className="w-3 h-3" />
+                  {option.syntheticConfigId
+                    ? <Layers3 className="h-3 w-3" aria-hidden="true" />
+                    : <ProviderLogo provider={option.agentAlias} className="w-3 h-3" />}
                   {option.modelName}
                 </button>
               );
@@ -268,10 +294,19 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
                     {msg.results?.map((res, rIdx) => (
                       <div key={rIdx} className={`flex-1 min-w-[220px] max-w-[300px] bg-transparent relative flex flex-col ${rIdx > 0 ? 'border-l border-slate-200 pl-3' : ''}`}>
                         <div className="text-[10px] font-medium text-gray-500 mb-1 flex items-center gap-1.5">
-                          <ProviderLogo provider={res.agentAlias} className="w-3 h-3" />
-                          <span>{res.agentAlias}</span>
-                          <span className="text-gray-400">· {res.model}</span>
+                          {res.virtualAgentAlias
+                            ? <Layers3 className="h-3 w-3" aria-hidden="true" />
+                            : <ProviderLogo provider={res.agentAlias} className="w-3 h-3" />}
+                          <span>{res.virtualAgentAlias || res.agentAlias}</span>
+                          <span className="text-gray-400">· {res.virtualModel || res.model}</span>
                         </div>
+                        {res.physicalAgentAlias && (
+                          <div className="mb-1 flex items-center gap-1 text-[10px] text-slate-500">
+                            <ProviderLogo provider={res.physicalAgentAlias} className="h-3 w-3" />
+                            <span>Executed by {res.physicalAgentAlias} · {res.physicalModel}</span>
+                            {res.attemptNumber && <span>· attempt {res.attemptNumber}</span>}
+                          </div>
+                        )}
                         <div className="text-sm text-gray-800 whitespace-pre-wrap">
                           {res.error ? <span className="text-red-500">{res.error}</span> : res.response}
                         </div>

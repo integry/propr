@@ -30,6 +30,7 @@ const AdminSettingsPage: React.FC = () => {
     ignoreKeywords,
     newIgnoreKeyword,
     agents,
+    catalogAgents,
     summarizationSettings,
     isReindexing,
     agentTankSettings,
@@ -106,6 +107,7 @@ const AdminSettingsPage: React.FC = () => {
               }}
               summarizationSettings={summarizationSettings}
               agents={agents}
+              catalogAgents={catalogAgents}
               onSettingChange={handleModelSelectionChange}
               onReviewPromptChange={(e) => setSettings(prev => ({ ...prev, pr_review_prompt: e.target.value }))}
               onReviewPromptBlur={triggerSettingsSave}

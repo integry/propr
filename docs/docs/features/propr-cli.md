@@ -268,11 +268,17 @@ propr agent add --file agent-config.json     # From a JSON file (or `-` for stdi
 propr agent enable my-agent                  # Enable / disable without deleting
 propr agent disable my-agent
 propr agent delete my-agent --force
+
+propr agent pool list --json > pools.json
+propr agent pool apply pools.json       # Also accepts '-' for stdin
+propr agent pool delete balanced-pool
 ```
 
 Agent types: `claude`, `codex`, `antigravity`, `opencode`, `vibe`.
 
 See [Agents and Models](./agents-and-models.md) for the model catalog, label formats, and per-agent credential setup, including the OpenCode host-authentication steps and the `XDG_DATA_HOME` requirement for file-based OpenCode auth.
+
+Synthetic pool commands replace one complete, nested configuration document. JSON from `pool list --json` can be passed unchanged to `pool apply`; validation failures retain the backend's nested field message. See [Synthetic Pools](./synthetic-pools.md) for schemas and routing behavior.
 
 ## To-Dos
 

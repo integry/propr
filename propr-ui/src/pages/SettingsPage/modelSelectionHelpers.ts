@@ -1,4 +1,5 @@
 import { AgentConfig } from '../../api/proprApi';
+import type { InstanceCatalogAgent } from '@propr/shared';
 import {
   AgentType,
   AGENT_MODELS,
@@ -73,7 +74,10 @@ function isRecommendedFor(modelId: string, aliases: string[]): boolean {
   return !!info && aliases.includes(info.shortAlias);
 }
 
-function buildSortedModelOptions(agents: AgentConfig[], recommendedAliases: string[]): ModelOption[] {
+export type ModelSelectionAgent = Pick<AgentConfig, 'alias' | 'enabled' | 'supportedModels'>
+  | InstanceCatalogAgent;
+
+function buildSortedModelOptions(agents: ModelSelectionAgent[], recommendedAliases: string[]): ModelOption[] {
   return agents.flatMap(agent =>
     agent.supportedModels.map(model => ({
       value: `${agent.alias}:${model}`,
@@ -88,7 +92,7 @@ function buildSortedModelOptions(agents: AgentConfig[], recommendedAliases: stri
   });
 }
 
-export function buildAllModelOptions(agents: AgentConfig[]): ModelOption[] {
+export function buildAllModelOptions(agents: ModelSelectionAgent[]): ModelOption[] {
   return agents.flatMap(agent =>
     agent.supportedModels.map(model => ({
       value: `${agent.alias}:${model}`,
@@ -98,19 +102,19 @@ export function buildAllModelOptions(agents: AgentConfig[]): ModelOption[] {
   );
 }
 
-export function buildSummarizationOptions(enabledAgents: AgentConfig[]): ModelOption[] {
+export function buildSummarizationOptions(enabledAgents: ModelSelectionAgent[]): ModelOption[] {
   return buildSortedModelOptions(enabledAgents, RECOMMENDED_SUMMARIZATION_ALIASES);
 }
 
-export function buildContextAnalysisOptions(enabledAgents: AgentConfig[]): ModelOption[] {
+export function buildContextAnalysisOptions(enabledAgents: ModelSelectionAgent[]): ModelOption[] {
   return buildSortedModelOptions(enabledAgents, RECOMMENDED_CONTEXT_ANALYSIS_ALIASES);
 }
 
-export function buildPlanGenerationOptions(enabledAgents: AgentConfig[]): ModelOption[] {
+export function buildPlanGenerationOptions(enabledAgents: ModelSelectionAgent[]): ModelOption[] {
   return buildSortedModelOptions(enabledAgents, RECOMMENDED_PLAN_GENERATION_ALIASES);
 }
 
-export function buildPrReviewOptions(enabledAgents: AgentConfig[]): ModelOption[] {
+export function buildPrReviewOptions(enabledAgents: ModelSelectionAgent[]): ModelOption[] {
   return buildSortedModelOptions(enabledAgents, RECOMMENDED_PR_REVIEW_ALIASES);
 }
 
@@ -162,7 +166,7 @@ export function buildSelectableModels(agentType: AgentType, modelIds: string[]):
   return Array.from(modelMap.values());
 }
 
-export function buildImplementationAgentOptions(enabledAgents: AgentConfig[]): AgentOption[] {
+export function buildImplementationAgentOptions(enabledAgents: ModelSelectionAgent[]): AgentOption[] {
   return enabledAgents.map(agent => ({
     value: agent.alias,
     label: agent.alias,

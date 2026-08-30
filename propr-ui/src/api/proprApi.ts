@@ -33,7 +33,7 @@ export const getSystemStatus = async (): Promise<SystemStatus> => {
   const workers: { id: number; status: string }[] = [];
   for (let i = 0; i < (data.workerCount || 0); i++) workers.push({ id: i + 1, status: 'active' });
   const mapAuthStatus = (status?: string) => status === 'connected' ? 'Authenticated' : 'Failed';
-  const mapAgentStatus = (status?: string) => status === 'connected' ? 'Ready' : 'Failed';
+  const mapAgentStatus = (status?: string) => status === 'connected' ? 'Ready' : status === 'degraded' ? 'Degraded' : 'Failed';
   const mapIndexingStatus = (status?: string) => {
     switch (status) {
       case 'active':

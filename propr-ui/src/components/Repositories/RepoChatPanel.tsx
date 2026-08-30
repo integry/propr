@@ -187,6 +187,7 @@ export interface RepoChatPanelProps {
   defaultModel?: string;
   /** Default context level */
   defaultContextLevel?: number;
+  agents?: import('@propr/shared').InstanceCatalogAgent[];
 }
 
 const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
@@ -199,9 +200,8 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
   disabled = false,
   repositoryName,
   defaultModel = '',
-  defaultContextLevel = 50,
+  defaultContextLevel = 50, agents,
 }) => {
-  // Support both controlled and uncontrolled modes
   const [internalMessages, setInternalMessages] = useState<Message[]>([]);
   const messages = externalMessages ?? internalMessages;
   const setMessages = useCallback((updater: Message[] | ((prev: Message[]) => Message[])) => {
@@ -222,7 +222,6 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Estimated duration based on current context level
   const estimatedDuration = useMemo(() => getEstimatedDuration(contextLevel), [contextLevel]);
 
   // Handle delete message
@@ -328,6 +327,7 @@ const RepoChatPanel: React.FC<RepoChatPanelProps> = ({
           onContextLevelChange={setContextLevel}
           disabled={isLoading || disabled}
           className="flex-1 border-b-0"
+          agents={agents}
         />
         {messages.length > 0 && (
           <button
