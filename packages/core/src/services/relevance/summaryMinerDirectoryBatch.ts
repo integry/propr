@@ -288,7 +288,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       if (fallbackAgentAliasSetting) {
         await promoteSummarizationFallbackIfNeeded({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
       }
-    } else if (failureKind === 'invalid-response' && isSummarizationInvalidResponseError(primaryError)) {
+    } else if (shouldRecordResponseFailure(failureKind, primaryError)) {
       await recordPrimarySummarizationResponseFailure({
         primaryAgentAlias,
         fallbackAgentAlias: fallbackAgentAliasSetting as string,
@@ -308,6 +308,10 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     });
     throw new SummarizationCooldownRecordedError(fallbackError);
   }
+}
+
+function shouldRecordResponseFailure(failureKind: string, error: unknown): boolean {
+  return failureKind === 'invalid-response' && isSummarizationInvalidResponseError(error);
 }
 
 function beginFallbackRoutingSession(agent: Agent | undefined, model: string | undefined): SyntheticRoutingSession | undefined {

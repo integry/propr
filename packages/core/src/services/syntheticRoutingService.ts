@@ -3,18 +3,18 @@ import type { Knex } from 'knex';
 import type { SyntheticAgentConfig, SyntheticModelConfig, SyntheticModelMember } from '@propr/shared';
 import { db } from '../db/connection.js';
 import { getModelHardLimit } from '../config/modelLimits.js';
-import { loadAgentTankSettings, loadSyntheticAgents } from '../config/configManager.js';
-import { getStatus, type AgentStatusResponse } from './agentTankService.js';
+import { loadSyntheticAgents } from '../config/configManager.js';
 import type { Agent, AgentExecutionResult, AgentTaskOptions, AnalysisResult, AnalyzeOptions } from '../agents/types.js';
 import logger from '../utils/logger.js';
 import { estimateTokens } from '../utils/tokenCalculation.js';
 import { SyntheticPoolExhaustedError, isNonRetryableSyntheticFailure } from './syntheticRoutingTypes.js';
-import type { BeginSyntheticRoutingOptions, SyntheticMemberDiagnostic, SyntheticPhysicalSelection, SyntheticRoutingServiceOptions, SyntheticUsageSnapshot, SyntheticUsageSnapshotProvider } from './syntheticRoutingTypes.js';
+import type { BeginSyntheticRoutingOptions, SyntheticMemberDiagnostic, SyntheticPhysicalSelection, SyntheticRoutingServiceOptions, SyntheticUsageSnapshotProvider } from './syntheticRoutingTypes.js';
+import { AliasSpecificAgentTankSnapshotProvider } from './syntheticUsageSnapshotProvider.js';
 
 export * from './syntheticRoutingTypes.js';
+export { AliasSpecificAgentTankSnapshotProvider } from './syntheticUsageSnapshotProvider.js';
 
 const DEFAULT_OUTPUT_RESERVE_TOKENS = 16_000;
-const DEFAULT_USAGE_FRESHNESS_MS = 5 * 60_000;
 
 /**
  * Estimate every caller-provided field that can become part of an implementation
@@ -47,61 +47,6 @@ interface EligibleMember {
   member: SyntheticModelMember;
   agent: Agent;
   headroom: number;
-}
-
-function finitePercent(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100
-    ? value
-    : undefined;
-}
-
-function nestedPercent(usage: Record<string, unknown>, names: string[]): number | undefined {
-  for (const name of names) {
-    const value = usage[name];
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const percent = finitePercent((value as Record<string, unknown>).percent)
-        ?? finitePercent((value as Record<string, unknown>).percentUsed);
-      if (percent !== undefined) return percent;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Agent Tank is accepted only when the returned record names the exact direct
- * alias requested. A provider-level `claude` record therefore cannot be copied
- * to `claude-work` and `claude-personal`.
- */
-export class AliasSpecificAgentTankSnapshotProvider implements SyntheticUsageSnapshotProvider {
-  constructor(
-    private readonly now: () => Date = () => new Date(),
-    private readonly freshnessMs = Number(process.env.SYNTHETIC_USAGE_FRESHNESS_MS) || DEFAULT_USAGE_FRESHNESS_MS,
-    private readonly fetchStatus: (alias: string) => Promise<AgentStatusResponse> = getStatus,
-  ) {}
-
-  async getSnapshot(directAgentAlias: string): Promise<SyntheticUsageSnapshot | null> {
-    const settings = await loadAgentTankSettings();
-    if (!settings.enabled) return null;
-
-    let status: AgentStatusResponse;
-    try {
-      status = await this.fetchStatus(directAgentAlias);
-    } catch (error) {
-      logger.warn({ directAgentAlias, error: (error as Error).message }, 'Alias-specific usage snapshot unavailable');
-      return null;
-    }
-
-    if (status.name !== directAgentAlias || status.error || status.isRefreshing || !status.lastUpdated) return null;
-    const capturedAt = new Date(status.lastUpdated);
-    if (!Number.isFinite(capturedAt.getTime()) || this.now().getTime() - capturedAt.getTime() > this.freshnessMs) return null;
-
-    return {
-      directAgentAlias,
-      capturedAt,
-      sessionPercent: nestedPercent(status.usage, ['session']),
-      weeklyPercent: nestedPercent(status.usage, ['weekly', 'weeklyAll', 'week']),
-    };
-  }
 }
 
 function resultFailure(result: AnalysisResult | AgentExecutionResult): Error {

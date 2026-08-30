@@ -1,13 +1,15 @@
 import type { Logger } from 'pino';
-import logger from '../../utils/logger.js';
 import { Agent, type AnalyzeOptions } from '../../agents/types.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
-import { resolveExpectedSummaryPath } from './summaryMinerDirectoryHelpers.js';
 import { saveBatchSummaries, logFileBatchCall, type SummaryResult } from './summaryMinerBatchPersistence.js';
 import { clearSummarizationCooldown, clearSummarizationPrimaryQuotaFailures, isSummarizationInvalidResponseError, promoteSummarizationFallbackIfNeeded } from '../../config/configManager.js';
 import { recordPrimarySummarizationQuotaFailure, recordPrimarySummarizationResponseFailure, recordSummarizationCooldown } from '../../config/configManager.js';
 import { SyntheticPoolExhaustedError, type SyntheticRoutingSession } from '../syntheticRoutingService.js';
 import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
+import { buildBatchPrompt, parseBatchResponse, type BatchFile } from './summaryMinerBatchHelpers.js';
+
+export { DEFAULT_INSTRUCTIONS, parseBatchResponse } from './summaryMinerBatchHelpers.js';
+export type { BatchFile } from './summaryMinerBatchHelpers.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 3;
 const SUMMARIZATION_RETRY_BASE_DELAY_MS = process.env.NODE_ENV === 'test' ? 0 : 2000;
@@ -30,8 +32,6 @@ const SUMMARIZATION_FALLBACK_RETRY: RetryOptions = {
   retryableErrors: ['SUMMARIZATION_INVALID_RESPONSE'],
 };
 
-export interface BatchFile { path: string; content: string; blobHash: string }
-
 interface ProcessSingleBatchOptions {
   fullName: string; batch: BatchFile[];
   agent: Agent; log: Logger;
@@ -53,26 +53,6 @@ interface BatchAnalysisResult {
   routingMetadata?: Record<string, unknown>; fallbackUsed: boolean;
   primaryAgentAlias?: string; fallbackAgentAlias?: string;
 }
-
-export const DEFAULT_INSTRUCTIONS = `You are a code expert. Analyze the following source code files.
-For each file, provide a summary (3-4 sentences) covering:
-1. Primary purpose of the file
-2. Key functions, classes, or exports it provides
-3. What other parts of the system it interacts with or depends on`;
-
-const JSON_FORMAT_RULES = `Return ONLY valid JSON in this exact format:
-{
-  "summaries": [
-    { "path": "relative/path/to/file", "summary": "This file handles... It provides... It interacts with..." }
-  ]
-}
-
-Important:
-- Include ALL files listed below in your response
-- Each summary should be 3-4 sentences with specific details
-- Mention key function/class names when relevant
-- Focus on what the file does and how it connects to the system
-- Return valid JSON only, no markdown or other formatting`;
 
 class SummarizationCooldownRecordedError extends Error {
   constructor(error: unknown) {
@@ -242,9 +222,7 @@ async function analyzeBatchAfterPrimaryFailure(
     primaryAgentAlias: agent.config.alias,
     fallbackAgentAlias: fallbackAgent.config.alias,
     fallbackModel: fallbackModelUsed ?? fallbackModelOverride
-  }, syntheticRouteUnavailable
-    ? 'Primary synthetic summarization route unavailable; retrying batch with fallback'
-    : 'Primary summarization model quota-limited; retrying batch with fallback');
+  }, primaryFallbackWarning(syntheticRouteUnavailable));
 
   const fallbackRoutingSession = options.fallbackRoutingSession;
   try {
@@ -288,6 +266,12 @@ async function analyzeBatchAfterPrimaryFailure(
     });
     throw new SummarizationCooldownRecordedError(fallbackError);
   }
+}
+
+function primaryFallbackWarning(syntheticRouteUnavailable: boolean): string {
+  return syntheticRouteUnavailable
+    ? 'Primary synthetic summarization route unavailable; retrying batch with fallback'
+    : 'Primary summarization model quota-limited; retrying batch with fallback';
 }
 
 async function analyzeBatchWithInvalidResponseFallback(
@@ -415,56 +399,4 @@ async function analyzeBatchWithAgent(options: {
     retryOptions,
     context
   );
-}
-
-function buildBatchPrompt(batch: BatchFile[], customPrompt?: string): string {
-  const filesContent = batch.map(f =>
-    `--- START ${f.path} ---\n${f.content}\n--- END ${f.path} ---`
-  ).join('\n\n');
-  const instructions = customPrompt && customPrompt.trim().length > 0
-    ? customPrompt
-    : DEFAULT_INSTRUCTIONS;
-
-  return `${instructions}
-
-${JSON_FORMAT_RULES}
-
-FILES:
-${filesContent}`;
-}
-
-export function parseBatchResponse(response: string, expectedPaths?: string[]): SummaryResult[] {
-  try {
-    const jsonMatch = response.match(/\{[\s\S]*"summaries"[\s\S]*\}/);
-    if (!jsonMatch) {
-      logger.warn('No JSON found in batch response');
-      return [];
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as { summaries: SummaryResult[] };
-    if (!parsed.summaries || !Array.isArray(parsed.summaries)) {
-      logger.warn('Invalid summaries format in response');
-      return [];
-    }
-
-    return parsed.summaries
-      .filter(s =>
-        typeof s.path === 'string' &&
-        typeof s.summary === 'string' &&
-        s.path.trim().length > 0 &&
-        s.summary.trim().length > 0
-      )
-      .map(s => {
-        const expectedPath = expectedPaths
-          ? resolveExpectedSummaryPath(s.path, expectedPaths)
-          : s.path.trim();
-        return expectedPath
-          ? { path: expectedPath, summary: s.summary.trim() }
-          : null;
-      })
-      .filter((s): s is SummaryResult => s !== null);
-  } catch (error) {
-    logger.warn({ error: (error as Error).message }, 'Failed to parse batch response');
-    return [];
-  }
 }
