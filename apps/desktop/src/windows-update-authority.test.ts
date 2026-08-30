@@ -35,7 +35,9 @@ import {
   WINDOWS_AUTHORITY_COMPILE_STAGES,
 } from './windows-update-authority';
 import {
+  invokeWindowsAclTool,
   prepareWindowsAuthorityBuildDirectory,
+  resolveWindowsAclTool,
   sealWindowsAuthorityDirectory,
 } from '../scripts/build-windows-native-launcher.mjs';
 
@@ -481,6 +483,7 @@ test('bootstrap authority rejects real unprotected, current-owner, explicit-writ
     const { stdout } = await execFileAsync(kernelPowerShell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
       '[Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { env: {}, windowsHide: true });
     const currentSid = stdout.trim();
+    const canonicalIcacls = await resolveWindowsAclTool(kernelIcacls);
     assert.match(currentSid, /^S-1-(?:\d+-){1,14}\d+$/);
     for (const scenario of ['unprotected-dacl', 'current-owner', 'explicit-write', 'inherited-write'] as const) {
       await t.test(scenario, async () => {
@@ -499,14 +502,15 @@ test('bootstrap authority rejects real unprotected, current-owner, explicit-writ
           await writeFile(join(root, 'propr-windows-authority.manifest.json'), `${JSON.stringify(manifest)}\n`);
           await sealWindowsAuthorityDirectory(root);
           if (scenario === 'unprotected-dacl') {
-            await execFileAsync(kernelIcacls, [bootstrap, '/inheritance:e', '/Q'], { env: {} });
+            await invokeWindowsAclTool(canonicalIcacls, [bootstrap, '/inheritance:e', '/Q']);
           } else if (scenario === 'current-owner') {
-            await execFileAsync(kernelIcacls, [root, '/setowner', `*${currentSid}`, '/T', '/C', '/Q'], { env: {} });
+            await invokeWindowsAclTool(canonicalIcacls,
+              [root, '/setowner', `*${currentSid}`, '/T', '/C', '/Q']);
           } else if (scenario === 'explicit-write') {
-            await execFileAsync(kernelIcacls, [bootstrap, '/grant', `*${currentSid}:M`, '/Q'], { env: {} });
+            await invokeWindowsAclTool(canonicalIcacls, [bootstrap, '/grant', `*${currentSid}:M`, '/Q']);
           } else {
-            await execFileAsync(kernelIcacls, [root, '/inheritance:e', '/grant', `*${currentSid}:(OI)(CI)M`, '/Q'],
-              { env: {} });
+            await invokeWindowsAclTool(canonicalIcacls,
+              [root, '/inheritance:e', '/grant', `*${currentSid}:(OI)(CI)M`, '/Q']);
           }
           process.env.PROPR_WINDOWS_MALICIOUS_BOOTSTRAP_SIDE_EFFECT = marker;
           await assert.rejects(

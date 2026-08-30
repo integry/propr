@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -21,7 +21,9 @@ import {
 } from './build-windows-authority-helper.mjs';
 import {
   buildWindowsNativeLauncher,
+  invokeWindowsAclTool,
   prepareWindowsAuthorityBuildDirectory,
+  resolveWindowsAclTool,
   WINDOWS_NATIVE_BUILD_BOOTSTRAP,
   WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY,
   WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY,
@@ -40,6 +42,7 @@ const windowsNativeBuildOnly = {
 };
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
+const kernelTakeown = String.raw`\\?\GLOBALROOT\SystemRoot\System32\takeown.exe`;
 const kernelIcacls = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
 const microsoftWindowsSubjectRdns = [
   '310b3009060355040613025553',
@@ -123,6 +126,7 @@ test('node-gyp failures retain bounded secret-free compiler causes and evidence'
     stderr: String.raw`D:\private\propr_windows_launcher.obj : fatal error LNK1120: 1 unresolved externals`,
   })), 'LINK');
   assert.equal(classifyWindowsNativeBuildFailure(Object.assign(new Error('spawn'), { code: 'ENOENT' })), 'SPAWN');
+  assert.equal(classifyWindowsNativeBuildFailure(Object.assign(new Error('invalid spawn'), { code: 'EINVAL' })), 'SPAWN');
   assert.equal(classifyWindowsNativeBuildFailure(Object.assign(new Error('timeout'), {
     code: null, killed: true, signal: 'SIGTERM',
   })), 'TIMEOUT');
@@ -132,6 +136,41 @@ test('node-gyp failures retain bounded secret-free compiler causes and evidence'
   assert.equal(classifyWindowsNativeBuildFailure(Object.assign(new Error('signal'), {
     code: null, killed: false, signal: 'SIGABRT',
   })), 'EXIT');
+});
+
+test('ACL tool launch maps synchronous throws and asynchronous rejections to one bounded spawn diagnostic', async () => {
+  const canonical = String.raw`C:\Windows\System32\icacls.exe`;
+  for (const invoke of [
+    () => { throw Object.assign(new Error(String.raw`C:\private\sync detail`), { code: 'EINVAL' }); },
+    async () => { throw Object.assign(new Error(String.raw`C:\private\async detail`), { code: 'EPERM' }); },
+  ]) {
+    await assert.rejects(
+      invokeWindowsAclTool(canonical, ['/?'], invoke),
+      error => error instanceof Error
+        && error.message === 'Windows authority helper build failed [win-authority:BUILD_COMPILER:SPAWN]'
+        && error.code === 'SPAWN'
+        && !error.message.includes('private'),
+    );
+  }
+  let observed;
+  await invokeWindowsAclTool(canonical, ['/?'], async (tool, args, options) => { observed = { tool, args, options }; });
+  assert.deepEqual(observed, {
+    tool: canonical,
+    args: ['/?'],
+    options: { windowsHide: true, timeout: 30_000, maxBuffer: 64 * 1024, env: {} },
+  });
+});
+
+test('fixed GLOBALROOT ACL tools resolve to normal held-identity DOS paths and execute', {
+  skip: process.platform !== 'win32',
+}, async () => {
+  for (const [fixed, basename] of [[kernelTakeown, 'takeown.exe'], [kernelIcacls, 'icacls.exe']]) {
+    const canonical = await resolveWindowsAclTool(fixed);
+    assert.match(canonical, /^[A-Za-z]:\\/);
+    assert.equal(canonical.startsWith('\\\\'), false);
+    assert.equal(canonical.toLowerCase().endsWith(`\\system32\\${basename}`), true);
+    await invokeWindowsAclTool(canonical, ['/?']);
+  }
 });
 
 test('compiler layout preserves recognized probe substages and redacts unknown failures', async () => {
@@ -213,6 +252,10 @@ test('the current-owner exception exists only in the unshipped build bootstrap',
   assert.match(nativeBuild, /cleanupWindowsAuthorityBuildStaging/);
   assert.match(nativeBuild, /await mkdir\(root, \{ recursive: true \}\)/);
   assert.match(nativeBuild, /KERNEL_TAKEOWN, \['\/F', root, '\/R', '\/SKIPSL'\]/);
+  assert.match(nativeBuild, /KERNEL_ICACLS, \[root, '\/reset', '\/T', '\/C', '\/Q'\]/);
+  assert.match(nativeBuild, /resolveWindowsAclTool\(tool\)/);
+  assert.match(nativeBuild, /await invoke\(tool, args, \{/);
+  assert.doesNotMatch(nativeBuild, /execFileAsync\(tool, args,[\s\S]{0,180}\.catch/);
   assert.doesNotMatch(nativeBuild, /copyFile\(builtBuildBootstrap/);
   assert.match(await readFile(new URL('./build-windows-authority-helper.mjs', import.meta.url), 'utf8'),
     /readHeldBuildOutput\([\s\S]*launcher\.buildBootstrap\.path[\s\S]*launcher\.buildBootstrap\.sha256/);
@@ -323,6 +366,48 @@ test('absent Windows build roots are created before their DACL is protected', wi
   }
 });
 
+test('protected build staging removes hostile explicit and inherited ACEs and rejects a swapped root',
+  windowsNativeBuildOnly, async () => {
+    const launcher = await buildWindowsNativeLauncher();
+    const buildBootstrap = require(WINDOWS_NATIVE_BUILD_BOOTSTRAP);
+    const parent = await mkdtemp(join(tmpdir(), 'propr-hostile-precreated-root-'));
+    const root = join(parent, 'staging');
+    const artifact = join(root, 'propr-windows-launcher.node');
+    const displaced = join(parent, 'protected-root');
+    const canonicalIcacls = await resolveWindowsAclTool(kernelIcacls);
+    const policy = {
+      path: artifact,
+      size: launcher.size,
+      sha256: launcher.sha256,
+      production: false,
+      authenticationMode: 'held-build-artifact',
+      publisher: null,
+      signerCertificateSha256: null,
+      signerSpkiSha256: null,
+    };
+    try {
+      await invokeWindowsAclTool(canonicalIcacls,
+        [parent, '/grant', '*S-1-5-32-545:(OI)(CI)M', '/Q']);
+      await mkdir(root);
+      await copyFile(launcher.path, artifact);
+      await invokeWindowsAclTool(canonicalIcacls, [root, '/grant', '*S-1-5-32-546:(OI)(CI)M', '/T', '/C', '/Q']);
+      await prepareWindowsAuthorityBuildDirectory(root);
+      assert.equal(typeof buildBootstrap.loadVerifiedModule(policy).compileHeld, 'function',
+        'reset plus inheritance removal leaves only the exact build identities');
+
+      await rename(root, displaced);
+      await mkdir(root);
+      await copyFile(launcher.path, artifact);
+      assert.throws(() => buildBootstrap.loadVerifiedModule(policy), error => error?.code === 'MODULE_AUTHORITY',
+        'a pathname swap cannot inherit the protected staging capability');
+      await rm(root, { recursive: true, force: true });
+      await rename(displaced, root);
+    } finally {
+      await prepareWindowsAuthorityBuildDirectory(parent).catch(() => undefined);
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
 test('build-owner module authentication is compile-time-only, ACL-strict, and held-identity-bound',
   windowsNativeBuildOnly, async () => {
     const launcher = await buildWindowsNativeLauncher();
@@ -355,7 +440,8 @@ test('build-owner module authentication is compile-time-only, ACL-strict, and he
     const broad = join(root, 'propr-windows-launcher.node');
     try {
       await copyFile(launcher.path, broad);
-      await execFileAsync(kernelIcacls, [broad, '/inheritance:r', '/grant:r', '*S-1-5-32-545:M', '/Q'], { env: {} });
+      await invokeWindowsAclTool(await resolveWindowsAclTool(kernelIcacls),
+        [broad, '/inheritance:r', '/grant:r', '*S-1-5-32-545:M', '/Q']);
       assert.throws(() => buildBootstrap.loadVerifiedModule({
         ...policy, path: broad, authenticationMode: 'held-build-artifact',
       }), error => error?.code === 'MODULE_AUTHORITY');

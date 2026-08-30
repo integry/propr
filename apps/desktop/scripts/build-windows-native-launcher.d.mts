@@ -8,6 +8,12 @@ export const WINDOWS_NATIVE_AUTHORITY_DIRECTORY: string;
 export function prepareWindowsAuthorityBuildDirectory(root?: string): Promise<void>;
 export function sealWindowsAuthorityDirectory(root?: string): Promise<void>;
 export function cleanupWindowsAuthorityBuildStaging(): Promise<void>;
+export function resolveWindowsAclTool(tool: string): Promise<string>;
+export function invokeWindowsAclTool(
+  tool: string,
+  args: readonly string[],
+  invoke?: (tool: string, args: readonly string[], options: Record<string, unknown>) => Promise<unknown>,
+): Promise<void>;
 
 export function inspectWindowsNativeLauncherPe(bytes: Buffer, expectedArchitecture: string): {
   format: 'PE';

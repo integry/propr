@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { lstat, mkdir, open, realpath, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, resolve, win32 as windowsPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -17,6 +17,7 @@ export const WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY = join(WINDOWS_NATIVE_AUTHOR
 export const WINDOWS_NATIVE_BUILD_BOOTSTRAP = join(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY,
   'propr-windows-build-bootstrap.node');
 const MAX_LAUNCHER_BYTES = 4 * 1024 * 1024;
+const MAX_ACL_TOOL_BYTES = 4 * 1024 * 1024;
 const KERNEL_TAKEOWN = String.raw`\\?\GLOBALROOT\SystemRoot\System32\takeown.exe`;
 const KERNEL_ICACLS = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
 const SYSTEM_SID = '*S-1-5-18';
@@ -67,7 +68,7 @@ export const sanitizeWindowsNativeBuildDiagnostics = output => {
 
 export const classifyWindowsNativeBuildFailure = error => {
   const code = error && typeof error === 'object' ? error.code : undefined;
-  if (code === 'ENOENT' || code === 'EACCES' || code === 'EPERM') return 'SPAWN';
+  if (code === 'EINVAL' || code === 'ENOENT' || code === 'EACCES' || code === 'EPERM') return 'SPAWN';
   if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || error?.name === 'RangeError'
     && /maxBuffer/i.test(String(error?.message ?? ''))) return 'OUTPUT_LIMIT';
   if (error?.killed === true && error?.signal) return 'TIMEOUT';
@@ -77,13 +78,69 @@ export const classifyWindowsNativeBuildFailure = error => {
   return 'EXIT';
 };
 
+const sameFileIdentity = (left, right) => left.dev === right.dev && left.ino === right.ino
+  && left.size === right.size && left.nlink === right.nlink;
+
+const normalDosExecutable = (path, basename) => {
+  const candidate = /^\\\\\?\\[A-Za-z]:\\/.test(path) ? path.slice(4) : path;
+  if (!/^[A-Za-z]:\\[^\0]+$/.test(candidate) || candidate.startsWith('\\\\')
+      || windowsPath.isAbsolute(candidate) !== true || candidate.indexOf(':', 2) >= 0
+      || windowsPath.basename(candidate).toLowerCase() !== basename
+      || windowsPath.basename(windowsPath.dirname(candidate)).toLowerCase() !== 'system32') {
+    fail('DIRECTORY_PROBE');
+  }
+  return candidate;
+};
+
+// CreateProcess does not accept the fixed GLOBALROOT spelling. Retain the
+// exact kernel-rooted file while realpath resolves its normal DOS spelling,
+// then prove that spelling opens the same non-reparse OS file before launch.
+export const resolveWindowsAclTool = async tool => {
+  const basename = tool === KERNEL_TAKEOWN ? 'takeown.exe'
+    : tool === KERNEL_ICACLS ? 'icacls.exe' : fail('DIRECTORY_PROBE');
+  const targetStats = await lstat(tool, { bigint: true }).catch(() => fail('DIRECTORY_PROBE'));
+  if (!targetStats.isFile() || targetStats.isSymbolicLink() || targetStats.nlink < 1n
+      || targetStats.size <= 0n || targetStats.size > BigInt(MAX_ACL_TOOL_BYTES)) fail('DIRECTORY_PROBE');
+  const target = await open(tool, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    .catch(() => fail('DIRECTORY_PROBE'));
+  let canonical;
+  try {
+    const targetBefore = await target.stat({ bigint: true }).catch(() => fail('DIRECTORY_PROBE'));
+    if (!sameFileIdentity(targetBefore, targetStats)) fail('DIRECTORY_PROBE');
+    canonical = normalDosExecutable(
+      await realpath(tool).catch(() => fail('DIRECTORY_PROBE')),
+      basename,
+    );
+    const canonicalStats = await lstat(canonical, { bigint: true }).catch(() => fail('DIRECTORY_PROBE'));
+    if (!canonicalStats.isFile() || canonicalStats.isSymbolicLink()
+        || !sameFileIdentity(canonicalStats, targetBefore)) fail('DIRECTORY_PROBE');
+    const canonicalHandle = await open(canonical, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+      .catch(() => fail('DIRECTORY_PROBE'));
+    try {
+      const canonicalBefore = await canonicalHandle.stat({ bigint: true }).catch(() => fail('DIRECTORY_PROBE'));
+      const targetAfter = await target.stat({ bigint: true }).catch(() => fail('DIRECTORY_PROBE'));
+      const canonicalAfter = await canonicalHandle.stat({ bigint: true }).catch(() => fail('DIRECTORY_PROBE'));
+      if (!sameFileIdentity(targetBefore, targetAfter) || !sameFileIdentity(targetBefore, canonicalBefore)
+          || !sameFileIdentity(canonicalBefore, canonicalAfter)) fail('DIRECTORY_PROBE');
+    } finally { await canonicalHandle.close().catch(() => undefined); }
+  } finally { await target.close().catch(() => undefined); }
+  return canonical;
+};
+
+export const invokeWindowsAclTool = async (tool, args, invoke = execFileAsync) => {
+  try {
+    await invoke(tool, args, {
+      windowsHide: true,
+      timeout: 30_000,
+      maxBuffer: 64 * 1024,
+      env: {},
+    });
+  } catch { fail('SPAWN'); }
+};
+
 const authorityAclTool = async (tool, args) => {
-  await execFileAsync(tool, args, {
-    windowsHide: true,
-    timeout: 30_000,
-    maxBuffer: 64 * 1024,
-    env: {},
-  }).catch(() => fail('DIRECTORY_PROBE'));
+  const canonical = await resolveWindowsAclTool(tool);
+  await invokeWindowsAclTool(canonical, args);
 };
 
 const exactAuthorityDirectory = async root => {
@@ -107,6 +164,9 @@ export const prepareWindowsAuthorityBuildDirectory = async (root = WINDOWS_NATIV
   // must continue to reject it until sealWindowsAuthorityDirectory transfers
   // ownership to SYSTEM.
   await authorityAclTool(KERNEL_TAKEOWN, ['/F', root, '/R', '/SKIPSL']);
+  // /grant:r replaces only ACEs for its named trustees. Reset the complete
+  // tree first so a hostile explicit trustee cannot survive build staging.
+  await authorityAclTool(KERNEL_ICACLS, [root, '/reset', '/T', '/C', '/Q']);
   await authorityAclTool(KERNEL_ICACLS, [root, '/inheritance:r', '/T', '/C', '/Q']);
   await authorityAclTool(KERNEL_ICACLS, [root, '/grant:r', `${ADMINISTRATORS_SID}:(OI)(CI)F`,
     `${SYSTEM_SID}:(OI)(CI)F`, '/T', '/C', '/Q']);
