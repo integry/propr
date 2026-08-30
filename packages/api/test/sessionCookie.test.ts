@@ -54,6 +54,14 @@ test('secure session cookie follows API_PUBLIC_URL protocol for HTTPS and localh
   assert.equal(shouldUseSecureSessionCookie('.example.com'), true);
 });
 
+test('noncanonical HTTPS public URL keeps the session cookie secure in development', () => {
+  process.env.NODE_ENV = 'development';
+  delete process.env.COOKIE_DOMAIN;
+  process.env.API_PUBLIC_URL = 'https://api.example.test/path';
+
+  assert.equal(shouldUseSecureSessionCookie(undefined), true);
+});
+
 test('secure session cookie does not downgrade for non-localhost HTTP public URL', () => {
   process.env.API_PUBLIC_URL = 'http://api.example.com';
   process.env.COOKIE_DOMAIN = '.example.com';

@@ -19,10 +19,10 @@ export function shouldUseSecureSessionCookie(cookieDomain: string | undefined): 
         if (process.env.API_PUBLIC_URL) {
             const raw = process.env.API_PUBLIC_URL;
             const url = new URL(raw);
+            if (url.protocol === 'https:') return true;
             if (normalizeProprApiOrigin(raw) !== url.origin) {
                 return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
             }
-            if (url.protocol === 'https:') return true;
             if (url.protocol === 'http:' && isProprLoopbackHostname(url.hostname)) return false;
         }
         return process.env.NODE_ENV === 'production' || Boolean(cookieDomain);
