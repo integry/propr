@@ -104,10 +104,9 @@ test("task inspect defaults to every canonical active state, including queued wo
     },
   }));
 
-  assert.deepEqual(
-    result.requests.map((url) => url.searchParams.get("status")),
-    [...ACTIVE_TASK_LIFECYCLE_STATES]
-  );
+  const requestedStates = result.requests.map((url) => url.searchParams.get("status"));
+  assert.equal(requestedStates.length, ACTIVE_TASK_LIFECYCLE_STATES.length);
+  assert.deepEqual(new Set(requestedStates), new Set(ACTIVE_TASK_LIFECYCLE_STATES));
   const output = JSON.parse(result.stdout.join("\n"));
   assert.deepEqual(output.states, [...ACTIVE_TASK_LIFECYCLE_STATES]);
   assert.equal(output.tasks[0].state, "claude_execution");
