@@ -249,16 +249,10 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     primaryAgentAlias,
     fallbackAgentAlias: fallbackAgent?.config.alias,
     fallbackModel: fallbackModelUsed ?? fallbackModelOverride
-  }, failureKind === 'quota'
-    ? 'Primary directory summarization model quota-limited; retrying batch with fallback'
-    : failureKind === 'synthetic-route'
-      ? 'Primary synthetic directory summarization route unavailable; retrying batch with fallback'
-      : 'Primary directory summarization returned unusable output; retrying batch with fallback');
+  }, directoryFallbackWarning(failureKind));
 
   const fallbackRoutingSession = options.fallbackRoutingSession;
-  state.agentUsed = fallbackAgent as Agent;
-  state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
-  state.routingMetadata = undefined;
+  markDirectoryFallbackAttempt(state, fallbackAgent as Agent, fallbackModelUsed ?? fallbackModelOverride);
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
       prompt,
@@ -311,6 +305,24 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     });
     throw new SummarizationCooldownRecordedError(fallbackError);
   }
+}
+
+function directoryFallbackWarning(failureKind: 'quota' | 'invalid-response' | 'synthetic-route'): string {
+  return failureKind === 'quota'
+    ? 'Primary directory summarization model quota-limited; retrying batch with fallback'
+    : failureKind === 'synthetic-route'
+      ? 'Primary synthetic directory summarization route unavailable; retrying batch with fallback'
+      : 'Primary directory summarization returned unusable output; retrying batch with fallback';
+}
+
+function markDirectoryFallbackAttempt(
+  state: DirectoryBatchState,
+  fallbackAgent: Agent,
+  fallbackModel: string | undefined
+): void {
+  state.agentUsed = fallbackAgent;
+  state.modelLogged = fallbackModel ?? fallbackAgent.config.defaultModel ?? 'unknown';
+  state.routingMetadata = undefined;
 }
 
 function shouldRecordResponseFailure(failureKind: string, error: unknown): boolean {
