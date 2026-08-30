@@ -161,6 +161,20 @@ describe('synthetic agent contracts', () => {
     }
   });
 
+  test('rejects duplicate top-level agent IDs at the duplicate index', () => {
+    const value = cloneConfig();
+    value.push({ ...structuredClone(value[0]), alias: 'another-pool' });
+
+    const result = syntheticAgentConfigsSchema.safeParse(value);
+
+    assert.equal(result.success, false);
+    if (result.success) return;
+    const duplicateIdIssue = result.error.issues.find(issue =>
+      issue.message === `Duplicate synthetic agent ID '${AGENT_ID}'`,
+    );
+    assert.deepEqual(duplicateIdIssue?.path, [1, 'id']);
+  });
+
   test('validates the shared direct namespace and physical model references', () => {
     const config = [syntheticAgent()];
     assert.deepEqual(validateSyntheticAgentReferences(config, [directAgent()]), {
@@ -248,6 +262,41 @@ describe('synthetic agent persistence and API', () => {
 });
 
 describe('synthetic direct-agent integrity and catalog', () => {
+  test('preserves an operational synthetic default during a direct-agent update', async () => {
+    const database = await createConfigDatabase();
+    const previous = directAgent();
+    const updated = { ...previous, configPath: '/tmp/codex-primary-updated' };
+    const publishedUpdates: string[] = [];
+    let appliedDefault: string | null | undefined;
+    try {
+      const result = await applyAgentsUpdate({
+        agents: [updated],
+        processedAgents: [updated],
+        username: 'admin',
+        publishConfigUpdate: async subtype => { publishedUpdates.push(subtype); },
+        logActivityHelper: async () => undefined,
+        configStore: {
+          loadAgents: async () => [previous],
+          loadSyntheticAgents: async () => [syntheticAgent()],
+          loadSettings: async () => ({ default_agent_alias: 'balanced-pool' }),
+          handleSettingsSaveSideEffects: async () => undefined,
+        },
+        database,
+        registry: {
+          refresh: async () => undefined,
+          setDefaultAgentAlias: alias => { appliedDefault = alias; },
+        },
+      });
+
+      assert.equal(result.status, 200);
+      assert.equal(appliedDefault, 'balanced-pool');
+      assert.deepEqual(publishedUpdates, ['agents_update']);
+      assert.equal(await database('system_configs').where({ key: 'settings' }).first(), undefined);
+    } finally {
+      await database.destroy();
+    }
+  });
+
   test('blocks deletion of a referenced direct alias but permits disabling it', async () => {
     const database = await createConfigDatabase();
     const previous = directAgent();

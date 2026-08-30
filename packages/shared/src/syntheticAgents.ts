@@ -91,7 +91,17 @@ export const syntheticAgentConfigSchema = z.object({
 export const syntheticAgentConfigsSchema = z.array(syntheticAgentConfigSchema)
   .superRefine((agents, context) => {
     const aliases = new Set<string>();
+    const agentIds = new Set<string>();
     agents.forEach((agent, index) => {
+      if (agentIds.has(agent.id)) {
+        context.addIssue({
+          code: 'custom',
+          path: [index, 'id'],
+          message: `Duplicate synthetic agent ID '${agent.id}'`,
+        });
+      }
+      agentIds.add(agent.id);
+
       if (aliases.has(agent.alias)) {
         context.addIssue({
           code: 'custom',
