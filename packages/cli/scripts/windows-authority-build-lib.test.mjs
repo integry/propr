@@ -10,10 +10,14 @@ import {
   authorizeWindowsBuildToolSigner,
   awaitWindowsBuildLeaseReadiness,
   canonicalWindowsBuildSourceBytes,
+  createWindowsBuildProgressValidator,
   fixedBuildDiagnostic,
+  formatWindowsBuildProgressFrame,
   planWindowsBuildLeaseReadiness,
   runBoundedBuildTool,
+  runBoundedProgressBuildTool,
   validateNativeWindowsDirectories,
+  windowsBuildLeaseProgressFrames,
 } from "./windows-authority-build-lib.mjs";
 
 test("x64 and arm64 slow-host lease readiness is inventory-sized and hard bounded", async () => {
@@ -29,8 +33,52 @@ test("x64 and arm64 slow-host lease readiness is inventory-sized and hard bounde
     assert.ok(plan.batches.every((batch) => batch.length <= 512));
     assert.ok(plan.deadlineMs > 10_000, `${architecture} retained the obsolete ten-second deadline`);
     assert.ok(plan.deadlineMs <= 180_000, `${architecture} readiness lost its hard deadline`);
-    await awaitWindowsBuildLeaseReadiness(plan.batches.map(() => Promise.resolve()), plan);
+    const progress = windowsBuildLeaseProgressFrames(plan);
+    await awaitWindowsBuildLeaseReadiness(progress.slice(1, -1).map((frame) => Promise.resolve(frame)), plan);
   }
+});
+
+test("runtime lease progress rejects duplicate, regression, counter overflow, and missing frames", () => {
+  const plan = planWindowsBuildLeaseReadiness([
+    { path: "one", bytes: 7 },
+    { path: "two", bytes: 8 },
+  ]);
+  const frames = windowsBuildLeaseProgressFrames(plan);
+  const duplicate = createWindowsBuildProgressValidator(frames);
+  duplicate.push(frames[0]);
+  assert.throws(() => duplicate.push(frames[0]), WindowsHelperBuildError);
+  const missing = createWindowsBuildProgressValidator(frames);
+  missing.push(frames[0]);
+  assert.throws(() => missing.finish(), (error) => error.diagnostic === "STALLED");
+  assert.throws(() => createWindowsBuildProgressValidator(frames).push(
+    "PROPR_BUILD_PROGRESS_V1 2/3 1/1 3/2 15/15\n",
+  ), WindowsHelperBuildError);
+  assert.throws(() => createWindowsBuildProgressValidator(frames).push(
+    "PROPR_BUILD_PROGRESS_V1 2/3 1/1 1/2 999999999999999999999/15\n",
+  ), WindowsHelperBuildError);
+});
+
+test("slow staged discovery progress completes under one realistic hard deadline", async () => {
+  const frames = Array.from({ length: 3 }, (_, index) => formatWindowsBuildProgressFrame({
+    stage: index + 1, stages: 3, batch: 0, batches: 0,
+    files: 0, totalFiles: 0, bytes: 0, totalBytes: 0,
+  }));
+  const script = `const frames=${JSON.stringify(frames)};let i=0;const next=()=>{if(i===frames.length){process.stdout.write('ready');return;}process.stderr.write(frames[i++]);setTimeout(next,20)};next()`;
+  const result = await runBoundedProgressBuildTool(process.execPath, ["-e", script], {
+    progressFrames: frames, timeout: 1_000, maxBytes: 16, maxProgressBytes: 1024,
+  });
+  assert.equal(result.stdout.toString(), "ready");
+});
+
+test("intentional staged discovery stall is bounded by the one overall deadline", async () => {
+  const frame = formatWindowsBuildProgressFrame({
+    stage: 1, stages: 2, batch: 0, batches: 0,
+    files: 0, totalFiles: 0, bytes: 0, totalBytes: 0,
+  });
+  await assert.rejects(runBoundedProgressBuildTool(process.execPath, ["-e",
+    `process.stderr.write(${JSON.stringify(frame)});setInterval(()=>{},1000)`], {
+    progressFrames: [frame, frame.replace("1/2", "2/2")], timeout: 50, maxBytes: 16,
+  }), (error) => error instanceof WindowsHelperBuildError && error.diagnostic === "STALLED");
 });
 
 test("intentional lease-readiness stall remains BUILD_COMPILER diagnostic 4", async () => {
@@ -76,7 +124,7 @@ test("canonical source binding rejects ambiguous bytes and stages only canonical
 test("every pinned Windows and fixture source hashes the same canonical bytes that are compiled", () => {
   const pins = new Map([
     ["../native/windows-authority-bootstrap.c", "1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e"],
-    ["../native/windows-authority-broker.c", "7ccb346248aac0a452c2db7d87cb7b9504a3da9c5201e937bc7c49e6b0539379"],
+    ["../native/windows-authority-broker.c", "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c"],
     ["../native/windows-authority-supervisor.cs", "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff"],
     ["../../../scripts/fixtures/windows-connect-docker-fixture.c", "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c"],
     ["../../../test/fixtures/windowsAuthorityReplacementAttacker.c", "01ccc521cf6784f92cc33bbc4846b218625d61cb3b7dcbd9ed9366f50d12f6fa"],
@@ -216,6 +264,10 @@ test("production signer pins cannot be copied from environment claims", () => {
   assert.match(buildSource, /runAuthorityLeasedBuildTool\(nativeLinker, nativeLinkArgs/u);
   assert.match(buildSource, /planWindowsBuildLeaseReadiness/u);
   assert.match(buildSource, /awaitWindowsBuildLeaseReadiness/u);
+  assert.match(buildSource, /await runBoundedProgressBuildTool\(trustedPowerShell/u);
+  assert.match(buildSource, /timeout: 180_000/u);
+  assert.doesNotMatch(buildSource, /timeout: 15_000/u);
+  assert.match(buildSource, /signer-pins-v1", path\], \{\s*stage: "BUILD_COMPILER", timeout: 60_000/u);
   assert.match(buildSource, /lease-build-inputs-v1/u);
   assert.match(buildSource, /input\.tool === true \|\| prior\.tool !== true/u);
   assert.match(buildSource, /signer-pins-v1/u);
@@ -227,6 +279,13 @@ test("production signer pins cannot be copied from environment claims", () => {
   const brokerSource = readFileSync(new URL("../native/windows-authority-broker.c", import.meta.url), "utf8");
   assert.match(brokerSource, /launch-bootstrap-v1/u);
   assert.match(brokerSource, /_get_osfhandle\(9\)/u);
+  assert.match(brokerSource, /_get_osfhandle\(10\)/u);
+  assert.match(brokerSource, /DuplicateHandle\(GetCurrentProcess\(\), self_lease/u);
+  assert.match(brokerSource, /_dup2\(child_authority_fd, 6\)/u);
+  assert.match(brokerSource, /PROC_THREAD_ATTRIBUTE_HANDLE_LIST/u);
+  assert.match(brokerSource, /EXTENDED_STARTUPINFO_PRESENT/u);
+  assert.match(brokerSource, /if \(child_authority_installed\) _close\(6\)/u);
+  assert.doesNotMatch(brokerSource, /SetHandleInformation\(inherited_authority, HANDLE_FLAG_INHERIT, 0\)/u);
   assert.match(brokerSource, /CREATE_SUSPENDED \| CREATE_NO_WINDOW/u);
   assert.match(brokerSource, /verify_authenticode_pins\(self_path, expected_leaf, expected_spki\)/u);
   assert.match(brokerSource, /same_file_id\(&target_id, &loaded_id\)/u);

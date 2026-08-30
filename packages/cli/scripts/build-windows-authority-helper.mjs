@@ -31,10 +31,13 @@ import {
   awaitWindowsBuildLeaseReadiness,
   canonicalWindowsBuildSourceBytes,
   fixedBuildDiagnostic,
+  formatWindowsBuildProgressFrame,
   planWindowsBuildLeaseReadiness,
   publishWindowsBuildArtifactNoReplace,
   runBoundedBuildTool,
+  runBoundedProgressBuildTool,
   validateNativeWindowsDirectories,
+  windowsBuildLeaseProgressFrames,
 } from "./windows-authority-build-lib.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -57,7 +60,7 @@ const evidenceStage = evidenceArguments.length === 1 ? evidenceArguments[0].slic
 const nonce = randomBytes(32).toString("hex");
 const protocolVersion = 2;
 const sourceSha256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
-const launcherSourceSha256 = "7ccb346248aac0a452c2db7d87cb7b9504a3da9c5201e937bc7c49e6b0539379";
+const launcherSourceSha256 = "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c";
 const bootstrapSourceSha256 = "1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e";
 const bootstrapSha256 = "a633479040f27b4a8fab4fb982167803d05ecfdbb9063c3b76e25116575d8087";
 const smokeFixtureSourceSha256 = "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c";
@@ -238,8 +241,9 @@ async function runAuthorityLeasedBuildTool(command, args, options, rawInputs) {
     for (const { manifest } of prepared) rmSync(manifest, { force: true });
     throw new WindowsHelperBuildError(options.stage, "SPAWN_ERROR", error);
   }
+  const progressFrames = windowsBuildLeaseProgressFrames(plan);
   let completedBatches = 0;
-  const readiness = authorities.map(({ authority }) => new Promise((resolveReady, rejectReady) => {
+  const readiness = authorities.map(({ authority }, batchIndex) => new Promise((resolveReady, rejectReady) => {
     let settled = false;
     let ready = Buffer.alloc(0);
     let stderrBytes = 0;
@@ -251,7 +255,7 @@ async function runAuthorityLeasedBuildTool(command, args, options, rawInputs) {
       if (error) rejectReady(error);
       else {
         completedBatches += 1;
-        resolveReady();
+        resolveReady(progressFrames[batchIndex + 1]);
       }
     };
     authority.once("error", () => finish(new WindowsHelperBuildError(options.stage, "SPAWN_ERROR")));
@@ -363,6 +367,14 @@ mkdirSync(launcherOutputDirectory, { recursive: true });
 emergencyBuildWorkspace = join(outputDirectory, `.propr-build-${nonce}`);
 const resolver = String.raw`
 $ErrorActionPreference='Stop'
+$utf8=[Text.UTF8Encoding]::new($false,$true)
+$stderr=[IO.StreamWriter]::new([Console]::OpenStandardError(),$utf8,256,$true)
+$stderr.AutoFlush=$true
+[Console]::SetError($stderr)
+[Console]::OutputEncoding=$utf8
+function Send-ProprProgress([int]$stage){
+  [Console]::Error.Write(('PROPR_BUILD_PROGRESS_V1 '+$stage+'/8 0/0 0/0 0/0'+[char]10))
+}
 $windows=[Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
 $system=[Environment]::SystemDirectory
 $systemWindows=[Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
@@ -370,6 +382,7 @@ $programFilesX86=[Environment]::GetFolderPath([Environment+SpecialFolder]::Progr
 if([string]::IsNullOrWhiteSpace($windows)-or[string]::IsNullOrWhiteSpace($system)-or[string]::IsNullOrWhiteSpace($programFilesX86)-or
    $windows-ne$env:PROPR_BUILD_WINDOWS_DIRECTORY-or$system-ne$env:PROPR_BUILD_SYSTEM_DIRECTORY-or
    $systemWindows-ne$env:PROPR_BUILD_SYSTEM_WINDOWS_DIRECTORY){exit 31}
+Send-ProprProgress 1
 $workspace=[IO.Path]::Combine($env:PROPR_BUILD_STAGING_PARENT,('.propr-build-'+$env:PROPR_BUILD_NONCE))
 if([IO.Directory]::Exists($workspace)-or[IO.File]::Exists($workspace)){exit 42}
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
@@ -387,6 +400,7 @@ foreach($sid in @($identity.User,$administrators,$systemSid)){
 $workspaceAcl=Get-Acl -LiteralPath $workspace
 $workspaceOwner=([Security.Principal.NTAccount]$workspaceAcl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value
 if(-not$workspaceAcl.AreAccessRulesProtected-or$workspaceOwner-ne$identity.User.Value){exit 43}
+Send-ProprProgress 2
 $authorizedSubjects=@(
   'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
   'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
@@ -397,10 +411,12 @@ function Test-AuthorizedResolverFile([string]$path){
 }
 $currentPowerShell=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 if($currentPowerShell-ne$env:PROPR_BUILD_POWERSHELL-or-not(Test-AuthorizedResolverFile $currentPowerShell)){exit 44}
+Send-ProprProgress 3
 $vswhere=[IO.Path]::Combine($programFilesX86,'Microsoft Visual Studio','Installer','vswhere.exe')
 if(-not(Test-AuthorizedResolverFile $vswhere)){exit 32}
 $installation=& $vswhere -latest -products '*' -version '[17.14,17.15)' -requires Microsoft.VisualStudio.Component.Roslyn.Compiler -property installationPath
 if($LASTEXITCODE-ne0-or[string]::IsNullOrWhiteSpace($installation)-or$installation.Contains([char]10)){exit 33}
+Send-ProprProgress 4
 $compiler=[IO.Path]::Combine($installation.Trim(),'MSBuild','Current','Bin','Roslyn','csc.exe')
 if(-not(Test-Path -LiteralPath $compiler -PathType Leaf)){exit 34}
 $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($compiler).ProductVersion
@@ -411,10 +427,12 @@ $nativeCompiler=[IO.Path]::Combine($toolsets[0].FullName,'bin','Hostx64','x64','
 $nativeLinker=[IO.Path]::Combine($toolsets[0].FullName,'bin','Hostx64','x64','link.exe')
 if(-not(Test-Path -LiteralPath $nativeCompiler -PathType Leaf)){exit 39}
 if(-not(Test-Path -LiteralPath $nativeLinker -PathType Leaf)){exit 41}
+Send-ProprProgress 5
 $sdkRoot=[IO.Path]::Combine($programFilesX86,'Windows Kits','10')
 $sdkVersions=@(Get-ChildItem -LiteralPath ([IO.Path]::Combine($sdkRoot,'Include')) -Directory|Where-Object{$_.Name-match'^10\.0\.26100\.'})
 if($sdkVersions.Count-ne1){exit 40}
 $sdkVersion=$sdkVersions[0].Name
+Send-ProprProgress 6
 $nativeIncludes=@(
   [IO.Path]::Combine($toolsets[0].FullName,'include'),
   [IO.Path]::Combine($sdkRoot,'Include',$sdkVersion,'ucrt'),
@@ -433,19 +451,27 @@ foreach($reference in $references){
   $acl=Get-Acl -LiteralPath $reference
   if($acl.Owner-notmatch'^(NT SERVICE\\TrustedInstaller|BUILTIN\\Administrators|NT AUTHORITY\\SYSTEM)$'){exit 37}
 }
+Send-ProprProgress 7
 $document=[ordered]@{windowsDirectory=$windows;systemWindowsDirectory=$windows;systemDirectory=$system;buildWorkspace=$workspace;compiler=$compiler;compilerVersion=$version;nativeCompiler=$nativeCompiler;nativeLinker=$nativeLinker;nativeIncludes=$nativeIncludes;nativeLibraries=$nativeLibraries;references=$references}
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false,$true)
+Send-ProprProgress 8
 [Console]::Out.Write(($document|ConvertTo-Json -Compress))
 `;
 
 let resolvedToolchain;
 try {
-  const resolved = runBoundedBuildTool(trustedPowerShell, [
+  const resolverProgressFrames = Object.freeze(Array.from({ length: 8 }, (_, index) =>
+    formatWindowsBuildProgressFrame({
+      stage: index + 1, stages: 8, batch: 0, batches: 0,
+      files: 0, totalFiles: 0, bytes: 0, totalBytes: 0,
+    })));
+  const resolved = await runBoundedProgressBuildTool(trustedPowerShell, [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", resolver,
   ], {
     stage: "BUILD_COMPILER",
-    timeout: 15_000,
+    timeout: 180_000,
     maxBytes: 16 * 1024,
+    maxProgressBytes: 4 * 1024,
+    progressFrames: resolverProgressFrames,
     env: {
       SystemRoot: bootstrapPaths.windowsDirectory,
       PROPR_BUILD_WINDOWS_DIRECTORY: bootstrapPaths.windowsDirectory,
@@ -553,7 +579,7 @@ if (sha256(smokeFixtureSourceBytes) !== smokeFixtureSourceSha256) {
 }
 const readBuildToolSignerPolicy = (role, path) => {
   const result = runBoundedBuildTool(bootstrapOutput, ["signer-pins-v1", path], {
-    stage: "BUILD_COMPILER", timeout: 10_000, maxBytes: 256, sensitiveValues: [path, bootstrapOutput],
+    stage: "BUILD_COMPILER", timeout: 60_000, maxBytes: 256, sensitiveValues: [path, bootstrapOutput],
   });
   const match = /^E ([0-9a-f]{64}) ([0-9a-f]{64})\r?\n$/u.exec(
     new TextDecoder("utf-8", { fatal: true }).decode(result.stdout),
@@ -793,7 +819,7 @@ try {
     const readSigningPins = async () => {
       const outputInput = { path: temporaryOutput, sha256: sha256(heldIdentity(temporaryOutput).bytes), tool: true };
       const pinResult = await runAuthorityLeasedBuildTool(temporaryOutput, ["--print-signing-pins-v1"], {
-        stage: "BUILD_OUTPUT", timeout: 10_000, maxBytes: 1024, sensitiveValues: [temporaryOutput],
+        stage: "BUILD_OUTPUT", timeout: 60_000, maxBytes: 1024, sensitiveValues: [temporaryOutput],
       }, [outputInput]);
       try {
         const pinText = new TextDecoder("utf-8", { fatal: true }).decode(pinResult.stdout);

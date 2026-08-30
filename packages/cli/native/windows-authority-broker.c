@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <io.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -608,11 +609,19 @@ static int quote_launch_argument(wchar_t *output, size_t capacity, size_t *offse
 /*
  * Outer bootstrap launch authority. fd 6 is the already hash/manifest-bound
  * packaged authority, fd 8 is the exact bootstrap object, and fd 9 is a
- * dedicated pre-CreateProcess barrier. This proof is intentionally distinct
- * from fd 7, which belongs to the bootstrap's packaged-broker child barrier.
+ * dedicated bootstrap pre-CreateProcess barrier, and fd 10 is the exact
+ * outer-authority final-check-to-first-CreateProcess attack barrier. This
+ * proof is intentionally distinct from fd 7, which belongs to the
+ * bootstrap's packaged-broker child barrier.
  */
 static int secure_launch_bootstrap(int argc, wchar_t **argv) {
   int status = PROPR_LAUNCH_FAILURE;
+  HANDLE child_authority = INVALID_HANDLE_VALUE;
+  int child_authority_fd = -1;
+  int child_authority_installed = 0;
+  LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
+  int attributes_initialized = 0;
+  HANDLE job = NULL;
   if (argc < 10 || argv[2] == NULL || argv[2][0] == L'\0' || wcschr(argv[2], L'"') != NULL) {
     return PROPR_LAUNCH_FAILURE;
   }
@@ -637,10 +646,14 @@ static int secure_launch_bootstrap(int argc, wchar_t **argv) {
   intptr_t authority_value = _get_osfhandle(6);
   intptr_t target_value = _get_osfhandle(8);
   intptr_t barrier_value = _get_osfhandle(9);
-  if (authority_value == -1 || target_value == -1 || barrier_value == -1) return PROPR_LAUNCH_FAILURE;
+  intptr_t outer_barrier_value = _get_osfhandle(10);
+  if (authority_value == -1 || target_value == -1 || barrier_value == -1 || outer_barrier_value == -1) {
+    return PROPR_LAUNCH_FAILURE;
+  }
   HANDLE inherited_authority = (HANDLE)authority_value;
   HANDLE inherited_target = (HANDLE)target_value;
   HANDLE barrier = (HANDLE)barrier_value;
+  HANDLE outer_barrier = (HANDLE)outer_barrier_value;
   wchar_t self_path[32768];
   DWORD self_length = GetModuleFileNameW(NULL, self_path, sizeof(self_path) / sizeof(self_path[0]));
   HANDLE self_lease = self_length == 0 || self_length >= sizeof(self_path) / sizeof(self_path[0])
@@ -674,13 +687,42 @@ static int secure_launch_bootstrap(int argc, wchar_t **argv) {
     (!production || verify_authenticode_pins(self_path, expected_leaf, expected_spki));
   if (!authenticated) goto bootstrap_cleanup;
 
+  /* fd 6 has two different lifetimes. The inherited package handle proves
+     this already-running outer authority, while the bootstrap needs its own
+     least-privilege authority object at fd 6 for launch_packaged_broker.
+     Install a distinct read-only duplicate in the CRT table; self_lease stays
+     open independently until the suspended child and its job are reaped. */
+  if (!DuplicateHandle(GetCurrentProcess(), self_lease, GetCurrentProcess(), &child_authority,
+      0, TRUE, DUPLICATE_SAME_ACCESS)) goto bootstrap_cleanup;
+  child_authority_fd = _open_osfhandle((intptr_t)child_authority, _O_RDONLY);
+  if (child_authority_fd < 0) {
+    CloseHandle(child_authority);
+    goto bootstrap_cleanup;
+  }
+  child_authority = INVALID_HANDLE_VALUE;
+  if (_dup2(child_authority_fd, 6) != 0) goto bootstrap_cleanup;
+  child_authority_installed = 1;
+  _close(child_authority_fd);
+  child_authority_fd = -1;
+  HANDLE child_authority_handle = (HANDLE)_get_osfhandle(6);
+  if (child_authority_handle == INVALID_HANDLE_VALUE ||
+      !SetHandleInformation(child_authority_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+    goto bootstrap_cleanup;
+  }
+
+  BYTE outer_ready = 'R';
+  BYTE outer_go = 0;
+  DWORD outer_transferred = 0;
+  if (!WriteFile(outer_barrier, &outer_ready, 1, &outer_transferred, NULL) || outer_transferred != 1 ||
+      !ReadFile(outer_barrier, &outer_go, 1, &outer_transferred, NULL) || outer_transferred != 1 ||
+      outer_go != 'G' || !SetHandleInformation(outer_barrier, HANDLE_FLAG_INHERIT, 0)) goto bootstrap_cleanup;
+
   BYTE ready = 'R';
   BYTE go = 0;
   DWORD transferred = 0;
   if (!WriteFile(barrier, &ready, 1, &transferred, NULL) || transferred != 1 ||
       !ReadFile(barrier, &go, 1, &transferred, NULL) || transferred != 1 || go != 'G' ||
-      !SetHandleInformation(barrier, HANDLE_FLAG_INHERIT, 0) ||
-      !SetHandleInformation(inherited_authority, HANDLE_FLAG_INHERIT, 0)) goto bootstrap_cleanup;
+      !SetHandleInformation(barrier, HANDLE_FLAG_INHERIT, 0)) goto bootstrap_cleanup;
 
   wchar_t command[32768];
   size_t command_offset = 0;
@@ -690,15 +732,40 @@ static int secure_launch_bootstrap(int argc, wchar_t **argv) {
       goto bootstrap_cleanup;
     }
   }
-  STARTUPINFOW startup;
+  STARTUPINFOEXW startup;
   PROCESS_INFORMATION child;
   ZeroMemory(&startup, sizeof(startup));
   ZeroMemory(&child, sizeof(child));
-  startup.cb = sizeof(startup);
-  GetStartupInfoW(&startup);
-  HANDLE job = NULL;
-  if (!CreateProcessW(argv[2], command, NULL, NULL, TRUE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
-      NULL, NULL, &startup, &child)) goto bootstrap_child_cleanup;
+  startup.StartupInfo.cb = sizeof(startup);
+  GetStartupInfoW(&startup.StartupInfo);
+  startup.StartupInfo.cb = sizeof(startup);
+  HANDLE inherited_handles[9];
+  SIZE_T inherited_count = 0;
+  for (int fd = 0; fd <= 8; fd += 1) {
+    intptr_t value = _get_osfhandle(fd);
+    if (value == -1 || value == (intptr_t)INVALID_HANDLE_VALUE) goto bootstrap_child_cleanup;
+    HANDLE handle = (HANDLE)value;
+    if (!SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) goto bootstrap_child_cleanup;
+    int duplicate = 0;
+    for (SIZE_T prior = 0; prior < inherited_count; prior += 1) {
+      if (inherited_handles[prior] == handle) { duplicate = 1; break; }
+    }
+    if (!duplicate) inherited_handles[inherited_count++] = handle;
+  }
+  SIZE_T attribute_bytes = 0;
+  InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_bytes);
+  if (attribute_bytes == 0 || attribute_bytes > 64 * 1024) goto bootstrap_child_cleanup;
+  attributes = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, attribute_bytes);
+  if (attributes == NULL || !InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_bytes)) {
+    goto bootstrap_child_cleanup;
+  }
+  attributes_initialized = 1;
+  if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+      inherited_handles, inherited_count * sizeof(HANDLE), NULL, NULL)) goto bootstrap_child_cleanup;
+  startup.lpAttributeList = attributes;
+  if (!CreateProcessW(argv[2], command, NULL, NULL, TRUE,
+      CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+      NULL, NULL, &startup.StartupInfo, &child)) goto bootstrap_child_cleanup;
   job = CreateJobObjectW(NULL, NULL);
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
   ZeroMemory(&limits, sizeof(limits));
@@ -725,7 +792,14 @@ bootstrap_child_cleanup:
   if (child.hThread != NULL) CloseHandle(child.hThread);
   if (child.hProcess != NULL) CloseHandle(child.hProcess);
   if (job != NULL) CloseHandle(job);
+  if (attributes != NULL) {
+    if (attributes_initialized) DeleteProcThreadAttributeList(attributes);
+    HeapFree(GetProcessHeap(), 0, attributes);
+  }
 bootstrap_cleanup:
+  if (child_authority_fd >= 0) _close(child_authority_fd);
+  if (child_authority != INVALID_HANDLE_VALUE) CloseHandle(child_authority);
+  if (child_authority_installed) _close(6);
   if (target_lease != INVALID_HANDLE_VALUE) CloseHandle(target_lease);
   if (self_lease != INVALID_HANDLE_VALUE) CloseHandle(self_lease);
   if (token_buffer != NULL) LocalFree(token_buffer);

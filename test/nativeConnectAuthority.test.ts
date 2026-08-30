@@ -700,6 +700,30 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       }
       rmSync(bootstrapMarker, { force: true });
     }
+    const packagedBrokerPath = join(process.cwd(), 'packages', 'cli', 'dist', 'native', 'prebuilds',
+      'win32-x64', 'connect-authority-broker.exe');
+    const outerDetached = `${packagedBrokerPath}.outer-final-check-detached`;
+    let outerFinalGapObserved = false;
+    try {
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
+        onOuterAuthorityCreateProcess: (outerPath) => {
+          outerFinalGapObserved = true;
+          assert.equal(outerPath, packagedBrokerPath);
+          assert.throws(() => renameSync(outerPath, outerDetached));
+          assert.throws(() => copyFileSync(replacementAttacker, outerPath));
+          assert.throws(() => lstatSync(bootstrapMarker), /ENOENT/);
+          throw new Error('outer authority exact final-check pre-CreateProcess lease observed');
+        },
+      }), /capability|authority|lease observed/);
+      assert.equal(outerFinalGapObserved, true);
+      assert.throws(() => lstatSync(bootstrapMarker), /ENOENT/);
+    } finally {
+      if (existsSync(outerDetached)) {
+        rmSync(packagedBrokerPath, { force: true });
+        renameSync(outerDetached, packagedBrokerPath);
+      }
+      rmSync(bootstrapMarker, { force: true });
+    }
     completeScenario('bootstrap-first-launch');
 
     const packagedSupervisorPath = join(process.cwd(), 'packages', 'cli', 'dist', 'native', 'prebuilds',

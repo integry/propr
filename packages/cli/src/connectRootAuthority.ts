@@ -148,7 +148,7 @@ const WINDOWS_AUTHORITY_BOOTSTRAP_SOURCE_SHA256 = "1b4dd2771e235bb1a4912095667f8
 
 const WINDOWS_AUTHORITY_PROTOCOL_VERSION = 2;
 const WINDOWS_AUTHORITY_SUPERVISOR_SOURCE_SHA256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
-const WINDOWS_AUTHORITY_LAUNCHER_SOURCE_SHA256 = "7ccb346248aac0a452c2db7d87cb7b9504a3da9c5201e937bc7c49e6b0539379";
+const WINDOWS_AUTHORITY_LAUNCHER_SOURCE_SHA256 = "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c";
 const WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS = Object.freeze({
   compiler: Object.freeze({
     leaf: "35e68cd82f647085ef7da13ce37929fa2d298fae6cb1d41c66a00709d00c8eae",
@@ -640,6 +640,8 @@ export interface WindowsAuthorityCapabilityProbe {
   readonly onBootstrapFirstLaunch?: (bootstrapPath: string) => void;
   /** Native-test-only attack after final binding and before the leased native CreateProcess. */
   readonly onBootstrapCreateProcess?: (bootstrapPath: string) => void;
+  /** Native-test-only attack after the outer authority's final self proof and before its first CreateProcess. */
+  readonly onOuterAuthorityCreateProcess?: (packagedBrokerPath: string) => void;
   readonly onSupervisorStarting?: (details: {
     readonly stagedPath: string;
     readonly helperPath: string;
@@ -1247,7 +1249,7 @@ async function destroyWindowsAuthorityCapability(
 }
 
 async function acquireWindowsAuthorityCapability(
-  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onPackagedBrokerLocked" | "onBootstrapFirstLaunch" | "onBootstrapCreateProcess" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName" | "testWorkspaceMode">,
+  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onPackagedBrokerLocked" | "onBootstrapFirstLaunch" | "onBootstrapCreateProcess" | "onOuterAuthorityCreateProcess" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName" | "testWorkspaceMode">,
   signal?: AbortSignal,
 ): Promise<WindowsAuthorityCapability> {
   if (windowsAuthorityCapability) {
@@ -1366,18 +1368,21 @@ async function acquireWindowsAuthorityCapability(
       windowsHide: true,
       env: supervisorEnvironment,
       // fd 5 is the staged-broker barrier; fd 7 is the packaged-broker
-      // barrier; fd 8 binds the bootstrap object; fd 9 is the distinct outer
-      // bootstrap pre-CreateProcess barrier owned by the packaged authority.
-      stdio: ["pipe", "pipe", "pipe", staged.fd, helper.fd, "pipe", artifact.fd, "pipe", bootstrap.fd, "pipe"],
+      // barrier; fd 8 binds the bootstrap object; fd 9 is the bootstrap
+      // pre-CreateProcess barrier; fd 10 attacks the outer authority's exact
+      // final-self-check-to-first-CreateProcess boundary.
+      stdio: ["pipe", "pipe", "pipe", staged.fd, helper.fd, "pipe", artifact.fd, "pipe", bootstrap.fd, "pipe", "pipe"],
     });
     if (!supervisor.pid) throw new WindowsSupervisorStartupError("TRANSPORT_SPAWN");
     const launchBarrier = (supervisor.stdio as unknown as Array<NodeJS.ReadWriteStream | null>)[5];
     const packagedBarrier = (supervisor.stdio as unknown as Array<NodeJS.ReadWriteStream | null>)[7];
     const bootstrapBarrier = (supervisor.stdio as unknown as Array<NodeJS.ReadWriteStream | null>)[9];
-    if (!launchBarrier || !packagedBarrier || !bootstrapBarrier
+    const outerAuthorityBarrier = (supervisor.stdio as unknown as Array<NodeJS.ReadWriteStream | null>)[10];
+    if (!launchBarrier || !packagedBarrier || !bootstrapBarrier || !outerAuthorityBarrier
       || typeof (launchBarrier as NodeJS.ReadWriteStream).write !== "function"
       || typeof (packagedBarrier as NodeJS.ReadWriteStream).write !== "function"
-      || typeof (bootstrapBarrier as NodeJS.ReadWriteStream).write !== "function") {
+      || typeof (bootstrapBarrier as NodeJS.ReadWriteStream).write !== "function"
+      || typeof (outerAuthorityBarrier as NodeJS.ReadWriteStream).write !== "function") {
       throw new WindowsSupervisorStartupError("TRANSPORT_SPAWN");
     }
     const awaitLeaseBarrier = (barrier: NodeJS.ReadWriteStream) => new Promise<void>((resolve, reject) => {
@@ -1404,6 +1409,14 @@ async function acquireWindowsAuthorityCapability(
       supervisor!.once("error", onError);
       supervisor!.once("exit", onExit);
     });
+    await awaitLeaseBarrier(outerAuthorityBarrier as NodeJS.ReadWriteStream);
+    try {
+      probe?.onOuterAuthorityCreateProcess?.(artifact.path);
+      (outerAuthorityBarrier as NodeJS.ReadWriteStream).end(Buffer.from("G"));
+    } catch (error) {
+      (outerAuthorityBarrier as NodeJS.ReadWriteStream).end(Buffer.from("X"));
+      throw error;
+    }
     await awaitLeaseBarrier(bootstrapBarrier as NodeJS.ReadWriteStream);
     try {
       probe?.onBootstrapCreateProcess?.(bootstrap.path);
@@ -1977,11 +1990,11 @@ export function exerciseWindowsAuthorityCapabilityForNativeTest(
 }> {
   if (process.platform !== "win32") throw new Error("Windows capability probe requires Windows");
   return enqueueWindowsAuthority(async () => {
-  if (probe.onStaged || probe.onPackagedBrokerLocked || probe.onBootstrapFirstLaunch || probe.onBootstrapCreateProcess || probe.onSupervisorStarting || probe.onSupervisorSpawned) {
+  if (probe.onStaged || probe.onPackagedBrokerLocked || probe.onBootstrapFirstLaunch || probe.onBootstrapCreateProcess || probe.onOuterAuthorityCreateProcess || probe.onSupervisorStarting || probe.onSupervisorSpawned) {
     await destroyWindowsAuthorityCapability();
   }
   const capability = await acquireWindowsAuthorityCapability(
-    probe.onStaged || probe.onPackagedBrokerLocked || probe.onBootstrapFirstLaunch || probe.onBootstrapCreateProcess || probe.onSupervisorStarting || probe.onSupervisorSpawned
+    probe.onStaged || probe.onPackagedBrokerLocked || probe.onBootstrapFirstLaunch || probe.onBootstrapCreateProcess || probe.onOuterAuthorityCreateProcess || probe.onSupervisorStarting || probe.onSupervisorSpawned
       ? probe
       : undefined,
     probe.signal,

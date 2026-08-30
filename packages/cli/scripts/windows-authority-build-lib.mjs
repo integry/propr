@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { linkSync, unlinkSync } from "node:fs";
 import { win32 } from "node:path";
 
@@ -36,6 +36,170 @@ export const WINDOWS_BUILD_LEASE_LIMITS = Object.freeze({
   minimumBytesPerSecond: 8 * 1024 * 1024,
   perFileMs: 2,
 });
+
+const WINDOWS_BUILD_PROGRESS_PREFIX = "PROPR_BUILD_PROGRESS_V1";
+
+export function formatWindowsBuildProgressFrame(frame) {
+  const values = [frame.stage, frame.stages, frame.batch, frame.batches,
+    frame.files, frame.totalFiles, frame.bytes, frame.totalBytes];
+  if (!values.every((value) => Number.isSafeInteger(value) && value >= 0)) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+  return `${WINDOWS_BUILD_PROGRESS_PREFIX} ${frame.stage}/${frame.stages} ${frame.batch}/${frame.batches} ${frame.files}/${frame.totalFiles} ${frame.bytes}/${frame.totalBytes}\n`;
+}
+
+export function parseWindowsBuildProgressFrame(value) {
+  if (typeof value !== "string" || value.length > 192) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+  const match = /^PROPR_BUILD_PROGRESS_V1 (0|[1-9]\d*)\/(0|[1-9]\d*) (0|[1-9]\d*)\/(0|[1-9]\d*) (0|[1-9]\d*)\/(0|[1-9]\d*) (0|[1-9]\d*)\/(0|[1-9]\d*)\n$/u.exec(value);
+  if (!match) throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  const numbers = match.slice(1).map(Number);
+  if (!numbers.every(Number.isSafeInteger)) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "OVERSIZED_OUTPUT");
+  }
+  const [stage, stages, batch, batches, files, totalFiles, bytes, totalBytes] = numbers;
+  if (stages < 1 || stage < 1 || stage > stages || batch > batches || files > totalFiles || bytes > totalBytes
+    || stages > 64 || batches > WINDOWS_BUILD_LEASE_LIMITS.maxBatches
+    || totalFiles > WINDOWS_BUILD_LEASE_LIMITS.maxFiles || totalBytes > WINDOWS_BUILD_LEASE_LIMITS.maxBytes) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "OVERSIZED_OUTPUT");
+  }
+  return Object.freeze({ stage, stages, batch, batches, files, totalFiles, bytes, totalBytes });
+}
+
+export function windowsBuildLeaseProgressFrames(plan) {
+  if (!plan || !Array.isArray(plan.batches) || plan.batches.length < 1) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
+  }
+  let files = 0;
+  let bytes = 0;
+  const frames = [{ stage: 1, stages: 3, batch: 0, batches: plan.batches.length,
+    files: 0, totalFiles: plan.files, bytes: 0, totalBytes: plan.bytes }];
+  for (let index = 0; index < plan.batches.length; index += 1) {
+    for (const input of plan.batches[index]) {
+      files += 1;
+      bytes += input.bytes;
+    }
+    frames.push({ stage: 2, stages: 3, batch: index + 1, batches: plan.batches.length,
+      files, totalFiles: plan.files, bytes, totalBytes: plan.bytes });
+  }
+  frames.push({ stage: 3, stages: 3, batch: plan.batches.length, batches: plan.batches.length,
+    files: plan.files, totalFiles: plan.files, bytes: plan.bytes, totalBytes: plan.bytes });
+  return Object.freeze(frames.map((frame) => formatWindowsBuildProgressFrame(frame)));
+}
+
+export function createWindowsBuildProgressValidator(expectedFrames, stage = "BUILD_COMPILER") {
+  if (!Array.isArray(expectedFrames) || expectedFrames.length < 1
+    || expectedFrames.length > WINDOWS_BUILD_LEASE_LIMITS.maxBatches + 64) {
+    throw new WindowsHelperBuildError(stage, "NONZERO_OUTPUT");
+  }
+  const expected = expectedFrames.map((frame) => parseWindowsBuildProgressFrame(frame));
+  let index = 0;
+  let prior;
+  return Object.freeze({
+    push(value) {
+      const observed = parseWindowsBuildProgressFrame(value);
+      const next = expected[index];
+      if (!next || Object.keys(next).some((key) => observed[key] !== next[key])
+        || (prior && (observed.stage < prior.stage || observed.batch < prior.batch
+          || observed.files < prior.files || observed.bytes < prior.bytes))) {
+        throw new WindowsHelperBuildError(stage, "NONZERO_OUTPUT");
+      }
+      prior = observed;
+      index += 1;
+    },
+    finish() {
+      if (index !== expected.length) throw new WindowsHelperBuildError(stage, "STALLED");
+    },
+    get count() { return index; },
+  });
+}
+
+/**
+ * Run a slow discovery tool under one hard deadline while accepting only the
+ * exact fixed progress transcript selected by the caller. stderr is reserved
+ * for those bounded frames; paths and native diagnostic text never cross it.
+ */
+export function runBoundedProgressBuildTool(command, args, options = {}) {
+  const stage = options.stage ?? "BUILD_COMPILER";
+  const timeout = options.timeout ?? WINDOWS_BUILD_LEASE_LIMITS.maxDeadlineMs;
+  const maxBytes = options.maxBytes ?? MAX_COMPILER_DIAGNOSTIC_BYTES;
+  const maxProgressBytes = options.maxProgressBytes ?? 16 * 1024;
+  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > WINDOWS_BUILD_LEASE_LIMITS.maxDeadlineMs
+    || !Number.isSafeInteger(maxBytes) || maxBytes < 1
+    || !Number.isSafeInteger(maxProgressBytes) || maxProgressBytes < 1 || maxProgressBytes > 64 * 1024) {
+    return Promise.reject(new WindowsHelperBuildError(stage, "NONZERO_OUTPUT"));
+  }
+  const validator = createWindowsBuildProgressValidator(options.progressFrames, stage);
+  return new Promise((resolve, reject) => {
+    let child;
+    let settled = false;
+    let stdout = Buffer.alloc(0);
+    let progress = Buffer.alloc(0);
+    let progressBytes = 0;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        try { child?.kill("SIGKILL"); } catch { /* The fixed diagnostic owns termination failure. */ }
+        reject(error);
+      } else resolve(result);
+    };
+    const timer = setTimeout(() => finish(new WindowsHelperBuildError(stage, "STALLED")), timeout);
+    timer.unref?.();
+    try {
+      child = (options.spawnImpl ?? spawn)(command, args, {
+        cwd: options.cwd,
+        env: options.env,
+        shell: false,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      finish(new WindowsHelperBuildError(stage, "SPAWN_ERROR", error));
+      return;
+    }
+    child.once("error", (error) => finish(new WindowsHelperBuildError(stage, "SPAWN_ERROR", error)));
+    child.stdout.on("data", (chunk) => {
+      if (settled) return;
+      stdout = Buffer.concat([stdout, Buffer.from(chunk)]);
+      if (stdout.byteLength > maxBytes) finish(new WindowsHelperBuildError(stage, "OVERSIZED_OUTPUT"));
+    });
+    child.stderr.on("data", (chunk) => {
+      if (settled) return;
+      const bytes = Buffer.from(chunk);
+      progressBytes += bytes.byteLength;
+      progress = Buffer.concat([progress, bytes]);
+      if (progressBytes > maxProgressBytes) {
+        finish(new WindowsHelperBuildError(stage, "OVERSIZED_OUTPUT"));
+        return;
+      }
+      while (true) {
+        const newline = progress.indexOf(0x0a);
+        if (newline < 0) break;
+        const frame = progress.subarray(0, newline + 1);
+        progress = progress.subarray(newline + 1);
+        let text;
+        try { text = new TextDecoder("utf-8", { fatal: true }).decode(frame); }
+        catch (error) { finish(new WindowsHelperBuildError(stage, "INVALID_UTF8", error)); return; }
+        try { validator.push(text); }
+        catch (error) { finish(error); return; }
+      }
+      if (progress.byteLength > 192) finish(new WindowsHelperBuildError(stage, "OVERSIZED_OUTPUT"));
+    });
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      if (progress.byteLength !== 0) return finish(new WindowsHelperBuildError(stage, "NONZERO_OUTPUT"));
+      if (signal) return finish(new WindowsHelperBuildError(stage, "UNEXPECTED_EXIT"));
+      if (code !== 0) return finish(new WindowsHelperBuildError(stage,
+        stdout.byteLength === 0 ? "NONZERO_EMPTY_OUTPUT" : "NONZERO_OUTPUT"));
+      try { validator.finish(); }
+      catch (error) { finish(error); return; }
+      finish(undefined, { stdout, stderr: Buffer.alloc(0) });
+    });
+  });
+}
 
 /**
  * Partition an already hash-validated inventory into a fixed bounded lease
@@ -96,10 +260,28 @@ export async function awaitWindowsBuildLeaseReadiness(readiness, plan, options =
   }
   const setTimer = options.setTimeoutImpl ?? setTimeout;
   const clearTimer = options.clearTimeoutImpl ?? clearTimeout;
+  const progressFrames = windowsBuildLeaseProgressFrames(plan);
+  const validator = createWindowsBuildProgressValidator(progressFrames, options.stage ?? "BUILD_COMPILER");
+  // Attach rejection handlers to every concurrently running authority before
+  // awaiting them in fixed batch order. A later batch may fail first on a slow
+  // host; it must remain a bounded protocol failure, never an unhandled one.
+  const guardedReadiness = readiness.map((item) => Promise.resolve(item).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  ));
   let timer;
   try {
     await Promise.race([
-      Promise.all(readiness),
+      (async () => {
+        validator.push(progressFrames[0]);
+        for (let index = 0; index < guardedReadiness.length; index += 1) {
+          const observed = await guardedReadiness[index];
+          if ("error" in observed) throw observed.error;
+          validator.push(observed.value);
+        }
+        validator.push(progressFrames.at(-1));
+        validator.finish();
+      })(),
       new Promise((_, reject) => {
         timer = setTimer(() => reject(new WindowsHelperBuildError(
           options.stage ?? "BUILD_COMPILER", "STALLED",
