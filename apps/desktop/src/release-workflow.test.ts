@@ -268,6 +268,11 @@ describe('desktop trusted release workflow', () => {
     assert.ok(!windowsAuthority.includes('-EncodedCommand'));
     assert.match(windowsAuthority, /System32', 'WindowsPowerShell', 'v1\.0', 'powershell\.exe'/);
     assert.match(windowsAuthority, /'-ExecutionPolicy',\n\s+'Bypass'/);
-    assert.match(windowsAuthority, /child\.stdin\.end\(`\$\{brokerSource\(\)\}\\n/);
+    assert.match(windowsAuthority, /const source = brokerSource\(\)/);
+    assert.match(windowsAuthority, /session\.write\(source\)/);
+    assert.match(windowsAuthority, /BROKER_STARTUP_TIMEOUT_MS = 60_000/);
+    assert.match(windowsAuthority, /type = 'ready'/);
+    assert.match(windowsAuthority, /nativeSmoke = \$true/);
+    assert.match(windowsAuthority, /compileCount = 1/);
   });
 });

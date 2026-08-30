@@ -35,6 +35,7 @@ const certificateSha256 = '1'.repeat(64);
 const spkiSha256 = '2'.repeat(64);
 const windowsSignerPins = `certificate-sha256:${certificateSha256},spki-sha256:${spkiSha256}`;
 const execFile = promisify(execFileCallback);
+const nativeDarwinArch = process.arch === 'arm64' ? 'arm64' : 'x64';
 
 const privateDmgSnapshotPaths = async () => {
   const entries = await readdir(tmpdir(), { withFileTypes: true });
@@ -398,15 +399,15 @@ describe('desktop release artifacts', () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-private-accept-'));
     const makeDirectory = join(root, 'make');
     await mkdir(makeDirectory);
-    await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
-    await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+    await writeFile(join(makeDirectory, 'desktop.dmg'), `darwin-${nativeDarwinArch}-dmg`);
+    await writeFile(join(makeDirectory, 'desktop.zip'), `darwin-${nativeDarwinArch}-zip`);
     const previousSnapshots = new Set(await privateDmgSnapshotPaths());
     try {
       await stageFixtureArtifacts({
         makeDirectory,
         outputDirectory: join(root, 'stage'),
         platform: 'darwin',
-        arch: 'arm64',
+        arch: nativeDarwinArch,
         version: '1.2.3',
         inspectArchitecture: async arguments_ => {
           const inspection = await architectureInspector(arguments_);
@@ -440,15 +441,15 @@ describe('desktop release artifacts', () => {
       const root = await mkdtemp(join(tmpdir(), `propr-release-dmg-private-${scenario}-`));
       const makeDirectory = join(root, 'make');
       await mkdir(makeDirectory);
-      await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
-      await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+      await writeFile(join(makeDirectory, 'desktop.dmg'), `darwin-${nativeDarwinArch}-dmg`);
+      await writeFile(join(makeDirectory, 'desktop.zip'), `darwin-${nativeDarwinArch}-zip`);
       const previousSnapshots = new Set(await privateDmgSnapshotPaths());
       await assert.rejects(
         stageFixtureArtifacts({
           makeDirectory,
           outputDirectory: join(root, 'stage'),
           platform: 'darwin',
-          arch: 'arm64',
+          arch: nativeDarwinArch,
           version: '1.2.3',
           inspectArchitecture: async arguments_ => {
             const inspection = await architectureInspector(arguments_);
@@ -467,7 +468,8 @@ describe('desktop release artifacts', () => {
             return inspection;
           },
         }),
-        new RegExp(`^Private DMG authority rejected \\[dmg-private:${code}\\]$`),
+        error => error instanceof Error
+          && error.message === `Private DMG authority rejected [dmg-private:${code}]`,
       );
       await rm(root, { recursive: true, force: true });
     });
@@ -480,14 +482,14 @@ describe('desktop release artifacts', () => {
     const makeDirectory = join(root, 'make');
     const outputDirectory = join(root, 'stage');
     await mkdir(makeDirectory);
-    await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
-    await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+    await writeFile(join(makeDirectory, 'desktop.dmg'), `darwin-${nativeDarwinArch}-dmg`);
+    await writeFile(join(makeDirectory, 'desktop.zip'), `darwin-${nativeDarwinArch}-zip`);
     const previousSnapshots = new Set(await privateDmgSnapshotPaths());
     const fragment = await stageFixtureArtifacts({
       makeDirectory,
       outputDirectory,
       platform: 'darwin',
-      arch: 'arm64',
+      arch: nativeDarwinArch,
       version: '1.2.3',
       inspectArchitecture: async arguments_ => {
         const inspection = await architectureInspector(arguments_);

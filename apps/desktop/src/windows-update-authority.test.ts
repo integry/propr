@@ -7,15 +7,43 @@ import { promisify } from 'node:util';
 import { test } from 'node:test';
 import {
   crashWindowsLockedArtifactForTest,
+  decodeWindowsAuthorityFramesForTest,
   ensureWindowsPrivateDirectory,
   inspectWindowsPrivatePath,
   openWindowsLockedArtifact,
+  parseWindowsAuthorityStartupFailureForTest,
   protectWindowsPrivateFile,
+  shutdownWindowsAuthorityBrokerForTest,
   smokeWindowsUpdateAuthority,
+  windowsAuthorityBrokerStatsForTest,
 } from './windows-update-authority';
 
 const execFileAsync = promisify(execFile);
 const windowsOnly = { skip: process.platform !== 'win32' };
+
+test('Windows broker framing accepts partial JSON and rejects extra frames and strict compile failures', () => {
+  const compileFailure = '{"version":1,"type":"error","reason":"compile_load","scenario":0}\n';
+  const frames = decodeWindowsAuthorityFramesForTest([
+    compileFailure.slice(0, 19),
+    compileFailure.slice(19, 47),
+    compileFailure.slice(47),
+  ]);
+  const failure = parseWindowsAuthorityStartupFailureForTest(frames[0]);
+  assert.equal(
+    failure.message,
+    'Verified update cache authority inspection failed [win-authority:compile_load:0]',
+  );
+  assert.throws(
+    () => decodeWindowsAuthorityFramesForTest([compileFailure + compileFailure]),
+    error => error instanceof Error
+      && error.message === 'Verified update cache authority inspection failed [win-authority:stdio_protocol:16]',
+  );
+  assert.throws(
+    () => decodeWindowsAuthorityFramesForTest([compileFailure.slice(0, -1)]),
+    error => error instanceof Error
+      && error.message === 'Verified update cache authority inspection failed [win-authority:stdio_protocol:16]',
+  );
+});
 
 test('native Windows authority binds protected owner DACL and complete file identity', windowsOnly, async () => {
   const root = await mkdtemp(join(tmpdir(), 'propr-win-authority-'));
@@ -46,6 +74,61 @@ test('native Windows authority binds protected owner DACL and complete file iden
       'held-read',
       'clean-shutdown',
     ]);
+    const stats = windowsAuthorityBrokerStatsForTest();
+    assert.equal(stats.compileCount, 1, 'all smoke and authority requests must share one Add-Type compilation');
+    assert.equal(stats.activeProcessCount, 1);
+    assert.ok(stats.requestCount >= 8);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('native Windows broker serializes a concurrent queue within one practical aggregate latency budget', windowsOnly, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-win-queue-'));
+  try {
+    const cache = join(root, 'cache');
+    await ensureWindowsPrivateDirectory(cache);
+    const artifact = join(cache, 'artifact');
+    await writeFile(artifact, 'trusted-A');
+    await protectWindowsPrivateFile(artifact);
+    const started = Date.now();
+    const results = await Promise.all(Array.from(
+      { length: 16 },
+      () => inspectWindowsPrivatePath(artifact),
+    ));
+    assert.ok(Date.now() - started < 30_000, '16 warm requests must finish within 30 seconds on hosted Windows');
+    assert.ok(results.every(result => result.identity.fileId128 === results[0].identity.fileId128));
+    assert.equal(windowsAuthorityBrokerStatsForTest().compileCount, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('native Windows queued cancellation is bounded and does not disturb the held authority handle', windowsOnly, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-win-cancel-'));
+  try {
+    const cache = join(root, 'cache');
+    await ensureWindowsPrivateDirectory(cache);
+    const artifact = join(cache, 'artifact');
+    await writeFile(artifact, 'trusted-A');
+    await protectWindowsPrivateFile(artifact);
+    const held = await openWindowsLockedArtifact(artifact);
+    const controller = new AbortController();
+    const cancelled = inspectWindowsPrivatePath(artifact, false, controller.signal);
+    let queuedResolved = false;
+    const queued = inspectWindowsPrivatePath(artifact).then(result => {
+      queuedResolved = true;
+      return result;
+    });
+    controller.abort();
+    await assert.rejects(cancelled, error => error instanceof Error && error.name === 'AbortError');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(queuedResolved, false, 'queued authority work must wait until the held capability closes');
+    assert.equal((await held.read(0, 9)).toString(), 'trusted-A');
+    assert.equal(windowsAuthorityBrokerStatsForTest().queuedEntries, 1);
+    await held.close();
+    assert.equal((await queued).identity.fileId128, held.inspection.identity.fileId128);
+    assert.equal(windowsAuthorityBrokerStatsForTest().queuedEntries, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -129,7 +212,7 @@ test('native Windows exact-handle capability rejects hardlinks and emits only bo
   }
 });
 
-test('native Windows capability survives clean broker restart without accepting pathname B', windowsOnly, async () => {
+test('native Windows capability reuses one compiled broker without accepting pathname B', windowsOnly, async () => {
   const root = await mkdtemp(join(tmpdir(), 'propr-win-restart-'));
   try {
     const cache = join(root, 'cache');
@@ -144,6 +227,7 @@ test('native Windows capability survives clean broker restart without accepting 
     try {
       assert.deepEqual(second.inspection.identity, first.inspection.identity);
       assert.equal((await second.read(0, 9)).toString(), 'trusted-A');
+      assert.equal(windowsAuthorityBrokerStatsForTest().compileCount, 1);
     } finally {
       await second.close();
     }
@@ -161,10 +245,13 @@ test('native Windows broker crash releases its exact handle and restart reauthen
     await writeFile(artifact, 'trusted-A');
     await protectWindowsPrivateFile(artifact);
     const crashed = await openWindowsLockedArtifact(artifact);
+    assert.equal(windowsAuthorityBrokerStatsForTest().compileCount, 1);
     await crashWindowsLockedArtifactForTest(crashed);
     await assert.rejects(crashed.read(0, 1), /win-authority:(?:clean_shutdown|process_exit)/);
     const restarted = await openWindowsLockedArtifact(artifact);
     try {
+      assert.equal(windowsAuthorityBrokerStatsForTest().compileCount, 2);
+      assert.equal(windowsAuthorityBrokerStatsForTest().restartCount, 1);
       assert.deepEqual(restarted.inspection.identity, crashed.inspection.identity);
       assert.equal((await restarted.read(0, 9)).toString(), 'trusted-A');
     } finally {
@@ -173,4 +260,11 @@ test('native Windows broker crash releases its exact handle and restart reauthen
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('native Windows persistent broker is reaped without a handle or process leak', windowsOnly, async () => {
+  await shutdownWindowsAuthorityBrokerForTest();
+  const stats = windowsAuthorityBrokerStatsForTest();
+  assert.equal(stats.activeProcessCount, 0);
+  assert.equal(stats.queuedEntries, 0);
 });
