@@ -2,6 +2,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { db } from '@propr/core';
+import { canonicalProprHttpUrlOrigin, normalizeProprApiOrigin } from '@propr/shared';
 import type { GitHubUser } from './authTypes.js';
 
 const DEFAULT_PAIRING_TTL_MS = 10 * 60_000;
@@ -79,6 +80,10 @@ export interface InstanceTokenIdentity {
   user: GitHubUser;
 }
 
+export type PresentedTokenRevocation =
+  | { revoked: true }
+  | { revoked: false; code: 'TOKEN_NOT_FOUND' | 'INSTANCE_TOKEN_REVOKED' | 'INSTANCE_TOKEN_EXPIRED' };
+
 export class DesktopAuthError extends Error {
   constructor(
     public readonly code: string,
@@ -141,7 +146,7 @@ function frontendApprovalBase(configured?: string): URL {
   const raw = configured ?? process.env.FRONTEND_URL;
   if (!raw) throw new Error('FRONTEND_URL is required for desktop pairing');
   const url = new URL(raw);
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname))) {
+  if (canonicalProprHttpUrlOrigin(raw) !== url.origin) {
     throw new Error('Desktop pairing approval requires HTTPS except on loopback hosts');
   }
   if (url.username || url.password) throw new Error('FRONTEND_URL must not contain credentials');
@@ -152,7 +157,7 @@ function publicApiBase(configured?: string): URL | null {
   const raw = configured ?? process.env.API_PUBLIC_URL;
   if (!raw) return null;
   const url = new URL(raw);
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname))) {
+  if (normalizeProprApiOrigin(raw) !== url.origin) {
     throw new Error('Desktop pairing browser entry requires HTTPS except on loopback hosts');
   }
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
@@ -391,6 +396,39 @@ export class DesktopAuthService {
       .update({ revoked_at: revokedAt, revoked_by_user_id: actor.id });
     if (updated !== 1) throw new DesktopAuthError('TOKEN_NOT_FOUND', 404, 'Active token was not found');
     await this.audit('token_revoked', { tokenId, actor });
+  }
+
+  async revokePresentedToken(token: string): Promise<PresentedTokenRevocation> {
+    if (!token.startsWith(INSTANCE_TOKEN_PREFIX)
+      || token.length !== INSTANCE_TOKEN_PREFIX.length + 43) {
+      return { revoked: false, code: 'TOKEN_NOT_FOUND' };
+    }
+    return this.database.transaction(async transaction => {
+      const row = await transaction<TokenRow>('instance_api_tokens')
+        .where({ token_hash: digest(token) })
+        .first();
+      if (!row) return { revoked: false, code: 'TOKEN_NOT_FOUND' };
+      if (row.revoked_at) return { revoked: false, code: 'INSTANCE_TOKEN_REVOKED' };
+      const now = this.now();
+      if (row.expires_at && Date.parse(row.expires_at) <= now.getTime()) {
+        return { revoked: false, code: 'INSTANCE_TOKEN_EXPIRED' };
+      }
+      const actor: GitHubUser = {
+        id: row.owner_github_user_id,
+        login: row.owner_github_username,
+        username: row.owner_github_username,
+        displayName: row.owner_display_name,
+        email: row.owner_email,
+        avatarUrl: row.owner_avatar_url,
+      };
+      const updated = await transaction<TokenRow>('instance_api_tokens')
+        .where({ id: row.id })
+        .whereNull('revoked_at')
+        .update({ revoked_at: now.toISOString(), revoked_by_user_id: actor.id });
+      if (updated !== 1) return { revoked: false, code: 'INSTANCE_TOKEN_REVOKED' };
+      await this.audit('token_revoked', { tokenId: row.id, actor }, transaction);
+      return { revoked: true };
+    });
   }
 
   async cleanupPairings(): Promise<number> {

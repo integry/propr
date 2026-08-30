@@ -262,11 +262,13 @@ function setupRoutes(): void {
   app.post('/api/desktop/pairings', createPairingStartRateLimiter(), desktopAuthRoutes.startPairing);
   app.post('/api/desktop/pairings/:pairingId/poll', createPairingPollRateLimiter(), desktopAuthRoutes.pollPairing);
   app.get('/api/desktop/pairings/:pairingId/browser', createPairingStartRateLimiter(), desktopAuthRoutes.openPairingApproval);
+  // Token possession authorizes only this exact self-revocation route. It must
+  // precede generic auth so inactive tokens receive a stable terminal contract.
+  app.delete('/api/desktop/tokens/current', desktopAuthRoutes.revokeCurrentToken);
   app.use('/api', ensureAuthenticated, resolveAuthorization);
   app.get('/api/desktop/pairings/:pairingId/approval', desktopAuthRoutes.browserSessionGuard, desktopAuthRoutes.getPairingApproval);
   app.post('/api/desktop/pairings/:pairingId/approve', desktopAuthRoutes.browserSessionGuard, desktopAuthRoutes.approvalOriginGuard, desktopAuthRoutes.approvePairing);
   app.get('/api/desktop/tokens', desktopAuthRoutes.listTokens);
-  app.delete('/api/desktop/tokens/current', desktopAuthRoutes.revokeCurrentToken);
   app.delete('/api/desktop/tokens/:tokenId', desktopAuthRoutes.revokeToken);
   const taskRoutes = createTaskRoutes({ db, taskQueue });
   const taskHistoryRoutes = createTaskHistoryRoutes({ redisClient, taskQueue, db });

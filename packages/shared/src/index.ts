@@ -59,6 +59,24 @@ export { DEMO_MODE_READ_ONLY_CODE, parseTruthyEnvValue } from './demoMode.js';
 export { MIN_SESSION_SECRET_LENGTH, validateSessionSecret } from './sessionSecret.js';
 
 export {
+  canonicalProprHttpUrlOrigin,
+  isProprLoopbackHostname,
+  normalizeProprApiOrigin,
+  PROPR_API_ORIGIN_PARITY_CASES,
+  type NormalizeProprApiOriginOptions,
+} from './apiOrigin.js';
+
+export {
+  DESKTOP_REVOCATION_BINDING_HEADER,
+  DESKTOP_TOKEN_REVOCATION_ENDPOINT,
+  DESKTOP_TOKEN_REVOCATION_SCHEMA,
+  DESKTOP_TOKEN_REVOCATION_VERSION,
+  DESKTOP_TOKEN_TERMINAL_CODES,
+  type DesktopTokenTerminalCode,
+  type DesktopTokenTerminalRevocation,
+} from './desktopTokenRevocation.js';
+
+export {
   INSTANCE_PERMISSIONS,
   type AuthenticatedInstanceUser,
   type InstanceAuthorizationSource,

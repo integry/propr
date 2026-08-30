@@ -1,5 +1,5 @@
 import { DEMO_MODE_READ_ONLY_CODE, DESKTOP_TRANSPORT_SCOPE_HEADER } from '@propr/shared';
-import { ProprClient } from '@propr/client';
+import { normalizeApiBaseUrl, ProprClient } from '@propr/client';
 import type { DesktopBridge } from '../../../apps/desktop/src/shared/contract';
 import { getApiBaseUrl, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import { currentUiPathname, isDesktopRuntime, navigateToUiPath } from '../config/runtimeMode';
@@ -37,7 +37,7 @@ export let proprClient = createProprClient(API_BASE_URL);
 
 /** Update the live bindings used by existing API modules when desktop profiles switch. */
 export const setApiBaseUrl = (value: string): void => {
-  const nextApiBaseUrl = value.trim().replace(/\/+$/, '');
+  const nextApiBaseUrl = normalizeApiBaseUrl(value);
   const nextProprClient = createProprClient(nextApiBaseUrl);
   API_BASE_URL = nextApiBaseUrl;
   proprClient = nextProprClient;
@@ -48,7 +48,7 @@ export const setDesktopConnectionScope = (
   scope: DesktopConnectionScope | null,
   apiBaseUrl?: string,
 ): void => {
-  const nextApiBaseUrl = apiBaseUrl === undefined ? API_BASE_URL : apiBaseUrl.trim().replace(/\/+$/, '');
+  const nextApiBaseUrl = apiBaseUrl === undefined ? API_BASE_URL : normalizeApiBaseUrl(apiBaseUrl);
   const nextProprClient = createProprClient(nextApiBaseUrl);
   API_BASE_URL = nextApiBaseUrl;
   desktopConnectionScope = scope;

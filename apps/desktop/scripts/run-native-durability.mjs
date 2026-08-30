@@ -2,14 +2,15 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const EXPECTED = Object.freeze({
-  'credential-service': 36,
-  'profile-store': 34,
+  'credential-service': 55,
+  'profile-store': 36,
 });
 const expectedTotal = Object.values(EXPECTED).reduce((total, count) => total + count, 0);
 const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'));
 const child = spawn(process.execPath, [
   tsxCli,
   '--test',
+  '--test-concurrency=1',
   'src/profile-store.test.ts',
   'src/credential-service.test.ts',
 ], {
@@ -67,6 +68,8 @@ const scenarioCategories = {
   'mirror-repair': countedCategory('mirror-repair', 6),
   'revocation-crash': countedCategory('revocation-crash', 2),
   'cancellation-switch': countedCategory('cancellation-switch', 4),
+  'detach-crash': countedCategory('detach-crash', process.platform === 'win32' ? 12 : 13),
+  'transient-revocation': countedCategory('transient-revocation', 4),
 };
 const summary = Object.fromEntries(
   ['tests', 'pass', 'fail', 'cancelled', 'skipped'].map(key => {

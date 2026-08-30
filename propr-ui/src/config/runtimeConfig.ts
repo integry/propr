@@ -121,7 +121,14 @@ export const hostedTunnelQueryApiBaseUrl = (
   const raw = new URLSearchParams(search).get('tunnel')?.trim();
   if (!raw) return null;
 
-  if (isProprProxyUrl(raw)) return raw.replace(/\/+$/, '');
+  try {
+    const normalized = normalizeApiBaseUrl(raw);
+    if (normalized && isProprProxyUrl(normalized)) return normalized;
+  } catch {
+    // A bare instance id/hostname is handled below. An absolute non-origin URL
+    // must not be repaired into a broader credential scope.
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(raw)) return null;
+  }
 
   const instanceUrl = proprInstanceProxyUrl(raw);
   if (instanceUrl) return instanceUrl;

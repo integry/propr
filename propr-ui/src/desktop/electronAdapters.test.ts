@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import type { DesktopBridge, DesktopProfile as StoredProfile } from '../../../apps/desktop/src/shared/contract';
 import { createElectronDesktopAdapters } from './electronAdapters';
 
@@ -66,6 +67,24 @@ describe('Electron remote instance adapters', () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     setDesktopConnectionScope.mockClear();
+  });
+  it('matches the shared canonical origin parity table before profile IPC', async () => {
+    const fixture = bridgeFixture();
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+    let index = 0;
+    for (const [name, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      const save = adapters.profiles.save({
+        id: `parity-${index++}`,
+        name,
+        baseUrl: input,
+        kind: expected?.startsWith('http:') ? 'local' : 'remote',
+      });
+      if (expected === null) await expect(save, name).rejects.toThrow();
+      else {
+        await expect(save, name).resolves.toBeUndefined();
+        expect(fixture.profiles().at(-1)?.apiBaseUrl).toBe(expected);
+      }
+    }
   });
   it('uses status-only main-process pairing and probe APIs', async () => {
     const fixture = bridgeFixture();

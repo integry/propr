@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import { normalizeBaseUrl, resolveDesktopAdapters } from './browserAdapters';
 import { DESKTOP_AUTHENTICATION_COMPLETE_EVENT } from './types';
 
@@ -29,9 +30,16 @@ describe('desktop browser fixtures', () => {
   });
 
   it('normalizes safe instance origins and rejects non-http protocols', () => {
-    expect(normalizeBaseUrl(' https://propr.example.com/// ')).toBe('https://propr.example.com');
+    expect(() => normalizeBaseUrl(' https://propr.example.com/// ')).toThrow(/canonical HTTPS origin/i);
     expect(() => normalizeBaseUrl('file:///tmp/propr')).toThrow(/http/i);
-    expect(() => normalizeBaseUrl('https://user:secret@example.com')).toThrow(/credentials/);
+    expect(() => normalizeBaseUrl('https://user:secret@example.com')).toThrow(/canonical HTTPS origin/i);
+  });
+
+  it('matches the shared canonical origin parity table', () => {
+    for (const [, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      if (expected === null) expect(() => normalizeBaseUrl(input)).toThrow();
+      else expect(normalizeBaseUrl(input)).toBe(expected);
+    }
   });
 
   it('resolves fixture authentication only after the matching desktop completion signal', async () => {

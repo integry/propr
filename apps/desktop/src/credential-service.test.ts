@@ -4,7 +4,15 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
-import { DESKTOP_RENDERER_ORIGIN, PROPR_API_COMPATIBILITY, PROPR_UI_COMPATIBILITY } from '@propr/shared';
+import {
+  DESKTOP_RENDERER_ORIGIN,
+  DESKTOP_REVOCATION_BINDING_HEADER,
+  DESKTOP_TOKEN_REVOCATION_ENDPOINT,
+  DESKTOP_TOKEN_REVOCATION_SCHEMA,
+  DESKTOP_TOKEN_REVOCATION_VERSION,
+  PROPR_API_COMPATIBILITY,
+  PROPR_UI_COMPATIBILITY,
+} from '@propr/shared';
 import { DesktopCredentialService } from './credential-service';
 import { ProfileStore, type EncryptionProvider, type StoredCredential } from './profile-store';
 
@@ -19,6 +27,21 @@ const json = (body: unknown, status = 200): Response => new Response(JSON.string
   status,
   headers: { 'Content-Type': 'application/json' },
 });
+const terminalRevocationBody = (
+  init: RequestInit | undefined,
+  code: 'TOKEN_NOT_FOUND' | 'INSTANCE_TOKEN_REVOKED' | 'INSTANCE_TOKEN_EXPIRED' = 'TOKEN_NOT_FOUND',
+): Record<string, unknown> => ({
+  schema: DESKTOP_TOKEN_REVOCATION_SCHEMA,
+  version: DESKTOP_TOKEN_REVOCATION_VERSION,
+  endpoint: DESKTOP_TOKEN_REVOCATION_ENDPOINT,
+  terminal: true,
+  code,
+  credentialGeneration: new Headers(init?.headers).get(DESKTOP_REVOCATION_BINDING_HEADER),
+});
+const terminalRevocation = (
+  init: RequestInit | undefined,
+  code: 'TOKEN_NOT_FOUND' | 'INSTANCE_TOKEN_REVOKED' | 'INSTANCE_TOKEN_EXPIRED' = 'TOKEN_NOT_FOUND',
+): Response => json(terminalRevocationBody(init, code), code === 'TOKEN_NOT_FOUND' ? 404 : 401);
 const discovery = {
   product: 'ProPR',
   version: '0.8.15',
@@ -115,6 +138,9 @@ describe('main-process desktop credential service', () => {
     assert.deepEqual(service.prepareRequest('https://a.example.test/api/desktop/tokens/current', {}), {
       cancel: true,
     });
+    assert.deepEqual(service.prepareRequest('http://remote.example.test/api/tasks', {}), { cancel: true });
+    assert.deepEqual(service.prepareRequest('http://127.1:3000/api/tasks', {}), { cancel: true });
+    assert.deepEqual(service.prepareRequest('http://local%68ost:3000/api/tasks', {}), { cancel: true });
     assert.deepEqual(wireRequests.at(-1), {
       url: 'https://a.example.test/api/auth/user',
       headers: { authorization: `Bearer ${token('A')}` },
@@ -948,9 +974,9 @@ describe('main-process desktop credential service', () => {
       profiles: store,
       clientName: 'Test desktop',
       openExternal: async () => undefined,
-      fetch: async () => {
+      fetch: async (_input, init) => {
         terminalRetries += 1;
-        return new Response(null, { status: 404 });
+        return terminalRevocation(init);
       },
     });
     await onlineRestart.initialize();
@@ -962,10 +988,12 @@ describe('main-process desktop credential service', () => {
     const uncertainDirectory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
     temporaryDirectories.push(uncertainDirectory);
     let failCommitFlush = false;
+    let armedCommitFlushes = 0;
     const uncertainStore = new ProfileStore(uncertainDirectory, encryption, {
       beforeIO: operation => {
         if (failCommitFlush && operation === 'journal-commit-flush') {
-          throw new Error('injected journal commit flush failure');
+          armedCommitFlushes += 1;
+          if (armedCommitFlushes === 2) throw new Error('injected journal commit flush failure');
         }
       },
     });
@@ -1060,7 +1088,7 @@ describe('main-process desktop credential service', () => {
         fetch: async (_input, init) => {
           retries += 1;
           assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${credentialA.token}`);
-          return new Response(null, { status: 404 });
+          return terminalRevocation(init);
         },
       });
       await retryingService.initialize();
@@ -1071,6 +1099,113 @@ describe('main-process desktop credential service', () => {
       console.log('NATIVE_SCENARIO revocation-crash');
     });
   }
+
+  for (const [name, response] of [
+    ['204 success', (_init: RequestInit | undefined) => new Response(null, { status: 204 })],
+    ['404 TOKEN_NOT_FOUND', (init: RequestInit | undefined) => terminalRevocation(init)],
+    ['401 INSTANCE_TOKEN_REVOKED', (init: RequestInit | undefined) => terminalRevocation(init, 'INSTANCE_TOKEN_REVOKED')],
+    ['401 INSTANCE_TOKEN_EXPIRED', (init: RequestInit | undefined) => terminalRevocation(init, 'INSTANCE_TOKEN_EXPIRED')],
+  ] as const) {
+    it(`cleans durable retry material only for endpoint-bound terminal ${name}`, async () => {
+      const store = await createStore();
+      const profile = await store.save({ id: 'profile-terminal', label: 'A', apiBaseUrl: 'https://a.example.test' });
+      const old = credential(profile.id, profile.apiBaseUrl, 'A');
+      await store.writeCredential(old);
+      await store.removeCredential(profile.id);
+      const pending = await store.pendingRevocations();
+      assert.equal(pending.length, 1);
+      const service = new DesktopCredentialService({
+        profiles: store,
+        clientName: 'Terminal contract test',
+        openExternal: async () => undefined,
+        fetch: async (input, init) => {
+          assert.equal(input.toString(), `${old.origin}${DESKTOP_TOKEN_REVOCATION_ENDPOINT}`);
+          assert.equal(new Headers(init?.headers).get(DESKTOP_REVOCATION_BINDING_HEADER), pending[0].credentialGeneration);
+          return response(init);
+        },
+      });
+      await service.initialize();
+      assert.deepEqual(await store.pendingRevocations(), []);
+    });
+  }
+
+  const retryableRevocationResponses: ReadonlyArray<[
+    string,
+    (init: RequestInit | undefined) => Response,
+  ]> = [
+    ['empty 401', () => new Response(null, { status: 401 })],
+    ['empty 404', () => new Response(null, { status: 404 })],
+    ['HTML route 404', () => new Response('<h1>not found</h1>', { status: 404, headers: { 'Content-Type': 'text/html' } })],
+    ['malformed JSON', () => new Response('{', { status: 404, headers: { 'Content-Type': 'application/json' } })],
+    ['wrong content type', init => new Response(JSON.stringify(terminalRevocationBody(init)), {
+      status: 404, headers: { 'Content-Type': 'text/plain' },
+    })],
+    ['wrong schema version', init => json({ ...terminalRevocationBody(init), version: 2 }, 404)],
+    ['wrong credential generation', init => json({
+      ...terminalRevocationBody(init), credentialGeneration: 'Z'.repeat(22),
+    }, 404)],
+    ['unknown terminal code', init => json({ ...terminalRevocationBody(init), code: 'INVALID_INSTANCE_TOKEN' }, 404)],
+    ['status/code mismatch', init => json(terminalRevocationBody(init), 401)],
+    ['redirect', () => Response.redirect('https://proxy.example.test/moved', 302)],
+    ['redirected 204', () => {
+      const result = new Response(null, { status: 204 });
+      Object.defineProperty(result, 'redirected', { value: true });
+      return result;
+    }],
+    ['wrong endpoint 204', () => {
+      const result = new Response(null, { status: 204 });
+      Object.defineProperty(result, 'url', { value: 'https://proxy.example.test/api/desktop/tokens/current' });
+      return result;
+    }],
+    ['server failure', () => json({ code: 'DESKTOP_AUTH_FAILED' }, 503)],
+    ['oversized JSON', init => json({ ...terminalRevocationBody(init), padding: 'x'.repeat(2_048) }, 404)],
+  ];
+  for (const [name, response] of retryableRevocationResponses) {
+    it(`retains encrypted retry material for ${name}`, async () => {
+      const store = await createStore();
+      const profile = await store.save({ id: 'profile-retryable', label: 'A', apiBaseUrl: 'https://a.example.test' });
+      await store.writeCredential(credential(profile.id, profile.apiBaseUrl, 'A'));
+      await store.removeCredential(profile.id);
+      const diagnostics: Array<{ code: string; status?: number }> = [];
+      const service = new DesktopCredentialService({
+        profiles: store,
+        clientName: 'Retryable contract test',
+        openExternal: async () => undefined,
+        reportRevocationFailure: diagnostic => diagnostics.push(diagnostic),
+        fetch: async (_input, init) => response(init),
+      });
+      await service.initialize();
+      assert.equal((await store.pendingRevocations()).length, 1);
+      assert.deepEqual(diagnostics, [{ code: 'http', status: response(undefined).status }]);
+      assert.equal(JSON.stringify(diagnostics).includes(token('A')), false);
+    });
+  }
+
+  it('retries a crash-left provisional pairing credential on startup', async () => {
+    const store = await createStore();
+    const profile = await store.save({ id: 'profile-provisional', label: 'A', apiBaseUrl: 'https://a.example.test' });
+    const provisional = await store.journalPendingRevocation(
+      credential(profile.id, profile.apiBaseUrl, 'C'),
+    );
+    assert.equal('stored' in provisional, false);
+    if ('stored' in provisional) return;
+    assert.equal(provisional.deferred, true);
+    let calls = 0;
+    const restarted = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Restarted after provisional crash',
+      openExternal: async () => undefined,
+      fetch: async (_input, init) => {
+        calls += 1;
+        assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${token('C')}`);
+        return new Response(null, { status: 204 });
+      },
+    });
+    await restarted.initialize();
+    assert.equal(calls, 1);
+    assert.deepEqual(await store.pendingRevocations(), []);
+    console.log('NATIVE_SCENARIO transient-revocation');
+  });
 
   it('ignores delayed A invalidation after B connects and preserves tokens for authorization/transient codes', async () => {
     const store = await createStore();
@@ -1118,6 +1253,7 @@ describe('main-process desktop credential service', () => {
       transportScope: activatedB.transportScope,
       code: 'INVALID_INSTANCE_TOKEN',
     }), { invalidated: true });
+    await service.initialize();
     assert.ok(await store.readCredential(profileA.id));
     assert.equal(await store.readCredential(profileB.id), null);
   });
@@ -1187,7 +1323,7 @@ describe('main-process desktop credential service', () => {
     assert.deepEqual(await store.readCredential(profile.id), credential(profile.id, profile.apiBaseUrl, 'D'));
   });
 
-  it('deletes an exactly persisted cancelled pairing token even when revocation fails', async () => {
+  it('keeps an exactly persisted cancelled pairing token pending when revocation fails', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
     temporaryDirectories.push(directory);
     let service!: DesktopCredentialService;
@@ -1229,6 +1365,10 @@ describe('main-process desktop credential service', () => {
       /cancelled/i,
     );
     assert.equal(await store.readCredential(profile.id), null);
+    const pending = await store.pendingRevocations();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].credential.token, token('C'));
+    console.log('NATIVE_SCENARIO transient-revocation');
   });
 
   it('detaches a removed profile locally before deferred revoke and preserves a later replacement', async () => {
@@ -1266,6 +1406,9 @@ describe('main-process desktop credential service', () => {
     await store.writeCredential(replacementCredential);
     releaseRevocation.resolve(new Response(null, { status: 204 }));
     await removal;
+    // Drain the serialized retry queue before the test removes its keychain
+    // directory; removeProfile intentionally does not wait on the network.
+    await service.initialize();
 
     assert.equal((await store.list()).profiles.find(item => item.id === profile.id)?.label, replacementProfile.label);
     assert.deepEqual(await store.readCredential(profile.id), replacementCredential);
@@ -1421,6 +1564,9 @@ describe('main-process desktop credential service', () => {
         removeCredential: (profileId: string) => store.removeCredential(profileId),
         removeCredentialIfCurrent: (...args: Parameters<ProfileStore['removeCredentialIfCurrent']>) =>
           store.removeCredentialIfCurrent(...args),
+        journalPendingRevocation: (value: StoredCredential) => store.journalPendingRevocation(value),
+        releasePendingRevocation: (...args: Parameters<ProfileStore['releasePendingRevocation']>) =>
+          store.releasePendingRevocation(...args),
         pendingRevocations: () => store.pendingRevocations(),
         completePendingRevocation: (...args: Parameters<ProfileStore['completePendingRevocation']>) =>
           store.completePendingRevocation(...args),
@@ -1460,6 +1606,7 @@ describe('main-process desktop credential service', () => {
       await raceOperation;
       assert.equal(await store.readCredential(profileA.id), null);
       assert.deepEqual(revocations, [`Bearer ${token('C')}`]);
+      console.log('NATIVE_SCENARIO transient-revocation');
     });
   }
 

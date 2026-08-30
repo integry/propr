@@ -3,6 +3,7 @@ import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { NextFunction, Request, Response } from 'express';
 import knex, { type Knex } from 'knex';
 import { closeConnection } from '@propr/core';
+import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import { up as createDesktopAuthTables } from '../../core/src/db/migrations/20260829000000_create_desktop_auth.js';
 import {
   DesktopAuthError,
@@ -156,6 +157,20 @@ describe('desktop browser pairing', () => {
     const insecure = new DesktopAuthService({ database, approvalBaseUrl: 'http://remote.example.test' });
     await assert.rejects(insecure.startPairing('Laptop'), /requires HTTPS/);
   });
+
+  test('matches the shared canonical origin parity table for the public REST and Socket origin', async () => {
+    let index = 0;
+    for (const [name, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      const candidate = new DesktopAuthService({
+        database,
+        approvalBaseUrl: 'https://app.example.test',
+        publicApiUrl: input,
+      });
+      const start = candidate.startPairing(`Parity ${index++}`);
+      if (expected === null) await assert.rejects(start, undefined, name);
+      else assert.equal(new URL((await start).approvalUrl).origin, expected, name);
+    }
+  });
 });
 
 describe('instance token ownership and revocation', () => {
@@ -214,11 +229,57 @@ describe('instance token ownership and revocation', () => {
       user: owner,
       authenticationMethod: 'instance_token',
       instanceTokenId: tokenId,
+      header(name: string) {
+        if (name.toLowerCase() === 'authorization') return `Bearer ${token}`;
+        if (name.toLowerCase() === 'x-propr-desktop-revocation-binding') return 'A'.repeat(22);
+        return undefined;
+      },
     } as unknown as Request, response);
 
     assert.equal(statusCode, 204);
     assert.equal(ended, true);
     assert.equal(await service.validateToken(token), null);
+  });
+
+  test('returns the versioned endpoint-bound terminal contract on repeated self-revocation', async () => {
+    const { token } = await issueToken();
+    const routes = createDesktopAuthRoutes({ service, frontendUrl: 'https://app.example.test' });
+    const binding = 'G'.repeat(22);
+    const request = {
+      header(name: string) {
+        if (name.toLowerCase() === 'authorization') return `Bearer ${token}`;
+        if (name.toLowerCase() === 'x-propr-desktop-revocation-binding') return binding;
+        return undefined;
+      },
+    } as unknown as Request;
+    const replies: Array<{ status: number; body?: unknown }> = [];
+    const makeResponse = () => {
+      const reply: { status: number; body?: unknown } = { status: 200 };
+      replies.push(reply);
+      const response = {
+        status(value: number) { reply.status = value; return response; },
+        json(value: unknown) { reply.body = value; return response; },
+        end() { return response; },
+      } as unknown as Response;
+      return response;
+    };
+
+    await routes.revokeCurrentToken(request, makeResponse());
+    await routes.revokeCurrentToken(request, makeResponse());
+    assert.deepEqual(replies, [
+      { status: 204 },
+      {
+        status: 401,
+        body: {
+          schema: 'propr.desktop-token-revocation',
+          version: 1,
+          endpoint: '/api/desktop/tokens/current',
+          terminal: true,
+          code: 'INSTANCE_TOKEN_REVOKED',
+          credentialGeneration: binding,
+        },
+      },
+    ]);
   });
 
   test('REST authentication accepts instance tokens while optional GitHub bearer auth is disabled', async () => {
@@ -252,6 +313,8 @@ describe('pairing approval request protection', () => {
     assert.equal(isTrustedPairingApprovalOrigin('https://app.example.test', 'https://app.example.test/path'), true);
     assert.equal(isTrustedPairingApprovalOrigin('https://preview.app.example.test', 'https://app.example.test'), false);
     assert.equal(isTrustedPairingApprovalOrigin('http://app.example.test', 'https://app.example.test'), false);
+    assert.equal(isTrustedPairingApprovalOrigin('http://127.1:3000', 'http://127.0.0.1:3000'), false);
+    assert.equal(isTrustedPairingApprovalOrigin('http://local%68ost:3000', 'http://localhost:3000'), false);
     assert.equal(isTrustedPairingApprovalOrigin(undefined, 'https://app.example.test'), false);
   });
 

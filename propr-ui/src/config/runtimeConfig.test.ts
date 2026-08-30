@@ -120,10 +120,10 @@ describe('getApiBaseUrl', () => {
     expect(getApiBaseUrl()).toBe('https://t-abc123.propr.dev');
   });
 
-  it('strips multiple trailing slashes', async () => {
+  it('rejects multiple trailing slashes as a non-default origin path', async () => {
     window.__PROPR_CONFIG__ = { apiBaseUrl: 'https://t-abc123.propr.dev///' };
     const getApiBaseUrl = await loadGetApiBaseUrl();
-    expect(getApiBaseUrl()).toBe('https://t-abc123.propr.dev');
+    expect(() => getApiBaseUrl()).toThrow(/canonical HTTPS origin/i);
   });
 
   it('strips a trailing slash from the build-time env var', async () => {
@@ -232,11 +232,11 @@ describe('hosted tunnel query API base', () => {
     ).toBe('https://t-abc123.propr.dev');
   });
 
-  it('accepts a full hosted proxy URL and strips trailing slashes', async () => {
+  it('rejects a full hosted proxy URL carrying a non-default path', async () => {
     const { hostedTunnelQueryApiBaseUrl } = await load();
     expect(
       hostedTunnelQueryApiBaseUrl('app.propr.dev', '?tunnel=https%3A%2F%2Ft-abc123.propr.dev%2F%2F')
-    ).toBe('https://t-abc123.propr.dev');
+    ).toBeNull();
   });
 
   it('accepts an instance id for manually built hosted UI links', async () => {

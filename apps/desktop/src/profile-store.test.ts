@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, unlink, writeFile } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
+import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import {
   flushFileData,
   ProfileStore,
@@ -96,10 +97,19 @@ afterEach(async () => {
 });
 
 describe('desktop profile store', () => {
+  it('matches the shared canonical origin parity table at the persistence boundary', async () => {
+    const store = new ProfileStore(await createDirectory(), encryption());
+    let index = 0;
+    for (const [name, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      const save = store.save({ id: `parity-${index++}`, label: name, apiBaseUrl: input });
+      if (expected === null) await assert.rejects(save, /HTTPS|URL/, name);
+      else assert.equal((await save).apiBaseUrl, expected, name);
+    }
+  });
   it('persists validated profiles and active selection', async () => {
     const directory = await createDirectory();
     const store = new ProfileStore(directory, encryption());
-    const profile = await store.save({ label: ' Local ', apiBaseUrl: 'http://localhost:4000///' });
+    const profile = await store.save({ label: ' Local ', apiBaseUrl: 'http://localhost:4000/' });
     const ipv6Profile = await store.save({ label: 'IPv6', apiBaseUrl: 'http://[::1]:4000/' });
     await store.setActive(profile.id);
     assert.deepEqual(await store.list(), { profiles: [profile, ipv6Profile], activeProfileId: profile.id });
@@ -221,6 +231,8 @@ describe('desktop profile store', () => {
     const pending = await store.pendingRevocations();
     assert.equal(pending.length, 1);
     assert.deepEqual(pending[0].credential, credentialA);
+    assert.equal(pending[0].credentialGeneration, baseline.identityEpoch);
+    assert.notEqual(pending[0].credentialGeneration, committed.identityEpoch);
     assert.deepEqual(await store.readCredential(profile.id), credential(profile.id, 'B'));
     const desktop = join(directory, 'desktop');
     for (const file of await readdir(desktop)) {
@@ -231,7 +243,10 @@ describe('desktop profile store', () => {
     }
     assert.equal((await readdir(join(desktop, 'credentials'))).length, 2);
 
-    assert.equal(await store.completePendingRevocation(pending[0].id, credentialA), true);
+    assert.equal(await store.completePendingRevocation(
+      pending[0].id, credentialA, pending[0].credentialGeneration,
+    ), true);
+    assert.deepEqual(await store.readCredential(profile.id), credential(profile.id, 'B'));
     assert.deepEqual(await store.pendingRevocations(), []);
     assert.equal((await readdir(join(desktop, 'credentials'))).length, 1);
   });
@@ -609,6 +624,49 @@ describe('desktop profile store', () => {
     }
     assert.equal(completed, steps.length, 'a native durability boundary fixture was skipped');
     console.log(`NATIVE_CATEGORY transaction-boundaries expected=${steps.length} executed=${completed}`);
+  });
+
+  it('recovers profile deletion crashes as active A or detached pending A at the journal commit', async () => {
+    const steps = RECOVERY_KILL_STEPS;
+    let completed = 0;
+    for (const step of steps) {
+      const directory = await createDirectory();
+      const setup = new ProfileStore(directory, encryption());
+      const profile = await setup.save({
+        id: 'profile-1', label: 'Original', apiBaseUrl: 'https://propr.example.com',
+      });
+      const credentialA = credential(profile.id, 'A');
+      await setup.writeCredential(credentialA);
+      await setup.setActive(profile.id);
+      const child = spawn(process.execPath, [
+        '--import', 'tsx', join(import.meta.dirname, 'profile-store-crash-fixture.ts'),
+        directory, `detach:${step}`,
+      ], { stdio: 'ignore' });
+      const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+        child.once('exit', (code, signal) => resolve({ code, signal }));
+      });
+      assert.equal(
+        result.signal === 'SIGKILL' || (process.platform === 'win32' && result.code !== 0),
+        true,
+        `${step}: detach child did not crash at the requested boundary`,
+      );
+      const committed = step === 'journal-committed'
+        || step === 'journal-commit-fsynced'
+        || step === 'journal-commit-verified'
+        || step === 'journal-commit-closed'
+        || step === 'state-renamed'
+        || step === 'state-directory-fsynced';
+      const restarted = new ProfileStore(directory, encryption());
+      const snapshot = await restarted.readProfileCredential(profile.id);
+      assert.equal(snapshot.profile?.id ?? null, committed ? null : profile.id, step);
+      assert.deepEqual(snapshot.credential, committed ? null : credentialA, step);
+      const pending = await restarted.pendingRevocations();
+      assert.equal(pending.length, committed ? 1 : 0, step);
+      if (committed) assert.deepEqual(pending[0].credential, credentialA, step);
+      console.log('NATIVE_SCENARIO detach-crash');
+      completed += 1;
+    }
+    assert.equal(completed, steps.length);
   });
 
   it('recovers every first bootstrap and v1/v2 migration child-process kill without activating prepared B', async () => {

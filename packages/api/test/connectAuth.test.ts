@@ -32,11 +32,27 @@ test('local relay mode uses Connect without a per-instance OAuth App', () => {
   }), 'connect');
 });
 
-test('off-tunnel relay inference rejects callbacks outside the exact loopback allowlist', () => {
+test('off-tunnel relay inference uses the shared canonical loopback rule', () => {
+  for (const callbackUrl of [
+    'http://api.dev.localhost:4000/api/auth/github/callback',
+    'http://127.0.0.2:4000/api/auth/github/callback',
+    'http://127.42.7.9:4000/api/auth/github/callback',
+    'http://[::1]:4000/api/auth/github/callback',
+  ]) {
+    assert.equal(resolveBrowserAuthMode({
+      PROPR_UI_TUNNEL_ENABLED: 'false',
+      PROPR_GH_RELAY_URL: 'https://webhook.propr.dev/v1',
+      PROPR_GH_RELAY_TOKEN: 'prt_secret',
+      GH_OAUTH_CALLBACK_URL: callbackUrl,
+    }), 'connect', callbackUrl);
+  }
+
   for (const callbackUrl of [
     'https://api.example.com/api/auth/github/callback',
     'https://localhost:4000/api/auth/github/callback',
-    'http://127.0.0.2:4000/api/auth/github/callback',
+    'http://127.1:4000/api/auth/github/callback',
+    'http://0177.0.0.1:4000/api/auth/github/callback',
+    'http://localhost.:4000/api/auth/github/callback',
     'http://localhost:4000/not-the-auth-callback',
   ]) {
     assert.equal(resolveBrowserAuthMode({

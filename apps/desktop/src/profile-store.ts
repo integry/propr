@@ -74,6 +74,8 @@ interface PendingRevocationRecord {
   profileId: string;
   origin: string;
   slot: string;
+  credentialGeneration: string;
+  deferred: boolean;
 }
 
 interface PersistedState {
@@ -112,6 +114,8 @@ interface AuthenticatedJournal {
 export interface PendingCredentialRevocation {
   id: string;
   credential: StoredCredential;
+  credentialGeneration: string;
+  deferred: boolean;
 }
 
 export interface EncryptionProvider {
@@ -260,9 +264,20 @@ const parseState = (contents: string): PersistedState | VersionTwoPersistedState
         throw new Error('Desktop revocation state is invalid');
       }
       const record = raw as Record<string, unknown>;
+      if (record.credentialGeneration === undefined && typeof record.slot === 'string') {
+        record.credentialGeneration = createHash('sha256')
+          .update(record.slot)
+          .digest()
+          .subarray(0, 16)
+          .toString('base64url');
+      }
+      if (record.deferred === undefined) record.deferred = false;
       if (record.version !== 1 || typeof record.profileId !== 'string'
         || !PROFILE_ID_PATTERN.test(record.profileId) || typeof record.origin !== 'string'
         || normalizeApiBaseUrl(record.origin) !== record.origin || typeof record.slot !== 'string'
+        || typeof record.credentialGeneration !== 'string'
+        || !IDENTITY_EPOCH_PATTERN.test(record.credentialGeneration)
+        || typeof record.deferred !== 'boolean'
         || SLOT_PATTERN.exec(record.slot)?.[1] !== record.profileId
         || Object.values(slots).includes(record.slot) || pendingSlots.has(record.slot)) {
         throw new Error('Desktop revocation state is invalid');
@@ -390,12 +405,8 @@ export class ProfileStore {
       const existing = state.profiles.find(profile => profile.id === normalized.id);
       const originChanged = existing !== undefined && existing.apiBaseUrl !== normalized.apiBaseUrl;
       let detachedCredential: StoredCredential | null = null;
-      let detachedSlot: string | undefined;
       if (!existing || originChanged) {
-        detachedCredential = await this.#captureCredentialFile(state, normalized.id);
-        detachedSlot = state.credentialSlots[normalized.id];
-        delete state.credentialSlots[normalized.id];
-        delete state.credentialEpochs[normalized.id];
+        detachedCredential = (await this.#moveCredentialToPending(state, normalized.id))?.credential ?? null;
         if (originChanged && state.activeProfileId === normalized.id) state.activeProfileId = null;
       }
       const now = new Date().toISOString();
@@ -406,7 +417,6 @@ export class ProfileStore {
       };
       state.profiles = [...state.profiles.filter(item => item.id !== profile.id), profile];
       const durable = await this.#writeState(state);
-      if (durable && detachedSlot) await this.#unlinkSlot(detachedSlot).catch(() => undefined);
       return { profile: { ...profile }, detachedCredential: durable ? detachedCredential : null, originChanged };
     });
   }
@@ -418,6 +428,7 @@ export class ProfileStore {
     isCurrent: () => boolean,
     beginPublish?: () => (() => void) | null,
     onPublished?: () => void,
+    pendingRevocationId?: string,
   ): Promise<PairedProfileTransaction | null | { stored: false; reason: 'encryption-unavailable' }> {
     const normalized = normalizedProfileInput(input);
     if (credential.version !== 1
@@ -448,31 +459,34 @@ export class ProfileStore {
         updatedAt: now,
       };
       const originChanged = existing !== null && existing.apiBaseUrl !== profile.apiBaseUrl;
-      state.profiles = [...state.profiles.filter(item => item.id !== profile.id), profile];
-      if (originChanged && state.activeProfileId === profile.id) state.activeProfileId = null;
 
       const previousSlot = state.credentialSlots[profile.id];
-      const stagedSlot = await this.#stageCredential(credential);
-      const identityEpoch = randomBytes(16).toString('base64url');
+      const pending = pendingRevocationId ? state.pendingRevocations[pendingRevocationId] : undefined;
+      if (pendingRevocationId && !pending) return null;
+      const stagedSlot = pending?.slot ?? await this.#stageCredential(credential);
+      const identityEpoch = pending?.credentialGeneration ?? randomBytes(16).toString('base64url');
+      const stagedByThisCall = !pending;
+      if (pending) {
+        const pendingCredential = await this.#readCredentialSlot(pending.slot, pending.profileId);
+        if (pending.profileId !== credential.profileId || pending.origin !== credential.origin
+          || !this.#sameCredential(pendingCredential, credential)) {
+          throw new Error('Pending desktop credential does not match the paired profile');
+        }
+      }
       let committed = false;
       try {
         if (!isCurrent()) return null;
+        // Promote B and detach A through the same pending transition used by
+        // deletion, origin edits and explicit credential replacement. These
+        // are only in-memory changes until the single journal commit below.
+        if (pendingRevocationId) delete state.pendingRevocations[pendingRevocationId];
+        if (previousSlot) await this.#moveCredentialToPending(state, profile.id);
+        state.profiles = [...state.profiles.filter(item => item.id !== profile.id), profile];
+        if (originChanged && state.activeProfileId === profile.id) state.activeProfileId = null;
         // The staged slot is durable while the old state still names A. This
         // single atomic state-file rename is the only A -> B commit point.
         state.credentialSlots[profile.id] = stagedSlot;
         state.credentialEpochs[profile.id] = identityEpoch;
-        if (previousSlot && existingCredential) {
-          if (Object.keys(state.pendingRevocations).length >= MAX_PENDING_REVOCATIONS) {
-            throw new Error('Pending desktop credential revocations must complete before pairing again.');
-          }
-          const revocationId = randomUUID();
-          state.pendingRevocations[revocationId] = {
-            version: 1,
-            profileId: existingCredential.profileId,
-            origin: existingCredential.origin,
-            slot: previousSlot,
-          };
-        }
         const durable = await this.#writeState(state, isCurrent, beginPublish, onPublished);
         if (durable === null) return null;
         committed = true;
@@ -482,7 +496,7 @@ export class ProfileStore {
           originChanged,
         };
       } finally {
-        if (!committed) {
+        if (!committed && stagedByThisCall) {
           await this.#unlinkSlot(stagedSlot).catch(() => undefined);
         }
       }
@@ -498,15 +512,12 @@ export class ProfileStore {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const profile = state.profiles.find(item => item.id === profileId);
-      const credential = await this.#captureCredentialFile(state, profileId);
       const previousSlot = state.credentialSlots[profileId];
-      delete state.credentialSlots[profileId];
-      delete state.credentialEpochs[profileId];
+      const credential = (await this.#moveCredentialToPending(state, profileId))?.credential ?? null;
       if (!profile && !previousSlot) return null;
       state.profiles = state.profiles.filter(profile => profile.id !== profileId);
       if (state.activeProfileId === profileId) state.activeProfileId = null;
       const durable = await this.#writeState(state);
-      if (durable && previousSlot) await this.#unlinkSlot(previousSlot).catch(() => undefined);
       if (!profile) return null;
       return { profile: { ...profile }, credential: durable ? credential : null };
     });
@@ -610,14 +621,39 @@ export class ProfileStore {
     }
   }
 
-  async #captureCredentialFile(state: PersistedState, profileId: string): Promise<StoredCredential | null> {
-    try {
-      return await this.#readCredentialFile(state, profileId);
-    } catch {
-      // Removal is the security boundary. Decrypt/keychain/read failures only
-      // prevent the optional remote revoke, never explicit local detachment.
-      return null;
+  async #moveCredentialToPending(
+    state: PersistedState,
+    profileId: string,
+  ): Promise<(Omit<PendingCredentialRevocation, 'credential'> & { credential: StoredCredential | null }) | null> {
+    const slot = state.credentialSlots[profileId];
+    if (!slot) return null;
+    if (Object.keys(state.pendingRevocations).length >= MAX_PENDING_REVOCATIONS) {
+      throw new Error('Pending desktop credential revocations must complete before changing profiles.');
     }
+    let credential: StoredCredential | null = null;
+    try {
+      credential = await this.#readCredentialSlot(slot, profileId);
+    } catch {
+      // The slot bytes were authenticated by the prior committed journal. Keep
+      // them durable even while a keychain/backend read is temporarily failing.
+    }
+    const credentialGeneration = state.credentialEpochs[profileId];
+    const profile = state.profiles.find(item => item.id === profileId);
+    if (!credentialGeneration || (!credential && !profile)) {
+      throw new Error('Desktop credential cannot be safely detached for revocation.');
+    }
+    const id = randomUUID();
+    state.pendingRevocations[id] = {
+      version: 1,
+      profileId,
+      origin: credential?.origin ?? profile!.apiBaseUrl,
+      slot,
+      credentialGeneration,
+      deferred: false,
+    };
+    delete state.credentialSlots[profileId];
+    delete state.credentialEpochs[profileId];
+    return { id, credential, credentialGeneration, deferred: false };
   }
 
   #sameCredential(actual: StoredCredential | null, expected: StoredCredential): boolean {
@@ -653,6 +689,7 @@ export class ProfileStore {
     return this.#mutate(async () => {
       const state = await this.#readState();
       const previousSlot = state.credentialSlots[profileId];
+      if (previousSlot) await this.#moveCredentialToPending(state, profileId);
       const stagedSlot = await this.#stageCredential(credential);
       let committed = false;
       try {
@@ -666,10 +703,6 @@ export class ProfileStore {
           await this.#unlinkSlot(stagedSlot).catch(() => undefined);
         }
       }
-      if (previousSlot) {
-        await this.#unlinkSlot(previousSlot).catch(() => undefined);
-        await this.#step('old-credential-removed').catch(() => undefined);
-      }
       return { stored: true };
     });
   }
@@ -678,12 +711,8 @@ export class ProfileStore {
     assertProfileId(profileId);
     return this.#mutate(async () => {
       const state = await this.#readState();
-      const previousSlot = state.credentialSlots[profileId];
-      if (!previousSlot) return;
-      delete state.credentialSlots[profileId];
-      delete state.credentialEpochs[profileId];
-      const durable = await this.#writeState(state);
-      if (durable) await this.#unlinkSlot(previousSlot).catch(() => undefined);
+      if (!await this.#moveCredentialToPending(state, profileId)) return;
+      await this.#writeState(state);
     });
   }
 
@@ -708,37 +737,111 @@ export class ProfileStore {
         || credential.profileId !== expected.profileId
         || credential.origin !== expected.origin
         || credential.token !== expected.token) return false;
-      const previousSlot = state.credentialSlots[profileId];
-      delete state.credentialSlots[profileId];
-      delete state.credentialEpochs[profileId];
-      const durable = await this.#writeState(state);
-      if (durable && previousSlot) await this.#unlinkSlot(previousSlot).catch(() => undefined);
+      await this.#moveCredentialToPending(state, profileId);
+      await this.#writeState(state);
       return true;
     });
   }
 
-  pendingRevocations(): Promise<PendingCredentialRevocation[]> {
+  journalPendingRevocation(
+    credential: StoredCredential,
+  ): Promise<PendingCredentialRevocation | { stored: false; reason: 'encryption-unavailable' }> {
+    const profileId = credential?.profileId;
+    assertProfileId(profileId);
+    if (credential.version !== 1 || normalizeApiBaseUrl(credential.origin) !== credential.origin
+      || typeof credential.token !== 'string' || credential.token.length > MAX_CREDENTIAL_LENGTH
+      || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token)) {
+      throw new Error('Invalid desktop credential revocation material');
+    }
+    if (!this.security().available) return Promise.resolve({ stored: false, reason: 'encryption-unavailable' });
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      for (const [id, record] of Object.entries(state.pendingRevocations)) {
+        if (record.profileId !== profileId || record.origin !== credential.origin) continue;
+        const existing = await this.#readCredentialSlot(record.slot, record.profileId);
+        if (this.#sameCredential(existing, credential)) {
+          return {
+            id,
+            credential: { ...credential },
+            credentialGeneration: record.credentialGeneration,
+            deferred: record.deferred,
+          };
+        }
+      }
+      if (Object.keys(state.pendingRevocations).length >= MAX_PENDING_REVOCATIONS) {
+        throw new Error('Pending desktop credential revocations must complete before pairing again.');
+      }
+      const slot = await this.#stageCredential(credential);
+      const id = randomUUID();
+      const credentialGeneration = randomBytes(16).toString('base64url');
+      let committed = false;
+      try {
+        state.pendingRevocations[id] = {
+          version: 1,
+          profileId,
+          origin: credential.origin,
+          slot,
+          credentialGeneration,
+          deferred: true,
+        };
+        await this.#writeState(state);
+        committed = true;
+        return { id, credential: { ...credential }, credentialGeneration, deferred: true };
+      } finally {
+        if (!committed) await this.#unlinkSlot(slot).catch(() => undefined);
+      }
+    });
+  }
+
+  releasePendingRevocation(id: string, credentialGeneration: string): Promise<boolean> {
+    if (!/^[0-9a-f-]{36}$/i.test(id) || !IDENTITY_EPOCH_PATTERN.test(credentialGeneration)) {
+      throw new Error('Invalid desktop revocation release');
+    }
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      const record = state.pendingRevocations[id];
+      if (!record || record.credentialGeneration !== credentialGeneration) return false;
+      if (!record.deferred) return true;
+      record.deferred = false;
+      await this.#writeState(state);
+      return true;
+    });
+  }
+
+  pendingRevocations(includeDeferred = true): Promise<PendingCredentialRevocation[]> {
     if (!this.security().available) return Promise.resolve([]);
     return this.#mutate(async () => {
       const state = await this.#readState();
       const pending: PendingCredentialRevocation[] = [];
       for (const [id, record] of Object.entries(state.pendingRevocations)) {
+        if (record.deferred && !includeDeferred) continue;
         const credential = await this.#readCredentialSlot(record.slot, record.profileId);
         if (!credential || credential.origin !== record.origin) {
           throw new Error('Desktop pending revocation material is unavailable');
         }
-        pending.push({ id, credential });
+        pending.push({
+          id,
+          credential,
+          credentialGeneration: record.credentialGeneration,
+          deferred: record.deferred,
+        });
       }
       return pending;
     });
   }
 
-  completePendingRevocation(id: string, expected: StoredCredential): Promise<boolean> {
+  completePendingRevocation(
+    id: string,
+    expected: StoredCredential,
+    expectedCredentialGeneration?: string,
+  ): Promise<boolean> {
     if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Invalid desktop revocation id');
     return this.#mutate(async () => {
       const state = await this.#readState();
       const record = state.pendingRevocations[id];
-      if (!record || record.profileId !== expected.profileId || record.origin !== expected.origin) return false;
+      if (!record || record.profileId !== expected.profileId || record.origin !== expected.origin
+        || (expectedCredentialGeneration !== undefined
+          && record.credentialGeneration !== expectedCredentialGeneration)) return false;
       const actual = await this.#readCredentialSlot(record.slot, record.profileId);
       if (!this.#sameCredential(actual, expected)) return false;
       delete state.pendingRevocations[id];
@@ -1018,20 +1121,21 @@ export class ProfileStore {
         || !/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error(RECOVERY_ERROR);
       const bytes = Buffer.from(encoded, 'base64url');
       if (bytes.toString('base64url') !== encoded) throw new Error(RECOVERY_ERROR);
-      let credential: StoredCredential;
+      let credential: StoredCredential | null = null;
       try {
         credential = JSON.parse(this.#encryption.decrypt(bytes)) as StoredCredential;
       } catch {
-        throw new Error(RECOVERY_ERROR);
+        if (!this.#wasPreviouslyAuthenticatedSlot(state, slot, encoded)) throw new Error(RECOVERY_ERROR);
       }
       const profileId = SLOT_PATTERN.exec(slot)?.[1];
-      if (credential.version !== 1 || credential.profileId !== profileId
+      if (credential && (credential.version !== 1 || credential.profileId !== profileId
         || typeof credential.origin !== 'string'
         || normalizeApiBaseUrl(credential.origin) !== credential.origin
         || typeof credential.token !== 'string'
-        || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token)) throw new Error(RECOVERY_ERROR);
+        || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token))) throw new Error(RECOVERY_ERROR);
       const pending = Object.values(state.pendingRevocations).find(record => record.slot === slot);
-      if (pending && (pending.profileId !== credential.profileId || pending.origin !== credential.origin)) {
+      if (credential && pending
+        && (pending.profileId !== credential.profileId || pending.origin !== credential.origin)) {
         throw new Error(RECOVERY_ERROR);
       }
       authenticatedSlots[slot] = encoded;
@@ -1043,6 +1147,29 @@ export class ProfileStore {
       encryptedSlots: { ...authenticatedSlots },
     });
     return authenticated;
+  }
+
+  #wasPreviouslyAuthenticatedSlot(state: PersistedState, slot: string, encoded: string): boolean {
+    const currentPending = Object.values(state.pendingRevocations).find(record => record.slot === slot);
+    const currentProfileId = SLOT_PATTERN.exec(slot)?.[1];
+    for (const cached of this.#authenticatedJournalCache.values()) {
+      if (cached.encryptedSlots[slot] !== encoded) continue;
+      const priorPending = Object.values(cached.state.pendingRevocations).find(record => record.slot === slot);
+      if (currentPending && priorPending
+        && currentPending.profileId === priorPending.profileId
+        && currentPending.origin === priorPending.origin
+        && currentPending.credentialGeneration === priorPending.credentialGeneration) return true;
+      if (currentPending && currentProfileId
+        && cached.state.credentialSlots[currentProfileId] === slot
+        && cached.state.credentialEpochs[currentProfileId] === currentPending.credentialGeneration
+        && cached.state.profiles.find(profile => profile.id === currentProfileId)?.apiBaseUrl
+          === currentPending.origin) return true;
+      if (!currentPending && currentProfileId
+        && state.credentialSlots[currentProfileId] === slot
+        && cached.state.credentialSlots[currentProfileId] === slot
+        && state.credentialEpochs[currentProfileId] === cached.state.credentialEpochs[currentProfileId]) return true;
+    }
+    return false;
   }
 
   async #recover(): Promise<void> {

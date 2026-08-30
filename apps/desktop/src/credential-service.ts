@@ -1,6 +1,15 @@
 import { randomBytes } from 'node:crypto';
 import { ProprClient, ProprClientError, type ProprDesktopPairingOptions } from '@propr/client';
-import { DESKTOP_TRANSPORT_SCOPE_HEADER, DESKTOP_TRANSPORT_SCOPE_QUERY } from '@propr/shared';
+import {
+  DESKTOP_REVOCATION_BINDING_HEADER,
+  DESKTOP_TOKEN_REVOCATION_ENDPOINT,
+  DESKTOP_TOKEN_REVOCATION_SCHEMA,
+  DESKTOP_TOKEN_REVOCATION_VERSION,
+  DESKTOP_TOKEN_TERMINAL_CODES,
+  DESKTOP_TRANSPORT_SCOPE_HEADER,
+  DESKTOP_TRANSPORT_SCOPE_QUERY,
+  canonicalProprHttpUrlOrigin,
+} from '@propr/shared';
 import {
   type DesktopProfileInput,
   type DesktopConnectionResult,
@@ -21,7 +30,8 @@ export interface CredentialServiceDependencies {
   profiles: Pick<ProfileStore,
     'list' | 'saveAndDetachCredential' | 'commitPairedProfile' | 'detachProfile' | 'setActive' | 'activateProfile' | 'security'
     | 'readCredential' | 'readProfileCredential' | 'writeCredential' | 'removeCredential'
-    | 'removeCredentialIfCurrent' | 'pendingRevocations' | 'completePendingRevocation'>;
+    | 'removeCredentialIfCurrent' | 'journalPendingRevocation' | 'releasePendingRevocation'
+    | 'pendingRevocations' | 'completePendingRevocation'>;
   fetch: typeof globalThis.fetch;
   openExternal(url: string): Promise<void>;
   clientName: string;
@@ -78,13 +88,17 @@ const headerValues = (headers: RequestHeaders, name: string): string[] => {
 };
 
 const TRANSPORT_SCOPE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+const MAX_REVOCATION_RESPONSE_BYTES = 2_048;
+const TERMINAL_REVOCATION_CODES = new Set<string>(DESKTOP_TOKEN_TERMINAL_CODES);
 
 const requestOrigin = (value: string): { origin: string; pathname: string; url: URL } | null => {
   try {
+    const httpValue = value.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
     const url = new URL(value);
     if (url.protocol === 'ws:') url.protocol = 'http:';
     if (url.protocol === 'wss:') url.protocol = 'https:';
     if (url.username || url.password || !['http:', 'https:'].includes(url.protocol)) return null;
+    if (canonicalProprHttpUrlOrigin(httpValue) !== url.origin) return null;
     return { origin: url.origin, pathname: url.pathname, url };
   } catch {
     return null;
@@ -98,6 +112,60 @@ const parseCode = async (response: Response): Promise<string | undefined> => {
   } catch {
     return undefined;
   }
+};
+
+const isEndpointBoundTerminalRevocation = async (
+  response: Response,
+  credential: StoredCredential,
+  credentialGeneration: string,
+): Promise<boolean> => {
+  if (response.redirected) return false;
+  if (response.url) {
+    try {
+      const url = new URL(response.url);
+      if (url.href !== `${credential.origin}${DESKTOP_TOKEN_REVOCATION_ENDPOINT}`) return false;
+    } catch {
+      return false;
+    }
+  }
+  if (response.ok) return true;
+  if (response.status !== 401 && response.status !== 404) return false;
+  const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  if (contentType !== 'application/json') return false;
+  const declaredLength = response.headers.get('content-length');
+  if (declaredLength !== null
+    && (!/^(?:0|[1-9][0-9]*)$/.test(declaredLength)
+      || Number(declaredLength) > MAX_REVOCATION_RESPONSE_BYTES)) return false;
+  let text: string;
+  try {
+    text = await response.clone().text();
+  } catch {
+    return false;
+  }
+  if (Buffer.byteLength(text, 'utf8') > MAX_REVOCATION_RESPONSE_BYTES) return false;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text) as unknown;
+  } catch {
+    return false;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const body = raw as Record<string, unknown>;
+  const expectedKeys = [
+    'schema', 'version', 'endpoint', 'terminal', 'code', 'credentialGeneration',
+  ];
+  if (Object.keys(body).length !== expectedKeys.length
+    || expectedKeys.some(key => !(key in body))) return false;
+  if (body.schema !== DESKTOP_TOKEN_REVOCATION_SCHEMA
+    || body.version !== DESKTOP_TOKEN_REVOCATION_VERSION
+    || body.endpoint !== DESKTOP_TOKEN_REVOCATION_ENDPOINT
+    || body.terminal !== true
+    || body.credentialGeneration !== credentialGeneration
+    || typeof body.code !== 'string'
+    || !TERMINAL_REVOCATION_CODES.has(body.code)) return false;
+  return response.status === 404
+    ? body.code === 'TOKEN_NOT_FOUND'
+    : body.code === 'INSTANCE_TOKEN_REVOKED' || body.code === 'INSTANCE_TOKEN_EXPIRED';
 };
 
 const authenticationSummary = (capabilities: {
@@ -138,12 +206,12 @@ export class DesktopCredentialService {
   }
 
   async initialize(): Promise<void> {
-    await this.#retryPendingRevocations();
+    await this.#retryPendingRevocations(true);
   }
 
   async saveProfile(input: DesktopProfileInput) {
     await this.#waitForPairPublish();
-    await this.#retryPendingRevocations();
+    void this.#retryPendingRevocations();
     const before = input.id
       ? (await this.#profiles.list()).profiles.find(profile => profile.id === input.id)
       : undefined;
@@ -160,20 +228,18 @@ export class DesktopCredentialService {
     }
     if (transaction.detachedCredential) this.#clearActiveIfCredential(transaction.detachedCredential);
     if (transaction.originChanged && this.#active?.profileId === transaction.profile.id) this.#active = null;
-    if (transaction.detachedCredential) {
-      await this.#revoke(transaction.detachedCredential).catch(() => undefined);
-    }
+    void this.#retryPendingRevocations();
     return transaction.profile;
   }
 
   async removeProfile(profileId: string): Promise<string | null> {
     if (this.#publishingPair) await this.#waitForPairPublish();
     this.#invalidateProfileOperations(profileId);
-    await this.#retryPendingRevocations();
+    void this.#retryPendingRevocations();
     const detached = await this.#profiles.detachProfile(profileId);
     if (!detached) return null;
     if (detached.credential) this.#clearActiveIfCredential(detached.credential);
-    if (detached.credential) await this.#revoke(detached.credential).catch(() => undefined);
+    void this.#retryPendingRevocations();
     return detached.profile.apiBaseUrl;
   }
 
@@ -185,7 +251,7 @@ export class DesktopCredentialService {
     for (const controller of this.#pairingControllers.values()) controller.abort();
     this.#pairingControllers.clear();
     this.#active = null;
-    await this.#retryPendingRevocations();
+    void this.#retryPendingRevocations();
     await this.#profiles.setActive(profileId);
   }
 
@@ -208,8 +274,11 @@ export class DesktopCredentialService {
 
   async pair(input: DesktopProfileInput): Promise<{ paired: true }> {
     await this.#waitForPairPublish();
-    await this.#retryPendingRevocations();
+    void this.#retryPendingRevocations();
     if (!input.id) throw new Error('Desktop profile id is required');
+    if (!this.#profiles.security().available) {
+      throw new Error('OS-backed secure storage is required for desktop pairing.');
+    }
     const origin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!origin) throw new Error('Invalid desktop API URL');
     const label = input.label?.trim();
@@ -223,6 +292,7 @@ export class DesktopCredentialService {
     const profileGeneration = this.#generation(proposed.id);
     const selectionGeneration = this.#selectionGeneration;
     let transient: StoredCredential | null = null;
+    let transientRevocation: PendingCredentialRevocation | null = null;
     let publicationStarted = false;
     const client = this.#client(proposed.apiBaseUrl);
 
@@ -243,6 +313,11 @@ export class DesktopCredentialService {
         origin: proposed.apiBaseUrl,
         token: completed.token,
       };
+      const journaled = await this.#profiles.journalPendingRevocation(transient);
+      if ('stored' in journaled) {
+        throw new Error('OS-backed secure storage is required for desktop pairing.');
+      }
+      transientRevocation = journaled;
       this.#assertPairingCurrent(
         proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
       );
@@ -260,17 +335,32 @@ export class DesktopCredentialService {
           publicationStarted = true;
           if (this.#active?.profileId === proposed.id) this.#active = null;
         },
+        transientRevocation.id,
       );
       if (committed && 'stored' in committed) {
         throw new Error('OS-backed secure storage is required for desktop pairing.');
       }
       if (!committed) throw new ProprClientError('Desktop pairing was cancelled.', { kind: 'aborted' });
       transient = null;
-      await this.#retryPendingRevocations();
+      transientRevocation = null;
+      void this.#retryPendingRevocations();
       return { paired: true };
     } catch (error) {
-      if (transient && !publicationStarted) {
-        await this.#revoke(transient).catch(() => undefined);
+      if (transient && !transientRevocation && !publicationStarted) {
+        try {
+          const journaled = await this.#profiles.journalPendingRevocation(transient);
+          if (!('stored' in journaled)) transientRevocation = journaled;
+        } catch {
+          // Preserve the original pairing/storage error. A retry is attempted
+          // below whenever durable material was established.
+        }
+      }
+      if (transientRevocation && !publicationStarted) {
+        const released = await this.#profiles.releasePendingRevocation(
+          transientRevocation.id,
+          transientRevocation.credentialGeneration,
+        );
+        if (released) await this.#retryPendingRevocations();
       }
       if (error instanceof ProprClientError && error.kind === 'aborted') {
         throw new Error('Desktop pairing was cancelled.');
@@ -283,7 +373,7 @@ export class DesktopCredentialService {
 
   async probe(input: DesktopProfileInput): Promise<DesktopConnectionResult> {
     await this.#waitForPairPublish();
-    await this.#retryPendingRevocations();
+    void this.#retryPendingRevocations();
     if (!input.id) throw new Error('Desktop profile id is required');
     const origin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
     if (!origin || origin !== input.apiBaseUrl) throw new Error('Invalid desktop API URL');
@@ -355,6 +445,7 @@ export class DesktopCredentialService {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
       }
       this.#clearActiveIfCredential(credential);
+      void this.#retryPendingRevocations();
       return {
         status: 'authentication-required',
         message: discovery.desktopAuthentication.browserPairing
@@ -415,6 +506,7 @@ export class DesktopCredentialService {
         return { status: 'offline', message: 'This connection changed while it was being checked. Try again.' };
       }
       this.#clearActiveIfCredential(credential);
+      void this.#retryPendingRevocations();
       return {
         status: 'authentication-required',
         message: 'Access to this instance was revoked or expired. Pair again to continue.',
@@ -433,7 +525,7 @@ export class DesktopCredentialService {
 
   async activate(activationTicket: unknown): Promise<DesktopActivatedConnection> {
     await this.#waitForPairPublish();
-    await this.#retryPendingRevocations();
+    void this.#retryPendingRevocations();
     if (typeof activationTicket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(activationTicket)) {
       throw new Error('Invalid desktop activation ticket');
     }
@@ -478,7 +570,7 @@ export class DesktopCredentialService {
 
   async invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }> {
     await this.#waitForPairPublish();
-    await this.#retryPendingRevocations();
+    void this.#retryPendingRevocations();
     if (!DEFINITIVE_INVALID_CODES.has(value.code)) return { invalidated: false };
     const active = this.#active;
     if (!active || active.profileId !== value.profileId
@@ -492,12 +584,13 @@ export class DesktopCredentialService {
       active.origin,
       () => this.#generation(active.profileId) === invalidationGeneration,
     );
+    if (removed) void this.#retryPendingRevocations();
     return { invalidated: removed };
   }
 
   async discardActivation(value: DesktopConnectionScope): Promise<{ discarded: boolean }> {
     await this.#waitForPairPublish();
-    await this.#retryPendingRevocations();
+    void this.#retryPendingRevocations();
     const active = this.#active;
     if (!active || typeof value?.profileId !== 'string' || typeof value?.transportScope !== 'string'
       || active.profileId !== value.profileId || active.transportScope !== value.transportScope
@@ -517,6 +610,10 @@ export class DesktopCredentialService {
     details: { method?: string; resourceType?: string } = {},
   ): DesktopRequestDecision {
     const headers = { ...originalHeaders };
+    if (/^(?:https?|wss?):/i.test(url)) {
+      const httpUrl = url.replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:');
+      if (!canonicalProprHttpUrlOrigin(httpUrl)) return { cancel: true };
+    }
     const internalHeader = headerName(headers, 'x-propr-desktop-main-request');
     const trustedMainRequest = internalHeader !== undefined
       && headers[internalHeader] === this.#internalRequestKey;
@@ -532,6 +629,9 @@ export class DesktopCredentialService {
     if (!trustedMainRequest) removeHeader(headers, 'authorization');
 
     const target = requestOrigin(url);
+    if (target && target.url.protocol === 'http:' && !normalizeApiBaseUrl(target.origin)) {
+      return { cancel: true };
+    }
     if (trustedMainRequest) return { requestHeaders: headers };
 
     const markedRestRequest = scopeValues.length > 0;
@@ -609,23 +709,11 @@ export class DesktopCredentialService {
     return this.#fetch(input, { ...init, headers });
   };
 
-  async #revoke(credential: StoredCredential): Promise<void> {
-    const response = await this.#authenticatedFetch(
-      credential,
-      '/api/desktop/tokens/current',
-      { method: 'DELETE' },
-      8_000,
-    );
-    if (!response.ok && response.status !== 401 && response.status !== 404) {
-      throw new Error(`The instance could not revoke this connection (HTTP ${response.status}).`);
-    }
-  }
-
-  #retryPendingRevocations(): Promise<void> {
+  #retryPendingRevocations(includeDeferred = false): Promise<void> {
     const retry = async () => {
       let pending: PendingCredentialRevocation[];
       try {
-        pending = await this.#profiles.pendingRevocations();
+        pending = await this.#profiles.pendingRevocations(includeDeferred);
       } catch {
         this.#reportRevocationFailure({ code: 'local-cleanup' });
         return;
@@ -635,20 +723,27 @@ export class DesktopCredentialService {
         try {
           response = await this.#authenticatedFetch(
             entry.credential,
-            '/api/desktop/tokens/current',
-            { method: 'DELETE' },
+            DESKTOP_TOKEN_REVOCATION_ENDPOINT,
+            {
+              method: 'DELETE',
+              headers: { [DESKTOP_REVOCATION_BINDING_HEADER]: entry.credentialGeneration },
+            },
             8_000,
           );
         } catch {
           this.#reportRevocationFailure({ code: 'network' });
           continue;
         }
-        if (!response.ok && response.status !== 401 && response.status !== 404) {
+        if (!await isEndpointBoundTerminalRevocation(
+          response, entry.credential, entry.credentialGeneration,
+        )) {
           this.#reportRevocationFailure({ code: 'http', status: response.status });
           continue;
         }
         try {
-          const completed = await this.#profiles.completePendingRevocation(entry.id, entry.credential);
+          const completed = await this.#profiles.completePendingRevocation(
+            entry.id, entry.credential, entry.credentialGeneration,
+          );
           if (!completed) this.#reportRevocationFailure({ code: 'local-cleanup' });
         } catch {
           this.#reportRevocationFailure({ code: 'local-cleanup' });

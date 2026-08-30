@@ -1,4 +1,5 @@
 import { normalizeApiBaseUrl } from '@propr/client';
+import { isProprLoopbackHostname } from '@propr/shared';
 import type { DesktopBridge, DesktopProfile as StoredDesktopProfile } from '../../../apps/desktop/src/shared/contract';
 import { setDesktopConnectionScope } from '../api/apiClient';
 import type { DesktopAdapters, DesktopPlatform, DesktopProfile } from './types';
@@ -11,9 +12,7 @@ const platform = (value: string): DesktopPlatform => {
 };
 
 const isLocal = (baseUrl: string): boolean => {
-  const hostname = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '');
-  return hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '[::1]'
-    || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  return isProprLoopbackHostname(new URL(baseUrl).hostname);
 };
 
 const fromStoredProfile = (profile: StoredDesktopProfile): DesktopProfile => ({

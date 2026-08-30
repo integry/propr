@@ -2,6 +2,7 @@ import type {
   ProprApiCompatibilityResult,
   ProprDesktopAuthenticationCapabilities,
 } from '@propr/shared';
+import { canonicalProprHttpUrlOrigin } from '@propr/shared';
 import type { ProprClient } from './client.js';
 import { ProprClientError } from './errors.js';
 
@@ -113,8 +114,7 @@ export const parseDesktopPairingStart = (
   }
   try {
     const approvalUrl = new URL(body.approvalUrl);
-    if (approvalUrl.protocol !== 'https:' && !(approvalUrl.protocol === 'http:'
-      && ['localhost', '127.0.0.1', '[::1]'].includes(approvalUrl.hostname))) throw new Error();
+    if (canonicalProprHttpUrlOrigin(body.approvalUrl) !== approvalUrl.origin) throw new Error();
     if (approvalUrl.username || approvalUrl.password) throw new Error();
     // Device approval is intentionally same-origin. A future hosted approval
     // service must define and validate a narrow trust contract here first.

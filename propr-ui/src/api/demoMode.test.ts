@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DEMO_MODE_READ_ONLY_CODE } from '@propr/shared';
+import { DEMO_MODE_READ_ONLY_CODE, PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import {
   apiFetch,
   CommittedConfigWriteError,
@@ -7,6 +7,8 @@ import {
   handleApiResponse,
   handleDesktopAccessCode,
   INSTANCE_AUTHORIZATION_CHANGED_EVENT,
+  API_BASE_URL,
+  setApiBaseUrl,
   setDesktopConnectionScope,
   TokenRefreshRetryRequiredError,
 } from './proprApi';
@@ -14,7 +16,18 @@ import {
 describe('demo mode API helpers', () => {
   afterEach(() => {
     setDesktopConnectionScope(null);
+    setApiBaseUrl('');
     vi.restoreAllMocks();
+  });
+
+  it('applies the shared canonical origin parity table to REST and Socket.IO client configuration', () => {
+    for (const [name, input, expected] of PROPR_API_ORIGIN_PARITY_CASES) {
+      if (expected === null) expect(() => setApiBaseUrl(input), name).toThrow();
+      else {
+        setApiBaseUrl(input);
+        expect(API_BASE_URL, name).toBe(expected);
+      }
+    }
   });
 
   it('discovers demo mode from the backend metadata endpoint', async () => {

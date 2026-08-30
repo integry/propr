@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { isProprLoopbackHostname } from '@propr/shared';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -53,7 +54,7 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({ initial, operation
         id: initial?.id || createProfileId(),
         name: name.trim() || 'My ProPR',
         baseUrl: normalizeBaseUrl(baseUrl),
-        kind: initial?.kind || (hostname === '127.0.0.1' || hostname === 'localhost' ? 'local' : 'remote'),
+        kind: initial?.kind || (isProprLoopbackHostname(hostname) ? 'local' : 'remote'),
         lastConnectedAt: initial?.lastConnectedAt,
       });
     } catch (caught) {

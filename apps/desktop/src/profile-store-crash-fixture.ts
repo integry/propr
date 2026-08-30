@@ -29,6 +29,10 @@ const journalsA = requestedStep.startsWith('visibility:')
     }))
   : [];
 const baseline = await store.readProfileCredential('profile-1');
+if (requestedStep.startsWith('detach:')) {
+  await store.detachProfile('profile-1');
+  throw new Error(`Detach fixture did not reach ${crashStep}`);
+}
 await store.commitPairedProfile(
   { id: 'profile-1', label: 'Replacement', apiBaseUrl: 'https://propr.example.com' },
   {
