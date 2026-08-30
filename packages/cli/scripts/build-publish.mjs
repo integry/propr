@@ -103,7 +103,7 @@ for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {
 const authorityArtifacts = {
   "darwin-arm64/connect-authority-broker": "75fda2624bf093555e726b968401321fef61ea7ae0479f4c1892be0dfc6554c0",
   "darwin-x64/connect-authority-broker": "e5a49be0db85655b9ff1d0614de9d61defd41a0a1b2eff8f11571407f10d809b",
-  "win32-x64/connect-authority-broker.exe": "d6ab19e1fd775a5271cbf16f22851b895c9db8b8730cbbb884c6a30f34c68ff3",
+  "win32-x64/connect-authority-broker.exe": "5d775b1cfb53cbc451c548fba99899b70bd559ef8cbcfb2e25bbef2d137cca9c",
 };
 for (const [relativeArtifact, expected] of Object.entries(authorityArtifacts)) {
   const artifact = join(stageDir, "dist", "native", "prebuilds", relativeArtifact);

@@ -31,6 +31,7 @@ import {
   assertNativeWindowsEntriesAuthority,
   nativeConnectRootAuthorityInspector,
   protectWindowsSetupEntry,
+  WindowsAuthorityPolicyError,
   type ConnectAuthorityEntryKind,
   type ConnectRootAuthorityInspector,
 } from "./connectRootAuthority.js";
@@ -40,8 +41,8 @@ const MAX_ENV_FILE_BYTES = 1024 * 1024;
 const MAX_CONNECT_CONFIG_BYTES = 1024 * 1024;
 
 export class ConnectRootError extends Error {
-  constructor() {
-    super("the explicit stack root is unavailable or is not owned by the caller");
+  constructor(readonly reason = "INVALID_ROOT") {
+    super(`the explicit stack root is unavailable or is not owned by the caller [reason=${reason}]`);
     this.name = "ConnectRootError";
   }
 }
@@ -54,8 +55,8 @@ export class PublicInstanceIdentityError extends Error {
 }
 
 export class TrustedConnectConfigError extends Error {
-  constructor() {
-    super("the persisted Connect configuration is unavailable or unsafe");
+  constructor(readonly reason = "UNSAFE_CONFIG") {
+    super(`the persisted Connect configuration is unavailable or unsafe [reason=${reason}]`);
     this.name = "TrustedConnectConfigError";
   }
 }
@@ -351,9 +352,11 @@ export function readTrustedConnectTunnelOverride(
   let configDir: HeldDirectory | undefined;
   let configFd: number | undefined;
   try {
-    if (!sameResolvedPath(realpathSync.native(homePath), homePath, platform)) throw new TrustedConnectConfigError();
+    if (!sameResolvedPath(realpathSync.native(homePath), homePath, platform)) {
+      throw new TrustedConnectConfigError("REPARSE_POINT");
+    }
     const namedHomeBefore = lstatSync(homePath);
-    if (namedHomeBefore.isSymbolicLink()) throw new TrustedConnectConfigError();
+    if (namedHomeBefore.isSymbolicLink()) throw new TrustedConnectConfigError("REPARSE_POINT");
     options.onBoundary?.("home-before-open");
     home = openRootNoFollow(homePath, ioPlatform);
     options.onBoundary?.("home-opened");
@@ -373,7 +376,9 @@ export function readTrustedConnectTunnelOverride(
 
     verifyNamedHome();
     const namedConfigDirectoryBefore = lstatSync(join(homePath, ".propr"));
-    if (namedConfigDirectoryBefore.isSymbolicLink()) throw new TrustedConnectConfigError();
+    if (namedConfigDirectoryBefore.isSymbolicLink()) {
+      throw new TrustedConnectConfigError("CONFIG_DIRECTORY_REPARSE");
+    }
     options.onBoundary?.("config-directory-before-open");
     const configDirectoryFd = home.root.openChild(
       ".propr",
@@ -484,6 +489,10 @@ export function readTrustedConnectTunnelOverride(
     return parseTrustedTunnelOverride(contents, requestedRoot, platform);
   } catch (error) {
     if (error instanceof TrustedConnectConfigError) throw error;
+    if (error instanceof WindowsAuthorityPolicyError) {
+      throw new TrustedConnectConfigError(`NATIVE_ENTRY_${error.entryIndex}_${error.policyReason}`);
+    }
+    if (error instanceof ConnectRootError) throw new TrustedConnectConfigError(error.reason);
     throw new TrustedConnectConfigError();
   } finally {
     if (configFd !== undefined) closeSync(configFd);
@@ -504,7 +513,8 @@ function authorityEntry(
 ): void {
   try {
     assertNativeEntryAuthority(inspector, platform, path, kind, pinnedFd);
-  } catch {
+  } catch (error) {
+    if (error instanceof WindowsAuthorityPolicyError) throw error;
     throw new ConnectRootError();
   }
 }
@@ -513,11 +523,7 @@ function authorityEntries(
   inspector: ConnectRootAuthorityInspector,
   entries: readonly { path: string; kind: ConnectAuthorityEntryKind; pinnedFd: number }[],
 ): void {
-  try {
-    assertNativeWindowsEntriesAuthority(inspector, entries);
-  } catch {
-    throw new ConnectRootError();
-  }
+  assertNativeWindowsEntriesAuthority(inspector, entries);
 }
 
 function assertPlatformAuthority(
@@ -578,7 +584,7 @@ function sameResolvedPath(left: string, right: string, platform: NodeJS.Platform
 
 function assertNamedEntry(rootDir: string, name: string, held: Stats): void {
   const named = lstatSync(join(rootDir, name));
-  if (named.isSymbolicLink() || !sameIdentity(named, held)) throw new ConnectRootError();
+  if (named.isSymbolicLink() || !sameIdentity(named, held)) throw new ConnectRootError("NAMED_REPLACED");
 }
 
 function identifyHeldChild(directory: HeldDirectory, platform: NodeJS.Platform, name: string) {
@@ -629,9 +635,12 @@ export function withOwnedConnectRootSnapshot<T>(
   if (platform !== "win32" && callerUid === undefined) throw new ConnectRootError();
   const requestedRoot = resolve(flagRoot);
   try {
-    if (!sameResolvedPath(realpathSync.native(requestedRoot), requestedRoot, platform)) throw new ConnectRootError();
-  } catch {
-    throw new ConnectRootError();
+    if (!sameResolvedPath(realpathSync.native(requestedRoot), requestedRoot, platform)) {
+      throw new ConnectRootError("REPARSE_POINT");
+    }
+  } catch (error) {
+    if (error instanceof ConnectRootError) throw error;
+    throw new ConnectRootError("REALPATH_UNAVAILABLE");
   }
 
   let root: HeldDirectory | undefined;
@@ -808,6 +817,9 @@ export function withOwnedConnectRootSnapshot<T>(
     if (error instanceof ConnectSnapshotOperationError) throw error.operationCause;
     if (error instanceof PublicInstanceIdentityError) throw error;
     if (error instanceof ConnectRootError) throw error;
+    if (error instanceof WindowsAuthorityPolicyError) {
+      throw new ConnectRootError(`NATIVE_ENTRY_${error.entryIndex}_${error.policyReason}`);
+    }
     throw new ConnectRootError();
   } finally {
     if (acquiredRoot !== undefined && !acquiredAncestorsClosed) closeAcquiredAncestors(acquiredRoot);

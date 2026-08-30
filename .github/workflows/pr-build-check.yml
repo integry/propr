@@ -171,25 +171,31 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run real native Connect authority tests
+      - name: Build native Connect authority dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           node -e "if (process.platform === 'win32' && process.arch !== 'x64') process.exit(1)"
           npm run build -w @propr/shared
           npm run build -w @propr/core
           npm run build -w @propr/local-setup
           npm run typecheck -w @propr/cli
           npm run build -w @propr/cli
+
+      - name: Run platform-safe focused Connect suites
+        shell: bash
+        run: |
+          set -euo pipefail
           npx tsx --experimental-test-module-mocks --test \
-            test/publicInstanceIdentity.test.ts \
-            test/connectCliIntegration.test.ts \
             packages/cli/src/commands/connectCommand.test.ts \
             packages/cli/src/config/ConfigManager.test.ts \
             packages/cli/src/index.test.ts \
             packages/cli/src/orchestrator/index.test.ts \
             packages/api/test/statusRoutes.test.ts
-          npx tsx --test test/nativeConnectAuthority.test.ts
-          echo "Native authority scenarios: expected=6 executed=6 skipped=0"
-          echo "Groups: ordinary-no-acl identity-bigint root-data-env-ready-publication-recovery helper-integrity reparse-swap config-absence-off"
+
+      - name: Require complete native Connect authority proof
+        shell: bash
+        run: node scripts/verify-native-connect-authority.mjs
 
   validate:
     name: Validate Changes

@@ -6,8 +6,10 @@
 #include <sddl.h>
 
 #include <stdint.h>
+#include <errno.h>
 #include <io.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define PROPR_MAX_ENTRIES 64
@@ -259,12 +261,29 @@ static int write_output(const output_buffer *output) {
   return written == output->length && fflush(stdout) == 0;
 }
 
+static int parse_uintptr(const wchar_t *text, ULONG_PTR *value) {
+  if (text == NULL || text[0] == L'\0' || text[0] == L'-') return 0;
+  wchar_t *end = NULL;
+  errno = 0;
+  unsigned long long parsed = _wcstoui64(text, &end, 10);
+  if (errno != 0 || end == text || *end != L'\0' || parsed > (unsigned long long)(ULONG_PTR)-1) return 0;
+  *value = (ULONG_PTR)parsed;
+  return 1;
+}
+
 int wmain(int argc, wchar_t **argv) {
+  if (argc == 2 && (wcscmp(argv[1], L"ping") == 0 || wcscmp(argv[1], L"ping-hold") == 0)) {
+    if (wcscmp(argv[1], L"ping-hold") == 0) Sleep(1000);
+    static const char response[] = "{\"version\":1,\"ready\":true}\n";
+    return fwrite(response, 1, sizeof(response) - 1, stdout) == sizeof(response) - 1 && fflush(stdout) == 0 ? 0 : 14;
+  }
   if (argc < 3) return 10;
   int inspect = wcscmp(argv[1], L"inspect") == 0;
+  int inspect_parent = wcscmp(argv[1], L"inspect-parent") == 0;
   int protect = wcscmp(argv[1], L"protect") == 0;
-  if (!inspect && !protect) return 11;
+  if (!inspect && !inspect_parent && !protect) return 11;
   if ((inspect && argc - 2 > PROPR_MAX_ENTRIES) ||
+      (inspect_parent && (argc < 5 || ((argc - 3) % 2) != 0 || (argc - 3) / 2 > PROPR_MAX_ENTRIES)) ||
       (protect && (((argc - 2) % 2) != 0 || (argc - 2) / 2 > PROPR_MAX_ENTRIES))) return 10;
   BYTE *token_buffer = NULL;
   PSID user_sid = NULL;
@@ -272,22 +291,36 @@ int wmain(int argc, wchar_t **argv) {
   if (!current_user_sid(&token_buffer, &user_sid, user_sid_text, sizeof(user_sid_text))) return 12;
 
   output_buffer output = {{0}, 0};
-  int count = inspect ? argc - 2 : (argc - 2) / 2;
+  int count = inspect ? argc - 2 : inspect_parent ? (argc - 3) / 2 : (argc - 2) / 2;
   HANDLE handles[PROPR_MAX_ENTRIES];
   for (int index = 0; index < count; index += 1) handles[index] = INVALID_HANDLE_VALUE;
+  HANDLE parent_process = NULL;
+  if (inspect_parent) {
+    ULONG_PTR parent_pid = 0;
+    if (!parse_uintptr(argv[2], &parent_pid) || parent_pid == 0 || parent_pid > MAXDWORD) goto failure;
+    parent_process = OpenProcess(PROCESS_DUP_HANDLE, FALSE, (DWORD)parent_pid);
+    if (parent_process == NULL) goto failure;
+  }
 
   /* Inspection never receives or resolves an authority pathname. Node passes
      each already-open pinned object as child fd 3+index; the CRT descriptor
      table exposes the exact inherited HANDLE through _get_osfhandle. */
   for (int index = 0; index < count; index += 1) {
-    if (inspect) {
-      const wchar_t *kind = argv[2 + index];
+    if (inspect || inspect_parent) {
+      const wchar_t *kind = inspect ? argv[2 + index] : argv[3 + index * 2];
       if (wcscmp(kind, L"ancestor") != 0 && wcscmp(kind, L"home") != 0 &&
           wcscmp(kind, L"root") != 0 && wcscmp(kind, L"data") != 0 &&
           wcscmp(kind, L"env") != 0) goto failure;
-      intptr_t inherited = _get_osfhandle(3 + index);
-      if (inherited == -1) goto failure;
-      handles[index] = (HANDLE)inherited;
+      if (inspect) {
+        intptr_t inherited = _get_osfhandle(3 + index);
+        if (inherited == -1) goto failure;
+        handles[index] = (HANDLE)inherited;
+      } else {
+        ULONG_PTR source_value = 0;
+        if (!parse_uintptr(argv[4 + index * 2], &source_value) || source_value == 0 ||
+            !DuplicateHandle(parent_process, (HANDLE)source_value, GetCurrentProcess(),
+                             &handles[index], 0, FALSE, DUPLICATE_SAME_ACCESS)) goto failure;
+      }
     } else {
       const wchar_t *kind = argv[2 + index * 2];
       const wchar_t *path = argv[3 + index * 2];
@@ -298,11 +331,12 @@ int wmain(int argc, wchar_t **argv) {
     if (handles[index] == INVALID_HANDLE_VALUE) goto failure;
   }
 
-  if (inspect) {
+  if (inspect || inspect_parent) {
     if (!append_literal(&output, "{\"version\":1,\"entries\":[")) goto failure;
     for (int index = 0; index < count; index += 1) {
       if ((index != 0 && !append_literal(&output, ",")) ||
-          !inspect_entry(&output, handles[index], user_sid_text, index, argv[2 + index])) goto failure;
+          !inspect_entry(&output, handles[index], user_sid_text, index,
+                         inspect ? argv[2 + index] : argv[3 + index * 2])) goto failure;
     }
     if (!append_literal(&output, "]}\n")) goto failure;
   } else {
@@ -314,16 +348,18 @@ int wmain(int argc, wchar_t **argv) {
     if (!append_literal(&output, "{\"version\":1,\"protected\":") ||
         !append_u32(&output, (DWORD)count) || !append_literal(&output, "}\n")) goto failure;
   }
-  if (protect) {
+  if (protect || inspect_parent) {
     for (int index = 0; index < count; index += 1) CloseHandle(handles[index]);
   }
+  if (parent_process != NULL) CloseHandle(parent_process);
   LocalFree(token_buffer);
   return write_output(&output) ? 0 : 14;
 
 failure:
   for (int index = 0; index < count; index += 1) {
-    if (protect && handles[index] != INVALID_HANDLE_VALUE) CloseHandle(handles[index]);
+    if ((protect || inspect_parent) && handles[index] != INVALID_HANDLE_VALUE) CloseHandle(handles[index]);
   }
+  if (parent_process != NULL) CloseHandle(parent_process);
   LocalFree(token_buffer);
   return 13;
 }

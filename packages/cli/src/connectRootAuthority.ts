@@ -11,11 +11,12 @@ import {
   mkdtempSync,
   openSync,
   readSync,
+  realpathSync,
   rmSync,
   writeSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { tmpdir, userInfo } from "node:os";
+import { dirname, join, parse } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const NATIVE_INSPECTION_MAX_BYTES = 128 * 1024;
@@ -79,6 +80,25 @@ export interface StableAuthorityIdentity {
   readonly file: string;
 }
 
+export type WindowsAuthorityPolicyReason =
+  | "OWNER_MISMATCH"
+  | "DACL_NOT_PROTECTED"
+  | "REPARSE_POINT"
+  | "UNKNOWN_RIGHTS"
+  | "BROAD_WRITE"
+  | "INHERITED_WRITE";
+
+/** Redacted native diagnostic: an entry ordinal and fixed policy reason only. */
+export class WindowsAuthorityPolicyError extends Error {
+  constructor(
+    readonly entryIndex: number,
+    readonly policyReason: WindowsAuthorityPolicyReason,
+  ) {
+    super(`Windows native authority rejected entry ${entryIndex}: ${policyReason}`);
+    this.name = "WindowsAuthorityPolicyError";
+  }
+}
+
 export interface ConnectRootAuthorityInspector {
   inspectDarwinAcl(
     path: string,
@@ -118,8 +138,144 @@ const DARWIN_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
 };
 
 const WINDOWS_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
-  x64: "d6ab19e1fd775a5271cbf16f22851b895c9db8b8730cbbb884c6a30f34c68ff3",
+  x64: "5d775b1cfb53cbc451c548fba99899b70bd559ef8cbcfb2e25bbef2d137cca9c",
 };
+
+const WINDOWS_BOOTSTRAP_TIMEOUT_MS = 10_000;
+const WINDOWS_BOOTSTRAP_SCRIPT = String.raw`
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class ProprNative {
+  [StructLayout(LayoutKind.Sequential)] public struct FileIdInfo {
+    public UInt64 Volume;
+    public UInt64 FileIdLow;
+    public UInt64 FileIdHigh;
+  }
+  [StructLayout(LayoutKind.Sequential)] public struct FileAttributeTagInfo {
+    public UInt32 FileAttributes;
+    public UInt32 ReparseTag;
+  }
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+  public static extern SafeFileHandle CreateFile(string name,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
+  [DllImport("kernel32.dll",SetLastError=true)]
+  public static extern bool GetFileInformationByHandleEx(SafeFileHandle handle,int infoClass,out FileIdInfo info,uint size);
+  [DllImport("kernel32.dll",EntryPoint="GetFileInformationByHandleEx",SetLastError=true)]
+  public static extern bool GetFileAttributesByHandle(SafeFileHandle handle,int infoClass,out FileAttributeTagInfo info,uint size);
+  [DllImport("msvcrt.dll",CallingConvention=CallingConvention.Cdecl)]
+  public static extern IntPtr _get_osfhandle(int fd);
+}
+'@
+function Fail { [Console]::Out.Write('{"version":1,"error":"unavailable"}'); exit 23 }
+function Identity($handle) {
+  $value=New-Object ProprNative+FileIdInfo
+  if(![ProprNative]::GetFileInformationByHandleEx($handle,18,[ref]$value,24)){throw 'identity'}
+  $number=([Numerics.BigInteger]$value.FileIdHigh*[Numerics.BigInteger]::Pow(2,64))+[Numerics.BigInteger]$value.FileIdLow
+  $file=$number.ToString([Globalization.CultureInfo]::InvariantCulture)
+  return @($value.Volume.ToString([Globalization.CultureInfo]::InvariantCulture),$file)
+}
+function RequireOrdinary($handle) {
+  $value=New-Object ProprNative+FileAttributeTagInfo
+  if(![ProprNative]::GetFileAttributesByHandle($handle,9,[ref]$value,8) -or ($value.FileAttributes -band 0x400) -ne 0){throw 'reparse'}
+}
+function Rule($sid,$directory) {
+  $inherit=if($directory){[Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'}else{[Security.AccessControl.InheritanceFlags]::None}
+  return [Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::FullControl,$inherit,[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)
+}
+function Protect($path,$directory,$owner) {
+  $security=if($directory){[Security.AccessControl.DirectorySecurity]::new()}else{[Security.AccessControl.FileSecurity]::new()}
+  $security.SetOwner($owner)
+  $security.SetAccessRuleProtection($true,$false)
+  foreach($text in @($owner.Value,'S-1-5-18','S-1-5-32-544')){
+    [void]$security.AddAccessRule((Rule ([Security.Principal.SecurityIdentifier]::new($text)) $directory))
+  }
+  if($directory){[IO.Directory]::SetAccessControl($path,$security)}else{[IO.File]::SetAccessControl($path,$security)}
+}
+function Verify($path,$directory,$owner) {
+  $security=if($directory){[IO.Directory]::GetAccessControl($path)}else{[IO.File]::GetAccessControl($path)}
+  if(!$security.AreAccessRulesProtected -or $security.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner.Value){throw 'acl'}
+  $rules=@($security.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+  if($rules.Count -ne 3){throw 'acl'}
+  $expected=@($owner.Value,'S-1-5-18','S-1-5-32-544')
+  foreach($rule in $rules){
+    if($rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+       [int64]$rule.FileSystemRights -ne 2032127 -or $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None -or
+       $expected -notcontains $rule.IdentityReference.Value){throw 'acl'}
+    $flags=[int]$rule.InheritanceFlags
+    if(($directory -and $flags -ne 3) -or (!$directory -and $flags -ne 0)){throw 'acl'}
+  }
+}
+function Quote($value) {
+  if($value -notmatch '[\s"]'){return $value}
+  $builder=[Text.StringBuilder]::new();[void]$builder.Append('"');$slashes=0
+  foreach($character in $value.ToCharArray()){
+    if($character -eq '\'){$slashes++;continue}
+    if($character -eq '"'){[void]$builder.Append(('\' * (2*$slashes+1)));[void]$builder.Append('"')}else{[void]$builder.Append(('\' * $slashes));[void]$builder.Append($character)}
+    $slashes=0
+  }
+  [void]$builder.Append(('\' * (2*$slashes)));[void]$builder.Append('"');return $builder.ToString()
+}
+function Barrier($name) {
+  if($env:PROPR_BOOTSTRAP_BOUNDARY -ne $name){return}
+  $ready=$env:PROPR_BOOTSTRAP_READY;$continue=$env:PROPR_BOOTSTRAP_CONTINUE
+  if([string]::IsNullOrEmpty($ready) -or [string]::IsNullOrEmpty($continue)){throw 'barrier'}
+  [IO.File]::WriteAllText($ready,'ready',[Text.UTF8Encoding]::new($false))
+  $watch=[Diagnostics.Stopwatch]::StartNew()
+  while(![IO.File]::Exists($continue)){if($watch.ElapsedMilliseconds -gt 2500){throw 'barrier'};[Threading.Thread]::Sleep(10)}
+}
+try {
+  $path=$env:PROPR_BOOTSTRAP_PATH;$directory=[IO.Path]::GetDirectoryName($path);$expected=$env:PROPR_BOOTSTRAP_SHA256
+  if([string]::IsNullOrEmpty($path) -or [string]::IsNullOrEmpty($directory) -or $expected -notmatch '^[0-9a-f]{64}$'){throw 'input'}
+  $dir=[ProprNative]::CreateFile($directory,0x00020000,1,[IntPtr]::Zero,3,0x02200000,[IntPtr]::Zero)
+  if($dir.IsInvalid){throw 'directory'}
+  RequireOrdinary $dir
+  $file=[IO.FileStream]::new($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read,4096,[IO.FileOptions]::SequentialScan)
+  RequireOrdinary $file.SafeFileHandle
+  $before=Identity $file.SafeFileHandle
+  $sha=[Security.Cryptography.SHA256]::Create();$actual=([BitConverter]::ToString($sha.ComputeHash($file))).Replace('-','').ToLowerInvariant();$file.Position=0
+  if($actual -cne $expected){throw 'hash'}
+  $owner=[Security.Principal.WindowsIdentity]::GetCurrent().User
+  Protect $directory $true $owner;Protect $path $false $owner;Verify $directory $true $owner;Verify $path $false $owner
+  $locked=Identity $file.SafeFileHandle
+  if($before[0] -ne $locked[0] -or $before[1] -ne $locked[1]){throw 'replacement'}
+  Barrier 'after-lock'
+  $mode=$env:PROPR_BOOTSTRAP_MODE
+  if($mode -eq 'inspect'){
+    $kinds=@(ConvertFrom-Json $env:PROPR_BOOTSTRAP_KINDS)
+    if($kinds.Count -lt 1 -or $kinds.Count -gt 64){throw 'arguments'}
+    $arguments=[Collections.Generic.List[string]]::new();$arguments.Add('inspect-parent');$arguments.Add($PID.ToString([Globalization.CultureInfo]::InvariantCulture))
+    for($index=0;$index -lt $kinds.Count;$index++){
+      if(@('ancestor','home','root','data','env') -notcontains $kinds[$index]){throw 'arguments'}
+      $handle=[ProprNative]::_get_osfhandle(3+$index);if($handle -eq [IntPtr](-1)){throw 'handle'}
+      $arguments.Add($kinds[$index]);$arguments.Add($handle.ToInt64().ToString([Globalization.CultureInfo]::InvariantCulture))
+    }
+  } else {
+    $arguments=@(ConvertFrom-Json $env:PROPR_BOOTSTRAP_ARGUMENTS)
+    if($arguments.Count -lt 1 -or $arguments.Count -gt 130){throw 'arguments'}
+  }
+  $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=$path;$start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+  $start.StandardOutputEncoding=[Text.UTF8Encoding]::new($false);$start.StandardErrorEncoding=[Text.UTF8Encoding]::new($false);$start.EnvironmentVariables.Clear()
+  $start.Arguments=(@($arguments|ForEach-Object { Quote ([string]$_) }) -join ' ')
+  Barrier 'before-launch'
+  $process=[Diagnostics.Process]::new();$process.StartInfo=$start;if(!$process.Start()){throw 'launch'}
+  Barrier 'during-launch'
+  $outTask=$process.StandardOutput.ReadToEndAsync();$errTask=$process.StandardError.ReadToEndAsync()
+  if(!$process.WaitForExit(5000)){try{$process.Kill()}catch{};throw 'timeout'};$process.WaitForExit()
+  $stdout=$outTask.GetAwaiter().GetResult();$stderr=$errTask.GetAwaiter().GetResult()
+  $bytes=[Text.Encoding]::UTF8.GetBytes($stdout)
+  if($process.ExitCode -ne 0 -or $bytes.Length -gt 131072 -or [Text.Encoding]::UTF8.GetByteCount($stderr) -gt 131072){throw 'child'}
+  $after=Identity $file.SafeFileHandle;$file.Position=0;$finalHash=([BitConverter]::ToString($sha.ComputeHash($file))).Replace('-','').ToLowerInvariant()
+  Verify $directory $true $owner;Verify $path $false $owner
+  if($before[0] -ne $after[0] -or $before[1] -ne $after[1] -or $finalHash -cne $expected){throw 'replacement'}
+  $encoded=[Convert]::ToBase64String($bytes)
+  [Console]::Out.Write('{"version":1,"status":0,"stdout":"'+$encoded+'","volumeSerialNumber":"'+$before[0]+'","fileId":"'+$before[1]+'","verifiedVolumeSerialNumber":"'+$after[0]+'","verifiedFileId":"'+$after[1]+'"}')
+  $file.Dispose();$dir.Dispose();exit 0
+} catch { try{if($file){$file.Dispose()}}catch{};try{if($dir){$dir.Dispose()}}catch{};Fail }
+`;
+const WINDOWS_BOOTSTRAP_ENCODED = Buffer.from(WINDOWS_BOOTSTRAP_SCRIPT, "utf16le").toString("base64");
 
 function authorityBrokerArtifact(platform: "darwin" | "win32", arch: string): {
   path: string;
@@ -251,6 +407,154 @@ function stageDarwinAuthorityBroker(artifact: ReturnType<typeof authorityBrokerA
   }
 }
 
+interface WindowsBootstrapBarrier {
+  readonly boundary: "after-lock" | "before-launch" | "during-launch";
+  readonly readyPath: string;
+  readonly continuePath: string;
+}
+
+export interface WindowsAuthorityBootstrapProbe {
+  readonly args?: readonly string[];
+  readonly barrier?: WindowsBootstrapBarrier;
+  readonly onStaged?: (stagedPath: string) => void;
+}
+
+function trustedWindowsSystemRoot(): string {
+  // uv_os_get_passwd/GetUserProfileDirectoryW backs userInfo(), so this drive
+  // does not come from caller-controlled SystemRoot, windir, or USERPROFILE.
+  const driveRoot = parse(userInfo().homedir).root;
+  if (!/^[A-Za-z]:\\$/.test(driveRoot)) {
+    throw new Error("Windows system authority bootstrap is unavailable");
+  }
+  const systemRoot = join(driveRoot, "Windows");
+  try {
+    const stat = lstatSync(systemRoot);
+    if (
+      !stat.isDirectory()
+      || stat.isSymbolicLink()
+      || realpathSync.native(systemRoot).toLowerCase() !== systemRoot.toLowerCase()
+    ) throw new Error("untrusted system root");
+  } catch {
+    throw new Error("Windows system authority bootstrap is unavailable");
+  }
+  return systemRoot;
+}
+
+function canonicalUint128(value: unknown): value is string {
+  return typeof value === "string"
+    && /^(?:0|[1-9]\d{0,38})$/.test(value)
+    && BigInt(value) <= 0xffffffffffffffffffffffffffffffffn;
+}
+
+function runWindowsAuthorityBroker(
+  path: string,
+  digest: string,
+  args: readonly string[],
+  targetFds: readonly number[] = [],
+  barrier?: WindowsBootstrapBarrier,
+): Buffer {
+  validateWindowsBrokerPath(path);
+  if (!/^[0-9a-f]{64}$/.test(digest) || args.length === 0 || args.length > 130 || targetFds.length > 64) {
+    throw new Error("Windows system authority bootstrap is unavailable");
+  }
+  const inspect = args[0] === "inspect";
+  if ((inspect && args.length !== targetFds.length + 1) || (!inspect && targetFds.length !== 0)) {
+    throw new Error("Windows system authority bootstrap is unavailable");
+  }
+  const systemRoot = trustedWindowsSystemRoot();
+  const environment: NodeJS.ProcessEnv = {
+    SystemRoot: systemRoot,
+    PROPR_BOOTSTRAP_PATH: path,
+    PROPR_BOOTSTRAP_SHA256: digest,
+    PROPR_BOOTSTRAP_MODE: inspect ? "inspect" : "arguments",
+    ...(inspect
+      ? { PROPR_BOOTSTRAP_KINDS: JSON.stringify(args.slice(1)) }
+      : { PROPR_BOOTSTRAP_ARGUMENTS: JSON.stringify(args) }),
+    ...(barrier ? {
+      PROPR_BOOTSTRAP_BOUNDARY: barrier.boundary,
+      PROPR_BOOTSTRAP_READY: barrier.readyPath,
+      PROPR_BOOTSTRAP_CONTINUE: barrier.continuePath,
+    } : {}),
+  };
+  const result = spawnSync(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", WINDOWS_BOOTSTRAP_ENCODED,
+  ], {
+    shell: false,
+    windowsHide: true,
+    encoding: "buffer",
+    env: environment,
+    timeout: WINDOWS_BOOTSTRAP_TIMEOUT_MS,
+    maxBuffer: NATIVE_INSPECTION_MAX_BYTES * 2,
+    stdio: ["ignore", "pipe", "pipe", ...targetFds],
+  });
+  if (result.status !== 0 || result.error || result.signal) {
+    throw new Error("Windows system authority bootstrap is unavailable");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decodeBoundedUtf8(result.stdout).trim());
+  } catch {
+    throw new Error("Windows system authority bootstrap was malformed");
+  }
+  if (
+    !parsed
+    || typeof parsed !== "object"
+    || Array.isArray(parsed)
+    || !exactKeys(parsed, [
+      "version", "status", "stdout", "volumeSerialNumber", "fileId",
+      "verifiedVolumeSerialNumber", "verifiedFileId",
+    ])
+  ) throw new Error("Windows system authority bootstrap was malformed");
+  const document = parsed as Record<string, unknown>;
+  if (
+    document.version !== 1
+    || document.status !== 0
+    || typeof document.stdout !== "string"
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(document.stdout)
+    || !canonicalUint64(document.volumeSerialNumber)
+    || !canonicalUint128(document.fileId)
+    || !canonicalUint64(document.verifiedVolumeSerialNumber)
+    || !canonicalUint128(document.verifiedFileId)
+    || BigInt(document.volumeSerialNumber) !== BigInt(document.verifiedVolumeSerialNumber)
+    || BigInt(document.fileId) !== BigInt(document.verifiedFileId)
+  ) throw new Error("Windows system authority bootstrap was malformed");
+  const output = Buffer.from(document.stdout, "base64");
+  if (output.byteLength > NATIVE_INSPECTION_MAX_BYTES || output.toString("base64") !== document.stdout) {
+    throw new Error("Windows system authority bootstrap was malformed");
+  }
+  return output;
+}
+
+/** Native-test seam for deterministic staged-name attacks; production callers never use it. */
+export function exerciseWindowsAuthorityBootstrapForNativeTest(
+  probe: WindowsAuthorityBootstrapProbe,
+): Buffer {
+  if (process.platform !== "win32") throw new Error("Windows bootstrap probe requires Windows");
+  const artifact = authorityBrokerArtifact("win32", process.arch);
+  const directory = mkdtempSync(join(tmpdir(), "propr-authority-probe-"));
+  const path = join(directory, `broker-${randomUUID()}.exe`);
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
+    let offset = 0;
+    while (offset < artifact.bytes.byteLength) {
+      const count = writeSync(fd, artifact.bytes, offset, artifact.bytes.byteLength - offset, offset);
+      if (count <= 0) throw new Error("Windows bootstrap probe is unavailable");
+      offset += count;
+    }
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    probe.onStaged?.(path);
+    return runWindowsAuthorityBroker(path, artifact.digest, probe.args ?? ["ping"], [], probe.barrier);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    closeSync(artifact.fd);
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 function stageWindowsAuthorityBroker(artifact: ReturnType<typeof authorityBrokerArtifact>): {
   path: string;
   fd: number;
@@ -274,25 +578,7 @@ function stageWindowsAuthorityBroker(artifact: ReturnType<typeof authorityBroker
     closeSync(writableFd);
     writableFd = undefined;
 
-    // Execute the randomized copy made from held, digest-verified bytes, never
-    // the replaceable packaged pathname. This first invocation can only close
-    // its private capability DACL. The staged bytes then inspect their own held
-    // file and directory before they may inspect any authority target.
-    const protectedResult = spawnSync(path, [
-      "protect", "directory", directory, "file", path,
-    ], {
-      shell: false,
-      windowsHide: true,
-      encoding: "buffer",
-      env: {},
-      timeout: 15_000,
-      maxBuffer: NATIVE_INSPECTION_MAX_BYTES,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
     revalidateAuthorityBroker(artifact);
-    if (protectedResult.status !== 0 || protectedResult.error || protectedResult.signal) {
-      throw new Error("Windows ACL authority inspection is unavailable");
-    }
     stagedFd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     const staged = fstatSync(stagedFd, { bigint: true });
     const named = lstatSync(path, { bigint: true });
@@ -316,52 +602,6 @@ function stageWindowsAuthorityBroker(artifact: ReturnType<typeof authorityBroker
     if (directoryFd !== undefined) closeSync(directoryFd);
     rmSync(directory, { recursive: true, force: true });
     throw error;
-  }
-}
-
-function assertWindowsCapability(
-  capability: ReturnType<typeof stageWindowsAuthorityBroker>,
-): void {
-  const result = spawnSync(capability.path, ["inspect", "data", "env"], {
-    shell: false,
-    windowsHide: true,
-    encoding: "buffer",
-    env: {},
-    timeout: 15_000,
-    maxBuffer: NATIVE_INSPECTION_MAX_BYTES,
-    stdio: ["ignore", "pipe", "pipe", capability.directoryFd, capability.fd],
-  });
-  if (result.status !== 0 || result.error || result.signal) {
-    throw new Error("Windows ACL authority inspection is unavailable");
-  }
-  let document: unknown;
-  try {
-    document = JSON.parse(decodeBoundedUtf8(result.stdout).trim());
-  } catch {
-    throw new Error("Windows ACL authority inspection was malformed");
-  }
-  if (
-    !document
-    || typeof document !== "object"
-    || Array.isArray(document)
-    || !exactKeys(document, ["version", "entries"])
-    || (document as { version?: unknown }).version !== 1
-    || !Array.isArray((document as { entries?: unknown }).entries)
-    || (document as { entries: unknown[] }).entries.length !== 2
-  ) throw new Error("Windows ACL authority inspection was malformed");
-  const entries = (document as { entries: unknown[] }).entries;
-  for (let index = 0; index < entries.length; index += 1) {
-    const inspection = entries[index];
-    const expectedKind: ConnectAuthorityEntryKind = index === 0 ? "data" : "env";
-    assertWindowsInspectionShape(inspection);
-    if (
-      inspection.index !== index
-      || inspection.authorityKind !== expectedKind
-      || inspection.kind !== (index === 0 ? "directory" : "file")
-      || BigInt(inspection.volumeSerialNumber) !== BigInt(inspection.verifiedVolumeSerialNumber)
-      || BigInt(inspection.fileId) !== BigInt(inspection.verifiedFileId)
-    ) throw new Error("Windows ACL authority inspection was malformed");
-    assertSafeWindowsAuthority(inspection, expectedKind);
   }
 }
 
@@ -439,21 +679,15 @@ function nativeWindowsAcls(entries: readonly WindowsAuthorityTarget[]): readonly
     if (argumentCharacters > 24_000) throw new Error("Windows ACL authority inspection is unavailable");
     args.push(entry.kind);
   }
-  let result: ReturnType<typeof spawnSync>;
+  let output: Buffer;
   try {
     capability = stageWindowsAuthorityBroker(artifact);
-    assertWindowsCapability(capability);
-    result = spawnSync(capability.path, args, {
-      shell: false,
-      windowsHide: true,
-      encoding: "buffer",
-      env: {},
-      timeout: 15_000,
-      maxBuffer: NATIVE_INSPECTION_MAX_BYTES,
-      // Child fd 3+index is the caller's existing pinned object. The broker is
-      // deliberately given no authority pathnames and cannot reopen a target.
-      stdio: ["ignore", "pipe", "pipe", ...entries.map((entry) => entry.pinnedFd)],
-    });
+    output = runWindowsAuthorityBroker(
+      capability.path,
+      artifact.digest,
+      args,
+      entries.map((entry) => entry.pinnedFd),
+    );
     const staged = fstatSync(capability.fd, { bigint: true });
     const named = lstatSync(capability.path, { bigint: true });
     if (
@@ -473,12 +707,9 @@ function nativeWindowsAcls(entries: readonly WindowsAuthorityTarget[]): readonly
     }
     closeSync(artifact.fd);
   }
-  if (result.status !== 0 || result.error || result.signal) {
-    throw new Error("Windows ACL authority inspection is unavailable");
-  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(decodeBoundedUtf8(result.stdout).trim());
+    parsed = JSON.parse(decodeBoundedUtf8(output).trim());
   } catch {
     throw new Error("Windows ACL authority inspection was malformed");
   }
@@ -538,19 +769,10 @@ export function protectWindowsSetupEntries(
     if (argumentCharacters > 24_000) throw new Error("Windows setup authority could not be established");
     args.push(entry.kind, entry.path);
   }
-  let result: ReturnType<typeof spawnSync>;
+  let output: Buffer;
   try {
     capability = stageWindowsAuthorityBroker(artifact);
-    assertWindowsCapability(capability);
-    result = spawnSync(capability.path, args, {
-      shell: false,
-      windowsHide: true,
-      encoding: "buffer",
-      env: {},
-      timeout: 15_000,
-      maxBuffer: NATIVE_INSPECTION_MAX_BYTES,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    output = runWindowsAuthorityBroker(capability.path, artifact.digest, args);
     revalidateAuthorityBroker(artifact);
   } finally {
     if (capability !== undefined) {
@@ -560,12 +782,9 @@ export function protectWindowsSetupEntries(
     }
     closeSync(artifact.fd);
   }
-  if (result.status !== 0 || result.error || result.signal) {
-    throw new Error("Windows setup authority could not be established");
-  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(decodeBoundedUtf8(result.stdout).trim());
+    parsed = JSON.parse(decodeBoundedUtf8(output).trim());
   } catch {
     throw new Error("Windows setup authority could not be established");
   }
@@ -682,24 +901,31 @@ export function assertSafeWindowsAuthority(
   if (
     (terminal && inspection.ownerSid !== inspection.currentUserSid)
     || (!terminal && !trustedOwners.has(inspection.ownerSid))
-    || (protectedTerminal && !inspection.daclProtected)
-    || inspection.reparsePoint
-  ) throw new Error("Windows root authority is unsafe");
+  ) throw new WindowsAuthorityPolicyError(inspection.index, "OWNER_MISMATCH");
+  if (inspection.reparsePoint) {
+    throw new WindowsAuthorityPolicyError(inspection.index, "REPARSE_POINT");
+  }
 
   for (const rule of inspection.rules) {
     if (rule.accessType !== "allow" || !rule.appliesToSelf) continue;
     const rights = BigInt(rule.rights);
     if ((rights & ~WINDOWS_KNOWN_ALLOW_RIGHTS) !== 0n) {
-      throw new Error("Windows root authority has an unknown grant");
+      throw new WindowsAuthorityPolicyError(inspection.index, "UNKNOWN_RIGHTS");
     }
     const mutates = (rights & (WINDOWS_MUTATING_RIGHTS | WINDOWS_GENERIC_MUTATING_RIGHTS)) !== 0n;
     if (!mutates) continue;
     // OS ancestry commonly inherits grants for the same narrowly trusted
     // user/SYSTEM/Administrators set. Terminal setup/config entries must be
     // protected and explicit; an ancestor may inherit only those principals.
-    if (!trustedOwners.has(rule.identitySid) || (protectedTerminal && rule.inherited)) {
-      throw new Error("Windows root authority has a broad, inherited, or unknown writable grant");
+    if (!trustedOwners.has(rule.identitySid)) {
+      throw new WindowsAuthorityPolicyError(inspection.index, "BROAD_WRITE");
     }
+    if (protectedTerminal && rule.inherited) {
+      throw new WindowsAuthorityPolicyError(inspection.index, "INHERITED_WRITE");
+    }
+  }
+  if (protectedTerminal && !inspection.daclProtected) {
+    throw new WindowsAuthorityPolicyError(inspection.index, "DACL_NOT_PROTECTED");
   }
 }
 
