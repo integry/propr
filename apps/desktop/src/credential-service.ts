@@ -1,5 +1,10 @@
 import { randomBytes } from 'node:crypto';
-import { ProprClient, ProprClientError, type ProprDesktopPairingOptions } from '@propr/client';
+import {
+  ProprClient,
+  ProprClientError,
+  type PairingProtocolRequestOptions,
+  type ProprDesktopPairingOptions,
+} from '@propr/client';
 import {
   DESKTOP_REVOCATION_BINDING_HEADER,
   DESKTOP_TOKEN_REVOCATION_ENDPOINT,
@@ -37,6 +42,8 @@ export interface CredentialServiceDependencies {
   clientName: string;
   /** Deterministic pairing timing for protocol tests. Production uses the client defaults. */
   pairingTiming?: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
+  /** Deterministic service/native lifecycle proof; production uses fixed protocol defaults. */
+  pairingProtocol?: PairingProtocolRequestOptions;
   /** Tests may shorten, but never enlarge, the production revocation deadlines. */
   revocationDeadlines?: Partial<RevocationDeadlines>;
   reportRevocationFailure?(diagnostic: {
@@ -312,6 +319,7 @@ export class DesktopCredentialService {
   readonly #openExternal: (url: string) => Promise<void>;
   readonly #clientName: string;
   readonly #pairingTiming: Pick<ProprDesktopPairingOptions, 'sleep' | 'now'>;
+  readonly #pairingProtocol: PairingProtocolRequestOptions;
   readonly #reportRevocationFailure: NonNullable<CredentialServiceDependencies['reportRevocationFailure']>;
   readonly #revocationDeadlines: RevocationDeadlines;
   readonly #internalRequestKey = randomBytes(32).toString('base64url');
@@ -339,6 +347,7 @@ export class DesktopCredentialService {
     this.#openExternal = dependencies.openExternal;
     this.#clientName = dependencies.clientName;
     this.#pairingTiming = dependencies.pairingTiming ?? {};
+    this.#pairingProtocol = dependencies.pairingProtocol ?? {};
     this.#reportRevocationFailure = dependencies.reportRevocationFailure ?? (() => undefined);
     this.#revocationDeadlines = boundedRevocationDeadlines(dependencies.revocationDeadlines);
   }
@@ -625,7 +634,8 @@ export class DesktopCredentialService {
           if (released) await this.#requestPendingRevocationRetry();
         }
       }
-      if (error instanceof ProprClientError && error.kind === 'aborted') {
+      if (controller.signal.aborted || operation.signal.aborted
+        || (error instanceof ProprClientError && error.kind === 'aborted')) {
         throw new Error('Desktop pairing was cancelled.');
       }
       throw error;
@@ -975,6 +985,7 @@ export class DesktopCredentialService {
       authentication: { type: 'none' },
       fetch: this.#mainFetch,
       defaultTimeoutMs: 8_000,
+      pairingProtocol: this.#pairingProtocol,
     });
   }
 

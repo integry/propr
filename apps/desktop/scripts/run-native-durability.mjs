@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 const EXPECTED = Object.freeze({
   'credential-service': 68,
   'profile-store': 36,
+  'pairing-shutdown': 10,
 });
 const expectedTotal = Object.values(EXPECTED).reduce((total, count) => total + count, 0);
 const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'));
@@ -13,6 +14,7 @@ const child = spawn(process.execPath, [
   '--test-concurrency=1',
   'src/profile-store.test.ts',
   'src/credential-service.test.ts',
+  'src/pairing-response-lifecycle.test.ts',
 ], {
   cwd: fileURLToPath(new URL('..', import.meta.url)),
   env: process.env,
@@ -48,6 +50,7 @@ const plannedForSuite = (suiteName) => {
 const executed = {
   'credential-service': plannedForSuite('main-process desktop credential service'),
   'profile-store': plannedForSuite('desktop profile store'),
+  'pairing-shutdown': plannedForSuite('desktop pairing service IPC native shutdown lifecycle'),
 };
 const reportedCategory = (category) => {
   const match = output.match(new RegExp(
@@ -58,6 +61,10 @@ const reportedCategory = (category) => {
 const countedCategory = (category, expected) => ({
   expected,
   executed: output.match(new RegExp(`NATIVE_SCENARIO ${category}`, 'g'))?.length ?? 0,
+});
+const pairingShutdownCategory = category => ({
+  expected: 1,
+  executed: output.match(new RegExp(`NATIVE_PAIRING_SHUTDOWN ${category}(?:\\r?\\n|$)`, 'g'))?.length ?? 0,
 });
 const scenarioCategories = {
   barriers: reportedCategory('barriers'),
@@ -73,6 +80,16 @@ const scenarioCategories = {
   provisional: countedCategory('provisional', 1),
   delivery: countedCategory('delivery', 1),
   dispose: countedCategory('dispose', 1),
+  'start-header': pairingShutdownCategory('start-header'),
+  'start-body': pairingShutdownCategory('start-body'),
+  'poll-header': pairingShutdownCategory('poll-header'),
+  'poll-body': pairingShutdownCategory('poll-body'),
+  'activate-header': pairingShutdownCategory('activate-header'),
+  'activate-body': pairingShutdownCategory('activate-body'),
+  'cancel-header': pairingShutdownCategory('cancel-header'),
+  'cancel-body': pairingShutdownCategory('cancel-body'),
+  'never-settling-reader-cancel': pairingShutdownCategory('never-settling-reader-cancel'),
+  'never-settling-body-cancel': pairingShutdownCategory('never-settling-body-cancel'),
 };
 const summary = Object.fromEntries(
   ['tests', 'pass', 'fail', 'cancelled', 'skipped'].map(key => {

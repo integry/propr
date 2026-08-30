@@ -29,6 +29,7 @@ export {
   type ProprDesktopPairingOptions,
   type ProprDesktopPairingStart,
 } from './desktopPairing.js';
+export type { PairingProtocolRequestOptions } from './pairingProtocol.js';
 export {
   normalizeInstanceProfile,
   type NormalizedProprInstanceProfile,

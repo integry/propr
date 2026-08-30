@@ -8,6 +8,7 @@ import { registerIpcHandlers } from './ipc';
 import { LocalLifecycleController } from './lifecycle';
 import { createDesktopLogger, type DesktopLogger } from './logger';
 import { ProfileStore, type EncryptionProvider } from './profile-store';
+import { createDesktopShutdownCoordinator } from './shutdown';
 import {
   deepLinkFromArguments,
   isSafeExternalUrl,
@@ -285,31 +286,19 @@ if (!hasSingleInstanceLock) {
       }
     });
 
-    app.on('before-quit', event => {
-      if (shutdownStarted) return;
-      event.preventDefault();
-      shutdownStarted = true;
-      registeredIpc.close();
-      sessionSecurity.close();
-      disposeRendererProtocol();
-      void Promise.allSettled([
-        credentials.dispose(),
-        lifecycle.shutdown(),
-        registeredIpc.awaitIdle(),
-      ]).then(async results => {
-        for (const result of results) {
-          if (result.status === 'rejected') log('error', 'desktop.app.shutdown_failed', { error: result.reason });
-        }
-        await profiles.close().catch(error => {
-          log('error', 'desktop.profile_store.shutdown_failed', { error });
-        });
-        sessionSecurity.dispose();
-        registeredIpc.dispose();
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
-        log('info', 'desktop.app.shutdown');
-        app.quit();
-      });
+    const shutdown = createDesktopShutdownCoordinator({
+      credentials,
+      lifecycle,
+      ipc: registeredIpc,
+      profiles,
+      sessionSecurity,
+      disposeRendererProtocol,
+      getWindow: () => mainWindow,
+      quit: () => app.quit(),
+      onStarted: () => { shutdownStarted = true; },
+      log,
     });
+    app.on('before-quit', event => shutdown.beforeQuit(event));
   }).catch(error => {
     log('error', 'desktop.app.start_failed', { error });
     app.exit(1);

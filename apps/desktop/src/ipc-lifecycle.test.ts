@@ -7,6 +7,7 @@ import type { LocalLifecycleController } from './lifecycle';
 import type { DesktopLogger } from './logger';
 import type { ProfileStore } from './profile-store';
 import { IPC_CHANNELS } from './shared/contract';
+import { createDesktopShutdownCoordinator } from './shutdown';
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -67,4 +68,99 @@ describe('desktop IPC shutdown gate', () => {
     registered.dispose();
     assert.equal(handlers.size, 0);
   });
+
+  for (const category of ['profile', 'pairing', 'session'] as const) {
+    it(`runs an admitted ${category} handler through the production before-quit drain`, async () => {
+      const handlers = new Map<string, (...args: any[]) => unknown>();
+      const ipcMain = {
+        handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+        removeHandler: (channel: string) => { handlers.delete(channel); },
+      } as unknown as IpcMain;
+      const barrier = deferred<unknown>();
+      const started = deferred<void>();
+      let underlyingCalls = 0;
+      const begin = (): Promise<unknown> => {
+        underlyingCalls += 1;
+        started.resolve(undefined);
+        return barrier.promise;
+      };
+      const credentials = {
+        listProfiles: category === 'profile' ? begin : async () => ({ profiles: [], activeProfileId: null }),
+        pair: category === 'pairing' ? begin : async () => ({ paired: true }),
+        dispose: async () => undefined,
+      } as unknown as DesktopCredentialService;
+      const desktopSession = {
+        fetch: category === 'session'
+          ? async () => await begin() as Response
+          : async () => new Response(null, { status: 204 }),
+      } as unknown as Session;
+      const registered = registerIpcHandlers({
+        app: {
+          getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true,
+        } as unknown as App,
+        ipcMain,
+        profiles: {} as ProfileStore,
+        credentials,
+        lifecycle: {} as LocalLifecycleController,
+        logger: { log: () => undefined } as unknown as DesktopLogger,
+        desktopSession,
+        devServerUrl: undefined,
+        packagedRendererUrl: 'propr-renderer://app/index.html',
+        openExternal: async () => undefined,
+      });
+      const event = {
+        senderFrame: { url: 'propr-renderer://app/index.html' },
+      } as unknown as IpcMainInvokeEvent;
+      const invoke = (channel: string, ...args: unknown[]) =>
+        Promise.resolve(handlers.get(channel)!(event, ...args));
+      const channel = category === 'profile'
+        ? IPC_CHANNELS.profilesList
+        : category === 'pairing'
+          ? IPC_CHANNELS.authenticationPair
+          : IPC_CHANNELS.authLogout;
+      const args = category === 'pairing'
+        ? [{ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' }]
+        : category === 'session' ? ['https://a.example.test'] : [];
+      const admitted = invoke(channel, ...args);
+      await started.promise;
+
+      const order: string[] = [];
+      const shutdown = createDesktopShutdownCoordinator({
+        credentials: { dispose: async () => { order.push('credentials-dispose'); } },
+        lifecycle: { shutdown: async () => { order.push('lifecycle-shutdown'); } },
+        ipc: {
+          close: () => { order.push('ipc-close'); registered.close(); },
+          awaitIdle: () => { order.push('ipc-drain'); return registered.awaitIdle(); },
+          dispose: () => { order.push('ipc-dispose'); registered.dispose(); },
+        },
+        profiles: { close: async () => { order.push('profiles-close'); } },
+        sessionSecurity: {
+          close: () => { order.push('session-close'); },
+          dispose: () => { order.push('session-dispose'); },
+        },
+        disposeRendererProtocol: () => { order.push('protocol-dispose'); },
+        getWindow: () => ({
+          isDestroyed: () => false,
+          destroy: () => { order.push('window-destroy'); },
+        }),
+        quit: () => { order.push('app-quit'); },
+        onStarted: () => { order.push('shutdown-started'); },
+        log: () => undefined,
+      });
+      shutdown.beforeQuit({ preventDefault: () => undefined });
+      await assert.rejects(invoke(channel, ...args), /DESKTOP_CLOSING/);
+      assert.equal(underlyingCalls, 1);
+
+      if (category === 'profile') barrier.resolve({ profiles: [], activeProfileId: null });
+      else if (category === 'pairing') barrier.resolve({ paired: true });
+      else barrier.resolve(new Response(null, { status: 204 }));
+      await admitted;
+      await shutdown.awaitFinished();
+
+      assert.equal(handlers.size, 0);
+      assert.equal(order.indexOf('profiles-close') > order.indexOf('ipc-drain'), true);
+      assert.equal(order.indexOf('session-dispose') > order.indexOf('profiles-close'), true);
+      assert.deepEqual(order.slice(-3), ['ipc-dispose', 'window-destroy', 'app-quit']);
+    });
+  }
 });

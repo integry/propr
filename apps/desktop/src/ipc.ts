@@ -18,6 +18,8 @@ interface RegisterIpcOptions {
   devServerUrl: string | undefined;
   packagedRendererUrl: string;
   openExternal(url: string): Promise<void>;
+  /** @internal Deterministic admitted-work accounting for lifecycle proof. */
+  observeInvocation?(phase: 'entry' | 'exit', channel: string): void;
 }
 
 type Handler = (event: IpcMainInvokeEvent, ...args: any[]) => unknown;
@@ -46,6 +48,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
         options.logger.log('warn', 'desktop.ipc.rejected', { channel });
         throw new Error('Untrusted desktop IPC sender');
       }
+      options.observeInvocation?.('entry', channel);
       const invocation = Promise.resolve().then(() => handler(event, ...args));
       active.add(invocation);
       try {
@@ -55,6 +58,7 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
         throw error;
       } finally {
         active.delete(invocation);
+        options.observeInvocation?.('exit', channel);
       }
     });
   };

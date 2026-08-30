@@ -28,13 +28,18 @@ import {
   type ProprDesktopPairingOptions,
   type ProprDesktopPairingStart,
 } from './desktopPairing.js';
-import { requestPairingProtocol } from './pairingProtocol.js';
+import {
+  requestPairingProtocol,
+  type PairingProtocolRequestOptions,
+} from './pairingProtocol.js';
 
 export interface ProprClientOptions extends NormalizeApiBaseUrlOptions {
   baseUrl?: string | null;
   authentication?: ProprAuthentication;
   defaultTimeoutMs?: number;
   fetch?: typeof globalThis.fetch;
+  /** @internal Deterministic response-lifecycle proof; production uses fixed protocol defaults. */
+  pairingProtocol?: PairingProtocolRequestOptions;
 }
 
 export interface ProprFetchOptions {
@@ -87,6 +92,7 @@ export class ProprClient {
   readonly defaultTimeoutMs: number;
 
   private readonly fetchImplementation: typeof globalThis.fetch;
+  private readonly pairingProtocolOptions: PairingProtocolRequestOptions;
 
   constructor(options: ProprClientOptions = {}) {
     this.baseUrl = normalizeApiBaseUrl(options.baseUrl, options);
@@ -94,6 +100,7 @@ export class ProprClient {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 0;
     assertTimeout(this.defaultTimeoutMs);
     this.fetchImplementation = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    this.pairingProtocolOptions = options.pairingProtocol ?? {};
   }
 
   url(path: string): string {
@@ -334,7 +341,10 @@ export class ProprClient {
       this.fetchImplementation,
       target,
       authenticatedInit ?? {},
-      { overallTimeoutMs },
+      {
+        ...this.pairingProtocolOptions,
+        overallTimeoutMs: overallTimeoutMs ?? this.pairingProtocolOptions.overallTimeoutMs,
+      },
     );
   }
 
