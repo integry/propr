@@ -33,12 +33,15 @@ function createDatabase(): Knex {
 }
 
 function vapidConfiguration() {
+  // Keep the fixture exactly 32 bytes; getPrivateKey() can omit leading zeroes.
+  const privateKey = Buffer.alloc(32);
+  privateKey[31] = 1;
   const ecdh = createECDH('prime256v1');
-  ecdh.generateKeys();
+  ecdh.setPrivateKey(privateKey);
   return {
     subject: 'mailto:notifications@example.com',
     publicKey: ecdh.getPublicKey(undefined, 'uncompressed').toString('base64url'),
-    privateKey: ecdh.getPrivateKey().toString('base64url'),
+    privateKey: privateKey.toString('base64url'),
   };
 }
 
