@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -56,7 +56,10 @@ test('compiled helper output gate rejects corrupt, native-only, and wrong-machin
 });
 
 test('packaged helper refresh and inspection bind the exact held manifest and signed helper bytes', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'propr-packaged-helper-'));
+  // Darwin aliases /var to /private/var. Establish the fixture below the
+  // explicitly held canonical temp root so child proofs use one namespace.
+  const trustedTempRoot = await realpath(tmpdir());
+  const root = await realpath(await mkdtemp(join(trustedTempRoot, 'propr-packaged-helper-')));
   const executable = join(root, 'propr-windows-authority.exe');
   const manifestPath = join(root, 'propr-windows-authority.manifest.json');
   try {
@@ -75,7 +78,18 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
       protocol: 'propr-windows-authority-v1',
       trust: 'unsigned-validation',
       publisher: null,
-      compiler: { kind: 'systemroot-dotnet-framework-csc', framework: 'Framework64-v4.0.30319' },
+      signerPins: [],
+      signerCertificateSha256: null,
+      signerSpkiSha256: null,
+      compiler: {
+        kind: 'kernel-systemroot-dotnet-framework-csc',
+        framework: 'Framework64-v4.0.30319',
+        inputs: [
+          { name: 'csc.exe', size: 1, sha256: 'b'.repeat(64) },
+          { name: 'System.dll', size: 1, sha256: 'c'.repeat(64) },
+          { name: 'System.Web.Extensions.dll', size: 1, sha256: 'd'.repeat(64) },
+        ],
+      },
     })}\n`);
     await refreshPackagedWindowsAuthorityManifest(executable, manifestPath, {
       PROPR_DESKTOP_PRODUCTION_RELEASE: '0',

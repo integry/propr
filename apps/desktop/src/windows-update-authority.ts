@@ -108,6 +108,7 @@ const HELPER_MANIFEST_BYTES = 16 * 1024;
 const HELPER_MANIFEST_KEYS = Object.freeze([
   'schemaVersion', 'name', 'format', 'architecture', 'machine', 'clr', 'size', 'sha256', 'sourceSha256',
   'protocol', 'trust', 'publisher', 'compiler',
+  'signerPins', 'signerCertificateSha256', 'signerSpkiSha256',
 ] as const);
 
 interface WindowsAuthorityHelperManifest {
@@ -123,7 +124,14 @@ interface WindowsAuthorityHelperManifest {
   protocol: 'propr-windows-authority-v1';
   trust: 'unsigned-validation' | 'production-signed';
   publisher: string | null;
-  compiler: { kind: 'systemroot-dotnet-framework-csc'; framework: string };
+  signerPins: readonly string[];
+  signerCertificateSha256: string | null;
+  signerSpkiSha256: string | null;
+  compiler: {
+    kind: 'kernel-systemroot-dotnet-framework-csc';
+    framework: string;
+    inputs: readonly { name: string; size: number; sha256: string }[];
+  };
 }
 
 interface AuthenticatedWindowsAuthorityHelper {
@@ -147,6 +155,11 @@ const embeddedExpectedPublisher = (): string | undefined => {
   return __PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY__ || undefined;
 };
 
+const embeddedExpectedSignerPins = (): readonly string[] => {
+  if (process.platform !== 'win32' || typeof __PROPR_DESKTOP_WINDOWS_SIGNER_PINS__ === 'undefined') return [];
+  return __PROPR_DESKTOP_WINDOWS_SIGNER_PINS__;
+};
+
 const exactRecordKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 
@@ -163,7 +176,7 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
   const compiler = manifest.compiler;
   if (!exactRecordKeys(manifest, HELPER_MANIFEST_KEYS)
     || typeof compiler !== 'object' || compiler === null || Array.isArray(compiler)
-    || !exactRecordKeys(compiler as Record<string, unknown>, ['kind', 'framework'])
+    || !exactRecordKeys(compiler as Record<string, unknown>, ['kind', 'framework', 'inputs'])
     || manifest.schemaVersion !== 1 || manifest.name !== HELPER_NAME || manifest.format !== 'PE32'
     || manifest.architecture !== 'anycpu' || manifest.machine !== 'I386' || manifest.clr !== true
     || !Number.isSafeInteger(manifest.size) || Number(manifest.size) <= 0 || Number(manifest.size) > HELPER_MAX_BYTES
@@ -174,8 +187,31 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
     || (manifest.trust === 'unsigned-validation' && manifest.publisher !== null)
     || (manifest.trust === 'production-signed'
       && (typeof manifest.publisher !== 'string' || manifest.publisher.length <= 0 || manifest.publisher.length > 512))
-    || (compiler as Record<string, unknown>).kind !== 'systemroot-dotnet-framework-csc'
-    || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String((compiler as Record<string, unknown>).framework))) {
+    || !Array.isArray(manifest.signerPins) || manifest.signerPins.length > 16
+    || manifest.signerPins.some(pin => typeof pin !== 'string'
+      || !/^(?:certificate|spki)-sha256:[a-f0-9]{64}$/.test(pin))
+    || new Set(manifest.signerPins).size !== manifest.signerPins.length
+    || manifest.signerPins.join(',') !== [...manifest.signerPins].sort().join(',')
+    || (manifest.trust === 'unsigned-validation'
+      && (manifest.signerPins.length !== 0 || manifest.signerCertificateSha256 !== null
+        || manifest.signerSpkiSha256 !== null))
+    || (manifest.trust === 'production-signed'
+      && (manifest.signerPins.length === 0
+        || !/^[a-f0-9]{64}$/.test(String(manifest.signerCertificateSha256))
+        || !/^[a-f0-9]{64}$/.test(String(manifest.signerSpkiSha256))
+        || !manifest.signerPins.some(pin => pin === `certificate-sha256:${manifest.signerCertificateSha256}`
+          || pin === `spki-sha256:${manifest.signerSpkiSha256}`)))
+    || (compiler as Record<string, unknown>).kind !== 'kernel-systemroot-dotnet-framework-csc'
+    || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String((compiler as Record<string, unknown>).framework))
+    || !Array.isArray((compiler as Record<string, unknown>).inputs)
+    || ((compiler as Record<string, unknown>).inputs as unknown[]).length !== 3
+    || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])
+      .map(input => input?.name).join(',') !== 'csc.exe,System.dll,System.Web.Extensions.dll'
+    || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[]).some(input =>
+      typeof input !== 'object' || input === null || Array.isArray(input)
+      || !exactRecordKeys(input, ['name', 'size', 'sha256']) || !Number.isSafeInteger(input.size)
+      || Number(input.size) <= 0 || Number(input.size) > 32 * 1024 * 1024
+      || !/^[a-f0-9]{64}$/.test(String(input.sha256)))) {
     throw helperError('MANIFEST');
   }
   return manifest as unknown as WindowsAuthorityHelperManifest;
@@ -254,6 +290,7 @@ const authenticateWindowsAuthorityHelper = async (
   directory = helperDirectory(),
   beforeOpenForTest?: () => void | Promise<void>,
   expectedPublisher = embeddedExpectedPublisher(),
+  expectedSignerPins = embeddedExpectedSignerPins(),
 ): Promise<AuthenticatedWindowsAuthorityHelper> => {
   if (!isAbsolute(directory) || directory.indexOf(':', 2) >= 0) throw helperError('MANIFEST');
   const executableProof = await proveCanonicalTree(directory, join(directory, HELPER_NAME));
@@ -274,6 +311,9 @@ const authenticateWindowsAuthorityHelper = async (
     if (expectedPublisher
       ? manifest.trust !== 'production-signed' || manifest.publisher !== expectedPublisher
       : manifest.trust !== 'unsigned-validation' || manifest.publisher !== null) throw helperError('MANIFEST');
+    if (expectedPublisher && JSON.stringify(manifest.signerPins) !== JSON.stringify(expectedSignerPins)) {
+      throw helperError('MANIFEST');
+    }
     executableHandle = await open(executableProof.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
       .catch(() => { throw helperError('HELPER_OPEN'); });
     const before = await executableHandle.stat({ bigint: true });
@@ -464,6 +504,7 @@ let compileCount = 0;
 let requestCount = 0;
 let restartCount = 0;
 let activeProcessCount = 0;
+let lastClosedHeldId: string | undefined;
 const brokerChildren = new Set<ChildProcessWithoutNullStreams>();
 
 const encodeProtocolFrame = (value: string): Buffer => {
@@ -1024,7 +1065,7 @@ const openWindowsLockedArtifactAttempt = async (
   signal?: AbortSignal,
   retry = true,
 ): Promise<WindowsLockedArtifact> => {
-  if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > BROKER_ARTIFACT_BYTES
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || expectedBytes > BROKER_ARTIFACT_BYTES
     || !/^[a-f0-9]{16}$/.test(expectedIdentity.volumeSerial)
     || !/^[a-f0-9]{32}$/.test(expectedIdentity.fileId128)) throw authorityError('request_protocol', 1);
   const release = await acquireLease(signal);
@@ -1035,7 +1076,10 @@ const openWindowsLockedArtifactAttempt = async (
     const activeSession = session = await getBroker();
     const barrierChallenge = beforeOpenForTest ? randomBytes(16).toString('hex') : null;
     const hold = requestFrame('hold', {
-      purpose: expectedSha256 ? 'artifact' : 'setup',
+      // A zero-byte protected file is a setup capability. Every nonempty held
+      // file is an artifact capability, whether its hash is being learned or
+      // checked against an already authenticated digest.
+      purpose: expectedBytes === 0 ? 'setup' : 'artifact',
       path,
       expectedBytes,
       expectedVolumeSerial: expectedIdentity.volumeSerial,
@@ -1091,6 +1135,7 @@ const openWindowsLockedArtifactAttempt = async (
       const run = commandQueue.then(async () => {
         throwIfAborted(requestSignal);
         value = await activeSession.exchange(requestFrame(operation, {
+          id: hold.id,
           purpose: hold.purpose,
           challenge: capabilityChallenge,
           ...values,
@@ -1111,7 +1156,7 @@ const openWindowsLockedArtifactAttempt = async (
           || !Number.isSafeInteger(length) || length <= 0 || length > MAX_READ_BYTES
           || offset + length > Number(initial.size)) throw authorityError('request_protocol', 1);
         const result = await exchangeHeld('read', { offset, length }, requestSignal);
-        if (result.type !== 'bytes' || result.challenge !== capabilityChallenge
+        if (result.type !== 'bytes' || result.id !== hold.id || result.challenge !== capabilityChallenge
           || typeof result.bytes !== 'string'
           || !exactKeys(result, ['version', 'type', 'id', 'challenge', 'bytes'])) {
           activeSession.invalidate(authorityError('stdio_protocol', 16));
@@ -1129,7 +1174,7 @@ const openWindowsLockedArtifactAttempt = async (
         const challenge = randomBytes(16).toString('hex');
         const result = await exchangeHeld('verify', { barrier: challenge }, requestSignal);
         const verified = parseInspection(result, false, true) as WindowsHeldVerification | undefined;
-        if (!verified || result.type !== 'verified' || result.challenge !== challenge
+        if (!verified || result.type !== 'verified' || result.id !== hold.id || result.challenge !== challenge
           || !exactKeys(result, RESPONSE_INSPECTION_KEYS) || !sameInitial(verified)) {
           activeSession.invalidate(authorityError('stdio_protocol', 16));
           throw authorityError('final_verify', 14);
@@ -1143,10 +1188,11 @@ const openWindowsLockedArtifactAttempt = async (
         try {
           const result = await exchangeHeld('close', {}, requestSignal);
           const final = parseInspection(result, false, true) as WindowsHeldVerification | undefined;
-          if (!final || result.type !== 'closed' || result.challenge !== ''
+          if (!final || result.type !== 'closed' || result.id !== hold.id || result.challenge !== ''
             || !exactKeys(result, RESPONSE_INSPECTION_KEYS) || !sameInitial(final)) {
             throw authorityError('final_verify', 14);
           }
+          lastClosedHeldId = hold.id;
         } catch (error) {
           activeSession.invalidate(error instanceof Error ? error : authorityError('clean_shutdown', 15));
           throw error;
@@ -1201,7 +1247,7 @@ export const openWindowsLockedArtifact = (
   expectedIdentity?: WindowsFileIdentity,
   expectedSha256?: string,
 ): Promise<WindowsLockedArtifact> => (async () => {
-  if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > BROKER_ARTIFACT_BYTES) {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || expectedBytes > BROKER_ARTIFACT_BYTES) {
     throw authorityError('request_protocol', 1);
   }
   if (expectedSha256 !== undefined && !/^[a-f0-9]{64}$/.test(expectedSha256)) throw authorityError('request_protocol', 1);
@@ -1271,12 +1317,13 @@ export const injectWindowsAuthorityProtocolFaultForTest = async (
 /** Native-test-only held-session ID/purpose confusion injection. */
 export const injectWindowsAuthorityHeldFaultForTest = async (
   held: WindowsLockedArtifact,
-  kind: 'wrong-id' | 'wrong-purpose',
+  kind: 'wrong-id' | 'wrong-purpose' | 'stale-id',
 ): Promise<WindowsAuthorityReason> => {
   const process = lockedArtifactProcesses.get(held);
   if (!process) throw authorityError('request_protocol', 1);
   const frame = requestFrame('read', {
-    id: kind === 'wrong-id' ? randomBytes(16).toString('hex') : process.heldId,
+    id: kind === 'wrong-id' ? randomBytes(16).toString('hex')
+      : kind === 'stale-id' ? (lastClosedHeldId ?? randomBytes(16).toString('hex')) : process.heldId,
     purpose: kind === 'wrong-purpose' ? (process.purpose === 'setup' ? 'artifact' : 'setup') : process.purpose,
     challenge: process.challenge,
     offset: 0,

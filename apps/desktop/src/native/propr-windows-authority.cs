@@ -1,5 +1,6 @@
 // Strict UTF-8 source; the build gate rejects invalid byte sequences.
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -400,14 +401,16 @@ public static class ProprUpdateAuthority {
   public sealed class HeldArtifact : IDisposable {
     SafeFileHandle handle;
     long expectedBytes;
+    string purpose;
     InspectionResult initial;
 
     public HeldArtifact(string path, long exactBytes, string expectedVolumeSerial, string expectedFileId128,
       string purpose, string expectedSha256) {
       expectedBytes = exactBytes;
+      this.purpose = purpose;
       handle = OpenPinned(path, true);
       try {
-        initial = InspectHandle(handle, false, "artifact", expectedBytes);
+        initial = InspectHeld();
         if (initial.volumeSerial != expectedVolumeSerial || initial.fileId128 != expectedFileId128) {
           throw new BrokerFailure("final_verify", 14);
         }
@@ -428,6 +431,19 @@ public static class ProprUpdateAuthority {
 
     public InspectionResult Initial { get { RequireOpen(); return initial; } }
 
+    InspectionResult InspectHeld() {
+      InspectionResult result = InspectHandle(handle, false, purpose, expectedBytes);
+      // Held responses have one stable schema for setup and artifact
+      // capabilities. Setup policy remains bounded/non-exact, but its exact
+      // held bytes are still hashed for later same-handle comparisons.
+      if (purpose == "setup") {
+        string[] hashes = Hash(handle, Int64.Parse(result.size));
+        result.sha256 = hashes[0];
+        result.sha1 = hashes[1];
+      }
+      return result;
+    }
+
     public byte[] Read(long offset, int length) {
       RequireOpen();
       if (offset < 0 || length <= 0 || length > MAX_READ || offset + length > Int64.Parse(initial.size)) {
@@ -438,7 +454,7 @@ public static class ProprUpdateAuthority {
 
     public InspectionResult Verify() {
       RequireOpen();
-      InspectionResult verified = InspectHandle(handle, false, "artifact", expectedBytes);
+      InspectionResult verified = InspectHeld();
       if (!Same(initial, verified)) throw new BrokerFailure("final_verify", 14);
       return verified;
     }
@@ -457,9 +473,10 @@ public static class ProprUpdateAuthority {
 
   public static HeldArtifact OpenHeld(string path, long expectedBytes, string expectedVolumeSerial, string expectedFileId128,
     string purpose, string expectedSha256) {
-    if (expectedBytes <= 0 || expectedBytes > 1073741824L || expectedVolumeSerial == null || expectedFileId128 == null
+    if (expectedBytes < 0 || expectedBytes > 1073741824L || expectedVolumeSerial == null || expectedFileId128 == null
       || (purpose != "setup" && purpose != "artifact")
-      || (purpose == "artifact" && (expectedSha256 == null || expectedSha256.Length != 64))
+      || (purpose == "setup" && expectedBytes != 0)
+      || (purpose == "artifact" && (expectedBytes == 0 || (expectedSha256 != null && expectedSha256.Length != 64)))
       || (purpose == "setup" && expectedSha256 != null)) {
       throw new BrokerFailure("request_protocol", 1);
     }
@@ -597,6 +614,48 @@ public static class ProprUpdateAuthority {
     return error as BrokerFailure;
   }
 
+  static string[] ManifestPins(Dictionary<string, object> manifest) {
+    IList values = manifest["signerPins"] as IList;
+    if (values == null || values.Count <= 0 || values.Count > 16) throw new BrokerFailure("compile_load", 4);
+    string[] pins = new string[values.Count];
+    string previous = null;
+    for (int index = 0; index < values.Count; index++) {
+      string pin = values[index] as string;
+      bool valid = pin != null && ((pin.StartsWith("certificate-sha256:", StringComparison.Ordinal)
+        && Hex(pin.Substring(19), 64)) || (pin.StartsWith("spki-sha256:", StringComparison.Ordinal)
+        && Hex(pin.Substring(12), 64)));
+      if (!valid || (previous != null && String.CompareOrdinal(previous, pin) >= 0)) {
+        throw new BrokerFailure("compile_load", 4);
+      }
+      pins[index] = pin;
+      previous = pin;
+    }
+    return pins;
+  }
+
+  static void VerifyCompilerAttestation(Dictionary<string, object> manifest) {
+    Dictionary<string, object> compiler = manifest["compiler"] as Dictionary<string, object>;
+    string[] fields = { "kind", "framework", "inputs" };
+    if (compiler == null || !ExactFields(compiler, fields)
+      || Text(compiler, "kind") != "kernel-systemroot-dotnet-framework-csc"
+      || (Text(compiler, "framework") != "Framework64-v4.0.30319"
+        && Text(compiler, "framework") != "Framework-v4.0.30319")) throw new BrokerFailure("compile_load", 4);
+    IList inputs = compiler["inputs"] as IList;
+    string[] names = { "csc.exe", "System.dll", "System.Web.Extensions.dll" };
+    if (inputs == null || inputs.Count != names.Length) throw new BrokerFailure("compile_load", 4);
+    for (int index = 0; index < names.Length; index++) {
+      Dictionary<string, object> input = inputs[index] as Dictionary<string, object>;
+      string[] inputFields = { "name", "size", "sha256" };
+      if (input == null || !ExactFields(input, inputFields)) throw new BrokerFailure("compile_load", 4);
+      long size;
+      try { size = Convert.ToInt64(input["size"]); } catch { throw new BrokerFailure("compile_load", 4); }
+      if (Text(input, "name") != names[index] || size <= 0 || size > 33554432
+        || !Hex(Text(input, "sha256"), 64)) {
+        throw new BrokerFailure("compile_load", 4);
+      }
+    }
+  }
+
   static void Stage(int index, string name) {
     Console.Error.WriteLine("PROPR_BOOTSTRAP " + index.ToString("D2") + " " + name);
     Console.Error.Flush();
@@ -617,7 +676,8 @@ public static class ProprUpdateAuthority {
     try { value = JSON.Deserialize<Dictionary<string, object>>(text); }
     catch { throw new BrokerFailure("compile_load", 4); }
     string[] fields = { "schemaVersion", "name", "format", "architecture", "machine", "clr", "size", "sha256",
-      "sourceSha256", "protocol", "trust", "publisher", "compiler" };
+      "sourceSha256", "protocol", "trust", "publisher", "signerPins", "signerCertificateSha256",
+      "signerSpkiSha256", "compiler" };
     if (!ExactFields(value, fields) || Integer(value, "schemaVersion") != 1
       || Text(value, "name") != "propr-windows-authority.exe" || Text(value, "format") != "PE32"
       || Text(value, "architecture") != "anycpu" || Text(value, "machine") != "I386"
@@ -626,6 +686,18 @@ public static class ProprUpdateAuthority {
       || (Text(value, "trust") != "unsigned-validation" && Text(value, "trust") != "production-signed")) {
       throw new BrokerFailure("compile_load", 4);
     }
+    bool production = Text(value, "trust") == "production-signed";
+    if (production) {
+      string[] pins = ManifestPins(value);
+      string certificatePin = "certificate-sha256:" + Text(value, "signerCertificateSha256");
+      string spkiPin = "spki-sha256:" + Text(value, "signerSpkiSha256");
+      if (!Hex(Text(value, "signerCertificateSha256"), 64) || !Hex(Text(value, "signerSpkiSha256"), 64)
+        || Array.IndexOf(pins, certificatePin) < 0 && Array.IndexOf(pins, spkiPin) < 0
+        || String.IsNullOrEmpty(Text(value, "publisher"))) throw new BrokerFailure("compile_load", 4);
+    } else if (value["publisher"] != null || value["signerCertificateSha256"] != null
+      || value["signerSpkiSha256"] != null || !(value["signerPins"] is IList)
+      || ((IList)value["signerPins"]).Count != 0) throw new BrokerFailure("compile_load", 4);
+    VerifyCompilerAttestation(value);
     return value;
   }
 
@@ -714,7 +786,59 @@ public static class ProprUpdateAuthority {
     if ((corFlags & 0x1) == 0 || (corFlags & (0x2 | 0x10 | 0x20000)) != 0) throw new BrokerFailure("compile_load", 8);
   }
 
-  static void VerifyProductionSignature(string imagePath, string publisher) {
+  sealed class DerElement {
+    public int Start;
+    public int Content;
+    public int End;
+  }
+
+  static DerElement ReadDer(byte[] bytes, ref int offset, int expectedTag) {
+    int start = offset;
+    if (offset >= bytes.Length || bytes[offset++] != expectedTag || offset >= bytes.Length) {
+      throw new BrokerFailure("compile_load", 9);
+    }
+    int length = bytes[offset++];
+    if ((length & 0x80) != 0) {
+      int count = length & 0x7f;
+      if (count <= 0 || count > 4 || offset + count > bytes.Length || bytes[offset] == 0) {
+        throw new BrokerFailure("compile_load", 9);
+      }
+      length = 0;
+      for (int index = 0; index < count; index++) length = checked((length << 8) | bytes[offset++]);
+      if (length < 128) throw new BrokerFailure("compile_load", 9);
+    }
+    int end = checked(offset + length);
+    if (end > bytes.Length) throw new BrokerFailure("compile_load", 9);
+    return new DerElement { Start = start, Content = offset, End = end };
+  }
+
+  static byte[] SubjectPublicKeyInfo(X509Certificate2 certificate) {
+    byte[] raw = certificate.RawData;
+    int cursor = 0;
+    DerElement outer = ReadDer(raw, ref cursor, 0x30);
+    int tbsCursor = outer.Content;
+    DerElement tbs = ReadDer(raw, ref tbsCursor, 0x30);
+    int field = tbs.Content;
+    if (field < tbs.End && raw[field] == 0xa0) ReadDer(raw, ref field, 0xa0);
+    ReadDer(raw, ref field, 0x02); // serial
+    ReadDer(raw, ref field, 0x30); // signature algorithm
+    ReadDer(raw, ref field, 0x30); // issuer
+    ReadDer(raw, ref field, 0x30); // validity
+    ReadDer(raw, ref field, 0x30); // subject
+    DerElement spki = ReadDer(raw, ref field, 0x30);
+    byte[] result = new byte[spki.End - spki.Start];
+    Buffer.BlockCopy(raw, spki.Start, result, 0, result.Length);
+    return result;
+  }
+
+  static string Sha256(byte[] bytes) {
+    using (SHA256 hash = SHA256.Create()) {
+      return BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+    }
+  }
+
+  static void VerifyProductionSignature(string imagePath, string publisher, string[] pins,
+    string expectedCertificateSha256, string expectedSpkiSha256) {
     WINTRUST_FILE_INFO file = new WINTRUST_FILE_INFO {
       cbStruct = (uint)Marshal.SizeOf(typeof(WINTRUST_FILE_INFO)), pcwszFilePath = imagePath,
       hFile = IntPtr.Zero, pgKnownSubject = IntPtr.Zero
@@ -734,6 +858,31 @@ public static class ProprUpdateAuthority {
       X509Certificate2 certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(imagePath));
       try {
         if (!String.Equals(certificate.Subject, publisher, StringComparison.Ordinal)) throw new BrokerFailure("compile_load", 9);
+        DateTime now = DateTime.Now;
+        if (now < certificate.NotBefore || now > certificate.NotAfter) throw new BrokerFailure("compile_load", 9);
+        bool codeSigning = false;
+        foreach (X509Extension extension in certificate.Extensions) {
+          X509EnhancedKeyUsageExtension eku = extension as X509EnhancedKeyUsageExtension;
+          if (eku == null) continue;
+          foreach (Oid oid in eku.EnhancedKeyUsages) {
+            if (oid.Value == "1.3.6.1.5.5.7.3.3") codeSigning = true;
+          }
+        }
+        if (!codeSigning) throw new BrokerFailure("compile_load", 9);
+        using (X509Chain chain = new X509Chain()) {
+          chain.ChainPolicy.RevocationMode = X509RevocationMode.Online;
+          chain.ChainPolicy.RevocationFlag = X509RevocationFlag.EntireChain;
+          chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
+          chain.ChainPolicy.UrlRetrievalTimeout = TimeSpan.FromSeconds(15);
+          if (!chain.Build(certificate)) throw new BrokerFailure("compile_load", 9);
+        }
+        string certificateSha256 = Sha256(certificate.RawData);
+        string spkiSha256 = Sha256(SubjectPublicKeyInfo(certificate));
+        if (certificateSha256 != expectedCertificateSha256 || spkiSha256 != expectedSpkiSha256
+          || Array.IndexOf(pins, "certificate-sha256:" + certificateSha256) < 0
+            && Array.IndexOf(pins, "spki-sha256:" + spkiSha256) < 0) {
+          throw new BrokerFailure("compile_load", 9);
+        }
       } finally { certificate.Dispose(); }
     } finally {
       Marshal.FreeHGlobal(dataPointer);
@@ -808,7 +957,9 @@ public static class ProprUpdateAuthority {
       Stage(9, "HELPER_HASH");
       IMAGE_SHA256 = Hash(handle, standard.EndOfFile)[0];
       if (IMAGE_SHA256 != Text(manifest, "sha256")) throw new BrokerFailure("compile_load", 9);
-      if (Text(manifest, "trust") == "production-signed") VerifyProductionSignature(imagePath, Text(manifest, "publisher"));
+      if (Text(manifest, "trust") == "production-signed") VerifyProductionSignature(imagePath,
+        Text(manifest, "publisher"), ManifestPins(manifest), Text(manifest, "signerCertificateSha256"),
+        Text(manifest, "signerSpkiSha256"));
       ProveNoShareLock(imagePath);
       IMAGE_LEASE = handle;
       handle = null;
@@ -890,10 +1041,11 @@ public static class ProprUpdateAuthority {
               || (purpose != "setup" && purpose != "artifact") || !NullFields(request, "directory", "offset", "length")
               || !Hex(Text(request, "challenge"), 32) || !Hex(Text(request, "expectedVolumeSerial"), 16)
               || !Hex(Text(request, "expectedFileId128"), 32)
-              || (purpose == "artifact" && !Hex(Text(request, "expectedSha256"), 64))
+              || (purpose == "artifact" && request["expectedSha256"] != null
+                && !Hex(Text(request, "expectedSha256"), 64))
               || (purpose == "setup" && request["expectedSha256"] != null)) throwProtocol();
             long expectedBytes = Integer(request, "expectedBytes");
-            if (expectedBytes <= 0) throwProtocol();
+            if ((purpose == "setup" && expectedBytes != 0) || (purpose == "artifact" && expectedBytes <= 0)) throwProtocol();
             if (request["barrier"] != null) {
               string barrier = Text(request, "barrier");
               if (!Hex(barrier, 32)) throwProtocol();

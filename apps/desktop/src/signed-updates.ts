@@ -61,6 +61,7 @@ export interface SignedUpdateManifest {
   schemaVersion: 2;
   channel: 'stable';
   manifestUrl: string;
+  windowsSignerPins: readonly string[];
   version: string;
   tag: string;
   publishedAt: string;
@@ -282,6 +283,14 @@ export const parseSignedUpdateManifest = (payload: Buffer): SignedUpdateManifest
   if (typeof value.publishedAt !== 'string' || !Number.isFinite(Date.parse(value.publishedAt))) {
     throw new Error('Signed update manifest publishedAt is invalid');
   }
+  if (!Array.isArray(value.windowsSignerPins)
+    || value.windowsSignerPins.some(pin => typeof pin !== 'string')) {
+    throw new Error('Signed update manifest Windows signer pin policy is invalid');
+  }
+  const windowsSignerPins = parseWindowsSignerPins(
+    (value.windowsSignerPins as string[]).join(','),
+    'Signed update manifest Windows signer pin policy',
+  );
   if (!isRecord(value.feeds)) throw new Error('Signed update manifest feeds are missing');
 
   const feeds: Record<string, SignedUpdateFeed> = {};
@@ -289,7 +298,7 @@ export const parseSignedUpdateManifest = (payload: Buffer): SignedUpdateManifest
     if (!TARGET_PATTERN.test(target)) throw new Error(`Signed update manifest feed ${target} is invalid`);
     feeds[target] = parseFeed(candidate, target, value.version);
   }
-  return { ...value, manifestUrl, feeds } as unknown as SignedUpdateManifest;
+  return { ...value, manifestUrl, windowsSignerPins, feeds } as unknown as SignedUpdateManifest;
 };
 
 export const verifySignedUpdateManifest = (
@@ -1709,6 +1718,9 @@ const prepareSignedUpdate = async ({
   if (platform === 'win32') {
     if (!Array.isArray(config.windowsSignerPins)) throw new Error('Embedded Windows signer pin allowlist is invalid');
     const configuredPins = parseWindowsSignerPins(config.windowsSignerPins.join(','), 'Embedded Windows signer pin allowlist');
+    if (JSON.stringify(manifest.windowsSignerPins) !== JSON.stringify(configuredPins)) {
+      throw new Error('Signed update Windows signer pin policy does not match the signed application policy');
+    }
     const evidencePins = new Set([
       `certificate-sha256:${feed.signer.certificateSha256}`,
       `spki-sha256:${feed.signer.spkiSha256}`,

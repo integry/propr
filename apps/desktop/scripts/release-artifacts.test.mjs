@@ -202,7 +202,18 @@ const windowsAuthorityFixtureEntries = (executablePath, executable) => {
     protocol: 'propr-windows-authority-v1',
     trust: 'unsigned-validation',
     publisher: null,
-    compiler: { kind: 'systemroot-dotnet-framework-csc', framework: 'Framework64-v4.0.30319' },
+    signerPins: [],
+    signerCertificateSha256: null,
+    signerSpkiSha256: null,
+    compiler: {
+      kind: 'kernel-systemroot-dotnet-framework-csc',
+      framework: 'Framework64-v4.0.30319',
+      inputs: [
+        { name: 'csc.exe', size: 1, sha256: 'b'.repeat(64) },
+        { name: 'System.dll', size: 1, sha256: 'c'.repeat(64) },
+        { name: 'System.Web.Extensions.dll', size: 1, sha256: 'd'.repeat(64) },
+      ],
+    },
   })}\n`);
   return [
     [executablePath, executable],
@@ -773,6 +784,7 @@ describe('desktop release artifacts', () => {
     });
 
     assert.equal(manifest.manifestUrl, 'https://updates.example.test/stable/desktop-release.json');
+    assert.deepEqual(manifest.windowsSignerPins, windowsSignerPins.split(','));
     assert.deepEqual(Object.keys(manifest.feeds).sort(), [
       'darwin-arm64',
       'darwin-x64',

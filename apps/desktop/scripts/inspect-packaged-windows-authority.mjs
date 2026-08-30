@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open, realpath, rename } from 'node:fs/promises';
-import { basename, dirname, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspectAnyCpuPe } from './build-windows-authority-helper.mjs';
 
@@ -10,6 +10,7 @@ const MANIFEST_NAME = 'propr-windows-authority.manifest.json';
 const MANIFEST_KEYS = [
   'schemaVersion', 'name', 'format', 'architecture', 'machine', 'clr', 'size', 'sha256', 'sourceSha256',
   'protocol', 'trust', 'publisher', 'compiler',
+  'signerPins', 'signerCertificateSha256', 'signerSpkiSha256',
 ];
 const MAX_HELPER_BYTES = 4 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 16 * 1024;
@@ -25,7 +26,7 @@ const parseManifest = bytes => {
   catch { fail(); }
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) || !exactKeys(manifest, MANIFEST_KEYS)
     || !manifest.compiler || typeof manifest.compiler !== 'object' || Array.isArray(manifest.compiler)
-    || !exactKeys(manifest.compiler, ['kind', 'framework']) || manifest.schemaVersion !== 1
+    || !exactKeys(manifest.compiler, ['kind', 'framework', 'inputs']) || manifest.schemaVersion !== 1
     || manifest.name !== EXECUTABLE_NAME || manifest.format !== 'PE32' || manifest.architecture !== 'anycpu'
     || manifest.machine !== 'I386' || manifest.clr !== true || !Number.isSafeInteger(manifest.size)
     || manifest.size <= 0 || manifest.size > MAX_HELPER_BYTES || !/^[a-f0-9]{64}$/.test(manifest.sha256)
@@ -33,15 +34,40 @@ const parseManifest = bytes => {
     || !['unsigned-validation', 'production-signed'].includes(manifest.trust)
     || (manifest.trust === 'unsigned-validation' && manifest.publisher !== null)
     || (manifest.trust === 'production-signed' && (typeof manifest.publisher !== 'string' || !manifest.publisher))
-    || manifest.compiler.kind !== 'systemroot-dotnet-framework-csc'
-    || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(manifest.compiler.framework)) fail();
+    || !Array.isArray(manifest.signerPins) || manifest.signerPins.length > 16
+    || manifest.signerPins.some(pin => typeof pin !== 'string'
+      || !/^(?:certificate|spki)-sha256:[a-f0-9]{64}$/.test(pin))
+    || new Set(manifest.signerPins).size !== manifest.signerPins.length
+    || manifest.signerPins.join(',') !== [...manifest.signerPins].sort().join(',')
+    || (manifest.trust === 'unsigned-validation'
+      && (manifest.signerPins.length !== 0 || manifest.signerCertificateSha256 !== null
+        || manifest.signerSpkiSha256 !== null))
+    || (manifest.trust === 'production-signed'
+      && (manifest.signerPins.length === 0
+        || !/^[a-f0-9]{64}$/.test(String(manifest.signerCertificateSha256))
+        || !/^[a-f0-9]{64}$/.test(String(manifest.signerSpkiSha256))
+        || !manifest.signerPins.some(pin => pin === `certificate-sha256:${manifest.signerCertificateSha256}`
+          || pin === `spki-sha256:${manifest.signerSpkiSha256}`)))
+    || manifest.compiler.kind !== 'kernel-systemroot-dotnet-framework-csc'
+    || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(manifest.compiler.framework)
+    || !Array.isArray(manifest.compiler.inputs) || manifest.compiler.inputs.length !== 3
+    || manifest.compiler.inputs.map(input => input?.name).join(',') !== 'csc.exe,System.dll,System.Web.Extensions.dll'
+    || manifest.compiler.inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input)
+      || !exactKeys(input, ['name', 'size', 'sha256']) || !Number.isSafeInteger(input.size) || input.size <= 0
+      || input.size > 32 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(input.sha256))) fail();
   return manifest;
 };
 
-const openCanonicalRegular = async (path, expectedName) => {
+const openCanonicalRegular = async (trustedRoot, path, expectedName) => {
+  const canonicalRoot = await realpath(trustedRoot).catch(fail);
   const canonical = await realpath(path).catch(fail);
   const expected = resolve(path);
+  const child = relative(canonicalRoot, canonical);
   if (basename(path).toLowerCase() !== expectedName.toLowerCase()
+    || !child || child === '..' || child.startsWith(`..${sep}`) || isAbsolute(child)
+    || (process.platform === 'win32'
+      ? canonicalRoot.toLowerCase() !== resolve(trustedRoot).toLowerCase()
+      : canonicalRoot !== resolve(trustedRoot))
     || (process.platform === 'win32' ? canonical.toLowerCase() !== expected.toLowerCase() : canonical !== expected)) fail();
   const pathStats = await lstat(path, { bigint: true }).catch(fail);
   if (!pathStats.isFile() || pathStats.isSymbolicLink() || pathStats.nlink !== 1n) fail();
@@ -53,21 +79,37 @@ const openCanonicalRegular = async (path, expectedName) => {
 };
 
 export const refreshPackagedWindowsAuthorityManifest = async (executablePath, manifestPath, env = process.env) => {
-  const executable = await openCanonicalRegular(executablePath, EXECUTABLE_NAME);
-  const heldManifest = await openCanonicalRegular(manifestPath, MANIFEST_NAME);
+  const trustedRoot = dirname(executablePath);
+  if (trustedRoot !== dirname(manifestPath)) fail();
+  const executable = await openCanonicalRegular(trustedRoot, executablePath, EXECUTABLE_NAME);
+  const heldManifest = await openCanonicalRegular(trustedRoot, manifestPath, MANIFEST_NAME);
   try {
     const bytes = await executable.handle.readFile();
     inspectAnyCpuPe(bytes);
     const manifest = parseManifest(await heldManifest.handle.readFile());
     const production = env.PROPR_DESKTOP_PRODUCTION_RELEASE === '1';
     const publisher = production ? String(env.PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY || '') : null;
-    if (production && !publisher) fail();
+    const signerPins = production ? String(env.PROPR_DESKTOP_WINDOWS_SIGNER_PINS || '').split(',') : [];
+    const signerCertificateSha256 = production
+      ? String(env.PROPR_DESKTOP_ACTUAL_WINDOWS_CERTIFICATE_SHA256 || '') : null;
+    const signerSpkiSha256 = production ? String(env.PROPR_DESKTOP_ACTUAL_WINDOWS_SPKI_SHA256 || '') : null;
+    if (production && (!publisher || signerPins.length === 0
+      || signerPins.some(pin => !/^(?:certificate|spki)-sha256:[a-f0-9]{64}$/.test(pin))
+      || new Set(signerPins).size !== signerPins.length
+      || signerPins.join(',') !== [...signerPins].sort().join(',')
+      || !/^[a-f0-9]{64}$/.test(signerCertificateSha256)
+      || !/^[a-f0-9]{64}$/.test(signerSpkiSha256)
+      || !signerPins.some(pin => pin === `certificate-sha256:${signerCertificateSha256}`
+        || pin === `spki-sha256:${signerSpkiSha256}`))) fail();
     const refreshed = Buffer.from(`${JSON.stringify({
       ...manifest,
       size: bytes.length,
       sha256: digest(bytes),
       trust: production ? 'production-signed' : 'unsigned-validation',
       publisher,
+      signerPins,
+      signerCertificateSha256,
+      signerSpkiSha256,
     })}\n`, 'utf8');
     const temporary = `${manifestPath}.${process.pid}.tmp`;
     const handle = await open(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
@@ -81,8 +123,9 @@ export const refreshPackagedWindowsAuthorityManifest = async (executablePath, ma
 
 export const inspectPackagedWindowsAuthority = async (executablePath, manifestPath) => {
   if (dirname(executablePath) !== dirname(manifestPath)) fail();
-  const executable = await openCanonicalRegular(executablePath, EXECUTABLE_NAME);
-  const heldManifest = await openCanonicalRegular(manifestPath, MANIFEST_NAME);
+  const trustedRoot = dirname(executablePath);
+  const executable = await openCanonicalRegular(trustedRoot, executablePath, EXECUTABLE_NAME);
+  const heldManifest = await openCanonicalRegular(trustedRoot, manifestPath, MANIFEST_NAME);
   try {
     const manifest = parseManifest(await heldManifest.handle.readFile());
     const bytes = await executable.handle.readFile();

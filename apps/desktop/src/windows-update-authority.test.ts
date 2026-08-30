@@ -40,7 +40,7 @@ test('native Windows exact production C# compile probe reaches ready', windowsOn
 });
 
 test('native Windows compile probe bounds startup failure to an enumerated non-secret stage', windowsOnly, async () => {
-  assert.equal(await probeWindowsAuthorityCompileFailureForTest(), 'TYPE_COMPILE');
+  assert.equal(await probeWindowsAuthorityCompileFailureForTest(), 'BUILD_OUTPUT');
   assert.equal(await probeWindowsAuthorityStartupFailureForTest(), 'ready_protocol');
 });
 
@@ -57,7 +57,18 @@ const helperManifest = (overrides: Record<string, unknown> = {}): Buffer => Buff
   protocol: 'propr-windows-authority-v1',
   trust: 'unsigned-validation',
   publisher: null,
-  compiler: { kind: 'systemroot-dotnet-framework-csc', framework: 'Framework64-v4.0.30319' },
+  signerPins: [],
+  signerCertificateSha256: null,
+  signerSpkiSha256: null,
+  compiler: {
+    kind: 'kernel-systemroot-dotnet-framework-csc',
+    framework: 'Framework64-v4.0.30319',
+    inputs: [
+      { name: 'csc.exe', size: 1, sha256: 'c'.repeat(64) },
+      { name: 'System.dll', size: 1, sha256: 'd'.repeat(64) },
+      { name: 'System.Web.Extensions.dll', size: 1, sha256: 'e'.repeat(64) },
+    ],
+  },
   ...overrides,
 })}\n`);
 
@@ -237,6 +248,11 @@ test('native Windows purpose policy accepts empty setup files but requires exact
     await protectWindowsPrivateFile(setupPath);
     const empty = await inspectWindowsPrivatePath(setupPath);
     assert.equal(empty.size, '0');
+    const emptyHeld = await openWindowsLockedArtifact(setupPath, 0, undefined, undefined, empty.identity);
+    assert.equal(emptyHeld.inspection.size, '0');
+    await assert.rejects(emptyHeld.read(0, 1), /win-authority:request_protocol:1/);
+    await emptyHeld.verify();
+    await emptyHeld.close();
     await assert.rejects(openWindowsLockedArtifact(setupPath, 1), /win-authority:type_link_size:5/);
 
     await writeFile(setupPath, Buffer.from('A'), { flag: 'r+' });
@@ -415,10 +431,28 @@ test('native Windows capability reuses one compiled broker without accepting pat
     try {
       assert.deepEqual(second.inspection.identity, first.inspection.identity);
       assert.equal((await second.read(0, 9)).toString(), 'trusted-A');
+      await second.verify();
       assert.equal(windowsAuthorityBrokerStatsForTest().compileCount, 1);
     } finally {
       await second.close();
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('native Windows close/reopen rejects a stale held ID instead of accepting an ABA capability', windowsOnly, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'propr-win-stale-id-'));
+  try {
+    const cache = join(root, 'cache');
+    await ensureWindowsPrivateDirectory(cache);
+    const artifact = join(cache, 'artifact');
+    await writeFile(artifact, 'trusted-A');
+    await protectWindowsPrivateFile(artifact);
+    const closed = await openWindowsLockedArtifact(artifact, 9);
+    await closed.close();
+    const reopened = await openWindowsLockedArtifact(artifact, 9);
+    assert.equal(await injectWindowsAuthorityHeldFaultForTest(reopened, 'stale-id'), 'request_protocol');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

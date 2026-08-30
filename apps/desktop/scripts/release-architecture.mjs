@@ -726,7 +726,8 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
       try { authorityManifest = JSON.parse(UTF8_DECODER.decode(authorityManifestBytes.subarray(0, -1))); }
       catch { throw new Error('NUPKG Windows authority manifest is not strict UTF-8 JSON'); }
       const expectedKeys = ['architecture', 'clr', 'compiler', 'format', 'machine', 'name', 'protocol', 'publisher',
-        'schemaVersion', 'sha256', 'size', 'sourceSha256', 'trust'];
+        'schemaVersion', 'sha256', 'signerCertificateSha256', 'signerPins', 'signerSpkiSha256', 'size',
+        'sourceSha256', 'trust'];
       if (!authorityManifest || typeof authorityManifest !== 'object' || Array.isArray(authorityManifest)
         || JSON.stringify(Object.keys(authorityManifest).sort()) !== JSON.stringify(expectedKeys)
         || authorityManifest.schemaVersion !== 1 || authorityManifest.name !== 'propr-windows-authority.exe'
@@ -735,13 +736,33 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
         || authorityManifest.protocol !== 'propr-windows-authority-v1'
         || !authorityManifest.compiler || typeof authorityManifest.compiler !== 'object'
         || Array.isArray(authorityManifest.compiler)
-        || JSON.stringify(Object.keys(authorityManifest.compiler).sort()) !== JSON.stringify(['framework', 'kind'])
-        || authorityManifest.compiler.kind !== 'systemroot-dotnet-framework-csc'
+        || JSON.stringify(Object.keys(authorityManifest.compiler).sort()) !== JSON.stringify(['framework', 'inputs', 'kind'])
+        || authorityManifest.compiler.kind !== 'kernel-systemroot-dotnet-framework-csc'
         || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String(authorityManifest.compiler.framework))
+        || !Array.isArray(authorityManifest.compiler.inputs) || authorityManifest.compiler.inputs.length !== 3
+        || authorityManifest.compiler.inputs.map(input => input?.name).join(',')
+          !== 'csc.exe,System.dll,System.Web.Extensions.dll'
+        || authorityManifest.compiler.inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input)
+          || JSON.stringify(Object.keys(input).sort()) !== JSON.stringify(['name', 'sha256', 'size'])
+          || !Number.isSafeInteger(input.size) || input.size <= 0 || input.size > 32 * 1024 * 1024
+          || !/^[a-f0-9]{64}$/.test(String(input.sha256)))
         || !['unsigned-validation', 'production-signed'].includes(authorityManifest.trust)
-        || (authorityManifest.trust === 'unsigned-validation' && authorityManifest.publisher !== null)
+        || !Array.isArray(authorityManifest.signerPins) || authorityManifest.signerPins.length > 16
+        || authorityManifest.signerPins.some(pin => typeof pin !== 'string'
+          || !/^(?:certificate|spki)-sha256:[a-f0-9]{64}$/.test(pin))
+        || new Set(authorityManifest.signerPins).size !== authorityManifest.signerPins.length
+        || authorityManifest.signerPins.join(',') !== [...authorityManifest.signerPins].sort().join(',')
+        || (authorityManifest.trust === 'unsigned-validation'
+          && (authorityManifest.publisher !== null || authorityManifest.signerPins.length !== 0
+            || authorityManifest.signerCertificateSha256 !== null || authorityManifest.signerSpkiSha256 !== null))
         || (authorityManifest.trust === 'production-signed'
-          && (typeof authorityManifest.publisher !== 'string' || !authorityManifest.publisher))
+          && (typeof authorityManifest.publisher !== 'string' || !authorityManifest.publisher
+            || authorityManifest.signerPins.length === 0
+            || !/^[a-f0-9]{64}$/.test(String(authorityManifest.signerCertificateSha256))
+            || !/^[a-f0-9]{64}$/.test(String(authorityManifest.signerSpkiSha256))
+            || !authorityManifest.signerPins.some(pin =>
+              pin === `certificate-sha256:${authorityManifest.signerCertificateSha256}`
+              || pin === `spki-sha256:${authorityManifest.signerSpkiSha256}`)))
         || authorityManifest.size !== authorityExecutableBytes.length
         || authorityManifest.sha256 !== createHash('sha256').update(authorityExecutableBytes).digest('hex')
         || !/^[a-f0-9]{64}$/.test(String(authorityManifest.sourceSha256))) {

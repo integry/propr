@@ -45,6 +45,7 @@ const manifest: SignedUpdateManifest = {
   schemaVersion: 2,
   channel: 'stable',
   manifestUrl: 'https://updates.example.test/stable/desktop-release.json',
+  windowsSignerPins: [`certificate-sha256:${certificateSha256}`],
   version: '1.2.4',
   tag: 'desktop-v1.2.4',
   publishedAt: '2026-08-29T12:00:00.000Z',
@@ -398,6 +399,20 @@ describe('signed desktop updates', () => {
         request: fetcher(tamperedRelease.payload, tamperedRelease.signature),
       }),
       /fingerprint is not in the embedded allowlist/,
+    );
+
+    const alteredPolicy = structuredClone(manifest);
+    alteredPolicy.windowsSignerPins = [`spki-sha256:${spkiSha256}`];
+    const alteredPolicyRelease = signed(alteredPolicy);
+    await assert.rejects(
+      checkForSignedUpdates({
+        config,
+        currentVersion: '1.2.3',
+        platform: 'win32',
+        arch: 'x64',
+        request: fetcher(alteredPolicyRelease.payload, alteredPolicyRelease.signature),
+      }),
+      /pin policy does not match the signed application policy/,
     );
 
     await assert.rejects(

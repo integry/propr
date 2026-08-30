@@ -1054,7 +1054,7 @@ export const signReleaseMetadata = async ({ inputDirectory, outputDirectory, ver
   await rm(outputDirectory, { recursive: true, force: true });
   await cp(inputDirectory, outputDirectory, { recursive: true });
   const { feeds, feedFiles } = await createSignedFeeds(unsignedManifest, outputDirectory, env);
-  const signedManifest = { ...unsignedManifest, manifestUrl, feeds };
+  const signedManifest = { ...unsignedManifest, manifestUrl, windowsSignerPins, feeds };
   const manifestPayload = Buffer.from(`${JSON.stringify(signedManifest, null, 2)}\n`);
   const signaturePayload = Buffer.from(`${sign(null, manifestPayload, privateKey).toString('base64')}\n`);
   await writeFile(join(outputDirectory, 'desktop-release.json'), manifestPayload);
