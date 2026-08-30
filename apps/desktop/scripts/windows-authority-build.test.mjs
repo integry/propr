@@ -65,8 +65,8 @@ const compilerInputEvidence = (name, sha256) => ({
   signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
   signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
   signerRootSpkiSha256: '3'.repeat(64),
-  catalogName: 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
-  catalogSha256: 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
+  catalogName: '10.0.26100.33296.cat',
+  catalogSha256: '7'.repeat(64),
   catalogVolumeSerial: '5'.repeat(16),
   catalogFileId128: '6'.repeat(32),
 });
@@ -109,8 +109,7 @@ test('bounded Windows system-directory channel rejects NT aliases, malformed rec
 test('compiler failures expose only fixed non-secret authenticate-to-spawn substages', () => {
   assert.deepEqual(WINDOWS_AUTHORITY_COMPILER_SUBSTAGES, [
     'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH',
-    'POLICY_NAME', 'POLICY_HASH', 'POLICY_TUPLE', 'WINTRUST_POLICY',
-    'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
+    'WINTRUST_POLICY', 'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
     'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'BOOTSTRAP_READ', 'BOOTSTRAP_AUTH',
     'LAUNCHER_AUTH', 'OPEN', 'FILE_META', 'OWNER', 'DACL', 'DACL_PROTECTED', 'ARCH', 'HASH',
     'SAME_IMAGE', 'LEASE', 'SOURCE_COPY', 'SPAWN',
@@ -294,7 +293,7 @@ test('every native build boundary preserves only the fixed secret-free compiler 
       && !error.message.includes('secret'),
   );
   const policy = Object.assign(new Error('raw certificate and host path'), {
-    code: 'POLICY_HASH',
+    code: 'CATALOG_HASH',
     diagnostics: ['member:powershell.exe',
       'catalog:Microsoft-Windows-PowerShell.cat',
       `catalog-sha256:${'a'.repeat(64)}`,
@@ -358,8 +357,15 @@ test('the current-owner exception exists only in the unshipped build bootstrap',
   assert.doesNotMatch(runtime, /held-build-artifact/);
 });
 
-test('system catalog policy is standalone, cache-only, held, and independently diagnosable', async () => {
-  const source = await readFile(new URL('../src/native/windows-launcher/propr_windows_launcher.cc', import.meta.url), 'utf8');
+test('dynamic build catalog authority is standalone, cache-only, held, and independent of servicing tuples', async () => {
+  const [source, builder, runtime, broker, packagedInspector, releaseArchitecture] = await Promise.all([
+    readFile(new URL('../src/native/windows-launcher/propr_windows_launcher.cc', import.meta.url), 'utf8'),
+    readFile(new URL('./build-windows-authority-helper.mjs', import.meta.url), 'utf8'),
+    readFile(new URL('../src/windows-update-authority.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../src/native/propr-windows-authority.cs', import.meta.url), 'utf8'),
+    readFile(new URL('./inspect-packaged-windows-authority.mjs', import.meta.url), 'utf8'),
+    readFile(new URL('./release-architecture.mjs', import.meta.url), 'utf8'),
+  ]);
   assert.equal(createHash('sha256').update(Buffer.from(microsoftWindowsSubjectDer, 'hex')).digest('hex'),
     'bd68f19a09e1bdede787648ed1d0fde5b77d7bece7b1f9430bcfba4d10ec058e');
   assert.match(source, /SignerContent::StandaloneCatalog/);
@@ -367,11 +373,18 @@ test('system catalog policy is standalone, cache-only, held, and independently d
   assert.match(source, /CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY/);
   assert.match(source, /CERT_TRUST_IS_REVOKED/);
   assert.match(source, /SameHeldCatalog\(catalogs\[index\], catalog_identities\[index\], catalog_hashes\[index\]\)/);
-  assert.match(source, /kMicrosoftCatalogPolicy/);
-  assert.match(source, /ApprovedMicrosoftCatalog/);
   assert.match(source, /const CERT_NAME_BLOB& subject = certificate->pCertInfo->Subject;/);
-  assert.match(source, /subject_der == approved\.subject_der/);
+  assert.match(source, /subject_der == kMicrosoftWindowsSubjectDer/);
   assert.match(source, new RegExp(microsoftWindowsSubjectDer));
+  assert.match(source, /MicrosoftSystemComponentAuthority\(wrong_subject, wrong_root\)/);
+  assert.doesNotMatch(source, /kMicrosoftCatalogPolicy|ApprovedMicrosoftCatalog|NamedMicrosoftCatalog/);
+  assert.doesNotMatch(builder, /MICROSOFT_COMPILER_CATALOG_POLICY|KB5066128/);
+  assert.doesNotMatch(runtime, /MICROSOFT_COMPILER_CATALOG_POLICY/);
+  assert.doesNotMatch(broker, /MICROSOFT_COMPILER_CATALOG|KB5066128/);
+  assert.doesNotMatch(packagedInspector, /KB5066128|f447c801fde63f35|fd4c63e1001a8281/);
+  assert.doesNotMatch(releaseArchitecture, /KB5066128|f447c801fde63f35|fd4c63e1001a8281/);
+  assert.match(runtime, /MICROSOFT_SYSTEM_CATALOG_POLICY/,
+    'the runtime bootstrap authority remains independently pinned');
   assert.doesNotMatch(source, /ExactMicrosoftSystemPublisher/);
   assert.match(source, /GUID driver_action = DRIVER_ACTION_VERIFY/);
   assert.match(source, /member\.pcCatalogContext = nullptr;/);
@@ -380,70 +393,34 @@ test('system catalog policy is standalone, cache-only, held, and independently d
   assert.doesNotMatch(source, /&DRIVER_ACTION_VERIFY/);
   assert.doesNotMatch(source, /compiler-(?:wrong-signer|same-root-wrong-certificate|same-root-wrong-signer|subject-spoof|wrong-spki|manifest-replacement)/);
   assert.doesNotMatch(source, /\(void\)presented/);
-  assert.doesNotMatch(source, /certificate->size\(\)\s*!=\s*64|spki->size\(\)\s*!=\s*64/);
-  for (const digest of [
-    '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-    'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-    'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
-    'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85',
-  ]) assert.match(source, new RegExp(digest));
-  for (const code of WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.slice(1, 15)) {
+  assert.match(source, /certificate->size\(\) != 64 \|\| spki->size\(\) != 64/,
+    'rotating leaf evidence remains exact and bounded in the proof');
+  for (const code of WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.slice(1, 12)) {
     assert.match(source, new RegExp(`"${code}"`));
   }
 });
 
-test('catalog signer policy pins exact DER subjects independent of rendered X.500 order',
+test('catalog signer authority pins Microsoft system-component publisher and root independent of servicing tuple',
   windowsNativeBuildOnly, async () => {
     await buildWindowsNativeLauncher();
     const native = require(join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
       'propr_windows_launcher.node'));
-    assert.equal(typeof native.approvedCatalogSignerForTest, 'function');
-    assert.equal(typeof native.catalogPolicyFailureForTest, 'function');
+    assert.equal(typeof native.microsoftSystemComponentForTest, 'function');
     const policy = {
-      member: 'csc.exe',
-      catalog: process.arch === 'arm64'
-        ? 'Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat'
-        : 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
       subjectDer: microsoftWindowsSubjectDer,
-      certificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-      spkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-      catalogSha256: process.arch === 'arm64'
-        ? 'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85'
-        : 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
+      rootSpkiSha256: '02376d0908ac23041cc7d666d9daf192554f7fc36317aa9cb800908616b28af8',
     };
-    for (const renderedSubject of [
-      'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
-      'C=US, ST=Washington, L=Redmond, O=Microsoft Corporation, CN=Microsoft Windows',
-    ]) assert.equal(native.approvedCatalogSignerForTest({ ...policy, renderedSubject }), true);
+    assert.equal(native.microsoftSystemComponentForTest(policy), true);
     const reorderedDer = `3070${[...microsoftWindowsSubjectRdns].reverse().join('')}`;
-    assert.equal(native.approvedCatalogSignerForTest({ ...policy, subjectDer: reorderedDer }), false);
-    assert.equal(native.approvedCatalogSignerForTest({
+    assert.equal(native.microsoftSystemComponentForTest({ ...policy, subjectDer: reorderedDer }), false);
+    assert.equal(native.microsoftSystemComponentForTest({
       ...policy,
       subjectDer: `${microsoftWindowsSubjectDer.slice(0, -2)}74`,
     }), false, 'a Microsoft-looking subject under the same root is not authority');
-    assert.equal(native.approvedCatalogSignerForTest({
+    assert.equal(native.microsoftSystemComponentForTest({
       ...policy,
-      certificateSha256: '0'.repeat(64),
-    }), false, 'the exact subject cannot authorize a different same-root leaf');
-    const powershellPolicy = process.arch === 'arm64' ? {
-      ...policy,
-      member: 'powershell.exe',
-      catalog: 'Microsoft-Windows-Client-Features-Package02~31bf3856ad364e35~arm64~~10.0.26100.1.cat',
-      certificateSha256: 'ce08760345bd5a18aa9091e6f083522ad593bd42f587699e025afd55be589334',
-      spkiSha256: '130dc613f271c90adf66157a030391c404f1e4ca21ef8261ac914fc615298b62',
-      catalogSha256: '08150f5768c0780ab94d998a4302718fd1a69d6e54220a057f2d16f691a4582c',
-    } : {
-      ...policy,
-      member: 'powershell.exe',
-      catalog: 'Microsoft-Windows-PowerShell-ServerCore-Package~31bf3856ad364e35~amd64~~10.0.26100.32230.cat',
-      catalogSha256: '2d2ac25e4f3cc782a886422964dffc851a66af354220923d96153738867d7866',
-    };
-    assert.equal(native.approvedCatalogSignerForTest(powershellPolicy), true,
-      'each reviewed certificate/SPKI/catalog tuple carries the exact approved subject DER');
-    assert.equal(native.catalogPolicyFailureForTest(policy), 'CURRENT_EXACT_TUPLE');
-    assert.equal(native.catalogPolicyFailureForTest({ ...policy, catalog: 'wrong.cat' }), 'POLICY_NAME');
-    assert.equal(native.catalogPolicyFailureForTest({ ...policy, catalogSha256: '0'.repeat(64) }), 'POLICY_HASH');
-    assert.equal(native.catalogPolicyFailureForTest({ ...policy, spkiSha256: '0'.repeat(64) }), 'POLICY_TUPLE');
+      rootSpkiSha256: '0'.repeat(64),
+    }), false, 'an exact-looking publisher under a different chain is not authority');
   });
 
 test('absent Windows build roots are created before their DACL is protected', windowsNativeBuildOnly, async () => {
@@ -720,8 +697,13 @@ test('native compiler leases defeat compiler, reference, and exact-source substi
 
 test('native compiler signer, image, job, exit, and output failures stay bounded and clean', windowsNativeBuildOnly, async () => {
   const cases = [
-    ['compiler-wrong-catalog', 'POLICY_NAME'],
+    ['compiler-nonmember', 'CATALOG_ENUMERATION'],
+    ['compiler-wrong-catalog', 'CATALOG_LEASE'],
+    ['compiler-unsigned-catalog', 'SIGNER_PARSE'],
     ['compiler-swapped-catalog', 'CATALOG_LEASE'],
+    ['compiler-member-replacement', 'CATALOG_LEASE'],
+    ['compiler-held-member-identity-mismatch', 'IMAGE'],
+    ['compiler-held-catalog-identity-mismatch', 'LEASE'],
     ['compiler-job', 'IMAGE'],
     ['compiler-image', 'IMAGE'],
     ['compiler-exit', 'EXIT'],
@@ -748,8 +730,7 @@ test('native compiler signer, image, job, exit, and output failures stay bounded
 
 test('native directory catalog failures expose their exact bounded offline-policy substage', windowsNativeBuildOnly, async () => {
   for (const substage of [
-    'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'POLICY_NAME', 'POLICY_HASH', 'POLICY_TUPLE',
-    'WINTRUST_POLICY', 'REVOCATION', 'CATALOG_LEASE',
+    'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY', 'REVOCATION', 'CATALOG_LEASE',
     'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN', 'SPKI_PIN',
   ]) {
     await assert.rejects(

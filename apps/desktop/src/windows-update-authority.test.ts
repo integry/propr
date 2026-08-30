@@ -182,6 +182,55 @@ test('Windows helper manifest is fatal-UTF8, exact, architecture-bound, and dist
   assert.throws(() => parseWindowsAuthorityHelperManifestForTest(helperManifest().subarray(0, -1)), /compile_load:4/);
 });
 
+test('Windows build proof retains and accepts distinct dynamically authenticated servicing catalog evidence', () => {
+  const base = JSON.parse(helperManifest().toString()) as {
+    launcher: Record<string, unknown>;
+    bootstrap: Record<string, unknown>;
+    compiler: Record<string, unknown> & { inputs: Record<string, unknown>[] };
+  };
+  const cases = [
+    {
+      architecture: 'x64', machine: 'AMD64', framework: 'Framework64-v4.0.30319',
+      catalogName: '10.0.26100.33296.cat', catalogSha256: '8'.repeat(64),
+      certificateSha256: '1'.repeat(64), spkiSha256: '2'.repeat(64),
+      rootSpkiSha256: '02376d0908ac23041cc7d666d9daf192554f7fc36317aa9cb800908616b28af8',
+    },
+    {
+      architecture: 'arm64', machine: 'ARM64', framework: 'Framework-v4.0.30319',
+      catalogName: '10.0.26100.9168.cat', catalogSha256: '9'.repeat(64),
+      certificateSha256: '4'.repeat(64), spkiSha256: '5'.repeat(64),
+      rootSpkiSha256: 'c9905b0ee01202293ca026e64f08412442c5504c06e44ca7e9726d61f20e4089',
+    },
+  ];
+  for (const evidence of cases) {
+    const inputs = base.compiler.inputs.map((input: Record<string, unknown>) => ({
+      ...input,
+      signerCertificateSha256: evidence.certificateSha256,
+      signerSpkiSha256: evidence.spkiSha256,
+      signerRootSpkiSha256: evidence.rootSpkiSha256,
+      catalogName: evidence.catalogName,
+      catalogSha256: evidence.catalogSha256,
+    }));
+    const parsed = parseWindowsAuthorityHelperManifestForTest(helperManifest({
+      launcher: { ...base.launcher, architecture: evidence.architecture, machine: evidence.machine },
+      bootstrap: { ...base.bootstrap, architecture: evidence.architecture, machine: evidence.machine },
+      compiler: {
+        ...base.compiler,
+        framework: evidence.framework,
+        signerCertificateSha256: evidence.certificateSha256,
+        signerSpkiSha256: evidence.spkiSha256,
+        signerRootSpkiSha256: evidence.rootSpkiSha256,
+        inputs,
+      },
+    }));
+    assert.equal(parsed.compiler.inputs[0].catalogName, evidence.catalogName);
+    assert.equal(parsed.compiler.inputs[0].catalogSha256, evidence.catalogSha256);
+    assert.equal(parsed.compiler.inputs[0].signerCertificateSha256, evidence.certificateSha256);
+    assert.equal(parsed.compiler.inputs[0].signerSpkiSha256, evidence.spkiSha256);
+    assert.equal(parsed.compiler.inputs[0].signerRootSpkiSha256, evidence.rootSpkiSha256);
+  }
+});
+
 test('Windows helper PE inspection requires a managed PE32 AnyCPU-compatible image', () => {
   const pe = Buffer.alloc(1024);
   pe.writeUInt16LE(0x5a4d, 0);

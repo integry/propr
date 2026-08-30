@@ -71,12 +71,6 @@ public static class ProprUpdateAuthority {
   const int MAX_FRAMES = 8192;
   const long MAX_INPUT = 67108864L;
   static readonly string CURRENT_USER_SID = WindowsIdentity.GetCurrent(TokenAccessLevels.Query).User.Value;
-  const string MICROSOFT_CATALOG_CERTIFICATE_SHA256 = "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de";
-  const string MICROSOFT_CATALOG_SPKI_SHA256 = "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1";
-  const string MICROSOFT_COMPILER_CATALOG = "Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat";
-  const string MICROSOFT_COMPILER_CATALOG_SHA256 = "f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef";
-  const string MICROSOFT_COMPILER_CATALOG_ARM64 = "Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat";
-  const string MICROSOFT_COMPILER_CATALOG_ARM64_SHA256 = "fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85";
   static readonly UTF8Encoding STRICT_UTF8 = new UTF8Encoding(false, true);
   static readonly JavaScriptSerializer JSON = new JavaScriptSerializer { MaxJsonLength = MAX_JSON };
   static readonly Stream OUTPUT = Console.OpenStandardOutput();
@@ -536,6 +530,17 @@ public static class ProprUpdateAuthority {
     return true;
   }
 
+  static bool CatalogEvidenceName(string value) {
+    if (value == null || value.Length < 5 || value.Length > 180
+      || !value.EndsWith(".cat", StringComparison.OrdinalIgnoreCase)) return false;
+    foreach (char character in value) {
+      if (!((character >= '0' && character <= '9') || (character >= 'A' && character <= 'Z')
+        || (character >= 'a' && character <= 'z') || character == '_' || character == '.'
+        || character == '~' || character == '-')) return false;
+    }
+    return true;
+  }
+
   static string ReadFrameBounded(Stream input, ref long inputBytes) {
     int first = input.ReadByte();
     if (first < 0) return null;
@@ -623,14 +628,8 @@ public static class ProprUpdateAuthority {
         || !Hex(Text(input, "signerCertificateSha256"), 64)
         || !Hex(Text(input, "signerSpkiSha256"), 64)
         || !Hex(Text(input, "signerRootSpkiSha256"), 64)
-        || Text(input, "signerCertificateSha256") != MICROSOFT_CATALOG_CERTIFICATE_SHA256
-        || Text(input, "signerSpkiSha256") != MICROSOFT_CATALOG_SPKI_SHA256
-        || !((Text(launcher, "architecture") == "x64"
-            && Text(input, "catalogName") == MICROSOFT_COMPILER_CATALOG
-            && Text(input, "catalogSha256") == MICROSOFT_COMPILER_CATALOG_SHA256)
-          || (Text(launcher, "architecture") == "arm64"
-            && Text(input, "catalogName") == MICROSOFT_COMPILER_CATALOG_ARM64
-            && Text(input, "catalogSha256") == MICROSOFT_COMPILER_CATALOG_ARM64_SHA256))
+        || !CatalogEvidenceName(Text(input, "catalogName"))
+        || !Hex(Text(input, "catalogSha256"), 64)
         || !Hex(Text(input, "catalogVolumeSerial"), 16)
         || !Hex(Text(input, "catalogFileId128"), 32)) {
         throw new BrokerFailure("compile_load", 4);

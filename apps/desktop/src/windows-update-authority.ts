@@ -200,7 +200,6 @@ interface WindowsNativeLauncher {
   close(lease: object): void;
   compileHeld?(policy: Record<string, unknown>): Record<string, unknown>;
   dangerousAclForTest?(policy: { sddl: string }): boolean;
-  approvedCatalogSignerForTest?(policy: Record<string, string>): boolean;
 }
 
 interface WindowsNativeBootstrap {
@@ -247,27 +246,6 @@ const MICROSOFT_SYSTEM_CATALOG_POLICY = Object.freeze([
     catalogSha256: '08150f5768c0780ab94d998a4302718fd1a69d6e54220a057f2d16f691a4582c',
   }),
 ]);
-const MICROSOFT_COMPILER_CATALOG_POLICY = Object.freeze(
-  ['csc.exe', 'System.dll', 'System.Web.Extensions.dll'].flatMap(name => [
-    Object.freeze({
-      name,
-      architecture: 'x64',
-      catalogName: 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
-      certificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-      spkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-      catalogSha256: 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
-    }),
-    Object.freeze({
-      name,
-      architecture: 'arm64',
-      catalogName: 'Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat',
-      certificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-      spkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-      catalogSha256: 'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85',
-    }),
-  ]),
-);
-
 const BOOTSTRAP_AUTHORITY_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $policy = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadLine())) | ConvertFrom-Json
@@ -924,16 +902,10 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
       || !/^[a-f0-9]{64}$/.test(String(input.signerCertificateSha256))
       || !/^[a-f0-9]{64}$/.test(String(input.signerSpkiSha256))
       || !/^[a-f0-9]{64}$/.test(String(input.signerRootSpkiSha256))
-      || !/^[A-Za-z0-9_.~-]{1,180}\.cat$/.test(String(input.catalogName))
+      || !/^[A-Za-z0-9_.~-]{1,176}\.cat$/.test(String(input.catalogName))
       || !/^[a-f0-9]{64}$/.test(String(input.catalogSha256))
       || !/^[a-f0-9]{16}$/.test(String(input.catalogVolumeSerial))
-      || !/^[a-f0-9]{32}$/.test(String(input.catalogFileId128))
-      || !MICROSOFT_COMPILER_CATALOG_POLICY.some(approved => approved.name === input.name
-        && approved.architecture === (launcher as Record<string, unknown>).architecture
-        && approved.catalogName === input.catalogName
-        && approved.certificateSha256 === input.signerCertificateSha256
-        && approved.spkiSha256 === input.signerSpkiSha256
-        && approved.catalogSha256 === input.catalogSha256))
+      || !/^[a-f0-9]{32}$/.test(String(input.catalogFileId128)))
     || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])[0].signerCertificateSha256
       !== (compiler as Record<string, unknown>).signerCertificateSha256
     || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])[0].signerSpkiSha256

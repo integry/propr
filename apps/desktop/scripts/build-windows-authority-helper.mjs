@@ -22,7 +22,7 @@ export const WINDOWS_AUTHORITY_EXECUTABLE = join(WINDOWS_AUTHORITY_BUILD_DIRECTO
 export const WINDOWS_AUTHORITY_MANIFEST = join(WINDOWS_AUTHORITY_BUILD_DIRECTORY, 'propr-windows-authority.manifest.json');
 export const WINDOWS_AUTHORITY_BUILD_STAGES = Object.freeze(['BUILD_COMPILER', 'BUILD_SOURCE', 'BUILD_OUTPUT']);
 export const WINDOWS_AUTHORITY_COMPILER_SUBSTAGES = Object.freeze([
-  'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'POLICY_NAME', 'POLICY_HASH', 'POLICY_TUPLE', 'WINTRUST_POLICY',
+  'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY',
   'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
   'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'BOOTSTRAP_READ', 'BOOTSTRAP_AUTH',
   'LAUNCHER_AUTH', 'OPEN', 'FILE_META', 'OWNER', 'DACL', 'DACL_PROTECTED', 'ARCH', 'HASH',
@@ -49,25 +49,12 @@ const WINDOWS_BUILD_AUTH_FAILURES = Object.freeze([
 ]);
 const WINDOWS_CLEANUP_DIAGNOSTIC = 'BUILD_COMPILER:LEASE';
 const SYSTEM_DIRECTORY_RECORD_BYTES = 2 + (520 * 2);
-const MICROSOFT_COMPILER_CATALOG_POLICY = Object.freeze([
-  'csc.exe', 'System.dll', 'System.Web.Extensions.dll',
-].map(name => Object.freeze({
-  name,
-  catalogName: process.arch === 'arm64'
-    ? 'Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat'
-    : 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
-  certificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
-  spkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
-  catalogSha256: process.arch === 'arm64'
-    ? 'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85'
-    : 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
-})));
 const require = createRequire(import.meta.url);
 const boundedCompilerDiagnostics = diagnostics => Array.isArray(diagnostics)
   ? diagnostics.filter(value => typeof value === 'string' && (
     /^(?:propr_windows_launcher\.(?:cc|obj)|link):\d+:(?:C|LNK)\d{4}$/.test(value)
       || /^member:[A-Za-z0-9_.~-]{1,64}$/.test(value)
-      || /^catalog:[A-Za-z0-9_.~-]{1,180}\.cat$/.test(value)
+      || /^catalog:[A-Za-z0-9_.~-]{1,176}\.cat$/.test(value)
       || /^catalog-sha256:[a-f0-9]{64}$/.test(value)
   )).slice(0, 8)
   : [];
@@ -426,17 +413,13 @@ const buildWindowsAuthorityHelperInner = async (env, launcher, evidence = () => 
       || !isProofArray(compileProof.inputCertificateSha256, /^[a-f0-9]{64}$/)
       || !isProofArray(compileProof.inputSpkiSha256, /^[a-f0-9]{64}$/)
       || !isProofArray(compileProof.inputRootSpkiSha256, /^[a-f0-9]{64}$/)
-      || !isProofArray(compileProof.inputCatalogName, /^[A-Za-z0-9_.~-]{1,180}\.cat$/)
+      || !isProofArray(compileProof.inputCatalogName, /^[A-Za-z0-9_.~-]{1,176}\.cat$/)
       || !isProofArray(compileProof.inputCatalogSha256, /^[a-f0-9]{64}$/)
       || !isProofArray(compileProof.inputCatalogVolumeSerial, /^[a-f0-9]{16}$/)
       || !isProofArray(compileProof.inputCatalogFileId128, /^[a-f0-9]{32}$/)
-      || buildInputs.some((input, index) => {
-        const approved = MICROSOFT_COMPILER_CATALOG_POLICY.find(entry => entry.name === input.name);
-        return !approved || compileProof.inputCertificateSha256[index] !== approved.certificateSha256
-          || compileProof.inputSpkiSha256[index] !== approved.spkiSha256
-          || compileProof.inputCatalogName[index] !== approved.catalogName
-          || compileProof.inputCatalogSha256[index] !== approved.catalogSha256;
-      })) fail('BUILD_OUTPUT');
+      || compileProof.compilerCertificateSha256 !== compileProof.inputCertificateSha256[0]
+      || compileProof.compilerSpkiSha256 !== compileProof.inputSpkiSha256[0]
+      || compileProof.compilerRootSpkiSha256 !== compileProof.inputRootSpkiSha256[0]) fail('BUILD_OUTPUT');
     await writeAtomic(WINDOWS_AUTHORITY_EXECUTABLE, output);
     const publishedOutput = await readHeldBuildOutput(WINDOWS_AUTHORITY_BUILD_DIRECTORY, WINDOWS_AUTHORITY_EXECUTABLE);
     if (!publishedOutput.equals(output)) fail('BUILD_OUTPUT');

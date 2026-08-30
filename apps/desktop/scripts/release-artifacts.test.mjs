@@ -42,11 +42,11 @@ const compilerInputEvidence = (name, sha256, architecture = 'x64') => ({
   signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
   signerRootSpkiSha256: '3'.repeat(64),
   catalogName: architecture === 'arm64'
-    ? 'Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat'
-    : 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
+    ? '10.0.26100.9168.cat'
+    : '10.0.26100.33296.cat',
   catalogSha256: architecture === 'arm64'
-    ? 'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85'
-    : 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
+    ? '8'.repeat(64)
+    : '9'.repeat(64),
   catalogVolumeSerial: '5'.repeat(16),
   catalogFileId128: '6'.repeat(32),
 });
