@@ -45,6 +45,23 @@ export function secureExistingPrivateDirectory(directoryPath: string): boolean {
   return true;
 }
 
+/**
+ * Validate an existing private directory without changing it. Read-only
+ * consumers use this so inspecting configuration cannot repair or otherwise
+ * mutate the authority boundary as a side effect.
+ */
+export function validateExistingPrivateDirectory(directoryPath: string): boolean {
+  const stat = lstatIfPresent(directoryPath);
+  if (!stat) return false;
+  if (stat.isSymbolicLink()) throw new Error(`Refusing to use symbolic-link directory ${directoryPath}`);
+  if (!stat.isDirectory()) throw new Error(`Expected a directory at ${directoryPath}`);
+  assertOwned(stat, directoryPath);
+  if (process.platform !== "win32" && (stat.mode & 0o777) !== PRIVATE_DIRECTORY_MODE) {
+    throw new Error(`Refusing to use non-private directory ${directoryPath}`);
+  }
+  return true;
+}
+
 export function ensurePrivateDirectory(directoryPath: string): void {
   if (!lstatIfPresent(directoryPath)) {
     mkdirSync(directoryPath, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
@@ -60,6 +77,19 @@ export function secureExistingPrivateFile(filePath: string): boolean {
   assertOwned(stat, filePath);
   if (process.platform !== "win32" && (stat.mode & 0o777) !== PRIVATE_FILE_MODE) {
     chmodSync(filePath, PRIVATE_FILE_MODE);
+  }
+  return true;
+}
+
+/** Validate an existing private file without chmod or any other mutation. */
+export function validateExistingPrivateFile(filePath: string): boolean {
+  const stat = lstatIfPresent(filePath);
+  if (!stat) return false;
+  if (stat.isSymbolicLink()) throw new Error(`Refusing to use symbolic-link file ${filePath}`);
+  if (!stat.isFile()) throw new Error(`Expected a regular file at ${filePath}`);
+  assertOwned(stat, filePath);
+  if (process.platform !== "win32" && (stat.mode & 0o777) !== PRIVATE_FILE_MODE) {
+    throw new Error(`Refusing to use non-private file ${filePath}`);
   }
   return true;
 }

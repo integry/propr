@@ -74,7 +74,7 @@ export function canonicalProprProxyUrl(url) {
         const id = label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length);
         if (!isValidProprInstanceId(id)) return undefined;
         const canonical = `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}`;
-        return url.toLowerCase() === canonical || url.toLowerCase() === `${canonical}/` ? canonical : undefined;
+        return url === canonical ? canonical : undefined;
     } catch {
         return undefined;
     }
@@ -351,17 +351,11 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const cloudflaredImage = get('PROPR_CLOUDFLARED_IMAGE') || manifest.images.cloudflared || DEFAULT_CLOUDFLARED_IMAGE;
     // Explicit URL wins; otherwise derive from the instance id's proxy hostname.
     // Falls back to undefined for local development (no instance id), where
-    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Trailing
-    // slashes are stripped once here so every consumer (API/worker/UI env, status
-    // output, endpoint rendering) sees one canonical form — the derived URL never
-    // has one, but an explicit PROPR_UI_PUBLIC_API_URL might.
+    // API_PUBLIC_URL / FRONTEND_URL keep their localhost defaults below. Keep
+    // explicit bytes unchanged so alternate spellings are rejected before any
+    // parser or consumer can normalize them into authority.
     const configuredUiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId);
-    // Normalize one ordinary origin slash, but do not erase repeated slashes:
-    // strict Connect discovery must still be able to reject that alternate URL
-    // spelling rather than silently converting it into a trusted origin.
-    const uiPublicApiUrl = configuredUiPublicApiUrl?.endsWith('/')
-        ? configuredUiPublicApiUrl.slice(0, -1)
-        : configuredUiPublicApiUrl || undefined;
+    const uiPublicApiUrl = configuredUiPublicApiUrl || undefined;
 
     return Object.freeze({
         stack, network, envFileLocal, envFileHost, nodeEnv,

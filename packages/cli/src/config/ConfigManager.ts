@@ -19,6 +19,8 @@ import {
   ensurePrivateDirectory,
   secureExistingPrivateDirectory,
   secureExistingPrivateFile,
+  validateExistingPrivateDirectory,
+  validateExistingPrivateFile,
   writePrivateFileAtomic,
 } from "../utils/privateFilesystem.js";
 
@@ -63,6 +65,7 @@ export class ConfigManager {
   private config: CLIConfig;
   private initialized: boolean = false;
   private readonly warn: (message: string) => void;
+  private readonly readOnly: boolean;
 
   /**
    * Creates a new ConfigManager instance.
@@ -70,11 +73,15 @@ export class ConfigManager {
    * @param customConfigDir - Optional custom configuration directory path.
    *                          Defaults to ~/.propr
    */
-  constructor(customConfigDir?: string, options: { warn?: (message: string) => void } = {}) {
+  constructor(
+    customConfigDir?: string,
+    options: { warn?: (message: string) => void; readOnly?: boolean } = {},
+  ) {
     this.configDir = customConfigDir ?? path.join(os.homedir(), CONFIG_DIR_NAME);
     this.configFilePath = path.join(this.configDir, CONFIG_FILE_NAME);
     this.config = { ...DEFAULT_CONFIG };
     this.warn = options.warn ?? ((message) => console.warn(message));
+    this.readOnly = options.readOnly ?? false;
   }
 
   /**
@@ -101,8 +108,12 @@ export class ConfigManager {
    */
   async load(): Promise<CLIConfig> {
     try {
-      if (secureExistingPrivateDirectory(this.configDir)) {
-        secureExistingPrivateFile(this.configFilePath);
+      const directoryExists = this.readOnly
+        ? validateExistingPrivateDirectory(this.configDir)
+        : secureExistingPrivateDirectory(this.configDir);
+      if (directoryExists) {
+        if (this.readOnly) validateExistingPrivateFile(this.configFilePath);
+        else secureExistingPrivateFile(this.configFilePath);
       }
       const data = await fs.promises.readFile(this.configFilePath, "utf-8");
       const parsed = JSON.parse(data);
@@ -276,6 +287,7 @@ export class ConfigManager {
    * @returns A promise that resolves when the configuration is saved.
    */
   async save(): Promise<void> {
+    if (this.readOnly) throw new Error("Configuration manager is read-only");
     ensurePrivateDirectory(this.configDir);
 
     // Only write non-undefined values
@@ -619,7 +631,7 @@ export class ConfigManager {
  */
 export async function createConfigManager(
   customConfigDir?: string,
-  options: { warn?: (message: string) => void } = {},
+  options: { warn?: (message: string) => void; readOnly?: boolean } = {},
 ): Promise<ConfigManager> {
   const manager = new ConfigManager(customConfigDir, options);
   await manager.init();

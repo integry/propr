@@ -19,7 +19,15 @@ const FETCH_FIXTURE = join(process.cwd(), 'test', 'fixtures', 'connectFetchMock.
 const IDENTITY = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ENDPOINT = 'https://t-abc123.propr.dev';
 
-function makeRoot(parent: string, name: string, endpoint = ENDPOINT): string {
+function makeRoot(
+  parent: string,
+  name: string,
+  endpoint = ENDPOINT,
+  tunnel: { token?: string; enabled?: string } = {
+    token: 'relay-token-in-root-SENTINEL',
+    enabled: 'true',
+  },
+): string {
   const root = join(parent, name);
   mkdirSync(join(root, 'data'), { recursive: true, mode: 0o700 });
   chmodSync(root, 0o700);
@@ -28,12 +36,23 @@ function makeRoot(parent: string, name: string, endpoint = ENDPOINT): string {
     'PROPR_STACK=authorized',
     'PROPR_INSTANCE_ID=abc123',
     `PROPR_UI_PUBLIC_API_URL=${endpoint}`,
-    'PROPR_UI_TUNNEL_ENABLED=true',
-    'PROPR_UI_TUNNEL_TOKEN=relay-token-in-root-SENTINEL',
+    ...(tunnel.enabled === undefined ? [] : [`PROPR_UI_TUNNEL_ENABLED=${tunnel.enabled}`]),
+    ...(tunnel.token === undefined ? [] : [`PROPR_UI_TUNNEL_TOKEN=${tunnel.token}`]),
     '',
   ].join('\n'), { mode: 0o600 });
   chmodSync(join(root, '.env'), 0o600);
   return root;
+}
+
+function persistTunnelOverride(home: string, root: string, enabled: boolean): void {
+  const configDir = join(home, '.propr');
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  chmodSync(configDir, 0o700);
+  const configPath = join(configDir, 'config.json');
+  writeFileSync(configPath, JSON.stringify({
+    tunnelEnabledByRoot: { [root]: enabled },
+  }), { mode: 0o600 });
+  chmodSync(configPath, 0o600);
 }
 
 function installFakeDocker(parent: string): string {
@@ -45,6 +64,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const behaviorPath = path.join(__dirname, 'docker-behavior');
 const behavior = fs.existsSync(behaviorPath) ? fs.readFileSync(behaviorPath, 'utf8') : 'ready';
+const expectationsPath = path.join(__dirname, 'docker-env-expectations');
+if (fs.existsSync(expectationsPath)) {
+  const expected = JSON.parse(fs.readFileSync(expectationsPath, 'utf8'));
+  if (Object.entries(expected).some(([name, value]) => process.env[name] !== value)) process.exit(8);
+}
 const replacementPath = path.join(__dirname, 'replace-root');
 if (fs.existsSync(replacementPath)) {
   const root = fs.readFileSync(replacementPath, 'utf8');
@@ -75,6 +99,8 @@ interface InvocationOptions {
   replaceRoot?: boolean;
   windowsSemantics?: boolean;
   arguments?: string[];
+  environment?: Record<string, string>;
+  dockerEnvironmentExpectations?: Record<string, string>;
 }
 
 function invoke(
@@ -87,8 +113,12 @@ function invoke(
   const credentialPath = join(privateParent, 'credential-path-SENTINEL');
   const behaviorPath = join(bin, 'docker-behavior');
   const replacementPath = join(bin, 'replace-root');
+  const expectationsPath = join(bin, 'docker-env-expectations');
   if (options.dockerBehavior) writeFileSync(behaviorPath, options.dockerBehavior, { mode: 0o600 });
   if (options.replaceRoot) writeFileSync(replacementPath, root, { mode: 0o600 });
+  if (options.dockerEnvironmentExpectations) {
+    writeFileSync(expectationsPath, JSON.stringify(options.dockerEnvironmentExpectations), { mode: 0o600 });
+  }
   const result = spawnSync(process.execPath, [
     '--import',
     FETCH_FIXTURE,
@@ -125,11 +155,13 @@ function invoke(
       GITHUB_TOKEN: 'github-token-SENTINEL',
       GH_PRIVATE_KEY_PATH: credentialPath,
       UNTRUSTED_RAW_URL: 'https://userinfo:secret@raw-url-SENTINEL.invalid/path',
+      ...options.environment,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   rmSync(behaviorPath, { force: true });
   rmSync(replacementPath, { force: true });
+  rmSync(expectationsPath, { force: true });
   assert.equal(result.signal, null);
   assert.ok(
     result.stdout.length > 0 && result.stdout.length < 2048,
@@ -180,6 +212,39 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(ready.status, 0, JSON.stringify(ready.document));
     assert.equal(ready.document.status, 'ready');
     assert.equal(ready.document.canonicalEndpoint, ENDPOINT);
+
+    const dockerTransport = {
+      DOCKER_HOST: 'tcp://127.0.0.1:2376',
+      DOCKER_CONTEXT: 'trusted-context',
+      DOCKER_TLS: '1',
+      DOCKER_TLS_VERIFY: '1',
+      DOCKER_CERT_PATH: join(parent, 'private-cert-path-SENTINEL'),
+      DOCKER_CONFIG: join(parent, 'private-docker-config-SENTINEL'),
+    };
+    const customDocker = invoke(readyRoot, 'ready', bin, parent, {
+      environment: dockerTransport,
+      dockerEnvironmentExpectations: dockerTransport,
+    });
+    assert.equal(customDocker.status, 0);
+    const oversizedDocker = invoke(readyRoot, 'ready', bin, parent, {
+      environment: { DOCKER_HOST: 'x'.repeat(4097) },
+    });
+    assert.equal(oversizedDocker.status, 1);
+    assert.deepEqual(oversizedDocker.document.reasonCodes, ['INTERNAL_FAILURE']);
+
+    persistTunnelOverride(join(parent, 'home-private-SENTINEL'), readyRoot, false);
+    const explicitlyOff = invoke(readyRoot, 'ready', bin, parent);
+    assert.equal(explicitlyOff.status, 2);
+    assert.deepEqual(explicitlyOff.document.reasonCodes, ['TUNNEL_DISABLED']);
+    persistTunnelOverride(join(parent, 'home-private-SENTINEL'), readyRoot, true);
+    const explicitlyOn = invoke(readyRoot, 'ready', bin, parent);
+    assert.equal(explicitlyOn.status, 0);
+
+    const tokenlessRoot = makeRoot(parent, 'tokenless-root', ENDPOINT, {});
+    assert.equal(getOrCreatePublicInstanceIdentity(join(tokenlessRoot, 'data'), () => IDENTITY), IDENTITY);
+    persistTunnelOverride(join(parent, 'home-private-SENTINEL'), tokenlessRoot, false);
+    const tokenlessOff = invoke(tokenlessRoot, 'ready', bin, parent);
+    assert.deepEqual(tokenlessOff.document.reasonCodes, ['TUNNEL_DISABLED']);
 
     const equalsRoot = invoke(readyRoot, 'ready', bin, parent, {
       arguments: ['--project', 'owner/repo', 'connect', 'status', `--root=${readyRoot}`, '--json'],

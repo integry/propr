@@ -89,11 +89,11 @@ function emptyStackStatus(): ReturnType<OrchestratorModule["startStack"]> {
 
 const sink = () => {};
 
-test("tunnel setup builds env from the Connect proxy URL", () => {
+test("tunnel setup builds env from the exact Connect proxy URL", () => {
   assert.deepEqual(
     buildTunnelSetupEnv({
       token: "secret-token",
-      url: "https://t-abc123.propr.dev/",
+      url: "https://t-abc123.propr.dev",
     }),
     {
       PROPR_UI_TUNNEL_TOKEN: "secret-token",
@@ -108,13 +108,12 @@ test("tunnel setup builds env from the Connect proxy URL", () => {
   );
 });
 
-test("tunnel setup normalizes redundant trailing slashes before strict parsing", () => {
-  assert.equal(
-    buildTunnelSetupEnv({ token: "secret-token", url: "https://t-abc123.propr.dev////" })
-      .PROPR_UI_PUBLIC_API_URL,
-    "https://t-abc123.propr.dev",
-  );
+test("tunnel setup rejects every noncanonical raw URL spelling", () => {
   for (const url of [
+    "https://t-abc123.propr.dev/",
+    "https://t-abc123.propr.dev////",
+    "https://T-AbC123.ProPR.dev",
+    " https://t-abc123.propr.dev",
     "https://user@t-abc123.propr.dev///",
     "https://t-abc123.propr.dev:443///",
     "https://t-abc123.propr.dev/path///",

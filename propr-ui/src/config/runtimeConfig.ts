@@ -420,11 +420,21 @@ export const resolveApiBaseUrl = (
   const selectedApiBaseUrl = (
     queryApiBaseUrl ||
     storedApiBaseUrl ||
-    config?.apiBaseUrl?.trim() ||
-    buildTimeApiBaseUrl?.trim() ||
+    (config?.apiBaseUrl?.trim() ? config.apiBaseUrl : undefined) ||
+    (buildTimeApiBaseUrl?.trim() ? buildTimeApiBaseUrl : undefined) ||
     ''
   );
-  return normalizeApiBaseUrl(selectedApiBaseUrl);
+  const normalized = normalizeApiBaseUrl(selectedApiBaseUrl);
+  // The generic client normalizer intentionally accepts equivalent HTTP URL
+  // spellings. A hosted managed origin is an authority selector, though: if
+  // normalization made it canonical, its raw input was not canonical and must
+  // not be trusted.
+  if (
+    isHostedUiOrigin(hostname)
+    && isProprProxyUrl(normalized)
+    && !isProprProxyUrl(selectedApiBaseUrl)
+  ) return '';
+  return normalized;
 };
 /* eslint-enable max-params */
 
@@ -480,11 +490,10 @@ if (typeof window !== 'undefined') {
  * connection so they always target the same origin. Returns an empty string
  * for same-origin requests.
  *
- * Trailing slashes are stripped here, once, so the many callers that build
- * paths as `${API_BASE_URL}/api/...` never produce a double slash (e.g.
- * `https://t-abc.propr.dev//api/compatibility`). The orchestrator already
- * normalizes the values it injects, but a hand-served `public/config.js`,
- * `VITE_API_BASE_URL`, or manually set apiBaseUrl can still carry one.
+ * Generic/self-managed URL spellings are normalized here so callers that build
+ * paths as `${API_BASE_URL}/api/...` never produce a double slash. Hosted
+ * managed tunnel origins are checked before that normalization and must already
+ * use their exact lowercase, slash-free canonical spelling.
  */
 export const getApiBaseUrl = (): string => {
   if (

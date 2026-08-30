@@ -3,6 +3,17 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { isExplicitConnectStatusInvocation } from './index.js';
+
+test('every Connect status argument shape is identified before dotenv or option validation', () => {
+  for (const args of [
+    ['connect', 'status', '--json'],
+    ['connect', 'status', '--json', '--root'],
+    ['connect', 'status', '--json', '--root='],
+    ['connect', 'status', '--root', '/one', '--root', '/two', '--json'],
+    ['--project', 'owner/repo', 'connect', 'status', '--root=/one', '-j'],
+  ]) assert.equal(isExplicitConnectStatusInvocation(['node', 'propr', ...args]), true, args.join(' '));
+});
 
 test('direct CLI execution is not disabled by test environment variables', () => {
   const entryPoint = fileURLToPath(new URL('./index.ts', import.meta.url));

@@ -101,7 +101,10 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
   test('canonical proxy parsing agrees and rejects authority lookalikes', () => {
     const cases = [
       'https://t-abc123.propr.dev',
+      'https://t-abc123.propr.dev/',
       'https://T-AbC123.ProPR.dev/',
+      'HTTPS://t-abc123.propr.dev',
+      ' https://t-abc123.propr.dev',
       'https://user@t-abc123.propr.dev',
       'https://t-abc123.propr.dev:443',
       'https://t-abc123.propr.dev.',
@@ -116,7 +119,7 @@ describe('launcher hosted-UI constants stay in sync with @propr/shared', () => {
 
   test('scheme-less Connect selectors accept only one canonical host spelling', () => {
     assert.equal(canonicalProprProxySelector('t-abc123.propr.dev'), 't-abc123.propr.dev');
-    assert.equal(canonicalProprProxySelector('T-AbC123.ProPR.dev'), 't-abc123.propr.dev');
+    assert.equal(canonicalProprProxySelector('T-AbC123.ProPR.dev'), undefined);
     for (const selector of [
       'abc123',
       'https://t-abc123.propr.dev',

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
+  appendFileSync,
   chmodSync,
   linkSync,
   lstatSync,
@@ -31,6 +32,12 @@ import {
   type PublicIdentityBoundary,
 } from '../packages/local-setup/src/publicInstanceIdentity.js';
 import { PUBLIC_INSTANCE_IDENTITY_FILENAME } from '@propr/shared';
+import {
+  assertSafeDarwinAclOutput,
+  assertSafeWindowsAuthority,
+  type ConnectRootAuthorityInspector,
+  type WindowsAuthorityInspection,
+} from '../packages/cli/src/connectRootAuthority.js';
 
 const IDS = {
   first: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -200,6 +207,66 @@ test('identity storage rejects replaceable directories, symlinks, hardlinks, and
   }
 });
 
+test('identity repairs only the exact recovery/final same-inode crash remnant', () => {
+  const root = temporaryRoot('propr-public-identity-link-crash-');
+  const data = join(root, 'data');
+  privateDirectory(data);
+  const recovery = join(data, `.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.ready-v1`);
+  try {
+    assert.equal(getCliIdentity(data, () => IDS.first), IDS.first);
+    linkSync(identityPath(data), recovery);
+    assert.equal(lstatSync(identityPath(data)).nlink, 2);
+    assert.equal(getApiIdentity(data, () => IDS.second), IDS.first);
+    assert.equal(lstatSync(identityPath(data)).nlink, 1);
+    assert.throws(() => lstatSync(recovery), /ENOENT/);
+
+    linkSync(identityPath(data), join(data, 'hostile-unknown-hardlink'));
+    assert.throws(() => getApiIdentity(data), /identity|single-link/);
+    assert.equal(lstatSync(identityPath(data)).nlink, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('identity bounded reads reject growth and named replacement after the initial stat', () => {
+  const root = temporaryRoot('propr-public-identity-read-race-');
+  const data = join(root, 'data');
+  privateDirectory(data);
+  try {
+    assert.equal(getCliIdentity(data, () => IDS.first), IDS.first);
+    let grew = false;
+    assert.throws(() => getOrCreatePublicInstanceIdentity(data, {
+      role: 'host',
+      onBoundary: (boundary) => {
+        if (boundary === 'identity-read-statted' && !grew) {
+          grew = true;
+          appendFileSync(identityPath(data), 'growth');
+        }
+      },
+    }), /changed|size|identity/);
+
+    writeFileSync(identityPath(data), `${JSON.stringify({
+      schemaVersion: 1,
+      publicInstanceIdentity: IDS.first,
+    })}\n`, { mode: PUBLIC_IDENTITY_FILE_MODE });
+    let replaced = false;
+    assert.throws(() => getOrCreatePublicInstanceIdentity(data, {
+      role: 'host',
+      onBoundary: (boundary) => {
+        if (boundary !== 'identity-read-statted' || replaced) return;
+        replaced = true;
+        renameSync(identityPath(data), join(data, 'detached-identity'));
+        writeFileSync(identityPath(data), `${JSON.stringify({
+          schemaVersion: 1,
+          publicInstanceIdentity: IDS.second,
+        })}\n`, { mode: PUBLIC_IDENTITY_FILE_MODE });
+      },
+    }), /changed|identity|ENOENT/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('the cross-container model accepts a host-readable root-owned file only', () => {
   const hostOwner = 1000;
   assert.equal(publicIdentityFilePermissionsAllowed({ uid: 0, mode: 0o100644 }, hostOwner, 'linux'), true);
@@ -283,6 +350,103 @@ test('Connect root authority rejects symlinks, unsafe modes, and Windows pathnam
     chmodSync(join(root, 'data'), 0o700);
     chmodSync(parent, 0o777);
     assert.throws(() => withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile }), ConnectRootError);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+const WINDOWS_USER_SID = 'S-1-5-21-1000-1000-1000-1001';
+const safeWindowsAuthority = (): WindowsAuthorityInspection => ({
+  currentUserSid: WINDOWS_USER_SID,
+  ownerSid: WINDOWS_USER_SID,
+  daclProtected: true,
+  reparsePoint: false,
+  rules: [
+    { identitySid: WINDOWS_USER_SID, inherited: false, accessType: 'allow', rights: '2032127' },
+    { identitySid: 'S-1-5-18', inherited: false, accessType: 'allow', rights: '2032127' },
+    { identitySid: 'S-1-5-32-544', inherited: false, accessType: 'allow', rights: '2032127' },
+    { identitySid: 'S-1-1-0', inherited: true, accessType: 'allow', rights: '1179785' },
+  ],
+});
+
+test('Windows DACL policy accepts only explicit narrow mutators and rejects inherited or broad writes', () => {
+  assert.doesNotThrow(() => assertSafeWindowsAuthority(safeWindowsAuthority(), 'root'));
+  for (const rule of [
+    { identitySid: WINDOWS_USER_SID, inherited: true, accessType: 'allow' as const, rights: '2' },
+    { identitySid: 'S-1-1-0', inherited: false, accessType: 'allow' as const, rights: '2' },
+    { identitySid: 'S-1-5-11', inherited: false, accessType: 'allow' as const, rights: '268435456' },
+  ]) {
+    assert.throws(() => assertSafeWindowsAuthority({
+      ...safeWindowsAuthority(),
+      rules: [rule],
+    }, 'root'), /authority|grant/);
+  }
+  assert.throws(() => assertSafeWindowsAuthority({
+    ...safeWindowsAuthority(),
+    ownerSid: 'S-1-5-18',
+  }, 'root'), /authority/);
+  assert.throws(() => assertSafeWindowsAuthority({
+    ...safeWindowsAuthority(),
+    daclProtected: false,
+  }, 'data'), /authority/);
+  assert.throws(() => assertSafeWindowsAuthority({
+    ...safeWindowsAuthority(),
+    reparsePoint: true,
+  }, 'root'), /authority/);
+});
+
+test('Darwin ACL parser accepts absent/read-only ACLs and rejects write or unknown authority', () => {
+  assert.doesNotThrow(() => assertSafeDarwinAclOutput('drwx------ 2 caller staff 64 Aug 29 00:00 /private/root\n'));
+  assert.doesNotThrow(() => assertSafeDarwinAclOutput([
+    'drwx------ 2 caller staff 64 Aug 29 00:00 /private/root',
+    ' 0: group:everyone deny delete',
+    ' 1: user:auditor allow read,readattr,readextattr,readsecurity',
+    '',
+  ].join('\n')));
+  assert.throws(() => assertSafeDarwinAclOutput([
+    'drwx------ 2 caller staff 64 Aug 29 00:00 /private/root',
+    ' 0: group:staff allow add_file,add_subdirectory',
+  ].join('\n')), /write authority/);
+  assert.throws(() => assertSafeDarwinAclOutput('drwx------ root\n unparseable acl'), /malformed/);
+});
+
+test('injected Windows and Darwin inspectors exercise the real root policy path', () => {
+  const parent = temporaryRoot('propr-connect-platform-authority-');
+  const root = connectRoot(parent);
+  const calls: string[] = [];
+  const inspector: ConnectRootAuthorityInspector = {
+    inspectDarwinAcl: (path) => {
+      calls.push(`darwin:${path}`);
+      return `drwx------ 2 caller staff 64 Aug 29 00:00 ${path}\n`;
+    },
+    inspectWindowsAcl: (path) => {
+      calls.push(`win32:${path}`);
+      return safeWindowsAuthority();
+    },
+  };
+  try {
+    assert.equal(withOwnedConnectRootSnapshot(root, (snapshot) => (
+      getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory, () => IDS.first)
+    ), { platform: 'win32', authorityInspector: inspector, parseEnvFile: () => ({}) }), IDS.first);
+    assert.ok(calls.some((entry) => entry.endsWith('/stack')));
+    calls.length = 0;
+    assert.equal(withOwnedConnectRootSnapshot(root, (snapshot) => snapshot.envFileValues, {
+      platform: 'darwin',
+      authorityInspector: inspector,
+      parseEnvFile: () => ({ safe: 'yes' }),
+    }).safe, 'yes');
+    assert.ok(calls.some((entry) => entry.startsWith('darwin:')));
+
+    const rejecting: ConnectRootAuthorityInspector = {
+      ...inspector,
+      inspectWindowsAcl: () => ({
+        ...safeWindowsAuthority(),
+        rules: [{ identitySid: 'S-1-1-0', inherited: true, accessType: 'allow', rights: '2' }],
+      }),
+    };
+    assert.throws(() => withOwnedConnectRootSnapshot(root, () => undefined, {
+      platform: 'win32', authorityInspector: rejecting, parseEnvFile: () => ({}),
+    }), ConnectRootError);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }

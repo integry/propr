@@ -107,19 +107,16 @@ export type {
 export function isExplicitConnectStatusInvocation(argv: readonly string[]): boolean {
   const args = argv.slice(2);
   const positionals: string[] = [];
-  let hasRoot = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--root") {
       const value = args[index + 1];
       if (value !== undefined && value !== "" && !value.startsWith("-")) {
-        hasRoot = true;
         index += 1;
       }
       continue;
     }
     if (arg.startsWith("--root=")) {
-      if (arg.slice("--root=".length) !== "") hasRoot = true;
       continue;
     }
     if (arg === "--project" || arg === "-p") {
@@ -129,11 +126,12 @@ export function isExplicitConnectStatusInvocation(argv: readonly string[]): bool
     if (arg.startsWith("--project=") || arg === "--json" || arg === "-j") continue;
     if (!arg.startsWith("-")) positionals.push(arg);
   }
-  return hasRoot && positionals[0] === "connect" && positionals[1] === "status";
+  return positionals[0] === "connect" && positionals[1] === "status";
 }
 
-// Connect discovery authorizes and reads only its explicit root. In particular,
-// do not let dotenv pre-read a replaceable cwd/.env before root acquisition.
+// Identify the command shape before Commander validates required, malformed, or
+// duplicate root options. Every Connect status invocation (and therefore every
+// --json failure shape) must avoid pre-reading a replaceable cwd/.env.
 const connectStatusInvocation = isExplicitConnectStatusInvocation(process.argv);
 if (!connectStatusInvocation) config();
 

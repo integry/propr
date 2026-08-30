@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ConfigManager } from "../config/ConfigManager.js";
-import { getHostConfig } from "./index.js";
+import { connectExecutionEnvironment, getHostConfig } from "./index.js";
 
 function createStackRoot(parent: string, name: string): string {
   const root = join(parent, name);
@@ -46,4 +46,35 @@ test("explicit new root does not inherit legacy tunnel intent during start prefl
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
+});
+
+test("Connect forwards only validated Docker transport and process bootstrap variables", () => {
+  const environment = connectExecutionEnvironment({
+    PATH: "/trusted/bin",
+    DOCKER_HOST: "tcp://127.0.0.1:2376",
+    DOCKER_CONTEXT: "remote-context",
+    DOCKER_TLS: "1",
+    DOCKER_TLS_VERIFY: "1",
+    DOCKER_CERT_PATH: "/private/certs",
+    DOCKER_CONFIG: "/private/docker-config",
+    PROPR_UI_TUNNEL_TOKEN: "must-not-cross",
+    HOME: "/must-not-cross",
+  });
+  assert.deepEqual(environment, {
+    PATH: "/trusted/bin",
+    DOCKER_HOST: "tcp://127.0.0.1:2376",
+    DOCKER_CONTEXT: "remote-context",
+    DOCKER_TLS: "1",
+    DOCKER_TLS_VERIFY: "1",
+    DOCKER_CERT_PATH: "/private/certs",
+    DOCKER_CONFIG: "/private/docker-config",
+  });
+  for (const invalid of [
+    { DOCKER_HOST: "x".repeat(4097) },
+    { DOCKER_CONTEXT: "x".repeat(256) },
+    { DOCKER_CONTEXT: "é".repeat(128) },
+    { DOCKER_CERT_PATH: "private\0path" },
+    { DOCKER_CONFIG: 42 },
+    { DOCKER_TLS_VERIFY: "" },
+  ]) assert.throws(() => connectExecutionEnvironment(invalid), /environment/);
 });

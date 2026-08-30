@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import type { OrchestratorConfig, OrchestratorModule } from "./types.js";
 import type { ConfigManager } from "../config/index.js";
+import { createConfigManager } from "../config/index.js";
 
 export type {
   OrchestratorConfig,
@@ -152,15 +153,42 @@ const CONNECT_EXECUTION_ENV_ALLOWLIST = [
   "TEMP",
 ] as const;
 
+const CONNECT_DOCKER_ENV_LIMITS = {
+  DOCKER_HOST: 4096,
+  DOCKER_CONTEXT: 255,
+  DOCKER_TLS: 16,
+  DOCKER_TLS_VERIFY: 16,
+  DOCKER_CERT_PATH: 4096,
+  DOCKER_CONFIG: 4096,
+} as const;
+
 /**
- * Discovery needs only executable lookup and OS process-bootstrap variables.
- * Docker/configuration variables are intentionally absent: the explicit root
- * snapshot is the sole authority for all ProPR stack and path configuration.
+ * Discovery needs executable lookup, OS bootstrap variables, and the trusted
+ * parent process's documented Docker transport selection. ProPR/configuration
+ * variables remain absent: the explicit root snapshot is their sole authority.
  */
-function connectExecutionEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function connectExecutionEnvironment(source: Readonly<Record<string, unknown>>): NodeJS.ProcessEnv {
   const allowed: NodeJS.ProcessEnv = {};
   for (const name of CONNECT_EXECUTION_ENV_ALLOWLIST) {
-    if (source[name] !== undefined) allowed[name] = source[name];
+    const value = source[name];
+    if (value === undefined) continue;
+    if (typeof value !== "string" || value.includes("\0") || Buffer.byteLength(value, "utf8") > 4096) {
+      throw new Error("Connect process environment is invalid");
+    }
+    allowed[name] = value;
+  }
+  for (const [name, maximum] of Object.entries(CONNECT_DOCKER_ENV_LIMITS)) {
+    const value = source[name];
+    if (value === undefined) continue;
+    if (
+      typeof value !== "string"
+      || value.includes("\0")
+      || value.length === 0
+      || Buffer.byteLength(value, "utf8") > maximum
+    ) {
+      throw new Error("Connect Docker transport environment is invalid");
+    }
+    allowed[name] = value;
   }
   return allowed;
 }
@@ -178,10 +206,19 @@ export async function prepareConnectHostConfig(): Promise<{
     throw new Error("Connect host configuration manifest is unavailable");
   }
   const executionEnv = connectExecutionEnvironment(process.env);
+  // Load persisted CLI intent before root acquisition. Only the boolean entry
+  // keyed by the subsequently authorized explicit root is ever consumed; no
+  // profile, ambient stack root, token, or other config value crosses into the
+  // snapshot resolver, and warnings are suppressed to keep stderr redacted.
+  const configManager = await createConfigManager(undefined, {
+    warn: () => undefined,
+    readOnly: true,
+  });
   return {
     orch,
     parseEnvFile: (contents) => orch.parseEnvFileContents(contents),
     resolveSnapshot: ({ requestedRoot, envFileValues }) => {
+      const tunnelOverride = configManager.getTunnelEnabled(requestedRoot);
       return orch.resolveConfig(executionEnv, {
         envFileValues,
         stack: envFileValues.PROPR_STACK || "propr",
@@ -195,6 +232,7 @@ export async function prepareConnectHostConfig(): Promise<{
         managedCredentialsDir: join(requestedRoot, "data", "agent-credentials"),
         validateHostPaths: true,
         manifestPath,
+        ...(tunnelOverride === undefined ? {} : { uiTunnelEnabled: tunnelOverride }),
       });
     },
     inspectTunnel: (cfg) => {

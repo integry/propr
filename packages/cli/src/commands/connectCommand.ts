@@ -105,12 +105,12 @@ function cancelResponseBody(response: Response): void {
   }
 }
 
-type BoundedBodyResult =
+export type BoundedBodyResult =
   | { kind: "ok"; body: string }
   | { kind: "tooLarge" }
   | { kind: "invalid" };
 
-async function readBoundedBody(response: Response, signal: AbortSignal): Promise<BoundedBodyResult> {
+export async function readBoundedBody(response: Response, signal: AbortSignal): Promise<BoundedBodyResult> {
   const declaredLength = parseContentLength(response);
   if (declaredLength !== null && declaredLength > PROPR_CONNECT_DISCOVERY_MAX_BYTES) {
     cancelResponseBody(response);
@@ -118,20 +118,34 @@ async function readBoundedBody(response: Response, signal: AbortSignal): Promise
   }
   if (!response.body) return { kind: "ok", body: "" };
 
+  if (signal.aborted) {
+    cancelResponseBody(response);
+    throw new Error("Connect discovery response was aborted");
+  }
   const reader = response.body.getReader();
+  let canceled = false;
   const abort = () => {
+    if (canceled) return;
+    canceled = true;
     try {
       void reader.cancel().catch(() => undefined);
     } catch {
       // The stream may already be closed or errored.
     }
   };
+  // Check on both sides of listener installation. AbortSignal dispatch is
+  // synchronous, so after the second check either this listener observed the
+  // abort or it remains installed for the subsequent body read.
+  if (signal.aborted) abort();
   signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
   const chunks: Uint8Array[] = [];
   let length = 0;
   try {
+    if (signal.aborted) throw new Error("Connect discovery response was aborted");
     while (true) {
       const { done, value } = await reader.read();
+      if (signal.aborted) throw new Error("Connect discovery response was aborted");
       if (done) break;
       if (!value) continue;
       length += value.byteLength;
@@ -155,7 +169,12 @@ async function readBoundedBody(response: Response, signal: AbortSignal): Promise
     }
   } finally {
     signal.removeEventListener("abort", abort);
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      // A transport may keep cancellation pending briefly; the listener is
+      // already detached and cancellation remains owned by the reader.
+    }
   }
 }
 

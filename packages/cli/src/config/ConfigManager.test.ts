@@ -54,6 +54,25 @@ test("getRemoteProfiles returns copied profiles and includes an empty default pr
   }
 });
 
+test("read-only configuration inspection never repairs permissions or writes", async () => {
+  if (process.platform === "win32") return;
+  const tempDir = createTempDir();
+  const configPath = join(tempDir, "config.json");
+  try {
+    writeFileSync(configPath, JSON.stringify({ tunnelEnabledByRoot: { "/trusted/root": false } }));
+    chmodSync(configPath, 0o644);
+    const manager = new ConfigManager(tempDir, { readOnly: true, warn: () => undefined });
+    await manager.init();
+
+    assert.equal(manager.getTunnelEnabled("/trusted/root"), undefined);
+    assert.equal(lstatSync(configPath).mode & 0o777, 0o644);
+    await assert.rejects(manager.setTunnelEnabled("/trusted/root", true), /read-only/);
+    assert.equal(lstatSync(configPath).mode & 0o777, 0o644);
+  } finally {
+    cleanupTempDir(tempDir);
+  }
+});
+
 test("setRemoteProfile updates a named profile without changing the active profile", async () => {
   const tempDir = createTempDir();
   try {

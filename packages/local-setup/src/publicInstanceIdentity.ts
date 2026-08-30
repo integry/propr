@@ -10,7 +10,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  readSync,
   realpathSync,
   unlinkSync,
   writeFileSync,
@@ -38,6 +38,7 @@ export type PublicIdentityBoundary =
   | "temporary-synced"
   | "recovery-published"
   | "identity-published"
+  | "identity-read-statted"
   | "directory-synced";
 
 export interface PublicIdentityOptions {
@@ -50,6 +51,7 @@ export interface PinnedPublicIdentityDirectory {
   readonly fd: number;
   readonly ownerUid: number;
   open(name: string, flags: number, mode?: number): number;
+  identify(name: string): { dev: number; ino: number; kind: "file" | "directory" | "symbolic-link" | "other" };
   publishNoReplace(oldName: string, newName: string): void;
   unlink(name: string): void;
 }
@@ -81,8 +83,8 @@ export function publicIdentityFilePermissionsAllowed(
     && (metadata.mode & 0o777) === PUBLIC_IDENTITY_FILE_MODE;
 }
 
-function validateFileStat(stat: Stats, directoryOwnerUid: number): void {
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+function validateFileStat(stat: Stats, directoryOwnerUid: number, allowedLinks = 1): void {
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== allowedLinks) {
     if (stat.isFile() && stat.nlink === 2) throw new IdentityBusyError();
     throw new Error("public instance identity file is not a private single-link regular file");
   }
@@ -96,18 +98,41 @@ function validateFileStat(stat: Stats, directoryOwnerUid: number): void {
   }
 }
 
-function readIdentity(directory: PinnedPublicIdentityDirectory, name: string): string {
+function readIdentity(
+  directory: PinnedPublicIdentityDirectory,
+  name: string,
+  options: Pick<PublicIdentityOptions, "onBoundary"> = {},
+  allowedLinks = 1,
+): string {
   let fd: number | undefined;
   try {
     fd = directory.open(name, constants.O_RDONLY | constants.O_NOFOLLOW);
     const before = fstatSync(fd);
-    validateFileStat(before, directory.ownerUid);
-    const bytes = readFileSync(fd);
+    validateFileStat(before, directory.ownerUid, allowedLinks);
+    options.onBoundary?.("identity-read-statted");
+    const bytes = Buffer.allocUnsafe(PUBLIC_IDENTITY_MAX_BYTES + 1);
+    let length = 0;
+    while (length < bytes.byteLength) {
+      const count = readSync(fd, bytes, length, bytes.byteLength - length, null);
+      if (count === 0) break;
+      length += count;
+    }
     const after = fstatSync(fd);
-    if (!sameIdentity(before, after) || before.size !== after.size) {
+    validateFileStat(after, directory.ownerUid, allowedLinks);
+    const namedAfter = directory.identify(name);
+    if (
+      !sameIdentity(before, after)
+      || before.size !== after.size
+      || length !== before.size
+      || length > PUBLIC_IDENTITY_MAX_BYTES
+      || namedAfter.kind !== "file"
+      || !sameIdentity(after, namedAfter)
+    ) {
       throw new Error("public instance identity changed while it was read");
     }
-    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+    const value = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)),
+    ) as unknown;
     if (
       !value
       || typeof value !== "object"
@@ -126,12 +151,67 @@ function readIdentity(directory: PinnedPublicIdentityDirectory, name: string): s
 function readIdentityIfPresent(
   directory: PinnedPublicIdentityDirectory,
   name: string,
+  options: Pick<PublicIdentityOptions, "onBoundary"> = {},
 ): string | undefined {
   try {
-    return readIdentity(directory, name);
+    return readIdentity(directory, name, options);
   } catch (error) {
     if (errno(error) === "ENOENT") return undefined;
     throw error;
+  }
+}
+
+/**
+ * Repair only the exact Darwin/Windows link-then-unlink crash remnant. The
+ * fixed recovery slot and final name must be the only two links to one valid
+ * inode; a hardlink at any other name is deliberately indistinguishable from
+ * an attack and remains rejected.
+ */
+function recoverPublishedLinkRemnant(
+  directory: PinnedPublicIdentityDirectory,
+  options: Pick<PublicIdentityOptions, "onBoundary"> = {},
+): string | undefined {
+  let finalFd: number | undefined;
+  let recoveryFd: number | undefined;
+  try {
+    try {
+      finalFd = directory.open(PUBLIC_INSTANCE_IDENTITY_FILENAME, constants.O_RDONLY | constants.O_NOFOLLOW);
+      recoveryFd = directory.open(READY_NAME, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      if (errno(error) === "ENOENT") return undefined;
+      throw error;
+    }
+    const finalStat = fstatSync(finalFd);
+    const recoveryStat = fstatSync(recoveryFd);
+    validateFileStat(finalStat, directory.ownerUid, 2);
+    validateFileStat(recoveryStat, directory.ownerUid, 2);
+    if (!sameIdentity(finalStat, recoveryStat)) {
+      throw new Error("public identity hardlink state is ambiguous");
+    }
+    const recovered = readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options, 2);
+    // Revalidate both held handles immediately before removing the private name.
+    const finalAfter = fstatSync(finalFd);
+    const recoveryAfter = fstatSync(recoveryFd);
+    const namedFinal = directory.identify(PUBLIC_INSTANCE_IDENTITY_FILENAME);
+    const namedRecovery = directory.identify(READY_NAME);
+    if (
+      !sameIdentity(finalStat, finalAfter)
+      || !sameIdentity(recoveryStat, recoveryAfter)
+      || !sameIdentity(finalAfter, recoveryAfter)
+      || finalAfter.nlink !== 2
+      || recoveryAfter.nlink !== 2
+      || namedFinal.kind !== "file"
+      || namedRecovery.kind !== "file"
+      || !sameIdentity(finalAfter, namedFinal)
+      || !sameIdentity(recoveryAfter, namedRecovery)
+    ) throw new Error("public identity hardlink state changed during recovery");
+    directory.unlink(READY_NAME);
+    fsyncSync(directory.fd);
+    options.onBoundary?.("directory-synced");
+    return readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options) ?? recovered;
+  } finally {
+    if (recoveryFd !== undefined) closeSync(recoveryFd);
+    if (finalFd !== undefined) closeSync(finalFd);
   }
 }
 
@@ -149,7 +229,7 @@ function publishRecovery(
 ): string | undefined {
   let recovered: string;
   try {
-    recovered = readIdentity(directory, READY_NAME);
+    recovered = readIdentity(directory, READY_NAME, { onBoundary });
   } catch (error) {
     if (errno(error) === "ENOENT") return undefined;
     if (error instanceof IdentityBusyError) return undefined;
@@ -179,7 +259,7 @@ function publishRecovery(
   fsyncSync(directory.fd);
   onBoundary?.("directory-synced");
   try {
-    return readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME) ?? recovered;
+    return readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, { onBoundary }) ?? recovered;
   } catch (error) {
     if (error instanceof IdentityBusyError) return undefined;
     throw error;
@@ -193,10 +273,12 @@ export function getOrCreatePublicInstanceIdentityPinned(
 ): string {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
-      const existing = readIdentityIfPresent(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME);
+      const existing = readIdentityIfPresent(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options);
       if (existing) return existing;
     } catch (error) {
       if (!(error instanceof IdentityBusyError)) throw error;
+      const repaired = recoverPublishedLinkRemnant(directory, options);
+      if (repaired) return repaired;
     }
 
     const recovered = publishRecovery(directory, options.onBoundary);
@@ -332,6 +414,20 @@ function openPinnedDataDirectory(dataDir: string, role: PublicIdentityRole): {
       fd,
       ownerUid: terminal.uid,
       open: (name, openFlags, mode = 0) => openSync(join(anchor, name), openFlags, mode),
+      identify: (name) => {
+        const stat = lstatSync(join(anchor, name));
+        return {
+          dev: stat.dev,
+          ino: stat.ino,
+          kind: stat.isFile()
+            ? "file"
+            : stat.isDirectory()
+              ? "directory"
+              : stat.isSymbolicLink()
+                ? "symbolic-link"
+                : "other",
+        };
+      },
       publishNoReplace: (oldName, newName) => {
         linkSync(join(anchor, oldName), join(anchor, newName));
         unlinkSync(join(anchor, oldName));

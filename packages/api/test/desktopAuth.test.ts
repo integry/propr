@@ -106,16 +106,16 @@ describe('desktop browser pairing', () => {
     }
   });
 
-  test('pairing normalizes canonical managed tunnel DNS case', () => {
+  test('pairing rejects mixed-case managed tunnel DNS before URL normalization', () => {
     const pairingId = 'dpr_' + 'A'.repeat(22);
     const hosted = new DesktopAuthService({
       database,
       approvalBaseUrl: 'https://app.propr.dev',
       publicApiUrl: 'https://T-Instance123.ProPR.dev',
     });
-    assert.equal(
-      hosted.getFrontendApprovalUrl(pairingId).toString(),
-      `https://app.propr.dev/desktop/pairing?pairing_id=${pairingId}&tunnel=t-instance123.propr.dev`,
+    assert.throws(
+      () => hosted.getFrontendApprovalUrl(pairingId),
+      /API_PUBLIC_URL|noncanonical reserved/,
     );
   });
 

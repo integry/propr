@@ -91,7 +91,7 @@ export function proprInstanceProxyUrl(instanceId: string | undefined | null): st
 /**
  * Normalize one scheme-less Connect tunnel selector. Connect deep links carry
  * only the DNS hostname (`t-<id>.propr.dev`), never a URL or a bare instance
- * id. DNS case is normalized, but every other spelling must already be exact:
+ * id. Every spelling must already be exact, including lowercase DNS case:
  * no whitespace, percent encoding, userinfo, port, path, query, fragment,
  * trailing dot, extra label, or non-ASCII character is accepted.
  */
@@ -106,8 +106,9 @@ export function canonicalProprProxySelector(selector: string | undefined | null)
   if (label.length > 63 || label.includes('.')) return undefined;
   const id = label.slice(PROPR_UI_PROXY_LABEL_PREFIX.length);
   return isValidProprInstanceId(id)
-    && /^[A-Za-z0-9.-]+$/.test(selector)
-    ? normalized
+    && /^[a-z0-9.-]+$/.test(selector)
+    && selector === normalized
+    ? selector
     : undefined;
 }
 
@@ -143,11 +144,9 @@ export function canonicalProprProxyUrl(url: string | undefined | null): string |
     if (!isValidProprInstanceId(id)) return undefined;
 
     const canonical = `https://${PROPR_UI_PROXY_LABEL_PREFIX}${id.toLowerCase()}.${PROPR_UI_PROXY_SUFFIX}`;
-    // URL parsing canonicalizes case and an optional single trailing slash, but
-    // no other raw spelling is accepted at this trust boundary.
-    return url.toLowerCase() === canonical || url.toLowerCase() === `${canonical}/`
-      ? canonical
-      : undefined;
+    // Compare the raw spelling: URL parsing must not normalize case or any
+    // number of trailing slashes into authority at this trust boundary.
+    return url === canonical ? canonical : undefined;
   } catch {
     return undefined;
   }

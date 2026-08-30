@@ -4,6 +4,7 @@ import { parseProprDesktopDiscovery } from "@propr/shared";
 import {
   CONNECT_STATUS_EXIT,
   probeConnectDiscovery,
+  readBoundedBody,
   resolveConnectStatus,
 } from "./connectCommand.js";
 import type { OrchestratorConfig } from "../orchestrator/types.js";
@@ -281,6 +282,44 @@ test("timeout cancels an active body and late-settling responses are canceled on
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(lateCanceled, 1, `late status ${status}`);
   }
+});
+
+test("abort between reader acquisition and listener installation cancels without reading or leaking", async () => {
+  const controller = new AbortController();
+  let reads = 0;
+  let cancellations = 0;
+  let releases = 0;
+  let listeners = 0;
+  const originalAdd = controller.signal.addEventListener.bind(controller.signal);
+  const originalRemove = controller.signal.removeEventListener.bind(controller.signal);
+  controller.signal.addEventListener = ((...args: Parameters<AbortSignal["addEventListener"]>) => {
+    listeners += 1;
+    return originalAdd(...args);
+  }) as AbortSignal["addEventListener"];
+  controller.signal.removeEventListener = ((...args: Parameters<AbortSignal["removeEventListener"]>) => {
+    listeners -= 1;
+    return originalRemove(...args);
+  }) as AbortSignal["removeEventListener"];
+
+  const response = {
+    headers: new Headers({ "content-type": "application/json" }),
+    body: {
+      getReader() {
+        controller.abort();
+        return {
+          cancel: async () => { cancellations += 1; },
+          read: async () => { reads += 1; return { done: true, value: undefined }; },
+          releaseLock: () => { releases += 1; },
+        };
+      },
+    },
+  } as unknown as Response;
+
+  await assert.rejects(() => readBoundedBody(response, controller.signal), /aborted/);
+  assert.equal(reads, 0);
+  assert.equal(cancellations, 1);
+  assert.equal(releases, 1);
+  assert.equal(listeners, 0);
 });
 
 test("serialized JSON is bounded and cannot include local secret sentinels", async () => {
