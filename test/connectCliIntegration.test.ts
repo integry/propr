@@ -3,13 +3,14 @@ import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
   cpSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { getOrCreatePublicInstanceIdentity } from '../packages/cli/src/connectIdentity.js';
@@ -214,6 +215,12 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
   const bin = installFakeDocker(parent);
   mkdirSync(join(parent, 'home-private-SENTINEL'), { mode: 0o700 });
   mkdirSync(join(parent, 'hostile-cwd'), { mode: 0o700 });
+  // Production deliberately trusts the OS account home, not ambient HOME.
+  // Establish only its parent config directory so exact config.json absence is
+  // the authenticated fallback exercised by this built-CLI matrix.
+  const osConfigDir = join(userInfo().homedir, '.propr');
+  const removeOsConfigDir = !existsSync(osConfigDir);
+  if (removeOsConfigDir) mkdirSync(osConfigDir, { mode: 0o700 });
   writeFileSync(join(parent, 'hostile-cwd', '.env'), [
     'PROPR_STACK=cwd-stack-SENTINEL',
     'PROPR_UI_PUBLIC_API_URL=https://t-cwd-SENTINEL.propr.dev',
@@ -338,6 +345,7 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(internal.status, 1);
     assert.equal(internal.document.status, 'internalFailure');
   } finally {
+    if (removeOsConfigDir) rmSync(osConfigDir, { recursive: true, force: true });
     rmSync(parent, { recursive: true, force: true });
   }
 });

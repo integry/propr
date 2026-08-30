@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, linkSync, lstatSync, mkdtempSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -9,16 +9,58 @@ import {
   getOrCreateSnapshotPublicInstanceIdentity,
   readTrustedConnectTunnelOverride,
   withOwnedConnectRootSnapshot,
-} from '../packages/cli/src/connectIdentity.js';
+} from '../packages/cli/dist/connectIdentity.js';
 import {
   nativeConnectRootAuthorityInspector,
+  assertNativeEntryAuthority,
+  protectWindowsSetupEntries,
   protectWindowsSetupEntry,
-} from '../packages/cli/src/connectRootAuthority.js';
+  stableAuthorityIdentity,
+} from '../packages/cli/dist/connectRootAuthority.js';
 import { PUBLIC_INSTANCE_IDENTITY_FILENAME } from '@propr/shared';
 import { getOrCreatePublicInstanceIdentityPinned } from '@propr/local-setup';
 
 const ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const READY = `.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.ready-v1`;
+
+test('native broker carries distinct file identities losslessly', (t) => {
+  if (!nativeOnly(t)) return;
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'propr-native-identity-')));
+  const firstPath = join(parent, 'first');
+  const secondPath = join(parent, 'second');
+  writeFileSync(firstPath, 'first', { mode: 0o600 });
+  writeFileSync(secondPath, 'second', { mode: 0o600 });
+  if (process.platform === 'win32') {
+    protectWindowsSetupEntries([
+      { path: parent, kind: 'directory' },
+      { path: firstPath, kind: 'file' },
+      { path: secondPath, kind: 'file' },
+    ]);
+  }
+  const firstFd = openSync(firstPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const secondFd = openSync(secondPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const firstIdentity = stableAuthorityIdentity(firstFd);
+    const secondIdentity = stableAuthorityIdentity(secondFd);
+    assert.notDeepEqual(firstIdentity, secondIdentity);
+    if (process.platform === 'darwin') {
+      const first = nativeConnectRootAuthorityInspector.inspectDarwinAcl(firstPath, firstFd, firstIdentity);
+      const second = nativeConnectRootAuthorityInspector.inspectDarwinAcl(secondPath, secondFd, secondIdentity);
+      assert.notEqual(`${first.device}:${first.file}`, `${second.device}:${second.file}`);
+    } else {
+      const inspections = nativeConnectRootAuthorityInspector.inspectWindowsAcls!([
+        { path: firstPath, kind: 'env', expectedIdentity: firstIdentity },
+        { path: secondPath, kind: 'env', expectedIdentity: secondIdentity },
+      ]);
+      assert.notEqual(inspections[0].fileId, inspections[1].fileId);
+      assert.notEqual(inspections[0].nodeFileId, inspections[1].nodeFileId);
+    }
+  } finally {
+    closeSync(secondFd);
+    closeSync(firstFd);
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
 
 function nativeOnly(t: { skip(message?: string): void }): boolean {
   if (process.platform === 'darwin' || process.platform === 'win32') return true;
@@ -41,12 +83,31 @@ function makeStack(parent: string, name = 'stack'): string {
   writeFileSync(join(root, '.env'), 'PROPR_STACK=native\n', { mode: 0o600 });
   chmodSync(join(root, '.env'), 0o600);
   if (process.platform === 'win32') {
-    protectWindowsSetupEntry(parent, 'directory');
-    protectWindowsSetupEntry(root, 'directory');
-    protectWindowsSetupEntry(join(root, 'data'), 'directory');
-    protectWindowsSetupEntry(join(root, '.env'), 'file');
+    protectWindowsSetupEntries([
+      { path: parent, kind: 'directory' },
+      { path: root, kind: 'directory' },
+      { path: join(root, 'data'), kind: 'directory' },
+      { path: join(root, '.env'), kind: 'file' },
+    ]);
   }
   return root;
+}
+
+function assertPublishedNative(path: string, links = 1): void {
+  const stat = lstatSync(path);
+  assert.equal(stat.isFile(), true);
+  assert.equal(stat.isSymbolicLink(), false);
+  assert.equal(stat.nlink, links);
+  if (process.platform === 'darwin') {
+    assert.equal(stat.mode & 0o777, 0o644);
+    assert.equal(stat.uid, process.getuid!());
+  }
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    assertNativeEntryAuthority(nativeConnectRootAuthorityInspector, process.platform, path, 'env', fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function grantBroadWrite(path: string, directory: boolean): void {
@@ -98,10 +159,44 @@ test('native root/env/data/identity authority accepts the protected object and r
     assert.equal(withOwnedConnectRootSnapshot(root, (snapshot) => (
       getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory, () => ID)
     ), { parseEnvFile: () => ({}) }), ID);
+    const finalPath = join(root, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME);
+    assertPublishedNative(finalPath);
+
+    const publicationRoot = makeStack(parent, 'publication-state');
+    let temporaryChecked = false;
+    assert.equal(withOwnedConnectRootSnapshot(publicationRoot, (snapshot) => (
+      getOrCreatePublicInstanceIdentityPinned(snapshot.identityDirectory, {
+        role: 'host',
+        generate: () => ID,
+        onBoundary: (boundary) => {
+          if (boundary !== 'temporary-synced' || temporaryChecked) return;
+          const name = readdirSync(join(publicationRoot, 'data'))
+            .find((entry) => entry.startsWith(`.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.creating-v1-`));
+          assert.ok(name);
+          assertPublishedNative(join(publicationRoot, 'data', name));
+          temporaryChecked = true;
+        },
+      })
+    ), { parseEnvFile: () => ({}) }), ID);
+    assert.equal(temporaryChecked, true);
+    const publishedPath = join(publicationRoot, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME);
+    assertPublishedNative(publishedPath);
+
+    const crashReady = join(publicationRoot, 'data', READY);
+    linkSync(publishedPath, crashReady);
+    assertPublishedNative(publishedPath, 2);
+    assertPublishedNative(crashReady, 2);
+    assert.equal(withOwnedConnectRootSnapshot(publicationRoot, (snapshot) => (
+      getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
+    ), { parseEnvFile: () => ({}) }), ID);
+    assertPublishedNative(publishedPath);
+    assert.throws(() => lstatSync(crashReady), /ENOENT/);
 
     const readyPath = join(root, 'data', READY);
-    writeFileSync(readyPath, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: ID })}\n`, { mode: 0o600 });
-    chmodSync(readyPath, 0o600);
+    // The policy-valid 0644 state must pass before ACL authority is the only
+    // changed variable; otherwise this fixture proves only a mode rejection.
+    writeFileSync(readyPath, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: ID })}\n`, { mode: 0o644 });
+    chmodSync(readyPath, 0o644);
     if (process.platform === 'win32') protectWindowsSetupEntry(readyPath, 'file');
     grantBroadWrite(readyPath, false);
     assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => (
@@ -155,6 +250,36 @@ test('native root/env/data/identity authority accepts the protected object and r
       const foreignOwned = makeStack(parent, 'foreign-owner-root');
       mutateWindowsAcl(foreignOwned, 'administrator-owner');
       assert.throws(() => withOwnedConnectRootSnapshot(foreignOwned, () => undefined, { parseEnvFile: () => ({}) }));
+    } else {
+      const inheritanceDirectory = join(parent, 'darwin-inherited-acl');
+      mkdirSync(inheritanceDirectory, { mode: 0o700 });
+      run('/bin/chmod', [
+        '+a',
+        'everyone allow write,writeattr,writeextattr,writesecurity,file_inherit,directory_inherit',
+        inheritanceDirectory,
+      ]);
+      const inheritedFile = join(inheritanceDirectory, 'inherited-file');
+      writeFileSync(inheritedFile, 'identity fixture\n', { mode: 0o644 });
+      chmodSync(inheritedFile, 0o644);
+      const inheritedFd = openSync(inheritedFile, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const identity = stableAuthorityIdentity(inheritedFd);
+        const inspection = nativeConnectRootAuthorityInspector.inspectDarwinAcl(
+          inheritedFile,
+          inheritedFd,
+          identity,
+        );
+        assert.match(inspection.acl, /(?:^|,)inherited(?:,|:)/m);
+        assert.throws(() => assertNativeEntryAuthority(
+          nativeConnectRootAuthorityInspector,
+          process.platform,
+          inheritedFile,
+          'env',
+          inheritedFd,
+        ));
+      } finally {
+        closeSync(inheritedFd);
+      }
     }
   } finally {
     rmSync(parent, { recursive: true, force: true });
@@ -191,9 +316,9 @@ test('native reparse, replacement, and inspection-path swap never authorize anot
     const safe = makeStack(parent, 'safe');
     let swapped = false;
     const inspector = {
-      inspectDarwinAcl(path: string, fd: number) {
+      inspectDarwinAcl(path: string, fd: number, identity: { device: string; file: string }) {
         if (!swapped && path === unsafe) { swapped = true; renameSync(unsafe, `${unsafe}.held`); renameSync(safe, unsafe); }
-        return nativeConnectRootAuthorityInspector.inspectDarwinAcl(path, fd);
+        return nativeConnectRootAuthorityInspector.inspectDarwinAcl(path, fd, identity);
       },
       inspectWindowsAcl(path: string, identity: { device: string; file: string }) {
         if (!swapped && path === unsafe) { swapped = true; renameSync(unsafe, `${unsafe}.held`); renameSync(safe, unsafe); }

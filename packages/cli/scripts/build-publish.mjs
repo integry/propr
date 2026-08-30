@@ -100,7 +100,23 @@ for (const [platformArch, expected] of Object.entries(nativeArtifacts)) {
   const actual = createHash("sha256").update(readFileSync(artifact)).digest("hex");
   if (actual !== expected) throw new Error(`${platformArch} directory-operations artifact failed integrity verification`);
 }
-for (const auditedFile of ["directory-operations.c", "README.md"]) {
+const authorityArtifacts = {
+  "darwin-arm64/connect-authority-broker": "f457676befb7640261a4b7aab45f2e4631199e647871aa70f5c148e6f1f6f168",
+  "darwin-x64/connect-authority-broker": "de74da6d8f5afcbaa8012e246525775d1a3b8d8f6a1e053727cb4d4c1df578fa",
+  "win32-x64/connect-authority-broker.exe": "7e92f1b8c54e7e2665249dc2598edbf261c99f383e36201e59743d7a20d0506c",
+};
+for (const [relativeArtifact, expected] of Object.entries(authorityArtifacts)) {
+  const artifact = join(stageDir, "dist", "native", "prebuilds", relativeArtifact);
+  if (!existsSync(artifact)) throw new Error(`Native authority broker is missing: ${artifact}`);
+  const actual = createHash("sha256").update(readFileSync(artifact)).digest("hex");
+  if (actual !== expected) throw new Error(`${relativeArtifact} failed integrity verification`);
+}
+for (const auditedFile of [
+  "directory-operations.c",
+  "darwin-authority-broker.c",
+  "windows-authority-broker.c",
+  "README.md",
+]) {
   const bundled = join(stageDir, "dist", "native", auditedFile);
   if (!existsSync(bundled)) throw new Error(`Audited native helper file is missing: ${bundled}`);
 }

@@ -31,6 +31,7 @@ import {
   PUBLIC_IDENTITY_FILE_MODE,
   getOrCreatePublicInstanceIdentity,
   publicIdentityFilePermissionsAllowed,
+  samePublicFileIdentity,
   type PublicIdentityBoundary,
 } from '../packages/local-setup/src/publicInstanceIdentity.js';
 import { PUBLIC_INSTANCE_IDENTITY_FILENAME } from '@propr/shared';
@@ -47,6 +48,21 @@ const IDS = {
   third: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
   fourth: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
 } as const;
+
+test('exact identity comparison does not collapse adjacent values above Number.MAX_SAFE_INTEGER', () => {
+  assert.equal(samePublicFileIdentity(
+    { device: '7', file: '9007199254740992' },
+    { device: '7', file: '9007199254740993' },
+  ), false);
+  assert.equal(samePublicFileIdentity(
+    { device: '18446744073709551614', file: '18446744073709551615' },
+    { device: '18446744073709551614', file: '18446744073709551615' },
+  ), true);
+  assert.throws(() => samePublicFileIdentity(
+    { device: '7', file: '09007199254740992' },
+    { device: '7', file: '9007199254740992' },
+  ), /canonical/);
+});
 
 function temporaryRoot(prefix: string): string {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
@@ -365,6 +381,7 @@ const safeWindowsAuthority = (identity = { device: '1', file: '1' }): WindowsAut
   reparsePoint: false,
   volumeSerialNumber: identity.device,
   fileId: identity.file,
+  nodeFileId: identity.file,
   rules: [
     { identitySid: WINDOWS_USER_SID, inherited: false, accessType: 'allow', appliesToSelf: true, rights: '2032127' },
     { identitySid: 'S-1-5-18', inherited: false, accessType: 'allow', appliesToSelf: true, rights: '2032127' },
@@ -400,18 +417,19 @@ test('Windows DACL policy accepts only explicit narrow mutators and rejects inhe
 });
 
 test('Darwin ACL parser accepts absent/read-only ACLs and rejects write or unknown authority', () => {
-  assert.doesNotThrow(() => assertSafeDarwinAclOutput('drwx------ 2 caller staff 64 Aug 29 00:00 /private/root\n'));
+  const uuid = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA';
+  assert.doesNotThrow(() => assertSafeDarwinAclOutput('!#acl 1\n'));
   assert.doesNotThrow(() => assertSafeDarwinAclOutput([
-    'drwx------ 2 caller staff 64 Aug 29 00:00 /private/root',
-    ' 0: group:everyone deny delete',
-    ' 1: user:auditor allow read,readattr,readextattr,readsecurity',
+    '!#acl 1',
+    `group:${uuid}:everyone:12:deny:delete`,
+    `user:${uuid}:auditor:501:allow:read,readattr,readextattr,readsecurity`,
     '',
   ].join('\n')));
   assert.throws(() => assertSafeDarwinAclOutput([
-    'drwx------ 2 caller staff 64 Aug 29 00:00 /private/root',
-    ' 0: group:staff allow add_file,add_subdirectory',
+    '!#acl 1',
+    `group:${uuid}:staff:20:allow:write,append`,
   ].join('\n')), /write authority/);
-  assert.throws(() => assertSafeDarwinAclOutput('drwx------ root\n unparseable acl'), /malformed/);
+  assert.throws(() => assertSafeDarwinAclOutput('!#acl 1\nunparseable acl'), /malformed/);
 });
 
 test('injected Windows and Darwin inspectors exercise the real root policy path', () => {
@@ -419,9 +437,9 @@ test('injected Windows and Darwin inspectors exercise the real root policy path'
   const root = connectRoot(parent);
   const calls: string[] = [];
   const inspector: ConnectRootAuthorityInspector = {
-    inspectDarwinAcl: (path) => {
+    inspectDarwinAcl: (path, _fd, expectedIdentity) => {
       calls.push(`darwin:${path}`);
-      return `drwx------ 2 caller staff 64 Aug 29 00:00 ${path}\n`;
+      return { version: 1, ...expectedIdentity, acl: '!#acl 1\n' };
     },
     inspectWindowsAcl: (path, expectedIdentity) => {
       calls.push(`win32:${path}`);
@@ -480,7 +498,7 @@ test('trusted Connect config read is bounded, root-specific, replacement-safe, a
 
     writeConfig({ tunnelEnabledByRoot: { 'C:\\Work\\Stack': false, 'c:\\work\\stack': false } });
     const inspector: ConnectRootAuthorityInspector = {
-      inspectDarwinAcl: (path) => `drwx------ 2 caller staff 64 Aug 29 00:00 ${path}\n`,
+      inspectDarwinAcl: (_path, _fd, identity) => ({ version: 1, ...identity, acl: '!#acl 1\n' }),
       inspectWindowsAcl: (_path, identity) => safeWindowsAuthority(identity),
     };
     assert.equal(readTrustedConnectTunnelOverride('c:\\WORK\\STACK', {
@@ -510,6 +528,68 @@ test('trusted Connect config read is bounded, root-specific, replacement-safe, a
     assert.throws(() => readTrustedConnectTunnelOverride(root, { trustedHome: home }), TrustedConnectConfigError);
     chmodSync(configPath, 0o000);
     assert.throws(() => readTrustedConnectTunnelOverride(root, { trustedHome: home }), TrustedConnectConfigError);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('trusted config authenticates absence only at the exact config child open', () => {
+  const root = '/trusted/stack';
+  const boundaries = [
+    'home-before-open',
+    'home-opened',
+    'config-directory-before-open',
+    'config-directory-opened',
+    'config-before-open',
+    'config-opened',
+  ] as const;
+  for (const boundary of boundaries) {
+    const parent = temporaryRoot(`propr-config-barrier-${boundary}-`);
+    const home = join(parent, 'home');
+    const configDir = join(home, '.propr');
+    const configPath = join(configDir, 'config.json');
+    privateDirectory(configDir);
+    writeFileSync(configPath, JSON.stringify({ tunnelEnabledByRoot: { [root]: false } }), { mode: 0o600 });
+    chmodSync(configPath, 0o600);
+    let replaced = false;
+    try {
+      assert.throws(() => readTrustedConnectTunnelOverride(root, {
+        trustedHome: home,
+        onBoundary: (current) => {
+          if (current !== boundary || replaced) return;
+          replaced = true;
+          if (current.startsWith('home-')) {
+            renameSync(home, `${home}.detached`);
+            privateDirectory(join(home, '.propr'));
+            writeFileSync(configPath, JSON.stringify({ tunnelEnabledByRoot: { [root]: true } }), { mode: 0o600 });
+          } else if (current.startsWith('config-directory-')) {
+            renameSync(configDir, `${configDir}.detached`);
+            privateDirectory(configDir);
+            writeFileSync(configPath, JSON.stringify({ tunnelEnabledByRoot: { [root]: true } }), { mode: 0o600 });
+          } else {
+            renameSync(configPath, `${configPath}.detached`);
+            writeFileSync(configPath, JSON.stringify({ tunnelEnabledByRoot: { [root]: true } }), { mode: 0o600 });
+            chmodSync(configPath, 0o600);
+          }
+        },
+      }), TrustedConnectConfigError, boundary);
+      assert.equal(replaced, true, boundary);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  }
+
+  const parent = temporaryRoot('propr-config-absence-');
+  const home = join(parent, 'home');
+  const configDir = join(home, '.propr');
+  try {
+    privateDirectory(configDir);
+    assert.equal(readTrustedConnectTunnelOverride(root, { trustedHome: home }), undefined);
+    rmSync(configDir, { recursive: true });
+    assert.throws(
+      () => readTrustedConnectTunnelOverride(root, { trustedHome: home }),
+      TrustedConnectConfigError,
+    );
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }

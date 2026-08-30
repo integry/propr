@@ -47,6 +47,9 @@ jobs:
           test -f packages/cli/dist/native/prebuilds/darwin-x64/directory-operations.node
           test -f packages/cli/dist/native/prebuilds/linux-arm64/directory-operations.node
           test -f packages/cli/dist/native/prebuilds/linux-x64/directory-operations.node
+          test -f packages/cli/dist/native/prebuilds/darwin-arm64/connect-authority-broker
+          test -f packages/cli/dist/native/prebuilds/darwin-x64/connect-authority-broker
+          test -f packages/cli/dist/native/prebuilds/win32-x64/connect-authority-broker.exe
 
   cli-agent-skill-glibc-231:
     name: CLI Agent Skill (Linux x64, glibc 2.31, Node 22)
@@ -170,9 +173,11 @@ jobs:
 
       - name: Run real native Connect authority tests
         run: |
+          node -e "if (process.platform === 'win32' && process.arch !== 'x64') process.exit(1)"
           npm run build -w @propr/shared
           npm run build -w @propr/local-setup
           npm run typecheck -w @propr/cli
+          npm run build -w @propr/cli
           npx tsx --test test/nativeConnectAuthority.test.ts
 
   validate:

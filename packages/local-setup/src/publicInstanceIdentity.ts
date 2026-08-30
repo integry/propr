@@ -51,7 +51,11 @@ export interface PinnedPublicIdentityDirectory {
   readonly fd: number;
   readonly ownerUid: number;
   open(name: string, flags: number, mode?: number): number;
-  identify(name: string): { dev: number; ino: number; kind: "file" | "directory" | "symbolic-link" | "other" };
+  identify(name: string): {
+    device: string;
+    file: string;
+    kind: "file" | "directory" | "symbolic-link" | "other";
+  };
   /** Validate native owner/ACL/no-reparse authority for this exact open file. */
   validateEntry(name: string, fd: number, newlyCreated?: boolean): void;
   publishNoReplace(oldName: string, newName: string): void;
@@ -64,8 +68,33 @@ function errno(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException).code;
 }
 
-function sameIdentity(left: Pick<Stats, "dev" | "ino">, right: Pick<Stats, "dev" | "ino">): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
+export interface ExactPublicFileIdentity {
+  readonly device: string;
+  readonly file: string;
+}
+
+function exactIdentity(fd: number): ExactPublicFileIdentity {
+  const stat = fstatSync(fd, { bigint: true });
+  return { device: stat.dev.toString(10), file: stat.ino.toString(10) };
+}
+
+function canonicalIdentityPart(value: string): bigint {
+  if (!/^(?:0|[1-9]\d{0,19})$/.test(value) || BigInt(value) > 0xffffffffffffffffn) {
+    throw new Error("public instance identity metadata is not a canonical 64-bit identity");
+  }
+  return BigInt(value);
+}
+
+export function samePublicFileIdentity(
+  left: ExactPublicFileIdentity,
+  right: ExactPublicFileIdentity,
+): boolean {
+  return canonicalIdentityPart(left.device) === canonicalIdentityPart(right.device)
+    && canonicalIdentityPart(left.file) === canonicalIdentityPart(right.file);
+}
+
+function sameIdentity(left: ExactPublicFileIdentity, right: ExactPublicFileIdentity): boolean {
+  return samePublicFileIdentity(left, right);
 }
 
 function validateDirectoryMode(stat: Stats): void {
@@ -110,6 +139,7 @@ function readIdentity(
   try {
     fd = directory.open(name, constants.O_RDONLY | constants.O_NOFOLLOW);
     const before = fstatSync(fd);
+    const beforeIdentity = exactIdentity(fd);
     validateFileStat(before, directory.ownerUid, allowedLinks);
     directory.validateEntry(name, fd);
     options.onBoundary?.("identity-read-statted");
@@ -121,16 +151,17 @@ function readIdentity(
       length += count;
     }
     const after = fstatSync(fd);
+    const afterIdentity = exactIdentity(fd);
     validateFileStat(after, directory.ownerUid, allowedLinks);
     directory.validateEntry(name, fd);
     const namedAfter = directory.identify(name);
     if (
-      !sameIdentity(before, after)
+      !sameIdentity(beforeIdentity, afterIdentity)
       || before.size !== after.size
       || length !== before.size
       || length > PUBLIC_IDENTITY_MAX_BYTES
       || namedAfter.kind !== "file"
-      || !sameIdentity(after, namedAfter)
+      || !sameIdentity(afterIdentity, namedAfter)
     ) {
       throw new Error("public instance identity changed while it was read");
     }
@@ -187,29 +218,33 @@ function recoverPublishedLinkRemnant(
     }
     const finalStat = fstatSync(finalFd);
     const recoveryStat = fstatSync(recoveryFd);
+    const finalIdentity = exactIdentity(finalFd);
+    const recoveryIdentity = exactIdentity(recoveryFd);
     validateFileStat(finalStat, directory.ownerUid, 2);
     validateFileStat(recoveryStat, directory.ownerUid, 2);
     directory.validateEntry(PUBLIC_INSTANCE_IDENTITY_FILENAME, finalFd);
     directory.validateEntry(READY_NAME, recoveryFd);
-    if (!sameIdentity(finalStat, recoveryStat)) {
+    if (!sameIdentity(finalIdentity, recoveryIdentity)) {
       throw new Error("public identity hardlink state is ambiguous");
     }
     const recovered = readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options, 2);
     // Revalidate both held handles immediately before removing the private name.
     const finalAfter = fstatSync(finalFd);
     const recoveryAfter = fstatSync(recoveryFd);
+    const finalAfterIdentity = exactIdentity(finalFd);
+    const recoveryAfterIdentity = exactIdentity(recoveryFd);
     const namedFinal = directory.identify(PUBLIC_INSTANCE_IDENTITY_FILENAME);
     const namedRecovery = directory.identify(READY_NAME);
     if (
-      !sameIdentity(finalStat, finalAfter)
-      || !sameIdentity(recoveryStat, recoveryAfter)
-      || !sameIdentity(finalAfter, recoveryAfter)
+      !sameIdentity(finalIdentity, finalAfterIdentity)
+      || !sameIdentity(recoveryIdentity, recoveryAfterIdentity)
+      || !sameIdentity(finalAfterIdentity, recoveryAfterIdentity)
       || finalAfter.nlink !== 2
       || recoveryAfter.nlink !== 2
       || namedFinal.kind !== "file"
       || namedRecovery.kind !== "file"
-      || !sameIdentity(finalAfter, namedFinal)
-      || !sameIdentity(recoveryAfter, namedRecovery)
+      || !sameIdentity(finalAfterIdentity, namedFinal)
+      || !sameIdentity(recoveryAfterIdentity, namedRecovery)
     ) throw new Error("public identity hardlink state changed during recovery");
     directory.unlink(READY_NAME);
     fsyncSync(directory.fd);
@@ -422,8 +457,11 @@ function openPinnedDataDirectory(dataDir: string, role: PublicIdentityRole): {
       fd = next;
       visible = join(visible, component);
       const visibleStat = lstatSync(visible);
-      const pinnedStat = fstatSync(fd);
-      if (visibleStat.isSymbolicLink() || !sameIdentity(visibleStat, pinnedStat)) {
+      const visibleIdentityStat = lstatSync(visible, { bigint: true });
+      if (visibleStat.isSymbolicLink() || !sameIdentity(
+        { device: visibleIdentityStat.dev.toString(10), file: visibleIdentityStat.ino.toString(10) },
+        exactIdentity(fd),
+      )) {
         throw new Error("public identity directory changed during acquisition");
       }
       ancestry.push(visibleStat);
@@ -437,10 +475,10 @@ function openPinnedDataDirectory(dataDir: string, role: PublicIdentityRole): {
       ownerUid: terminal.uid,
       open: (name, openFlags, mode = 0) => openSync(join(anchor, name), openFlags, mode),
       identify: (name) => {
-        const stat = lstatSync(join(anchor, name));
+        const stat = lstatSync(join(anchor, name), { bigint: true });
         return {
-          dev: stat.dev,
-          ino: stat.ino,
+          device: stat.dev.toString(10),
+          file: stat.ino.toString(10),
           kind: stat.isFile()
             ? "file"
             : stat.isDirectory()
@@ -462,7 +500,11 @@ function openPinnedDataDirectory(dataDir: string, role: PublicIdentityRole): {
       close: () => closeSync(fd),
       validateVisible: () => {
         const visible = lstatSync(absolute);
-        if (visible.isSymbolicLink() || !sameIdentity(visible, fstatSync(fd))) {
+        const visibleIdentity = lstatSync(absolute, { bigint: true });
+        if (visible.isSymbolicLink() || !sameIdentity(
+          { device: visibleIdentity.dev.toString(10), file: visibleIdentity.ino.toString(10) },
+          exactIdentity(fd),
+        )) {
           throw new Error("public identity data directory was replaced");
         }
       },

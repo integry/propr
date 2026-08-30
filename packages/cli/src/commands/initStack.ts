@@ -21,7 +21,7 @@ import {
   writePrivateFileAtomic,
 } from "../utils/privateFilesystem.js";
 import { getOrCreatePublicInstanceIdentity } from "../connectIdentity.js";
-import { protectWindowsSetupEntry } from "../connectRootAuthority.js";
+import { protectWindowsSetupEntries, protectWindowsSetupEntry } from "../connectRootAuthority.js";
 
 export function materializeSessionSecret(
   template: string,
@@ -173,14 +173,16 @@ export async function scaffoldStack(
   for (const sub of ["data", "logs", "repos"]) {
     const dir = join(rootDir, sub);
     const created = !existsSync(dir);
-    ensurePrivateDirectory(dir);
+    ensurePrivateDirectory(dir, { deferWindowsProtection: true });
     (created ? result.dirsCreated : result.dirsSkipped).push(sub);
   }
   if (process.platform === "win32") {
-    protectWindowsSetupEntry(rootDir, "directory");
-    for (const sub of ["data", "logs", "repos"]) {
-      protectWindowsSetupEntry(join(rootDir, sub), "directory");
-    }
+    protectWindowsSetupEntries([
+      { path: rootDir, kind: "directory" },
+      ...["data", "logs", "repos"].map((sub) => ({
+        path: join(rootDir, sub), kind: "directory" as const,
+      })),
+    ]);
   }
 
   // The public installation identity belongs to the durable data boundary, not

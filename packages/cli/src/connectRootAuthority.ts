@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { fstatSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { createHash } from "node:crypto";
+import { fstatSync, lstatSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const NATIVE_INSPECTION_MAX_BYTES = 32 * 1024;
+const NATIVE_INSPECTION_MAX_BYTES = 128 * 1024;
 const WINDOWS_SID = /^S-\d(?:-\d+)+$/;
 const WINDOWS_TRUSTED_MUTATORS = new Set([
   "S-1-5-18", // NT AUTHORITY\\SYSTEM
@@ -40,8 +42,18 @@ export interface WindowsAuthorityInspection {
   readonly daclProtected: boolean;
   readonly reparsePoint: boolean;
   readonly volumeSerialNumber: string;
+  /** Full unsigned 128-bit FILE_ID_128 as a canonical decimal string. */
   readonly fileId: string;
+  /** The lossless 64-bit identity exposed by Node's held file descriptor. */
+  readonly nodeFileId: string;
   readonly rules: readonly WindowsAclRuleInspection[];
+}
+
+export interface DarwinAuthorityInspection {
+  readonly version: 1;
+  readonly device: string;
+  readonly file: string;
+  readonly acl: string;
 }
 
 export interface StableAuthorityIdentity {
@@ -50,8 +62,19 @@ export interface StableAuthorityIdentity {
 }
 
 export interface ConnectRootAuthorityInspector {
-  inspectDarwinAcl(path: string, pinnedFd: number): string;
+  inspectDarwinAcl(
+    path: string,
+    pinnedFd: number,
+    expectedIdentity: StableAuthorityIdentity,
+  ): DarwinAuthorityInspection;
   inspectWindowsAcl(path: string, expectedIdentity: StableAuthorityIdentity): WindowsAuthorityInspection;
+  inspectWindowsAcls?(entries: readonly WindowsAuthorityTarget[]): readonly WindowsAuthorityInspection[];
+}
+
+export interface WindowsAuthorityTarget {
+  readonly path: string;
+  readonly kind: ConnectAuthorityEntryKind;
+  readonly expectedIdentity: StableAuthorityIdentity;
 }
 
 export function stableAuthorityIdentity(fd: number): StableAuthorityIdentity {
@@ -65,222 +88,235 @@ function decodeBoundedUtf8(value: Buffer | string | null | undefined): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-const POWERSHELL_ACL_INSPECTION = String.raw`
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$target = [Environment]::GetEnvironmentVariable('PROPR_NATIVE_AUTHORITY_TARGET', 'Process')
-if ([string]::IsNullOrEmpty($target)) { throw 'missing authority target' }
-[string]$source = @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
-public static class ProprFileIdentity {
-  [StructLayout(LayoutKind.Sequential)] public struct FILETIME { public uint Low; public uint High; }
-  [StructLayout(LayoutKind.Sequential)] public struct BY_HANDLE_FILE_INFORMATION {
-    public uint Attributes; public FILETIME Creation; public FILETIME Access; public FILETIME Write;
-    public uint VolumeSerial; public uint SizeHigh; public uint SizeLow; public uint Links;
-    public uint FileIndexHigh; public uint FileIndexLow;
-  }
-  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-  public static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security,
-    uint creation, uint flags, IntPtr template);
-  [DllImport("kernel32.dll", SetLastError=true)]
-  public static extern bool GetFileInformationByHandle(SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION info);
-  [DllImport("advapi32.dll", SetLastError=true)]
-  private static extern uint GetSecurityInfo(SafeFileHandle handle, int objectType, uint securityInfo,
-    out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr securityDescriptor);
-  [DllImport("advapi32.dll", SetLastError=true)]
-  private static extern uint GetSecurityDescriptorLength(IntPtr securityDescriptor);
-  [DllImport("kernel32.dll", SetLastError=true)]
-  private static extern IntPtr LocalFree(IntPtr memory);
-  public static byte[] ReadSecurityDescriptor(SafeFileHandle handle) {
-    IntPtr owner, group, dacl, sacl, descriptor;
-    uint status = GetSecurityInfo(handle, 1, 0x00000007, out owner, out group, out dacl, out sacl, out descriptor);
-    if (status != 0) throw new Win32Exception((int)status);
+const DARWIN_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
+  arm64: "f457676befb7640261a4b7aab45f2e4631199e647871aa70f5c148e6f1f6f168",
+  x64: "de74da6d8f5afcbaa8012e246525775d1a3b8d8f6a1e053727cb4d4c1df578fa",
+};
+
+const WINDOWS_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
+  x64: "7e92f1b8c54e7e2665249dc2598edbf261c99f383e36201e59743d7a20d0506c",
+};
+
+function authorityBrokerArtifact(platform: "darwin" | "win32", arch: string): {
+  path: string;
+  identity: StableAuthorityIdentity;
+  digest: string;
+} {
+  const expected = platform === "darwin"
+    ? DARWIN_AUTHORITY_BROKER_SHA256[arch]
+    : WINDOWS_AUTHORITY_BROKER_SHA256[arch];
+  if (!expected) throw new Error(`native authority inspection is not packaged for ${platform}-${arch}`);
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const relative = join(
+    "prebuilds",
+    `${platform}-${arch}`,
+    `connect-authority-broker${platform === "win32" ? ".exe" : ""}`,
+  );
+  const candidates = [
+    join(moduleDirectory, "native", relative),
+    join(moduleDirectory, "..", "native", relative),
+    join(moduleDirectory, "..", "..", "native", relative),
+  ];
+  for (const candidate of candidates) {
     try {
-      uint length = GetSecurityDescriptorLength(descriptor);
-      if (length == 0 || length > 65536) throw new InvalidOperationException("invalid security descriptor");
-      byte[] bytes = new byte[length];
-      Marshal.Copy(descriptor, bytes, 0, (int)length);
-      return bytes;
-    } finally { LocalFree(descriptor); }
+      const stat = lstatSync(candidate);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > 512 * 1024) continue;
+      const digest = createHash("sha256").update(readFileSync(candidate)).digest("hex");
+      if (digest !== expected) throw new Error("packaged native authority broker failed integrity verification");
+      const exact = lstatSync(candidate, { bigint: true });
+      return {
+        path: candidate,
+        identity: { device: exact.dev.toString(10), file: exact.ino.toString(10) },
+        digest,
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
-}
-'@
-Add-Type -TypeDefinition $source
-$handle = [ProprFileIdentity]::CreateFileW($target, 0x00020000, 7, [IntPtr]::Zero, 3, 0x02200000, [IntPtr]::Zero)
-if ($handle.IsInvalid) { throw 'authority target open failed' }
-try {
-  $before = [ProprFileIdentity+BY_HANDLE_FILE_INFORMATION]::new()
-  if (-not [ProprFileIdentity]::GetFileInformationByHandle($handle, [ref]$before)) { throw 'identity read failed' }
-$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new([ProprFileIdentity]::ReadSecurityDescriptor($handle), 0)
-if ($null -eq $descriptor.Owner -or $null -eq $descriptor.DiscretionaryAcl) { throw 'incomplete security descriptor' }
-$owner = $descriptor.Owner.Value
-$rules = @($descriptor.DiscretionaryAcl | ForEach-Object {
-  if (-not ($_ -is [System.Security.AccessControl.QualifiedAce])) { throw 'unsupported access rule' }
-  if ($_.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessAllowed) { $accessType = 'allow' }
-  elseif ($_.AceQualifier -eq [System.Security.AccessControl.AceQualifier]::AccessDenied) { $accessType = 'deny' }
-  else { throw 'unsupported access rule' }
-  $mask = [uint32]([int64]$_.AccessMask -band 0xffffffffL)
-  [ordered]@{
-    identitySid = $_.SecurityIdentifier.Value
-    inherited = [bool](($_.AceFlags -band [System.Security.AccessControl.AceFlags]::Inherited) -ne 0)
-    accessType = $accessType
-    appliesToSelf = [bool](($_.AceFlags -band [System.Security.AccessControl.AceFlags]::InheritOnly) -eq 0)
-    rights = $mask.ToString([Globalization.CultureInfo]::InvariantCulture)
-  }
-})
-$after = [ProprFileIdentity+BY_HANDLE_FILE_INFORMATION]::new()
-if (-not [ProprFileIdentity]::GetFileInformationByHandle($handle, [ref]$after)) { throw 'identity reread failed' }
-$beforeId = ([uint64]$before.FileIndexHigh -shl 32) -bor [uint64]$before.FileIndexLow
-$afterId = ([uint64]$after.FileIndexHigh -shl 32) -bor [uint64]$after.FileIndexLow
-if ($before.VolumeSerial -ne $after.VolumeSerial -or $beforeId -ne $afterId) { throw 'authority target changed' }
-[ordered]@{
-  currentUserSid = $identity
-  ownerSid = $owner
-  daclProtected = [bool](($descriptor.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -ne 0)
-  reparsePoint = [bool](($before.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
-  volumeSerialNumber = ([uint64]$before.VolumeSerial).ToString([Globalization.CultureInfo]::InvariantCulture)
-  fileId = $beforeId.ToString([Globalization.CultureInfo]::InvariantCulture)
-  rules = $rules
-} | ConvertTo-Json -Compress -Depth 4
-} finally { $handle.Dispose() }
-`;
-
-const POWERSHELL_PRIVATE_ACL = String.raw`
-$ErrorActionPreference = 'Stop'
-$target = [Environment]::GetEnvironmentVariable('PROPR_NATIVE_AUTHORITY_TARGET', 'Process')
-$kind = [Environment]::GetEnvironmentVariable('PROPR_NATIVE_AUTHORITY_KIND', 'Process')
-if ([string]::IsNullOrEmpty($target)) { throw 'missing authority target' }
-$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
-$admins = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
-if ($kind -eq 'directory') {
-  $acl = [System.Security.AccessControl.DirectorySecurity]::new()
-  $inheritance = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-} elseif ($kind -eq 'file') {
-  $acl = [System.Security.AccessControl.FileSecurity]::new()
-  $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
-} else { throw 'invalid entry kind' }
-$acl.SetOwner($current)
-$acl.SetAccessRuleProtection($true, $false)
-foreach ($principal in @($current, $system, $admins)) {
-  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-    $principal,
-    [System.Security.AccessControl.FileSystemRights]::FullControl,
-    $inheritance,
-    [System.Security.AccessControl.PropagationFlags]::None,
-    [System.Security.AccessControl.AccessControlType]::Allow
-  )
-  [void]$acl.AddAccessRule($rule)
-}
-Set-Acl -LiteralPath $target -AclObject $acl
-`;
-
-function windowsPowerShellExecutable(environment: NodeJS.ProcessEnv): string {
-  const systemRoot = environment.SystemRoot ?? environment.SYSTEMROOT;
-  if (!systemRoot || !isAbsolute(systemRoot) || systemRoot.includes("\0") || systemRoot.length > 1024) {
-    throw new Error("Windows system authority inspection is unavailable");
-  }
-  return join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  throw new Error(`packaged native authority broker is missing for ${platform}-${arch}`);
 }
 
-function windowsAuthorityEnvironment(path: string, kind?: "directory" | "file"): NodeJS.ProcessEnv {
-  if (!path || path.includes("\0") || path.length > 32_767) {
-    throw new Error("Windows system authority inspection is unavailable");
-  }
-  return {
-    ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-    ...(process.env.SYSTEMROOT ? { SYSTEMROOT: process.env.SYSTEMROOT } : {}),
-    ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
-    ...(process.env.TEMP ? { TEMP: process.env.TEMP } : {}),
-    ...(process.env.TMP ? { TMP: process.env.TMP } : {}),
-    PROPR_NATIVE_AUTHORITY_TARGET: path,
-    ...(kind === undefined ? {} : { PROPR_NATIVE_AUTHORITY_KIND: kind }),
-  };
+function revalidateAuthorityBroker(
+  artifact: { path: string; identity: StableAuthorityIdentity; digest: string },
+): void {
+  const stat = lstatSync(artifact.path, { bigint: true });
+  if (
+    !stat.isFile()
+    || stat.isSymbolicLink()
+    || stat.dev.toString(10) !== artifact.identity.device
+    || stat.ino.toString(10) !== artifact.identity.file
+    || createHash("sha256").update(readFileSync(artifact.path)).digest("hex") !== artifact.digest
+  ) throw new Error("packaged native authority broker was replaced");
 }
 
-function nativeDarwinAcl(_path: string, pinnedFd: number): string {
+function nativeDarwinAcl(
+  _path: string,
+  pinnedFd: number,
+  _expectedIdentity: StableAuthorityIdentity,
+): DarwinAuthorityInspection {
   if (!Number.isInteger(pinnedFd) || pinnedFd < 0) throw new Error("Darwin ACL authority inspection is unavailable");
-  const result = spawnSync("/bin/ls", ["-Llde", "/dev/fd/3"], {
+  const artifact = authorityBrokerArtifact("darwin", process.arch);
+  const result = spawnSync(artifact.path, [], {
     shell: false,
     windowsHide: true,
     encoding: "buffer",
-    env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
-    timeout: 3000,
+    env: {},
+    timeout: 5000,
     maxBuffer: NATIVE_INSPECTION_MAX_BYTES,
-    // The inspected object is the caller's already-held descriptor. Passing it
-    // as fd 3 removes pathname replacement from the ACL authority decision.
+    // fd 3 is the caller's already-held object. The broker uses only fstat and
+    // acl_get_fd_np/acl_to_text on this inherited descriptor.
     stdio: ["ignore", "pipe", "pipe", pinnedFd],
   });
+  revalidateAuthorityBroker(artifact);
   if (result.status !== 0 || result.error || result.signal) {
     throw new Error("Darwin ACL authority inspection is unavailable");
   }
-  return decodeBoundedUtf8(result.stdout);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decodeBoundedUtf8(result.stdout).trim());
+  } catch {
+    throw new Error("Darwin ACL authority inspection was malformed");
+  }
+  assertDarwinInspectionShape(parsed);
+  return parsed;
 }
 
-function nativeWindowsAcl(path: string, _expectedIdentity: StableAuthorityIdentity): WindowsAuthorityInspection {
-  const executable = windowsPowerShellExecutable(process.env);
-  const result = spawnSync(executable, [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    POWERSHELL_ACL_INSPECTION,
-  ], {
+function validateWindowsBrokerPath(path: string): void {
+  if (!path || path.includes("\0") || path.length > 32_000) {
+    throw new Error("Windows system authority inspection is unavailable");
+  }
+}
+
+function nativeWindowsAcls(entries: readonly WindowsAuthorityTarget[]): readonly WindowsAuthorityInspection[] {
+  if (entries.length === 0 || entries.length > 64) {
+    throw new Error("Windows ACL authority inspection is unavailable");
+  }
+  const artifact = authorityBrokerArtifact("win32", process.arch);
+  const args = ["inspect"];
+  let argumentCharacters = args[0].length;
+  for (const entry of entries) {
+    validateWindowsBrokerPath(entry.path);
+    argumentCharacters += entry.kind.length + entry.path.length + 2;
+    if (argumentCharacters > 24_000) throw new Error("Windows ACL authority inspection is unavailable");
+    args.push(entry.kind, entry.path);
+  }
+  const result = spawnSync(artifact.path, args, {
     shell: false,
     windowsHide: true,
     encoding: "buffer",
-    env: windowsAuthorityEnvironment(path),
-    timeout: 3000,
+    env: {},
+    timeout: 15_000,
     maxBuffer: NATIVE_INSPECTION_MAX_BYTES,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  revalidateAuthorityBroker(artifact);
   if (result.status !== 0 || result.error || result.signal) {
     throw new Error("Windows ACL authority inspection is unavailable");
   }
-  const parsed = JSON.parse(decodeBoundedUtf8(result.stdout).trim()) as unknown;
-  assertWindowsInspectionShape(parsed);
-  return parsed;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decodeBoundedUtf8(result.stdout).trim());
+  } catch {
+    throw new Error("Windows ACL authority inspection was malformed");
+  }
+  if (
+    !parsed
+    || typeof parsed !== "object"
+    || Array.isArray(parsed)
+    || !exactKeys(parsed, ["version", "entries"])
+  ) throw new Error("Windows ACL authority inspection was malformed");
+  const document = parsed as Record<string, unknown>;
+  if (document.version !== 1 || !Array.isArray(document.entries) || document.entries.length !== entries.length) {
+    throw new Error("Windows ACL authority inspection was malformed");
+  }
+  for (const inspection of document.entries) assertWindowsInspectionShape(inspection);
+  return document.entries;
+}
+
+function nativeWindowsAcl(path: string, expectedIdentity: StableAuthorityIdentity): WindowsAuthorityInspection {
+  return nativeWindowsAcls([{ path, kind: "env", expectedIdentity }])[0];
 }
 
 /** Establish the same narrowly documented DACL used by a new Windows stack. */
 export function protectWindowsSetupEntry(path: string, kind: "directory" | "file"): void {
-  if (process.platform !== "win32") return;
-  const executable = windowsPowerShellExecutable(process.env);
-  const result = spawnSync(executable, [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    POWERSHELL_PRIVATE_ACL,
-  ], {
+  protectWindowsSetupEntries([{ path, kind }]);
+}
+
+/** Protect a complete setup group in one bounded native broker process. */
+export function protectWindowsSetupEntries(
+  entries: readonly { readonly path: string; readonly kind: "directory" | "file" }[],
+): void {
+  if (process.platform !== "win32" || entries.length === 0) return;
+  if (entries.length > 64) throw new Error("Windows setup authority could not be established");
+  const artifact = authorityBrokerArtifact("win32", process.arch);
+  const args = ["protect"];
+  let argumentCharacters = args[0].length;
+  for (const entry of entries) {
+    validateWindowsBrokerPath(entry.path);
+    argumentCharacters += entry.kind.length + entry.path.length + 2;
+    if (argumentCharacters > 24_000) throw new Error("Windows setup authority could not be established");
+    args.push(entry.kind, entry.path);
+  }
+  const result = spawnSync(artifact.path, args, {
     shell: false,
     windowsHide: true,
     encoding: "buffer",
-    env: windowsAuthorityEnvironment(path, kind),
-    timeout: 3000,
+    env: {},
+    timeout: 15_000,
     maxBuffer: NATIVE_INSPECTION_MAX_BYTES,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  if (result.status !== 0 || result.error || result.signal || (result.stdout?.byteLength ?? 0) > 0) {
+  revalidateAuthorityBroker(artifact);
+  if (result.status !== 0 || result.error || result.signal) {
     throw new Error("Windows setup authority could not be established");
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decodeBoundedUtf8(result.stdout).trim());
+  } catch {
+    throw new Error("Windows setup authority could not be established");
+  }
+  if (
+    !parsed
+    || typeof parsed !== "object"
+    || Array.isArray(parsed)
+    || !exactKeys(parsed, ["version", "protected"])
+    || (parsed as Record<string, unknown>).version !== 1
+    || (parsed as Record<string, unknown>).protected !== entries.length
+  ) throw new Error("Windows setup authority could not be established");
 }
 
 export const nativeConnectRootAuthorityInspector: ConnectRootAuthorityInspector = {
   inspectDarwinAcl: nativeDarwinAcl,
   inspectWindowsAcl: nativeWindowsAcl,
+  inspectWindowsAcls: nativeWindowsAcls,
 };
 
 function exactKeys(value: object, expected: readonly string[]): boolean {
   return Object.keys(value).sort().join(",") === [...expected].sort().join(",");
+}
+
+function canonicalUint64(value: unknown): value is string {
+  return typeof value === "string"
+    && /^(?:0|[1-9]\d{0,19})$/.test(value)
+    && BigInt(value) <= 0xffffffffffffffffn;
+}
+
+function assertDarwinInspectionShape(value: unknown): asserts value is DarwinAuthorityInspection {
+  if (
+    !value
+    || typeof value !== "object"
+    || Array.isArray(value)
+    || !exactKeys(value, ["version", "device", "file", "acl"])
+  ) throw new Error("Darwin ACL authority inspection was malformed");
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1
+    || !canonicalUint64(record.device)
+    || !canonicalUint64(record.file)
+    || typeof record.acl !== "string"
+    || Buffer.byteLength(record.acl, "utf8") > 24 * 1024
+  ) throw new Error("Darwin ACL authority inspection was malformed");
 }
 
 function assertWindowsInspectionShape(value: unknown): asserts value is WindowsAuthorityInspection {
@@ -288,7 +324,10 @@ function assertWindowsInspectionShape(value: unknown): asserts value is WindowsA
     !value
     || typeof value !== "object"
     || Array.isArray(value)
-    || !exactKeys(value, ["currentUserSid", "ownerSid", "daclProtected", "reparsePoint", "volumeSerialNumber", "fileId", "rules"])
+    || !exactKeys(value, [
+      "currentUserSid", "ownerSid", "daclProtected", "reparsePoint",
+      "volumeSerialNumber", "fileId", "nodeFileId", "rules",
+    ])
   ) throw new Error("Windows ACL authority inspection was malformed");
   const record = value as Record<string, unknown>;
   if (
@@ -301,7 +340,9 @@ function assertWindowsInspectionShape(value: unknown): asserts value is WindowsA
     || typeof record.volumeSerialNumber !== "string"
     || !/^(?:0|[1-9]\d{0,19})$/.test(record.volumeSerialNumber)
     || typeof record.fileId !== "string"
-    || !/^(?:0|[1-9]\d{0,19})$/.test(record.fileId)
+    || !/^(?:0|[1-9]\d{0,38})$/.test(record.fileId)
+    || BigInt(record.fileId) > 0xffffffffffffffffffffffffffffffffn
+    || !canonicalUint64(record.nodeFileId)
     || !Array.isArray(record.rules)
     || record.rules.length > 256
   ) throw new Error("Windows ACL authority inspection was malformed");
@@ -367,6 +408,7 @@ const DARWIN_READ_ONLY_ACL_PERMISSIONS = new Set([
   "readextattr",
   "readsecurity",
   "search",
+  "synchronize",
 ]);
 const DARWIN_MUTATING_ACL_PERMISSIONS = new Set([
   "add_file",
@@ -384,22 +426,35 @@ const DARWIN_ACL_FLAGS = new Set(["directory_inherit", "file_inherit", "inherite
 
 /** Reject malformed ACL output and every ACL allow entry carrying mutation authority. */
 export function assertSafeDarwinAclOutput(output: string): void {
-  if (!output || Buffer.byteLength(output, "utf8") > NATIVE_INSPECTION_MAX_BYTES || output.includes("\0")) {
+  if (!output || Buffer.byteLength(output, "utf8") > 24 * 1024 || output.includes("\0")) {
     throw new Error("Darwin ACL authority inspection was malformed");
   }
   const lines = output.replace(/\n$/, "").split("\n");
-  if (lines.length === 0 || lines[0].trim() === "") throw new Error("Darwin ACL authority inspection was malformed");
+  if (!/^!#acl 1(?: (?:defer_inherit|no_inherit)(?:,(?:defer_inherit|no_inherit))*)?$/.test(lines[0])) {
+    throw new Error("Darwin ACL authority inspection was malformed");
+  }
   for (const line of lines.slice(1)) {
-    if (line.trim() === "") continue;
-    const match = /^\s+\d+:\s+.+?\s+(allow|deny)\s+([a-z_,]+)\s*$/.exec(line);
-    if (!match) throw new Error("Darwin ACL authority inspection was malformed");
-    if (match[1] === "deny") continue;
-    const permissions = match[2].split(",");
+    const fields = line.split(":");
+    if (
+      fields.length !== 6
+      || (fields[0] !== "user" && fields[0] !== "group")
+      || !/^[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}$/.test(fields[1])
+      || fields[2].length > 255
+      || !/^(?:|0|[1-9]\d{0,9})$/.test(fields[3])
+    ) throw new Error("Darwin ACL authority inspection was malformed");
+    const disposition = fields[4].split(",");
+    if (disposition[0] !== "allow" && disposition[0] !== "deny") {
+      throw new Error("Darwin ACL authority inspection was malformed");
+    }
+    if (disposition.slice(1).some((flag) => !DARWIN_ACL_FLAGS.has(flag))) {
+      throw new Error("Darwin ACL authority inspection was malformed");
+    }
+    const permissions = fields[5].split(",");
     for (const permission of permissions) {
-      if (DARWIN_MUTATING_ACL_PERMISSIONS.has(permission)) {
+      if (disposition[0] === "allow" && DARWIN_MUTATING_ACL_PERMISSIONS.has(permission)) {
         throw new Error("Darwin ACL grants unexpected write authority");
       }
-      if (!DARWIN_READ_ONLY_ACL_PERMISSIONS.has(permission) && !DARWIN_ACL_FLAGS.has(permission)) {
+      if (!DARWIN_READ_ONLY_ACL_PERMISSIONS.has(permission) && !DARWIN_MUTATING_ACL_PERMISSIONS.has(permission)) {
         throw new Error("Darwin ACL authority inspection was malformed");
       }
     }
@@ -415,10 +470,15 @@ export function assertNativeEntryAuthority(
 ): void {
   const before = stableAuthorityIdentity(pinnedFd);
   if (platform === "darwin") {
-    assertSafeDarwinAclOutput(inspector.inspectDarwinAcl(path, pinnedFd));
+    const inspection = inspector.inspectDarwinAcl(path, pinnedFd, before);
+    assertDarwinInspectionShape(inspection);
+    if (inspection.device !== before.device || inspection.file !== before.file) {
+      throw new Error("Darwin authority inspection did not match the pinned object");
+    }
+    assertSafeDarwinAclOutput(inspection.acl);
   } else if (platform === "win32") {
     const inspection = inspector.inspectWindowsAcl(path, before);
-    if (inspection.volumeSerialNumber !== before.device || inspection.fileId !== before.file) {
+    if (inspection.volumeSerialNumber !== before.device || inspection.nodeFileId !== before.file) {
       throw new Error("Windows authority inspection did not match the pinned object");
     }
     assertSafeWindowsAuthority(inspection, kind);
@@ -426,5 +486,35 @@ export function assertNativeEntryAuthority(
   const after = stableAuthorityIdentity(pinnedFd);
   if (before.device !== after.device || before.file !== after.file) {
     throw new Error("native authority target changed during inspection");
+  }
+}
+
+/** Inspect all Windows entries in one process and bind every result to its held descriptor identity. */
+export function assertNativeWindowsEntriesAuthority(
+  inspector: ConnectRootAuthorityInspector,
+  entries: readonly { path: string; kind: ConnectAuthorityEntryKind; pinnedFd: number }[],
+): void {
+  const targets = entries.map((entry) => ({
+    path: entry.path,
+    kind: entry.kind,
+    expectedIdentity: stableAuthorityIdentity(entry.pinnedFd),
+  }));
+  const inspections = inspector.inspectWindowsAcls
+    ? inspector.inspectWindowsAcls(targets)
+    : targets.map((target) => inspector.inspectWindowsAcl(target.path, target.expectedIdentity));
+  if (inspections.length !== targets.length) throw new Error("Windows ACL authority inspection was malformed");
+  for (let index = 0; index < targets.length; index += 1) {
+    const target = targets[index];
+    const inspection = inspections[index];
+    assertWindowsInspectionShape(inspection);
+    if (
+      inspection.volumeSerialNumber !== target.expectedIdentity.device
+      || inspection.nodeFileId !== target.expectedIdentity.file
+    ) throw new Error("Windows authority inspection did not match the pinned object");
+    assertSafeWindowsAuthority(inspection, target.kind);
+    const after = stableAuthorityIdentity(entries[index].pinnedFd);
+    if (after.device !== target.expectedIdentity.device || after.file !== target.expectedIdentity.file) {
+      throw new Error("native authority target changed during inspection");
+    }
   }
 }

@@ -65,11 +65,21 @@ export function validateExistingPrivateDirectory(directoryPath: string): boolean
   return true;
 }
 
-export function ensurePrivateDirectory(directoryPath: string): void {
+export function ensurePrivateDirectory(
+  directoryPath: string,
+  options: { deferWindowsProtection?: boolean } = {},
+): void {
   if (!lstatIfPresent(directoryPath)) {
     mkdirSync(directoryPath, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   }
-  secureExistingPrivateDirectory(directoryPath);
+  if (process.platform === "win32" && options.deferWindowsProtection) {
+    const stat = lstatIfPresent(directoryPath);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`Refusing to use unsafe directory ${directoryPath}`);
+    }
+  } else {
+    secureExistingPrivateDirectory(directoryPath);
+  }
 }
 
 export function secureExistingPrivateFile(filePath: string): boolean {
