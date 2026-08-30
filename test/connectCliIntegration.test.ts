@@ -350,7 +350,7 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
   }
 });
 
-test('the built CLI rejects malformed roots under Unix and fail-closed Windows semantics', () => {
+test('the built CLI rejects malformed Unix roots and reports unavailable Windows ACL diagnostics', async () => {
   const parent = mkdtempSync(join(tmpdir(), 'propr-built-connect-root-'));
   chmodSync(parent, 0o700);
   const bin = installFakeDocker(parent);
@@ -371,9 +371,11 @@ test('the built CLI rejects malformed roots under Unix and fail-closed Windows s
     assert.deepEqual(unsafe.document.reasonCodes, ['INVALID_ROOT']);
 
     chmodSync(join(root, 'data'), 0o700);
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(root, 'data'), () => IDENTITY), IDENTITY);
     const windows = invoke(root, 'ready', bin, parent, { windowsSemantics: true });
-    assert.equal(windows.status, 1);
-    assert.deepEqual(windows.document.reasonCodes, ['INVALID_ROOT']);
+    assert.equal(windows.status, 0);
+    assert.equal(windows.document.status, 'ready');
+    assert.deepEqual(windows.document.reasonCodes, ['ACL_DIAGNOSTIC_UNAVAILABLE']);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
