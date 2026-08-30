@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { Server as SocketIOServer } from 'socket.io';
 import {
   DESKTOP_RENDERER_ORIGIN,
+  DESKTOP_TRANSPORT_SCOPE_QUERY,
   PROPR_API_COMPATIBILITY,
   PROPR_UI_COMPATIBILITY,
 } from '@propr/shared';
@@ -26,6 +27,7 @@ const MAIN_PROCESS_ERROR_MARKERS = [
   'Uncaught Exception:',
 ];
 const TIMEOUT_MS = 45_000;
+const INVALID_INSTANCE_TOKEN = 'INVALID_INSTANCE_TOKEN';
 const artifact = process.platform === 'linux'
   ? [`propr-desktop-linux-${process.arch}`, 'propr-desktop']
   : process.platform === 'win32'
@@ -136,6 +138,9 @@ const listenFixture = async name => {
     cors: { origin: DESKTOP_RENDERER_ORIGIN, credentials: false },
   });
   io.of('/').use((socket, next) => {
+    const queryScopes = new URL(socket.handshake.url, 'http://fixture.invalid')
+      .searchParams.getAll(DESKTOP_TRANSPORT_SCOPE_QUERY);
+    const activationScope = socket.handshake.auth?.[DESKTOP_TRANSPORT_SCOPE_QUERY];
     const record = {
       fixture: name,
       method: 'SOCKET.IO',
@@ -148,9 +153,11 @@ const listenFixture = async name => {
       engineProtocol: socket.conn.protocol,
     };
     requests.push(record);
-    if (!/^Bearer propr_it_[A-Za-z0-9_-]{43}$/.test(record.authorization ?? '')) {
-      const error = new Error('invalid desktop bearer');
-      error.data = { code: 'INVALID_INSTANCE_TOKEN' };
+    if (!/^Bearer propr_it_[A-Za-z0-9_-]{43}$/.test(record.authorization ?? '')
+      || queryScopes.length !== 1 || typeof activationScope !== 'string'
+      || activationScope !== queryScopes[0]) {
+      const error = new Error(INVALID_INSTANCE_TOKEN);
+      error.data = { code: INVALID_INSTANCE_TOKEN };
       next(error);
       return;
     }

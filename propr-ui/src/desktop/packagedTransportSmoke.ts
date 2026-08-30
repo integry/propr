@@ -16,6 +16,12 @@ interface SocketRecord {
   transportScope: string;
 }
 
+interface SocketConnectionError extends Error {
+  data?: { code?: unknown };
+}
+
+const INVALID_INSTANCE_TOKEN = 'INVALID_INSTANCE_TOKEN';
+
 interface PackagedTransportSmokeHarness {
   activate(profile: DesktopProfile): Promise<{
     profileId: string;
@@ -46,11 +52,23 @@ const waitForSocket = (socket: Socket, expected: 'connect' | 'connect_error'): P
     }, 5_000);
     const connected = () => {
       cleanup();
-      expected === 'connect' ? resolve() : reject(new Error('Stale Socket.IO scope unexpectedly connected'));
+      if (expected === 'connect') {
+        resolve();
+        return;
+      }
+      reject(new Error('Stale Socket.IO scope unexpectedly connected'));
     };
-    const failed = () => {
+    const failed = (error: SocketConnectionError) => {
       cleanup();
-      expected === 'connect_error' ? resolve() : reject(new Error('Packaged Socket.IO connection failed'));
+      if (expected !== 'connect_error') {
+        reject(new Error(`Packaged Socket.IO connection failed: ${error.message}`));
+        return;
+      }
+      if (error.message !== INVALID_INSTANCE_TOKEN || error.data?.code !== INVALID_INSTANCE_TOKEN) {
+        reject(new Error('Packaged stale Socket.IO rejection was not INVALID_INSTANCE_TOKEN'));
+        return;
+      }
+      resolve();
     };
     const cleanup = () => {
       window.clearTimeout(timer);
@@ -104,6 +122,7 @@ export const installPackagedTransportSmokeHarness = (): void => {
         transports: ['websocket'],
         forceNew: true,
         reconnection: true,
+        auth: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: scope.transportScope },
         query: { [DESKTOP_TRANSPORT_SCOPE_QUERY]: scope.transportScope },
       });
       const id = nextSocketId++;
@@ -122,11 +141,22 @@ export const installPackagedTransportSmokeHarness = (): void => {
     async expectSocketRejected(id) {
       const record = sockets.get(id);
       if (!record) throw new Error('Packaged Socket.IO connection is unavailable');
+      const currentScope = getDesktopConnectionScope();
+      if (!currentScope || currentScope.profileId !== record.profileId
+        || currentScope.transportScope === record.transportScope) {
+        throw new Error('Packaged stale Socket.IO activation was not rotated');
+      }
       record.socket.disconnect();
+      record.socket.io.opts.query = {
+        [DESKTOP_TRANSPORT_SCOPE_QUERY]: currentScope.transportScope,
+      };
       const rejected = waitForSocket(record.socket, 'connect_error');
-      record.socket.connect();
-      await rejected;
-      record.socket.disconnect();
+      try {
+        record.socket.connect();
+        await rejected;
+      } finally {
+        record.socket.disconnect();
+      }
     },
     disconnectSocket(id) {
       sockets.get(id)?.socket.disconnect();
