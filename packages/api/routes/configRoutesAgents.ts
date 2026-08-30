@@ -13,6 +13,7 @@ import {
 import { withConfigLock, SETTINGS_CONFIG_LOCK_KEY, upsertConfigValue, buildMergedSettings, stripSpecializedSettings, loadPersistedSettingsRecord, type ConfigLockContext } from './configHelpers.js';
 import type { AgentConfigStore, AgentRegistrySync, AgentsRoutesDeps, ApplyAgentsUpdateParams, ApplyAgentsUpdateResult, PersistAgentConfigurationResult, PublishAgentUpdatesParams, RollbackAgentConfigStateParams } from './configRoutesAgentsTypes.js';
 import { DEFAULT_PREPARATION_DEPS, loadProcessedAgents, prepareAgentsUpdate, resolveDefaultAgentAlias } from './configRoutesAgentsPreparation.js';
+export { validateDefaultAgentSetting } from './configRoutesAgentDefaults.js';
 function buildAgentPreparationError(error: string, code?: string): { code?: string; error: string } {
   return code ? { code, error } : { error };
 }
@@ -213,6 +214,29 @@ function resolveUpdatedDefaultAgent(
     ? currentDefault
     : resolveDefaultAgentAlias(processedAgents, currentDefault);
 }
+async function loadSyntheticAgents(configStore: AgentConfigStore): Promise<SyntheticAgentConfig[]> {
+  return configStore.loadSyntheticAgents ? configStore.loadSyntheticAgents() : [];
+}
+async function resolveAgentUpdateDefaults(
+  configStore: AgentConfigStore,
+  processedAgents: AgentConfig[],
+  syntheticAgents: SyntheticAgentConfig[],
+): Promise<ApplyAgentsUpdateResult | {
+  currentDefault: string | undefined;
+  newDefault: string | undefined;
+  defaultChanged: boolean;
+}> {
+  const settings = await configStore.loadSettings();
+  const currentDefault = (settings as Record<string, unknown>).default_agent_alias as string | undefined;
+  const defaultError = validateExecutableSyntheticDefault(
+    currentDefault?.trim() || '',
+    syntheticAgents,
+    processedAgents,
+  );
+  if (defaultError) return { status: 409, body: { error: defaultError } };
+  const newDefault = resolveUpdatedDefaultAgent(processedAgents, syntheticAgents, currentDefault);
+  return { currentDefault, newDefault, defaultChanged: newDefault !== currentDefault };
+}
 export async function applyAgentsUpdate({
   agents,
   processedAgents: providedProcessedAgents,
@@ -239,23 +263,12 @@ export async function applyAgentsUpdate({
   }
 
   const previousAgents = await configStore.loadAgents();
-  const syntheticAgents = configStore.loadSyntheticAgents
-    ? await configStore.loadSyntheticAgents()
-    : [];
+  const syntheticAgents = await loadSyntheticAgents(configStore);
   const integrityError = validateDirectAgentUpdateIntegrity(previousAgents, processedAgents, syntheticAgents);
   if (integrityError) return integrityError;
-  const settings = await configStore.loadSettings();
-  const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
-  const syntheticDefaultError = validateExecutableSyntheticDefault(
-    currentDefault?.trim() || '',
-    syntheticAgents,
-    processedAgents,
-  );
-  if (syntheticDefaultError) {
-    return { status: 409, body: { error: syntheticDefaultError } };
-  }
-  const newDefault = resolveUpdatedDefaultAgent(processedAgents, syntheticAgents, currentDefault);
-  const defaultChanged = newDefault !== currentDefault;
+  const defaults = await resolveAgentUpdateDefaults(configStore, processedAgents, syntheticAgents);
+  if ('status' in defaults) return defaults;
+  const { currentDefault, newDefault, defaultChanged } = defaults;
 
   try {
     const { settingsWereUpdated } = await persistAgentConfigurationAtomically({

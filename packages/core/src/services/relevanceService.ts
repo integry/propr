@@ -168,12 +168,16 @@ function buildSortedFiles(
 /**
  * Extract keywords with optional LLM enhancement
  */
+interface KeywordExtractionOptions {
+  agent?: Agent;
+  useLLMKeywords: boolean;
+  correlationId?: string;
+  routingSession?: SyntheticRoutingSession;
+}
+
 async function extractKeywordsForRelevance(
   prompt: string,
-  agent: Agent | undefined,
-  useLLMKeywords: boolean,
-  correlationId?: string,
-  routingSession?: SyntheticRoutingSession,
+  { agent, useLLMKeywords, correlationId, routingSession }: KeywordExtractionOptions,
 ): Promise<string[]> {
   const correlatedLogger = correlationId ? logger.withCorrelation(correlationId) : logger;
   let keywords = extractKeywords(prompt);
@@ -358,7 +362,12 @@ export async function findRelevantFiles(
   }, 'Starting relevance analysis');
 
   // Extract keywords - optionally enhanced with LLM
-  const keywords = await extractKeywordsForRelevance(prompt, agent, useLLMKeywords, correlationId, routingSession?.fork());
+  const keywords = await extractKeywordsForRelevance(prompt, {
+    agent,
+    useLLMKeywords,
+    correlationId,
+    routingSession: routingSession?.fork(),
+  });
 
   correlatedLogger.debug({ keywords }, 'Extracted keywords');
 
