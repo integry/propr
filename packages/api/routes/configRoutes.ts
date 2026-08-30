@@ -6,6 +6,7 @@ import { ConfigRouteError, withConfigLock, SETTINGS_CONFIG_LOCK_KEY, resolveConf
 import { createIndexingRoutes } from './configRoutesIndexing.js';
 import { createAgentTankRoutes } from './configRoutesAgentTank.js';
 import { createAgentsRoutes } from './configRoutesAgents.js';
+import { createSyntheticAgentConfigRoutes } from './configRoutesSyntheticAgents.js';
 import { saveSettingsWithRollback } from './configRoutesSettings.js';
 import { saveThenPublishConfigUpdate } from './configRoutesPersistence.js';
 import type { AgentPreparationDeps } from './configRoutesAgentsTypes.js';
@@ -137,6 +138,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     database,
     preparationDeps: deps.agentPreparationDeps,
   });
+  const syntheticAgentRoutes = createSyntheticAgentConfigRoutes(
+    { redisClient, configStore, publishConfigUpdate, logActivityHelper },
+  );
   const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, committedErrorMessage, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
     if (!bodyValidation.ok) {
@@ -314,9 +318,19 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
       }
     }
 
-    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock =>
-      saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock })
-    );
+    const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
+      const requestedDefault = settingsValidation.value.default_agent_alias;
+      if (typeof requestedDefault === 'string') {
+        const normalizedDefault = requestedDefault.trim();
+        const syntheticAgents = await configStore.loadSyntheticAgents();
+        if (syntheticAgents.some(agent => agent.alias === normalizedDefault)) {
+          throw new ConfigRouteError(409, {
+            error: `Cannot set default_agent_alias to synthetic agent '${normalizedDefault}' because synthetic agents cannot execute at runtime. Select a direct default agent instead.`,
+          });
+        }
+      }
+      return saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock });
+    });
     if (result.status === 200 && result.body.noop !== true) {
       try {
         const updatedKeys = Object.keys(settingsValidation.value);
@@ -396,7 +410,9 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
   return {
     getFollowupKeywords, postFollowupKeywords, getFollowupIgnoreKeywords, postFollowupIgnoreKeywords, getRepos, postRepos, getSettings, postSettings,
     getPrLabel, postPrLabel, getAiPrimaryTag, postAiPrimaryTag, getPrimaryProcessingLabels, postPrimaryProcessingLabels,
-    getAgents: agentsRoutes.getAgents, postAgents: agentsRoutes.postAgents, getSummarizationSettings,
+    getAgents: agentsRoutes.getAgents, postAgents: agentsRoutes.postAgents, getSyntheticAgents: syntheticAgentRoutes.getSyntheticAgents,
+    postSyntheticAgents: syntheticAgentRoutes.postSyntheticAgents,
+    getSummarizationSettings,
     postSummarizationSettings: indexingRoutes.postSummarizationSettings, getRepositoriesIndexingStatus: indexingRoutes.getRepositoriesIndexingStatus,
     triggerIndexing: indexingRoutes.triggerIndexing, triggerReindexAll: indexingRoutes.triggerReindexAll, stopIndexing: indexingRoutes.stopIndexing,
     getAgentTankSettings: agentTankRoutes.getAgentTankSettings, postAgentTankSettings: agentTankRoutes.postAgentTankSettings,
