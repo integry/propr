@@ -2,10 +2,12 @@ export const WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY: string;
 export const WINDOWS_NATIVE_LAUNCHER: string;
 export const WINDOWS_NATIVE_BOOTSTRAP: string;
 export const WINDOWS_NATIVE_BUILD_BOOTSTRAP: string;
+export const WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY: string;
 export const WINDOWS_NATIVE_AUTHORITY_DIRECTORY: string;
 
 export function prepareWindowsAuthorityBuildDirectory(root?: string): Promise<void>;
 export function sealWindowsAuthorityDirectory(root?: string): Promise<void>;
+export function cleanupWindowsAuthorityBuildStaging(): Promise<void>;
 
 export function inspectWindowsNativeLauncherPe(bytes: Buffer, expectedArchitecture: string): {
   format: 'PE';

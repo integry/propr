@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -23,6 +23,7 @@ import {
   buildWindowsNativeLauncher,
   prepareWindowsAuthorityBuildDirectory,
   WINDOWS_NATIVE_BUILD_BOOTSTRAP,
+  WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY,
   WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY,
 } from './build-windows-native-launcher.mjs';
 import {
@@ -98,7 +99,8 @@ test('bounded Windows system-directory channel rejects NT aliases, malformed rec
 
 test('compiler failures expose only fixed non-secret authenticate-to-spawn substages', () => {
   assert.deepEqual(WINDOWS_AUTHORITY_COMPILER_SUBSTAGES, [
-    'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY',
+    'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH',
+    'POLICY_NAME', 'POLICY_HASH', 'POLICY_TUPLE', 'WINTRUST_POLICY',
     'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
     'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY', 'SPAWN',
     'COMPILE', 'LINK', 'EXIT', 'TIMEOUT', 'OUTPUT_LIMIT', 'IMAGE', 'OUTPUT_VALIDATION',
@@ -177,14 +179,20 @@ test('every native build boundary preserves only the fixed secret-free compiler 
       && error.message === 'Windows authority helper build failed [win-authority:BUILD_COMPILER:DIRECTORY_PROBE]'
       && !error.message.includes('secret'),
   );
-  const identity = Object.assign(new Error('raw rendered subject and host path'), {
-    code: 'EXACT_PUBLISHER',
-    diagnostics: ['subject-der-sha256:bd68f19a09e1bdede787648ed1d0fde5b77d7bece7b1f9430bcfba4d10ec058e',
+  const policy = Object.assign(new Error('raw certificate and host path'), {
+    code: 'POLICY_HASH',
+    diagnostics: ['member:powershell.exe',
+      'catalog:Microsoft-Windows-PowerShell.cat',
+      `catalog-sha256:${'a'.repeat(64)}`,
+      'catalog:C:\\Windows\\System32\\CatRoot\\secret.cat',
+      'member:..\\powershell.exe',
       'CN=Microsoft Windows, C:\\host'],
   });
-  assert.throws(() => preserveWindowsAuthorityCompilerFailure(identity), error => {
+  assert.throws(() => preserveWindowsAuthorityCompilerFailure(policy), error => {
     assert.deepEqual(error.diagnostics, [
-      'subject-der-sha256:bd68f19a09e1bdede787648ed1d0fde5b77d7bece7b1f9430bcfba4d10ec058e',
+      'member:powershell.exe',
+      'catalog:Microsoft-Windows-PowerShell.cat',
+      `catalog-sha256:${'a'.repeat(64)}`,
     ]);
     return true;
   });
@@ -200,9 +208,16 @@ test('the current-owner exception exists only in the unshipped build bootstrap',
   assert.match(binding, /propr_windows_build_bootstrap/);
   assert.match(binding, /PROPR_WINDOWS_BUILD_BOOTSTRAP=1/);
   assert.match(nativeBuild, /buildBootstrap:/);
+  assert.match(nativeBuild, /WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY/);
+  assert.match(nativeBuild, /publishHeldArtifact\(WINDOWS_NATIVE_BUILD_BOOTSTRAP, buildBootstrapBytes/);
+  assert.match(nativeBuild, /cleanupWindowsAuthorityBuildStaging/);
+  assert.match(nativeBuild, /await mkdir\(root, \{ recursive: true \}\)/);
+  assert.match(nativeBuild, /KERNEL_TAKEOWN, \['\/F', root, '\/R', '\/SKIPSL'\]/);
   assert.doesNotMatch(nativeBuild, /copyFile\(builtBuildBootstrap/);
+  assert.match(await readFile(new URL('./build-windows-authority-helper.mjs', import.meta.url), 'utf8'),
+    /readHeldBuildOutput\([\s\S]*launcher\.buildBootstrap\.path[\s\S]*launcher\.buildBootstrap\.sha256/);
   assert.match(nativeSource, /authentication_mode == "held-build-artifact"/);
-  assert.match(nativeSource, /SecureRegularFile\(held, expected_size, &held_id, false, allow_current_build_owner\)/);
+  assert.match(nativeSource, /SecureRegularFile\(held, expected_size, &held_id, allow_current_build_owner, allow_current_build_owner\)/);
   assert.match(nativeSource, /SameIdentity\(held_id, loaded_id\)/);
   assert.match(runtime, /authenticationMode: 'runtime'/);
   assert.doesNotMatch(runtime, /held-build-artifact/);
@@ -221,7 +236,6 @@ test('system catalog policy is standalone, cache-only, held, and independently d
   assert.match(source, /ApprovedMicrosoftCatalog/);
   assert.match(source, /const CERT_NAME_BLOB& subject = certificate->pCertInfo->Subject;/);
   assert.match(source, /subject_der == approved\.subject_der/);
-  assert.match(source, /subject-der-sha256:/);
   assert.match(source, new RegExp(microsoftWindowsSubjectDer));
   assert.doesNotMatch(source, /ExactMicrosoftSystemPublisher/);
   assert.match(source, /GUID driver_action = DRIVER_ACTION_VERIFY/);
@@ -238,7 +252,7 @@ test('system catalog policy is standalone, cache-only, held, and independently d
     'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
     'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85',
   ]) assert.match(source, new RegExp(digest));
-  for (const code of WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.slice(1, 12)) {
+  for (const code of WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.slice(1, 15)) {
     assert.match(source, new RegExp(`"${code}"`));
   }
 });
@@ -249,6 +263,7 @@ test('catalog signer policy pins exact DER subjects independent of rendered X.50
     const native = require(join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
       'propr_windows_launcher.node'));
     assert.equal(typeof native.approvedCatalogSignerForTest, 'function');
+    assert.equal(typeof native.catalogPolicyFailureForTest, 'function');
     const policy = {
       member: 'csc.exe',
       catalog: process.arch === 'arm64'
@@ -290,7 +305,23 @@ test('catalog signer policy pins exact DER subjects independent of rendered X.50
     };
     assert.equal(native.approvedCatalogSignerForTest(powershellPolicy), true,
       'each reviewed certificate/SPKI/catalog tuple carries the exact approved subject DER');
+    assert.equal(native.catalogPolicyFailureForTest(policy), 'CURRENT_EXACT_TUPLE');
+    assert.equal(native.catalogPolicyFailureForTest({ ...policy, catalog: 'wrong.cat' }), 'POLICY_NAME');
+    assert.equal(native.catalogPolicyFailureForTest({ ...policy, catalogSha256: '0'.repeat(64) }), 'POLICY_HASH');
+    assert.equal(native.catalogPolicyFailureForTest({ ...policy, spkiSha256: '0'.repeat(64) }), 'POLICY_TUPLE');
   });
+
+test('absent Windows build roots are created before their DACL is protected', windowsNativeBuildOnly, async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'propr-absent-build-root-'));
+  const root = join(parent, 'private', 'staging');
+  try {
+    await prepareWindowsAuthorityBuildDirectory(root);
+    assert.equal((await lstat(root)).isDirectory(), true);
+  } finally {
+    await prepareWindowsAuthorityBuildDirectory(parent).catch(() => undefined);
+    await rm(parent, { recursive: true, force: true });
+  }
+});
 
 test('build-owner module authentication is compile-time-only, ACL-strict, and held-identity-bound',
   windowsNativeBuildOnly, async () => {
@@ -313,6 +344,12 @@ test('build-owner module authentication is compile-time-only, ACL-strict, and he
     assert.throws(() => runtimeBootstrap.loadVerifiedModule({
       ...policy, authenticationMode: 'runtime',
     }), error => error?.code === 'MODULE_AUTHORITY', 'runtime rejects a current-owner authority module');
+    assert.throws(() => buildBootstrap.loadVerifiedModule({
+      ...policy, authenticationMode: 'runtime',
+    }), error => error?.code === 'MODULE_ARGUMENT', 'build-only bootstrap rejects runtime mode confusion');
+    assert.throws(() => buildBootstrap.loadVerifiedModule({
+      ...policy, authenticationMode: 'held-build-artifact', production: true,
+    }), error => error?.code === 'MODULE_ARGUMENT', 'production mode cannot reach the current-owner allowance');
 
     const root = await mkdtemp(join(tmpdir(), 'propr-build-owner-mode-'));
     const broad = join(root, 'propr-windows-launcher.node');
@@ -330,6 +367,14 @@ test('build-owner module authentication is compile-time-only, ACL-strict, and he
       fault: 'barrier-before-module-load-swap',
     });
     assert.equal(typeof loaded.compileHeld, 'function', 'the held no-write/delete/rename lease binds the loaded identity');
+    for (const mutation of ['delete', 'swap', 'rename']) {
+      const held = buildBootstrap.loadVerifiedModule({
+        ...policy,
+        authenticationMode: 'held-build-artifact',
+        fault: `barrier-before-module-load-${mutation}`,
+      });
+      assert.equal(typeof held.compileHeld, 'function', `${mutation} is denied across the held load boundary`);
+    }
   });
 
 test('native WinTrust catalog binding requires the exact retained SHA-256 admin and catalog pair',
@@ -364,6 +409,7 @@ test('native WinTrust catalog binding requires the exact retained SHA-256 admin 
     assert.equal(exact.skipped, false);
     assert.match(exact.sourceSha256, /^[a-f0-9]{64}$/);
     assert.equal(exact.compiler.inputs.length, 3);
+    await assert.rejects(lstat(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY), error => error?.code === 'ENOENT');
   });
 
 test('compiler layout treats SystemRoot and windir as disagreement checks and rejects reparse references', async () => {
@@ -417,7 +463,7 @@ test('native compiler leases defeat compiler, reference, and exact-source substi
 
 test('native compiler signer, image, job, exit, and output failures stay bounded and clean', windowsNativeBuildOnly, async () => {
   const cases = [
-    ['compiler-wrong-catalog', 'CATALOG_HASH'],
+    ['compiler-wrong-catalog', 'POLICY_NAME'],
     ['compiler-swapped-catalog', 'CATALOG_LEASE'],
     ['compiler-job', 'IMAGE'],
     ['compiler-image', 'IMAGE'],
@@ -445,7 +491,8 @@ test('native compiler signer, image, job, exit, and output failures stay bounded
 
 test('native directory catalog failures expose their exact bounded offline-policy substage', windowsNativeBuildOnly, async () => {
   for (const substage of [
-    'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY', 'REVOCATION', 'CATALOG_LEASE',
+    'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'POLICY_NAME', 'POLICY_HASH', 'POLICY_TUPLE',
+    'WINTRUST_POLICY', 'REVOCATION', 'CATALOG_LEASE',
     'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN', 'SPKI_PIN',
   ]) {
     await assert.rejects(

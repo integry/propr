@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { copyFile, lstat, mkdir, open, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, realpath, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -12,9 +12,10 @@ const repositoryRoot = resolve(desktopRoot, '..', '..');
 export const WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY = join(desktopRoot, 'src', 'native', 'windows-launcher');
 export const WINDOWS_NATIVE_LAUNCHER = join(desktopRoot, 'build', 'windows-authority', 'propr-windows-launcher.node');
 export const WINDOWS_NATIVE_BOOTSTRAP = join(desktopRoot, 'build', 'windows-authority', 'propr-windows-bootstrap.node');
-export const WINDOWS_NATIVE_BUILD_BOOTSTRAP = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
-  'propr_windows_build_bootstrap.node');
 export const WINDOWS_NATIVE_AUTHORITY_DIRECTORY = join(desktopRoot, 'build', 'windows-authority');
+export const WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY = join(WINDOWS_NATIVE_AUTHORITY_DIRECTORY, '.build-staging');
+export const WINDOWS_NATIVE_BUILD_BOOTSTRAP = join(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY,
+  'propr-windows-build-bootstrap.node');
 const MAX_LAUNCHER_BYTES = 4 * 1024 * 1024;
 const KERNEL_TAKEOWN = String.raw`\\?\GLOBALROOT\SystemRoot\System32\takeown.exe`;
 const KERNEL_ICACLS = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
@@ -98,8 +99,14 @@ const exactAuthorityDirectory = async root => {
 // Build steps are the only writers. Reopening a previously sealed tree is an
 // explicit trusted-build transition, never part of runtime authorization.
 export const prepareWindowsAuthorityBuildDirectory = async (root = WINDOWS_NATIVE_AUTHORITY_DIRECTORY) => {
-  if (process.platform !== 'win32' || !(await exactAuthorityDirectory(root))) return;
-  await authorityAclTool(KERNEL_TAKEOWN, ['/F', root, '/A', '/R', '/SKIPSL']);
+  if (process.platform !== 'win32') return;
+  await mkdir(root, { recursive: true }).catch(() => fail('DIRECTORY_PROBE'));
+  if (!(await exactAuthorityDirectory(root))) fail('DIRECTORY_PROBE');
+  // Keep build ownership distinct from packaged authority: the build-only
+  // bootstrap may admit this exact current owner, while the runtime bootstrap
+  // must continue to reject it until sealWindowsAuthorityDirectory transfers
+  // ownership to SYSTEM.
+  await authorityAclTool(KERNEL_TAKEOWN, ['/F', root, '/R', '/SKIPSL']);
   await authorityAclTool(KERNEL_ICACLS, [root, '/inheritance:r', '/T', '/C', '/Q']);
   await authorityAclTool(KERNEL_ICACLS, [root, '/grant:r', `${ADMINISTRATORS_SID}:(OI)(CI)F`,
     `${SYSTEM_SID}:(OI)(CI)F`, '/T', '/C', '/Q']);
@@ -150,6 +157,26 @@ const heldBytes = async path => {
   } finally { await handle.close(); }
 };
 
+const publishHeldArtifact = async (target, bytes, expectedArchitecture) => {
+  await rm(target, { force: true }).catch(() => fail('OUTPUT_VALIDATION'));
+  const handle = await open(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600)
+    .catch(() => fail('OUTPUT_VALIDATION'));
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } catch { fail('OUTPUT_VALIDATION'); }
+  finally { await handle.close().catch(() => undefined); }
+  const published = await heldBytes(target);
+  if (!published.equals(bytes)) fail('OUTPUT_VALIDATION');
+  inspectWindowsNativeLauncherPe(published, expectedArchitecture);
+};
+
+export const cleanupWindowsAuthorityBuildStaging = async () => {
+  if (process.platform !== 'win32') return;
+  await rm(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY, { recursive: true, force: true })
+    .catch(() => fail('LEASE'));
+};
+
 let launcherBuild;
 
 const buildWindowsNativeLauncherOnce = async () => {
@@ -166,19 +193,23 @@ const buildWindowsNativeLauncherOnce = async () => {
   }
   const built = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_launcher.node');
   const builtBootstrap = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_bootstrap.node');
-  const builtBuildBootstrap = WINDOWS_NATIVE_BUILD_BOOTSTRAP;
+  const builtBuildBootstrap = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release',
+    'propr_windows_build_bootstrap.node');
   const bytes = await heldBytes(built);
   const bootstrapBytes = await heldBytes(builtBootstrap);
   const buildBootstrapBytes = await heldBytes(builtBuildBootstrap);
   const pe = inspectWindowsNativeLauncherPe(bytes, process.arch);
   const bootstrapPe = inspectWindowsNativeLauncherPe(bootstrapBytes, process.arch);
   const buildBootstrapPe = inspectWindowsNativeLauncherPe(buildBootstrapBytes, process.arch);
-  await mkdir(WINDOWS_NATIVE_AUTHORITY_DIRECTORY, { recursive: true });
-  await copyFile(built, WINDOWS_NATIVE_LAUNCHER);
-  await copyFile(builtBootstrap, WINDOWS_NATIVE_BOOTSTRAP);
-  const published = await heldBytes(WINDOWS_NATIVE_LAUNCHER);
-  const publishedBootstrap = await heldBytes(WINDOWS_NATIVE_BOOTSTRAP);
-  if (!published.equals(bytes) || !publishedBootstrap.equals(bootstrapBytes)) fail('OUTPUT_VALIDATION');
+  await prepareWindowsAuthorityBuildDirectory(WINDOWS_NATIVE_AUTHORITY_DIRECTORY);
+  await prepareWindowsAuthorityBuildDirectory(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY);
+  await publishHeldArtifact(WINDOWS_NATIVE_LAUNCHER, bytes, process.arch);
+  await publishHeldArtifact(WINDOWS_NATIVE_BOOTSTRAP, bootstrapBytes, process.arch);
+  await publishHeldArtifact(WINDOWS_NATIVE_BUILD_BOOTSTRAP, buildBootstrapBytes, process.arch);
+  // Newly created children must themselves carry protected DACLs; a protected
+  // parent alone does not make a child's security descriptor authoritative.
+  await prepareWindowsAuthorityBuildDirectory(WINDOWS_NATIVE_AUTHORITY_DIRECTORY);
+  await prepareWindowsAuthorityBuildDirectory(WINDOWS_NATIVE_BUILD_STAGING_DIRECTORY);
   return {
     skipped: false,
     path: WINDOWS_NATIVE_LAUNCHER,
@@ -192,11 +223,11 @@ const buildWindowsNativeLauncherOnce = async () => {
       sha256: sha256(bootstrapBytes),
       ...bootstrapPe,
     },
-    // This current-owner build capability is consumed only from node-gyp's
-    // private output. It is deliberately never copied to the authority/package
-    // directory and is not represented in the runtime manifest.
+    // This current-owner build capability exists only in the protected,
+    // unshipped staging boundary and is removed before package sealing. It is
+    // never represented in the runtime manifest.
     buildBootstrap: {
-      path: builtBuildBootstrap,
+      path: WINDOWS_NATIVE_BUILD_BOOTSTRAP,
       size: buildBootstrapBytes.length,
       sha256: sha256(buildBootstrapBytes),
       ...buildBootstrapPe,

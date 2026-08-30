@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import {
   buildWindowsNativeLauncher,
+  cleanupWindowsAuthorityBuildStaging,
+  inspectWindowsNativeLauncherPe,
   prepareWindowsAuthorityBuildDirectory,
   sealWindowsAuthorityDirectory,
 } from './build-windows-native-launcher.mjs';
@@ -17,7 +19,7 @@ export const WINDOWS_AUTHORITY_EXECUTABLE = join(WINDOWS_AUTHORITY_BUILD_DIRECTO
 export const WINDOWS_AUTHORITY_MANIFEST = join(WINDOWS_AUTHORITY_BUILD_DIRECTORY, 'propr-windows-authority.manifest.json');
 export const WINDOWS_AUTHORITY_BUILD_STAGES = Object.freeze(['BUILD_COMPILER', 'BUILD_SOURCE', 'BUILD_OUTPUT']);
 export const WINDOWS_AUTHORITY_COMPILER_SUBSTAGES = Object.freeze([
-  'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY',
+  'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'POLICY_NAME', 'POLICY_HASH', 'POLICY_TUPLE', 'WINTRUST_POLICY',
   'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
   'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY', 'SPAWN',
   'COMPILE', 'LINK', 'EXIT', 'TIMEOUT', 'OUTPUT_LIMIT', 'IMAGE', 'OUTPUT_VALIDATION',
@@ -43,7 +45,9 @@ const require = createRequire(import.meta.url);
 const boundedCompilerDiagnostics = diagnostics => Array.isArray(diagnostics)
   ? diagnostics.filter(value => typeof value === 'string' && (
     /^(?:propr_windows_launcher\.(?:cc|obj)|link):\d+:(?:C|LNK)\d{4}$/.test(value)
-      || /^subject-der-sha256:[a-f0-9]{64}$/.test(value)
+      || /^member:[A-Za-z0-9_.~-]{1,64}$/.test(value)
+      || /^catalog:[A-Za-z0-9_.~-]{1,180}\.cat$/.test(value)
+      || /^catalog-sha256:[a-f0-9]{64}$/.test(value)
   )).slice(0, 8)
   : [];
 
@@ -130,7 +134,15 @@ export const decodeWindowsSystemDirectoryRecord = record => {
   return path;
 };
 
-const loadAuthenticatedNativeLauncher = launcher => {
+const loadAuthenticatedNativeLauncher = async launcher => {
+  const buildBootstrapBytes = await readHeldBuildOutput(
+    WINDOWS_AUTHORITY_BUILD_DIRECTORY, launcher.buildBootstrap.path,
+  ).catch(() => fail('BUILD_COMPILER', 'LEASE'));
+  try {
+    if (buildBootstrapBytes.length !== launcher.buildBootstrap.size
+        || sha256(buildBootstrapBytes) !== launcher.buildBootstrap.sha256) fail('BUILD_COMPILER', 'LEASE');
+    inspectWindowsNativeLauncherPe(buildBootstrapBytes, process.arch);
+  } catch { fail('BUILD_COMPILER', 'LEASE'); }
   let bootstrap;
   try { bootstrap = require(launcher.buildBootstrap.path); }
   catch { fail('BUILD_COMPILER', 'DIRECTORY_PROBE'); }
@@ -302,12 +314,12 @@ const writeAtomic = async (target, bytes) => {
   await rename(temporary, target);
 };
 
-export const buildWindowsAuthorityHelper = async (env = process.env) => {
+const buildWindowsAuthorityHelperInner = async (env = process.env) => {
   if (process.platform !== 'win32') return { skipped: true };
   await prepareWindowsAuthorityBuildDirectory();
   const launcher = await buildWindowsNativeLauncher().catch(error => preserveWindowsAuthorityCompilerFailure(error));
   if (launcher.skipped) fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
-  const nativeLauncher = loadAuthenticatedNativeLauncher(launcher);
+  const nativeLauncher = await loadAuthenticatedNativeLauncher(launcher);
   const { systemRoot, compiler, framework, systemReference, webReference } = await resolveWindowsCompilerLayout(
     env,
     probeEnv => {
@@ -456,8 +468,14 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
     await Promise.all(buildInputs.map(input => input.handle.close().catch(() => undefined)));
     await sourceInput.handle.close().catch(() => undefined);
     await rm(privateOutputDirectory, { recursive: true, force: true });
+    await cleanupWindowsAuthorityBuildStaging();
     if (publicationComplete) await sealWindowsAuthorityDirectory();
   }
+};
+
+export const buildWindowsAuthorityHelper = async (env = process.env) => {
+  try { return await buildWindowsAuthorityHelperInner(env); }
+  finally { await cleanupWindowsAuthorityBuildStaging(); }
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
