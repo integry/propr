@@ -213,6 +213,25 @@ Return ONLY a JSON object in this exact format:
   "alternatives": ["alt1", "alt2", "related1"]
 }`;
 
+function resolveKeywordLogTarget(options: {
+  actualModelUsed?: string;
+  routedMetadata?: Record<string, unknown>;
+  configuredModel?: string;
+  agent: Agent;
+}): { modelUsed: string; agentAlias: string } {
+  const { actualModelUsed, routedMetadata, configuredModel, agent } = options;
+  const routedModel = routedMetadata?.physicalModel;
+  const routedAgentAlias = routedMetadata?.physicalAgentAlias;
+  return {
+    modelUsed: actualModelUsed
+      || (typeof routedModel === 'string' ? routedModel : undefined)
+      || configuredModel
+      || agent.config.defaultModel
+      || 'unknown',
+    agentAlias: typeof routedAgentAlias === 'string' ? routedAgentAlias : agent.config.alias,
+  };
+}
+
 /**
  * Extracts relevant keywords and alternatives from a user prompt using an LLM.
  * This helps improve file matching by understanding the user's intent.
@@ -294,23 +313,22 @@ export async function extractKeywordsWithLLM(
   } finally {
     const durationMs = Date.now() - startTime;
     routedMetadata ??= routingSession?.routingMetadata;
-    const physicalModel = typeof routedMetadata?.physicalModel === 'string'
-      ? routedMetadata.physicalModel
-      : undefined;
-    const modelUsed = actualModelUsed || physicalModel || (cachedSettings.planner_context_model as string) || agent.config.defaultModel || 'unknown';
-    const physicalAgentAlias = typeof routedMetadata?.physicalAgentAlias === 'string'
-      ? routedMetadata.physicalAgentAlias
-      : agent.config.alias;
+    const logTarget = resolveKeywordLogTarget({
+      actualModelUsed,
+      routedMetadata,
+      configuredModel: cachedSettings.planner_context_model as string,
+      agent,
+    });
 
     // Persist to llm_logs table
     const logEntry = createLlmLogFromAnalysis({
       executionType: 'context-analysis',
-      modelUsed,
+      modelUsed: logTarget.modelUsed,
       executionTimeMs: durationMs,
       success,
       error: errorMessage,
       correlationId,
-      agentAlias: physicalAgentAlias,
+      agentAlias: logTarget.agentAlias,
       metadata: {
         callType: 'keyword_extraction',
         ...(routedMetadata && { syntheticRouting: routedMetadata }),
