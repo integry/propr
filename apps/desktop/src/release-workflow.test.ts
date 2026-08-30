@@ -281,25 +281,30 @@ describe('desktop trusted release workflow', () => {
         `${jobName} must compile, load, and exercise the broker before the complete runtime suite`,
       );
     }
-    assert.ok(!windowsAuthority.includes('-EncodedCommand'));
+    assert.match(windowsAuthority, /'-EncodedCommand',\n\s+POWERSHELL_BINARY_LOADER_ENCODED/);
+    assert.ok(!windowsAuthority.includes("'-Command'"));
     assert.match(windowsAuthority, /System32', 'WindowsPowerShell', 'v1\.0', 'powershell\.exe'/);
     assert.match(windowsAuthority, /'-ExecutionPolicy',\n\s+'Bypass'/);
-    assert.match(windowsAuthority, /const source = brokerSource\(\)/);
-    assert.match(windowsAuthority, /session\.write\(source\)/);
+    assert.match(windowsAuthority, /const source = options\.source \?\? brokerSource\(\)/);
+    assert.match(windowsAuthority, /await session\.writeBootstrap\(source, options\.bootstrapChunks\)/);
+    assert.match(windowsAuthority, /await session\.write\(JSON\.stringify\(\{/);
     assert.match(windowsAuthority, /BROKER_STARTUP_TIMEOUT_MS = 60_000/);
-    assert.match(windowsAuthority, /type = 'ready'/);
-    assert.match(windowsAuthority, /nativeSmoke = \$true/);
-    assert.match(windowsAuthority, /compileCount = 1/);
+    assert.match(windowsAuthority, /"type", "ready"/);
+    assert.match(windowsAuthority, /"nativeSmoke", true/);
+    assert.match(windowsAuthority, /"compileCount", 1/);
     for (const stage of [
-      'source_decode',
-      'language_version',
-      'reference_load',
-      'type_compile',
-      'entrypoint_resolve',
-      'protocol_init',
-      'ready',
+      'TRANSPORT_SPAWN',
+      'SOURCE_LENGTH',
+      'SOURCE_READ',
+      'SOURCE_UTF8',
+      'SCRIPT_PARSE',
+      'REFERENCE_LOAD',
+      'TYPE_COMPILE',
+      'ENTRYPOINT_RESOLVE',
+      'PROTOCOL_INIT',
+      'READY',
     ]) assert.match(windowsAuthority, new RegExp(`'${stage}'`));
-    assert.match(windowsAuthority, /-CompilerOptions '\/langversion:5'/);
+    assert.match(windowsAuthority, /-CompilerOptions ''\/langversion:5''/);
     assert.match(windowsAuthority, /purpose: BrokerPurpose/);
     assert.match(windowsAuthority, /expectedBytes: number \| null/);
   });

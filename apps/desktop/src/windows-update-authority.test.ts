@@ -8,7 +8,9 @@ import { promisify } from 'node:util';
 import { test } from 'node:test';
 import {
   crashWindowsLockedArtifactForTest,
+  decodeWindowsAuthoritySourceForTest,
   decodeWindowsAuthorityFramesForTest,
+  encodeWindowsAuthoritySourceForTest,
   ensureWindowsPrivateDirectory,
   injectWindowsAuthorityHeldFaultForTest,
   injectWindowsAuthorityProtocolFaultForTest,
@@ -17,23 +19,76 @@ import {
   parseWindowsAuthorityStartupFailureForTest,
   probeWindowsAuthorityCompile,
   probeWindowsAuthorityCompileFailureForTest,
+  probeWindowsAuthorityBootstrapStageForTest,
+  probeWindowsAuthorityFragmentedSourceForTest,
+  probeWindowsAuthorityRawSourceFailureForTest,
   probeWindowsAuthorityStartupFailureForTest,
   protectWindowsPrivateFile,
   shutdownWindowsAuthorityBrokerForTest,
   smokeWindowsUpdateAuthority,
   windowsAuthorityBrokerStatsForTest,
+  WINDOWS_AUTHORITY_COMPILE_STAGES,
 } from './windows-update-authority';
 
 const execFileAsync = promisify(execFile);
 const windowsOnly = { skip: process.platform !== 'win32' };
 
 test('native Windows exact production C# compile probe reaches ready', windowsOnly, async () => {
-  assert.equal(await probeWindowsAuthorityCompile(), 'ready');
+  assert.equal(await probeWindowsAuthorityCompile(), 'READY');
 });
 
 test('native Windows compile probe bounds startup failure to an enumerated non-secret stage', windowsOnly, async () => {
-  assert.equal(await probeWindowsAuthorityCompileFailureForTest(), 'type_compile');
+  assert.equal(await probeWindowsAuthorityCompileFailureForTest(), 'TYPE_COMPILE');
   assert.equal(await probeWindowsAuthorityStartupFailureForTest(), 'ready_protocol');
+});
+
+test('Windows binary source loader accepts fragmentation at every prefix and multibyte UTF-8 boundary', () => {
+  const source = '// π🙂\r\npublic sealed class ExactSource {}';
+  const payload = encodeWindowsAuthoritySourceForTest(source);
+  for (let split = 1; split < payload.length; split++) {
+    assert.equal(decodeWindowsAuthoritySourceForTest([
+      payload.subarray(0, split),
+      payload.subarray(split),
+    ]), source, `split ${split}`);
+  }
+  assert.equal(decodeWindowsAuthoritySourceForTest([...payload].map(byte => Buffer.from([byte]))), source);
+});
+
+test('Windows binary source loader rejects partial, oversized, invalid UTF-8, and trailing startup bytes', () => {
+  const payload = encodeWindowsAuthoritySourceForTest('// π');
+  assert.throws(() => decodeWindowsAuthoritySourceForTest([payload.subarray(0, 7)]), /compile_load:1/);
+  assert.throws(() => decodeWindowsAuthoritySourceForTest([payload.subarray(0, -1)]), /compile_load:2/);
+  assert.throws(
+    () => decodeWindowsAuthoritySourceForTest([Buffer.from('00040001', 'ascii')]),
+    /compile_load:1/,
+  );
+  assert.throws(
+    () => decodeWindowsAuthoritySourceForTest([Buffer.concat([Buffer.from('00000002', 'ascii'), Buffer.from([0xc3, 0x28])])]),
+    /compile_load:3/,
+  );
+  assert.throws(
+    () => decodeWindowsAuthoritySourceForTest([Buffer.concat([payload, Buffer.from('X')])]),
+    /compile_load:2/,
+  );
+});
+
+test('native Windows bootstrap reports every injected real boundary including early exit', windowsOnly, async () => {
+  for (const stage of WINDOWS_AUTHORITY_COMPILE_STAGES) {
+    assert.equal(await probeWindowsAuthorityBootstrapStageForTest(stage), stage);
+  }
+});
+
+test('native Windows loader survives byte fragmentation and classifies malformed raw source transport', windowsOnly, async () => {
+  assert.equal(await probeWindowsAuthorityFragmentedSourceForTest(), 'READY');
+  for (const [kind, stage] of [
+    ['partial-prefix', 'SOURCE_LENGTH'],
+    ['partial-source', 'SOURCE_READ'],
+    ['oversize', 'SOURCE_LENGTH'],
+    ['invalid-utf8', 'SOURCE_UTF8'],
+    ['trailing-source', 'READY'],
+  ] as const) {
+    assert.equal(await probeWindowsAuthorityRawSourceFailureForTest(kind), stage);
+  }
 });
 
 test('Windows broker framing accepts partial JSON and rejects extra frames and strict compile failures', () => {

@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { isAbsolute, join } from 'node:path';
+import { TextDecoder } from 'node:util';
 
 export interface WindowsFileIdentity {
   platform: 'win32';
@@ -62,13 +63,16 @@ type BrokerOperation = 'inspect' | 'ensure-directory' | 'protect-directory' | 'p
 type BrokerPurpose = 'setup' | 'artifact';
 
 export const WINDOWS_AUTHORITY_COMPILE_STAGES = Object.freeze([
-  'source_decode',
-  'language_version',
-  'reference_load',
-  'type_compile',
-  'entrypoint_resolve',
-  'protocol_init',
-  'ready',
+  'TRANSPORT_SPAWN',
+  'SOURCE_LENGTH',
+  'SOURCE_READ',
+  'SOURCE_UTF8',
+  'SCRIPT_PARSE',
+  'REFERENCE_LOAD',
+  'TYPE_COMPILE',
+  'ENTRYPOINT_RESOLVE',
+  'PROTOCOL_INIT',
+  'READY',
 ] as const);
 export type WindowsAuthorityCompileStage = typeof WINDOWS_AUTHORITY_COMPILE_STAGES[number];
 
@@ -98,21 +102,16 @@ const lockedArtifactProcesses = new WeakMap<WindowsLockedArtifact, LockedArtifac
 // from the single CreateFileW handle opened with OPEN_REPARSE_POINT and sharing
 // that denies write/delete/replace for the entire session.
 const WINDOWS_AUTHORITY_BROKER = String.raw`
-$ErrorActionPreference = 'Stop'
-function Write-ProprFailure([string]$code, [int]$scenario, [string]$id = '') {
-  $frame = @{ version = 1; type = 'error'; reason = $code; scenario = $scenario }
-  if ($id -ne '') { $frame.id = $id }
-  [Console]::Out.WriteLine(($frame | ConvertTo-Json -Compress))
-  [Console]::Out.Flush()
-}
-try {
-Add-Type -TypeDefinition @'
+// Strict UTF-8 fragmentation sentinel: π🙂
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using System.Text;
+using System.Web.Script.Serialization;
 using Microsoft.Win32.SafeHandles;
 
 public sealed class BrokerFailure : Exception {
@@ -167,7 +166,13 @@ public static class ProprUpdateAuthority {
   const int WRITE_AUTHORITY = unchecked((int)0x500D0156);
   const int MAX_SECURITY_DESCRIPTOR = 65536;
   const int MAX_READ = 1048576;
+  const int MAX_REQUEST = 16384;
+  const int MAX_JSON = 2097152;
+  const int MAX_FRAMES = 8192;
+  const long MAX_INPUT = 67108864L;
   static readonly string CURRENT_USER_SID = WindowsIdentity.GetCurrent(TokenAccessLevels.Query).User.Value;
+  static readonly UTF8Encoding STRICT_UTF8 = new UTF8Encoding(false, true);
+  static readonly JavaScriptSerializer JSON = new JavaScriptSerializer { MaxJsonLength = MAX_JSON };
 
   [StructLayout(LayoutKind.Sequential)]
   struct FILE_STANDARD_INFO {
@@ -494,229 +499,297 @@ public static class ProprUpdateAuthority {
       try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
     }
   }
-}
-'@ -Language CSharp -CompilerOptions '/langversion:5'
-} catch {
-  Write-ProprFailure 'compile_load' 0
-  exit 0
-}
+  static readonly string[] START_FIELDS = { "version", "type", "challenge", "protocol" };
+  static readonly string[] REQUEST_FIELDS = { "version", "type", "id", "operation", "purpose", "path",
+    "directory", "expectedBytes", "expectedVolumeSerial", "expectedFileId128", "expectedSha256", "challenge",
+    "barrier", "offset", "length" };
 
-function Write-ProprFrame($frame) {
-  [Console]::Out.WriteLine(($frame | ConvertTo-Json -Compress))
-  [Console]::Out.Flush()
-}
-
-function Test-ProprFields($value, [string[]]$fields) {
-  if ($null -eq $value) { return $false }
-  $names = @($value.PSObject.Properties.Name)
-  if ($names.Count -ne $fields.Count) { return $false }
-  foreach ($field in $fields) { if ($names -notcontains $field) { return $false } }
-  return $true
-}
-
-function Test-ProprNullFields($value, [string[]]$fields) {
-  foreach ($field in $fields) { if ($null -ne $value.$field) { return $false } }
-  return $true
-}
-
-function Write-ProprInspection([string]$type, [string]$id, [string]$challenge, $value) {
-  Write-ProprFrame @{
-    version = 1; type = $type; id = $id; challenge = $challenge
-    volumeSerial = $value.volumeSerial; fileId128 = $value.fileId128
-    directory = $value.directory; links = $value.links; size = $value.size
-    reparseTag = $value.reparseTag; ownerSid = $value.ownerSid
-    daclProtected = $value.daclProtected; aceCount = $value.aceCount
-    inheritedWriteAces = $value.inheritedWriteAces; broadWriteAces = $value.broadWriteAces
-    sha256 = $value.sha256; sha1 = $value.sha1
+  static Dictionary<string, object> Frame(params object[] values) {
+    Dictionary<string, object> frame = new Dictionary<string, object>();
+    for (int index = 0; index < values.Length; index += 2) frame[(string)values[index]] = values[index + 1];
+    return frame;
   }
-}
 
-$startFields = @('version', 'type', 'challenge', 'protocol')
-$requestFields = @('version', 'type', 'id', 'operation', 'purpose', 'path', 'directory', 'expectedBytes', 'expectedVolumeSerial', 'expectedFileId128', 'expectedSha256', 'challenge', 'barrier', 'offset', 'length')
-$held = $null
-$heldChallenge = ''
-$heldId = ''
-$heldPurpose = ''
-$frameCount = 0
-$inputBytes = 0L
-try {
-  $startLine = [Console]::In.ReadLine()
-  if ($null -eq $startLine -or [Text.Encoding]::UTF8.GetByteCount($startLine) -gt 16384) { throw 'start' }
-  $start = $startLine | ConvertFrom-Json
-  if (-not (Test-ProprFields $start $startFields) -or $start.version -ne 1 -or $start.type -ne 'start'
-    -or $start.protocol -ne 'propr-windows-authority-v1' -or [string]$start.challenge -notmatch '^[a-f0-9]{32}$') { throw 'start' }
-  [ProprUpdateAuthority]::Smoke()
-  Write-ProprFrame @{ version = 1; type = 'ready'; challenge = [string]$start.challenge
-    protocol = 'propr-windows-authority-v1'; maxRequestBytes = 16384; nativeSmoke = $true; compileCount = 1 }
+  static void WriteFrame(Dictionary<string, object> frame) {
+    Console.Out.WriteLine(JSON.Serialize(frame));
+    Console.Out.Flush();
+  }
 
-  while ($true) {
-    $line = [Console]::In.ReadLine()
-    if ($null -eq $line) { break }
-    $frameCount++
-    $inputBytes += [Text.Encoding]::UTF8.GetByteCount($line) + 1
-    if ($frameCount -gt 8192 -or $inputBytes -gt 67108864
-      -or [Text.Encoding]::UTF8.GetByteCount($line) -gt 16384) { throw 'bound' }
-    $id = ''
-    $operation = ''
-    try {
-      $request = $line | ConvertFrom-Json
-      if (-not (Test-ProprFields $request $requestFields) -or $request.version -ne 1 -or $request.type -ne 'request'
-        -or [string]$request.id -notmatch '^[a-f0-9]{32}$') { throw 'request' }
-      $id = [string]$request.id
-      $operation = [string]$request.operation
-      if ($operation -eq 'hold') {
-        $requestPath = [string]$request.path
-        if ($null -ne $held -or $requestPath -eq '' -or $requestPath.Length -gt 8192
-          -or ($request.purpose -ne 'setup' -and $request.purpose -ne 'artifact')
-          -or -not (Test-ProprNullFields $request @('directory', 'offset', 'length'))
-          -or [string]$request.challenge -notmatch '^[a-f0-9]{32}$'
-          -or [string]$request.expectedVolumeSerial -notmatch '^[a-f0-9]{16}$'
-          -or [string]$request.expectedFileId128 -notmatch '^[a-f0-9]{32}$') { throw 'request' }
-        if (($request.purpose -eq 'artifact' -and [string]$request.expectedSha256 -notmatch '^[a-f0-9]{64}$')
-          -or ($request.purpose -eq 'setup' -and $null -ne $request.expectedSha256)) { throw 'request' }
-        $expectedBytes = [Convert]::ToInt64($request.expectedBytes)
-        if ($expectedBytes -le 0) { throw 'request' }
-        if ($null -ne $request.barrier) {
-          $barrier = [string]$request.barrier
-          if ($barrier -notmatch '^[a-f0-9]{32}$') { throw 'request' }
-          Write-ProprFrame @{ version = 1; type = 'before-open'; id = $id; challenge = $barrier }
-          $continueLine = [Console]::In.ReadLine()
-          $frameCount++
-          if ($null -eq $continueLine -or [Text.Encoding]::UTF8.GetByteCount($continueLine) -gt 16384
-            -or $frameCount -gt 8192) { throw 'request' }
-          $inputBytes += [Text.Encoding]::UTF8.GetByteCount($continueLine) + 1
-          if ($inputBytes -gt 67108864) { throw 'bound' }
-          $continue = $continueLine | ConvertFrom-Json
-          if (-not (Test-ProprFields $continue $requestFields) -or $continue.version -ne 1 -or $continue.type -ne 'request'
-            -or $continue.id -ne $id -or $continue.operation -ne 'continue' -or $continue.purpose -ne $request.purpose
-            -or $continue.challenge -ne $request.challenge
-            -or $continue.barrier -ne $barrier
-            -or -not (Test-ProprNullFields $continue @('path', 'directory', 'expectedBytes', 'expectedVolumeSerial',
-              'expectedFileId128', 'expectedSha256', 'offset', 'length'))) { throw 'request' }
-        }
-        $held = [ProprUpdateAuthority]::OpenHeld($requestPath, $expectedBytes,
-          [string]$request.expectedVolumeSerial, [string]$request.expectedFileId128,
-          [string]$request.purpose, $request.expectedSha256)
-        $heldChallenge = [string]$request.challenge
-        $heldId = $id
-        $heldPurpose = [string]$request.purpose
-        Write-ProprInspection 'held' $id $heldChallenge $held.Initial
-      } elseif ($operation -eq 'read') {
-        if ($null -eq $held -or $id -ne $heldId -or $request.purpose -ne $heldPurpose
-          -or $request.challenge -ne $heldChallenge
-          -or -not (Test-ProprNullFields $request @('path', 'directory', 'expectedBytes', 'expectedVolumeSerial',
-            'expectedFileId128', 'expectedSha256', 'barrier'))) { throw 'request' }
-        $offset = [Convert]::ToInt64($request.offset)
-        $length = [Convert]::ToInt32($request.length)
-        $bytes = $held.Read($offset, $length)
-        Write-ProprFrame @{ version = 1; type = 'bytes'; id = $id; challenge = $heldChallenge
-          bytes = [Convert]::ToBase64String($bytes) }
-      } elseif ($operation -eq 'verify') {
-        if ($null -eq $held -or $id -ne $heldId -or $request.purpose -ne $heldPurpose -or $request.challenge -ne $heldChallenge
-          -or [string]$request.barrier -notmatch '^[a-f0-9]{32}$'
-          -or -not (Test-ProprNullFields $request @('path', 'directory', 'expectedBytes', 'expectedVolumeSerial',
-            'expectedFileId128', 'expectedSha256', 'offset', 'length'))) { throw 'request' }
-        Write-ProprInspection 'verified' $id ([string]$request.barrier) ($held.Verify())
-      } elseif ($operation -eq 'close') {
-        if ($null -eq $held -or $id -ne $heldId -or $request.purpose -ne $heldPurpose
-          -or $request.challenge -ne $heldChallenge
-          -or -not (Test-ProprNullFields $request @('path', 'directory', 'expectedBytes', 'expectedVolumeSerial',
-            'expectedFileId128', 'expectedSha256', 'barrier', 'offset', 'length'))) { throw 'request' }
-        $final = $held.CloseVerified()
-        $held = $null
-        $heldChallenge = ''
-        $heldId = ''
-        $heldPurpose = ''
-        Write-ProprInspection 'closed' $id '' $final
-      } elseif ($null -ne $held) {
-        throw 'request'
-      } elseif ($operation -eq 'inspect') {
-        if ($request.purpose -ne 'setup'
-          -or -not (Test-ProprNullFields $request @('expectedBytes', 'expectedVolumeSerial', 'expectedFileId128',
-            'expectedSha256', 'challenge', 'barrier', 'offset', 'length'))) { throw 'request' }
-        Write-ProprInspection 'inspection' $id '' ([ProprUpdateAuthority]::Inspect([string]$request.path, [bool]$request.directory))
-      } elseif ($operation -eq 'ensure-directory') {
-        if ($request.purpose -ne 'setup' -or $request.directory -ne $true
-          -or -not (Test-ProprNullFields $request @('expectedBytes', 'expectedVolumeSerial', 'expectedFileId128',
-            'expectedSha256', 'challenge', 'barrier', 'offset', 'length'))) { throw 'request' }
-        Write-ProprInspection 'inspection' $id '' ([ProprUpdateAuthority]::EnsureDirectory([string]$request.path))
-      } elseif ($operation -eq 'protect-directory') {
-        if ($request.purpose -ne 'setup' -or $request.directory -ne $true
-          -or -not (Test-ProprNullFields $request @('expectedBytes', 'expectedVolumeSerial', 'expectedFileId128',
-            'expectedSha256', 'challenge', 'barrier', 'offset', 'length'))) { throw 'request' }
-        Write-ProprInspection 'inspection' $id '' ([ProprUpdateAuthority]::ProtectDirectory([string]$request.path))
-      } elseif ($operation -eq 'protect-file') {
-        if ($request.purpose -ne 'setup' -or $request.directory -ne $false
-          -or -not (Test-ProprNullFields $request @('expectedBytes', 'expectedVolumeSerial', 'expectedFileId128',
-            'expectedSha256', 'challenge', 'barrier', 'offset', 'length'))) { throw 'request' }
-        Write-ProprInspection 'inspection' $id '' ([ProprUpdateAuthority]::ProtectFile([string]$request.path))
-      } else { throw 'request' }
-    } catch {
-      if ($null -ne $held) { $held.Dispose(); $held = $null; $heldChallenge = ''; $heldId = ''; $heldPurpose = '' }
-      $failure = $_.Exception
-      while ($null -ne $failure.InnerException) { $failure = $failure.InnerException }
-      if ($failure -is [BrokerFailure]) { Write-ProprFailure $failure.Code $failure.Scenario $id }
-      else { Write-ProprFailure 'request_protocol' 1 $id }
+  static void WriteFailure(string code, int scenario, string id) {
+    Dictionary<string, object> frame = Frame("version", 1, "type", "error", "reason", code, "scenario", scenario);
+    if (!String.IsNullOrEmpty(id)) frame["id"] = id;
+    WriteFrame(frame);
+  }
+
+  static void WriteInspection(string type, string id, string challenge, InspectionResult value) {
+    WriteFrame(Frame("version", 1, "type", type, "id", id, "challenge", challenge,
+      "volumeSerial", value.volumeSerial, "fileId128", value.fileId128, "directory", value.directory,
+      "links", value.links, "size", value.size, "reparseTag", value.reparseTag, "ownerSid", value.ownerSid,
+      "daclProtected", value.daclProtected, "aceCount", value.aceCount,
+      "inheritedWriteAces", value.inheritedWriteAces, "broadWriteAces", value.broadWriteAces,
+      "sha256", value.sha256, "sha1", value.sha1));
+  }
+
+  static bool ExactFields(Dictionary<string, object> value, string[] fields) {
+    if (value == null || value.Count != fields.Length) return false;
+    foreach (string field in fields) if (!value.ContainsKey(field)) return false;
+    return true;
+  }
+
+  static bool NullFields(Dictionary<string, object> value, params string[] fields) {
+    foreach (string field in fields) if (!value.ContainsKey(field) || value[field] != null) return false;
+    return true;
+  }
+
+  static string Text(Dictionary<string, object> value, string field) {
+    object item;
+    return value.TryGetValue(field, out item) && item is string ? (string)item : null;
+  }
+
+  static bool IsBool(Dictionary<string, object> value, string field, bool expected) {
+    object item;
+    return value.TryGetValue(field, out item) && item is bool && (bool)item == expected;
+  }
+
+  static long Integer(Dictionary<string, object> value, string field) {
+    object item;
+    if (!value.TryGetValue(field, out item) || item == null) throw new BrokerFailure("request_protocol", 1);
+    try { return Convert.ToInt64(item); } catch { throw new BrokerFailure("request_protocol", 1); }
+  }
+
+  static bool Hex(string value, int length) {
+    if (value == null || value.Length != length) return false;
+    foreach (char character in value) if (!((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'))) return false;
+    return true;
+  }
+
+  static string ReadLineBounded(Stream input, ref long inputBytes) {
+    MemoryStream bytes = new MemoryStream();
+    while (true) {
+      int next = input.ReadByte();
+      if (next < 0) return bytes.Length == 0 ? null : throwProtocol();
+      inputBytes++;
+      if (inputBytes > MAX_INPUT || bytes.Length > MAX_REQUEST) throw new BrokerFailure("output_bound", 17);
+      if (next == 10) break;
+      if (next == 13 || bytes.Length == MAX_REQUEST) throw new BrokerFailure("request_protocol", 1);
+      bytes.WriteByte((byte)next);
     }
+    if (bytes.Length == 0) throw new BrokerFailure("request_protocol", 1);
+    try { return STRICT_UTF8.GetString(bytes.ToArray()); }
+    catch { throw new BrokerFailure("request_protocol", 1); }
   }
-} catch {
-  if ($null -ne $held) { $held.Dispose() }
-  $failure = $_.Exception
-  while ($null -ne $failure.InnerException) { $failure = $failure.InnerException }
-  if ($failure -is [BrokerFailure]) { Write-ProprFailure $failure.Code $failure.Scenario }
-  elseif ($frameCount -gt 8192 -or $inputBytes -gt 67108864) { Write-ProprFailure 'output_bound' 17 }
-  else { Write-ProprFailure 'ready_protocol' 12 }
+
+  static string throwProtocol() { throw new BrokerFailure("request_protocol", 1); }
+
+  static Dictionary<string, object> ReadObject(Stream input, ref long inputBytes) {
+    string line = ReadLineBounded(input, ref inputBytes);
+    if (line == null) return null;
+    try { return JSON.Deserialize<Dictionary<string, object>>(line); }
+    catch { throw new BrokerFailure("request_protocol", 1); }
+  }
+
+  static BrokerFailure Innermost(Exception error) {
+    while (error.InnerException != null) error = error.InnerException;
+    return error as BrokerFailure;
+  }
+
+  public static void Initialize() { Smoke(); }
+
+  public static void Serve() {
+    Stream input = Console.OpenStandardInput();
+    long inputBytes = 0;
+    int frameCount = 0;
+    Dictionary<string, object> start = ReadObject(input, ref inputBytes);
+    if (!ExactFields(start, START_FIELDS) || Integer(start, "version") != 1 || Text(start, "type") != "start"
+      || Text(start, "protocol") != "propr-windows-authority-v1" || !Hex(Text(start, "challenge"), 32)) {
+      throw new BrokerFailure("ready_protocol", 12);
+    }
+    WriteFrame(Frame("version", 1, "type", "ready", "challenge", Text(start, "challenge"),
+      "protocol", "propr-windows-authority-v1", "maxRequestBytes", MAX_REQUEST,
+      "nativeSmoke", true, "compileCount", 1));
+
+    HeldArtifact held = null;
+    string heldChallenge = "";
+    string heldId = "";
+    string heldPurpose = "";
+    try {
+      while (true) {
+        Dictionary<string, object> request = ReadObject(input, ref inputBytes);
+        if (request == null) break;
+        if (++frameCount > MAX_FRAMES) throw new BrokerFailure("output_bound", 17);
+        string id = "";
+        try {
+          if (!ExactFields(request, REQUEST_FIELDS) || Integer(request, "version") != 1
+            || Text(request, "type") != "request" || !Hex(Text(request, "id"), 32)) throwProtocol();
+          id = Text(request, "id");
+          string operation = Text(request, "operation");
+          string purpose = Text(request, "purpose");
+          if (operation == "hold") {
+            string path = Text(request, "path");
+            if (held != null || String.IsNullOrEmpty(path) || path.Length > 8192
+              || (purpose != "setup" && purpose != "artifact") || !NullFields(request, "directory", "offset", "length")
+              || !Hex(Text(request, "challenge"), 32) || !Hex(Text(request, "expectedVolumeSerial"), 16)
+              || !Hex(Text(request, "expectedFileId128"), 32)
+              || (purpose == "artifact" && !Hex(Text(request, "expectedSha256"), 64))
+              || (purpose == "setup" && request["expectedSha256"] != null)) throwProtocol();
+            long expectedBytes = Integer(request, "expectedBytes");
+            if (expectedBytes <= 0) throwProtocol();
+            if (request["barrier"] != null) {
+              string barrier = Text(request, "barrier");
+              if (!Hex(barrier, 32)) throwProtocol();
+              WriteFrame(Frame("version", 1, "type", "before-open", "id", id, "challenge", barrier));
+              Dictionary<string, object> continuation = ReadObject(input, ref inputBytes);
+              if (++frameCount > MAX_FRAMES || !ExactFields(continuation, REQUEST_FIELDS)
+                || Integer(continuation, "version") != 1 || Text(continuation, "type") != "request"
+                || Text(continuation, "id") != id || Text(continuation, "operation") != "continue"
+                || Text(continuation, "purpose") != purpose || Text(continuation, "challenge") != Text(request, "challenge")
+                || Text(continuation, "barrier") != barrier || !NullFields(continuation, "path", "directory", "expectedBytes",
+                  "expectedVolumeSerial", "expectedFileId128", "expectedSha256", "offset", "length")) throwProtocol();
+            }
+            held = OpenHeld(path, expectedBytes, Text(request, "expectedVolumeSerial"), Text(request, "expectedFileId128"),
+              purpose, Text(request, "expectedSha256"));
+            heldChallenge = Text(request, "challenge"); heldId = id; heldPurpose = purpose;
+            WriteInspection("held", id, heldChallenge, held.Initial);
+          } else if (operation == "read") {
+            if (held == null || id != heldId || purpose != heldPurpose || Text(request, "challenge") != heldChallenge
+              || !NullFields(request, "path", "directory", "expectedBytes", "expectedVolumeSerial", "expectedFileId128",
+                "expectedSha256", "barrier")) throwProtocol();
+            byte[] bytes = held.Read(Integer(request, "offset"), checked((int)Integer(request, "length")));
+            WriteFrame(Frame("version", 1, "type", "bytes", "id", id, "challenge", heldChallenge,
+              "bytes", Convert.ToBase64String(bytes)));
+          } else if (operation == "verify") {
+            if (held == null || id != heldId || purpose != heldPurpose || Text(request, "challenge") != heldChallenge
+              || !Hex(Text(request, "barrier"), 32) || !NullFields(request, "path", "directory", "expectedBytes",
+                "expectedVolumeSerial", "expectedFileId128", "expectedSha256", "offset", "length")) throwProtocol();
+            WriteInspection("verified", id, Text(request, "barrier"), held.Verify());
+          } else if (operation == "close") {
+            if (held == null || id != heldId || purpose != heldPurpose || Text(request, "challenge") != heldChallenge
+              || !NullFields(request, "path", "directory", "expectedBytes", "expectedVolumeSerial", "expectedFileId128",
+                "expectedSha256", "barrier", "offset", "length")) throwProtocol();
+            InspectionResult final = held.CloseVerified(); held = null; heldChallenge = ""; heldId = ""; heldPurpose = "";
+            WriteInspection("closed", id, "", final);
+          } else if (held != null) {
+            throwProtocol();
+          } else if (operation == "inspect") {
+            if (purpose != "setup" || request["path"] == null || !(request["directory"] is bool)
+              || !NullFields(request, "expectedBytes", "expectedVolumeSerial", "expectedFileId128", "expectedSha256",
+                "challenge", "barrier", "offset", "length")) throwProtocol();
+            WriteInspection("inspection", id, "", Inspect(Text(request, "path"), (bool)request["directory"]));
+          } else if (operation == "ensure-directory" || operation == "protect-directory" || operation == "protect-file") {
+            bool expectedDirectory = operation != "protect-file";
+            if (purpose != "setup" || !IsBool(request, "directory", expectedDirectory)
+              || !NullFields(request, "expectedBytes", "expectedVolumeSerial", "expectedFileId128", "expectedSha256",
+                "challenge", "barrier", "offset", "length")) throwProtocol();
+            InspectionResult result = operation == "ensure-directory" ? EnsureDirectory(Text(request, "path"))
+              : operation == "protect-directory" ? ProtectDirectory(Text(request, "path")) : ProtectFile(Text(request, "path"));
+            WriteInspection("inspection", id, "", result);
+          } else throwProtocol();
+        } catch (Exception error) {
+          if (held != null) { held.Dispose(); held = null; heldChallenge = ""; heldId = ""; heldPurpose = ""; }
+          BrokerFailure failure = Innermost(error);
+          WriteFailure(failure == null ? "request_protocol" : failure.Code, failure == null ? 1 : failure.Scenario, id);
+        }
+      }
+    } catch (Exception error) {
+      BrokerFailure failure = Innermost(error);
+      WriteFailure(failure == null ? "request_protocol" : failure.Code, failure == null ? 1 : failure.Scenario, "");
+    } finally { if (held != null) held.Dispose(); }
+  }
 }
 `;
 
-// The command line is constant and contains neither the broker nor request data.
-// The bounded UTF-8 broker is authenticated by this process and transported over
-// inherited stdin before the versioned request stream begins.
-const POWERSHELL_STDIN_BOOTSTRAP = String.raw`$ErrorActionPreference='Stop';try{$line=[Console]::In.ReadLine();if($null -eq $line -or $line.Length -gt 349528){throw 'source'};$bytes=[Convert]::FromBase64String($line);if($bytes.Length -le 0 -or $bytes.Length -gt 262144){throw 'source'};$utf8=New-Object System.Text.UTF8Encoding($false,$true);$source=$utf8.GetString($bytes);& ([ScriptBlock]::Create($source))}catch{[Console]::Out.WriteLine('{"version":1,"type":"error","reason":"compile_load","scenario":0}');[Console]::Out.Flush()}`;
-
-const POWERSHELL_COMPILE_PROBE = String.raw`
-$ErrorActionPreference = 'Stop'
-$stage = 'source_decode'
+// This fixed loader is the only command-line payload. It opens stdin once as a
+// binary stream, consumes an eight-byte hexadecimal length and exactly that many
+// raw UTF-8 C# bytes, compiles once, then transfers the same stream to Serve().
+const POWERSHELL_BINARY_LOADER = String.raw`
+$ErrorActionPreference='Stop'
+$inputStream=[Console]::OpenStandardInput()
+$inject=[Environment]::GetEnvironmentVariable('PROPR_WINDOWS_AUTHORITY_TEST_STAGE')
+function Set-ProprStage([int]$index,[string]$name){
+  [Console]::Error.WriteLine(('PROPR_BOOTSTRAP {0:D2} {1}' -f $index,$name));[Console]::Error.Flush()
+  if($inject -eq $name){throw 'injected'}
+}
+function Read-ProprExact([int]$count){
+  $bytes=New-Object byte[] $count;$offset=0
+  while($offset -lt $count){$read=$inputStream.Read($bytes,$offset,$count-$offset);if($read -le 0){throw 'eof'};$offset+=$read}
+  return ,$bytes
+}
 try {
-  $line = [Console]::In.ReadLine()
-  if ($null -eq $line -or $line.Length -gt 349528) { throw 'probe' }
-  $bytes = [Convert]::FromBase64String($line)
-  if ($bytes.Length -le 0 -or $bytes.Length -gt 262144) { throw 'probe' }
-  $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
-  $csharp = $utf8.GetString($bytes)
-  $stage = 'language_version'
-  if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'probe' }
-  $stage = 'reference_load'
-  $references = @([System.Security.AccessControl.RawSecurityDescriptor],
-    [System.Security.Principal.WindowsIdentity], [Microsoft.Win32.SafeHandles.SafeFileHandle],
-    [System.Security.Cryptography.SHA256])
-  if ($references.Count -ne 4 -or $references -contains $null) { throw 'probe' }
-  $stage = 'type_compile'
-  Add-Type -TypeDefinition $csharp -Language CSharp -CompilerOptions '/langversion:5'
-  $stage = 'entrypoint_resolve'
-  $authorityType = [ProprUpdateAuthority]
-  if ($null -eq $authorityType.GetMethod('Smoke')
-    -or $null -eq $authorityType.GetMethod('OpenHeld')) { throw 'probe' }
-  $stage = 'protocol_init'
-  [ProprUpdateAuthority]::Smoke()
-  $stage = 'ready'
-} catch { }
-[Console]::Out.WriteLine('{"version":1,"type":"compile-probe","stage":"' + $stage + '"}')
-[Console]::Out.Flush()
+  Set-ProprStage 1 'SOURCE_LENGTH'
+  $prefix=Read-ProprExact 8
+  $lengthText=[Text.Encoding]::ASCII.GetString($prefix)
+  if($lengthText -cnotmatch '^[0-9A-F]{8}$'){throw 'length'}
+  $length=[Convert]::ToInt32($lengthText,16)
+  if($length -le 0 -or $length -gt 262144){throw 'length'}
+  Set-ProprStage 2 'SOURCE_READ'
+  $sourceBytes=Read-ProprExact $length
+  Set-ProprStage 3 'SOURCE_UTF8'
+  $source=(New-Object Text.UTF8Encoding($false,$true)).GetString($sourceBytes)
+  Set-ProprStage 4 'SCRIPT_PARSE'
+  $compiler=[ScriptBlock]::Create('param($source) Add-Type -TypeDefinition $source -Language CSharp -ReferencedAssemblies ''System.Web.Extensions.dll'' -CompilerOptions ''/langversion:5''')
+  Set-ProprStage 5 'REFERENCE_LOAD'
+  $null=[Reflection.Assembly]::Load('System.Web.Extensions, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31BF3856AD364E35')
+  Set-ProprStage 6 'TYPE_COMPILE'
+  & $compiler $source
+  Set-ProprStage 7 'ENTRYPOINT_RESOLVE'
+  $type=[ProprUpdateAuthority]
+  $initialize=$type.GetMethod('Initialize',[Reflection.BindingFlags]'Public,Static')
+  $serve=$type.GetMethod('Serve',[Reflection.BindingFlags]'Public,Static')
+  if($null -eq $initialize -or $null -eq $serve){throw 'entrypoint'}
+  Set-ProprStage 8 'PROTOCOL_INIT'
+  $null=$initialize.Invoke($null,@())
+  Set-ProprStage 9 'READY'
+  $null=$serve.Invoke($null,@())
+} catch { exit 70 }
 `;
 
-const brokerSource = (): string => {
+const POWERSHELL_BINARY_LOADER_ENCODED = Buffer.from(POWERSHELL_BINARY_LOADER, 'utf16le').toString('base64');
+
+const brokerSource = (): Buffer => {
   const bytes = Buffer.from(WINDOWS_AUTHORITY_BROKER, 'utf8');
   if (bytes.length <= 0 || bytes.length > BROKER_SOURCE_BYTES) throw authorityError('compile_load', 0);
-  return bytes.toString('base64');
+  return bytes;
 };
 
-const brokerCSharpSource = (): string => {
-  const match = WINDOWS_AUTHORITY_BROKER.match(/Add-Type -TypeDefinition @'\r?\n([\s\S]*?)\r?\n'@ -Language CSharp/);
-  if (!match) throw authorityError('compile_load', 0);
-  const bytes = Buffer.from(match[1], 'utf8');
-  if (bytes.length <= 0 || bytes.length > BROKER_SOURCE_BYTES) throw authorityError('compile_load', 0);
-  return bytes.toString('base64');
+const sourcePrefix = (bytes: number): Buffer => Buffer.from(bytes.toString(16).toUpperCase().padStart(8, '0'), 'ascii');
+
+/** Pure test seam for the loader's exact incremental prefix/source contract. */
+export const decodeWindowsAuthoritySourceForTest = (chunks: readonly Buffer[]): string => {
+  const prefix = Buffer.alloc(8);
+  let prefixBytes = 0;
+  let expected: number | undefined;
+  const source: Buffer[] = [];
+  let sourceBytes = 0;
+  for (const chunk of chunks) {
+    if (!Buffer.isBuffer(chunk) || chunk.length === 0) throw authorityError('compile_load', expected === undefined ? 1 : 2);
+    let offset = 0;
+    if (prefixBytes < prefix.length) {
+      const copied = Math.min(prefix.length - prefixBytes, chunk.length);
+      chunk.copy(prefix, prefixBytes, 0, copied);
+      prefixBytes += copied;
+      offset += copied;
+      if (prefixBytes === prefix.length) {
+        const length = prefix.toString('ascii');
+        if (!/^[0-9A-F]{8}$/.test(length)) throw authorityError('compile_load', 1);
+        expected = Number.parseInt(length, 16);
+        if (expected <= 0 || expected > BROKER_SOURCE_BYTES) throw authorityError('compile_load', 1);
+      }
+    }
+    if (offset < chunk.length) {
+      if (expected === undefined || sourceBytes + chunk.length - offset > expected) throw authorityError('compile_load', 2);
+      source.push(chunk.subarray(offset));
+      sourceBytes += chunk.length - offset;
+    }
+  }
+  if (prefixBytes !== prefix.length) throw authorityError('compile_load', 1);
+  if (expected === undefined || sourceBytes !== expected) throw authorityError('compile_load', 2);
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(source)); }
+  catch { throw authorityError('compile_load', 3); }
+};
+
+export const encodeWindowsAuthoritySourceForTest = (source: string): Buffer => {
+  const bytes = Buffer.from(source, 'utf8');
+  return Buffer.concat([sourcePrefix(bytes.length), bytes]);
 };
 
 const windowsPowerShellPath = (): string => {
@@ -725,21 +798,48 @@ const windowsPowerShellPath = (): string => {
   return join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 };
 
-const spawnPowerShell = (bootstrap: string): ChildProcessWithoutNullStreams => spawn(windowsPowerShellPath(), [
-  '-NoLogo',
-  '-NoProfile',
-  '-NonInteractive',
-  '-ExecutionPolicy',
-  'Bypass',
-  '-Command',
-  bootstrap,
-], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+const spawnPowerShell = (injectedStage?: WindowsAuthorityCompileStage): ChildProcessWithoutNullStreams => {
+  const env = { ...process.env };
+  delete env.PROPR_WINDOWS_AUTHORITY_TEST_STAGE;
+  if (injectedStage && injectedStage !== 'TRANSPORT_SPAWN') {
+    env.PROPR_WINDOWS_AUTHORITY_TEST_STAGE = injectedStage;
+  }
+  return spawn(windowsPowerShellPath(), [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-EncodedCommand',
+    POWERSHELL_BINARY_LOADER_ENCODED,
+  ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env });
+};
 
-const spawnBroker = (): ChildProcessWithoutNullStreams => spawnPowerShell(POWERSHELL_STDIN_BOOTSTRAP);
+const spawnBroker = (injectedStage?: WindowsAuthorityCompileStage): ChildProcessWithoutNullStreams =>
+  spawnPowerShell(injectedStage);
 
 class WindowsAuthorityError extends Error {
   constructor(readonly reason: WindowsAuthorityReason, readonly scenario: number) {
     super(`Verified update cache authority inspection failed [win-authority:${reason}:${scenario}]`);
+  }
+}
+
+export type WindowsAuthorityBootstrapFailureKind =
+  | 'SPAWN_ERROR'
+  | 'EXIT_NO_OUTPUT'
+  | 'EXIT_AFTER_OUTPUT'
+  | 'TIMEOUT'
+  | 'MALFORMED_OUTPUT'
+  | 'EXTRA_OUTPUT'
+  | 'STAGE_CHANNEL'
+  | 'WRITE_ERROR';
+
+export class WindowsAuthorityBootstrapError extends WindowsAuthorityError {
+  readonly stage: WindowsAuthorityCompileStage;
+
+  constructor(readonly kind: WindowsAuthorityBootstrapFailureKind, stageIndex: number) {
+    super('compile_load', stageIndex);
+    this.stage = WINDOWS_AUTHORITY_COMPILE_STAGES[stageIndex] ?? 'TRANSPORT_SPAWN';
   }
 }
 
@@ -754,67 +854,6 @@ const throwIfAborted = (signal?: AbortSignal): void => {
 
 const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
-
-/**
- * Hosted-runner compile probe. It loads the exact production C# body with the
- * production System32 Windows PowerShell executable and flags, but reports only
- * one bounded, enumerated stage and discards compiler/OS diagnostics.
- */
-const runWindowsAuthorityCompileProbe = async (csharpSource: string): Promise<WindowsAuthorityCompileStage> => {
-  let child: ChildProcessWithoutNullStreams;
-  try { child = spawnPowerShell(POWERSHELL_STDIN_BOOTSTRAP); } catch { return 'source_decode'; }
-  const stdout: Buffer[] = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  let settled = false;
-  const completed = new Promise<WindowsAuthorityCompileStage>(resolve => {
-    const finish = (stage: WindowsAuthorityCompileStage) => {
-      if (settled) return;
-      settled = true;
-      resolve(stage);
-    };
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdoutBytes += chunk.length;
-      if (stdoutBytes <= BROKER_OUTPUT_BYTES) stdout.push(chunk);
-      else child.kill();
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderrBytes += chunk.length;
-      if (stderrBytes > BROKER_OUTPUT_BYTES) child.kill();
-    });
-    child.once('error', () => finish('source_decode'));
-    child.once('close', () => {
-      if (stdoutBytes > BROKER_OUTPUT_BYTES || stderrBytes > BROKER_OUTPUT_BYTES) return finish('source_decode');
-      const output = Buffer.concat(stdout).toString('utf8');
-      if (!output.endsWith('\n')) return finish('source_decode');
-      const line = output.slice(0, -1).replace(/\r$/, '');
-      if (!line || /[\r\n]/.test(line)) return finish('source_decode');
-      let frame: unknown;
-      try { frame = JSON.parse(line); } catch {
-        return finish('source_decode');
-      }
-      if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) return finish('source_decode');
-      const candidate = frame as Record<string, unknown>;
-      const stage = candidate.stage;
-      if (!hasExactKeys(candidate, ['version', 'type', 'stage'])
-        || candidate.version !== WINDOWS_AUTHORITY_PROTOCOL_VERSION || candidate.type !== 'compile-probe'
-        || typeof stage !== 'string'
-        || !(WINDOWS_AUTHORITY_COMPILE_STAGES as readonly string[]).includes(stage)) return finish('source_decode');
-      finish(stage as WindowsAuthorityCompileStage);
-    });
-  });
-  const timer = setTimeout(() => child.kill(), BROKER_STARTUP_TIMEOUT_MS);
-  child.stdin.write(`${Buffer.from(POWERSHELL_COMPILE_PROBE, 'utf8').toString('base64')}\n`);
-  child.stdin.end(`${csharpSource}\n`);
-  try { return await completed; } finally { clearTimeout(timer); }
-};
-
-export const probeWindowsAuthorityCompile = (): Promise<WindowsAuthorityCompileStage> =>
-  runWindowsAuthorityCompileProbe(brokerCSharpSource());
-
-/** Native-test-only negative compile probe; no compiler text leaves the child. */
-export const probeWindowsAuthorityCompileFailureForTest = (): Promise<WindowsAuthorityCompileStage> =>
-  runWindowsAuthorityCompileProbe(Buffer.from('public class {', 'utf8').toString('base64'));
 
 const parseFailure = (value: unknown, expectedId?: string): Error | undefined => {
   if (typeof value !== 'object' || value === null) return undefined;
@@ -951,28 +990,33 @@ class WindowsAuthoritySession {
   private buffered = '';
   private waiter: FrameWaiter | undefined;
   private stderrBytes = 0;
+  private stderrBuffered = '';
+  private bootstrapStages: WindowsAuthorityCompileStage[] = ['TRANSPORT_SPAWN'];
+  private bootstrapReady = false;
+  private bootstrapResolve!: () => void;
+  private readonly bootstrapCompleted = new Promise<void>(resolve => { this.bootstrapResolve = resolve; });
   private inputBytes = 0;
   private outputBytes = 0;
   private frames = 0;
   private closing = false;
 
-  constructor(readonly child: ChildProcessWithoutNullStreams) {
+  constructor(readonly child: ChildProcessWithoutNullStreams, private readonly sharedQueue = true) {
     activeProcessCount++;
     brokerChildren.add(child);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => this.consume(chunk));
-    child.stderr.on('data', (chunk: Buffer) => {
-      this.stderrBytes += chunk.length;
-      this.invalidate(authorityError(this.stderrBytes > BROKER_OUTPUT_BYTES ? 'output_bound' : 'process_exit',
-        this.stderrBytes > BROKER_OUTPUT_BYTES ? 17 : 19));
-    });
-    child.stdin.on('error', () => this.invalidate(authorityError('stdio_protocol', 16)));
-    child.on('error', () => this.invalidate(authorityError('process_exit', 19)));
+    child.stderr.on('data', (chunk: Buffer) => this.consumeBootstrapStage(chunk));
+    child.stdin.on('error', () => this.invalidate(this.bootstrapReady
+      ? authorityError('stdio_protocol', 16) : this.bootstrapError('WRITE_ERROR')));
+    child.on('error', () => this.invalidate(this.bootstrapReady
+      ? authorityError('process_exit', 19) : this.bootstrapError('SPAWN_ERROR')));
     this.exited = new Promise(resolve => child.once('close', code => {
       activeProcessCount--;
       brokerChildren.delete(child);
-      const clean = this.closing && code === 0 && this.stderrBytes === 0 && this.buffered === '';
-      this.fail(clean ? authorityError('clean_shutdown', 15) : authorityError('process_exit', 19), false);
+      const clean = this.closing && code === 0 && this.stderrBuffered === '' && this.buffered === '';
+      this.fail(clean ? authorityError('clean_shutdown', 15)
+        : this.bootstrapReady ? authorityError('process_exit', 19)
+          : this.bootstrapError(this.outputBytes === 0 ? 'EXIT_NO_OUTPUT' : 'EXIT_AFTER_OUTPUT'), false);
       if (brokerSession === this) brokerSession = undefined;
       resolve();
     }));
@@ -982,21 +1026,79 @@ class WindowsAuthoritySession {
     (child.stderr as typeof child.stderr & { unref?(): void }).unref?.();
   }
 
+  private bootstrapError(kind: WindowsAuthorityBootstrapFailureKind = 'EXIT_NO_OUTPUT'): WindowsAuthorityBootstrapError {
+    return new WindowsAuthorityBootstrapError(kind, this.bootstrapStages.length - 1);
+  }
+
+  private consumeBootstrapStage(chunk: Buffer): void {
+    if (this.terminalError) return;
+    this.stderrBytes += chunk.length;
+    if (this.stderrBytes > BROKER_OUTPUT_BYTES || this.bootstrapReady) {
+      return this.invalidate(authorityError(this.stderrBytes > BROKER_OUTPUT_BYTES ? 'output_bound' : 'stdio_protocol',
+        this.stderrBytes > BROKER_OUTPUT_BYTES ? 17 : 16));
+    }
+    this.stderrBuffered += chunk.toString('ascii');
+    while (this.stderrBuffered.includes('\n')) {
+      const newline = this.stderrBuffered.indexOf('\n');
+      const line = this.stderrBuffered.slice(0, newline).replace(/\r$/, '');
+      this.stderrBuffered = this.stderrBuffered.slice(newline + 1);
+      const match = /^PROPR_BOOTSTRAP (\d{2}) ([A-Z_]+)$/.exec(line);
+      const expectedIndex = this.bootstrapStages.length;
+      const expectedStage = WINDOWS_AUTHORITY_COMPILE_STAGES[expectedIndex];
+      if (!match || Number(match[1]) !== expectedIndex || match[2] !== expectedStage) {
+        return this.invalidate(this.bootstrapError('STAGE_CHANNEL'));
+      }
+      this.bootstrapStages.push(expectedStage);
+      if (expectedStage === 'READY') this.bootstrapResolve();
+    }
+    if (this.stderrBuffered.length > 128) this.invalidate(this.bootstrapError('STAGE_CHANNEL'));
+  }
+
+  async requireBootstrapReady(timeoutMs: number): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      this.bootstrapCompleted,
+      new Promise<void>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const error = this.bootstrapError('TIMEOUT');
+          this.invalidate(error);
+          reject(error);
+        }, timeoutMs);
+      }),
+    ]).finally(() => { if (timer) clearTimeout(timer); });
+    if (this.terminalError || this.stderrBuffered !== ''
+      || this.bootstrapStages.length !== WINDOWS_AUTHORITY_COMPILE_STAGES.length) {
+      throw this.terminalError ?? this.bootstrapError('STAGE_CHANNEL');
+    }
+    this.bootstrapReady = true;
+  }
+
+  currentBootstrapStage(): WindowsAuthorityCompileStage {
+    return this.bootstrapStages[this.bootstrapStages.length - 1];
+  }
+
   private consume(chunk: string): void {
     if (this.terminalError) return;
     this.outputBytes += Buffer.byteLength(chunk);
     if (this.outputBytes > BROKER_MAX_OUTPUT_BYTES) return this.invalidate(authorityError('output_bound', 17));
     let decoded: ReturnType<typeof decodeProtocolChunk>;
     try { decoded = decodeProtocolChunk(this.buffered, chunk); } catch (error) {
-      return this.invalidate(error instanceof Error ? error : authorityError('stdio_protocol', 16));
+      return this.invalidate(this.bootstrapReady
+        ? (error instanceof Error ? error : authorityError('stdio_protocol', 16))
+        : this.bootstrapError('MALFORMED_OUTPUT'));
     }
     this.buffered = decoded.buffered;
     for (const line of decoded.lines) {
-      if (!this.waiter) return this.invalidate(authorityError('stdio_protocol', 16));
+      if (!this.waiter) return this.invalidate(this.bootstrapReady
+        ? authorityError('stdio_protocol', 16) : this.bootstrapError('EXTRA_OUTPUT'));
       let value: unknown;
-      try { value = JSON.parse(line); } catch { return this.invalidate(authorityError('stdio_protocol', 16)); }
+      try { value = JSON.parse(line); } catch {
+        return this.invalidate(this.bootstrapReady
+          ? authorityError('stdio_protocol', 16) : this.bootstrapError('MALFORMED_OUTPUT'));
+      }
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        return this.invalidate(authorityError('stdio_protocol', 16));
+        return this.invalidate(this.bootstrapReady
+          ? authorityError('stdio_protocol', 16) : this.bootstrapError('MALFORMED_OUTPUT'));
       }
       const waiter = this.waiter;
       this.waiter = undefined;
@@ -1015,13 +1117,13 @@ class WindowsAuthoritySession {
       if (waiter.signal && waiter.abort) waiter.signal.removeEventListener('abort', waiter.abort);
       waiter.reject(this.terminalError);
     }
-    rejectBrokerQueue(this.terminalError);
+    if (this.sharedQueue) rejectBrokerQueue(this.terminalError);
     if (kill && !this.child.killed) this.child.kill();
   }
 
   invalidate(error: Error): void { this.fail(error, true); }
 
-  async receive(timeoutMs: number, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  async receive(timeoutMs: number, signal?: AbortSignal, startup = false): Promise<Record<string, unknown>> {
     throwIfAborted(signal);
     if (this.terminalError) throw this.terminalError;
     if (this.waiter) throw authorityError('stdio_protocol', 16);
@@ -1030,7 +1132,8 @@ class WindowsAuthoritySession {
         resolve,
         reject,
         signal,
-        timer: setTimeout(() => this.invalidate(authorityError('timeout', 18)), timeoutMs),
+        timer: setTimeout(() => this.invalidate(startup
+          ? this.bootstrapError('TIMEOUT') : authorityError('timeout', 18)), timeoutMs),
       };
       if (signal) {
         waiter.abort = () => this.invalidate(abortError());
@@ -1040,7 +1143,36 @@ class WindowsAuthoritySession {
     });
   }
 
-  write(value: string | BrokerRequestFrame): void {
+  private async writeChunk(value: string | Buffer): Promise<void> {
+    if (this.terminalError) throw this.terminalError;
+    if (this.child.stdin.write(value)) return;
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        this.child.stdin.removeListener('drain', drained);
+        this.child.stdin.removeListener('error', failed);
+      };
+      const drained = () => { cleanup(); resolve(); };
+      const failed = () => { cleanup(); reject(this.terminalError ?? authorityError('stdio_protocol', 16)); };
+      this.child.stdin.once('drain', drained);
+      this.child.stdin.once('error', failed);
+    });
+  }
+
+  async writeBootstrap(source: Buffer, chunks?: readonly number[]): Promise<void> {
+    if (source.length <= 0 || source.length > BROKER_SOURCE_BYTES) throw authorityError('compile_load', 1);
+    const payload = Buffer.concat([sourcePrefix(source.length), source]);
+    this.inputBytes += payload.length;
+    if (this.inputBytes > BROKER_MAX_INPUT_BYTES) throw authorityError('output_bound', 17);
+    if (!chunks) return this.writeChunk(payload);
+    let offset = 0;
+    for (const size of chunks) {
+      if (!Number.isInteger(size) || size <= 0 || offset + size > payload.length) throw authorityError('request_protocol', 1);
+      await this.writeChunk(payload.subarray(offset, offset += size));
+    }
+    if (offset !== payload.length) await this.writeChunk(payload.subarray(offset));
+  }
+
+  async write(value: string | BrokerRequestFrame): Promise<void> {
     if (this.terminalError) throw this.terminalError;
     const line = typeof value === 'string' ? value : JSON.stringify(value);
     const bytes = Buffer.byteLength(line) + 1;
@@ -1052,23 +1184,23 @@ class WindowsAuthoritySession {
       this.invalidate(authorityError('output_bound', 17));
       throw authorityError('output_bound', 17);
     }
-    this.child.stdin.write(`${line}\n`);
+    await this.writeChunk(`${line}\n`);
   }
 
-  writeRawForTest(chunks: readonly string[]): void {
+  async writeRawForTest(chunks: readonly string[]): Promise<void> {
     if (this.terminalError || chunks.length === 0
       || chunks.some(chunk => chunk.length === 0 || Buffer.byteLength(chunk) > BROKER_REQUEST_LINE_BYTES)) {
       throw authorityError('request_protocol', 1);
     }
-    for (const chunk of chunks) this.child.stdin.write(chunk);
+    for (const chunk of chunks) await this.writeChunk(chunk);
   }
 
   async exchange(frame: BrokerRequestFrame, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const response = this.receive(BROKER_TIMEOUT_MS, signal);
-    this.write(frame);
+    await this.write(frame);
     const value = await response;
     requestCount++;
-    const failure = parseFailure(value, frame.id);
+    const failure = parseFailure(value, frame.id) ?? parseFailure(value);
     if (failure) throw failure;
     if (value.id !== frame.id) {
       this.invalidate(authorityError('stdio_protocol', 16));
@@ -1117,23 +1249,42 @@ const requestFrame = (operation: BrokerRequestOperation, values: Partial<BrokerR
   ...values,
 });
 
-const startBroker = async (): Promise<WindowsAuthoritySession> => {
-  const source = brokerSource();
+interface StartBrokerOptions {
+  source?: Buffer;
+  injectedStage?: WindowsAuthorityCompileStage;
+  countCompilation?: boolean;
+  bootstrapChunks?: readonly number[];
+}
+
+const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAuthoritySession> => {
+  const source = options.source ?? brokerSource();
   let child: ChildProcessWithoutNullStreams;
-  try { child = spawnBroker(); } catch { throw authorityError('compile_load', 0); }
-  compileCount++;
-  if (compileCount > 1) restartCount++;
-  const session = new WindowsAuthoritySession(child);
+  try {
+    if (options.injectedStage === 'TRANSPORT_SPAWN') throw new Error('injected');
+    child = spawnBroker(options.injectedStage);
+  } catch { throw new WindowsAuthorityBootstrapError('SPAWN_ERROR', 0); }
+  if (options.countCompilation !== false) {
+    compileCount++;
+    if (compileCount > 1) restartCount++;
+  }
+  const session = new WindowsAuthoritySession(child, options.countCompilation !== false);
   const challenge = randomBytes(16).toString('hex');
-  const readyPromise = session.receive(BROKER_STARTUP_TIMEOUT_MS);
-  session.write(source);
-  session.write(JSON.stringify({
-    version: WINDOWS_AUTHORITY_PROTOCOL_VERSION,
-    type: 'start',
-    challenge,
-    protocol: 'propr-windows-authority-v1',
-  }));
+  const startupDeadline = Date.now() + BROKER_STARTUP_TIMEOUT_MS;
+  const readyPromise = session.receive(BROKER_STARTUP_TIMEOUT_MS, undefined, true);
+  try {
+    await session.writeBootstrap(source, options.bootstrapChunks);
+    await session.write(JSON.stringify({
+      version: WINDOWS_AUTHORITY_PROTOCOL_VERSION,
+      type: 'start',
+      challenge,
+      protocol: 'propr-windows-authority-v1',
+    }));
+  } catch (error) {
+    session.invalidate(error instanceof Error ? error : authorityError('compile_load', 0));
+    throw error;
+  }
   const ready = await readyPromise;
+  await session.requireBootstrapReady(Math.max(1, startupDeadline - Date.now()));
   const failure = parseFailure(ready);
   if (failure) {
     session.invalidate(failure);
@@ -1143,27 +1294,96 @@ const startBroker = async (): Promise<WindowsAuthoritySession> => {
     || ready.version !== WINDOWS_AUTHORITY_PROTOCOL_VERSION || ready.type !== 'ready'
     || ready.challenge !== challenge || ready.protocol !== 'propr-windows-authority-v1'
     || ready.maxRequestBytes !== BROKER_REQUEST_LINE_BYTES || ready.nativeSmoke !== true || ready.compileCount !== 1) {
-    session.invalidate(authorityError('ready_protocol', 12));
-    throw authorityError('ready_protocol', 12);
+    const error = new WindowsAuthorityBootstrapError('MALFORMED_OUTPUT', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf('READY'));
+    session.invalidate(error);
+    throw error;
   }
   return session;
 };
 
+const compileStageFromError = (error: unknown): WindowsAuthorityCompileStage => {
+  if (error instanceof WindowsAuthorityError && error.reason === 'compile_load'
+    && error.scenario >= 0 && error.scenario < WINDOWS_AUTHORITY_COMPILE_STAGES.length) {
+    return WINDOWS_AUTHORITY_COMPILE_STAGES[error.scenario];
+  }
+  return 'TRANSPORT_SPAWN';
+};
+
+const runWindowsAuthorityCompileProbe = async (options: StartBrokerOptions = {}): Promise<WindowsAuthorityCompileStage> => {
+  let session: WindowsAuthoritySession | undefined;
+  try {
+    session = await startBroker({ ...options, countCompilation: false });
+    return 'READY';
+  } catch (error) {
+    return compileStageFromError(error);
+  } finally {
+    await session?.shutdown();
+  }
+};
+
+/** Hosted smoke of the exact production source, loader, native initialization, and READY handshake. */
+export const probeWindowsAuthorityCompile = (): Promise<WindowsAuthorityCompileStage> =>
+  runWindowsAuthorityCompileProbe();
+
+/** Native-test-only negative compile probe; no source or compiler diagnostics leave the child. */
+export const probeWindowsAuthorityCompileFailureForTest = (): Promise<WindowsAuthorityCompileStage> =>
+  runWindowsAuthorityCompileProbe({ source: Buffer.from('public class Invalid {', 'utf8') });
+
+/** Native-test-only failure injection at each fixed startup boundary. */
+export const probeWindowsAuthorityBootstrapStageForTest = (stage: WindowsAuthorityCompileStage): Promise<WindowsAuthorityCompileStage> =>
+  runWindowsAuthorityCompileProbe({ injectedStage: stage });
+
+/** Native-test-only byte-at-a-time transport across every production source boundary. */
+export const probeWindowsAuthorityFragmentedSourceForTest = (): Promise<WindowsAuthorityCompileStage> => {
+  const source = brokerSource();
+  return runWindowsAuthorityCompileProbe({
+    source,
+    bootstrapChunks: Array.from({ length: source.length + 8 }, () => 1),
+  });
+};
+
+/** Native-test-only malformed startup transport; the child receives no mutable path or command-line source. */
+export const probeWindowsAuthorityRawSourceFailureForTest = async (
+  kind: 'partial-prefix' | 'partial-source' | 'oversize' | 'invalid-utf8' | 'trailing-source',
+): Promise<WindowsAuthorityCompileStage> => {
+  const exact = brokerSource();
+  const payload = kind === 'partial-prefix' ? Buffer.from('0000', 'ascii')
+    : kind === 'partial-source' ? Buffer.concat([Buffer.from('00000004', 'ascii'), Buffer.from('ab')])
+      : kind === 'oversize' ? Buffer.from('00040001', 'ascii')
+        : kind === 'invalid-utf8' ? Buffer.concat([Buffer.from('00000002', 'ascii'), Buffer.from([0xc3, 0x28])])
+          : Buffer.concat([sourcePrefix(exact.length), exact, Buffer.from('X')]);
+  const session = new WindowsAuthoritySession(spawnBroker(), false);
+  const response = session.receive(BROKER_STARTUP_TIMEOUT_MS, undefined, true);
+  session.child.stdin.end(payload);
+  try {
+    await response;
+    throw authorityError('stdio_protocol', 16);
+  } catch (error) {
+    return compileStageFromError(error);
+  } finally {
+    if (session.child.exitCode === null) session.child.kill();
+    await session.exited;
+  }
+};
+
 /** Native-test-only startup failure against an exact-source production child. */
 export const probeWindowsAuthorityStartupFailureForTest = async (): Promise<WindowsAuthorityReason> => {
-  const session = new WindowsAuthoritySession(spawnBroker());
+  const session = new WindowsAuthoritySession(spawnBroker(), false);
   try {
-    const response = session.receive(BROKER_STARTUP_TIMEOUT_MS);
-    session.write(brokerSource());
-    session.write(JSON.stringify({
+    const response = session.receive(BROKER_STARTUP_TIMEOUT_MS, undefined, true);
+    await session.writeBootstrap(brokerSource());
+    await session.write(JSON.stringify({
       version: WINDOWS_AUTHORITY_PROTOCOL_VERSION,
       type: 'start',
       challenge: randomBytes(16).toString('hex'),
       protocol: 'invalid-protocol',
     }));
-    const failure = parseFailure(await response);
-    if (!(failure instanceof WindowsAuthorityError)) throw authorityError('stdio_protocol', 16);
-    return failure.reason;
+    await response;
+    throw authorityError('stdio_protocol', 16);
+  } catch (error) {
+    if (error instanceof WindowsAuthorityError && error.reason === 'compile_load'
+      && error.scenario === WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf('READY')) return 'ready_protocol';
+    throw error;
   } finally {
     await session.shutdown();
   }
@@ -1312,7 +1532,7 @@ const openWindowsLockedArtifactAttempt = async (
       barrier: barrierChallenge,
     });
     let responsePromise = activeSession.receive(BROKER_TIMEOUT_MS, signal);
-    activeSession.write(hold);
+    await activeSession.write(hold);
     let ready = await responsePromise;
     if (barrierChallenge) {
       if (!exactKeys(ready, ['version', 'type', 'id', 'challenge'])
@@ -1332,7 +1552,7 @@ const openWindowsLockedArtifactAttempt = async (
         barrier: barrierChallenge,
       });
       responsePromise = activeSession.receive(BROKER_TIMEOUT_MS, signal);
-      activeSession.write(continuation);
+      await activeSession.write(continuation);
       ready = await responsePromise;
     }
     requestCount++;
@@ -1491,7 +1711,7 @@ export const injectWindowsAuthorityProtocolFaultForTest = async (
       const response = session.receive(BROKER_TIMEOUT_MS);
       const line = `${JSON.stringify(inspect)}\n`;
       const split = Math.floor(line.length / 2);
-      session.writeRawForTest([line.slice(0, split), line.slice(split)]);
+      await session.writeRawForTest([line.slice(0, split), line.slice(split)]);
       const value = await response;
       const parsed = parseInspection(value, false, false);
       if (!parsed || value.id !== inspect.id || value.type !== 'inspection') throw authorityError('stdio_protocol', 16);
@@ -1499,7 +1719,7 @@ export const injectWindowsAuthorityProtocolFaultForTest = async (
     }
     if (kind === 'extra-frame') {
       const response = session.receive(BROKER_TIMEOUT_MS);
-      session.writeRawForTest([`${JSON.stringify(inspect)}\n${JSON.stringify(requestFrame('inspect', {
+      await session.writeRawForTest([`${JSON.stringify(inspect)}\n${JSON.stringify(requestFrame('inspect', {
         purpose: 'setup',
         path,
         directory: false,
