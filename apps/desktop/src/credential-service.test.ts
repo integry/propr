@@ -28,6 +28,36 @@ const json = (body: unknown, status = 200): Response => new Response(JSON.string
   status,
   headers: { 'Content-Type': 'application/json' },
 });
+const testPairingBindings = new Map<string, Record<string, unknown>>();
+const pairingStartResponse = (
+  url: string,
+  init: RequestInit | undefined,
+  body: Record<string, unknown>,
+  status = 201,
+): Response => {
+  const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+  testPairingBindings.set(new URL(url).origin, {
+    instanceId: request.instanceId,
+    origin: request.origin,
+    scope: request.scope,
+    credentialGeneration: request.credentialGeneration,
+    activationExpiresAt: body.expiresAt,
+  });
+  return json(body, status);
+};
+const provisionalPairingResponse = (url: string, credentialToken: string): Response => json({
+  status: 'provisional',
+  token: credentialToken,
+  tokenType: 'Bearer',
+  activationTicket: 'T'.repeat(43),
+  ...testPairingBindings.get(new URL(url).origin),
+});
+const pairingActivationReceipt = (): Response => json({
+  status: 'active',
+  receipt: 'R'.repeat(22),
+  activatedAt: '2026-01-01T00:00:01.000Z',
+  expiresAt: null,
+});
 const terminalRevocationBody = (
   init: RequestInit | undefined,
   code: 'TOKEN_NOT_FOUND' | 'INSTANCE_TOKEN_REVOKED' | 'INSTANCE_TOKEN_EXPIRED' = 'TOKEN_NOT_FOUND',
@@ -49,7 +79,7 @@ const discovery = {
   apiCompatibility: PROPR_API_COMPATIBILITY,
   uiCompatibility: PROPR_UI_COMPATIBILITY,
   desktopAuthentication: {
-    protocolVersion: 1 as const,
+    protocolVersion: 2 as const,
     browserPairing: true,
     instanceBearerTokens: true,
     socketIoBearerAuthentication: true,
@@ -649,16 +679,15 @@ describe('main-process desktop credential service', () => {
         const url = input.toString();
         const authorization = new Headers(init?.headers).get('Authorization');
         if (url.endsWith('/api/desktop/discovery')) return json(discovery);
-        if (url.endsWith('/api/desktop/pairings')) return json({
+        if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
           pairingId: `dpr_${'A'.repeat(22)}`,
           deviceSecret: 'C'.repeat(43),
           approvalUrl: 'https://a.example.test/approve',
           expiresAt: new Date(pairingNow + 10_000).toISOString(),
           interval: 1,
         }, 201);
-        if (url.endsWith('/poll')) {
-          return json({ status: 'complete', token: replacement.token, tokenType: 'Bearer', expiresAt: null });
-        }
+        if (url.endsWith('/poll')) return provisionalPairingResponse(url, replacement.token);
+        if (url.endsWith('/activate')) return pairingActivationReceipt();
         if (url.endsWith('/api/auth/user') && authorization === `Bearer ${oldCredential.token}`) {
           oldProbePending.resolve();
           return oldProbeResponse.promise;
@@ -779,7 +808,7 @@ describe('main-process desktop credential service', () => {
           requests.push({ url, authorization });
           if (url === 'https://a.example.test/api/desktop/discovery') return json(discovery);
           if (url === 'https://a.example.test/api/auth/user') return json({ username: 'working-a' });
-          if (url === 'https://b.example.test/api/desktop/pairings') return json({
+          if (url === 'https://b.example.test/api/desktop/pairings') return pairingStartResponse(url, init, {
             pairingId: `dpr_${'A'.repeat(22)}`,
             deviceSecret: 'C'.repeat(43),
             approvalUrl: 'https://b.example.test/approve',
@@ -788,8 +817,9 @@ describe('main-process desktop credential service', () => {
           }, 201);
           if (url.endsWith('/poll')) {
             if (failure === 'polling') throw new Error('Pairing poll failed.');
-            return json({ status: 'complete', token: token('B'), tokenType: 'Bearer', expiresAt: null });
+            return provisionalPairingResponse(url, token('B'));
           }
+          if (url.endsWith('/activate')) return pairingActivationReceipt();
           if (url === 'https://b.example.test/api/desktop/tokens/current') {
             return new Response(null, { status: 204 });
           }
@@ -842,16 +872,15 @@ describe('main-process desktop credential service', () => {
       openExternal: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
-        if (url === 'https://b.example.test/api/desktop/pairings') return json({
+        if (url === 'https://b.example.test/api/desktop/pairings') return pairingStartResponse(url, init, {
           pairingId: `dpr_${'A'.repeat(22)}`,
           deviceSecret: 'C'.repeat(43),
           approvalUrl: 'https://b.example.test/approve',
           expiresAt: new Date(pairingNow + 10_000).toISOString(),
           interval: 1,
         }, 201);
-        if (url.endsWith('/poll')) {
-          return json({ status: 'complete', token: replacement.token, tokenType: 'Bearer', expiresAt: null });
-        }
+        if (url.endsWith('/poll')) return provisionalPairingResponse(url, replacement.token);
+        if (url.endsWith('/activate')) return pairingActivationReceipt();
         if (url === 'https://a.example.test/api/desktop/tokens/current') {
           assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${oldCredential.token}`);
           revocationSnapshot.resolve({
@@ -878,6 +907,50 @@ describe('main-process desktop credential service', () => {
     assert.deepEqual(await store.readCredential(profile.id), replacement);
   });
 
+  it('durably journals a provisional delivery before server activation and local publication', async () => {
+    const store = await createStore();
+    const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+    const replacement = credential('profile-delivery', 'https://a.example.test', 'B');
+    let activationChecked = false;
+    const service = createCredentialService({
+      profiles: store,
+      clientName: 'Delivery ordering test',
+      pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'C'.repeat(43),
+          approvalUrl: 'https://a.example.test/approve',
+          expiresAt: new Date(pairingNow + 10_000).toISOString(),
+          interval: 1,
+        });
+        if (url.endsWith('/poll')) return provisionalPairingResponse(url, replacement.token);
+        if (url.endsWith('/activate')) {
+          const pending = await store.pendingRevocations();
+          assert.equal(pending.length, 1);
+          assert.equal(pending[0]?.deferred, true);
+          assert.deepEqual(pending[0]?.credential, replacement);
+          assert.equal(await store.readCredential(replacement.profileId), null);
+          activationChecked = true;
+          return pairingActivationReceipt();
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+
+    await service.pair({
+      id: replacement.profileId,
+      label: 'Delivered B',
+      apiBaseUrl: replacement.origin,
+    });
+    assert.equal(activationChecked, true);
+    assert.deepEqual(await store.readCredential(replacement.profileId), replacement);
+    assert.deepEqual(await store.pendingRevocations(), []);
+    console.log('NATIVE_SCENARIO delivery');
+  });
+
   it('retries an encrypted pending A revocation across failure, restart, remote success, and local cleanup failure', async () => {
     const store = await createStore();
     const profile = await store.save({
@@ -897,16 +970,15 @@ describe('main-process desktop credential service', () => {
       reportRevocationFailure: value => diagnostics.push(value),
       fetch: async (input, init) => {
         const url = input.toString();
-        if (url.endsWith('/api/desktop/pairings')) return json({
+        if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
           pairingId: `dpr_${'A'.repeat(22)}`,
           deviceSecret: 'C'.repeat(43),
           approvalUrl: 'https://a.example.test/approve',
           expiresAt: new Date(pairingNow + 10_000).toISOString(),
           interval: 1,
         }, 201);
-        if (url.endsWith('/poll')) {
-          return json({ status: 'complete', token: credentialB.token, tokenType: 'Bearer', expiresAt: null });
-        }
+        if (url.endsWith('/poll')) return provisionalPairingResponse(url, credentialB.token);
+        if (url.endsWith('/activate')) return pairingActivationReceipt();
         if (url.endsWith('/api/desktop/tokens/current')) {
           assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${credentialA.token}`);
           return json({ error: 'offline' }, 503);
@@ -1021,16 +1093,15 @@ describe('main-process desktop credential service', () => {
       openExternal: async () => undefined,
       fetch: async (input, init) => {
         const url = input.toString();
-        if (url.endsWith('/api/desktop/pairings')) return json({
+        if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
           pairingId: `dpr_${'A'.repeat(22)}`,
           deviceSecret: 'C'.repeat(43),
           approvalUrl: 'https://a.example.test/approve',
           expiresAt: new Date(pairingNow + 10_000).toISOString(),
           interval: 1,
         }, 201);
-        if (url.endsWith('/poll')) {
-          return json({ status: 'complete', token: uncertainB.token, tokenType: 'Bearer', expiresAt: null });
-        }
+        if (url.endsWith('/poll')) return provisionalPairingResponse(url, uncertainB.token);
+        if (url.endsWith('/activate')) return pairingActivationReceipt();
         if (url.endsWith('/api/desktop/tokens/current')) {
           uncertainRevocations.push(new Headers(init?.headers).get('Authorization') ?? '');
           return new Response(null, { status: 204 });
@@ -1438,6 +1509,7 @@ describe('main-process desktop credential service', () => {
     assert.equal(ioOperations, ioAtDispose);
     assert.equal(networkCalls, networkAtDispose);
     assert.deepEqual(await store.pendingRevocations(), []);
+    console.log('NATIVE_SCENARIO dispose');
   });
 
   it('bounds aggregate startup across stalled records and recovers all encrypted records later', async () => {
@@ -1511,6 +1583,7 @@ describe('main-process desktop credential service', () => {
     assert.equal(calls, 1);
     assert.deepEqual(await store.pendingRevocations(), []);
     console.log('NATIVE_SCENARIO transient-revocation');
+    console.log('NATIVE_SCENARIO provisional');
   });
 
   it('ignores delayed A invalidation after B connects and preserves tokens for authorization/transient codes', async () => {
@@ -1596,7 +1669,7 @@ describe('main-process desktop credential service', () => {
         const url = input.toString();
         if (url.endsWith('/api/desktop/pairings')) {
           currentPairing = ++pairingNumber;
-          return json({
+          return pairingStartResponse(url, init, {
             pairingId: `dpr_${String.fromCharCode(64 + currentPairing).repeat(22)}`,
             deviceSecret: String.fromCharCode(66 + currentPairing).repeat(43),
             approvalUrl: 'https://a.example.test/approve',
@@ -1606,8 +1679,9 @@ describe('main-process desktop credential service', () => {
         }
         if (url.endsWith('/poll')) {
           const character = currentPairing === 1 ? 'C' : 'D';
-          return json({ status: 'complete', token: token(character), tokenType: 'Bearer', expiresAt: null });
+          return provisionalPairingResponse(url, token(character));
         }
+        if (url.endsWith('/activate')) return pairingActivationReceipt();
         if (url.endsWith('/api/desktop/tokens/current')) {
           assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${token('C')}`);
           revocationStarted.resolve();
@@ -1649,9 +1723,9 @@ describe('main-process desktop credential service', () => {
       clientName: 'Test desktop',
       pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
       openExternal: async () => undefined,
-      fetch: async input => {
+      fetch: async (input, init) => {
         const url = input.toString();
-        if (url.endsWith('/api/desktop/pairings')) return json({
+        if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
           pairingId: `dpr_${'A'.repeat(22)}`,
           deviceSecret: 'B'.repeat(43),
           approvalUrl: 'https://a.example.test/approve',
@@ -1659,8 +1733,9 @@ describe('main-process desktop credential service', () => {
           interval: 1,
         }, 201);
         if (url.endsWith('/poll')) {
-          return json({ status: 'complete', token: token('C'), tokenType: 'Bearer', expiresAt: null });
+          return provisionalPairingResponse(url, token('C'));
         }
+        if (url.endsWith('/activate')) return pairingActivationReceipt();
         if (url.endsWith('/api/desktop/tokens/current')) return json({ error: 'unavailable' }, 500);
         throw new Error(`Unexpected request: ${url}`);
       },
@@ -1740,7 +1815,7 @@ describe('main-process desktop credential service', () => {
           revokeStarted.resolve();
           return releaseRevoke.promise;
         }
-        if (url.endsWith('/api/desktop/pairings')) return json({
+        if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
           pairingId: `dpr_${'A'.repeat(22)}`,
           deviceSecret: 'B'.repeat(43),
           approvalUrl: 'https://c.example.test/approve',
@@ -1748,8 +1823,9 @@ describe('main-process desktop credential service', () => {
           interval: 1,
         }, 201);
         if (url.endsWith('/poll')) {
-          return json({ status: 'complete', token: token('C'), tokenType: 'Bearer', expiresAt: null });
+          return provisionalPairingResponse(url, token('C'));
         }
+        if (url.endsWith('/activate')) return pairingActivationReceipt();
         if (url.endsWith('/api/desktop/discovery')) return json(discovery);
         if (url.endsWith('/api/auth/user')) return json({ username: 'c' });
         throw new Error(`Unexpected request: ${url}`);
@@ -1798,7 +1874,7 @@ describe('main-process desktop credential service', () => {
           assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${oldCredential.token}`);
           return json({ username: 'old-user' });
         }
-        if (url.endsWith('/api/desktop/pairings')) return json({
+        if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
           pairingId: `dpr_${'A'.repeat(22)}`,
           deviceSecret: 'C'.repeat(43),
           approvalUrl: 'https://a.example.test/approve',
@@ -1806,8 +1882,9 @@ describe('main-process desktop credential service', () => {
           interval: 1,
         }, 201);
         if (url.endsWith('/poll')) {
-          return json({ status: 'complete', token: replacement.token, tokenType: 'Bearer', expiresAt: null });
+          return provisionalPairingResponse(url, replacement.token);
         }
+        if (url.endsWith('/activate')) return pairingActivationReceipt();
         throw new Error(`Unexpected request: ${url}`);
       },
     });
@@ -1888,7 +1965,7 @@ describe('main-process desktop credential service', () => {
         openExternal: async () => undefined,
         fetch: async (input, init) => {
           const url = input.toString();
-          if (url.endsWith('/api/desktop/pairings')) return json({
+          if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
             pairingId: `dpr_${'A'.repeat(22)}`,
             deviceSecret: 'B'.repeat(43),
             approvalUrl: 'https://a.example.test/approve',
@@ -1896,8 +1973,9 @@ describe('main-process desktop credential service', () => {
             interval: 1,
           }, 201);
           if (url.endsWith('/poll')) {
-            return json({ status: 'complete', token: token('C'), tokenType: 'Bearer', expiresAt: null });
+            return provisionalPairingResponse(url, token('C'));
           }
+          if (url.endsWith('/activate')) return pairingActivationReceipt();
           if (url.endsWith('/api/desktop/tokens/current')) {
             revocations.push(new Headers(init?.headers).get('Authorization') ?? '');
             return new Response(null, { status: 204 });
@@ -1954,7 +2032,7 @@ describe('main-process desktop credential service', () => {
           openExternal: async () => undefined,
           fetch: async (input, init) => {
             const url = input.toString();
-            if (url.endsWith('/api/desktop/pairings')) return json({
+            if (url.endsWith('/api/desktop/pairings')) return pairingStartResponse(url, init, {
               pairingId: `dpr_${'A'.repeat(22)}`,
               deviceSecret: 'C'.repeat(43),
               approvalUrl: 'https://a.example.test/approve',
@@ -1962,8 +2040,9 @@ describe('main-process desktop credential service', () => {
               interval: 1,
             }, 201);
             if (url.endsWith('/poll')) {
-              return json({ status: 'complete', token: token('C'), tokenType: 'Bearer', expiresAt: null });
+              return provisionalPairingResponse(url, token('C'));
             }
+            if (url.endsWith('/activate')) return pairingActivationReceipt();
             if (url.endsWith('/api/desktop/tokens/current')) {
               revocations.push(new Headers(init?.headers).get('Authorization') ?? '');
               return new Response(null, { status: 204 });

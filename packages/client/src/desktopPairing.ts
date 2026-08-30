@@ -26,11 +26,33 @@ export interface ProprDesktopPairingStart {
 export interface ProprDesktopPairingComplete {
   token: string;
   tokenType: 'Bearer';
+  pairingId: string;
+  deviceSecret: string;
+  activationTicket: string;
+  activationExpiresAt: string;
+  instanceId: string;
+  origin: string;
+  scope: 'desktop-instance';
+  credentialGeneration: string;
+}
+
+export interface ProprDesktopPairingBinding {
+  instanceId: string;
+  origin: string;
+  scope: 'desktop-instance';
+  credentialGeneration: string;
+}
+
+export interface ProprDesktopPairingActivationReceipt {
+  status: 'active';
+  receipt: string;
+  activatedAt: string;
   expiresAt: string | null;
 }
 
 export interface ProprDesktopPairingOptions {
   signal?: AbortSignal;
+  binding: ProprDesktopPairingBinding;
   onApprovalRequired?(approvalUrl: string, expiresAt: string): void | Promise<void>;
   /** Injectable only to make protocol tests deterministic. */
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
@@ -67,10 +89,22 @@ const validPairingDeadline = (value: unknown, now: number): value is string => {
     && deadline - now <= MAX_PAIRING_LIFETIME_MS;
 };
 
+const validBinding = (value: unknown): value is ProprDesktopPairingBinding => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const binding = value as Record<string, unknown>;
+  return typeof binding.instanceId === 'string'
+    && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(binding.instanceId)
+    && typeof binding.origin === 'string'
+    && canonicalProprHttpUrlOrigin(binding.origin) === binding.origin
+    && binding.scope === 'desktop-instance'
+    && typeof binding.credentialGeneration === 'string'
+    && /^[A-Za-z0-9_-]{22}$/.test(binding.credentialGeneration);
+};
+
 const validCapabilities = (value: unknown): value is ProprDesktopAuthenticationCapabilities => {
   if (!value || typeof value !== 'object') return false;
   const capabilities = value as Record<string, unknown>;
-  return capabilities.protocolVersion === 1
+  return capabilities.protocolVersion === 2
     && typeof capabilities.browserPairing === 'boolean'
     && typeof capabilities.instanceBearerTokens === 'boolean'
     && typeof capabilities.socketIoBearerAuthentication === 'boolean';
@@ -159,7 +193,7 @@ const defaultSleep = (milliseconds: number, signal?: AbortSignal): Promise<void>
 export const completeDesktopPairing = async (
   client: ProprClient,
   start: ProprDesktopPairingStart,
-  options: ProprDesktopPairingOptions = {},
+  options: ProprDesktopPairingOptions,
 ): Promise<ProprDesktopPairingComplete> => {
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
@@ -268,11 +302,28 @@ export const completeDesktopPairing = async (
         intervalSeconds = body.interval;
         continue;
       }
-      if (body.status === 'complete' && string(body.token)
+      if (body.status === 'provisional' && string(body.token)
         && /^propr_it_[A-Za-z0-9_-]{43}$/.test(body.token) && body.tokenType === 'Bearer'
-        && (body.expiresAt === null || (string(body.expiresAt) && Number.isFinite(Date.parse(body.expiresAt))))) {
+        && string(body.activationTicket) && /^[A-Za-z0-9_-]{43}$/.test(body.activationTicket)
+        && validPairingDeadline(body.activationExpiresAt, now())
+        && validBinding(body)
+        && body.instanceId === options.binding.instanceId
+        && body.origin === options.binding.origin
+        && body.scope === options.binding.scope
+        && body.credentialGeneration === options.binding.credentialGeneration) {
         requireRemainingLifetime();
-        return { token: body.token, tokenType: 'Bearer', expiresAt: body.expiresAt as string | null };
+        return {
+          token: body.token,
+          tokenType: 'Bearer',
+          pairingId: start.pairingId,
+          deviceSecret: start.deviceSecret,
+          activationTicket: body.activationTicket,
+          activationExpiresAt: body.activationExpiresAt,
+          instanceId: body.instanceId,
+          origin: body.origin,
+          scope: body.scope,
+          credentialGeneration: body.credentialGeneration,
+        };
       }
       throw new ProprClientError('The ProPR instance returned an invalid pairing status.', {
         kind: 'invalid_response',
@@ -282,4 +333,17 @@ export const completeDesktopPairing = async (
     clearTimeout(deadlineTimer);
     options.signal?.removeEventListener('abort', abortForCaller);
   }
+};
+
+export const parseDesktopPairingActivationReceipt = (value: unknown): ProprDesktopPairingActivationReceipt => {
+  const body = record(value);
+  if (body.status !== 'active' || !string(body.receipt) || !/^[A-Za-z0-9_-]{22}$/.test(body.receipt)
+    || !string(body.activatedAt) || !Number.isFinite(Date.parse(body.activatedAt))
+    || !(body.expiresAt === null || (string(body.expiresAt) && Number.isFinite(Date.parse(body.expiresAt))))
+    || Object.keys(body).some(key => !['status', 'receipt', 'activatedAt', 'expiresAt'].includes(key))) {
+    throw new ProprClientError('The ProPR instance returned an invalid pairing activation receipt.', {
+      kind: 'invalid_response',
+    });
+  }
+  return body as unknown as ProprDesktopPairingActivationReceipt;
 };

@@ -328,6 +328,8 @@ export class DesktopCredentialService {
   #retryIncludeDeferred = false;
   #revocationWorker: Promise<CredentialServiceInitialization> | null = null;
   readonly #backgroundTasks = new Set<Promise<unknown>>();
+  readonly #operationTasks = new Set<Promise<void>>();
+  readonly #operationControllers = new Set<AbortController>();
   #closed = false;
   #disposePromise: Promise<void> | null = null;
 
@@ -342,7 +344,8 @@ export class DesktopCredentialService {
   }
 
   async initialize(): Promise<CredentialServiceInitialization> {
-    if (this.#closed) return { status: 'degraded', retryPending: true };
+    const operation = this.#beginOperation();
+    try {
     const worker = this.#requestPendingRevocationRetry(true);
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -358,10 +361,40 @@ export class DesktopCredentialService {
     } finally {
       if (startupTimer) clearTimeout(startupTimer);
     }
+    } finally {
+      operation.done();
+    }
   }
 
   awaitIdle(): Promise<void> {
     return this.#awaitIdle();
+  }
+
+  async listProfiles() {
+    const operation = this.#beginOperation();
+    try {
+      return await this.#profiles.list();
+    } finally {
+      operation.done();
+    }
+  }
+
+  async storageSecurity() {
+    const operation = this.#beginOperation();
+    try {
+      return this.#profiles.security();
+    } finally {
+      operation.done();
+    }
+  }
+
+  async retryPendingRevocations(): Promise<CredentialServiceInitialization> {
+    const operation = this.#beginOperation();
+    try {
+      return await this.#requestPendingRevocationRetry(true);
+    } finally {
+      operation.done();
+    }
   }
 
   dispose(): Promise<void> {
@@ -370,18 +403,19 @@ export class DesktopCredentialService {
     this.#active = null;
     this.#pendingActivation = null;
     this.#lifecycleController.abort(new Error('Desktop credential service disposed'));
+    for (const controller of this.#operationControllers) controller.abort(new Error('Desktop credential service disposed'));
     for (const controller of this.#pairingControllers.values()) controller.abort();
     this.#pairingControllers.clear();
     this.#disposePromise = (async () => {
       await this.#awaitIdle();
       await this.#profiles.awaitIdle();
-      await this.#awaitIdle();
     })();
     return this.#disposePromise;
   }
 
   async saveProfile(input: DesktopProfileInput) {
-    this.#assertOpen();
+    const operation = this.#beginOperation();
+    try {
     await this.#waitForPairPublish();
     this.#schedulePendingRevocationRetry();
     const before = input.id
@@ -402,10 +436,14 @@ export class DesktopCredentialService {
     if (transaction.originChanged && this.#active?.profileId === transaction.profile.id) this.#active = null;
     this.#schedulePendingRevocationRetry();
     return transaction.profile;
+    } finally {
+      operation.done();
+    }
   }
 
   async removeProfile(profileId: string): Promise<string | null> {
-    this.#assertOpen();
+    const operation = this.#beginOperation();
+    try {
     if (this.#publishingPair) await this.#waitForPairPublish();
     this.#invalidateProfileOperations(profileId);
     this.#schedulePendingRevocationRetry();
@@ -414,10 +452,14 @@ export class DesktopCredentialService {
     if (detached.credential) this.#clearActiveIfCredential(detached.credential);
     this.#schedulePendingRevocationRetry();
     return detached.profile.apiBaseUrl;
+    } finally {
+      operation.done();
+    }
   }
 
   async setActiveProfile(profileId: string | null): Promise<void> {
-    this.#assertOpen();
+    const operation = this.#beginOperation();
+    try {
     if (this.#publishingPair) await this.#waitForPairPublish();
     this.#selectionGeneration += 1;
     this.#latestProbeTicket += 1;
@@ -427,15 +469,19 @@ export class DesktopCredentialService {
     this.#active = null;
     this.#schedulePendingRevocationRetry();
     await this.#profiles.setActive(profileId);
+    } finally {
+      operation.done();
+    }
   }
 
-  cancelPairing(profileId: string): void {
-    if (this.#closed) return;
-    if (this.#publishingPair) {
-      this.#publishWaiters.push(() => this.#cancelPairingNow(profileId));
-      return;
+  async cancelPairing(profileId: string): Promise<void> {
+    const operation = this.#beginOperation();
+    try {
+      if (this.#publishingPair) await this.#waitForPairPublish();
+      this.#cancelPairingNow(profileId);
+    } finally {
+      operation.done();
     }
-    this.#cancelPairingNow(profileId);
   }
 
   #cancelPairingNow(profileId: string): void {
@@ -448,7 +494,8 @@ export class DesktopCredentialService {
   }
 
   async pair(input: DesktopProfileInput): Promise<{ paired: true }> {
-    this.#assertOpen();
+    const operation = this.#beginOperation();
+    try {
     await this.#waitForPairPublish();
     this.#schedulePendingRevocationRetry();
     if (!input.id) throw new Error('Desktop profile id is required');
@@ -461,20 +508,28 @@ export class DesktopCredentialService {
     if (!label || label.length > 80) throw new Error('Profile label must contain 1 to 80 characters');
     const proposed = { ...input, id: input.id, label, apiBaseUrl: origin };
     const baseline = await this.#profiles.readProfileCredential(proposed.id);
-    this.cancelPairing(proposed.id);
+    this.#cancelPairingNow(proposed.id);
     if (this.#pendingActivation?.profileId === proposed.id) this.#pendingActivation = null;
     const controller = new AbortController();
     this.#pairingControllers.set(proposed.id, controller);
     const profileGeneration = this.#generation(proposed.id);
     const selectionGeneration = this.#selectionGeneration;
+    const credentialGeneration = randomBytes(16).toString('base64url');
     let transient: StoredCredential | null = null;
     let transientRevocation: PendingCredentialRevocation | null = null;
+    let provisional: Awaited<ReturnType<ProprClient['pairDesktop']>> | null = null;
     let publicationStarted = false;
     const client = this.#client(proposed.apiBaseUrl);
 
     try {
       const completed = await client.pairDesktop(this.#clientName, {
         ...this.#pairingTiming,
+        binding: {
+          instanceId: proposed.id,
+          origin: proposed.apiBaseUrl,
+          scope: 'desktop-instance',
+          credentialGeneration,
+        },
         signal: controller.signal,
         onApprovalRequired: async approvalUrl => {
           this.#assertPairingCurrent(
@@ -483,17 +538,33 @@ export class DesktopCredentialService {
           await this.#openExternal(approvalUrl);
         },
       });
+      provisional = completed;
       transient = {
         version: 1,
         profileId: proposed.id,
         origin: proposed.apiBaseUrl,
         token: completed.token,
       };
-      const journaled = await this.#profiles.journalPendingRevocation(transient);
+      const journaled = await this.#profiles.journalPendingRevocation(transient, credentialGeneration);
       if ('stored' in journaled) {
         throw new Error('OS-backed secure storage is required for desktop pairing.');
       }
       transientRevocation = journaled;
+      this.#assertPairingCurrent(
+        proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
+      );
+      let activationError: unknown;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await client.activateDesktopPairing(completed, controller.signal);
+          activationError = undefined;
+          break;
+        } catch (error) {
+          activationError = error;
+          if (controller.signal.aborted) break;
+        }
+      }
+      if (activationError) throw activationError;
       this.#assertPairingCurrent(
         proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
       );
@@ -524,7 +595,7 @@ export class DesktopCredentialService {
     } catch (error) {
       if (transient && !transientRevocation && !publicationStarted) {
         try {
-          const journaled = await this.#profiles.journalPendingRevocation(transient);
+          const journaled = await this.#profiles.journalPendingRevocation(transient, credentialGeneration);
           if (!('stored' in journaled)) transientRevocation = journaled;
         } catch {
           // Preserve the original pairing/storage error. A retry is attempted
@@ -532,11 +603,27 @@ export class DesktopCredentialService {
         }
       }
       if (transientRevocation && !publicationStarted) {
-        const released = await this.#profiles.releasePendingRevocation(
-          transientRevocation.id,
-          transientRevocation.credentialGeneration,
-        );
-        if (released) await this.#requestPendingRevocationRetry();
+        let cancelled = false;
+        if (provisional) {
+          try {
+            await client.cancelDesktopPairing(provisional, operation.signal);
+            cancelled = await this.#profiles.completePendingRevocation(
+              transientRevocation.id,
+              transientRevocation.credential,
+              transientRevocation.credentialGeneration,
+            );
+          } catch {
+            // The encrypted rollback remains authoritative until either exact
+            // cancellation or the endpoint-bound revocation worker confirms it.
+          }
+        }
+        if (!cancelled) {
+          const released = await this.#profiles.releasePendingRevocation(
+            transientRevocation.id,
+            transientRevocation.credentialGeneration,
+          );
+          if (released) await this.#requestPendingRevocationRetry();
+        }
       }
       if (error instanceof ProprClientError && error.kind === 'aborted') {
         throw new Error('Desktop pairing was cancelled.');
@@ -545,10 +632,14 @@ export class DesktopCredentialService {
     } finally {
       if (this.#pairingControllers.get(proposed.id) === controller) this.#pairingControllers.delete(proposed.id);
     }
+    } finally {
+      operation.done();
+    }
   }
 
   async probe(input: DesktopProfileInput): Promise<DesktopConnectionResult> {
-    this.#assertOpen();
+    const operation = this.#beginOperation();
+    try {
     await this.#waitForPairPublish();
     this.#schedulePendingRevocationRetry();
     if (!input.id) throw new Error('Desktop profile id is required');
@@ -561,7 +652,7 @@ export class DesktopCredentialService {
     const discoveryClient = this.#client(origin);
     let discovery;
     try {
-      discovery = await discoveryClient.discoverDesktop();
+      discovery = await discoveryClient.discoverDesktop(8_000, operation.signal);
     } catch (error) {
       return {
         status: 'offline',
@@ -635,7 +726,9 @@ export class DesktopCredentialService {
 
     let response: Response;
     try {
-      response = await this.#authenticatedFetch(credential, '/api/auth/user', { cache: 'no-store' }, 8_000);
+      response = await this.#authenticatedFetch(
+        credential, '/api/auth/user', { cache: 'no-store', signal: operation.signal }, 8_000,
+      );
     } catch {
       return { status: 'offline', message: 'The instance was discovered but authentication could not be checked.' };
     }
@@ -698,10 +791,14 @@ export class DesktopCredentialService {
       };
     }
     return { status: 'offline', message: `The instance returned HTTP ${response.status} while checking authentication.` };
+    } finally {
+      operation.done();
+    }
   }
 
   async activate(activationTicket: unknown): Promise<DesktopActivatedConnection> {
-    this.#assertOpen();
+    const operation = this.#beginOperation();
+    try {
     await this.#waitForPairPublish();
     this.#schedulePendingRevocationRetry();
     if (typeof activationTicket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(activationTicket)) {
@@ -744,10 +841,14 @@ export class DesktopCredentialService {
       transportScope,
       identityEpoch: pending.identityEpoch,
     };
+    } finally {
+      operation.done();
+    }
   }
 
   async invalidate(value: DesktopAccessInvalidation): Promise<{ invalidated: boolean }> {
-    this.#assertOpen();
+    const operation = this.#beginOperation();
+    try {
     await this.#waitForPairPublish();
     this.#schedulePendingRevocationRetry();
     if (!DEFINITIVE_INVALID_CODES.has(value.code)) return { invalidated: false };
@@ -765,10 +866,14 @@ export class DesktopCredentialService {
     );
     if (removed) this.#schedulePendingRevocationRetry();
     return { invalidated: removed };
+    } finally {
+      operation.done();
+    }
   }
 
   async discardActivation(value: DesktopConnectionScope): Promise<{ discarded: boolean }> {
-    this.#assertOpen();
+    const operation = this.#beginOperation();
+    try {
     await this.#waitForPairPublish();
     this.#schedulePendingRevocationRetry();
     const active = this.#active;
@@ -782,6 +887,9 @@ export class DesktopCredentialService {
     this.#pendingActivation = null;
     await this.#profiles.setActive(null);
     return { discarded: true };
+    } finally {
+      operation.done();
+    }
   }
 
   prepareRequest(
@@ -1027,8 +1135,8 @@ export class DesktopCredentialService {
   }
 
   async #awaitIdle(): Promise<void> {
-    while (this.#backgroundTasks.size > 0) {
-      await Promise.allSettled([...this.#backgroundTasks]);
+    while (this.#backgroundTasks.size > 0 || this.#operationTasks.size > 0) {
+      await Promise.allSettled([...this.#backgroundTasks, ...this.#operationTasks]);
     }
   }
 
@@ -1045,6 +1153,28 @@ export class DesktopCredentialService {
 
   #assertOpen(): void {
     if (this.#closed) throw new Error('Desktop credential service is closed');
+  }
+
+  #beginOperation(): { signal: AbortSignal; done: () => void } {
+    this.#assertOpen();
+    const linked = linkedAbortController([this.#lifecycleController.signal]);
+    const controller = linked.controller;
+    let settle!: () => void;
+    const task = new Promise<void>(resolve => { settle = resolve; });
+    this.#operationTasks.add(task);
+    this.#operationControllers.add(controller);
+    let finished = false;
+    return {
+      signal: controller.signal,
+      done: () => {
+        if (finished) return;
+        finished = true;
+        linked.dispose();
+        this.#operationControllers.delete(controller);
+        this.#operationTasks.delete(task);
+        settle();
+      },
+    };
   }
 
   #beginPairPublish(

@@ -21,8 +21,10 @@ import {
   completeDesktopPairing,
   parseDesktopDiscovery,
   parseDesktopPairingStart,
+  parseDesktopPairingActivationReceipt,
   type ProprDesktopDiscovery,
   type ProprDesktopPairingComplete,
+  type ProprDesktopPairingActivationReceipt,
   type ProprDesktopPairingOptions,
   type ProprDesktopPairingStart,
 } from './desktopPairing.js';
@@ -222,9 +224,10 @@ export class ProprClient {
     return result;
   }
 
-  async discoverDesktop(timeoutMs = 8000): Promise<ProprDesktopDiscovery> {
+  async discoverDesktop(timeoutMs = 8000, signal?: AbortSignal): Promise<ProprDesktopDiscovery> {
     const metadata = await this.request<unknown>('/api/desktop/discovery', {
       cache: 'no-store',
+      signal,
     }, { timeoutMs });
     const compatibility = evaluateProprApiCompatibility(
       metadata && typeof metadata === 'object'
@@ -236,22 +239,84 @@ export class ProprClient {
 
   async startDesktopPairing(
     clientName: string,
-    options: Pick<ProprDesktopPairingOptions, 'signal' | 'now'> = {},
+    options: Pick<ProprDesktopPairingOptions, 'signal' | 'now' | 'binding'>,
   ): Promise<ProprDesktopPairingStart> {
     return parseDesktopPairingStart(await this.request<unknown>('/api/desktop/pairings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientName }),
+      body: JSON.stringify({ clientName, ...options.binding }),
       signal: options.signal,
     }, { timeoutMs: 8000 }), this.baseUrl || undefined, options.now);
   }
 
   async pairDesktop(
     clientName: string,
-    options: ProprDesktopPairingOptions = {},
+    options: ProprDesktopPairingOptions,
   ): Promise<ProprDesktopPairingComplete> {
     const start = await this.startDesktopPairing(clientName, options);
     return completeDesktopPairing(this, start, options);
+  }
+
+  async activateDesktopPairing(
+    pairing: ProprDesktopPairingComplete,
+    signal?: AbortSignal,
+  ): Promise<ProprDesktopPairingActivationReceipt> {
+    return parseDesktopPairingActivationReceipt(await this.request<unknown>(
+      `/api/desktop/pairings/${encodeURIComponent(pairing.pairingId)}/activate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceSecret: pairing.deviceSecret,
+          activationTicket: pairing.activationTicket,
+          instanceId: pairing.instanceId,
+          origin: pairing.origin,
+          scope: pairing.scope,
+          credentialGeneration: pairing.credentialGeneration,
+        }),
+        redirect: 'manual',
+        signal,
+      },
+      { timeoutMs: 8_000 },
+    ));
+  }
+
+  async cancelDesktopPairing(
+    pairing: ProprDesktopPairingComplete,
+    signal?: AbortSignal,
+  ): Promise<{ status: 'cancelled'; cancelledAt: string }> {
+    const value = await this.request<unknown>(
+      `/api/desktop/pairings/${encodeURIComponent(pairing.pairingId)}/cancel`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceSecret: pairing.deviceSecret,
+          activationTicket: pairing.activationTicket,
+          instanceId: pairing.instanceId,
+          origin: pairing.origin,
+          scope: pairing.scope,
+          credentialGeneration: pairing.credentialGeneration,
+        }),
+        redirect: 'manual',
+        signal,
+      },
+      { timeoutMs: 8_000 },
+    );
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new ProprClientError('The ProPR instance returned an invalid pairing cancellation receipt.', {
+        kind: 'invalid_response',
+      });
+    }
+    const receipt = value as Record<string, unknown>;
+    if (receipt.status !== 'cancelled' || typeof receipt.cancelledAt !== 'string'
+      || !Number.isFinite(Date.parse(receipt.cancelledAt))
+      || Object.keys(receipt).some(key => !['status', 'cancelledAt'].includes(key))) {
+      throw new ProprClientError('The ProPR instance returned an invalid pairing cancellation receipt.', {
+        kind: 'invalid_response',
+      });
+    }
+    return receipt as unknown as { status: 'cancelled'; cancelledAt: string };
   }
 
   connectSocket(options: ProprSocketOptions = {}): Socket {

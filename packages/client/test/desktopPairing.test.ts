@@ -14,7 +14,7 @@ const discovery = {
   apiCompatibility: PROPR_API_COMPATIBILITY,
   uiCompatibility: PROPR_UI_COMPATIBILITY,
   desktopAuthentication: {
-    protocolVersion: 1 as const,
+    protocolVersion: 2 as const,
     browserPairing: true,
     instanceBearerTokens: true,
     socketIoBearerAuthentication: true,
@@ -22,6 +22,12 @@ const discovery = {
 };
 const protocolNow = Date.parse('2026-01-01T00:00:00.000Z');
 const protocolDeadline = new Date(protocolNow + 10 * 60 * 1000).toISOString();
+const binding = {
+  instanceId: 'profile-a',
+  origin: 'https://propr.example.test',
+  scope: 'desktop-instance' as const,
+  credentialGeneration: 'G'.repeat(22),
+};
 const bounded = <T>(promise: Promise<T>, milliseconds = 1_000): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -53,7 +59,14 @@ describe('desktop instance protocol', () => {
         polls += 1;
         return polls === 1
           ? json({ status: 'pending', interval: 3 }, 202)
-          : json({ status: 'complete', token: `propr_it_${'C'.repeat(43)}`, tokenType: 'Bearer', expiresAt: null });
+          : json({
+            status: 'provisional',
+            token: `propr_it_${'C'.repeat(43)}`,
+            tokenType: 'Bearer',
+            activationTicket: 'T'.repeat(43),
+            activationExpiresAt: protocolDeadline,
+            ...binding,
+          });
       },
     });
 
@@ -64,12 +77,21 @@ describe('desktop instance protocol', () => {
     const opened: string[] = [];
     const sleeps: number[] = [];
     const complete = await client.pairDesktop('Test desktop', {
+      binding,
       now: () => protocolNow,
       sleep: async milliseconds => { sleeps.push(milliseconds); },
       onApprovalRequired: url => { opened.push(url); },
     });
 
-    assert.deepEqual(complete, { token: `propr_it_${'C'.repeat(43)}`, tokenType: 'Bearer', expiresAt: null });
+    assert.deepEqual(complete, {
+      token: `propr_it_${'C'.repeat(43)}`,
+      tokenType: 'Bearer',
+      pairingId: `dpr_${'A'.repeat(22)}`,
+      deviceSecret: 'B'.repeat(43),
+      activationTicket: 'T'.repeat(43),
+      activationExpiresAt: protocolDeadline,
+      ...binding,
+    });
     assert.deepEqual(opened, [`https://propr.example.test/api/desktop/pairings/dpr_${'A'.repeat(22)}/browser`]);
     assert.deepEqual(sleeps, [2000, 3000]);
     assert.equal(requests.every(request => !request.url.includes('B'.repeat(43))), true);

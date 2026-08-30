@@ -367,6 +367,8 @@ export class ProfileStore {
   readonly #options: ProfileStoreOptions;
   readonly #authenticatedJournalCache = new Map<string, AuthenticatedJournal>();
   #mutation = Promise.resolve();
+  #closed = false;
+  #closePromise: Promise<void> | null = null;
 
   constructor(userDataPath: string, encryption: EncryptionProvider, options: ProfileStoreOptions = {}) {
     this.#directory = join(userDataPath, 'desktop');
@@ -387,6 +389,13 @@ export class ProfileStore {
   /** Resolves after every queued recovery, mutation, and cleanup operation has settled. */
   awaitIdle(): Promise<void> {
     return this.#mutation;
+  }
+
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
+    this.#closed = true;
+    this.#closePromise = this.awaitIdle();
+    return this.#closePromise;
   }
 
   list(): Promise<DesktopProfileList> {
@@ -750,6 +759,7 @@ export class ProfileStore {
 
   journalPendingRevocation(
     credential: StoredCredential,
+    credentialGeneration?: string,
   ): Promise<PendingCredentialRevocation | { stored: false; reason: 'encryption-unavailable' }> {
     const profileId = credential?.profileId;
     assertProfileId(profileId);
@@ -757,6 +767,9 @@ export class ProfileStore {
       || typeof credential.token !== 'string' || credential.token.length > MAX_CREDENTIAL_LENGTH
       || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token)) {
       throw new Error('Invalid desktop credential revocation material');
+    }
+    if (credentialGeneration !== undefined && !IDENTITY_EPOCH_PATTERN.test(credentialGeneration)) {
+      throw new Error('Invalid desktop credential generation');
     }
     if (!this.security().available) return Promise.resolve({ stored: false, reason: 'encryption-unavailable' });
     return this.#mutate(async () => {
@@ -778,7 +791,7 @@ export class ProfileStore {
       }
       const slot = await this.#stageCredential(credential);
       const id = randomUUID();
-      const credentialGeneration = randomBytes(16).toString('base64url');
+      const generation = credentialGeneration ?? randomBytes(16).toString('base64url');
       let committed = false;
       try {
         state.pendingRevocations[id] = {
@@ -786,12 +799,12 @@ export class ProfileStore {
           profileId,
           origin: credential.origin,
           slot,
-          credentialGeneration,
+          credentialGeneration: generation,
           deferred: true,
         };
         await this.#writeState(state);
         committed = true;
-        return { id, credential: { ...credential }, credentialGeneration, deferred: true };
+        return { id, credential: { ...credential }, credentialGeneration: generation, deferred: true };
       } finally {
         if (!committed) await this.#unlinkSlot(slot).catch(() => undefined);
       }
@@ -1462,6 +1475,7 @@ export class ProfileStore {
   }
 
   #mutate<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.#closed) return Promise.reject(new Error('Desktop profile store is closed'));
     const recoveredOperation = async () => {
       await this.#recover();
       return operation();

@@ -5,6 +5,7 @@ import knex, { type Knex } from 'knex';
 import { closeConnection } from '@propr/core';
 import { PROPR_API_ORIGIN_PARITY_CASES } from '@propr/shared';
 import { up as createDesktopAuthTables } from '../../core/src/db/migrations/20260829000000_create_desktop_auth.js';
+import { up as addTwoPhaseDesktopPairing } from '../../core/src/db/migrations/20260830000000_add_two_phase_desktop_pairing.js';
 import {
   DesktopAuthError,
   DesktopAuthService,
@@ -31,6 +32,17 @@ const owner: GitHubUser = {
 let database: Knex;
 let now: Date;
 let service: DesktopAuthService;
+const pairingBinding = (origin = 'https://app.example.test') => ({
+  instanceId: 'profile-a',
+  origin,
+  scope: 'desktop-instance' as const,
+  credentialGeneration: 'G'.repeat(22),
+});
+const startPairing = (
+  target: DesktopAuthService,
+  name: string,
+  origin = 'https://app.example.test',
+) => target.startPairing(name, pairingBinding(origin));
 
 beforeEach(async () => {
   database = knex({
@@ -39,6 +51,7 @@ beforeEach(async () => {
     useNullAsDefault: true,
   });
   await createDesktopAuthTables(database);
+  await addTwoPhaseDesktopPairing(database);
   now = new Date('2026-08-29T14:00:00.000Z');
   service = new DesktopAuthService({
     database,
@@ -52,7 +65,7 @@ after(async () => closeConnection());
 
 describe('desktop browser pairing', () => {
   test('stores only a device-secret hash and builds a fixed trusted approval URL', async () => {
-    const pairing = await service.startPairing('  Work   Laptop  ');
+    const pairing = await startPairing(service, '  Work   Laptop  ');
     const row = await database('desktop_pairing_requests').where({ id: pairing.pairingId }).first();
     const audit = await database('desktop_auth_audit').first();
 
@@ -61,6 +74,7 @@ describe('desktop browser pairing', () => {
     assert.equal(pairing.approvalUrl, `https://app.example.test/base/desktop/pairing?pairing_id=${pairing.pairingId}`);
     assert.equal(pairing.approvalUrl.includes(pairing.deviceSecret), false);
     assert.equal(row.client_name, 'Work Laptop');
+    assert.equal(row.requested_origin, 'https://app.example.test');
     assert.notEqual(row.device_secret_hash, pairing.deviceSecret);
     assert.equal(JSON.stringify(row).includes(pairing.deviceSecret), false);
     assert.equal(JSON.stringify(audit).includes(pairing.deviceSecret), false);
@@ -73,7 +87,7 @@ describe('desktop browser pairing', () => {
       approvalBaseUrl: 'https://app.propr.dev',
       publicApiUrl: 'https://t-instance123.propr.dev',
     });
-    const pairing = await hosted.startPairing('Windows desktop');
+    const pairing = await startPairing(hosted, 'Windows desktop', 'https://t-instance123.propr.dev');
 
     assert.equal(
       pairing.approvalUrl,
@@ -85,8 +99,9 @@ describe('desktop browser pairing', () => {
     );
   });
 
-  test('issues an opaque token once, resolves its owner, and never stores plaintext credentials', async () => {
-    const pairing = await service.startPairing('MacBook Pro');
+  test('provisions one unusable credential, then activates it exactly once without storing plaintext', async () => {
+    const binding = pairingBinding();
+    const pairing = await startPairing(service, 'MacBook Pro');
     assert.deepEqual(await service.pollPairing(pairing.pairingId, pairing.deviceSecret), {
       status: 'pending',
       interval: 5,
@@ -94,10 +109,19 @@ describe('desktop browser pairing', () => {
     await service.approvePairing(pairing.pairingId, owner);
 
     const completed = await service.pollPairing(pairing.pairingId, pairing.deviceSecret);
-    assert.equal(completed.status, 'complete');
-    if (completed.status !== 'complete') return;
+    assert.equal(completed.status, 'provisional');
+    if (completed.status !== 'provisional') return;
     assert.match(completed.token, new RegExp(`^${INSTANCE_TOKEN_PREFIX}[A-Za-z0-9_-]{43}$`));
-    assert.equal(completed.expiresAt, null);
+    assert.equal(await service.validateToken(completed.token), null);
+    assert.deepEqual(await service.pollPairing(pairing.pairingId, pairing.deviceSecret), completed);
+
+    const activation = {
+      ...binding,
+      deviceSecret: pairing.deviceSecret,
+      activationTicket: completed.activationTicket,
+    };
+    const receipt = await service.activatePairing(pairing.pairingId, activation);
+    assert.deepEqual(await service.activatePairing(pairing.pairingId, activation), receipt);
 
     const tokenRow = await database('instance_api_tokens').first();
     const pairingRow = await database('desktop_pairing_requests').first();
@@ -120,7 +144,7 @@ describe('desktop browser pairing', () => {
   });
 
   test('rejects the wrong secret without revealing pairing state', async () => {
-    const pairing = await service.startPairing('Linux workstation');
+    const pairing = await startPairing(service, 'Linux workstation');
     await service.approvePairing(pairing.pairingId, owner);
 
     await assert.rejects(
@@ -132,6 +156,57 @@ describe('desktop browser pairing', () => {
     assert.equal((await database('desktop_pairing_requests').first()).status, 'approved');
   });
 
+  test('binds activation and cancellation exactly and keeps cancellation idempotent', async () => {
+    const binding = pairingBinding();
+    const pairing = await startPairing(service, 'Cancelled desktop');
+    await service.approvePairing(pairing.pairingId, owner);
+    const provisional = await service.pollPairing(pairing.pairingId, pairing.deviceSecret);
+    assert.equal(provisional.status, 'provisional');
+    if (provisional.status !== 'provisional') return;
+    const exact = {
+      ...binding,
+      deviceSecret: pairing.deviceSecret,
+      activationTicket: provisional.activationTicket,
+    };
+    await assert.rejects(
+      service.activatePairing(pairing.pairingId, { ...exact, instanceId: 'wrong-profile' }),
+      (error: unknown) => error instanceof DesktopAuthError && error.code === 'PAIRING_NOT_FOUND',
+    );
+    assert.equal(await service.validateToken(provisional.token), null);
+
+    const cancelled = await service.cancelPairing(pairing.pairingId, exact);
+    assert.deepEqual(await service.cancelPairing(pairing.pairingId, exact), cancelled);
+    await assert.rejects(
+      service.activatePairing(pairing.pairingId, exact),
+      (error: unknown) => error instanceof DesktopAuthError && error.code === 'PAIRING_CANCELLED',
+    );
+    assert.equal(await service.validateToken(provisional.token), null);
+  });
+
+  test('reuses one provisional across a database restart and cleans it after fixed expiry', async () => {
+    const expiring = new DesktopAuthService({
+      database,
+      now: () => new Date(now),
+      provisionalTtlMs: 1_000,
+      approvalBaseUrl: 'https://app.example.test',
+    });
+    const pairing = await startPairing(expiring, 'Restarted desktop');
+    await expiring.approvePairing(pairing.pairingId, owner);
+    const first = await expiring.pollPairing(pairing.pairingId, pairing.deviceSecret);
+    const restarted = new DesktopAuthService({
+      database,
+      now: () => new Date(now),
+      provisionalTtlMs: 1_000,
+      approvalBaseUrl: 'https://app.example.test',
+    });
+    assert.deepEqual(await restarted.pollPairing(pairing.pairingId, pairing.deviceSecret), first);
+    assert.equal(await database('instance_api_tokens').where({ activation_state: 'provisional' }).count({ count: '*' }).first()
+      .then(row => Number(row?.count)), 1);
+    now = new Date(now.getTime() + 1_001);
+    await restarted.cleanupPairings();
+    assert.equal(await database('instance_api_tokens').count({ count: '*' }).first().then(row => Number(row?.count)), 0);
+  });
+
   test('expires unapproved pairings and cleans retained expired records', async () => {
     const expiringService = new DesktopAuthService({
       database,
@@ -139,7 +214,7 @@ describe('desktop browser pairing', () => {
       pairingTtlMs: 1_000,
       approvalBaseUrl: 'https://app.example.test',
     });
-    const pairing = await expiringService.startPairing('Old laptop');
+    const pairing = await startPairing(expiringService, 'Old laptop');
     now = new Date(now.getTime() + 1_001);
 
     await assert.rejects(
@@ -152,10 +227,10 @@ describe('desktop browser pairing', () => {
   });
 
   test('rejects unsafe names and non-HTTPS approval origins', async () => {
-    await assert.rejects(service.startPairing('bad\nname'), /printable characters/);
-    await assert.rejects(service.startPairing('x'.repeat(81)), /1 to 80/);
+    await assert.rejects(startPairing(service, 'bad\nname'), /printable characters/);
+    await assert.rejects(startPairing(service, 'x'.repeat(81)), /1 to 80/);
     const insecure = new DesktopAuthService({ database, approvalBaseUrl: 'http://remote.example.test' });
-    await assert.rejects(insecure.startPairing('Laptop'), /requires HTTPS/);
+    await assert.rejects(startPairing(insecure, 'Laptop'), /requires HTTPS/);
   });
 
   test('matches the shared canonical origin parity table for the public REST and Socket origin', async () => {
@@ -166,7 +241,7 @@ describe('desktop browser pairing', () => {
         approvalBaseUrl: 'https://app.example.test',
         publicApiUrl: input,
       });
-      const start = candidate.startPairing(`Parity ${index++}`);
+      const start = startPairing(candidate, `Parity ${index++}`, expected ?? 'https://invalid.example.test');
       if (expected === null) await assert.rejects(start, undefined, name);
       else assert.equal(new URL((await start).approvalUrl).origin, expected, name);
     }
@@ -175,11 +250,17 @@ describe('desktop browser pairing', () => {
 
 describe('instance token ownership and revocation', () => {
   async function issueToken(): Promise<{ token: string; tokenId: string }> {
-    const pairing = await service.startPairing('Desktop app');
+    const binding = pairingBinding();
+    const pairing = await startPairing(service, 'Desktop app');
     await service.approvePairing(pairing.pairingId, owner);
     const completed = await service.pollPairing(pairing.pairingId, pairing.deviceSecret);
-    assert.equal(completed.status, 'complete');
-    if (completed.status !== 'complete') throw new Error('token was not issued');
+    assert.equal(completed.status, 'provisional');
+    if (completed.status !== 'provisional') throw new Error('token was not issued');
+    await service.activatePairing(pairing.pairingId, {
+      ...binding,
+      deviceSecret: pairing.deviceSecret,
+      activationTicket: completed.activationTicket,
+    });
     const tokenId = (await service.listTokens(owner.id))[0].id;
     return { token: completed.token, tokenId };
   }

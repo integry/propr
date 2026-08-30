@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const EXPECTED = Object.freeze({
-  'credential-service': 67,
+  'credential-service': 68,
   'profile-store': 36,
 });
 const expectedTotal = Object.values(EXPECTED).reduce((total, count) => total + count, 0);
@@ -70,6 +70,9 @@ const scenarioCategories = {
   'cancellation-switch': countedCategory('cancellation-switch', 4),
   'detach-crash': countedCategory('detach-crash', process.platform === 'win32' ? 12 : 13),
   'transient-revocation': countedCategory('transient-revocation', 4),
+  provisional: countedCategory('provisional', 1),
+  delivery: countedCategory('delivery', 1),
+  dispose: countedCategory('dispose', 1),
 };
 const summary = Object.fromEntries(
   ['tests', 'pass', 'fail', 'cancelled', 'skipped'].map(key => {

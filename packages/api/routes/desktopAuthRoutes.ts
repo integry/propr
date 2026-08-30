@@ -71,8 +71,25 @@ export function createDesktopAuthRoutes(options: DesktopAuthRoutesOptions = {}) 
 
   async function startPairing(req: Request, res: Response): Promise<void> {
     try {
-      const result = await service.startPairing((req.body as { clientName?: unknown } | undefined)?.clientName);
+      const body = req.body as Record<string, unknown> | undefined;
+      const result = await service.startPairing(body?.clientName, body);
       res.status(201).json(result);
+    } catch (error) {
+      sendDesktopAuthError(error, res);
+    }
+  }
+
+  async function activatePairing(req: Request, res: Response): Promise<void> {
+    try {
+      res.json(await service.activatePairing(pathParameter(req.params.pairingId), req.body));
+    } catch (error) {
+      sendDesktopAuthError(error, res);
+    }
+  }
+
+  async function cancelPairing(req: Request, res: Response): Promise<void> {
+    try {
+      res.json(await service.cancelPairing(pathParameter(req.params.pairingId), req.body));
     } catch (error) {
       sendDesktopAuthError(error, res);
     }
@@ -186,6 +203,8 @@ export function createDesktopAuthRoutes(options: DesktopAuthRoutesOptions = {}) 
     approvalOriginGuard,
     startPairing,
     pollPairing,
+    activatePairing,
+    cancelPairing,
     getPairingApproval,
     openPairingApproval,
     approvePairing,

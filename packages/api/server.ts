@@ -261,6 +261,8 @@ function setupRoutes(): void {
   app.get('/api/desktop/discovery', createDiscoveryRequestRateLimiter(), statusRoutes.getDesktopDiscovery);
   app.post('/api/desktop/pairings', createPairingStartRateLimiter(), desktopAuthRoutes.startPairing);
   app.post('/api/desktop/pairings/:pairingId/poll', createPairingPollRateLimiter(), desktopAuthRoutes.pollPairing);
+  app.post('/api/desktop/pairings/:pairingId/activate', createPairingPollRateLimiter(), desktopAuthRoutes.activatePairing);
+  app.post('/api/desktop/pairings/:pairingId/cancel', createPairingPollRateLimiter(), desktopAuthRoutes.cancelPairing);
   app.get('/api/desktop/pairings/:pairingId/browser', createPairingStartRateLimiter(), desktopAuthRoutes.openPairingApproval);
   // Token possession authorizes only this exact self-revocation route. It must
   // precede generic auth so inactive tokens receive a stable terminal contract.

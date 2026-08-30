@@ -67,7 +67,10 @@ const deliverDeepLink = (value: string): void => {
   deepLinkDelivery.deliver(value);
 };
 
-const configureSessionSecurity = (credentials: DesktopCredentialService): void => {
+const configureSessionSecurity = (credentials: DesktopCredentialService): {
+  close(): void;
+  dispose(): void;
+} => {
   const desktopSession = session.defaultSession;
   desktopSession.setPermissionCheckHandler(() => false);
   desktopSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
@@ -85,9 +88,21 @@ const configureSessionSecurity = (credentials: DesktopCredentialService): void =
       },
     });
   });
+  return {
+    close() {
+      desktopSession.webRequest.onBeforeSendHeaders((_details, callback) => callback({ cancel: true }));
+      desktopSession.webRequest.onHeadersReceived((_details, callback) => callback({ cancel: true }));
+    },
+    dispose() {
+      desktopSession.setPermissionCheckHandler(null);
+      desktopSession.setPermissionRequestHandler(null);
+      desktopSession.webRequest.onBeforeSendHeaders(null);
+      desktopSession.webRequest.onHeadersReceived(null);
+    },
+  };
 };
 
-const configurePackagedRendererProtocol = (): void => {
+const configurePackagedRendererProtocol = (): (() => void) => {
   protocol.handle(PACKAGED_RENDERER_SCHEME, request => {
     const requestUrl = new URL(request.url);
     if (requestUrl.hostname !== PACKAGED_RENDERER_HOST) {
@@ -107,9 +122,11 @@ const configurePackagedRendererProtocol = (): void => {
     }
     return net.fetch(pathToFileURL(filePath).href);
   });
+  return () => { void protocol.unhandle(PACKAGED_RENDERER_SCHEME); };
 };
 
 const openAllowedExternalUrl = async (url: string): Promise<void> => {
+  if (shutdownStarted) return;
   if (!isSafeExternalUrl(url)) {
     log('warn', 'desktop.external_url.rejected');
     return;
@@ -186,6 +203,7 @@ const createMainWindow = async (): Promise<BrowserWindow> => {
 
 app.on('open-url', (event, url) => {
   event.preventDefault();
+  if (shutdownStarted) return;
   const normalized = normalizeDeepLink(url);
   if (normalized) deliverDeepLink(normalized);
 });
@@ -195,6 +213,7 @@ if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', (_event, argv) => {
+    if (shutdownStarted) return;
     const deepLink = deepLinkFromArguments(argv);
     if (deepLink) deliverDeepLink(deepLink);
     if (mainWindow) {
@@ -208,7 +227,7 @@ if (!hasSingleInstanceLock) {
   void app.whenReady().then(async () => {
     logger = createDesktopLogger(join(app.getPath('logs'), 'desktop.jsonl'));
     log('info', 'desktop.app.ready', { version: app.getVersion(), platform: process.platform });
-    configurePackagedRendererProtocol();
+    const disposeRendererProtocol = configurePackagedRendererProtocol();
 
     const encryption: EncryptionProvider = {
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
@@ -233,7 +252,7 @@ if (!hasSingleInstanceLock) {
         log('warn', 'desktop.credential_revocation.retry_pending', diagnostic);
       },
     });
-    configureSessionSecurity(credentials);
+    const sessionSecurity = configureSessionSecurity(credentials);
     const credentialInitialization = await credentials.initialize();
     if (credentialInitialization.status === 'degraded') {
       log('warn', 'desktop.credential_revocation.startup_degraded', {
@@ -241,7 +260,7 @@ if (!hasSingleInstanceLock) {
       });
     }
     const lifecycle = new LocalLifecycleController();
-    registerIpcHandlers({
+    const registeredIpc = registerIpcHandlers({
       app,
       ipcMain,
       profiles,
@@ -251,11 +270,13 @@ if (!hasSingleInstanceLock) {
       desktopSession: session.defaultSession,
       devServerUrl,
       packagedRendererUrl,
+      openExternal: async url => { await shell.openExternal(url); },
     });
     mainWindow = await createMainWindow();
     deepLinkDelivery.setWindow(mainWindow);
 
     app.on('activate', () => {
+      if (shutdownStarted) return;
       if (BrowserWindow.getAllWindows().length === 0) {
         void createMainWindow().then(window => {
           mainWindow = window;
@@ -268,13 +289,23 @@ if (!hasSingleInstanceLock) {
       if (shutdownStarted) return;
       event.preventDefault();
       shutdownStarted = true;
+      registeredIpc.close();
+      sessionSecurity.close();
+      disposeRendererProtocol();
       void Promise.allSettled([
         credentials.dispose(),
         lifecycle.shutdown(),
-      ]).then(results => {
+        registeredIpc.awaitIdle(),
+      ]).then(async results => {
         for (const result of results) {
           if (result.status === 'rejected') log('error', 'desktop.app.shutdown_failed', { error: result.reason });
         }
+        await profiles.close().catch(error => {
+          log('error', 'desktop.profile_store.shutdown_failed', { error });
+        });
+        sessionSecurity.dispose();
+        registeredIpc.dispose();
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
         log('info', 'desktop.app.shutdown');
         app.quit();
       });
