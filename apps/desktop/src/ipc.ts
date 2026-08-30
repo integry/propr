@@ -103,10 +103,11 @@ export const registerIpcHandlers = (options: RegisterIpcOptions): RegisteredIpcH
     const activated = await options.credentials.activate(activationTicket);
     try {
       const after = await options.credentials.listProfiles();
-      const origins = [before.activeProfileId, after.activeProfileId]
-        .flatMap(profileId => after.profiles.find(profile => profile.id === profileId)?.apiBaseUrl
-          ?? before.profiles.find(profile => profile.id === profileId)?.apiBaseUrl
-          ?? []);
+      const previousOrigin = before.profiles
+        .find(profile => profile.id === before.activeProfileId)?.apiBaseUrl;
+      const activatedOrigin = after.profiles
+        .find(profile => profile.id === after.activeProfileId)?.apiBaseUrl;
+      const origins = [previousOrigin, activatedOrigin].filter(origin => origin !== undefined);
       await clearDesktopInstanceCookies(options.desktopSession, origins);
       return activated;
     } catch (error) {

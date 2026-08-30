@@ -16,6 +16,75 @@ const deferred = <T>() => {
 };
 
 describe('desktop IPC shutdown gate', () => {
+  it('clears both origins when activation edits the active profile URL without changing its ID', async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    const ipcMain = {
+      handle: (channel: string, handler: (...args: any[]) => unknown) => { handlers.set(channel, handler); },
+      removeHandler: (channel: string) => { handlers.delete(channel); },
+    } as unknown as IpcMain;
+    const before = {
+      id: 'profile-a', label: 'A', apiBaseUrl: 'https://old.example.test',
+      createdAt: '2026-08-30T00:00:00.000Z', updatedAt: '2026-08-30T00:00:00.000Z',
+    };
+    const after = {
+      ...before,
+      apiBaseUrl: 'https://new.example.test',
+      updatedAt: '2026-08-30T00:01:00.000Z',
+    };
+    let listCalls = 0;
+    const credentials = {
+      listProfiles: async () => ({
+        profiles: [listCalls++ === 0 ? before : after],
+        activeProfileId: 'profile-a',
+      }),
+      activate: async () => ({
+        status: 'ready', profileId: 'profile-a', transportScope: 'scope-b', identityEpoch: 'B'.repeat(22),
+      }),
+    } as unknown as DesktopCredentialService;
+    const cleared: Array<Parameters<Session['clearStorageData']>[0]> = [];
+    const desktopSession = {
+      clearStorageData: async (options: Parameters<Session['clearStorageData']>[0]) => {
+        cleared.push(options);
+      },
+    } as unknown as Session;
+    registerIpcHandlers({
+      app: {
+        getName: () => 'ProPR', getVersion: () => '0.8.15', isPackaged: true,
+      } as unknown as App,
+      ipcMain,
+      profiles: {} as ProfileStore,
+      credentials,
+      lifecycle: {} as LocalLifecycleController,
+      logger: { log: () => undefined } as unknown as DesktopLogger,
+      desktopSession,
+      devServerUrl: undefined,
+      packagedRendererUrl: 'propr-renderer://app/index.html',
+      openExternal: async () => undefined,
+    });
+    const event = {
+      senderFrame: { url: 'propr-renderer://app/index.html' },
+    } as unknown as IpcMainInvokeEvent;
+
+    const activated = await Promise.resolve(
+      handlers.get(IPC_CHANNELS.connectionActivate)!(event, 'T'.repeat(43)),
+    );
+
+    assert.deepEqual(activated, {
+      status: 'ready', profileId: 'profile-a', transportScope: 'scope-b', identityEpoch: 'B'.repeat(22),
+    });
+    assert.equal(listCalls, 2);
+    assert.deepEqual(cleared, [
+      {
+        origin: 'https://old.example.test',
+        storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'],
+      },
+      {
+        origin: 'https://new.example.test',
+        storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers'],
+      },
+    ]);
+  });
+
   it('rejects activation and discards its exact scope when origin storage clearing fails', async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
     const ipcMain = {
