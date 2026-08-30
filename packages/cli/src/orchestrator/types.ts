@@ -122,6 +122,8 @@ export interface DockerCommandResult {
   status: number | null;
   stdout: string;
   stderr: string;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
   error?: Error & { code?: string };
   signal?: NodeJS.Signals | null;
 }
@@ -214,5 +216,5 @@ export interface OrchestratorModule {
 
   containerExists(cfg: OrchestratorConfig, name: string): boolean;
   docker(args: string[], opts?: DockerCommandOptions): DockerCommandResult;
-  dockerAsync(args: string[], opts?: { timeout?: number; signal?: AbortSignal }): Promise<DockerCommandResult>;
+  dockerAsync(args: string[], opts?: { timeout?: number; signal?: AbortSignal; maxOutputBytes?: number }): Promise<DockerCommandResult>;
 }

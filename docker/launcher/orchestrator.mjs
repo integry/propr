@@ -529,7 +529,7 @@ export function docker(args, { capture = false, timeout } = {}) {
  * On timeout it kills the child and reports an ETIMEDOUT error, matching the
  * spawnSync timeout contract that `dockerError` inspects.
  */
-export function dockerAsync(args, { timeout, signal } = {}) {
+export function dockerAsync(args, { timeout, signal, maxOutputBytes } = {}) {
     return new Promise((resolveResult) => {
         if (signal?.aborted) {
             resolveResult({ status: null, stdout: '', stderr: '', error: Object.assign(new Error('docker command cancelled'), { code: 'ABORT_ERR' }) });
@@ -540,6 +540,10 @@ export function dockerAsync(args, { timeout, signal } = {}) {
         const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
         let stdout = '';
         let stderr = '';
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
+        let stdoutTruncated = false;
+        let stderrTruncated = false;
         let settled = false;
         let timeoutError = null;
         const finish = (res) => {
@@ -548,7 +552,31 @@ export function dockerAsync(args, { timeout, signal } = {}) {
             if (timer) clearTimeout(timer);
             if (killTimer) clearTimeout(killTimer);
             signal?.removeEventListener('abort', abort);
-            resolveResult(res);
+            resolveResult({
+                ...res,
+                ...(stdoutTruncated ? { stdoutTruncated: true } : {}),
+                ...(stderrTruncated ? { stderrTruncated: true } : {}),
+            });
+        };
+        const appendOutput = (chunk, stream) => {
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 0) {
+                if (stream === 'stdout') stdout += buffer.toString();
+                else stderr += buffer.toString();
+                return;
+            }
+            const used = stream === 'stdout' ? stdoutBytes : stderrBytes;
+            const remaining = Math.max(0, maxOutputBytes - used);
+            const captured = buffer.subarray(0, remaining);
+            if (stream === 'stdout') {
+                stdout += captured.toString();
+                stdoutBytes += captured.length;
+                if (captured.length < buffer.length) stdoutTruncated = true;
+            } else {
+                stderr += captured.toString();
+                stderrBytes += captured.length;
+                if (captured.length < buffer.length) stderrTruncated = true;
+            }
         };
         const killTree = (force = false) => {
             if (!child.pid) return;
@@ -576,8 +604,8 @@ export function dockerAsync(args, { timeout, signal } = {}) {
                   killTimer = setTimeout(() => finish({ status: null, stdout, stderr, error: timeoutError }), 2_000);
               }, timeout)
             : null;
-        child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-        child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+        child.stdout.on('data', (chunk) => appendOutput(chunk, 'stdout'));
+        child.stderr.on('data', (chunk) => appendOutput(chunk, 'stderr'));
         signal?.addEventListener('abort', abort, { once: true });
         child.on('error', (error) => finish({ status: null, stdout, stderr, error }));
         child.on('close', (code, exitSignal) => finish({ status: code, stdout, stderr, signal: exitSignal, error: cancellationError || timeoutError || undefined }));
@@ -1600,10 +1628,51 @@ export async function runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signa
 }
 
 const SETUP_CLEANUP_INSPECT_TIMEOUT_MS = 3_000;
+const SETUP_CLEANUP_QUERY_TIMEOUT_MS = 3_000;
 // `docker stop -t 2` gets its full grace plus three seconds of daemon overhead.
 const SETUP_CLEANUP_STOP_TIMEOUT_MS = 5_000;
 const SETUP_CLEANUP_REMOVE_TIMEOUT_MS = 4_000;
 const SETUP_CLEANUP_WIDE_TIMEOUT_MS = 20_000;
+const SETUP_CLEANUP_OUTPUT_LIMIT_BYTES = 8_192;
+const STRICT_DOCKER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+function assertSetupCleanupEntry(cfg, entry) {
+    const validService = entry?.service === 'migrate' || SERVICES.includes(entry?.service);
+    if (!validService || typeof entry?.name !== 'string'
+        || !STRICT_DOCKER_NAME_PATTERN.test(entry.name)
+        || entry.name !== `${cfg.stack}-${entry.service}`) {
+        throw new Error('setup cleanup journal contains an invalid container identity');
+    }
+}
+
+function exactDockerNameFilter(name) {
+    // Docker's name filter is a regular expression over a leading-slash name.
+    // Escape every regexp metacharacter that the validated Docker alphabet can
+    // contain so a stack name with dots still means one literal exact name.
+    return `name=^/${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+}
+
+function successfulBoundedDockerResult(result) {
+    return result.status === 0
+        && !result.error
+        && !result.signal
+        && !result.stdoutTruncated
+        && !result.stderrTruncated;
+}
+
+function parseExactNameQuery(stdout, expectedName) {
+    if (stdout === '') return 'absent';
+    // One JSON row may have Docker's single line terminator. Whitespace-only
+    // output, extra blank lines, and every multi-row shape are not empty proof.
+    const row = stdout.match(/^([^\r\n]+)(?:\r?\n)?$/)?.[1];
+    if (!row) return 'ambiguous';
+    try {
+        const name = JSON.parse(row);
+        return typeof name === 'string' && name === expectedName ? 'present' : 'ambiguous';
+    } catch {
+        return 'ambiguous';
+    }
+}
 
 /**
  * Cleanup uses a fresh signal because the setup signal is already aborted.
@@ -1615,61 +1684,88 @@ async function cleanupSetupRunContainers(cfg, setupRunId, journal, onLog) {
     const cleanup = new AbortController();
     const timer = setTimeout(() => cleanup.abort(new Error('setup cleanup deadline exceeded')), SETUP_CLEANUP_WIDE_TIMEOUT_MS);
     const entries = [...journal].reverse().filter((entry) => !entry.preexisting);
-    const command = (args, timeout) => dockerAsync(args, { signal: cleanup.signal, timeout });
-    const assertCommand = (result, description) => {
-        cleanup.signal.throwIfAborted();
-        if (result.error) throw new Error(`${description}: ${result.error.message}`);
-        return result;
+    const command = (args, timeout, capture = false) => dockerAsync(args, {
+        signal: cleanup.signal,
+        timeout,
+        maxOutputBytes: capture ? SETUP_CLEANUP_OUTPUT_LIMIT_BYTES : 0,
+    });
+    const proveExactNameAfterInspectFailure = async (entry) => {
+        const queried = await command([
+            'ps', '-a',
+            '--filter', exactDockerNameFilter(entry.name),
+            '--format', '{{json .Names}}',
+        ], SETUP_CLEANUP_QUERY_TIMEOUT_MS, true);
+        if (!successfulBoundedDockerResult(queried)) return { state: 'unresolved' };
+        const proof = parseExactNameQuery(queried.stdout, entry.name);
+        if (proof === 'absent') return { state: 'absent' };
+        return proof === 'present' ? { state: 'unresolved-present' } : { state: 'unresolved' };
     };
-    const owns = async (entry) => {
-        const inspected = assertCommand(
-            await command(['inspect', '--format', '{{json .Config.Labels}}', entry.name], SETUP_CLEANUP_INSPECT_TIMEOUT_MS),
-            `could not inspect ${entry.name}`,
+    const classify = async (entry) => {
+        assertSetupCleanupEntry(cfg, entry);
+        const inspected = await command(
+            ['inspect', '--format', '{{json .Config.Labels}}', entry.name],
+            SETUP_CLEANUP_INSPECT_TIMEOUT_MS,
+            true,
         );
-        if (inspected.status !== 0) return false;
+        if (!successfulBoundedDockerResult(inspected)) {
+            return proveExactNameAfterInspectFailure(entry);
+        }
         try {
             const labels = JSON.parse(inspected.stdout.trim());
-            return labels?.['propr.stack'] === cfg.stack
+            if (!labels || Array.isArray(labels) || typeof labels !== 'object') {
+                return proveExactNameAfterInspectFailure(entry);
+            }
+            return labels['propr.stack'] === cfg.stack
                 && labels?.['propr.service'] === entry.service
-                && labels?.['propr.setup-run'] === setupRunId;
-        } catch (error) {
-            throw new Error(`could not parse ownership labels for ${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+                && labels?.['propr.setup-run'] === setupRunId
+                ? { state: 'owned' }
+                : { state: 'foreign' };
+        } catch {
+            return proveExactNameAfterInspectFailure(entry);
         }
     };
     try {
         const settled = await Promise.allSettled(entries.map(async (entry) => {
-            if (!(await owns(entry))) return;
+            const beforeStop = await classify(entry);
+            if (beforeStop.state === 'absent' || beforeStop.state === 'foreign') return;
+            if (beforeStop.state !== 'owned') throw new Error('container absence could not be proved before stop');
             await command(['stop', '-t', '2', entry.name], SETUP_CLEANUP_STOP_TIMEOUT_MS);
-            cleanup.signal.throwIfAborted();
             // A nonzero stop can mean the owned container exited between
             // inspect and stop while its stopped record still exists. The
             // second exact-label inspection, not the stop status, decides
             // whether it remains safe to force-remove that same record.
-            if (!(await owns(entry))) return;
-            const removed = assertCommand(
-                await command(['rm', '-f', entry.name], SETUP_CLEANUP_REMOVE_TIMEOUT_MS),
-                `could not remove ${entry.name}`,
-            );
-            if (removed.status === 0) onLog?.(`  [ok] removed run-owned ${entry.name}`);
+            const afterStop = await classify(entry);
+            if (afterStop.state === 'absent' || afterStop.state === 'foreign') return;
+            if (afterStop.state !== 'owned') throw new Error('container absence could not be proved after stop');
+            await command(['rm', '-f', entry.name], SETUP_CLEANUP_REMOVE_TIMEOUT_MS);
+            const afterRemove = await classify(entry);
+            if (afterRemove.state === 'absent' || afterRemove.state === 'foreign') {
+                onLog?.(`  [ok] removed run-owned ${entry.name}`);
+                return;
+            }
+            throw new Error(afterRemove.state === 'owned'
+                ? 'run-owned container remains after remove'
+                : 'container absence could not be proved after remove');
         }));
         const failures = settled.flatMap((result, index) => result.status === 'rejected'
-            ? [`${entries[index].name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`]
+            ? [`${entries[index].name}: rollback step could not be proved complete`]
             : []);
 
         // Await every entry, then independently prove no exact same-run record
         // remains. Foreign replacements deliberately fail the label match and
         // are therefore preserved and not reported as residual run ownership.
-        const residual = await Promise.all(entries.map(async (entry) => {
-            try { return await owns(entry) ? entry.name : null; } catch (error) {
-                failures.push(`${entry.name}: final ownership inspection failed (${error instanceof Error ? error.message : String(error)})`);
-                return null;
-            }
+        const terminal = await Promise.all(entries.map(async (entry) => {
+            try { return await classify(entry); } catch { return { state: 'unresolved' }; }
         }));
-        const remaining = residual.filter(Boolean);
-        if (remaining.length) failures.push(`run-owned containers remain: ${remaining.join(', ')}`);
+        failures.push(...terminal.flatMap((result, index) => {
+            if (result.state === 'absent' || result.state === 'foreign') return [];
+            return [`${entries[index].name}: ${result.state === 'owned' || result.state === 'unresolved-present'
+                ? 'run-owned container may remain'
+                : 'container absence could not be proved'}`];
+        }));
         if (failures.length) {
             for (const failure of failures) onLog?.(`  ! rollback: ${failure}`);
-            throw new Error(failures.join('; '));
+            throw new Error('run-owned container cleanup could not be proved complete');
         }
     } finally {
         clearTimeout(timer);
@@ -2027,7 +2123,7 @@ export function validateEnv(cfg) {
 
     // Docker name constraint — the stack name is embedded in container, volume
     // and network names, so reject it early instead of failing mid-startup.
-    const dockerNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+    const dockerNamePattern = STRICT_DOCKER_NAME_PATTERN;
     if (!dockerNamePattern.test(cfg.stack)) {
         errors.push(`PROPR_STACK ("${cfg.stack}") is not a valid Docker name — use letters, digits, '_', '.' or '-', starting with a letter or digit.`);
     }

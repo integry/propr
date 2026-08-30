@@ -41,7 +41,11 @@ if (args[0] === 'image' && args[1] === 'inspect') { fs.writeSync(1, '[]\\n'); pr
 if (args[0] === 'network') process.exit(0);
 if (args[0] === 'ps') {
   const match = args.join(' ').match(/name=\\^([^$]+)\\$/);
-  if (match) { if (read(match[1])) fs.writeSync(1, match[1] + '\\n'); process.exit(0); }
+  if (match) {
+    const name = match[1].replace(/^\\//, '');
+    if (read(name)) fs.writeSync(1, args.includes('{{json .Names}}') ? JSON.stringify(name) + '\\n' : name + '\\n');
+    process.exit(0);
+  }
   const current = names();
   const services = ['redis','daemon','worker','analysis-worker','indexing-worker','api','ui','docs','tunnel'];
   if (services.every(service => current.includes('propr-' + service))) {

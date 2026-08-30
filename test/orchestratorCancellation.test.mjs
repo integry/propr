@@ -79,7 +79,7 @@ if (args[0] === 'image' && args[1] === 'inspect') { console.log('[]'); process.e
 if (args[0] === 'network') process.exit(0);
 if (args[0] === 'ps') {
   const match = args.join(' ').match(/name=\\^([^$]+)\\$/);
-  const name = match && match[1];
+  const name = match && match[1].replace(/^\\//, '');
   const state = load();
   const entry = name && state[name];
   const allCoreLaunched = ['redis', 'daemon', 'worker', 'analysis-worker', 'indexing-worker', 'api']
@@ -92,7 +92,9 @@ if (args[0] === 'ps') {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30_000);
     process.exit(0);
   } else {
-    if (entry && (args.includes('-a') || entry.__running)) fs.writeSync(1, name + '\\n');
+    if (entry && (args.includes('-a') || entry.__running)) {
+      fs.writeSync(1, args.includes('{{json .Names}}') ? JSON.stringify(name) + '\\n' : name + '\\n');
+    }
     process.exit(0);
   }
 }
