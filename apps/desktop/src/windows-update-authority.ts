@@ -106,17 +106,18 @@ const lockedArtifactProcesses = new WeakMap<WindowsLockedArtifact, LockedArtifac
 const HELPER_NAME = 'propr-windows-authority.exe';
 const HELPER_MANIFEST_NAME = 'propr-windows-authority.manifest.json';
 const LAUNCHER_NAME = 'propr-windows-launcher.node';
+const BOOTSTRAP_NAME = 'propr-windows-bootstrap.node';
 const HELPER_MAX_BYTES = 4 * 1024 * 1024;
 const HELPER_MANIFEST_BYTES = 16 * 1024;
 const HELPER_MANIFEST_KEYS = Object.freeze([
   'schemaVersion', 'name', 'format', 'architecture', 'machine', 'clr', 'size', 'sha256', 'sourceSha256',
   'protocol', 'trust', 'publisher', 'compiler',
   'signerPins', 'signerCertificateSha256', 'signerSpkiSha256',
-  'launcher',
+  'bootstrap', 'launcher',
 ] as const);
 
 interface WindowsNativeLauncherPolicy {
-  name: typeof LAUNCHER_NAME;
+  name: typeof LAUNCHER_NAME | typeof BOOTSTRAP_NAME;
   format: 'PE';
   architecture: 'x64' | 'arm64';
   machine: 'AMD64' | 'ARM64';
@@ -146,9 +147,15 @@ interface WindowsAuthorityHelperManifest {
   signerCertificateSha256: string | null;
   signerSpkiSha256: string | null;
   launcher: WindowsNativeLauncherPolicy;
+  bootstrap: WindowsNativeLauncherPolicy;
   compiler: {
     kind: 'kernel-system-directory-probe-dotnet-framework-csc';
     framework: string;
+    signerCertificateSha256: string;
+    signerSpkiSha256: string;
+    signerRootSpkiSha256: string;
+    volumeSerial: string;
+    fileId128: string;
     inputs: readonly { name: string; size: number; sha256: string }[];
   };
 }
@@ -157,6 +164,7 @@ interface AuthenticatedWindowsAuthorityHelper {
   executable: string;
   executableHandle: FileHandle;
   launcherHandle: FileHandle;
+  bootstrapHandle: FileHandle;
   manifestHandle: FileHandle;
   manifest: WindowsAuthorityHelperManifest;
   launcher: WindowsNativeLauncher;
@@ -178,7 +186,11 @@ interface WindowsNativeLauncher {
   closeInput(lease: object): void;
   terminate(lease: object): void;
   close(lease: object): void;
-  verifyModule(policy: Record<string, unknown>): Record<string, unknown>;
+  compileHeld?(policy: Record<string, unknown>): Record<string, unknown>;
+}
+
+interface WindowsNativeBootstrap {
+  loadVerifiedModule(policy: Record<string, unknown>): WindowsNativeLauncher;
 }
 
 interface BrokerChild extends EventEmitter {
@@ -229,11 +241,20 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
   const manifest = value as Record<string, unknown>;
   const compiler = manifest.compiler;
   const launcher = manifest.launcher;
+  const bootstrap = manifest.bootstrap;
   if (!exactRecordKeys(manifest, HELPER_MANIFEST_KEYS)
     || typeof compiler !== 'object' || compiler === null || Array.isArray(compiler)
     || typeof launcher !== 'object' || launcher === null || Array.isArray(launcher)
-    || !exactRecordKeys(compiler as Record<string, unknown>, ['kind', 'framework', 'inputs'])
+    || typeof bootstrap !== 'object' || bootstrap === null || Array.isArray(bootstrap)
+    || !exactRecordKeys(compiler as Record<string, unknown>, [
+      'kind', 'framework', 'signerCertificateSha256', 'signerSpkiSha256', 'signerRootSpkiSha256',
+      'volumeSerial', 'fileId128', 'inputs',
+    ])
     || !exactRecordKeys(launcher as Record<string, unknown>, [
+      'name', 'format', 'architecture', 'machine', 'size', 'sha256', 'trust', 'publisher', 'signerPins',
+      'signerCertificateSha256', 'signerSpkiSha256',
+    ])
+    || !exactRecordKeys(bootstrap as Record<string, unknown>, [
       'name', 'format', 'architecture', 'machine', 'size', 'sha256', 'trust', 'publisher', 'signerPins',
       'signerCertificateSha256', 'signerSpkiSha256',
     ])
@@ -276,8 +297,26 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
     || JSON.stringify((launcher as Record<string, unknown>).signerPins) !== JSON.stringify(manifest.signerPins)
     || (launcher as Record<string, unknown>).signerCertificateSha256 !== manifest.signerCertificateSha256
     || (launcher as Record<string, unknown>).signerSpkiSha256 !== manifest.signerSpkiSha256
+    || (bootstrap as Record<string, unknown>).name !== BOOTSTRAP_NAME
+    || (bootstrap as Record<string, unknown>).format !== 'PE'
+    || (bootstrap as Record<string, unknown>).architecture !== (launcher as Record<string, unknown>).architecture
+    || (bootstrap as Record<string, unknown>).machine !== (launcher as Record<string, unknown>).machine
+    || !Number.isSafeInteger((bootstrap as Record<string, unknown>).size)
+    || Number((bootstrap as Record<string, unknown>).size) <= 0
+    || Number((bootstrap as Record<string, unknown>).size) > HELPER_MAX_BYTES
+    || !/^[a-f0-9]{64}$/.test(String((bootstrap as Record<string, unknown>).sha256))
+    || (bootstrap as Record<string, unknown>).trust !== manifest.trust
+    || (bootstrap as Record<string, unknown>).publisher !== manifest.publisher
+    || JSON.stringify((bootstrap as Record<string, unknown>).signerPins) !== JSON.stringify(manifest.signerPins)
+    || (bootstrap as Record<string, unknown>).signerCertificateSha256 !== manifest.signerCertificateSha256
+    || (bootstrap as Record<string, unknown>).signerSpkiSha256 !== manifest.signerSpkiSha256
     || (compiler as Record<string, unknown>).kind !== 'kernel-system-directory-probe-dotnet-framework-csc'
     || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String((compiler as Record<string, unknown>).framework))
+    || !/^[a-f0-9]{64}$/.test(String((compiler as Record<string, unknown>).signerCertificateSha256))
+    || !/^[a-f0-9]{64}$/.test(String((compiler as Record<string, unknown>).signerSpkiSha256))
+    || !/^[a-f0-9]{64}$/.test(String((compiler as Record<string, unknown>).signerRootSpkiSha256))
+    || !/^[a-f0-9]{16}$/.test(String((compiler as Record<string, unknown>).volumeSerial))
+    || !/^[a-f0-9]{32}$/.test(String((compiler as Record<string, unknown>).fileId128))
     || !Array.isArray((compiler as Record<string, unknown>).inputs)
     || ((compiler as Record<string, unknown>).inputs as unknown[]).length !== 3
     || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])
@@ -375,14 +414,18 @@ const authenticateWindowsAuthorityHelper = async (
   beforeOpenForTest?: () => void | Promise<void>,
   expectedPublisher = embeddedExpectedPublisher(),
   expectedSignerPins = embeddedExpectedSignerPins(),
+  nativeLoadFaultForTest?: 'barrier-before-module-load-swap' | 'barrier-before-module-load-write'
+    | 'barrier-before-module-load-delete',
 ): Promise<AuthenticatedWindowsAuthorityHelper> => {
   if (!isAbsolute(directory) || directory.indexOf(':', 2) >= 0) throw helperError('MANIFEST');
   const executableProof = await proveCanonicalTree(directory, join(directory, HELPER_NAME));
   const launcherProof = await proveCanonicalTree(directory, join(directory, LAUNCHER_NAME));
+  const bootstrapProof = await proveCanonicalTree(directory, join(directory, BOOTSTRAP_NAME));
   const manifestProof = await proveCanonicalTree(directory, join(directory, HELPER_MANIFEST_NAME));
   await beforeOpenForTest?.();
   let executableHandle: FileHandle | undefined;
   let launcherHandle: FileHandle | undefined;
+  let bootstrapHandle: FileHandle | undefined;
   let manifestHandle: FileHandle | undefined;
   try {
     manifestHandle = await open(manifestProof.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
@@ -428,15 +471,34 @@ const authenticateWindowsAuthorityHelper = async (
       || launcherAfter.size !== launcherBefore.size || launcherAfter.nlink !== launcherBefore.nlink) {
       throw helperError('HELPER_IDENTITY');
     }
-    let nativeLauncher: WindowsNativeLauncher;
-    try { nativeLauncher = require(launcherProof.path) as WindowsNativeLauncher; }
-    catch { throw helperError('HELPER_OPEN'); }
-    if (!nativeLauncher || typeof nativeLauncher.launch !== 'function' || typeof nativeLauncher.verifyModule !== 'function') {
-      throw helperError('HELPER_OPEN');
+    bootstrapHandle = await open(bootstrapProof.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+      .catch(() => { throw helperError('HELPER_OPEN'); });
+    const bootstrapBefore = await bootstrapHandle.stat({ bigint: true });
+    if (!bootstrapBefore.isFile() || bootstrapBefore.dev !== bootstrapProof.identity.dev
+      || bootstrapBefore.ino !== bootstrapProof.identity.ino || bootstrapBefore.nlink !== 1n
+      || bootstrapBefore.size !== BigInt(manifest.bootstrap.size)) throw helperError('HELPER_IDENTITY');
+    const bootstrapBytes = await readHeldExactly(bootstrapHandle, manifest.bootstrap.size, 'HELPER_HASH');
+    inspectWindowsNativeLauncherPeForTest(bootstrapBytes, manifest.bootstrap.architecture);
+    if (createHash('sha256').update(bootstrapBytes).digest('hex') !== manifest.bootstrap.sha256) {
+      throw helperError('HELPER_HASH');
     }
-    let moduleProof: Record<string, unknown>;
+    const bootstrapAfter = await bootstrapHandle.stat({ bigint: true });
+    if (bootstrapAfter.dev !== bootstrapBefore.dev || bootstrapAfter.ino !== bootstrapBefore.ino
+      || bootstrapAfter.size !== bootstrapBefore.size || bootstrapAfter.nlink !== bootstrapBefore.nlink) {
+      throw helperError('HELPER_IDENTITY');
+    }
+    // The bootstrap is the separately signed and release-manifest-bound native
+    // trust root. It is the only native path loaded directly. The target
+    // launcher remains unopened by the Windows loader until the bootstrap has
+    // authenticated its held bytes, full identity, ACL/reparse state and
+    // production Authenticode pins.
+    let bootstrap: WindowsNativeBootstrap;
+    try { bootstrap = require(bootstrapProof.path) as WindowsNativeBootstrap; }
+    catch { throw helperError('HELPER_OPEN'); }
+    if (!bootstrap || typeof bootstrap.loadVerifiedModule !== 'function') throw helperError('HELPER_OPEN');
+    let nativeLauncher: WindowsNativeLauncher;
     try {
-      moduleProof = nativeLauncher.verifyModule({
+      nativeLauncher = bootstrap.loadVerifiedModule({
         path: launcherProof.path,
         size: manifest.launcher.size,
         sha256: manifest.launcher.sha256,
@@ -444,15 +506,16 @@ const authenticateWindowsAuthorityHelper = async (
         publisher: manifest.launcher.publisher,
         signerCertificateSha256: manifest.launcher.signerCertificateSha256,
         signerSpkiSha256: manifest.launcher.signerSpkiSha256,
+        fault: nativeLoadFaultForTest ?? null,
       });
     } catch { throw helperError('HELPER_IDENTITY'); }
-    if (moduleProof.sha256 !== manifest.launcher.sha256
-      || moduleProof.architecture !== manifest.launcher.architecture) throw helperError('HELPER_IDENTITY');
-    return { executable: executableProof.path, executableHandle, launcherHandle, manifestHandle, manifest,
+    if (!nativeLauncher || typeof nativeLauncher.launch !== 'function') throw helperError('HELPER_IDENTITY');
+    return { executable: executableProof.path, executableHandle, launcherHandle, bootstrapHandle, manifestHandle, manifest,
       launcher: nativeLauncher };
   } catch (error) {
     await executableHandle?.close().catch(() => undefined);
     await launcherHandle?.close().catch(() => undefined);
+    await bootstrapHandle?.close().catch(() => undefined);
     await manifestHandle?.close().catch(() => undefined);
     throw error;
   }
@@ -756,6 +819,7 @@ class WindowsAuthoritySession {
       if (brokerSession === this) brokerSession = undefined;
       void this.helper?.executableHandle.close().catch(() => undefined);
       void this.helper?.launcherHandle.close().catch(() => undefined);
+      void this.helper?.bootstrapHandle.close().catch(() => undefined);
       void this.helper?.manifestHandle.close().catch(() => undefined);
       resolve();
     }));
@@ -995,6 +1059,7 @@ const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAut
   } catch {
     await helper.executableHandle.close().catch(() => undefined);
     await helper.launcherHandle.close().catch(() => undefined);
+    await helper.bootstrapHandle.close().catch(() => undefined);
     await helper.manifestHandle.close().catch(() => undefined);
     throw new WindowsAuthorityBootstrapError('SPAWN_ERROR', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf('TRANSPORT_SPAWN'));
   }

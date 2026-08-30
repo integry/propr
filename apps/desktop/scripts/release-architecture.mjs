@@ -14,6 +14,7 @@ const EXECUTABLE_NAME = 'propr-desktop';
 const WINDOWS_AUTHORITY_EXECUTABLE = 'lib/net45/resources/windows-authority/propr-windows-authority.exe';
 const WINDOWS_AUTHORITY_MANIFEST = 'lib/net45/resources/windows-authority/propr-windows-authority.manifest.json';
 const WINDOWS_AUTHORITY_LAUNCHER = 'lib/net45/resources/windows-authority/propr-windows-launcher.node';
+const WINDOWS_AUTHORITY_BOOTSTRAP = 'lib/net45/resources/windows-authority/propr-windows-bootstrap.node';
 const DMG_INSTALL_LINK = 'Applications';
 const DMG_HELPER_BUNDLES = new Set([
   `${EXECUTABLE_NAME} Helper.app`,
@@ -630,6 +631,7 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
     let authorityExecutableBytes;
     let authorityManifestBytes;
     let authorityLauncherBytes;
+    let authorityBootstrapBytes;
     const canonicalExecutable = archiveExecutablePath(kind, platform, arch);
     const expectedExecutableName = platform === 'win32' ? `${EXECUTABLE_NAME}.exe` : EXECUTABLE_NAME;
     const alternateExecutables = entries.filter(entry => !entry.directory
@@ -638,9 +640,11 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
     if (alternateExecutables.length) throw new Error(`ZIP contains an executable outside ${canonicalExecutable}`);
     if (kind === 'nupkg' && platform === 'win32') {
       const alternateAuthority = entries.filter(entry => !entry.directory
-        && ['propr-windows-authority.exe', 'propr-windows-authority.manifest.json', 'propr-windows-launcher.node']
+        && ['propr-windows-authority.exe', 'propr-windows-authority.manifest.json', 'propr-windows-launcher.node',
+          'propr-windows-bootstrap.node']
           .includes(basename(entry.path).toLocaleLowerCase('en-US'))
-        && ![WINDOWS_AUTHORITY_EXECUTABLE, WINDOWS_AUTHORITY_MANIFEST, WINDOWS_AUTHORITY_LAUNCHER].includes(entry.path));
+        && ![WINDOWS_AUTHORITY_EXECUTABLE, WINDOWS_AUTHORITY_MANIFEST, WINDOWS_AUTHORITY_LAUNCHER,
+          WINDOWS_AUTHORITY_BOOTSTRAP].includes(entry.path));
       if (alternateAuthority.length) throw new Error('NUPKG contains an ambiguous Windows authority helper layout');
     }
     for (const entry of entries) {
@@ -710,6 +714,7 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
       if (entry.path === WINDOWS_AUTHORITY_EXECUTABLE) authorityExecutableBytes = bytes;
       if (entry.path === WINDOWS_AUTHORITY_MANIFEST) authorityManifestBytes = bytes;
       if (entry.path === WINDOWS_AUTHORITY_LAUNCHER) authorityLauncherBytes = bytes;
+      if (entry.path === WINDOWS_AUTHORITY_BOOTSTRAP) authorityBootstrapBytes = bytes;
     }
     ranges.sort((left, right) => left.start - right.start);
     let expectedOffset = 0;
@@ -723,19 +728,22 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
     validateDarwinFrameworkSymlinks(entries);
     if (!executableBytes) throw new Error(`ZIP is missing canonical executable ${canonicalExecutable}`);
     if (kind === 'nupkg' && platform === 'win32') {
-      if (!authorityExecutableBytes || !authorityManifestBytes || !authorityLauncherBytes
+      if (!authorityExecutableBytes || !authorityManifestBytes || !authorityLauncherBytes || !authorityBootstrapBytes
         || authorityManifestBytes.length > 16 * 1024
         || authorityManifestBytes.at(-1) !== 0x0a) throw new Error('NUPKG is missing its exact Windows authority helper binding');
       let authorityManifest;
       try { authorityManifest = JSON.parse(UTF8_DECODER.decode(authorityManifestBytes.subarray(0, -1))); }
       catch { throw new Error('NUPKG Windows authority manifest is not strict UTF-8 JSON'); }
-      let launcherInspection;
-      try { launcherInspection = inspectExecutableBytes(authorityLauncherBytes); }
+      let launcherInspection, bootstrapInspection;
+      try {
+        launcherInspection = inspectExecutableBytes(authorityLauncherBytes);
+        bootstrapInspection = inspectExecutableBytes(authorityBootstrapBytes);
+      }
       catch { throw new Error('NUPKG Windows native launcher is not a valid PE image'); }
       const packagedApplicationInspection = inspectExecutableBytes(executableBytes);
       const packagedArchitecture = packagedApplicationInspection.architectures.length === 1
         ? packagedApplicationInspection.architectures[0] : '';
-      const expectedKeys = ['architecture', 'clr', 'compiler', 'format', 'launcher', 'machine', 'name', 'protocol', 'publisher',
+      const expectedKeys = ['architecture', 'bootstrap', 'clr', 'compiler', 'format', 'launcher', 'machine', 'name', 'protocol', 'publisher',
         'schemaVersion', 'sha256', 'signerCertificateSha256', 'signerPins', 'signerSpkiSha256', 'size',
         'sourceSha256', 'trust'];
       if (!authorityManifest || typeof authorityManifest !== 'object' || Array.isArray(authorityManifest)
@@ -746,9 +754,17 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
         || authorityManifest.protocol !== 'propr-windows-authority-v1'
         || !authorityManifest.compiler || typeof authorityManifest.compiler !== 'object'
         || Array.isArray(authorityManifest.compiler)
-        || JSON.stringify(Object.keys(authorityManifest.compiler).sort()) !== JSON.stringify(['framework', 'inputs', 'kind'])
+        || JSON.stringify(Object.keys(authorityManifest.compiler).sort()) !== JSON.stringify([
+          'fileId128', 'framework', 'inputs', 'kind', 'signerCertificateSha256', 'signerRootSpkiSha256',
+          'signerSpkiSha256', 'volumeSerial',
+        ])
         || authorityManifest.compiler.kind !== 'kernel-system-directory-probe-dotnet-framework-csc'
         || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String(authorityManifest.compiler.framework))
+        || !/^[a-f0-9]{64}$/.test(String(authorityManifest.compiler.signerCertificateSha256))
+        || !/^[a-f0-9]{64}$/.test(String(authorityManifest.compiler.signerSpkiSha256))
+        || !/^[a-f0-9]{64}$/.test(String(authorityManifest.compiler.signerRootSpkiSha256))
+        || !/^[a-f0-9]{16}$/.test(String(authorityManifest.compiler.volumeSerial))
+        || !/^[a-f0-9]{32}$/.test(String(authorityManifest.compiler.fileId128))
         || !Array.isArray(authorityManifest.compiler.inputs) || authorityManifest.compiler.inputs.length !== 3
         || authorityManifest.compiler.inputs.map(input => input?.name).join(',')
           !== 'csc.exe,System.dll,System.Web.Extensions.dll'
@@ -793,6 +809,25 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
         || JSON.stringify(authorityManifest.launcher.signerPins) !== JSON.stringify(authorityManifest.signerPins)
         || authorityManifest.launcher.signerCertificateSha256 !== authorityManifest.signerCertificateSha256
         || authorityManifest.launcher.signerSpkiSha256 !== authorityManifest.signerSpkiSha256
+        || !authorityManifest.bootstrap || typeof authorityManifest.bootstrap !== 'object'
+        || Array.isArray(authorityManifest.bootstrap)
+        || JSON.stringify(Object.keys(authorityManifest.bootstrap).sort()) !== JSON.stringify([
+          'architecture', 'format', 'machine', 'name', 'publisher', 'sha256', 'signerCertificateSha256',
+          'signerPins', 'signerSpkiSha256', 'size', 'trust',
+        ])
+        || authorityManifest.bootstrap.name !== 'propr-windows-bootstrap.node'
+        || authorityManifest.bootstrap.format !== 'PE'
+        || authorityManifest.bootstrap.architecture !== packagedArchitecture
+        || authorityManifest.bootstrap.machine !== (packagedArchitecture === 'arm64' ? 'ARM64' : 'AMD64')
+        || bootstrapInspection.format !== 'pe' || bootstrapInspection.architectures.length !== 1
+        || bootstrapInspection.architectures[0] !== packagedArchitecture
+        || authorityManifest.bootstrap.size !== authorityBootstrapBytes.length
+        || authorityManifest.bootstrap.sha256 !== createHash('sha256').update(authorityBootstrapBytes).digest('hex')
+        || authorityManifest.bootstrap.trust !== authorityManifest.trust
+        || authorityManifest.bootstrap.publisher !== authorityManifest.publisher
+        || JSON.stringify(authorityManifest.bootstrap.signerPins) !== JSON.stringify(authorityManifest.signerPins)
+        || authorityManifest.bootstrap.signerCertificateSha256 !== authorityManifest.signerCertificateSha256
+        || authorityManifest.bootstrap.signerSpkiSha256 !== authorityManifest.signerSpkiSha256
         || !/^[a-f0-9]{64}$/.test(String(authorityManifest.sourceSha256))) {
         throw new Error('NUPKG Windows authority helper does not match its bound manifest');
       }

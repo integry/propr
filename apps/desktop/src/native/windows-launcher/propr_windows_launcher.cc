@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <wincrypt.h>
 #include <wintrust.h>
+#include <mscat.h>
 #include <bcrypt.h>
 #include <softpub.h>
 #include <sddl.h>
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <cwctype>
 #include <memory>
 #include <string>
 #include <vector>
@@ -26,6 +28,8 @@
 namespace {
 constexpr size_t kSystemDirectoryChars = 520;
 constexpr DWORD kMaxImageBytes = 4 * 1024 * 1024;
+constexpr DWORD kMaxBuildInputBytes = 32 * 1024 * 1024;
+constexpr DWORD kMaxSourceBytes = 256 * 1024;
 constexpr DWORD kFileIdInfo = 18;
 constexpr DWORD kFileAttributeTagInfo = 9;
 
@@ -133,10 +137,10 @@ std::string Hex(const BYTE* bytes, size_t length) {
   return result;
 }
 
-bool Sha256Handle(HANDLE file, DWORD expected_size, std::string* result) {
+bool Sha256Handle(HANDLE file, DWORD expected_size, std::string* result, DWORD maximum_size = kMaxImageBytes) {
   LARGE_INTEGER size{};
   if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart != expected_size
-      || size.QuadPart > kMaxImageBytes || SetFilePointer(file, 0, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) return false;
+      || size.QuadPart > maximum_size || SetFilePointer(file, 0, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER) return false;
   BCRYPT_ALG_HANDLE algorithm = nullptr;
   BCRYPT_HASH_HANDLE hash = nullptr;
   DWORD object_size = 0, written = 0;
@@ -188,37 +192,61 @@ bool CurrentUserSid(PSID owner) {
   return same;
 }
 
-bool BroadWritableAcl(PACL dacl) {
+bool CurrentUserSidText(std::wstring* text) {
+  HANDLE token = nullptr;
+  DWORD bytes = 0;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+  GetTokenInformation(token, TokenUser, nullptr, 0, &bytes);
+  std::vector<BYTE> value(bytes);
+  LPWSTR sid_text = nullptr;
+  const bool ok = bytes > 0 && GetTokenInformation(token, TokenUser, value.data(), bytes, &bytes)
+    && ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(value.data())->User.Sid, &sid_text);
+  if (ok) *text = sid_text;
+  if (sid_text) LocalFree(sid_text);
+  CloseHandle(token);
+  return ok;
+}
+
+bool TrustedAuthoritySid(PSID sid, bool allow_current_user) {
+  return (allow_current_user && CurrentUserSid(sid)) || SameSid(sid, L"S-1-5-18") || SameSid(sid, L"S-1-5-32-544")
+    || SameSid(sid, L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
+}
+
+bool DangerousUntrustedAcl(PACL dacl, bool allow_current_user) {
   constexpr DWORD dangerous = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES
-    | DELETE | WRITE_DAC | WRITE_OWNER;
+    | FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL;
   for (DWORD index = 0; index < dacl->AceCount; ++index) {
     void* raw = nullptr;
     if (!GetAce(dacl, index, &raw)) return true;
     auto* header = static_cast<ACE_HEADER*>(raw);
     if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) continue;
+    if ((header->AceFlags & INHERIT_ONLY_ACE) != 0) continue;
     auto* ace = static_cast<ACCESS_ALLOWED_ACE*>(raw);
     PSID sid = &ace->SidStart;
-    if ((ace->Mask & dangerous) != 0 && (SameSid(sid, L"S-1-1-0") || SameSid(sid, L"S-1-5-11")
-        || SameSid(sid, L"S-1-5-32-545"))) return true;
+    // A named attacker SID is just as dangerous as a well-known broad group.
+    // Only the user and the fixed Windows authority principals may mutate an
+    // authenticated input while it is leased.
+    if ((ace->Mask & dangerous) != 0 && !TrustedAuthoritySid(sid, allow_current_user)) return true;
   }
   return false;
 }
 
-bool SecureObjectAcl(HANDLE object) {
+bool SecureObjectAcl(HANDLE object, bool allow_current_user = true) {
   PSECURITY_DESCRIPTOR descriptor = nullptr;
   PSID owner = nullptr;
   PACL dacl = nullptr;
   const DWORD status = GetSecurityInfo(object, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
     &owner, nullptr, &dacl, nullptr, &descriptor);
   const bool secure = status == ERROR_SUCCESS && owner != nullptr && dacl != nullptr
-    && (CurrentUserSid(owner) || SameSid(owner, L"S-1-5-18") || SameSid(owner, L"S-1-5-32-544")
+    && ((allow_current_user && CurrentUserSid(owner)) || SameSid(owner, L"S-1-5-18") || SameSid(owner, L"S-1-5-32-544")
       || SameSid(owner, L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"))
-    && !BroadWritableAcl(dacl);
+    && !DangerousUntrustedAcl(dacl, allow_current_user);
   if (descriptor) LocalFree(descriptor);
   return secure;
 }
 
-bool SecureRegularFile(HANDLE file, DWORD expected_size, FileIdInfo* identity, bool require_protected = true) {
+bool SecureRegularFile(HANDLE file, DWORD expected_size, FileIdInfo* identity, bool require_protected = true,
+    bool allow_current_user = true) {
   AttributeTagInfo tag{};
   BY_HANDLE_FILE_INFORMATION basic{};
   if (!GetFileInformationByHandle(file, &basic)
@@ -231,13 +259,25 @@ bool SecureRegularFile(HANDLE file, DWORD expected_size, FileIdInfo* identity, b
   PACL dacl = nullptr;
   const DWORD status = GetSecurityInfo(file, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
     &owner, nullptr, &dacl, nullptr, &descriptor);
-  bool secure = status == ERROR_SUCCESS && owner != nullptr && dacl != nullptr && SecureObjectAcl(file);
+  bool secure = status == ERROR_SUCCESS && owner != nullptr && dacl != nullptr && SecureObjectAcl(file, allow_current_user);
   SECURITY_DESCRIPTOR_CONTROL control = 0;
   DWORD revision = 0;
   secure = secure && GetSecurityDescriptorControl(descriptor, &control, &revision)
     && (!require_protected || (control & SE_DACL_PROTECTED) != 0);
   if (descriptor) LocalFree(descriptor);
   return secure;
+}
+
+bool SecureServicedSystemFile(HANDLE file, DWORD expected_size, FileIdInfo* identity) {
+  AttributeTagInfo tag{};
+  BY_HANDLE_FILE_INFORMATION basic{};
+  return expected_size > 0 && expected_size <= kMaxBuildInputBytes
+    && GetFileInformationByHandle(file, &basic)
+    && GetFileInformationByHandleEx(file, static_cast<FILE_INFO_BY_HANDLE_CLASS>(kFileAttributeTagInfo), &tag, sizeof(tag))
+    && FileIdentity(file, identity) && (tag.attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0
+    && (tag.attributes & FILE_ATTRIBUTE_DIRECTORY) == 0 && tag.reparse_tag == 0
+    && basic.nNumberOfLinks >= 1 && basic.nFileSizeHigh == 0 && basic.nFileSizeLow == expected_size
+    && SecureObjectAcl(file, false);
 }
 
 bool VerifyTrust(const std::wstring& path) {
@@ -343,6 +383,69 @@ bool VerifyPinnedSignature(const std::wstring& path, const std::string& expected
     && publisher == expected && certificate == expected_certificate && spki == expected_spki;
 }
 
+bool PinnedMicrosoftRoot(const std::string& root_spki) {
+  return root_spki == "02376d0908ac23041cc7d666d9daf192554f7fc36317aa9cb800908616b28af8"
+    || root_spki == "c9905b0ee01202293ca026e64f08412442c5504c06e44ca7e9726d61f20e4089"
+    || root_spki == "b2f7298b52bf2c3cac4ddfe72de4d682ac58957595982f2b62301af597c699c5";
+}
+
+bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* catalog_path) {
+  HCATADMIN admin = nullptr;
+  if (!CryptCATAdminAcquireContext2(&admin, &DRIVER_ACTION_VERIFY, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) return false;
+  DWORD hash_bytes = 0;
+  bool ok = CryptCATAdminCalcHashFromFileHandle2(admin, file, &hash_bytes, nullptr, 0) != FALSE
+    && hash_bytes > 0 && hash_bytes <= 128;
+  std::vector<BYTE> hash(hash_bytes);
+  ok = ok && SetFilePointer(file, 0, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER
+    && CryptCATAdminCalcHashFromFileHandle2(admin, file, &hash_bytes, hash.data(), 0);
+  HCATINFO catalog = ok ? CryptCATAdminEnumCatalogFromHash(admin, hash.data(), hash_bytes, 0, nullptr) : nullptr;
+  CATALOG_INFO catalog_info{};
+  catalog_info.cbStruct = sizeof(catalog_info);
+  ok = ok && catalog && CryptCATCatalogInfoFromContext(catalog, &catalog_info, 0);
+  std::wstring member_tag;
+  if (ok) {
+    const std::string lower = Hex(hash.data(), hash.size());
+    member_tag.assign(lower.begin(), lower.end());
+    std::transform(member_tag.begin(), member_tag.end(), member_tag.begin(),
+      [](wchar_t value) { return static_cast<wchar_t>(towupper(value)); });
+    WINTRUST_CATALOG_INFO member{};
+    member.cbStruct = sizeof(member);
+    member.pcwszCatalogFilePath = catalog_info.wszCatalogFile;
+    member.pcwszMemberTag = member_tag.c_str();
+    member.pcwszMemberFilePath = path.c_str();
+    member.hMemberFile = file;
+    member.pbCalculatedFileHash = hash.data();
+    member.cbCalculatedFileHash = hash_bytes;
+    WINTRUST_DATA data{};
+    data.cbStruct = sizeof(data);
+    data.dwUIChoice = WTD_UI_NONE;
+    data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+    data.dwUnionChoice = WTD_CHOICE_CATALOG;
+    data.pCatalog = &member;
+    data.dwStateAction = WTD_STATEACTION_VERIFY;
+    data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT;
+    GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    ok = WinVerifyTrust(nullptr, &policy, &data) == ERROR_SUCCESS;
+    data.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(nullptr, &policy, &data);
+    if (ok) *catalog_path = catalog_info.wszCatalogFile;
+  }
+  if (catalog) CryptCATAdminReleaseCatalogContext(admin, catalog, 0);
+  CryptCATAdminReleaseContext(admin, 0);
+  return ok;
+}
+
+bool VerifyMicrosoftCompilerInput(const std::wstring& path, HANDLE file, std::string* certificate,
+    std::string* spki, std::string* root_spki) {
+  std::wstring evidence_path = path;
+  bool trusted = VerifyTrust(path);
+  if (!trusted) trusted = VerifyCatalogTrust(path, file, &evidence_path);
+  std::wstring publisher;
+  return trusted && SignerEvidence(evidence_path, &publisher, certificate, spki, root_spki)
+    && publisher.find(L"Microsoft") != std::wstring::npos && certificate->size() == 64 && spki->size() == 64
+    && PinnedMicrosoftRoot(*root_spki);
+}
+
 bool ExpectedArchitecture(HANDLE file) {
   IMAGE_DOS_HEADER dos{};
   DWORD read = 0;
@@ -366,7 +469,7 @@ std::wstring SystemWindowsDirectory() {
   return std::wstring(path.data(), length);
 }
 
-bool CanonicalDirectory(const std::wstring& path) {
+bool CanonicalDirectory(const std::wstring& path, bool allow_current_user = true) {
   HANDLE directory = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL, FILE_SHARE_READ,
     nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
   AttributeTagInfo tag{};
@@ -374,9 +477,40 @@ bool CanonicalDirectory(const std::wstring& path) {
   const bool valid = directory != INVALID_HANDLE_VALUE
     && GetFileInformationByHandleEx(directory, static_cast<FILE_INFO_BY_HANDLE_CLASS>(kFileAttributeTagInfo),
       &tag, sizeof(tag)) && FileIdentity(directory, &identity)
-    && (tag.attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 && tag.reparse_tag == 0 && SecureObjectAcl(directory);
+    && (tag.attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 && tag.reparse_tag == 0
+    && SecureObjectAcl(directory, allow_current_user);
   if (directory != INVALID_HANDLE_VALUE) CloseHandle(directory);
   return valid;
+}
+
+bool ProtectPrivateBuildDirectory(const std::wstring& path) {
+  HANDLE directory = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC, FILE_SHARE_READ,
+    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  AttributeTagInfo tag{};
+  PSECURITY_DESCRIPTOR current = nullptr;
+  PSID owner = nullptr;
+  std::wstring user_sid;
+  bool valid = directory != INVALID_HANDLE_VALUE
+    && GetFileInformationByHandleEx(directory, static_cast<FILE_INFO_BY_HANDLE_CLASS>(kFileAttributeTagInfo),
+      &tag, sizeof(tag)) && (tag.attributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+    && (tag.attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 && tag.reparse_tag == 0
+    && GetSecurityInfo(directory, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr,
+      &current) == ERROR_SUCCESS && owner && CurrentUserSid(owner) && CurrentUserSidText(&user_sid);
+  PSECURITY_DESCRIPTOR replacement = nullptr;
+  PACL dacl = nullptr;
+  BOOL present = FALSE, defaulted = FALSE;
+  if (valid) {
+    const std::wstring sddl = L"D:P(A;OICI;FA;;;" + user_sid
+      + L")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+    valid = ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1,
+      &replacement, nullptr) && GetSecurityDescriptorDacl(replacement, &present, &dacl, &defaulted)
+      && present && dacl && SetSecurityInfo(directory, SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, dacl, nullptr) == ERROR_SUCCESS;
+  }
+  if (replacement) LocalFree(replacement);
+  if (current) LocalFree(current);
+  if (directory != INVALID_HANDLE_VALUE) CloseHandle(directory);
+  return valid && CanonicalDirectory(path, true);
 }
 
 napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
@@ -386,10 +520,10 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
   const std::wstring windows = SystemWindowsDirectory();
   if (windows.empty()) { Throw(env, "SYSTEM_PROBE"); return nullptr; }
   const std::wstring powershell = windows + L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-  const bool directory_valid = CanonicalDirectory(windows)
-    && CanonicalDirectory(windows + L"\\System32")
-    && CanonicalDirectory(windows + L"\\System32\\WindowsPowerShell")
-    && CanonicalDirectory(windows + L"\\System32\\WindowsPowerShell\\v1.0");
+  const bool directory_valid = CanonicalDirectory(windows, false)
+    && CanonicalDirectory(windows + L"\\System32", false)
+    && CanonicalDirectory(windows + L"\\System32\\WindowsPowerShell", false)
+    && CanonicalDirectory(windows + L"\\System32\\WindowsPowerShell\\v1.0", false);
   if (!directory_valid) { Throw(env, "SYSTEM_DIRECTORY"); return nullptr; }
   HANDLE candidate = CreateFileW(powershell.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
@@ -404,7 +538,7 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
   const std::wstring expected_final = L"\\\\?\\" + powershell;
   const bool valid = GetFileSizeEx(candidate, &size) && size.QuadPart > 0 && size.QuadPart <= kMaxImageBytes
     && final_length > 0 && final_length < final_path.size() && _wcsicmp(final_path.data(), expected_final.c_str()) == 0
-    && SecureRegularFile(candidate, static_cast<DWORD>(size.QuadPart), &identity, false) && VerifyTrust(powershell)
+    && SecureRegularFile(candidate, static_cast<DWORD>(size.QuadPart), &identity, false, false) && VerifyTrust(powershell)
     && SignerEvidence(powershell, &system_publisher, &system_certificate, &system_spki, &system_root_spki)
     && system_publisher.find(L"Microsoft") != std::wstring::npos
     && system_certificate.size() == 64 && system_spki.size() == 64
@@ -455,6 +589,75 @@ bool MutationWasDenied(const std::wstring& path, const std::string& fault) {
     return false;
   }
   return true;
+}
+
+napi_value LoadVerifiedModule(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1];
+  std::wstring path;
+  std::string expected_hash, publisher, certificate_pin, spki_pin, fault;
+  uint32_t expected_size = 0;
+  bool production = false;
+  if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 1
+      || !StringValue(env, args[0], "path", &path) || !Utf8Value(env, args[0], "sha256", &expected_hash)
+      || !Uint32Value(env, args[0], "size", &expected_size) || !BoolValue(env, args[0], "production", &production)
+      || expected_hash.size() != 64 || expected_size == 0 || expected_size > kMaxImageBytes) {
+    Throw(env, "MODULE_ARGUMENT"); return nullptr;
+  }
+  Utf8Value(env, args[0], "publisher", &publisher, true);
+  Utf8Value(env, args[0], "signerCertificateSha256", &certificate_pin, true);
+  Utf8Value(env, args[0], "signerSpkiSha256", &spki_pin, true);
+  Utf8Value(env, args[0], "fault", &fault, true);
+
+  // This handle denies write/delete sharing across authentication, loader
+  // mapping, loaded-image comparison and N-API registration. Consequently a
+  // hostile DllMain/NAPI image cannot be substituted at the pre-load barrier.
+  HANDLE held = CreateFileW(path.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  FileIdInfo held_id{};
+  std::string held_hash;
+  const bool authenticated = held != INVALID_HANDLE_VALUE
+    && SecureRegularFile(held, expected_size, &held_id, false) && ExpectedArchitecture(held)
+    && Sha256Handle(held, expected_size, &held_hash) && held_hash == expected_hash
+    && (!production || VerifyPinnedSignature(path, publisher, certificate_pin, spki_pin));
+  if (!authenticated) {
+    if (held != INVALID_HANDLE_VALUE) CloseHandle(held);
+    Throw(env, "MODULE_AUTHORITY"); return nullptr;
+  }
+  if (fault.rfind("barrier-before-module-load-", 0) == 0 && !MutationWasDenied(path, fault)) {
+    CloseHandle(held); Throw(env, "MODULE_BARRIER"); return nullptr;
+  }
+
+  HMODULE module = LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+  std::array<wchar_t, 32768> loaded_path{};
+  const DWORD loaded_length = module
+    ? GetModuleFileNameW(module, loaded_path.data(), static_cast<DWORD>(loaded_path.size())) : 0;
+  HANDLE loaded = loaded_length > 0 && loaded_length < loaded_path.size()
+    ? CreateFileW(loaded_path.data(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr)
+    : INVALID_HANDLE_VALUE;
+  FileIdInfo loaded_id{};
+  std::string loaded_hash;
+  const bool same_image = module && loaded != INVALID_HANDLE_VALUE
+    && SecureRegularFile(loaded, expected_size, &loaded_id, false) && SameIdentity(held_id, loaded_id)
+    && Sha256Handle(loaded, expected_size, &loaded_hash) && loaded_hash == held_hash;
+  if (loaded != INVALID_HANDLE_VALUE) CloseHandle(loaded);
+  if (!same_image) {
+    if (module) FreeLibrary(module);
+    CloseHandle(held); Throw(env, "MODULE_IMAGE"); return nullptr;
+  }
+  using RegisterModule = napi_value (*)(napi_env, napi_value);
+  auto* registration = reinterpret_cast<RegisterModule>(GetProcAddress(module, "napi_register_module_v1"));
+  napi_value exports;
+  if (!registration || napi_create_object(env, &exports) != napi_ok) {
+    FreeLibrary(module); CloseHandle(held); Throw(env, "MODULE_REGISTER"); return nullptr;
+  }
+  napi_value registered = registration(env, exports);
+  CloseHandle(held);
+  if (!registered) { Throw(env, "MODULE_REGISTER"); return nullptr; }
+  // Deliberately retain the authenticated module for the Node environment;
+  // unloading while exported functions remain reachable would be unsafe.
+  return registered;
 }
 
 std::wstring Quote(const std::wstring& value) {
@@ -669,6 +872,328 @@ napi_value Close(napi_env env, napi_callback_info info) {
   napi_value result; napi_get_undefined(env, &result); return result;
 }
 
+bool StringArrayValue(napi_env env, napi_value object, const char* name, size_t expected,
+    std::vector<std::wstring>* result) {
+  napi_value array;
+  bool is_array = false;
+  uint32_t length = 0;
+  if (napi_get_named_property(env, object, name, &array) != napi_ok
+      || napi_is_array(env, array, &is_array) != napi_ok || !is_array
+      || napi_get_array_length(env, array, &length) != napi_ok || length != expected) return false;
+  for (uint32_t index = 0; index < length; ++index) {
+    napi_value value;
+    size_t chars = 0;
+    if (napi_get_element(env, array, index, &value) != napi_ok
+        || napi_get_value_string_utf16(env, value, nullptr, 0, &chars) != napi_ok
+        || chars == 0 || chars > 32767) return false;
+    std::vector<char16_t> buffer(chars + 1);
+    if (napi_get_value_string_utf16(env, value, buffer.data(), buffer.size(), &chars) != napi_ok) return false;
+    result->emplace_back(reinterpret_cast<const wchar_t*>(buffer.data()), chars);
+  }
+  return true;
+}
+
+bool Uint32ArrayValue(napi_env env, napi_value object, const char* name, size_t expected,
+    std::vector<uint32_t>* result) {
+  napi_value array;
+  bool is_array = false;
+  uint32_t length = 0;
+  if (napi_get_named_property(env, object, name, &array) != napi_ok
+      || napi_is_array(env, array, &is_array) != napi_ok || !is_array
+      || napi_get_array_length(env, array, &length) != napi_ok || length != expected) return false;
+  for (uint32_t index = 0; index < length; ++index) {
+    napi_value value;
+    uint32_t number = 0;
+    if (napi_get_element(env, array, index, &value) != napi_ok
+        || napi_get_value_uint32(env, value, &number) != napi_ok || number == 0
+        || number > kMaxBuildInputBytes) return false;
+    result->push_back(number);
+  }
+  return true;
+}
+
+bool Utf8ArrayValue(napi_env env, napi_value object, const char* name, size_t expected,
+    std::vector<std::string>* result) {
+  napi_value array;
+  bool is_array = false;
+  uint32_t length = 0;
+  if (napi_get_named_property(env, object, name, &array) != napi_ok
+      || napi_is_array(env, array, &is_array) != napi_ok || !is_array
+      || napi_get_array_length(env, array, &length) != napi_ok || length != expected) return false;
+  for (uint32_t index = 0; index < length; ++index) {
+    napi_value value;
+    size_t bytes = 0;
+    if (napi_get_element(env, array, index, &value) != napi_ok
+        || napi_get_value_string_utf8(env, value, nullptr, 0, &bytes) != napi_ok || bytes != 64) return false;
+    std::vector<char> buffer(bytes + 1);
+    if (napi_get_value_string_utf8(env, value, buffer.data(), buffer.size(), &bytes) != napi_ok) return false;
+    result->emplace_back(buffer.data(), bytes);
+  }
+  return true;
+}
+
+std::wstring QuoteArgument(const std::wstring& value) {
+  if (value.find(L'"') != std::wstring::npos || value.find(L'\0') != std::wstring::npos) return {};
+  return L"\"" + value + L"\"";
+}
+
+bool SameHeldBuildInput(HANDLE handle, const FileIdInfo& expected_id, DWORD expected_size,
+    const std::string& expected_hash) {
+  FileIdInfo after_id{};
+  std::string after_hash;
+  return SecureServicedSystemFile(handle, expected_size, &after_id) && SameIdentity(expected_id, after_id)
+    && Sha256Handle(handle, expected_size, &after_hash, kMaxBuildInputBytes) && after_hash == expected_hash;
+}
+
+napi_value CompileHeld(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value args[1], source_value;
+  std::wstring system_root, output_path, working_directory;
+  std::vector<std::wstring> paths;
+  std::vector<uint32_t> sizes;
+  std::vector<std::string> hashes;
+  std::string fault;
+  void* source_data = nullptr;
+  size_t source_size = 0;
+  if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 1
+      || !StringValue(env, args[0], "systemRoot", &system_root)
+      || !StringValue(env, args[0], "output", &output_path)
+      || !StringValue(env, args[0], "cwd", &working_directory)
+      || !StringArrayValue(env, args[0], "paths", 3, &paths)
+      || !Uint32ArrayValue(env, args[0], "sizes", 3, &sizes)
+      || !Utf8ArrayValue(env, args[0], "sha256", 3, &hashes)
+      || napi_get_named_property(env, args[0], "source", &source_value) != napi_ok
+      || napi_get_buffer_info(env, source_value, &source_data, &source_size) != napi_ok
+      || source_size == 0 || source_size > kMaxSourceBytes) {
+    Throw(env, "COMPILE_ARGUMENT"); return nullptr;
+  }
+  Utf8Value(env, args[0], "fault", &fault, true);
+  const std::wstring expected_output = working_directory + L"\\propr-windows-authority.exe";
+  if (_wcsicmp(output_path.c_str(), expected_output.c_str()) != 0
+      || std::any_of(paths.begin(), paths.end(), [](const std::wstring& path) {
+        return path.find(L'"') != std::wstring::npos || path.find(L'\0') != std::wstring::npos;
+      })) {
+    Throw(env, "COMPILE_ARGUMENT"); return nullptr;
+  }
+  if (!CanonicalDirectory(system_root, false) || !ProtectPrivateBuildDirectory(working_directory)) {
+    Throw(env, "DIRECTORY_PROBE"); return nullptr;
+  }
+  HANDLE directory_lease = CreateFileW(working_directory.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL,
+    FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  FileIdInfo directory_id{};
+  if (directory_lease == INVALID_HANDLE_VALUE || !FileIdentity(directory_lease, &directory_id)
+      || !SecureObjectAcl(directory_lease, true)) {
+    if (directory_lease != INVALID_HANDLE_VALUE) CloseHandle(directory_lease);
+    Throw(env, "DIRECTORY_PROBE"); return nullptr;
+  }
+
+  std::array<HANDLE, 3> inputs{INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE};
+  std::array<FileIdInfo, 3> identities{};
+  std::array<std::string, 3> certificates, spkis, root_spkis;
+  bool inputs_valid = true;
+  size_t failed_input = inputs.size();
+  for (size_t index = 0; index < inputs.size(); ++index) {
+    inputs[index] = CreateFileW(paths[index].c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (inputs[index] == INVALID_HANDLE_VALUE
+        || !SecureServicedSystemFile(inputs[index], sizes[index], &identities[index])
+        || !Sha256Handle(inputs[index], sizes[index], &certificates[index], kMaxBuildInputBytes)
+        || certificates[index] != hashes[index]) {
+      inputs_valid = false;
+      failed_input = index;
+      break;
+    }
+  }
+  if (!inputs_valid) {
+    for (HANDLE handle : inputs) if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+    CloseHandle(directory_lease);
+    Throw(env, failed_input == 0 ? "COMPILER_OPEN" : "REFERENCE_OPEN"); return nullptr;
+  }
+  for (size_t index = 0; index < inputs.size(); ++index) {
+    // Overwrite the temporary hash slot with actual signer evidence only after
+    // exact held-byte authentication. Catalog-signed serviced hard links are
+    // accepted; reparse points and user-writable aliases are not.
+    if (!VerifyMicrosoftCompilerInput(paths[index], inputs[index], &certificates[index], &spkis[index], &root_spkis[index])) {
+      inputs_valid = false;
+      break;
+    }
+  }
+  if (!inputs_valid || fault == "compiler-wrong-signer" || fault == "compiler-wrong-spki"
+      || fault == "compiler-wrong-catalog") {
+    for (HANDLE handle : inputs) CloseHandle(handle);
+    CloseHandle(directory_lease);
+    Throw(env, "SIGNER_CATALOG"); return nullptr;
+  }
+  if ((fault == "compiler-swap-after-open" && !MutationWasDenied(paths[0], "swap"))
+      || (fault == "reference-swap-after-open" && !MutationWasDenied(paths[1], "swap"))) {
+    for (HANDLE handle : inputs) CloseHandle(handle);
+    CloseHandle(directory_lease);
+    Throw(env, "LEASE"); return nullptr;
+  }
+
+  std::array<BYTE, 16> random{};
+  if (BCryptGenRandom(nullptr, random.data(), static_cast<ULONG>(random.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+    for (HANDLE handle : inputs) CloseHandle(handle);
+    CloseHandle(directory_lease);
+    Throw(env, "SOURCE_COPY"); return nullptr;
+  }
+  const std::string random_hex = Hex(random.data(), random.size());
+  const std::wstring random_name(random_hex.begin(), random_hex.end());
+  const std::wstring source_path = working_directory + L"\\source-" + random_name + L".cs";
+  HANDLE source = CreateFileW(source_path.c_str(), GENERIC_READ | GENERIC_WRITE | READ_CONTROL, FILE_SHARE_READ,
+    nullptr, CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  DWORD written = 0;
+  bool source_valid = source != INVALID_HANDLE_VALUE
+    && WriteFile(source, source_data, static_cast<DWORD>(source_size), &written, nullptr) && written == source_size
+    && FlushFileBuffers(source) && SetFilePointer(source, 0, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER;
+  FileIdInfo source_id{};
+  std::string source_hash;
+  source_valid = source_valid && SecureRegularFile(source, static_cast<DWORD>(source_size), &source_id, false)
+    && Sha256Handle(source, static_cast<DWORD>(source_size), &source_hash);
+  if (!source_valid) {
+    if (source != INVALID_HANDLE_VALUE) CloseHandle(source);
+    DeleteFileW(source_path.c_str());
+    for (HANDLE handle : inputs) CloseHandle(handle);
+    CloseHandle(directory_lease);
+    Throw(env, "SOURCE_COPY"); return nullptr;
+  }
+  if ((fault == "source-swap-after-copy" || fault == "source-rename" || fault == "source-reparse"
+      || fault == "source-replace") && !MutationWasDenied(source_path, "swap")) source_valid = false;
+  if (fault == "source-truncate" && !MutationWasDenied(source_path, "write")) source_valid = false;
+  if (fault == "source-hardlink") {
+    const std::wstring extra_link = source_path + L".link";
+    CreateHardLinkW(extra_link.c_str(), source_path.c_str(), nullptr);
+    DeleteFileW(extra_link.c_str());
+  }
+  if ((fault == "compiler-swap-before-create" && !MutationWasDenied(paths[0], "swap"))
+      || (fault == "reference-swap-before-create" && !MutationWasDenied(paths[1], "swap"))) source_valid = false;
+
+  SECURITY_ATTRIBUTES inheritable{sizeof(inheritable), nullptr, TRUE};
+  HANDLE child_stdin = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    &inheritable, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE child_stdout = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    &inheritable, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE child_stderr = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+    &inheritable, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE inherited[] = {child_stdin, child_stdout, child_stderr};
+  SIZE_T attribute_bytes = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_bytes);
+  std::vector<BYTE> attribute_storage(attribute_bytes);
+  auto* attributes = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attribute_storage.data());
+  STARTUPINFOEXW startup{};
+  startup.StartupInfo.cb = sizeof(startup);
+  startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  startup.StartupInfo.hStdInput = child_stdin;
+  startup.StartupInfo.hStdOutput = child_stdout;
+  startup.StartupInfo.hStdError = child_stderr;
+  startup.lpAttributeList = attributes;
+  PROCESS_INFORMATION process{};
+  const std::wstring compiler_arg = QuoteArgument(paths[0]);
+  const std::wstring output_arg = QuoteArgument(L"/out:" + output_path);
+  const std::wstring reference_one = QuoteArgument(L"/reference:" + paths[1]);
+  const std::wstring reference_two = QuoteArgument(L"/reference:" + paths[2]);
+  const std::wstring source_arg = QuoteArgument(source_path);
+  std::wstring command = compiler_arg + L" /nologo /noconfig /target:exe /platform:anycpu /optimize+ /checked+"
+    L" /warnaserror+ " + output_arg + L" " + reference_one + L" " + reference_two + L" " + source_arg;
+  std::wstring environment = L"SystemRoot=" + system_root + L'\0' + L'\0';
+  const bool attributes_initialized = child_stdin != INVALID_HANDLE_VALUE && child_stdout != INVALID_HANDLE_VALUE
+    && child_stderr != INVALID_HANDLE_VALUE && source_valid
+    && InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_bytes);
+  bool created = attributes_initialized
+    && UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited), nullptr, nullptr)
+    && CreateProcessW(paths[0].c_str(), command.data(), nullptr, nullptr, TRUE,
+      CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+      environment.data(), working_directory.c_str(), &startup.StartupInfo, &process);
+  if (attributes_initialized) DeleteProcThreadAttributeList(attributes);
+  if (child_stdin != INVALID_HANDLE_VALUE) CloseHandle(child_stdin);
+  if (child_stdout != INVALID_HANDLE_VALUE) CloseHandle(child_stdout);
+  if (child_stderr != INVALID_HANDLE_VALUE) CloseHandle(child_stderr);
+
+  HANDLE job = created ? CreateJobObjectW(nullptr, nullptr) : nullptr;
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+  limits.BasicLimitInformation.ActiveProcessLimit = 1;
+  bool image_proven = created && job && SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))
+    && AssignProcessToJobObject(job, process.hProcess) && fault != "compiler-job";
+  std::array<wchar_t, 32768> loaded_path{};
+  DWORD loaded_length = static_cast<DWORD>(loaded_path.size());
+  image_proven = image_proven && QueryFullProcessImageNameW(process.hProcess, 0, loaded_path.data(), &loaded_length);
+  HANDLE loaded = image_proven ? CreateFileW(loaded_path.data(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr,
+    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr) : INVALID_HANDLE_VALUE;
+  FileIdInfo loaded_id{};
+  std::string loaded_hash;
+  image_proven = image_proven && loaded != INVALID_HANDLE_VALUE
+    && SecureServicedSystemFile(loaded, sizes[0], &loaded_id) && SameIdentity(identities[0], loaded_id)
+    && Sha256Handle(loaded, sizes[0], &loaded_hash, kMaxBuildInputBytes) && loaded_hash == hashes[0]
+    && fault != "compiler-image";
+  if (fault == "compiler-swap-after-process" && !MutationWasDenied(paths[0], "swap")) image_proven = false;
+  if (loaded != INVALID_HANDLE_VALUE) CloseHandle(loaded);
+  bool exited = image_proven && ResumeThread(process.hThread) != static_cast<DWORD>(-1)
+    && WaitForSingleObject(process.hProcess, 60'000) == WAIT_OBJECT_0;
+  DWORD exit_code = 1;
+  if (exited) exited = GetExitCodeProcess(process.hProcess, &exit_code) && exit_code == 0 && fault != "compiler-exit";
+  if (created && (!exited || !image_proven)) {
+    TerminateProcess(process.hProcess, 127);
+    WaitForSingleObject(process.hProcess, 5'000);
+  }
+  if (created) { CloseHandle(process.hThread); CloseHandle(process.hProcess); }
+
+  bool lease_proven = image_proven && exited;
+  FileIdInfo directory_after{};
+  lease_proven = lease_proven && FileIdentity(directory_lease, &directory_after)
+    && SameIdentity(directory_id, directory_after) && SecureObjectAcl(directory_lease, true);
+  for (size_t index = 0; index < inputs.size(); ++index) {
+    lease_proven = lease_proven && SameHeldBuildInput(inputs[index], identities[index], sizes[index], hashes[index]);
+  }
+  FileIdInfo source_after{};
+  std::string source_after_hash;
+  lease_proven = lease_proven && SecureRegularFile(source, static_cast<DWORD>(source_size), &source_after, false)
+    && SameIdentity(source_id, source_after)
+    && Sha256Handle(source, static_cast<DWORD>(source_size), &source_after_hash) && source_after_hash == source_hash;
+  CloseHandle(source);
+  DeleteFileW(source_path.c_str());
+  for (HANDLE handle : inputs) CloseHandle(handle);
+
+  HANDLE output = lease_proven ? CreateFileW(output_path.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, nullptr,
+    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr) : INVALID_HANDLE_VALUE;
+  LARGE_INTEGER output_size{};
+  FileIdInfo output_id{};
+  std::string output_hash;
+  bool output_valid = output != INVALID_HANDLE_VALUE && GetFileSizeEx(output, &output_size)
+    && output_size.QuadPart > 0 && output_size.QuadPart <= kMaxImageBytes
+    && SecureRegularFile(output, static_cast<DWORD>(output_size.QuadPart), &output_id, false)
+    && Sha256Handle(output, static_cast<DWORD>(output_size.QuadPart), &output_hash)
+    && fault != "compiler-output";
+  if (output != INVALID_HANDLE_VALUE) CloseHandle(output);
+  if (job) CloseHandle(job);
+  CloseHandle(directory_lease);
+  if (!created) { Throw(env, "SPAWN"); return nullptr; }
+  if (!image_proven) { Throw(env, "IMAGE"); return nullptr; }
+  if (!exited) { Throw(env, "EXIT"); return nullptr; }
+  if (!lease_proven) { Throw(env, "LEASE"); return nullptr; }
+  if (!output_valid) { Throw(env, "OUTPUT_VALIDATION"); return nullptr; }
+
+  napi_value result, value;
+  napi_create_object(env, &result);
+  napi_create_uint32(env, static_cast<uint32_t>(output_size.QuadPart), &value);
+  napi_set_named_property(env, result, "size", value);
+  napi_create_string_utf8(env, output_hash.c_str(), NAPI_AUTO_LENGTH, &value);
+  napi_set_named_property(env, result, "sha256", value);
+  napi_create_string_utf8(env, certificates[0].c_str(), NAPI_AUTO_LENGTH, &value);
+  napi_set_named_property(env, result, "compilerCertificateSha256", value);
+  napi_create_string_utf8(env, spkis[0].c_str(), NAPI_AUTO_LENGTH, &value);
+  napi_set_named_property(env, result, "compilerSpkiSha256", value);
+  napi_create_string_utf8(env, root_spkis[0].c_str(), NAPI_AUTO_LENGTH, &value);
+  napi_set_named_property(env, result, "compilerRootSpkiSha256", value);
+  char volume[17]{};
+  sprintf_s(volume, "%016llx", identities[0].volume);
+  napi_create_string_utf8(env, volume, NAPI_AUTO_LENGTH, &value);
+  napi_set_named_property(env, result, "compilerVolumeSerial", value);
+  napi_create_string_utf8(env, Hex(identities[0].id, sizeof(identities[0].id)).c_str(), NAPI_AUTO_LENGTH, &value);
+  napi_set_named_property(env, result, "compilerFileId128", value);
+  return result;
+}
+
 napi_value LeaseFiles(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
@@ -779,6 +1304,11 @@ napi_value VerifyModule(napi_env env, napi_callback_info info) {
 }
 
 napi_value Init(napi_env env, napi_value exports) {
+#if defined(PROPR_WINDOWS_BOOTSTRAP_ONLY)
+  napi_property_descriptor properties[] = {
+    {"loadVerifiedModule", nullptr, LoadVerifiedModule, nullptr, nullptr, nullptr, napi_default, nullptr},
+  };
+#else
   napi_property_descriptor properties[] = {
     {"probeSystemDirectory", nullptr, ProbeSystemDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"launch", nullptr, Launch, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -786,10 +1316,11 @@ napi_value Init(napi_env env, napi_value exports) {
     {"closeInput", nullptr, CloseInput, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"terminate", nullptr, Terminate, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr},
-    {"verifyModule", nullptr, VerifyModule, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"compileHeld", nullptr, CompileHeld, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"leaseFiles", nullptr, LeaseFiles, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"closeFileLease", nullptr, CloseFileLease, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
+#endif
   napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);
   return exports;
 }

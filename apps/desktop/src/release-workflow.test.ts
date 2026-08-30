@@ -318,6 +318,13 @@ describe('desktop trusted release workflow', () => {
     assert.match(windowsNativeLauncher, /QueryFullProcessImageNameW/);
     assert.match(windowsNativeLauncher, /SameIdentity\(held_id, loaded_id\)/);
     assert.match(windowsNativeLauncher, /VerifyPinnedSignature/);
+    assert.match(windowsNativeLauncher, /CompileHeld/);
+    assert.match(windowsNativeLauncher, /VerifyMicrosoftCompilerInput/);
+    assert.match(windowsNativeLauncher, /CryptCATAdminEnumCatalogFromHash/);
+    assert.match(windowsNativeLauncher, /CreateProcessW\(paths\[0\]\.c_str\(\)/);
+    assert.match(windowsNativeLauncher, /HANDLE inherited\[\] = \{child_stdin, child_stdout, child_stderr\}/);
+    assert.match(windowsNativeLauncher, /SameIdentity\(identities\[0\], loaded_id\)/);
+    assert.match(windowsNativeLauncher, /DangerousUntrustedAcl/);
     assert.ok(!windowsAuthority.toLowerCase().includes('powershell'));
     assert.ok(!windowsAuthority.includes('writeBootstrap'));
     assert.ok(!windowsAuthority.includes('brokerSource'));
@@ -341,7 +348,12 @@ describe('desktop trusted release workflow', () => {
       'READY',
     ]) assert.match(windowsAuthority, new RegExp(`'${stage}'`));
     assert.match(windowsAuthorityBuild, /Microsoft\.NET', layout, 'v4\.0\.30319'/);
-    assert.match(windowsAuthorityBuild, /'\/platform:anycpu'/);
+    assert.match(windowsAuthorityBuild, /nativeLauncher\.compileHeld\(\{/);
+    assert.match(windowsNativeLauncher, /\/platform:anycpu/);
+    assert.doesNotMatch(windowsAuthorityBuild, /execFileAsync\(compiler/);
+    assert.doesNotMatch(windowsAuthorityBuild, /require\(launcher\.path\)/);
+    assert.doesNotMatch(windowsAuthority, /require\(launcherProof\.path\)/);
+    assert.match(windowsAuthority, /bootstrap\.loadVerifiedModule\(\{/);
     assert.match(forgeConfig, /extraResource: \[resolve\('build', 'windows-authority'\)\]/);
     assert.match(forgeConfig, /refreshPackagedWindowsAuthorityManifest/);
     assert.match(windowsAuthority, /purpose: BrokerPurpose/);

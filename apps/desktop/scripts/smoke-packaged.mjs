@@ -35,9 +35,10 @@ const inspectOnly = process.argv.includes('--inspect-only');
 if (process.platform === 'win32') {
   const helperDirectory = resolve('out', `propr-desktop-win32-${process.arch}`, 'resources', 'windows-authority');
   const entries = (await readdir(helperDirectory)).sort();
-  if (entries.length !== 3 || entries[0] !== 'propr-windows-authority.exe'
+  if (entries.length !== 4 || entries[0] !== 'propr-windows-authority.exe'
     || entries[1] !== 'propr-windows-authority.manifest.json'
-    || entries[2] !== 'propr-windows-launcher.node') {
+    || entries[2] !== 'propr-windows-bootstrap.node'
+    || entries[3] !== 'propr-windows-launcher.node') {
     throw new Error('Packaged Windows authority helper layout is missing or ambiguous');
   }
   const manifest = await inspectPackagedWindowsAuthority(

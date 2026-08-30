@@ -579,11 +579,17 @@ public static class ProprUpdateAuthority {
 
   static void VerifyCompilerAttestation(Dictionary<string, object> manifest) {
     Dictionary<string, object> compiler = manifest["compiler"] as Dictionary<string, object>;
-    string[] fields = { "kind", "framework", "inputs" };
+    string[] fields = { "kind", "framework", "signerCertificateSha256", "signerSpkiSha256",
+      "signerRootSpkiSha256", "volumeSerial", "fileId128", "inputs" };
     if (compiler == null || !ExactFields(compiler, fields)
       || Text(compiler, "kind") != "kernel-system-directory-probe-dotnet-framework-csc"
       || (Text(compiler, "framework") != "Framework64-v4.0.30319"
-        && Text(compiler, "framework") != "Framework-v4.0.30319")) throw new BrokerFailure("compile_load", 4);
+        && Text(compiler, "framework") != "Framework-v4.0.30319")
+      || !Hex(Text(compiler, "signerCertificateSha256"), 64)
+      || !Hex(Text(compiler, "signerSpkiSha256"), 64)
+      || !Hex(Text(compiler, "signerRootSpkiSha256"), 64)
+      || !Hex(Text(compiler, "volumeSerial"), 16)
+      || !Hex(Text(compiler, "fileId128"), 32)) throw new BrokerFailure("compile_load", 4);
     IList inputs = compiler["inputs"] as IList;
     string[] names = { "csc.exe", "System.dll", "System.Web.Extensions.dll" };
     if (inputs == null || inputs.Count != names.Length) throw new BrokerFailure("compile_load", 4);
@@ -621,7 +627,7 @@ public static class ProprUpdateAuthority {
     catch { throw new BrokerFailure("compile_load", 4); }
     string[] fields = { "schemaVersion", "name", "format", "architecture", "machine", "clr", "size", "sha256",
       "sourceSha256", "protocol", "trust", "publisher", "signerPins", "signerCertificateSha256",
-      "signerSpkiSha256", "compiler", "launcher" };
+      "signerSpkiSha256", "compiler", "bootstrap", "launcher" };
     if (!ExactFields(value, fields) || Integer(value, "schemaVersion") != 1
       || Text(value, "name") != "propr-windows-authority.exe" || Text(value, "format") != "PE32"
       || Text(value, "architecture") != "anycpu" || Text(value, "machine") != "I386"
@@ -653,6 +659,14 @@ public static class ProprUpdateAuthority {
       || !Hex(Text(launcher, "sha256"), 64) || Text(launcher, "trust") != Text(value, "trust")
       || (launcher["publisher"] == null ? value["publisher"] != null
         : Text(launcher, "publisher") != Text(value, "publisher"))) throw new BrokerFailure("compile_load", 4);
+    Dictionary<string, object> bootstrap = value["bootstrap"] as Dictionary<string, object>;
+    if (bootstrap == null || !ExactFields(bootstrap, launcherFields) || Text(bootstrap, "name") != "propr-windows-bootstrap.node"
+      || Text(bootstrap, "format") != "PE" || Text(bootstrap, "architecture") != Text(launcher, "architecture")
+      || Text(bootstrap, "machine") != Text(launcher, "machine")
+      || Integer(bootstrap, "size") <= 0 || Integer(bootstrap, "size") > 4194304
+      || !Hex(Text(bootstrap, "sha256"), 64) || Text(bootstrap, "trust") != Text(value, "trust")
+      || (bootstrap["publisher"] == null ? value["publisher"] != null
+        : Text(bootstrap, "publisher") != Text(value, "publisher"))) throw new BrokerFailure("compile_load", 4);
     VerifyCompilerAttestation(value);
     return value;
   }

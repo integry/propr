@@ -9,11 +9,12 @@ import { inspectWindowsNativeLauncherPe } from './build-windows-native-launcher.
 const EXECUTABLE_NAME = 'propr-windows-authority.exe';
 const MANIFEST_NAME = 'propr-windows-authority.manifest.json';
 const LAUNCHER_NAME = 'propr-windows-launcher.node';
+const BOOTSTRAP_NAME = 'propr-windows-bootstrap.node';
 const MANIFEST_KEYS = [
   'schemaVersion', 'name', 'format', 'architecture', 'machine', 'clr', 'size', 'sha256', 'sourceSha256',
   'protocol', 'trust', 'publisher', 'compiler',
   'signerPins', 'signerCertificateSha256', 'signerSpkiSha256',
-  'launcher',
+  'bootstrap', 'launcher',
 ];
 const MAX_HELPER_BYTES = 4 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 16 * 1024;
@@ -30,8 +31,12 @@ const parseManifest = bytes => {
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) || !exactKeys(manifest, MANIFEST_KEYS)
     || !manifest.compiler || typeof manifest.compiler !== 'object' || Array.isArray(manifest.compiler)
     || !manifest.launcher || typeof manifest.launcher !== 'object' || Array.isArray(manifest.launcher)
-    || !exactKeys(manifest.compiler, ['kind', 'framework', 'inputs']) || manifest.schemaVersion !== 1
+    || !manifest.bootstrap || typeof manifest.bootstrap !== 'object' || Array.isArray(manifest.bootstrap)
+    || !exactKeys(manifest.compiler, ['kind', 'framework', 'signerCertificateSha256', 'signerSpkiSha256',
+      'signerRootSpkiSha256', 'volumeSerial', 'fileId128', 'inputs']) || manifest.schemaVersion !== 1
     || !exactKeys(manifest.launcher, ['name', 'format', 'architecture', 'machine', 'size', 'sha256', 'trust',
+      'publisher', 'signerPins', 'signerCertificateSha256', 'signerSpkiSha256'])
+    || !exactKeys(manifest.bootstrap, ['name', 'format', 'architecture', 'machine', 'size', 'sha256', 'trust',
       'publisher', 'signerPins', 'signerCertificateSha256', 'signerSpkiSha256'])
     || manifest.name !== EXECUTABLE_NAME || manifest.format !== 'PE32' || manifest.architecture !== 'anycpu'
     || manifest.machine !== 'I386' || manifest.clr !== true || !Number.isSafeInteger(manifest.size)
@@ -64,8 +69,22 @@ const parseManifest = bytes => {
     || JSON.stringify(manifest.launcher.signerPins) !== JSON.stringify(manifest.signerPins)
     || manifest.launcher.signerCertificateSha256 !== manifest.signerCertificateSha256
     || manifest.launcher.signerSpkiSha256 !== manifest.signerSpkiSha256
+    || manifest.bootstrap.name !== BOOTSTRAP_NAME || manifest.bootstrap.format !== 'PE'
+    || manifest.bootstrap.architecture !== manifest.launcher.architecture
+    || manifest.bootstrap.machine !== manifest.launcher.machine
+    || !Number.isSafeInteger(manifest.bootstrap.size) || manifest.bootstrap.size <= 0
+    || manifest.bootstrap.size > MAX_HELPER_BYTES || !/^[a-f0-9]{64}$/.test(manifest.bootstrap.sha256)
+    || manifest.bootstrap.trust !== manifest.trust || manifest.bootstrap.publisher !== manifest.publisher
+    || JSON.stringify(manifest.bootstrap.signerPins) !== JSON.stringify(manifest.signerPins)
+    || manifest.bootstrap.signerCertificateSha256 !== manifest.signerCertificateSha256
+    || manifest.bootstrap.signerSpkiSha256 !== manifest.signerSpkiSha256
     || manifest.compiler.kind !== 'kernel-system-directory-probe-dotnet-framework-csc'
     || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(manifest.compiler.framework)
+    || !/^[a-f0-9]{64}$/.test(manifest.compiler.signerCertificateSha256)
+    || !/^[a-f0-9]{64}$/.test(manifest.compiler.signerSpkiSha256)
+    || !/^[a-f0-9]{64}$/.test(manifest.compiler.signerRootSpkiSha256)
+    || !/^[a-f0-9]{16}$/.test(manifest.compiler.volumeSerial)
+    || !/^[a-f0-9]{32}$/.test(manifest.compiler.fileId128)
     || !Array.isArray(manifest.compiler.inputs) || manifest.compiler.inputs.length !== 3
     || manifest.compiler.inputs.map(input => input?.name).join(',') !== 'csc.exe,System.dll,System.Web.Extensions.dll'
     || manifest.compiler.inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input)
@@ -99,13 +118,16 @@ export const refreshPackagedWindowsAuthorityManifest = async (executablePath, ma
   if (trustedRoot !== dirname(manifestPath)) fail();
   const executable = await openCanonicalRegular(trustedRoot, executablePath, EXECUTABLE_NAME);
   const launcher = await openCanonicalRegular(trustedRoot, resolve(trustedRoot, LAUNCHER_NAME), LAUNCHER_NAME);
+  const bootstrap = await openCanonicalRegular(trustedRoot, resolve(trustedRoot, BOOTSTRAP_NAME), BOOTSTRAP_NAME);
   const heldManifest = await openCanonicalRegular(trustedRoot, manifestPath, MANIFEST_NAME);
   try {
     const bytes = await executable.handle.readFile();
     const launcherBytes = await launcher.handle.readFile();
+    const bootstrapBytes = await bootstrap.handle.readFile();
     inspectAnyCpuPe(bytes);
     const manifest = parseManifest(await heldManifest.handle.readFile());
     try { inspectWindowsNativeLauncherPe(launcherBytes, manifest.launcher.architecture); } catch { fail(); }
+    try { inspectWindowsNativeLauncherPe(bootstrapBytes, manifest.bootstrap.architecture); } catch { fail(); }
     const production = env.PROPR_DESKTOP_PRODUCTION_RELEASE === '1';
     const publisher = production ? String(env.PROPR_DESKTOP_UPDATE_SIGNING_IDENTITY || '') : null;
     const signerPins = production ? String(env.PROPR_DESKTOP_WINDOWS_SIGNER_PINS || '').split(',') : [];
@@ -139,6 +161,16 @@ export const refreshPackagedWindowsAuthorityManifest = async (executablePath, ma
         signerCertificateSha256,
         signerSpkiSha256,
       },
+      bootstrap: {
+        ...manifest.bootstrap,
+        size: bootstrapBytes.length,
+        sha256: digest(bootstrapBytes),
+        trust: production ? 'production-signed' : 'unsigned-validation',
+        publisher,
+        signerPins,
+        signerCertificateSha256,
+        signerSpkiSha256,
+      },
     })}\n`, 'utf8');
     const temporary = `${manifestPath}.${process.pid}.tmp`;
     const handle = await open(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
@@ -147,6 +179,7 @@ export const refreshPackagedWindowsAuthorityManifest = async (executablePath, ma
   } finally {
     await executable.handle.close();
     await launcher.handle.close();
+    await bootstrap.handle.close();
     await heldManifest.handle.close();
   }
 };
@@ -156,27 +189,35 @@ export const inspectPackagedWindowsAuthority = async (executablePath, manifestPa
   const trustedRoot = dirname(executablePath);
   const executable = await openCanonicalRegular(trustedRoot, executablePath, EXECUTABLE_NAME);
   const launcher = await openCanonicalRegular(trustedRoot, resolve(trustedRoot, LAUNCHER_NAME), LAUNCHER_NAME);
+  const bootstrap = await openCanonicalRegular(trustedRoot, resolve(trustedRoot, BOOTSTRAP_NAME), BOOTSTRAP_NAME);
   const heldManifest = await openCanonicalRegular(trustedRoot, manifestPath, MANIFEST_NAME);
   try {
     const manifest = parseManifest(await heldManifest.handle.readFile());
     const bytes = await executable.handle.readFile();
     const launcherBytes = await launcher.handle.readFile();
+    const bootstrapBytes = await bootstrap.handle.readFile();
     inspectAnyCpuPe(bytes);
     try { inspectWindowsNativeLauncherPe(launcherBytes, manifest.launcher.architecture); } catch { fail(); }
+    try { inspectWindowsNativeLauncherPe(bootstrapBytes, manifest.bootstrap.architecture); } catch { fail(); }
     if (bytes.length !== manifest.size || digest(bytes) !== manifest.sha256
-      || launcherBytes.length !== manifest.launcher.size || digest(launcherBytes) !== manifest.launcher.sha256) fail();
+      || launcherBytes.length !== manifest.launcher.size || digest(launcherBytes) !== manifest.launcher.sha256
+      || bootstrapBytes.length !== manifest.bootstrap.size || digest(bootstrapBytes) !== manifest.bootstrap.sha256) fail();
     const after = await executable.handle.stat({ bigint: true });
     const manifestAfter = await heldManifest.handle.stat({ bigint: true });
     const launcherAfter = await launcher.handle.stat({ bigint: true });
+    const bootstrapAfter = await bootstrap.handle.stat({ bigint: true });
     if (after.dev !== executable.stats.dev || after.ino !== executable.stats.ino || after.size !== executable.stats.size
       || manifestAfter.dev !== heldManifest.stats.dev || manifestAfter.ino !== heldManifest.stats.ino
       || manifestAfter.size !== heldManifest.stats.size
       || launcherAfter.dev !== launcher.stats.dev || launcherAfter.ino !== launcher.stats.ino
-      || launcherAfter.size !== launcher.stats.size) fail();
+      || launcherAfter.size !== launcher.stats.size
+      || bootstrapAfter.dev !== bootstrap.stats.dev || bootstrapAfter.ino !== bootstrap.stats.ino
+      || bootstrapAfter.size !== bootstrap.stats.size) fail();
     return manifest;
   } finally {
     await executable.handle.close();
     await launcher.handle.close();
+    await bootstrap.handle.close();
     await heldManifest.handle.close();
   }
 };

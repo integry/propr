@@ -6,15 +6,21 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   inspectAnyCpuPe,
+  buildWindowsAuthorityHelper,
   decodeWindowsSystemDirectoryRecord,
   resolveWindowsCompilerLayout,
   validateWindowsAuthoritySource,
+  WINDOWS_AUTHORITY_COMPILER_SUBSTAGES,
   WINDOWS_AUTHORITY_SOURCE,
 } from './build-windows-authority-helper.mjs';
 import {
   inspectPackagedWindowsAuthority,
   refreshPackagedWindowsAuthorityManifest,
 } from './inspect-packaged-windows-authority.mjs';
+
+const windowsNativeBuildOnly = {
+  skip: process.platform !== 'win32' || process.env.PROPR_WINDOWS_AUTHORITY_NATIVE_BUILD_TESTS !== '1',
+};
 
 const managedPe = () => {
   const bytes = Buffer.alloc(1024);
@@ -51,8 +57,17 @@ test('bounded Windows system-directory channel rejects NT aliases, malformed rec
   assert.throws(() => decodeWindowsSystemDirectoryRecord(trailing), /BUILD_COMPILER/);
 });
 
+test('compiler failures expose only fixed non-secret authenticate-to-spawn substages', () => {
+  assert.deepEqual(WINDOWS_AUTHORITY_COMPILER_SUBSTAGES, [
+    'DIRECTORY_PROBE', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY',
+    'SPAWN', 'IMAGE', 'EXIT', 'OUTPUT_VALIDATION',
+  ]);
+  assert.ok(WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.every(stage => /^[A-Z_]{4,24}$/.test(stage)));
+});
+
 test('compiler layout treats SystemRoot and windir as disagreement checks and rejects reparse references', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'propr-system-directory-'));
+  const canonicalTempRoot = await realpath(tmpdir());
+  const root = await realpath(await mkdtemp(join(canonicalTempRoot, 'propr-system-directory-')));
   try {
     const framework = join(root, 'Microsoft.NET', 'Framework64', 'v4.0.30319');
     await mkdir(framework, { recursive: true });
@@ -76,6 +91,44 @@ test('committed Windows broker source is nonempty strict UTF-8 with a real execu
   assert.throws(() => validateWindowsAuthoritySource(Buffer.from('public class SourceOnly {}')), /BUILD_SOURCE/);
 });
 
+test('native compiler leases defeat compiler, reference, and exact-source substitution barriers', windowsNativeBuildOnly, async () => {
+  for (const fault of [
+    'compiler-swap-after-open', 'reference-swap-after-open', 'compiler-swap-before-create',
+    'reference-swap-before-create', 'compiler-swap-after-process', 'source-swap-after-copy', 'source-rename',
+    'source-hardlink', 'source-reparse', 'source-truncate', 'source-replace',
+  ]) {
+    const result = await buildWindowsAuthorityHelper({
+      ...process.env,
+      PROPR_WINDOWS_AUTHORITY_TEST_COMPILER_FAULT: fault,
+    });
+    assert.equal(result.skipped, false);
+    assert.match(result.sourceSha256, /^[a-f0-9]{64}$/);
+    assert.match(result.compiler.fileId128, /^[a-f0-9]{32}$/);
+    assert.match(result.compiler.signerCertificateSha256, /^[a-f0-9]{64}$/);
+    assert.match(result.compiler.signerSpkiSha256, /^[a-f0-9]{64}$/);
+  }
+});
+
+test('native compiler signer, image, job, exit, and output failures stay bounded and clean', windowsNativeBuildOnly, async () => {
+  const cases = [
+    ['compiler-wrong-signer', 'SIGNER_CATALOG'],
+    ['compiler-wrong-spki', 'SIGNER_CATALOG'],
+    ['compiler-wrong-catalog', 'SIGNER_CATALOG'],
+    ['compiler-job', 'IMAGE'],
+    ['compiler-image', 'IMAGE'],
+    ['compiler-exit', 'EXIT'],
+    ['compiler-output', 'OUTPUT_VALIDATION'],
+  ];
+  for (const [fault, substage] of cases) {
+    await assert.rejects(
+      buildWindowsAuthorityHelper({ ...process.env, PROPR_WINDOWS_AUTHORITY_TEST_COMPILER_FAULT: fault }),
+      error => error instanceof Error
+        && error.message === `Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`
+        && !error.message.includes('\\') && !error.message.includes('C:'),
+    );
+  }
+});
+
 test('compiled helper output gate rejects corrupt, native-only, and wrong-machine PE files', () => {
   const exact = managedPe();
   assert.deepEqual(inspectAnyCpuPe(exact), { format: 'PE32', architecture: 'anycpu', machine: 'I386', clr: true });
@@ -97,6 +150,7 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
   const root = await realpath(await mkdtemp(join(trustedTempRoot, 'propr-packaged-helper-')));
   const executable = join(root, 'propr-windows-authority.exe');
   const launcherPath = join(root, 'propr-windows-launcher.node');
+  const bootstrapPath = join(root, 'propr-windows-bootstrap.node');
   const manifestPath = join(root, 'propr-windows-authority.manifest.json');
   try {
     const bytes = managedPe();
@@ -104,6 +158,7 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
     launcher.writeUInt16LE(0x8664, 0x84);
     await writeFile(executable, bytes);
     await writeFile(launcherPath, launcher);
+    await writeFile(bootstrapPath, launcher);
     await writeFile(manifestPath, `${JSON.stringify({
       schemaVersion: 1,
       name: 'propr-windows-authority.exe',
@@ -133,9 +188,27 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
         signerCertificateSha256: null,
         signerSpkiSha256: null,
       },
+      bootstrap: {
+        name: 'propr-windows-bootstrap.node',
+        format: 'PE',
+        architecture: 'x64',
+        machine: 'AMD64',
+        size: launcher.length,
+        sha256: createHash('sha256').update(launcher).digest('hex'),
+        trust: 'unsigned-validation',
+        publisher: null,
+        signerPins: [],
+        signerCertificateSha256: null,
+        signerSpkiSha256: null,
+      },
       compiler: {
         kind: 'kernel-system-directory-probe-dotnet-framework-csc',
         framework: 'Framework64-v4.0.30319',
+        signerCertificateSha256: '1'.repeat(64),
+        signerSpkiSha256: '2'.repeat(64),
+        signerRootSpkiSha256: '3'.repeat(64),
+        volumeSerial: '4'.repeat(16),
+        fileId128: '5'.repeat(32),
         inputs: [
           { name: 'csc.exe', size: 1, sha256: 'b'.repeat(64) },
           { name: 'System.dll', size: 1, sha256: 'c'.repeat(64) },
@@ -160,6 +233,11 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
     const wrongArchitecture = Buffer.from(launcher);
     wrongArchitecture.writeUInt16LE(0xaa64, 0x84);
     await writeFile(launcherPath, wrongArchitecture);
+    await assert.rejects(inspectPackagedWindowsAuthority(executable, manifestPath), /inspection failed/);
+    await writeFile(launcherPath, launcher);
+    const corruptBootstrap = Buffer.from(launcher);
+    corruptBootstrap[700] ^= 1;
+    await writeFile(bootstrapPath, corruptBootstrap);
     await assert.rejects(inspectPackagedWindowsAuthority(executable, manifestPath), /inspection failed/);
   } finally {
     await rm(root, { recursive: true, force: true });

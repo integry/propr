@@ -225,9 +225,27 @@ const windowsAuthorityFixtureEntries = (executablePath, executable) => {
       signerCertificateSha256: null,
       signerSpkiSha256: null,
     },
+    bootstrap: {
+      name: 'propr-windows-bootstrap.node',
+      format: 'PE',
+      architecture: launcherArchitecture,
+      machine: launcherArchitecture === 'arm64' ? 'ARM64' : 'AMD64',
+      size: launcher.length,
+      sha256: createHash('sha256').update(launcher).digest('hex'),
+      trust: 'unsigned-validation',
+      publisher: null,
+      signerPins: [],
+      signerCertificateSha256: null,
+      signerSpkiSha256: null,
+    },
     compiler: {
       kind: 'kernel-system-directory-probe-dotnet-framework-csc',
       framework: 'Framework64-v4.0.30319',
+      signerCertificateSha256: '1'.repeat(64),
+      signerSpkiSha256: '2'.repeat(64),
+      signerRootSpkiSha256: '3'.repeat(64),
+      volumeSerial: '4'.repeat(16),
+      fileId128: '5'.repeat(32),
       inputs: [
         { name: 'csc.exe', size: 1, sha256: 'b'.repeat(64) },
         { name: 'System.dll', size: 1, sha256: 'c'.repeat(64) },
@@ -240,6 +258,7 @@ const windowsAuthorityFixtureEntries = (executablePath, executable) => {
     ['lib/net45/resources/windows-authority/propr-windows-authority.exe', helper],
     ['lib/net45/resources/windows-authority/propr-windows-authority.manifest.json', manifest],
     ['lib/net45/resources/windows-authority/propr-windows-launcher.node', launcher],
+    ['lib/net45/resources/windows-authority/propr-windows-bootstrap.node', launcher],
   ];
 };
 

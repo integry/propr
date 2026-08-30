@@ -119,6 +119,11 @@ jobs:
         shell: bash
         run: npx tsx --test --test-name-pattern="native Windows authority binds protected owner DACL and complete file identity" apps/desktop/src/windows-update-authority.test.ts
 
+      - name: Run exact native Windows compiler and source barrier suite
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: PROPR_WINDOWS_AUTHORITY_NATIVE_BUILD_TESTS=1 npx tsx --test apps/desktop/scripts/windows-authority-build.test.mjs
+
       - name: Run full native Windows authority suite with zero skip
         if: matrix.platform == 'win32'
         shell: bash
@@ -400,6 +405,11 @@ jobs:
         shell: bash
         run: npx tsx --test --test-name-pattern="native Windows authority binds protected owner DACL and complete file identity" apps/desktop/src/windows-update-authority.test.ts
 
+      - name: Run exact native Windows compiler and source barrier suite
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: PROPR_WINDOWS_AUTHORITY_NATIVE_BUILD_TESTS=1 npx tsx --test apps/desktop/scripts/windows-authority-build.test.mjs
+
       - name: Run full native Windows authority suite with zero skip
         if: matrix.platform == 'win32'
         shell: bash
@@ -606,8 +616,9 @@ jobs:
           $appExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/propr-desktop.exe"
           $helperExecutable = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-authority.exe"
           $launcherModule = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-launcher.node"
+          $bootstrapModule = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-bootstrap.node"
           $helperManifest = "apps/desktop/out/propr-desktop-win32-${{ matrix.arch }}/resources/windows-authority/propr-windows-authority.manifest.json"
-          if (!(Test-Path -LiteralPath $helperExecutable -PathType Leaf) -or !(Test-Path -LiteralPath $launcherModule -PathType Leaf) -or !(Test-Path -LiteralPath $helperManifest -PathType Leaf)) {
+          if (!(Test-Path -LiteralPath $helperExecutable -PathType Leaf) -or !(Test-Path -LiteralPath $launcherModule -PathType Leaf) -or !(Test-Path -LiteralPath $bootstrapModule -PathType Leaf) -or !(Test-Path -LiteralPath $helperManifest -PathType Leaf)) {
             throw 'Packaged Windows authority helper, launcher, or bound manifest is missing'
           }
           node apps/desktop/scripts/inspect-packaged-windows-authority.mjs $helperExecutable $helperManifest
@@ -627,8 +638,9 @@ jobs:
           if (!$packageExecutable -or $packageExecutable.PSIsContainer) { throw 'Windows update package canonical application is missing' }
           $packageHelper = Get-Item -LiteralPath (Join-Path $extracted 'lib/net45/resources/windows-authority/propr-windows-authority.exe')
           $packageLauncher = Get-Item -LiteralPath (Join-Path $extracted 'lib/net45/resources/windows-authority/propr-windows-launcher.node')
+          $packageBootstrap = Get-Item -LiteralPath (Join-Path $extracted 'lib/net45/resources/windows-authority/propr-windows-bootstrap.node')
           $packageHelperManifest = Get-Item -LiteralPath (Join-Path $extracted 'lib/net45/resources/windows-authority/propr-windows-authority.manifest.json')
-          if (!$packageHelper -or $packageHelper.PSIsContainer -or !$packageLauncher -or $packageLauncher.PSIsContainer -or !$packageHelperManifest -or $packageHelperManifest.PSIsContainer) {
+          if (!$packageHelper -or $packageHelper.PSIsContainer -or !$packageLauncher -or $packageLauncher.PSIsContainer -or !$packageBootstrap -or $packageBootstrap.PSIsContainer -or !$packageHelperManifest -or $packageHelperManifest.PSIsContainer) {
             throw 'Windows update package authority helper, launcher, or bound manifest is missing'
           }
           node apps/desktop/scripts/inspect-packaged-windows-authority.mjs $packageHelper.FullName $packageHelperManifest.FullName
@@ -651,8 +663,10 @@ jobs:
             Get-ValidatedSignerEvidence $packageExecutable.FullName
             Get-ValidatedSignerEvidence $helperExecutable
             Get-ValidatedSignerEvidence $launcherModule
+            Get-ValidatedSignerEvidence $bootstrapModule
             Get-ValidatedSignerEvidence $packageHelper.FullName
             Get-ValidatedSignerEvidence $packageLauncher.FullName
+            Get-ValidatedSignerEvidence $packageBootstrap.FullName
           )
           foreach ($signer in $evidence) {
             if ($signer.Subject -cne $env:UPDATE_WINDOWS_SIGNING_IDENTITY) { throw 'Windows Authenticode signer does not match the configured exact subject' }

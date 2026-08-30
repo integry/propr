@@ -5,6 +5,7 @@ import { copyFile, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, t
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import {
   crashWindowsLockedArtifactForTest,
@@ -74,9 +75,27 @@ const helperManifest = (overrides: Record<string, unknown> = {}): Buffer => Buff
     signerCertificateSha256: null,
     signerSpkiSha256: null,
   },
+  bootstrap: {
+    name: 'propr-windows-bootstrap.node',
+    format: 'PE',
+    architecture: 'x64',
+    machine: 'AMD64',
+    size: 4096,
+    sha256: '9'.repeat(64),
+    trust: 'unsigned-validation',
+    publisher: null,
+    signerPins: [],
+    signerCertificateSha256: null,
+    signerSpkiSha256: null,
+  },
   compiler: {
     kind: 'kernel-system-directory-probe-dotnet-framework-csc',
     framework: 'Framework64-v4.0.30319',
+    signerCertificateSha256: '3'.repeat(64),
+    signerSpkiSha256: '4'.repeat(64),
+    signerRootSpkiSha256: '5'.repeat(64),
+    volumeSerial: '6'.repeat(16),
+    fileId128: '7'.repeat(32),
     inputs: [
       { name: 'csc.exe', size: 1, sha256: 'c'.repeat(64) },
       { name: 'System.dll', size: 1, sha256: 'd'.repeat(64) },
@@ -100,6 +119,14 @@ test('Windows helper manifest is fatal-UTF8, exact, architecture-bound, and dist
     signerSpkiSha256: spki,
     launcher: {
       ...base.launcher,
+      trust: 'production-signed',
+      publisher: 'CN=ProPR Test Publisher',
+      signerPins: pins,
+      signerCertificateSha256: certificate,
+      signerSpkiSha256: spki,
+    },
+    bootstrap: {
+      ...base.bootstrap,
       trust: 'production-signed',
       publisher: 'CN=ProPR Test Publisher',
       signerPins: pins,
@@ -156,6 +183,23 @@ test('Windows helper PE inspection requires a managed PE32 AnyCPU-compatible ima
   assert.throws(() => inspectWindowsAuthorityHelperPeForTest(required32Bit), /compile_load:9/);
 });
 
+test('launcher target has no path require before the authenticated native load boundary', async () => {
+  const implementation = await readFile(fileURLToPath(new URL('./windows-update-authority.ts', import.meta.url)), 'utf8');
+  assert.doesNotMatch(implementation, /require\(launcherProof\.path\)/);
+  assert.match(implementation, /bootstrap\.loadVerifiedModule\(\{/);
+});
+
+test('native pre-load swap barrier never transfers control to replacement N-API initialization', windowsOnly, async () => {
+  for (const fault of ['barrier-before-module-load-swap', 'barrier-before-module-load-write',
+    'barrier-before-module-load-delete'] as const) {
+    const helper = await authenticateWindowsAuthorityHelperForTest(undefined, undefined, undefined, undefined, fault);
+    await helper.executableHandle.close();
+    await helper.launcherHandle.close();
+    await helper.bootstrapHandle.close();
+    await helper.manifestHandle.close();
+  }
+});
+
 test('native Windows bootstrap reports every injected real boundary including early exit', windowsOnly, async () => {
   for (const stage of WINDOWS_AUTHORITY_COMPILE_STAGES) {
     assert.equal(await probeWindowsAuthorityBootstrapStageForTest(stage), stage);
@@ -168,6 +212,7 @@ test('native Windows helper authentication rejects manifest/output/compiler, lin
   const sourceDirectory = dirname(source.executable);
   await source.executableHandle.close();
   await source.launcherHandle.close();
+  await source.bootstrapHandle.close();
   await source.manifestHandle.close();
   await assert.rejects(
     authenticateWindowsAuthorityHelperForTest(sourceDirectory, undefined, 'CN=Expected Production Publisher'),
@@ -181,10 +226,12 @@ test('native Windows helper authentication rejects manifest/output/compiler, lin
     const executable = join(root, 'propr-windows-authority.exe');
     const manifest = join(root, 'propr-windows-authority.manifest.json');
     const launcher = join(root, 'propr-windows-launcher.node');
+    const bootstrap = join(root, 'propr-windows-bootstrap.node');
     await copyFile(source.executable, executable);
     await copyFile(join(sourceDirectory, 'propr-windows-launcher.node'), launcher);
+    await copyFile(join(sourceDirectory, 'propr-windows-bootstrap.node'), bootstrap);
     await copyFile(sourceManifest, manifest);
-    return { root, executable, manifest, launcher };
+    return { root, executable, manifest, launcher, bootstrap };
   };
 
   for (const scenario of ['manifest', 'output', 'compiler', 'hardlink', 'reparse', 'same-name-aba',
@@ -415,8 +462,8 @@ test('native Windows queued cancellation is bounded and does not disturb the hel
   }
 });
 
-test('native Windows authority rejects foreign owner, broad/inherited ACEs, and junction reparse points', windowsOnly, async t => {
-  for (const scenario of ['owner', 'broad', 'inherited', 'junction'] as const) {
+test('native Windows authority rejects foreign owner, every untrusted writer ACE, inherited ACEs, and junctions', windowsOnly, async t => {
+  for (const scenario of ['owner', 'broad', 'arbitrary-sid', 'inherited', 'junction'] as const) {
     await t.test(scenario, async () => {
       const root = await mkdtemp(join(tmpdir(), 'propr-win-authority-'));
       try {
@@ -431,6 +478,8 @@ test('native Windows authority rejects foreign owner, broad/inherited ACEs, and 
           await execFileAsync('icacls.exe', [cache, '/setowner', '*S-1-5-32-544']);
         } else if (scenario === 'broad') {
           await execFileAsync('icacls.exe', [cache, '/grant', '*S-1-5-32-545:(OI)(CI)M']);
+        } else if (scenario === 'arbitrary-sid') {
+          await execFileAsync('icacls.exe', [cache, '/grant', '*S-1-5-32-546:(OI)(CI)M']);
         } else if (scenario === 'junction') {
           const target = join(root, 'target');
           await mkdir(target);

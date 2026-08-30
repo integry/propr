@@ -11,6 +11,7 @@ const desktopRoot = fileURLToPath(new URL('..', import.meta.url));
 const repositoryRoot = resolve(desktopRoot, '..', '..');
 export const WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY = join(desktopRoot, 'src', 'native', 'windows-launcher');
 export const WINDOWS_NATIVE_LAUNCHER = join(desktopRoot, 'build', 'windows-authority', 'propr-windows-launcher.node');
+export const WINDOWS_NATIVE_BOOTSTRAP = join(desktopRoot, 'build', 'windows-authority', 'propr-windows-bootstrap.node');
 const MAX_LAUNCHER_BYTES = 4 * 1024 * 1024;
 
 const fail = () => { throw new Error('Windows native launcher build failed [win-authority:BUILD_COMPILER]'); };
@@ -46,7 +47,9 @@ const heldBytes = async path => {
   } finally { await handle.close(); }
 };
 
-export const buildWindowsNativeLauncher = async () => {
+let launcherBuild;
+
+const buildWindowsNativeLauncherOnce = async () => {
   if (process.platform !== 'win32') return { skipped: true };
   if (process.arch !== 'x64' && process.arch !== 'arm64') fail();
   const nodeGyp = join(repositoryRoot, 'node_modules', 'node-gyp', 'bin', 'node-gyp.js');
@@ -54,20 +57,41 @@ export const buildWindowsNativeLauncher = async () => {
     `--arch=${process.arch}`], { cwd: repositoryRoot, windowsHide: true, timeout: 120_000, maxBuffer: 64 * 1024 })
     .catch(fail);
   const built = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_launcher.node');
+  const builtBootstrap = join(WINDOWS_NATIVE_LAUNCHER_SOURCE_DIRECTORY, 'build', 'Release', 'propr_windows_bootstrap.node');
   const bytes = await heldBytes(built);
+  const bootstrapBytes = await heldBytes(builtBootstrap);
   const pe = inspectWindowsNativeLauncherPe(bytes, process.arch);
+  const bootstrapPe = inspectWindowsNativeLauncherPe(bootstrapBytes, process.arch);
   await mkdir(join(desktopRoot, 'build', 'windows-authority'), { recursive: true });
   await copyFile(built, WINDOWS_NATIVE_LAUNCHER);
+  await copyFile(builtBootstrap, WINDOWS_NATIVE_BOOTSTRAP);
   const published = await heldBytes(WINDOWS_NATIVE_LAUNCHER);
-  if (!published.equals(bytes)) fail();
+  const publishedBootstrap = await heldBytes(WINDOWS_NATIVE_BOOTSTRAP);
+  if (!published.equals(bytes) || !publishedBootstrap.equals(bootstrapBytes)) fail();
   return {
     skipped: false,
     path: WINDOWS_NATIVE_LAUNCHER,
     name: 'propr-windows-launcher.node',
     size: bytes.length,
     sha256: sha256(bytes),
+    bootstrap: {
+      path: WINDOWS_NATIVE_BOOTSTRAP,
+      name: 'propr-windows-bootstrap.node',
+      size: bootstrapBytes.length,
+      sha256: sha256(bootstrapBytes),
+      ...bootstrapPe,
+    },
     ...pe,
   };
+};
+
+export const buildWindowsNativeLauncher = async () => {
+  if (process.platform !== 'win32') return { skipped: true };
+  launcherBuild ??= buildWindowsNativeLauncherOnce().catch(error => {
+    launcherBuild = undefined;
+    throw error;
+  });
+  return launcherBuild;
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
