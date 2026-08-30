@@ -34,17 +34,24 @@ import {
   windowsAuthorityBrokerStatsForTest,
   WINDOWS_AUTHORITY_COMPILE_STAGES,
 } from './windows-update-authority';
+import {
+  prepareWindowsAuthorityBuildDirectory,
+  sealWindowsAuthorityDirectory,
+} from '../scripts/build-windows-native-launcher.mjs';
 
 const execFileAsync = promisify(execFile);
 const windowsOnly = { skip: process.platform !== 'win32' };
+const kernelPowerShell = String.raw`\\?\GLOBALROOT\SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`;
+const kernelIcacls = String.raw`\\?\GLOBALROOT\SystemRoot\System32\icacls.exe`;
 const compilerInputEvidence = (name: string, sha256: string) => ({
   name,
   size: 1,
   sha256,
-  signerCertificateSha256: '1'.repeat(64),
-  signerSpkiSha256: '2'.repeat(64),
+  signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
+  signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
   signerRootSpkiSha256: '3'.repeat(64),
-  catalogSha256: '4'.repeat(64),
+  catalogName: 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
+  catalogSha256: 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
   catalogVolumeSerial: '5'.repeat(16),
   catalogFileId128: '6'.repeat(32),
 });
@@ -103,8 +110,8 @@ const helperManifest = (overrides: Record<string, unknown> = {}): Buffer => Buff
   compiler: {
     kind: 'windows-catalog-authorized-dotnet-framework-csc-v1',
     framework: 'Framework64-v4.0.30319',
-    signerCertificateSha256: '1'.repeat(64),
-    signerSpkiSha256: '2'.repeat(64),
+    signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
+    signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
     signerRootSpkiSha256: '3'.repeat(64),
     volumeSerial: '6'.repeat(16),
     fileId128: '7'.repeat(32),
@@ -236,18 +243,23 @@ test('bootstrap authority rejects a forged or split held-object identity record'
     nodeIno: identity.ino,
     ownerSid: 'S-1-5-18',
     daclProtected: true,
+    systemAcl: true,
     reparseTag: '00000000',
     subject: null,
     certificate: null,
+    selfSubject: 'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
     selfCertificate: 'certificate',
     selfRootCertificate: 'root',
-    selfCatalogSha256: '3'.repeat(64),
+    selfCatalogName: 'Microsoft-Windows-PowerShell-ServerCore-Package~31bf3856ad364e35~amd64~~10.0.26100.32230.cat',
+    selfCatalogSha256: '2d2ac25e4f3cc782a886422964dffc851a66af354220923d96153738867d7866',
     selfCatalogVolumeSerial: '4'.repeat(16),
     selfCatalogFileId128: '5'.repeat(32),
   };
   assert.equal(validateBootstrapIdentityRecordForTest(record, policy, identity), true);
   assert.equal(validateBootstrapIdentityRecordForTest({ ...record, nodeIno: '5679' }, policy, identity), false);
   assert.equal(validateBootstrapIdentityRecordForTest({ ...record, fileId128: '2'.repeat(31) }, policy, identity), false);
+  assert.equal(validateBootstrapIdentityRecordForTest({ ...record, ownerSid: 'S-1-5-21-1-2-3-4' }, policy, identity), false);
+  assert.equal(validateBootstrapIdentityRecordForTest({ ...record, systemAcl: false }, policy, identity), false);
   assert.equal(validateBootstrapIdentityRecordForTest({ ...record, unexpected: true }, policy, identity), false);
 });
 
@@ -329,6 +341,7 @@ test('OS package authority never executes a malicious replacement bootstrap init
     manifest.bootstrap.size = maliciousBytes.length;
     manifest.bootstrap.sha256 = createHash('sha256').update(maliciousBytes).digest('hex');
     await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await sealWindowsAuthorityDirectory(root);
     process.env.PROPR_WINDOWS_MALICIOUS_BOOTSTRAP_SIDE_EFFECT = marker;
     await assert.rejects(
       authenticateWindowsAuthorityHelperForTest(root, undefined, publisher, pins, undefined, false),
@@ -337,9 +350,59 @@ test('OS package authority never executes a malicious replacement bootstrap init
     await assert.rejects(readFile(marker), error => (error as NodeJS.ErrnoException).code === 'ENOENT');
   } finally {
     delete process.env.PROPR_WINDOWS_MALICIOUS_BOOTSTRAP_SIDE_EFFECT;
+    await prepareWindowsAuthorityBuildDirectory(root).catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('bootstrap authority rejects real current-owner, explicit-write, and inherited-write ACL attacks', windowsOnly,
+  async t => {
+    await shutdownWindowsAuthorityBrokerForTest();
+    const sourceDirectory = fileURLToPath(new URL('../build/windows-authority', import.meta.url));
+    const malicious = fileURLToPath(new URL(
+      './native/windows-launcher/build/Release/propr_windows_malicious_bootstrap.node', import.meta.url,
+    ));
+    const { stdout } = await execFileAsync(kernelPowerShell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      '[Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { env: {}, windowsHide: true });
+    const currentSid = stdout.trim();
+    assert.match(currentSid, /^S-1-(?:\d+-){1,14}\d+$/);
+    for (const scenario of ['current-owner', 'explicit-write', 'inherited-write'] as const) {
+      await t.test(scenario, async () => {
+        const root = await mkdtemp(join(tmpdir(), 'propr-bootstrap-acl-'));
+        const marker = join(root, 'initializer-executed');
+        try {
+          for (const name of ['propr-windows-authority.exe', 'propr-windows-launcher.node']) {
+            await copyFile(join(sourceDirectory, name), join(root, name));
+          }
+          const bootstrap = join(root, 'propr-windows-bootstrap.node');
+          await copyFile(malicious, bootstrap);
+          const manifest = JSON.parse(await readFile(join(sourceDirectory, 'propr-windows-authority.manifest.json'), 'utf8'));
+          const bytes = await readFile(bootstrap);
+          manifest.bootstrap.size = bytes.length;
+          manifest.bootstrap.sha256 = createHash('sha256').update(bytes).digest('hex');
+          await writeFile(join(root, 'propr-windows-authority.manifest.json'), `${JSON.stringify(manifest)}\n`);
+          if (scenario === 'current-owner') {
+            await execFileAsync(kernelIcacls, [root, '/setowner', `*${currentSid}`, '/T', '/C', '/Q'], { env: {} });
+          } else if (scenario === 'explicit-write') {
+            await execFileAsync(kernelIcacls, [bootstrap, '/grant', `*${currentSid}:M`, '/Q'], { env: {} });
+          } else {
+            await execFileAsync(kernelIcacls, [root, '/inheritance:e', '/grant', `*${currentSid}:(OI)(CI)M`, '/Q'],
+              { env: {} });
+          }
+          process.env.PROPR_WINDOWS_MALICIOUS_BOOTSTRAP_SIDE_EFFECT = marker;
+          await assert.rejects(
+            authenticateWindowsAuthorityHelperForTest(root, undefined, undefined, undefined, undefined, true),
+            /compile_load:(?:6|7)/,
+          );
+          await assert.rejects(readFile(marker), error => (error as NodeJS.ErrnoException).code === 'ENOENT');
+          assert.equal(windowsAuthorityBrokerStatsForTest().activeProcessCount, 0);
+        } finally {
+          delete process.env.PROPR_WINDOWS_MALICIOUS_BOOTSTRAP_SIDE_EFFECT;
+          await rm(root, { recursive: true, force: true });
+        }
+      });
+    }
+  });
 
 test('native ACL policy rejects real arbitrary SID, object, callback, and conditional allow ACEs', windowsOnly, async () => {
   const helper = await authenticateWindowsAuthorityHelperForTest();
@@ -398,6 +461,7 @@ test('native Windows helper authentication rejects manifest/output/compiler, lin
     'bootstrap-output', 'bootstrap-hardlink', 'bootstrap-reparse', 'bootstrap-same-name-aba'] as const) {
     await t.test(scenario, async () => {
       const current = await fixture();
+      let sealed = false;
       try {
         if (scenario === 'manifest') {
           const bytes = await readFile(current.manifest);
@@ -435,8 +499,10 @@ test('native Windows helper authentication rejects manifest/output/compiler, lin
           await rm(current.bootstrap);
           await symlink(join(sourceDirectory, 'propr-windows-bootstrap.node'), current.bootstrap, 'file');
         }
+        const isReparse = scenario === 'reparse' || scenario === 'launcher-reparse' || scenario === 'bootstrap-reparse';
         const barrier = scenario === 'same-name-aba' || scenario === 'launcher-same-name-aba'
           || scenario === 'bootstrap-same-name-aba' ? async () => {
+          await prepareWindowsAuthorityBuildDirectory(current.root);
           const target = scenario === 'same-name-aba' ? current.executable
             : scenario === 'launcher-same-name-aba' ? current.launcher : current.bootstrap;
           const sourcePath = scenario === 'same-name-aba' ? source.executable
@@ -445,9 +511,18 @@ test('native Windows helper authentication rejects manifest/output/compiler, lin
           await rename(target, join(current.root, scenario === 'same-name-aba' ? 'displaced.exe'
             : scenario === 'launcher-same-name-aba' ? 'displaced.node' : 'displaced-bootstrap.node'));
           await copyFile(sourcePath, target);
+          await sealWindowsAuthorityDirectory(current.root);
+          sealed = true;
         } : undefined;
+        if (!barrier && !isReparse) {
+          await sealWindowsAuthorityDirectory(current.root);
+          sealed = true;
+        }
         await assert.rejects(authenticateWindowsAuthorityHelperForTest(current.root, barrier), /compile_load:(?:4|7|8|9)/);
-      } finally { await rm(current.root, { recursive: true, force: true }); }
+      } finally {
+        if (sealed) await prepareWindowsAuthorityBuildDirectory(current.root).catch(() => undefined);
+        await rm(current.root, { recursive: true, force: true });
+      }
     });
   }
 });

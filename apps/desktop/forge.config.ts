@@ -127,12 +127,14 @@ const config: ForgeConfig = {
       const { refreshPackagedWindowsAuthorityManifest, inspectPackagedWindowsAuthority } = await import(
         authorityInspectorModule
       );
+      const { sealWindowsAuthorityDirectory } = await import('./scripts/build-windows-native-launcher.mjs');
       for (const outputPath of packageResult.outputPaths) {
         const helperDirectory = resolve(outputPath, 'resources', 'windows-authority');
         const executable = resolve(helperDirectory, 'propr-windows-authority.exe');
         const manifest = resolve(helperDirectory, 'propr-windows-authority.manifest.json');
         await refreshPackagedWindowsAuthorityManifest(executable, manifest);
         await inspectPackagedWindowsAuthority(executable, manifest);
+        await sealWindowsAuthorityDirectory(helperDirectory);
       }
     },
   },

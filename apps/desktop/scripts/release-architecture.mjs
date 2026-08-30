@@ -771,7 +771,7 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
           !== 'csc.exe,System.dll,System.Web.Extensions.dll'
         || authorityManifest.compiler.inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input)
           || JSON.stringify(Object.keys(input).sort()) !== JSON.stringify([
-            'catalogFileId128', 'catalogSha256', 'catalogVolumeSerial', 'name', 'sha256', 'signerCertificateSha256',
+            'catalogFileId128', 'catalogName', 'catalogSha256', 'catalogVolumeSerial', 'name', 'sha256', 'signerCertificateSha256',
             'signerRootSpkiSha256', 'signerSpkiSha256', 'size',
           ])
           || !Number.isSafeInteger(input.size) || input.size <= 0 || input.size > 32 * 1024 * 1024
@@ -779,7 +779,14 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
           || !/^[a-f0-9]{64}$/.test(String(input.signerCertificateSha256))
           || !/^[a-f0-9]{64}$/.test(String(input.signerSpkiSha256))
           || !/^[a-f0-9]{64}$/.test(String(input.signerRootSpkiSha256))
-          || !/^[a-f0-9]{64}$/.test(String(input.catalogSha256))
+          || input.signerCertificateSha256 !== '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de'
+          || input.signerSpkiSha256 !== 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1'
+          || !((packagedArchitecture === 'x64'
+              && input.catalogName === 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat'
+              && input.catalogSha256 === 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef')
+            || (packagedArchitecture === 'arm64'
+              && input.catalogName === 'Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat'
+              && input.catalogSha256 === 'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85'))
           || !/^[a-f0-9]{16}$/.test(String(input.catalogVolumeSerial))
           || !/^[a-f0-9]{32}$/.test(String(input.catalogFileId128)))
         || authorityManifest.compiler.inputs[0].signerCertificateSha256

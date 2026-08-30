@@ -164,6 +164,7 @@ interface WindowsAuthorityHelperManifest {
       signerCertificateSha256: string;
       signerSpkiSha256: string;
       signerRootSpkiSha256: string;
+      catalogName: string;
       catalogSha256: string;
       catalogVolumeSerial: string;
       catalogFileId128: string;
@@ -227,6 +228,44 @@ const MICROSOFT_SYSTEM_ROOT_SPKI_SHA256 = new Set([
   'c9905b0ee01202293ca026e64f08412442c5504c06e44ca7e9726d61f20e4089',
   'b2f7298b52bf2c3cac4ddfe72de4d682ac58957595982f2b62301af597c699c5',
 ]);
+const MICROSOFT_SYSTEM_CATALOG_POLICY = Object.freeze([
+  Object.freeze({
+    member: 'powershell.exe',
+    catalog: 'Microsoft-Windows-PowerShell-ServerCore-Package~31bf3856ad364e35~amd64~~10.0.26100.32230.cat',
+    publisher: 'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
+    certificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
+    spkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
+    catalogSha256: '2d2ac25e4f3cc782a886422964dffc851a66af354220923d96153738867d7866',
+  }),
+  Object.freeze({
+    member: 'powershell.exe',
+    catalog: 'Microsoft-Windows-Client-Features-Package02~31bf3856ad364e35~arm64~~10.0.26100.1.cat',
+    publisher: 'CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
+    certificateSha256: 'ce08760345bd5a18aa9091e6f083522ad593bd42f587699e025afd55be589334',
+    spkiSha256: '130dc613f271c90adf66157a030391c404f1e4ca21ef8261ac914fc615298b62',
+    catalogSha256: '08150f5768c0780ab94d998a4302718fd1a69d6e54220a057f2d16f691a4582c',
+  }),
+]);
+const MICROSOFT_COMPILER_CATALOG_POLICY = Object.freeze(
+  ['csc.exe', 'System.dll', 'System.Web.Extensions.dll'].flatMap(name => [
+    Object.freeze({
+      name,
+      architecture: 'x64',
+      catalogName: 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
+      certificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
+      spkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
+      catalogSha256: 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
+    }),
+    Object.freeze({
+      name,
+      architecture: 'arm64',
+      catalogName: 'Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat',
+      certificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
+      spkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
+      catalogSha256: 'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85',
+    }),
+  ]),
+);
 
 const BOOTSTRAP_AUTHORITY_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -238,7 +277,10 @@ $trustedPublishers = @(
   'CN=Microsoft Windows, O=Microsoft Corporation, C=US',
   'CN=Microsoft Corporation, O=Microsoft Corporation, C=US'
 )
-$current = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$currentAuthorities = New-Object Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+[void]$currentAuthorities.Add($identity.User.Value)
+foreach ($group in $identity.Groups) {[void]$currentAuthorities.Add($group.Value)}
 $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
   (New-Object Reflection.AssemblyName('ProprHeldObjectNative')), [Reflection.Emit.AssemblyBuilderAccess]::Run)
 $module = $assembly.DefineDynamicModule('ProprHeldObjectNative')
@@ -261,6 +303,7 @@ Add-PInvoke 'CreateFileW' 'kernel32.dll' ([IntPtr]) @([string], [uint32], [uint3
 Add-PInvoke 'CloseHandle' 'kernel32.dll' ([bool]) @([IntPtr])
 Add-PInvoke 'GetSecurityInfo' 'advapi32.dll' ([uint32]) @([IntPtr], [int], [uint32], $intptrRef, $intptrRef, $intptrRef, $intptrRef, $intptrRef)
 Add-PInvoke 'GetSecurityDescriptorControl' 'advapi32.dll' ([bool]) @([IntPtr], $ushortRef, $uintRef)
+Add-PInvoke 'GetSecurityDescriptorLength' 'advapi32.dll' ([uint32]) @([IntPtr])
 Add-PInvoke 'GetSecurityDescriptorDacl' 'advapi32.dll' ([bool]) @([IntPtr], $boolRef, $intptrRef, $boolRef)
 Add-PInvoke 'GetAce' 'advapi32.dll' ([bool]) @([IntPtr], [uint32], $intptrRef)
 Add-PInvoke 'ConvertSidToStringSidW' 'advapi32.dll' ([bool]) @([IntPtr], $intptrRef)
@@ -272,6 +315,7 @@ Add-PInvoke 'CryptCATCatalogInfoFromContext' 'wintrust.dll' ([bool]) @([IntPtr],
 Add-PInvoke 'CryptCATAdminReleaseCatalogContext' 'wintrust.dll' ([bool]) @([IntPtr], [IntPtr], [uint32])
 Add-PInvoke 'CryptCATAdminReleaseContext' 'wintrust.dll' ([bool]) @([IntPtr], [uint32])
 $native = $builder.CreateType()
+$catalogLeases=New-Object Collections.Generic.List[object]
 
 function Hex-Bytes([byte[]]$bytes) { ([BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant() }
 function Read-Held([IO.FileStream]$stream, [int64]$expected, [int64]$maximum=4194304) {
@@ -300,31 +344,43 @@ function Get-HeldIdentity([IntPtr]$handle, [bool]$directory) {
       links=$links.ToString(); reparseTag=$reparse.ToString('x8') }
   } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($tag); [Runtime.InteropServices.Marshal]::FreeHGlobal($id); [Runtime.InteropServices.Marshal]::FreeHGlobal($basic) }
 }
-function Get-HeldSecurity([IntPtr]$handle, [bool]$allowCurrent) {
+function Get-HeldSecurity([IntPtr]$handle) {
   $owner=[IntPtr]::Zero; $group=[IntPtr]::Zero; $dacl=[IntPtr]::Zero; $sacl=[IntPtr]::Zero; $descriptor=[IntPtr]::Zero
   if ($native::GetSecurityInfo($handle, 1, 5, [ref]$owner, [ref]$group, [ref]$dacl, [ref]$sacl, [ref]$descriptor) -ne 0 -or
       $owner -eq [IntPtr]::Zero -or $dacl -eq [IntPtr]::Zero -or $descriptor -eq [IntPtr]::Zero) { throw 'security' }
   try {
     $ownerText=[IntPtr]::Zero; if (!$native::ConvertSidToStringSidW($owner, [ref]$ownerText)) { throw 'owner' }
     try { $ownerSid=[Runtime.InteropServices.Marshal]::PtrToStringUni($ownerText) } finally { if ($ownerText -ne [IntPtr]::Zero) { [void]$native::LocalFree($ownerText) } }
-    if ($trustedOwners -notcontains $ownerSid -and (!$allowCurrent -or $ownerSid -ne $current)) { throw 'owner' }
+    if ($trustedOwners -notcontains $ownerSid -or $currentAuthorities.Contains($ownerSid)) { throw 'owner' }
     $control=[uint16]0; $revision=[uint32]0
     if (!$native::GetSecurityDescriptorControl($descriptor, [ref]$control, [ref]$revision)) { throw 'dacl' }
     $present=$false; $defaulted=$false; $actualDacl=[IntPtr]::Zero
     if (!$native::GetSecurityDescriptorDacl($descriptor, [ref]$present, [ref]$actualDacl, [ref]$defaulted) -or !$present -or $actualDacl -eq [IntPtr]::Zero) { throw 'dacl' }
-    $aceCount=[uint16][Runtime.InteropServices.Marshal]::ReadInt16($actualDacl, 4)
-    for ($index=0; $index -lt $aceCount; $index++) {
-      $ace=[IntPtr]::Zero; if (!$native::GetAce($actualDacl, $index, [ref]$ace)) { throw 'ace' }
-      $type=[Runtime.InteropServices.Marshal]::ReadByte($ace,0); $flags=[Runtime.InteropServices.Marshal]::ReadByte($ace,1)
-      if (($flags -band 8) -ne 0 -or @(0,5,9,11) -notcontains $type) { continue }
-      $mask=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($ace,4); $sidOffset=8
-      if ($type -eq 5 -or $type -eq 11) { $objectFlags=[uint32][Runtime.InteropServices.Marshal]::ReadInt32($ace,8); $sidOffset=12; if (($objectFlags -band 1) -ne 0) {$sidOffset+=16}; if (($objectFlags -band 2) -ne 0) {$sidOffset+=16} }
-      if (($mask -band [uint32]0x500D0156) -eq 0) { continue }
-      $sidText=[IntPtr]::Zero; if (!$native::ConvertSidToStringSidW([IntPtr]::Add($ace,$sidOffset), [ref]$sidText)) { throw 'ace' }
-      try { $sid=[Runtime.InteropServices.Marshal]::PtrToStringUni($sidText) } finally { if ($sidText -ne [IntPtr]::Zero) {[void]$native::LocalFree($sidText)} }
-      if ($trustedOwners -notcontains $sid -and (!$allowCurrent -or $sid -ne $current)) { throw 'ace' }
+    $descriptorLength=$native::GetSecurityDescriptorLength($descriptor)
+    if ($descriptorLength -le 0 -or $descriptorLength -gt 65536) {throw 'dacl'}
+    $descriptorBytes=New-Object byte[] $descriptorLength
+    [Runtime.InteropServices.Marshal]::Copy($descriptor,$descriptorBytes,0,$descriptorLength)
+    $raw=New-Object Security.AccessControl.RawSecurityDescriptor($descriptorBytes,0)
+    if (!$raw.DiscretionaryAcl) {throw 'dacl'}
+    $aceCount=$raw.DiscretionaryAcl.Count
+    foreach ($ace in $raw.DiscretionaryAcl) {
+      if (($ace.AceFlags -band [Security.AccessControl.AceFlags]::InheritOnly) -ne 0) {continue}
+      $qualified=$ace -as [Security.AccessControl.QualifiedAce]
+      $known=$ace -as [Security.AccessControl.KnownAce]
+      if (!$qualified) {
+        # Compound and future effective ACE layouts must never be silently
+        # treated as non-authorizing merely because this verifier cannot parse
+        # their trustee and mask.
+        throw 'ace'
+      }
+      if ($qualified.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) {continue}
+      if (!$known -or !$known.SecurityIdentifier) {throw 'ace'}
+      $mask=[uint32]$known.AccessMask
+      if (($mask -band [uint32]0x500D0156) -eq 0) {continue}
+      $sid=$known.SecurityIdentifier.Value
+      if ($currentAuthorities.Contains($sid) -or $trustedOwners -notcontains $sid) {throw 'ace'}
     }
-    return @{ ownerSid=$ownerSid; daclProtected=(($control -band 0x1000) -ne 0); aceCount=$aceCount.ToString() }
+    return @{ ownerSid=$ownerSid; daclProtected=(($control -band 0x1000) -ne 0); systemAcl=$true; aceCount=$aceCount.ToString() }
   } finally { if ($descriptor -ne [IntPtr]::Zero) {[void]$native::LocalFree($descriptor)} }
 }
 function Get-FinalPath([IntPtr]$handle) { $value=New-Object Text.StringBuilder 32768; $length=$native::GetFinalPathNameByHandleW($handle,$value,32768,0); if ($length -le 0 -or $length -ge 32768) {throw 'path'}; $value.ToString() }
@@ -370,13 +426,15 @@ function Get-SystemCatalogProof([IntPtr]$memberHandle, [string]$windowsRoot) {
         $catalogPath.IndexOf('\',$catalogRoot.Length) -ge 0) {throw 'catalog-path'}
     $stream=[IO.File]::Open($catalogPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try {
-      $handle=$stream.SafeFileHandle.DangerousGetHandle(); $identity=Get-HeldIdentity $handle $false; [void](Get-HeldSecurity $handle $false)
+      $handle=$stream.SafeFileHandle.DangerousGetHandle(); $identity=Get-HeldIdentity $handle $false; [void](Get-HeldSecurity $handle)
       if (!(Get-FinalPath $handle).EndsWith($catalogPath,[StringComparison]::OrdinalIgnoreCase)) {throw 'catalog-path'}
       $bytes=Read-Held $stream $stream.Length 33554432; $sha=[Security.Cryptography.SHA256]::Create()
       try {$digest=Hex-Bytes $sha.ComputeHash($bytes)} finally {$sha.Dispose()}
       $signature=Test-Signature $bytes '.cat' $true
-      return @{sha256=$digest;volumeSerial=$identity.volumeSerial;fileId128=$identity.fileId128;signature=$signature}
-    } finally {$stream.Dispose()}
+      $catalogLeases.Add([pscustomobject]@{stream=$stream;path=$catalogPath;sha256=$digest;
+        volumeSerial=$identity.volumeSerial;fileId128=$identity.fileId128;length=[int64]$stream.Length})
+      return @{name=[IO.Path]::GetFileName($catalogPath);sha256=$digest;volumeSerial=$identity.volumeSerial;fileId128=$identity.fileId128;signature=$signature}
+    } catch {$stream.Dispose();throw}
   } finally {
     if ($catalog -ne [IntPtr]::Zero) {[void]$native::CryptCATAdminReleaseCatalogContext($admin,$catalog,0)}
     if ($admin -ne [IntPtr]::Zero) {[void]$native::CryptCATAdminReleaseContext($admin,0)}
@@ -398,13 +456,13 @@ try {
   if ($heldIdentity.volumeSerial -cne $loadIdentity.volumeSerial -or $heldIdentity.fileId128 -cne $loadIdentity.fileId128 -or
       $heldIdentity.nodeDev -cne $policy.nodeDev -or $heldIdentity.nodeIno -cne $policy.nodeIno -or $heldIdentity.links -cne '1') {throw 'split-handle'}
   if ((Get-FinalPath $heldHandle) -cne (Get-FinalPath $loadHandle)) {throw 'load-path'}
-  $security=Get-HeldSecurity $heldHandle $true
+  $security=Get-HeldSecurity $heldHandle
   $authorityRoot=[IO.Path]::GetFullPath($policy.authorityRoot).TrimEnd('\')
   $cursor=[IO.Directory]::GetParent($policy.path); $rootSeen=$false
   while ($cursor) {
     $directory=$native::CreateFileW($cursor.FullName,0x80 -bor 0x20000,1,[IntPtr]::Zero,3,0x2200000,[IntPtr]::Zero)
     if ($directory -eq [IntPtr](-1)) {throw 'ancestor'}; $ancestorHandles.Add($directory)
-    [void](Get-HeldIdentity $directory $true); [void](Get-HeldSecurity $directory $true)
+    [void](Get-HeldIdentity $directory $true); [void](Get-HeldSecurity $directory)
     if ($cursor.FullName.TrimEnd('\') -ieq $authorityRoot) {$rootSeen=$true; break}; $cursor=$cursor.Parent
   }
   if (!$rootSeen) {throw 'ancestor-root'}
@@ -416,22 +474,46 @@ try {
   $self=[IO.File]::Open($selfPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
   $selfHandle=$self.SafeFileHandle.DangerousGetHandle()
   if (!(Get-FinalPath $selfHandle).EndsWith('\System32\WindowsPowerShell\v1.0\powershell.exe',[StringComparison]::OrdinalIgnoreCase)) {throw 'self-path'}
-  [void](Get-HeldIdentity $selfHandle $false); [void](Get-HeldSecurity $selfHandle $false)
+  $selfIdentity=Get-HeldIdentity $selfHandle $false; [void](Get-HeldSecurity $selfHandle)
   $selfCursor=[IO.Directory]::GetParent($selfPath); $selfRoot=$selfCursor.Parent.Parent.Parent.FullName.TrimEnd('\'); $selfRootSeen=$false
   while ($selfCursor) {
     $selfDirectory=$native::CreateFileW($selfCursor.FullName,0x80 -bor 0x20000,1,[IntPtr]::Zero,3,0x2200000,[IntPtr]::Zero)
     if ($selfDirectory -eq [IntPtr](-1)) {throw 'self-ancestor'}; $ancestorHandles.Add($selfDirectory)
-    [void](Get-HeldIdentity $selfDirectory $true); [void](Get-HeldSecurity $selfDirectory $false)
+    [void](Get-HeldIdentity $selfDirectory $true); [void](Get-HeldSecurity $selfDirectory)
     if ($selfCursor.FullName.TrimEnd('\') -ieq $selfRoot) {$selfRootSeen=$true; break}; $selfCursor=$selfCursor.Parent
   }
   if (!$selfRootSeen) {throw 'self-root'}
   $selfCatalog=Get-SystemCatalogProof $selfHandle $selfRoot
   [Console]::Out.WriteLine((@{sha256=$digest;size=[int64]$bytes.Length;volumeSerial=$heldIdentity.volumeSerial;fileId128=$heldIdentity.fileId128;
-    nodeDev=$heldIdentity.nodeDev;nodeIno=$heldIdentity.nodeIno;ownerSid=$security.ownerSid;daclProtected=$security.daclProtected;reparseTag=$heldIdentity.reparseTag;
+    nodeDev=$heldIdentity.nodeDev;nodeIno=$heldIdentity.nodeIno;ownerSid=$security.ownerSid;daclProtected=$security.daclProtected;systemAcl=$security.systemAcl;reparseTag=$heldIdentity.reparseTag;
     subject=$signature.subject;certificate=$signature.certificate;selfCertificate=$selfCatalog.signature.certificate;selfRootCertificate=$selfCatalog.signature.rootCertificate;
-    selfCatalogSha256=$selfCatalog.sha256;selfCatalogVolumeSerial=$selfCatalog.volumeSerial;selfCatalogFileId128=$selfCatalog.fileId128}|ConvertTo-Json -Compress))
+    selfSubject=$selfCatalog.signature.subject;selfCatalogName=$selfCatalog.name;selfCatalogSha256=$selfCatalog.sha256;
+    selfCatalogVolumeSerial=$selfCatalog.volumeSerial;selfCatalogFileId128=$selfCatalog.fileId128}|ConvertTo-Json -Compress))
   [Console]::Out.Flush(); if ([Console]::In.ReadLine() -cne 'release') {throw 'release'}
-} finally { if ($self) {$self.Dispose()}; foreach ($handle in $ancestorHandles) {[void]$native::CloseHandle($handle)}; $load.Dispose(); $held.Dispose() }
+  # Re-prove every retained capability after Node has initialized the bootstrap
+  # and launcher. No catalog/member/ACL swap at any held barrier can be hidden
+  # behind the earlier JSON record.
+  $heldFinal=Get-HeldIdentity $heldHandle $false; $loadFinal=Get-HeldIdentity $loadHandle $false
+  if ($heldFinal.volumeSerial -cne $heldIdentity.volumeSerial -or $heldFinal.fileId128 -cne $heldIdentity.fileId128 -or
+      $loadFinal.volumeSerial -cne $loadIdentity.volumeSerial -or $loadFinal.fileId128 -cne $loadIdentity.fileId128) {throw 'final-identity'}
+  [void](Get-HeldSecurity $heldHandle); [void](Get-HeldSecurity $loadHandle)
+  $finalBytes=Read-Held $held ([int64]$policy.size); $finalSha=[Security.Cryptography.SHA256]::Create()
+  try {$finalDigest=Hex-Bytes $finalSha.ComputeHash($finalBytes)} finally {$finalSha.Dispose()}
+  if ($finalDigest -cne $digest -or (Get-FinalPath $heldHandle) -cne (Get-FinalPath $loadHandle)) {throw 'final-bootstrap'}
+  $selfFinal=Get-HeldIdentity $selfHandle $false; [void](Get-HeldSecurity $selfHandle)
+  if ($selfFinal.volumeSerial -cne $selfIdentity.volumeSerial -or $selfFinal.fileId128 -cne $selfIdentity.fileId128) {throw 'final-self'}
+  foreach ($catalogLease in $catalogLeases) {
+    $catalogHandle=$catalogLease.stream.SafeFileHandle.DangerousGetHandle()
+    $catalogFinal=Get-HeldIdentity $catalogHandle $false; [void](Get-HeldSecurity $catalogHandle)
+    $catalogFinalPath=Get-FinalPath $catalogHandle
+    if ($catalogFinal.volumeSerial -cne $catalogLease.volumeSerial -or $catalogFinal.fileId128 -cne $catalogLease.fileId128 -or
+        !$catalogFinalPath.EndsWith($catalogLease.path,[StringComparison]::OrdinalIgnoreCase)) {throw 'final-catalog'}
+    $catalogBytes=Read-Held $catalogLease.stream $catalogLease.length 33554432; $catalogSha=[Security.Cryptography.SHA256]::Create()
+    try {$catalogDigest=Hex-Bytes $catalogSha.ComputeHash($catalogBytes)} finally {$catalogSha.Dispose()}
+    if ($catalogDigest -cne $catalogLease.sha256) {throw 'final-catalog'}
+  }
+  foreach ($handle in $ancestorHandles) {[void](Get-HeldSecurity $handle)}
+} finally { if ($self) {$self.Dispose()}; foreach ($catalogLease in $catalogLeases) {$catalogLease.stream.Dispose()}; foreach ($handle in $ancestorHandles) {[void]$native::CloseHandle($handle)}; $load.Dispose(); $held.Dispose() }
 `;
 
 const helperError = (stage: WindowsAuthorityCompileStage): WindowsAuthorityBootstrapError =>
@@ -461,18 +543,23 @@ export const validateBootstrapIdentityRecordForTest = (
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return exactRecordKeys(record, ['sha256', 'size', 'volumeSerial', 'fileId128', 'nodeDev', 'nodeIno',
-    'ownerSid', 'daclProtected', 'reparseTag', 'subject', 'certificate', 'selfCertificate', 'selfRootCertificate',
-    'selfCatalogSha256', 'selfCatalogVolumeSerial', 'selfCatalogFileId128'])
+    'ownerSid', 'daclProtected', 'systemAcl', 'reparseTag', 'subject', 'certificate', 'selfSubject', 'selfCertificate', 'selfRootCertificate',
+    'selfCatalogName', 'selfCatalogSha256', 'selfCatalogVolumeSerial', 'selfCatalogFileId128'])
     && record.sha256 === policy.sha256 && record.size === policy.size
     && /^[a-f0-9]{16}$/.test(String(record.volumeSerial))
     && /^[a-f0-9]{32}$/.test(String(record.fileId128))
     && record.nodeDev === nodeIdentity.dev && record.nodeIno === nodeIdentity.ino
-    && typeof record.ownerSid === 'string' && /^S-1-(?:\d+-){1,14}\d+$/.test(record.ownerSid)
-    && typeof record.daclProtected === 'boolean' && record.reparseTag === '00000000'
-    && typeof record.selfCertificate === 'string' && typeof record.selfRootCertificate === 'string'
+    && ['S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464']
+      .includes(String(record.ownerSid))
+    && typeof record.daclProtected === 'boolean' && record.systemAcl === true && record.reparseTag === '00000000'
+    && typeof record.selfSubject === 'string' && typeof record.selfCertificate === 'string'
+    && typeof record.selfRootCertificate === 'string'
+    && typeof record.selfCatalogName === 'string' && record.selfCatalogName.length <= 260
     && /^[a-f0-9]{64}$/.test(String(record.selfCatalogSha256))
     && /^[a-f0-9]{16}$/.test(String(record.selfCatalogVolumeSerial))
-    && /^[a-f0-9]{32}$/.test(String(record.selfCatalogFileId128));
+    && /^[a-f0-9]{32}$/.test(String(record.selfCatalogFileId128))
+    && MICROSOFT_SYSTEM_CATALOG_POLICY.some(approved => approved.member === 'powershell.exe'
+      && approved.catalog === record.selfCatalogName && approved.catalogSha256 === record.selfCatalogSha256);
 };
 
 const acquireBootstrapPackageAuthority = async (
@@ -549,8 +636,16 @@ const acquireBootstrapPackageAuthority = async (
     const selfRootSpkiSha256 = createHash('sha256').update(
       selfRoot.publicKey.export({ format: 'der', type: 'spki' }),
     ).digest('hex');
-    if (!/^[a-f0-9]{64}$/.test(selfCertificateSha256) || !/^[a-f0-9]{64}$/.test(selfSpkiSha256)
-      || !MICROSOFT_SYSTEM_ROOT_SPKI_SHA256.has(selfRootSpkiSha256)) throw new Error('untrusted verifier');
+    const approvedCatalog = MICROSOFT_SYSTEM_CATALOG_POLICY.some(approved =>
+      approved.member === 'powershell.exe'
+      && approved.catalog === record.selfCatalogName
+      && approved.publisher === record.selfSubject
+      && approved.certificateSha256 === selfCertificateSha256
+      && approved.spkiSha256 === selfSpkiSha256
+      && approved.catalogSha256 === record.selfCatalogSha256);
+    if (!approvedCatalog || !MICROSOFT_SYSTEM_ROOT_SPKI_SHA256.has(selfRootSpkiSha256)) {
+      throw new Error('untrusted verifier');
+    }
   } catch { cleanup(); throw helperError('HELPER_OWNER_DACL'); }
   if (policy.trust === 'production-signed') {
     if (record.subject !== policy.publisher || typeof record.certificate !== 'string') {
@@ -573,9 +668,13 @@ const acquireBootstrapPackageAuthority = async (
   }
   return async () => {
     childInput.end('release\n');
-    await new Promise<void>(resolvePromise => {
-      const timer = setTimeout(() => { cleanup(); resolvePromise(); }, 5_000);
-      child.once('exit', () => { clearTimeout(timer); resolvePromise(); });
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const timer = setTimeout(() => { cleanup(); rejectPromise(helperError('HELPER_OWNER_DACL')); }, 5_000);
+      child.once('exit', (code, signal) => {
+        clearTimeout(timer);
+        if (code === 0 && signal === null && errorOutput === 0) resolvePromise();
+        else rejectPromise(helperError('HELPER_OWNER_DACL'));
+      });
     });
   };
 };
@@ -679,16 +778,23 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
       typeof input !== 'object' || input === null || Array.isArray(input)
       || !exactRecordKeys(input, [
         'name', 'size', 'sha256', 'signerCertificateSha256', 'signerSpkiSha256', 'signerRootSpkiSha256',
-        'catalogSha256', 'catalogVolumeSerial', 'catalogFileId128',
+        'catalogName', 'catalogSha256', 'catalogVolumeSerial', 'catalogFileId128',
       ]) || !Number.isSafeInteger(input.size)
       || Number(input.size) <= 0 || Number(input.size) > 32 * 1024 * 1024
       || !/^[a-f0-9]{64}$/.test(String(input.sha256))
       || !/^[a-f0-9]{64}$/.test(String(input.signerCertificateSha256))
       || !/^[a-f0-9]{64}$/.test(String(input.signerSpkiSha256))
       || !/^[a-f0-9]{64}$/.test(String(input.signerRootSpkiSha256))
+      || !/^[A-Za-z0-9_.~-]{1,180}\.cat$/.test(String(input.catalogName))
       || !/^[a-f0-9]{64}$/.test(String(input.catalogSha256))
       || !/^[a-f0-9]{16}$/.test(String(input.catalogVolumeSerial))
-      || !/^[a-f0-9]{32}$/.test(String(input.catalogFileId128)))
+      || !/^[a-f0-9]{32}$/.test(String(input.catalogFileId128))
+      || !MICROSOFT_COMPILER_CATALOG_POLICY.some(approved => approved.name === input.name
+        && approved.architecture === (launcher as Record<string, unknown>).architecture
+        && approved.catalogName === input.catalogName
+        && approved.certificateSha256 === input.signerCertificateSha256
+        && approved.spkiSha256 === input.signerSpkiSha256
+        && approved.catalogSha256 === input.catalogSha256))
     || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])[0].signerCertificateSha256
       !== (compiler as Record<string, unknown>).signerCertificateSha256
     || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])[0].signerSpkiSha256

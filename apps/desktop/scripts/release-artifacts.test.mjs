@@ -36,14 +36,19 @@ const spkiSha256 = '2'.repeat(64);
 const windowsSignerPins = `certificate-sha256:${certificateSha256},spki-sha256:${spkiSha256}`;
 const execFile = promisify(execFileCallback);
 const nativeDarwinArch = process.arch === 'arm64' ? 'arm64' : 'x64';
-const compilerInputEvidence = (name, sha256) => ({
+const compilerInputEvidence = (name, sha256, architecture = 'x64') => ({
   name,
   size: 1,
   sha256,
-  signerCertificateSha256: '1'.repeat(64),
-  signerSpkiSha256: '2'.repeat(64),
+  signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
+  signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
   signerRootSpkiSha256: '3'.repeat(64),
-  catalogSha256: '4'.repeat(64),
+  catalogName: architecture === 'arm64'
+    ? 'Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat'
+    : 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
+  catalogSha256: architecture === 'arm64'
+    ? 'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85'
+    : 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
   catalogVolumeSerial: '5'.repeat(16),
   catalogFileId128: '6'.repeat(32),
 });
@@ -252,15 +257,15 @@ const windowsAuthorityFixtureEntries = (executablePath, executable) => {
     compiler: {
       kind: 'windows-catalog-authorized-dotnet-framework-csc-v1',
       framework: 'Framework64-v4.0.30319',
-      signerCertificateSha256: '1'.repeat(64),
-      signerSpkiSha256: '2'.repeat(64),
+      signerCertificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
+      signerSpkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
       signerRootSpkiSha256: '3'.repeat(64),
       volumeSerial: '4'.repeat(16),
       fileId128: '5'.repeat(32),
       inputs: [
-        compilerInputEvidence('csc.exe', 'b'.repeat(64)),
-        compilerInputEvidence('System.dll', 'c'.repeat(64)),
-        compilerInputEvidence('System.Web.Extensions.dll', 'd'.repeat(64)),
+        compilerInputEvidence('csc.exe', 'b'.repeat(64), launcherArchitecture),
+        compilerInputEvidence('System.dll', 'c'.repeat(64), launcherArchitecture),
+        compilerInputEvidence('System.Web.Extensions.dll', 'd'.repeat(64), launcherArchitecture),
       ],
     },
   })}\n`);

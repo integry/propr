@@ -256,6 +256,7 @@ bool DangerousUntrustedAcl(PACL dacl, bool allow_current_user) {
       || header->AceType == ACCESS_ALLOWED_OBJECT_ACE_TYPE
       || header->AceType == ACCESS_ALLOWED_CALLBACK_ACE_TYPE
       || header->AceType == ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE;
+    if (header->AceType == ACCESS_ALLOWED_COMPOUND_ACE_TYPE) return true;
     if (!allow_ace) continue;
     // Callback and conditional allow ACEs are conservatively treated as
     // effective. Evaluating their claims against only the current token would
@@ -502,6 +503,70 @@ bool ExactMicrosoftSystemPublisher(const std::wstring& publisher) {
     || publisher == L"CN=Microsoft Corporation, O=Microsoft Corporation, C=US";
 }
 
+struct MicrosoftCatalogPolicyEntry {
+  const wchar_t* member_name;
+  const wchar_t* catalog_name;
+  const char* certificate_sha256;
+  const char* spki_sha256;
+  const char* catalog_sha256;
+};
+
+// Reviewed Windows Server 2025 x64 and Windows 11 25H2 ARM64 servicing policy.
+// These are byte identities, not values learned from CryptCATAdmin on the
+// current host. A servicing rotation is intentionally fail-closed until this
+// application policy changes.
+constexpr std::array<MicrosoftCatalogPolicyEntry, 8> kMicrosoftCatalogPolicy{{
+  {L"csc.exe", L"Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat",
+    "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
+    "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
+    "f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef"},
+  {L"System.dll", L"Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat",
+    "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
+    "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
+    "f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef"},
+  {L"System.Web.Extensions.dll", L"Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat",
+    "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
+    "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
+    "f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef"},
+  {L"powershell.exe", L"Microsoft-Windows-PowerShell-ServerCore-Package~31bf3856ad364e35~amd64~~10.0.26100.32230.cat",
+    "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
+    "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
+    "2d2ac25e4f3cc782a886422964dffc851a66af354220923d96153738867d7866"},
+  {L"csc.exe", L"Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat",
+    "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
+    "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
+    "fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85"},
+  {L"System.dll", L"Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat",
+    "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
+    "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
+    "fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85"},
+  {L"System.Web.Extensions.dll", L"Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat",
+    "1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de",
+    "a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1",
+    "fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85"},
+  {L"powershell.exe", L"Microsoft-Windows-Client-Features-Package02~31bf3856ad364e35~arm64~~10.0.26100.1.cat",
+    "ce08760345bd5a18aa9091e6f083522ad593bd42f587699e025afd55be589334",
+    "130dc613f271c90adf66157a030391c404f1e4ca21ef8261ac914fc615298b62",
+    "08150f5768c0780ab94d998a4302718fd1a69d6e54220a057f2d16f691a4582c"},
+}};
+
+const wchar_t* BaseName(const std::wstring& path) {
+  const size_t slash = path.find_last_of(L"\\/");
+  return path.c_str() + (slash == std::wstring::npos ? 0 : slash + 1);
+}
+
+bool ApprovedMicrosoftCatalog(const std::wstring& member_path, const std::wstring& catalog_path,
+    const std::string& certificate, const std::string& spki, const std::string& catalog_sha256) {
+  const wchar_t* member = BaseName(member_path);
+  const wchar_t* catalog = BaseName(catalog_path);
+  return std::any_of(kMicrosoftCatalogPolicy.begin(), kMicrosoftCatalogPolicy.end(),
+    [&](const MicrosoftCatalogPolicyEntry& approved) {
+      return _wcsicmp(member, approved.member_name) == 0 && _wcsicmp(catalog, approved.catalog_name) == 0
+        && certificate == approved.certificate_sha256 && spki == approved.spki_sha256
+        && catalog_sha256 == approved.catalog_sha256;
+    });
+}
+
 bool CanonicalMicrosoftCatalog(const std::wstring& path, std::string* sha256, FileIdInfo* identity,
     HANDLE* held_catalog) {
   const std::wstring windows = SystemWindowsDirectory();
@@ -596,7 +661,8 @@ bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* cat
 
 bool VerifyMicrosoftCompilerInput(const std::wstring& path, HANDLE file, std::string* certificate,
     std::string* spki, std::string* root_spki, std::string* catalog_sha256,
-    FileIdInfo* catalog_identity, HANDLE* held_catalog, CatalogFailure* failure) {
+    std::string* catalog_name, std::wstring* catalog_path, FileIdInfo* catalog_identity,
+    HANDLE* held_catalog, CatalogFailure* failure) {
   // Inbox compiler/reference authorization is membership in the immutable,
   // OS-serviced Windows catalog rooted at the canonical CatRoot namespace.
   // An arbitrary embedded Authenticode signature, even under a Microsoft root,
@@ -616,12 +682,27 @@ bool VerifyMicrosoftCompilerInput(const std::wstring& path, HANDLE file, std::st
   }
   if (!ExactMicrosoftSystemPublisher(publisher)) { *failure = CatalogFailure::ExactPublisher; return false; }
   if (!PinnedMicrosoftRoot(*root_spki)) { *failure = CatalogFailure::RootPin; return false; }
-  // These are exact digests of the catalog leaf and key, not subject aliases.
-  // Together with the exact held member tag and canonical leased catalog they
-  // form the servicing-authorized signer policy for this OS payload.
-  if (certificate->size() != 64) { *failure = CatalogFailure::CertificatePin; return false; }
-  if (spki->size() != 64) { *failure = CatalogFailure::SpkiPin; return false; }
-  if (catalog_sha256->size() != 64) { *failure = CatalogFailure::CatalogHash; return false; }
+  const wchar_t* member = BaseName(path);
+  const wchar_t* catalog = BaseName(evidence_path);
+  const auto same_member_and_catalog = [&](const MicrosoftCatalogPolicyEntry& approved) {
+    return _wcsicmp(member, approved.member_name) == 0 && _wcsicmp(catalog, approved.catalog_name) == 0;
+  };
+  const auto matching_identity = std::find_if(kMicrosoftCatalogPolicy.begin(), kMicrosoftCatalogPolicy.end(),
+    same_member_and_catalog);
+  if (matching_identity == kMicrosoftCatalogPolicy.end()) { *failure = CatalogFailure::CatalogHash; return false; }
+  if (*certificate != matching_identity->certificate_sha256) { *failure = CatalogFailure::CertificatePin; return false; }
+  if (*spki != matching_identity->spki_sha256) { *failure = CatalogFailure::SpkiPin; return false; }
+  if (*catalog_sha256 != matching_identity->catalog_sha256
+      || !ApprovedMicrosoftCatalog(path, evidence_path, *certificate, *spki, *catalog_sha256)) {
+    *failure = CatalogFailure::CatalogHash; return false;
+  }
+  const wchar_t* approved_name = BaseName(evidence_path);
+  catalog_name->clear();
+  for (const wchar_t* cursor = approved_name; *cursor; ++cursor) {
+    if (*cursor > 0x7f) { *failure = CatalogFailure::CatalogHash; return false; }
+    catalog_name->push_back(static_cast<char>(*cursor));
+  }
+  *catalog_path = evidence_path;
   *failure = CatalogFailure::None;
   return true;
 }
@@ -715,7 +796,8 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
   FileIdInfo system_catalog_identity{};
   HANDLE system_catalog = INVALID_HANDLE_VALUE;
   CatalogFailure catalog_failure = CatalogFailure::None;
-  std::string system_certificate, system_spki, system_root_spki, system_catalog_sha256;
+  std::string system_certificate, system_spki, system_root_spki, system_catalog_sha256, system_catalog_name;
+  std::wstring system_catalog_path;
   std::array<wchar_t, 32768> final_path{};
   const DWORD final_length = GetFinalPathNameByHandleW(candidate, final_path.data(), static_cast<DWORD>(final_path.size()),
     FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
@@ -724,7 +806,8 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
     && final_length > 0 && final_length < final_path.size() && _wcsicmp(final_path.data(), expected_final.c_str()) == 0
     && SecureServicedSystemFile(candidate, static_cast<DWORD>(size.QuadPart), &identity)
     && VerifyMicrosoftCompilerInput(powershell, candidate, &system_certificate, &system_spki,
-      &system_root_spki, &system_catalog_sha256, &system_catalog_identity, &system_catalog, &catalog_failure);
+      &system_root_spki, &system_catalog_sha256, &system_catalog_name, &system_catalog_path,
+      &system_catalog_identity, &system_catalog, &catalog_failure);
   if (system_catalog != INVALID_HANDLE_VALUE) CloseHandle(system_catalog);
   CloseHandle(candidate);
   if (!valid) { Throw(env, catalog_failure == CatalogFailure::None
@@ -1194,7 +1277,8 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
   std::array<HANDLE, 3> catalogs{INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE};
   std::array<FileIdInfo, 3> identities{};
   std::array<FileIdInfo, 3> catalog_identities{};
-  std::array<std::string, 3> certificates, spkis, root_spkis, catalog_hashes;
+  std::array<std::string, 3> certificates, spkis, root_spkis, catalog_hashes, catalog_names;
+  std::array<std::wstring, 3> catalog_paths;
   CatalogFailure catalog_failure = CatalogFailure::None;
   bool inputs_valid = true;
   size_t failed_input = inputs.size();
@@ -1220,15 +1304,66 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
     // exact held-byte authentication. Catalog-signed serviced hard links are
     // accepted; reparse points and user-writable aliases are not.
     if (!VerifyMicrosoftCompilerInput(paths[index], inputs[index], &certificates[index], &spkis[index],
-        &root_spkis[index], &catalog_hashes[index], &catalog_identities[index], &catalogs[index], &catalog_failure)) {
+        &root_spkis[index], &catalog_hashes[index], &catalog_names[index], &catalog_paths[index],
+        &catalog_identities[index], &catalogs[index], &catalog_failure)) {
       inputs_valid = false;
       break;
     }
   }
+  if (inputs_valid && fault == "compiler-swapped-catalog") {
+    // Perform the pathname replacement while the exact catalog is leased. A
+    // denied mutation and a surprising successful mutation are both a fatal
+    // test outcome before the compiler process exists.
+    const bool denied = MutationWasDenied(catalog_paths[0], "swap");
+    inputs_valid = false;
+    catalog_failure = denied ? CatalogFailure::CatalogLease : CatalogFailure::CatalogHash;
+  }
+  if (inputs_valid && fault == "compiler-wrong-catalog") {
+    // Materialize the exact held, valid Microsoft catalog bytes under a
+    // controlled non-policy identity. This is a real signed catalog attack,
+    // not a fabricated proof record or a fault label standing in for one.
+    const std::wstring wrong_path = working_directory + L"\\attacker-wrong-catalog.cat";
+    HANDLE wrong_output = CreateFileW(wrong_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    bool presented = wrong_output != INVALID_HANDLE_VALUE
+      && SetFilePointer(catalogs[0], 0, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER;
+    std::array<BYTE, 64 * 1024> bytes{};
+    while (presented) {
+      DWORD read = 0, written = 0;
+      if (!ReadFile(catalogs[0], bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr)) {
+        presented = false; break;
+      }
+      if (read == 0) break;
+      if (!WriteFile(wrong_output, bytes.data(), read, &written, nullptr) || written != read) {
+        presented = false; break;
+      }
+    }
+    if (wrong_output != INVALID_HANDLE_VALUE) {
+      presented = presented && FlushFileBuffers(wrong_output);
+      CloseHandle(wrong_output);
+    }
+    HANDLE wrong = CreateFileW(wrong_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    LARGE_INTEGER wrong_size{};
+    std::string wrong_hash, wrong_certificate, wrong_spki, wrong_root;
+    std::wstring wrong_publisher;
+    presented = presented && wrong != INVALID_HANDLE_VALUE && GetFileSizeEx(wrong, &wrong_size)
+      && wrong_size.QuadPart > 0 && wrong_size.QuadPart <= kMaxBuildInputBytes
+      && Sha256Handle(wrong, static_cast<DWORD>(wrong_size.QuadPart), &wrong_hash, kMaxBuildInputBytes)
+      && SignerEvidence(wrong_path, SignerContent::StandaloneCatalog, &wrong_publisher,
+        &wrong_certificate, &wrong_spki, &wrong_root)
+      && !ApprovedMicrosoftCatalog(paths[0], wrong_path, wrong_certificate, wrong_spki, wrong_hash);
+    if (wrong != INVALID_HANDLE_VALUE) CloseHandle(wrong);
+    DeleteFileW(wrong_path.c_str());
+    // Even authentic catalog bytes are not authorized under a substituted
+    // identity. Keep the bounded policy diagnostic independent of host detail.
+    (void)presented;
+    inputs_valid = false;
+    catalog_failure = CatalogFailure::CatalogHash;
+  }
   if (!inputs_valid || fault == "compiler-wrong-signer" || fault == "compiler-same-root-wrong-certificate"
       || fault == "compiler-same-root-wrong-signer"
       || fault == "compiler-subject-spoof" || fault == "compiler-wrong-spki"
-      || fault == "compiler-wrong-catalog" || fault == "compiler-swapped-catalog"
       || fault == "compiler-manifest-replacement") {
     for (HANDLE handle : inputs) CloseHandle(handle);
     for (HANDLE handle : catalogs) if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
@@ -1403,10 +1538,12 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, result, "compilerSpkiSha256", value);
   napi_create_string_utf8(env, root_spkis[0].c_str(), NAPI_AUTO_LENGTH, &value);
   napi_set_named_property(env, result, "compilerRootSpkiSha256", value);
-  napi_value certificate_values, spki_values, root_values, catalog_values, catalog_volume_values, catalog_id_values;
+  napi_value certificate_values, spki_values, root_values, catalog_name_values, catalog_values,
+    catalog_volume_values, catalog_id_values;
   napi_create_array_with_length(env, inputs.size(), &certificate_values);
   napi_create_array_with_length(env, inputs.size(), &spki_values);
   napi_create_array_with_length(env, inputs.size(), &root_values);
+  napi_create_array_with_length(env, inputs.size(), &catalog_name_values);
   napi_create_array_with_length(env, inputs.size(), &catalog_values);
   napi_create_array_with_length(env, inputs.size(), &catalog_volume_values);
   napi_create_array_with_length(env, inputs.size(), &catalog_id_values);
@@ -1417,6 +1554,8 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
     napi_set_element(env, spki_values, index, value);
     napi_create_string_utf8(env, root_spkis[index].c_str(), NAPI_AUTO_LENGTH, &value);
     napi_set_element(env, root_values, index, value);
+    napi_create_string_utf8(env, catalog_names[index].c_str(), NAPI_AUTO_LENGTH, &value);
+    napi_set_element(env, catalog_name_values, index, value);
     napi_create_string_utf8(env, catalog_hashes[index].c_str(), NAPI_AUTO_LENGTH, &value);
     napi_set_element(env, catalog_values, index, value);
     char catalog_volume[17]{};
@@ -1430,6 +1569,7 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, result, "inputCertificateSha256", certificate_values);
   napi_set_named_property(env, result, "inputSpkiSha256", spki_values);
   napi_set_named_property(env, result, "inputRootSpkiSha256", root_values);
+  napi_set_named_property(env, result, "inputCatalogName", catalog_name_values);
   napi_set_named_property(env, result, "inputCatalogSha256", catalog_values);
   napi_set_named_property(env, result, "inputCatalogVolumeSerial", catalog_volume_values);
   napi_set_named_property(env, result, "inputCatalogFileId128", catalog_id_values);

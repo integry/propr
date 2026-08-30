@@ -4,7 +4,11 @@ import { chmod, lstat, mkdir, mkdtemp, open, realpath, rename, rm, stat } from '
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { buildWindowsNativeLauncher } from './build-windows-native-launcher.mjs';
+import {
+  buildWindowsNativeLauncher,
+  prepareWindowsAuthorityBuildDirectory,
+  sealWindowsAuthorityDirectory,
+} from './build-windows-native-launcher.mjs';
 
 const desktopRoot = fileURLToPath(new URL('..', import.meta.url));
 export const WINDOWS_AUTHORITY_SOURCE = join(desktopRoot, 'src', 'native', 'propr-windows-authority.cs');
@@ -22,6 +26,19 @@ const MAX_SOURCE_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAX_BUILD_INPUT_BYTES = 32 * 1024 * 1024;
 const SYSTEM_DIRECTORY_RECORD_BYTES = 2 + (520 * 2);
+const MICROSOFT_COMPILER_CATALOG_POLICY = Object.freeze([
+  'csc.exe', 'System.dll', 'System.Web.Extensions.dll',
+].map(name => Object.freeze({
+  name,
+  catalogName: process.arch === 'arm64'
+    ? 'Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat'
+    : 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat',
+  certificateSha256: '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de',
+  spkiSha256: 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1',
+  catalogSha256: process.arch === 'arm64'
+    ? 'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85'
+    : 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef',
+})));
 const require = createRequire(import.meta.url);
 
 const fail = (stage, substage) => {
@@ -116,8 +133,18 @@ export const resolveWindowsCompilerLayout = async (env, probe) => {
   // The native boundary returns one fixed-size UTF-16 record from
   // GetSystemWindowsDirectoryW, after opening and authenticating the canonical
   // system PowerShell image. Environment roots are disagreement checks only.
-  const reportedRoot = await Promise.resolve().then(() => probe(env))
-    .catch(() => fail('BUILD_COMPILER', 'DIRECTORY_PROBE'));
+  let reportedRoot;
+  try {
+    reportedRoot = await Promise.resolve().then(() => probe(env));
+  } catch (error) {
+    // The native probe has already reduced its failure to the reviewed fixed
+    // catalog/compiler vocabulary. Preserve that bounded evidence verbatim;
+    // only genuinely unknown exceptions are redacted to DIRECTORY_PROBE.
+    if (typeof error === 'object' && error !== null
+      && error.stage === 'BUILD_COMPILER'
+      && WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.includes(error.substage)) throw error;
+    fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
+  }
   const canonicalRoot = await realpath(reportedRoot).catch(() => fail('BUILD_COMPILER', 'DIRECTORY_PROBE'));
   if (!samePath(resolve(reportedRoot), canonicalRoot)) fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
   for (const hint of [env.SystemRoot, env.windir]) {
@@ -265,6 +292,7 @@ const writeAtomic = async (target, bytes) => {
 
 export const buildWindowsAuthorityHelper = async (env = process.env) => {
   if (process.platform !== 'win32') return { skipped: true };
+  await prepareWindowsAuthorityBuildDirectory();
   const launcher = await buildWindowsNativeLauncher().catch(() => fail('BUILD_COMPILER', 'DIRECTORY_PROBE'));
   if (launcher.skipped) fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
   const nativeLauncher = loadAuthenticatedNativeLauncher(launcher);
@@ -290,6 +318,7 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
   await chmod(privateOutputDirectory, 0o700).catch(() => fail('BUILD_OUTPUT'));
   const temporaryOutput = join(privateOutputDirectory, 'propr-windows-authority.exe');
   const buildInputs = [];
+  let publicationComplete = false;
   try {
     try { buildInputs.push(await holdBuildInput(systemRoot, compiler, 'csc.exe')); }
     catch { fail('BUILD_COMPILER', 'COMPILER_OPEN'); }
@@ -330,9 +359,17 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
       || !isProofArray(compileProof.inputCertificateSha256, /^[a-f0-9]{64}$/)
       || !isProofArray(compileProof.inputSpkiSha256, /^[a-f0-9]{64}$/)
       || !isProofArray(compileProof.inputRootSpkiSha256, /^[a-f0-9]{64}$/)
+      || !isProofArray(compileProof.inputCatalogName, /^[A-Za-z0-9_.~-]{1,180}\.cat$/)
       || !isProofArray(compileProof.inputCatalogSha256, /^[a-f0-9]{64}$/)
       || !isProofArray(compileProof.inputCatalogVolumeSerial, /^[a-f0-9]{16}$/)
-      || !isProofArray(compileProof.inputCatalogFileId128, /^[a-f0-9]{32}$/)) fail('BUILD_OUTPUT');
+      || !isProofArray(compileProof.inputCatalogFileId128, /^[a-f0-9]{32}$/)
+      || buildInputs.some((input, index) => {
+        const approved = MICROSOFT_COMPILER_CATALOG_POLICY.find(entry => entry.name === input.name);
+        return !approved || compileProof.inputCertificateSha256[index] !== approved.certificateSha256
+          || compileProof.inputSpkiSha256[index] !== approved.spkiSha256
+          || compileProof.inputCatalogName[index] !== approved.catalogName
+          || compileProof.inputCatalogSha256[index] !== approved.catalogSha256;
+      })) fail('BUILD_OUTPUT');
     await writeAtomic(WINDOWS_AUTHORITY_EXECUTABLE, output);
     const publishedOutput = await readHeldBuildOutput(WINDOWS_AUTHORITY_BUILD_DIRECTORY, WINDOWS_AUTHORITY_EXECUTABLE);
     if (!publishedOutput.equals(output)) fail('BUILD_OUTPUT');
@@ -393,6 +430,7 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
           signerCertificateSha256: compileProof.inputCertificateSha256[index],
           signerSpkiSha256: compileProof.inputSpkiSha256[index],
           signerRootSpkiSha256: compileProof.inputRootSpkiSha256[index],
+          catalogName: compileProof.inputCatalogName[index],
           catalogSha256: compileProof.inputCatalogSha256[index],
           catalogVolumeSerial: compileProof.inputCatalogVolumeSerial[index],
           catalogFileId128: compileProof.inputCatalogFileId128[index],
@@ -400,11 +438,13 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
       },
     };
     await writeAtomic(WINDOWS_AUTHORITY_MANIFEST, Buffer.from(`${JSON.stringify(manifest)}\n`, 'utf8'));
+    publicationComplete = true;
     return { skipped: false, executable: WINDOWS_AUTHORITY_EXECUTABLE, manifest: WINDOWS_AUTHORITY_MANIFEST, ...manifest };
   } finally {
     await Promise.all(buildInputs.map(input => input.handle.close().catch(() => undefined)));
     await sourceInput.handle.close().catch(() => undefined);
     await rm(privateOutputDirectory, { recursive: true, force: true });
+    if (publicationComplete) await sealWindowsAuthorityDirectory();
   }
 };
 

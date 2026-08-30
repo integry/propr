@@ -89,13 +89,20 @@ const parseManifest = bytes => {
     || manifest.compiler.inputs.map(input => input?.name).join(',') !== 'csc.exe,System.dll,System.Web.Extensions.dll'
     || manifest.compiler.inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input)
       || !exactKeys(input, ['name', 'size', 'sha256', 'signerCertificateSha256', 'signerSpkiSha256',
-        'signerRootSpkiSha256', 'catalogSha256', 'catalogVolumeSerial', 'catalogFileId128'])
+        'signerRootSpkiSha256', 'catalogName', 'catalogSha256', 'catalogVolumeSerial', 'catalogFileId128'])
       || !Number.isSafeInteger(input.size) || input.size <= 0 || input.size > 32 * 1024 * 1024
       || !/^[a-f0-9]{64}$/.test(input.sha256)
       || !/^[a-f0-9]{64}$/.test(input.signerCertificateSha256)
       || !/^[a-f0-9]{64}$/.test(input.signerSpkiSha256)
       || !/^[a-f0-9]{64}$/.test(input.signerRootSpkiSha256)
-      || !/^[a-f0-9]{64}$/.test(input.catalogSha256)
+      || input.signerCertificateSha256 !== '1308aad34660d785a76b7360c31308d8835cf5721c364a6f5aedcba85eb5b3de'
+      || input.signerSpkiSha256 !== 'a693625901b3bb9292a8c61aa3b75e80027d578ee01501005a4761dabbf1b7d1'
+      || !((manifest.launcher.architecture === 'x64'
+          && input.catalogName === 'Package_4_for_KB5066128~31bf3856ad364e35~amd64~~10.0.9321.3.cat'
+          && input.catalogSha256 === 'f447c801fde63f353448d90567363190964bb2e716c271256dba5859aaece7ef')
+        || (manifest.launcher.architecture === 'arm64'
+          && input.catalogName === 'Package_2_for_KB5066128~31bf3856ad364e35~arm64~~10.0.9321.3.cat'
+          && input.catalogSha256 === 'fd4c63e1001a82816e4ac3cdc76af05a7a02096a7101b4ddd3963d23ab773b85'))
       || !/^[a-f0-9]{16}$/.test(input.catalogVolumeSerial)
       || !/^[a-f0-9]{32}$/.test(input.catalogFileId128))
     || manifest.compiler.inputs[0].signerCertificateSha256 !== manifest.compiler.signerCertificateSha256
