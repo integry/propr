@@ -185,6 +185,7 @@ jobs:
             packages/cli/native/prebuilds/win32-anycpu
             packages/cli/native/prebuilds/win32-x64/connect-authority-broker.exe
             packages/cli/native/prebuilds/win32-x64/connect-authority-bootstrap.exe
+            packages/cli/native/prebuilds/win32-service
           if-no-files-found: error
           overwrite: true
 
@@ -212,6 +213,8 @@ jobs:
 
       - name: Build native Connect authority dependencies
         shell: bash
+        env:
+          MSYS2_ARG_CONV_EXCL: '*'
         run: |
           set -euo pipefail
           if [ "$(node -p process.platform)" = win32 ]; then
@@ -219,6 +222,8 @@ jobs:
             node scripts/verify-windows-authority-build-evidence.mjs --receipt="$build_evidence_receipt"
             echo "PROPR_WINDOWS_BUILD_EVIDENCE_RECEIPT=$build_evidence_receipt" >> "$GITHUB_ENV"
             npm run build:windows-authority-validation -w @propr/cli
+            msiexec.exe /i "packages/cli/native/prebuilds/win32-service/ProPRConnectAuthority.msi" /qn /norestart
+            msiexec.exe /fa "packages/cli/native/prebuilds/win32-service/ProPRConnectAuthority.msi" /qn /norestart
           fi
           npm run build -w @propr/shared
           npm run build -w @propr/core
@@ -254,6 +259,13 @@ jobs:
         run: |
           npm run cli:pack
           node scripts/verify-packed-windows-connect.mjs
+
+      - name: Uninstall machine Connect authority
+        if: runner.os == 'Windows' && always()
+        shell: bash
+        env:
+          MSYS2_ARG_CONV_EXCL: '*'
+        run: msiexec.exe /x "packages/cli/native/prebuilds/win32-service/ProPRConnectAuthority.msi" /qn /norestart
 
   validate:
     name: Validate Changes

@@ -21,6 +21,11 @@ import {
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  acquireInstalledWindowsLaunchLease,
+  WindowsInstalledAuthorityError,
+  type InstalledWindowsLaunchLease,
+} from "./windowsInstalledAuthority.js";
 
 const NATIVE_INSPECTION_MAX_BYTES = 128 * 1024;
 const WINDOWS_SID = /^S-\d(?:-\d+)+$/;
@@ -143,11 +148,13 @@ const DARWIN_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
 const WINDOWS_AUTHORITY_BROKER_SHA256: Readonly<Record<string, string>> = {
   x64: "2ba903761156ef39235347998201710335ebe4fc97e51420ed1d117d384ce1d7",
 };
-const WINDOWS_AUTHORITY_BOOTSTRAP_SHA256 = "a633479040f27b4a8fab4fb982167803d05ecfdbb9063c3b76e25116575d8087";
-const WINDOWS_AUTHORITY_BOOTSTRAP_SOURCE_SHA256 = "1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e";
+const WINDOWS_AUTHORITY_BOOTSTRAP_SHA256 = "2373622afcd21231ff5bd2953f5896af1eb8565bbe395eeb5128b0591145ea17";
+const WINDOWS_AUTHORITY_BOOTSTRAP_SOURCE_SHA256 = "9c78ab7d06b43dcee72420ec6442fc639b5542a8ef76be3a46d281843d43ef72";
 
 const WINDOWS_AUTHORITY_PROTOCOL_VERSION = 2;
 const WINDOWS_AUTHORITY_SUPERVISOR_SOURCE_SHA256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
+const WINDOWS_AUTHORITY_SERVICE_SOURCE_SHA256 = "d192e97ac87d5d09188da0da9cca778ce9e9a578bd1bd22fc0b4d91a44b28d86";
+const WINDOWS_AUTHORITY_SERVICE_INSTALLER_SOURCE_SHA256 = "ea9c99b8f212e7deb6948172a7e3dae1a888147a2610deb6946904c863d7f6f8";
 const WINDOWS_AUTHORITY_LAUNCHER_SOURCE_SHA256 = "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c";
 const WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS = Object.freeze({
   compiler: Object.freeze({
@@ -173,6 +180,11 @@ const WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES = Object.freeze({
     sha256: "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2",
     files: 53,
     bytes: "62411793",
+  }),
+  "wix-runtime": Object.freeze({
+    sha256: "732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298",
+    files: 33,
+    bytes: "31929694",
   }),
 });
 const WINDOWS_AUTHORITY_MANIFEST_PUBLIC_KEY = createPublicKey(`-----BEGIN PUBLIC KEY-----
@@ -329,6 +341,15 @@ interface WindowsSupervisorManifest {
   readonly launcherSourceSha256: string;
   readonly helperSha256: string;
   readonly launcherSha256: string;
+  readonly service: {
+    readonly version: "3.0.0";
+    readonly sourceSha256: string;
+    readonly imageSha256: string;
+    readonly installerSourceSha256: string;
+    readonly installerSha256: string;
+    readonly authenticodeLeafSha256: string | null;
+    readonly authenticodeSpkiSha256: string | null;
+  };
   readonly pe: { readonly architecture: "anycpu"; readonly managed: true; readonly deterministic: true };
   readonly build: {
     readonly compilerSha256: string;
@@ -364,10 +385,11 @@ function canonicalJson(value: unknown): string {
 function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervisorManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const manifest = value as Record<string, unknown>;
-  if (!exactKeys(manifest, ["format", "protocolVersion", "sourceSha256", "launcherSourceSha256", "helperSha256", "launcherSha256", "pe", "build", "trust"])) return false;
+  if (!exactKeys(manifest, ["format", "protocolVersion", "sourceSha256", "launcherSourceSha256", "helperSha256", "launcherSha256", "service", "pe", "build", "trust"])) return false;
   const pe = manifest.pe as Record<string, unknown> | undefined;
   const build = manifest.build as Record<string, unknown> | undefined;
   const trust = manifest.trust as Record<string, unknown> | undefined;
+  const service = manifest.service as Record<string, unknown> | undefined;
   if (!pe || Array.isArray(pe) || !exactKeys(pe, ["architecture", "managed", "deterministic"])
     || pe.architecture !== "anycpu" || pe.managed !== true || pe.deterministic !== true
     || !build || Array.isArray(build) || !exactKeys(build, ["compilerSha256", "launcherCompilerSha256", "launcherLinkerSha256", "bootstrapSourceSha256", "bootstrapSha256", "compilerRelativePath", "toolSigners", "toolDependencies", "references", "nativeInputs"])
@@ -387,10 +409,10 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
       && (item as Record<string, unknown>).authenticodeSpkiSha256
         === WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS }).name]?.spki)
       .join("\0") !== "compiler\0native-compiler\0native-linker"
-    || !Array.isArray(build.toolDependencies) || build.toolDependencies.length !== 2
+    || !Array.isArray(build.toolDependencies) || build.toolDependencies.length !== 3
     || !build.toolDependencies.every((item) => item && typeof item === "object" && !Array.isArray(item)
       && exactKeys(item as Record<string, unknown>, ["name", "sha256", "files", "bytes"])
-      && ["roslyn-runtime", "msvc-host-runtime"].includes(String((item as Record<string, unknown>).name))
+      && ["roslyn-runtime", "msvc-host-runtime", "wix-runtime"].includes(String((item as Record<string, unknown>).name))
       && (item as Record<string, unknown>).sha256
         === WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES }).name]?.sha256
       && (item as Record<string, unknown>).files
@@ -398,7 +420,7 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
       && (item as Record<string, unknown>).bytes
         === WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES[(item as { name: keyof typeof WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES }).name]?.bytes)
     || build.toolDependencies.map((item) => (item as { name: string }).name).join("\0")
-      !== "roslyn-runtime\0msvc-host-runtime"
+      !== "roslyn-runtime\0msvc-host-runtime\0wix-runtime"
     || !Array.isArray(build.references) || build.references.length < 1 || build.references.length > 16
     || !build.references.every((item) => item && typeof item === "object" && !Array.isArray(item)
       && exactKeys(item as Record<string, unknown>, ["name", "sha256"])
@@ -412,6 +434,11 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
       && Number.isInteger((item as Record<string, unknown>).files)
       && Number((item as Record<string, unknown>).files) > 0
       && /^(?:0|[1-9]\d{0,12})$/.test(String((item as Record<string, unknown>).bytes)))
+    || !service || Array.isArray(service) || !exactKeys(service, ["version", "sourceSha256", "imageSha256", "installerSourceSha256", "installerSha256", "authenticodeLeafSha256", "authenticodeSpkiSha256"])
+    || service.version !== "3.0.0" || service.sourceSha256 !== WINDOWS_AUTHORITY_SERVICE_SOURCE_SHA256
+    || !/^[0-9a-f]{64}$/.test(String(service.imageSha256))
+    || service.installerSourceSha256 !== WINDOWS_AUTHORITY_SERVICE_INSTALLER_SOURCE_SHA256
+    || !/^[0-9a-f]{64}$/.test(String(service.installerSha256))
     || !trust || Array.isArray(trust) || !exactKeys(trust, ["mode", "authenticodeLeafSha256", "authenticodeSpkiSha256"])) return false;
   const production = trust.mode === "production-signed";
   const validation = trust.mode === "unsigned-validation";
@@ -424,7 +451,10 @@ function exactWindowsSupervisorManifest(value: unknown): value is WindowsSupervi
     && /^[0-9a-f]{64}$/.test(String(manifest.launcherSha256))
     && (production
       ? /^[0-9a-f]{64}$/.test(String(trust.authenticodeLeafSha256)) && /^[0-9a-f]{64}$/.test(String(trust.authenticodeSpkiSha256))
-      : trust.authenticodeLeafSha256 === null && trust.authenticodeSpkiSha256 === null);
+        && service.authenticodeLeafSha256 === trust.authenticodeLeafSha256
+        && service.authenticodeSpkiSha256 === trust.authenticodeSpkiSha256
+      : trust.authenticodeLeafSha256 === null && trust.authenticodeSpkiSha256 === null
+        && service.authenticodeLeafSha256 === null && service.authenticodeSpkiSha256 === null);
 }
 
 function windowsSupervisorArtifact(): {
@@ -642,6 +672,10 @@ export interface WindowsAuthorityCapabilityProbe {
   readonly onBootstrapCreateProcess?: (bootstrapPath: string) => void;
   /** Native-test-only attack after the outer authority's final self proof and before its first CreateProcess. */
   readonly onOuterAuthorityCreateProcess?: (packagedBrokerPath: string) => void;
+  /** Actual first boundary: the machine service holds and authenticated the package image before Node CreateProcess. */
+  readonly onInstalledAuthorityAuthorized?: (details: InstalledWindowsLaunchLease["identity"] & {
+    readonly servicePid: number; readonly packagedBrokerPath: string;
+  }) => void | Promise<void>;
   readonly onSupervisorStarting?: (details: {
     readonly stagedPath: string;
     readonly helperPath: string;
@@ -769,21 +803,25 @@ function requireWindowsProductionBuildEvidence(requestedStage: WindowsSupervisor
   const receipt = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(receiptBytes)) as unknown;
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
     || !exactKeys(receipt as Record<string, unknown>, ["version", "stages"])
-    || (receipt as Record<string, unknown>).version !== 1
+    || (receipt as Record<string, unknown>).version !== 2
     || !Array.isArray((receipt as Record<string, unknown>).stages)) {
     throw new Error("production build evidence is malformed");
   }
   const stages = (receipt as { stages: unknown[] }).stages;
-  const expected = [["BUILD_COMPILER", 6], ["BUILD_SOURCE", 6], ["BUILD_OUTPUT", 0]] as const;
+  const expected = [["BUILD_COMPILER", 6], ["BUILD_SOURCE", 6], ["BUILD_OUTPUT", 6]] as const;
   if (stages.length !== expected.length || !stages.every((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)
-      || !exactKeys(item as Record<string, unknown>, ["stage", "diagnostic", "publishedArtifacts", "stagingResidue", "childTerminated"])) return false;
+      || !exactKeys(item as Record<string, unknown>, ["stage", "diagnostic", "nonceAuthenticated", "hookAuthenticated",
+        "mutationAttempted", "mutationDenied", "childAndJobsTerminated", "publishedArtifactsChanged",
+        "baselineArtifactsChanged", "stagingResidueChanged"])) return false;
     const record = item as Record<string, unknown>;
     return record.stage === expected[index][0]
       && record.diagnostic === expected[index][1]
-      && record.publishedArtifacts === 0
-      && record.stagingResidue === 0
-      && record.childTerminated === true;
+      && record.nonceAuthenticated === true && record.hookAuthenticated === true
+      && record.mutationAttempted === true && record.mutationDenied === true
+      && record.childAndJobsTerminated === true
+      && record.publishedArtifactsChanged === 0 && record.baselineArtifactsChanged === 0
+      && record.stagingResidueChanged === 0;
   }) || !expected.some(([stage]) => stage === requestedStage)) {
     throw new Error("production build evidence is incomplete");
   }
@@ -1249,7 +1287,7 @@ async function destroyWindowsAuthorityCapability(
 }
 
 async function acquireWindowsAuthorityCapability(
-  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onPackagedBrokerLocked" | "onBootstrapFirstLaunch" | "onBootstrapCreateProcess" | "onOuterAuthorityCreateProcess" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName" | "testWorkspaceMode">,
+  probe?: Pick<WindowsAuthorityCapabilityProbe, "onStaged" | "onPackagedBrokerLocked" | "onBootstrapFirstLaunch" | "onBootstrapCreateProcess" | "onOuterAuthorityCreateProcess" | "onInstalledAuthorityAuthorized" | "onSupervisorStarting" | "onSupervisorSpawned" | "testFailureStage" | "testWorkspaceCollisionName" | "testWorkspaceMode">,
   signal?: AbortSignal,
 ): Promise<WindowsAuthorityCapability> {
   if (windowsAuthorityCapability) {
@@ -1294,6 +1332,7 @@ async function acquireWindowsAuthorityCapability(
   let staged: ReturnType<typeof stageWindowsAuthorityBroker> | undefined;
   let capability: WindowsAuthorityCapability | undefined;
   let supervisor: ChildProcess | undefined;
+  let installedLaunchLease: InstalledWindowsLaunchLease | undefined;
   let parentStage: WindowsSupervisorStage = "HELPER_OPEN";
   try {
     staged = stageWindowsAuthorityBroker(artifact);
@@ -1363,6 +1402,17 @@ async function acquireWindowsAuthorityCapability(
       bootstrap.path,
       ...launcherArgv,
     ];
+    installedLaunchLease = await acquireInstalledWindowsLaunchLease({ path: artifact.path, sha256: artifact.digest }, {
+      serviceVersion: helper.manifest.service.version,
+      sha256: helper.manifest.service.imageSha256,
+      authenticodeLeafSha256: helper.manifest.service.authenticodeLeafSha256 ?? zeroPin,
+      authenticodeSpkiSha256: helper.manifest.service.authenticodeSpkiSha256 ?? zeroPin,
+    });
+    await probe?.onInstalledAuthorityAuthorized?.({
+      ...installedLaunchLease.identity,
+      servicePid: installedLaunchLease.servicePid,
+      packagedBrokerPath: artifact.path,
+    });
     supervisor = spawn(executable, bootstrapLauncherArgv, {
       shell: false,
       windowsHide: true,
@@ -1374,6 +1424,7 @@ async function acquireWindowsAuthorityCapability(
       stdio: ["pipe", "pipe", "pipe", staged.fd, helper.fd, "pipe", artifact.fd, "pipe", bootstrap.fd, "pipe", "pipe"],
     });
     if (!supervisor.pid) throw new WindowsSupervisorStartupError("TRANSPORT_SPAWN");
+    await installedLaunchLease.confirm(supervisor.pid);
     const launchBarrier = (supervisor.stdio as unknown as Array<NodeJS.ReadWriteStream | null>)[5];
     const packagedBarrier = (supervisor.stdio as unknown as Array<NodeJS.ReadWriteStream | null>)[7];
     const bootstrapBarrier = (supervisor.stdio as unknown as Array<NodeJS.ReadWriteStream | null>)[9];
@@ -1417,6 +1468,8 @@ async function acquireWindowsAuthorityCapability(
       (outerAuthorityBarrier as NodeJS.ReadWriteStream).end(Buffer.from("X"));
       throw error;
     }
+    await installedLaunchLease.release();
+    installedLaunchLease = undefined;
     await awaitLeaseBarrier(bootstrapBarrier as NodeJS.ReadWriteStream);
     try {
       probe?.onBootstrapCreateProcess?.(bootstrap.path);
@@ -1535,6 +1588,9 @@ async function acquireWindowsAuthorityCapability(
     }
     return capability;
   } catch (error) {
+    if (installedLaunchLease) {
+      try { await installedLaunchLease.release(); } catch { /* Closing the authenticated pipe releases the OS lease. */ }
+    }
     if (capability) {
       capability.channel.invalidate(
         error instanceof Error ? error : new WindowsSupervisorStartupError(parentStage),
@@ -1558,6 +1614,7 @@ async function acquireWindowsAuthorityCapability(
       closeSync(helper.fd);
     }
     if (error instanceof WindowsSupervisorStartupError) throw error;
+    if (error instanceof WindowsInstalledAuthorityError) throw error;
     throw new WindowsSupervisorStartupError(parentStage);
   }
 }
@@ -1691,6 +1748,7 @@ async function runCachedWindowsAuthorityBroker(
     if (result.stderr.byteLength !== 0) throw new WindowsSupervisorStartupError(stage);
     return result.stdout;
   } catch (error) {
+    if (error instanceof WindowsInstalledAuthorityError) throw error;
     capability.channel.invalidate(
       error instanceof Error ? error : new WindowsSupervisorStartupError(stage),
     );
@@ -1990,11 +2048,11 @@ export function exerciseWindowsAuthorityCapabilityForNativeTest(
 }> {
   if (process.platform !== "win32") throw new Error("Windows capability probe requires Windows");
   return enqueueWindowsAuthority(async () => {
-  if (probe.onStaged || probe.onPackagedBrokerLocked || probe.onBootstrapFirstLaunch || probe.onBootstrapCreateProcess || probe.onOuterAuthorityCreateProcess || probe.onSupervisorStarting || probe.onSupervisorSpawned) {
+  if (probe.onStaged || probe.onPackagedBrokerLocked || probe.onBootstrapFirstLaunch || probe.onBootstrapCreateProcess || probe.onOuterAuthorityCreateProcess || probe.onInstalledAuthorityAuthorized || probe.onSupervisorStarting || probe.onSupervisorSpawned) {
     await destroyWindowsAuthorityCapability();
   }
   const capability = await acquireWindowsAuthorityCapability(
-    probe.onStaged || probe.onPackagedBrokerLocked || probe.onBootstrapFirstLaunch || probe.onBootstrapCreateProcess || probe.onOuterAuthorityCreateProcess || probe.onSupervisorStarting || probe.onSupervisorSpawned
+    probe.onStaged || probe.onPackagedBrokerLocked || probe.onBootstrapFirstLaunch || probe.onBootstrapCreateProcess || probe.onOuterAuthorityCreateProcess || probe.onInstalledAuthorityAuthorized || probe.onSupervisorStarting || probe.onSupervisorSpawned
       ? probe
       : undefined,
     probe.signal,

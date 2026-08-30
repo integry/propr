@@ -16,9 +16,11 @@
 #include <aclapi.h>
 #include <bcrypt.h>
 #include <io.h>
+#include <limits.h>
 #include <sddl.h>
 #include <softpub.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <wincrypt.h>
 #include <wintrust.h>
@@ -75,6 +77,29 @@ static int sha256_bytes(const BYTE *bytes, DWORD length, BYTE output[32]) {
   object = (BYTE *)HeapAlloc(GetProcessHeap(), 0, object_size);
   if (object == NULL || BCryptCreateHash(algorithm, &hash, object, object_size, NULL, 0, 0) < 0 ||
       BCryptHashData(hash, (PUCHAR)bytes, length, 0) < 0 ||
+      BCryptFinishHash(hash, output, 32, 0) < 0) goto cleanup;
+  result = 1;
+cleanup:
+  if (hash != NULL) BCryptDestroyHash(hash);
+  if (object != NULL) HeapFree(GetProcessHeap(), 0, object);
+  if (algorithm != NULL) BCryptCloseAlgorithmProvider(algorithm, 0);
+  return result;
+}
+
+static int hmac_sha256(const BYTE key[32], const BYTE *bytes, DWORD length, BYTE output[32]) {
+  BCRYPT_ALG_HANDLE algorithm = NULL;
+  BCRYPT_HASH_HANDLE hash = NULL;
+  BYTE *object = NULL;
+  DWORD object_size = 0;
+  DWORD received = 0;
+  int result = 0;
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL,
+      BCRYPT_ALG_HANDLE_HMAC_FLAG) < 0 ||
+      BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, (PUCHAR)&object_size,
+        sizeof(object_size), &received, 0) < 0 || object_size == 0 || object_size > 65536) goto cleanup;
+  object = (BYTE *)HeapAlloc(GetProcessHeap(), 0, object_size);
+  if (object == NULL || BCryptCreateHash(algorithm, &hash, object, object_size,
+      (PUCHAR)key, 32, 0) < 0 || BCryptHashData(hash, (PUCHAR)bytes, length, 0) < 0 ||
       BCryptFinishHash(hash, output, 32, 0) < 0) goto cleanup;
   result = 1;
 cleanup:
@@ -331,11 +356,46 @@ static int print_system_paths(void) {
   return printf("%s\n%s\n%s\n", first, second, third) > 0 && fflush(stdout) == 0 ? 0 : PROPR_FAILURE;
 }
 
+static int canonical_u64(const wchar_t *text, ULONGLONG *value) {
+  if (text == NULL || text[0] == L'\0' || (text[0] == L'0' && text[1] != L'\0')) return 0;
+  ULONGLONG parsed = 0;
+  for (SIZE_T index = 0; text[index] != L'\0'; index += 1) {
+    if (text[index] < L'0' || text[index] > L'9') return 0;
+    ULONGLONG digit = (ULONGLONG)(text[index] - L'0');
+    if (parsed > (ULLONG_MAX - digit) / 10) return 0;
+    parsed = parsed * 10 + digit;
+  }
+  *value = parsed;
+  return 1;
+}
+
+static int read_exact_fd(int fd, BYTE *bytes, int length) {
+  int offset = 0;
+  while (offset < length) {
+    int count = _read(fd, bytes + offset, (unsigned int)(length - offset));
+    if (count <= 0) return 0;
+    offset += count;
+  }
+  return 1;
+}
+
 /* Retain exact deny-write/delete leases over a hash-bound build input set.
-   The parent starts the actual explicitly named compiler/linker only after R
-   and closes this authority only after that tool has exited. */
+   Each worker receives a fresh MAC key only through inherited fd 4 and emits
+   its own cumulative batch/file/byte frame after every lease is established.
+   The parent starts the actual compiler/linker only after authenticating it. */
 static int lease_build_inputs(int argc, wchar_t **argv) {
-  if (argc != 4) return PROPR_FAILURE;
+  if (argc != 11) return PROPR_FAILURE;
+  ULONGLONG batch = 0, batches = 0, prior_files = 0, total_files = 0;
+  ULONGLONG prior_bytes = 0, total_bytes = 0;
+  if (!canonical_u64(argv[4], &batch) || !canonical_u64(argv[5], &batches) ||
+      !canonical_u64(argv[6], &prior_files) || !canonical_u64(argv[7], &total_files) ||
+      !canonical_u64(argv[8], &prior_bytes) || !canonical_u64(argv[9], &total_bytes) ||
+      batch < 1 || batch > batches || batches > 128 || prior_files > total_files ||
+      total_files > PROPR_BUILD_INPUT_LIMIT || prior_bytes > total_bytes ||
+      total_bytes > 1024ULL * 1024ULL * 1024ULL) return PROPR_FAILURE;
+  char progress_nonce[65];
+  if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, argv[10], -1, progress_nonce,
+      sizeof(progress_nonce), NULL, NULL) != 65 || !hex_digest(progress_nonce)) return PROPR_FAILURE;
   intptr_t inherited_self_value = _get_osfhandle(3);
   wchar_t self_path[32768];
   DWORD self_length = GetModuleFileNameW(NULL, self_path, 32768);
@@ -380,6 +440,7 @@ static int lease_build_inputs(int argc, wchar_t **argv) {
   if ((SIZE_T)size.QuadPart <= sizeof(header) - 1 || memcmp(bytes, header, sizeof(header) - 1) != 0) goto lease_cleanup;
   SIZE_T offset = sizeof(header) - 1;
   int count = 0;
+  ULONGLONG leased_bytes = 0;
   while (offset < (SIZE_T)size.QuadPart) {
     if (count >= PROPR_BUILD_INPUT_LIMIT || offset + 68 > (SIZE_T)size.QuadPart ||
         (bytes[offset] != 'T' && bytes[offset] != 'F') || bytes[offset + 1] != ' ') goto lease_cleanup;
@@ -419,8 +480,11 @@ static int lease_build_inputs(int argc, wchar_t **argv) {
     path[wide_length] = L'\0';
     HANDLE lease = CreateFileW(path, GENERIC_READ | READ_CONTROL, FILE_SHARE_READ, NULL,
       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    LARGE_INTEGER lease_size;
     char actual[65];
     if (!ordinary_file(lease) || !trusted_build_input_acl(lease) ||
+        !GetFileSizeEx(lease, &lease_size) || lease_size.QuadPart < 0 ||
+        (ULONGLONG)lease_size.QuadPart > total_bytes - prior_bytes - leased_bytes ||
         !sha256_handle(lease, actual) || strcmp(actual, expected) != 0 ||
         (tool && !verify_authenticode_pins(path, expected_leaf, expected_spki))) {
       HeapFree(GetProcessHeap(), 0, path);
@@ -429,9 +493,27 @@ static int lease_build_inputs(int argc, wchar_t **argv) {
     }
     HeapFree(GetProcessHeap(), 0, path);
     leases[count++] = lease;
+    leased_bytes += (ULONGLONG)lease_size.QuadPart;
     offset = end + 1;
   }
-  if (count == 0 || fputs("R\n", stdout) < 0 || fflush(stdout) != 0) goto lease_cleanup;
+  ULONGLONG completed_files = prior_files + (ULONGLONG)count;
+  ULONGLONG completed_bytes = prior_bytes + leased_bytes;
+  BYTE progress_key[32];
+  BYTE extra = 0;
+  if (count == 0 || completed_files > total_files || completed_bytes > total_bytes ||
+      !read_exact_fd(4, progress_key, sizeof(progress_key)) || _read(4, &extra, 1) != 0) goto lease_cleanup;
+  char progress_body[384];
+  int progress_length = _snprintf(progress_body, sizeof(progress_body),
+    "PROPR_BUILD_LEASE_PROGRESS_V2 %llu/%llu %llu/%llu %llu/%llu %s",
+    batch, batches, completed_files, total_files, completed_bytes, total_bytes, progress_nonce);
+  BYTE progress_digest[32];
+  char progress_mac[65];
+  if (progress_length <= 0 || progress_length >= (int)sizeof(progress_body) ||
+      !hmac_sha256(progress_key, (BYTE *)progress_body, (DWORD)progress_length, progress_digest)) goto lease_cleanup;
+  SecureZeroMemory(progress_key, sizeof(progress_key));
+  digest_hex(progress_digest, progress_mac);
+  if (fprintf(stdout, "%s %s\n", progress_body, progress_mac) < 0 || fflush(stdout) != 0 ||
+      fclose(stdout) != 0) goto lease_cleanup;
   int release = fgetc(stdin);
   if (release != 'X' || fgetc(stdin) != EOF) goto lease_cleanup;
   for (int index = 0; index < count; index += 1) CloseHandle(leases[index]);
@@ -557,7 +639,7 @@ cleanup:
 int wmain(int argc, wchar_t **argv) {
   if (argc == 2 && wcscmp(argv[1], L"system-paths-v1") == 0) return print_system_paths();
   if (argc == 3 && wcscmp(argv[1], L"signer-pins-v1") == 0) return print_signer_pins(argv[2]);
-  if (argc == 4 && wcscmp(argv[1], L"lease-build-inputs-v1") == 0) return lease_build_inputs(argc, argv);
+  if (argc == 11 && wcscmp(argv[1], L"lease-build-inputs-v1") == 0) return lease_build_inputs(argc, argv);
   if (argc >= 9 && wcscmp(argv[1], L"launch-packaged-broker-v1") == 0) return launch_packaged_broker(argc, argv);
   return PROPR_FAILURE;
 }

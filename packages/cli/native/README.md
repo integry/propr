@@ -62,9 +62,9 @@ Unsigned freshly built validation images are marked as data inputs and never
 produce or claim signer pins.
 
 The bootstrap provenance is independently reproducible: source SHA-256
-`1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e`,
+`9c78ab7d06b43dcee72420ec6442fc639b5542a8ef76be3a46d281843d43ef72`,
 PE SHA-256
-`a633479040f27b4a8fab4fb982167803d05ecfdbb9063c3b76e25116575d8087`,
+`2373622afcd21231ff5bd2953f5896af1eb8565bbe395eeb5128b0591145ea17`,
 and Zig 0.13.0 Linux x86_64 archive SHA-256
 `d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea`.
 From the repository root, the exact build is
@@ -84,6 +84,28 @@ an absent helper, an unsigned manifest, a non-canonical manifest, a bad
 signature, or any hash/metadata mismatch. Thus an installed CLI never needs
 PowerShell, `Add-Type`, `csc.exe`, a compiler temp directory, or source
 transport.
+
+`windows-connect-authority-service.cs` and `windows-connect-authority.wxs`
+close the earlier first-CreateProcess gap. The signed MSI installs the narrowly
+scoped `ProPRConnectAuthority` service per-machine under Program Files with a
+protected SYSTEM/TrustedInstaller-only mutable DACL and automatic LocalSystem startup. Repair
+reasserts the exact component; major-upgrade rules reject downgrades, and
+uninstall stops and removes the service through Windows Installer. The npm
+package contains the installer for an administrator to install, repair, or
+remove, but the standard-user CLI never invokes MSI or elevates itself.
+
+Before any package native image is executed, the CLI connects to the fixed
+least-privilege named pipe and sends one canonical 4 KiB-bounded launch
+authorization. The service rejects anonymous/SYSTEM clients, wrong sessions,
+stale versions, replayed request IDs, invalid UTF-8/schema/framing, nonordinary
+images, hash changes, and (in production) any broker not signed by the same
+fixed leaf/SPKI as the service. It holds a no-write/no-delete file lease while
+the existing anonymous-handle launch chain starts, then binds the reported
+child PID, loaded image path, volume, full `FILE_ID_128`, hash, signer pins,
+SYSTEM identity, and protected service ACL before acknowledging confirmation.
+The CLI releases that OS lease only after the broker's existing self-proof
+barrier. A missing, stopped, crashed, stale, or uninstalled service produces a
+fixed install/repair action and never falls back to the old package-first path.
 
 The CLI never passes the supervisor path to `child_process.spawn`. It starts
 the manifest-bound x64 native broker in `launch-supervisor-v2` mode with an

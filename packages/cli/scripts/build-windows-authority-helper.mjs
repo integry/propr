@@ -2,11 +2,12 @@
 // Explicit, Windows-only build for the committed authority supervisor.
 // Runtime and ordinary source builds never invoke this script or a compiler.
 
-import { createHash, createPrivateKey, randomBytes, sign } from "node:crypto";
+import { createHash, createHmac, createPrivateKey, randomBytes, sign } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   closeSync,
   constants,
+  existsSync,
   fsyncSync,
   fstatSync,
   lstatSync,
@@ -18,6 +19,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  renameSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -43,12 +45,17 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const cliDir = resolve(here, "..");
 const source = join(cliDir, "native", "windows-authority-supervisor.cs");
+const serviceSource = join(cliDir, "native", "windows-connect-authority-service.cs");
+const serviceInstallerSource = join(cliDir, "native", "windows-connect-authority.wxs");
 const launcherSource = join(cliDir, "native", "windows-authority-broker.c");
 const bootstrapSource = join(cliDir, "native", "windows-authority-bootstrap.c");
 const outputDirectory = join(cliDir, "native", "prebuilds", "win32-anycpu");
 const output = join(outputDirectory, "connect-authority-supervisor.exe");
 const manifestPath = join(outputDirectory, "connect-authority-supervisor.manifest.json");
 const signaturePath = join(outputDirectory, "connect-authority-supervisor.manifest.sig");
+const serviceOutputDirectory = join(cliDir, "native", "prebuilds", "win32-service");
+const serviceOutput = join(serviceOutputDirectory, "ProPRConnectAuthority.exe");
+const serviceInstallerOutput = join(serviceOutputDirectory, "ProPRConnectAuthority.msi");
 const launcherOutputDirectory = join(cliDir, "native", "prebuilds", "win32-x64");
 const launcherOutput = join(launcherOutputDirectory, "connect-authority-broker.exe");
 const bootstrapOutput = join(launcherOutputDirectory, "connect-authority-bootstrap.exe");
@@ -60,11 +67,15 @@ const evidenceStage = evidenceArguments.length === 1 ? evidenceArguments[0].slic
 const nonce = randomBytes(32).toString("hex");
 const protocolVersion = 2;
 const sourceSha256 = "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff";
+const serviceSourceSha256 = "d192e97ac87d5d09188da0da9cca778ce9e9a578bd1bd22fc0b4d91a44b28d86";
+const serviceInstallerSourceSha256 = "ea9c99b8f212e7deb6948172a7e3dae1a888147a2610deb6946904c863d7f6f8";
 const launcherSourceSha256 = "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c";
-const bootstrapSourceSha256 = "1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e";
-const bootstrapSha256 = "a633479040f27b4a8fab4fb982167803d05ecfdbb9063c3b76e25116575d8087";
+const bootstrapSourceSha256 = "9c78ab7d06b43dcee72420ec6442fc639b5542a8ef76be3a46d281843d43ef72";
+const bootstrapSha256 = "2373622afcd21231ff5bd2953f5896af1eb8565bbe395eeb5128b0591145ea17";
 const smokeFixtureSourceSha256 = "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c";
 let emergencyBuildWorkspace;
+let evidenceCapability;
+let evidenceReceiptEmitted = false;
 
 process.once("uncaughtException", (error) => {
   if (emergencyBuildWorkspace) rmSync(emergencyBuildWorkspace, { recursive: true, force: true });
@@ -88,8 +99,73 @@ if (evidenceArguments.length > 1 || (evidenceStage !== undefined
   throw new WindowsHelperBuildError("BUILD_OUTPUT", "UNKNOWN");
 }
 
+if (evidenceStage !== undefined) {
+  let request;
+  try {
+    const bytes = readFileSync(0);
+    if (bytes.byteLength > 256) throw new Error("oversized");
+    const match = /^PROPR_BUILD_EVIDENCE_V1 ([0-9a-f]{64}) ([0-9a-f]{64})\n$/u.exec(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
+    if (!match) throw new Error("invalid");
+    request = { nonce: match[1], key: Buffer.from(match[2], "hex") };
+    if (fstatSync(3).isFile()) throw new Error("receipt channel is not private");
+  } catch (error) {
+    throw new WindowsHelperBuildError("BUILD_OUTPUT", "UNKNOWN", error);
+  }
+  evidenceCapability = Object.freeze(request);
+}
+
+function emitAuthenticatedEvidenceReceipt(stage, mutationDenied) {
+  if (!evidenceCapability || evidenceReceiptEmitted || stage !== evidenceStage
+    || mutationDenied !== 3) throw new WindowsHelperBuildError(stage, "NONZERO_OUTPUT");
+  const receipt = {
+    version: 1,
+    stage,
+    nonce: evidenceCapability.nonce,
+    hook: "runAuthorityLeasedBuildTool.after-native-input-authority-v1",
+    mutationAttempted: true,
+    mutationDenied: true,
+    deniedOperations: 3,
+  };
+  const body = canonical(receipt);
+  const authenticated = `${canonical({
+    ...receipt,
+    mac: createHmac("sha256", evidenceCapability.key).update(body).digest("hex"),
+  })}\n`;
+  if (Buffer.byteLength(authenticated) > 1024) throw new WindowsHelperBuildError(stage, "OVERSIZED_OUTPUT");
+  writeSync(3, Buffer.from(authenticated, "utf8"));
+  evidenceReceiptEmitted = true;
+}
+
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function publishOrVerifyBaseline(temporary, final) {
+  if (!existsSync(final)) {
+    publishWindowsBuildArtifactNoReplace(temporary, final);
+    return true;
+  }
+  const baseline = heldIdentity(final);
+  const candidate = heldIdentity(temporary);
+  if (baseline.bytes.byteLength !== candidate.bytes.byteLength || sha256(baseline.bytes) !== sha256(candidate.bytes)) {
+    throw new WindowsHelperBuildError("BUILD_OUTPUT", "NONZERO_OUTPUT");
+  }
+  rmSync(temporary, { force: true });
+  return false;
+}
+
+function writeOrVerifyBaseline(final, bytes) {
+  if (!existsSync(final)) {
+    writeFileSync(final, bytes, { flag: "wx" });
+    return true;
+  }
+  const baseline = heldIdentity(final);
+  if (baseline.bytes.byteLength !== Buffer.byteLength(bytes) || !baseline.bytes.equals(Buffer.from(bytes))) {
+    throw new WindowsHelperBuildError("BUILD_OUTPUT", "NONZERO_OUTPUT");
+  }
+  return false;
 }
 
 function canonical(value) {
@@ -223,58 +299,119 @@ async function runAuthorityLeasedBuildTool(command, args, options, rawInputs) {
     throw error;
   }
   const authorities = [];
+  const progressFrames = windowsBuildLeaseProgressFrames(plan);
+  const deadline = Date.now() + plan.deadlineMs;
+  let completedFiles = 0;
+  let completedBytes = 0;
+  let leaseProtocolFailure;
   try {
-    for (const { body, manifest } of prepared) {
-      const authority = spawn(bootstrapOutput, ["lease-build-inputs-v1", manifest, sha256(body)], {
+    for (let batchIndex = 0; batchIndex < prepared.length; batchIndex += 1) {
+      const { body, manifest } = prepared[batchIndex];
+      const batch = plan.batches[batchIndex];
+      const batchFiles = batch.length;
+      const batchBytes = batch.reduce((sum, input) => sum + input.bytes, 0);
+      const progressNonce = randomBytes(32).toString("hex");
+      const progressKey = randomBytes(32);
+      const authority = spawn(bootstrapOutput, [
+        "lease-build-inputs-v1", manifest, sha256(body),
+        String(batchIndex + 1), String(prepared.length), String(completedFiles), String(plan.files),
+        String(completedBytes), String(plan.bytes), progressNonce,
+      ], {
         shell: false,
         windowsHide: true,
         env: {},
-        stdio: ["pipe", "pipe", "pipe", bootstrapAuthority.fd],
+        stdio: ["pipe", "pipe", "pipe", bootstrapAuthority.fd, "pipe"],
       });
       authority.stdin.on("error", () => {});
+      const progressCapability = authority.stdio[4];
+      if (!progressCapability || typeof progressCapability.end !== "function") {
+        throw new WindowsHelperBuildError(options.stage, "SPAWN_ERROR");
+      }
+      progressCapability.on("error", () => {});
+      progressCapability.end(progressKey);
       authorities.push({ authority, manifest });
+      const expectedFrame = progressFrames[batchIndex + 1];
+      await new Promise((resolveReady, rejectReady) => {
+        let settled = false;
+        let ready = Buffer.alloc(0);
+        let authenticatedFrame = false;
+        let stderrBytes = 0;
+        const remaining = deadline - Date.now();
+        let timer;
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          authority.removeAllListeners("error");
+          authority.removeAllListeners("exit");
+          if (error) rejectReady(error); else resolveReady();
+        };
+        if (remaining < 1) return finish(new WindowsHelperBuildError(options.stage, "STALLED"));
+        timer = setTimeout(() => finish(new WindowsHelperBuildError(options.stage, "STALLED")), remaining);
+        timer.unref?.();
+        authority.once("error", () => finish(new WindowsHelperBuildError(options.stage, "SPAWN_ERROR")));
+        authority.once("exit", () => finish(new WindowsHelperBuildError(options.stage, "NONZERO_EMPTY_OUTPUT")));
+        authority.stderr.on("data", (chunk) => {
+          stderrBytes += Buffer.byteLength(chunk);
+          if (stderrBytes > 0) finish(new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT"));
+        });
+        authority.stdout.on("data", (chunk) => {
+          if (settled || authenticatedFrame) {
+            leaseProtocolFailure = leaseProtocolFailure
+              ?? new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT");
+            try { authority.kill(); } catch { /* The fixed protocol diagnostic owns termination. */ }
+            return;
+          }
+          ready = Buffer.concat([ready, Buffer.from(chunk)]);
+          if (ready.byteLength > 512) return finish(new WindowsHelperBuildError(options.stage, "OVERSIZED_OUTPUT"));
+          const newline = ready.indexOf(0x0a);
+          if (newline < 0) return;
+          if (newline !== ready.byteLength - 1) return finish(new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT"));
+          let text;
+          try { text = new TextDecoder("utf-8", { fatal: true }).decode(ready); }
+          catch { return finish(new WindowsHelperBuildError(options.stage, "INVALID_UTF8")); }
+          const match = /^(PROPR_BUILD_LEASE_PROGRESS_V2 (0|[1-9]\d*)\/(0|[1-9]\d*) (0|[1-9]\d*)\/(0|[1-9]\d*) (0|[1-9]\d*)\/(0|[1-9]\d*) ([0-9a-f]{64})) ([0-9a-f]{64})\n$/u.exec(text);
+          if (!match) return finish(new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT"));
+          const bodyText = match[1];
+          const mac = createHmac("sha256", progressKey).update(bodyText).digest("hex");
+          const expected = /^PROPR_BUILD_PROGRESS_V1 \d+\/\d+ (\d+)\/(\d+) (\d+)\/(\d+) (\d+)\/(\d+)\n$/u.exec(expectedFrame);
+          if (mac !== match[9] || match[8] !== progressNonce || !expected
+            || Number(match[2]) !== Number(expected[1]) || Number(match[3]) !== Number(expected[2])
+            || Number(match[4]) !== Number(expected[3]) || Number(match[5]) !== Number(expected[4])
+            || Number(match[6]) !== Number(expected[5]) || Number(match[7]) !== Number(expected[6])) {
+            return finish(new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT"));
+          }
+          authenticatedFrame = true;
+        });
+        authority.stdout.once("end", () => {
+          if (!authenticatedFrame) finish(new WindowsHelperBuildError(options.stage, "NONZERO_EMPTY_OUTPUT"));
+          else finish();
+        });
+      });
+      completedFiles += batchFiles;
+      completedBytes += batchBytes;
     }
   } catch (error) {
     for (const { authority } of authorities) {
       try { authority.kill(); } catch { /* The fixed spawn diagnostic owns cleanup failure. */ }
     }
+    await Promise.all(authorities.map(({ authority }) => new Promise((resolveExit) => {
+      if (authority.exitCode !== null || authority.signalCode !== null) return resolveExit();
+      const timer = setTimeout(resolveExit, 5_000);
+      authority.once("exit", () => { clearTimeout(timer); resolveExit(); });
+    })));
     for (const { manifest } of prepared) rmSync(manifest, { force: true });
-    throw new WindowsHelperBuildError(options.stage, "SPAWN_ERROR", error);
+    throw error instanceof WindowsHelperBuildError
+      ? error : new WindowsHelperBuildError(options.stage, "SPAWN_ERROR", error);
   }
-  const progressFrames = windowsBuildLeaseProgressFrames(plan);
-  let completedBatches = 0;
-  const readiness = authorities.map(({ authority }, batchIndex) => new Promise((resolveReady, rejectReady) => {
-    let settled = false;
-    let ready = Buffer.alloc(0);
-    let stderrBytes = 0;
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      authority.removeAllListeners("error");
-      authority.removeAllListeners("exit");
-      if (error) rejectReady(error);
-      else {
-        completedBatches += 1;
-        resolveReady(progressFrames[batchIndex + 1]);
-      }
-    };
-    authority.once("error", () => finish(new WindowsHelperBuildError(options.stage, "SPAWN_ERROR")));
-    authority.once("exit", () => finish(new WindowsHelperBuildError(options.stage, "NONZERO_EMPTY_OUTPUT")));
-    authority.stderr.on("data", (chunk) => {
-      stderrBytes += Buffer.byteLength(chunk);
-      if (stderrBytes > 0) finish(new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT"));
-    });
-    authority.stdout.on("data", (chunk) => {
-      ready = Buffer.concat([ready, Buffer.from(chunk)]);
-      if (ready.byteLength > 2 || (ready.byteLength === 2 && !ready.equals(Buffer.from("R\n")))) {
-        finish(new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT"));
-      } else if (ready.byteLength === 2) finish();
-    });
-  }));
   let primaryFailure;
   try {
-    await awaitWindowsBuildLeaseReadiness(readiness, plan, { stage: options.stage });
-    if (completedBatches !== plan.batches.length) {
+    await awaitWindowsBuildLeaseReadiness(
+      progressFrames.slice(1, -1).map((frame) => Promise.resolve(frame)), plan, { stage: options.stage },
+    );
+    await new Promise((resolveTurn) => setImmediate(resolveTurn));
+    if (leaseProtocolFailure || completedFiles !== plan.files || completedBytes !== plan.bytes) {
+      if (leaseProtocolFailure) throw leaseProtocolFailure;
       throw new WindowsHelperBuildError(options.stage, "STALLED");
     }
     if (options.evidenceLeaseTarget) {
@@ -287,6 +424,7 @@ async function runAuthorityLeasedBuildTool(command, args, options, rawInputs) {
         try { mutate(); } catch { denied += 1; }
       }
       if (denied !== 3) throw new WindowsHelperBuildError(options.stage, "NONZERO_OUTPUT");
+      emitAuthenticatedEvidenceReceipt(options.stage, denied);
       // A malformed release byte makes the real native lease authority fail
       // closed. No compiler child is created after the evidence mutation.
       for (const { authority } of authorities) authority.stdin.end(Buffer.from("!"));
@@ -364,6 +502,7 @@ if (!/^[A-Za-z]:\\/u.test(trustedPowerShell)
 const heldPowerShell = heldIdentity(trustedPowerShell, true);
 mkdirSync(outputDirectory, { recursive: true });
 mkdirSync(launcherOutputDirectory, { recursive: true });
+mkdirSync(serviceOutputDirectory, { recursive: true });
 emergencyBuildWorkspace = join(outputDirectory, `.propr-build-${nonce}`);
 const resolver = String.raw`
 $ErrorActionPreference='Stop'
@@ -445,7 +584,7 @@ $nativeLibraries=@(
   [IO.Path]::Combine($sdkRoot,'Lib',$sdkVersion,'um','x64')
 )
 $referenceRoot=[IO.Path]::Combine($programFilesX86,'Reference Assemblies','Microsoft','Framework','.NETFramework','v4.8')
-$references=@('mscorlib.dll','System.dll','System.Core.dll','System.Numerics.dll','System.Web.Extensions.dll')|ForEach-Object{[IO.Path]::Combine($referenceRoot,$_)}
+$references=@('mscorlib.dll','System.dll','System.Core.dll','System.Numerics.dll','System.Web.Extensions.dll','System.ServiceProcess.dll')|ForEach-Object{[IO.Path]::Combine($referenceRoot,$_)}
 foreach($reference in $references){
   if(-not(Test-Path -LiteralPath $reference -PathType Leaf)){exit 36}
   $acl=Get-Acl -LiteralPath $reference
@@ -507,7 +646,7 @@ if (!resolvedToolchain || typeof resolvedToolchain !== "object" || Array.isArray
   || !Array.isArray(resolvedToolchain.nativeLibraries) || resolvedToolchain.nativeLibraries.length !== 3
   || !resolvedToolchain.nativeLibraries.every((item) => typeof item === "string")
   || !Array.isArray(resolvedToolchain.references)
-  || resolvedToolchain.references.length !== 5
+  || resolvedToolchain.references.length !== 6
   || !resolvedToolchain.references.every((item) => typeof item === "string")) {
   throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
 }
@@ -558,6 +697,9 @@ const toolRuntimeInventories = [dirname(compiler), dirname(nativeCompiler)].map(
 }));
 authorizeWindowsBuildToolDependencies("roslyn-runtime", toolRuntimeInventories[0]);
 authorizeWindowsBuildToolDependencies("msvc-host-runtime", toolRuntimeInventories[1]);
+const wixRuntimePath = join(cliDir, "..", "..", "node_modules", "electron-winstaller", "vendor");
+const wixRuntimeInventory = { path: wixRuntimePath, ...authoritativeDirectoryInventory(wixRuntimePath) };
+authorizeWindowsBuildToolDependencies("wix-runtime", wixRuntimeInventory);
 const nativeInputInventories = [...nativeIncludes, ...nativeLibraries].map((path) => ({
   path,
   ...authoritativeDirectoryInventory(path),
@@ -565,6 +707,16 @@ const nativeInputInventories = [...nativeIncludes, ...nativeLibraries].map((path
 const committedSource = heldIdentity(source, true);
 const sourceBytes = canonicalWindowsBuildSourceBytes(committedSource.bytes);
 if (sha256(sourceBytes) !== sourceSha256) {
+  throw new WindowsHelperBuildError("BUILD_SOURCE", "NONZERO_OUTPUT");
+}
+const committedServiceSource = heldIdentity(serviceSource, true);
+const serviceSourceBytes = canonicalWindowsBuildSourceBytes(committedServiceSource.bytes);
+if (sha256(serviceSourceBytes) !== serviceSourceSha256) {
+  throw new WindowsHelperBuildError("BUILD_SOURCE", "NONZERO_OUTPUT");
+}
+const committedServiceInstallerSource = heldIdentity(serviceInstallerSource, true);
+const serviceInstallerSourceBytes = canonicalWindowsBuildSourceBytes(committedServiceInstallerSource.bytes);
+if (sha256(serviceInstallerSourceBytes) !== serviceInstallerSourceSha256) {
   throw new WindowsHelperBuildError("BUILD_SOURCE", "NONZERO_OUTPUT");
 }
 const committedLauncherSource = heldIdentity(launcherSource, true);
@@ -603,16 +755,15 @@ const nativeLinkerInputs = [heldInput({ path: nativeLinker, bytes: heldNativeLin
   ...toolRuntimeInventories[1].inputs,
   ...nativeInputInventories.slice(nativeIncludes.length).flatMap((item) => item.inputs)];
 
-// Remove the previous complete release set before any expensive work. Final
-// publication below is no-replace; an ABA entry created during the build makes
-// publication fail rather than being overwritten or deleted.
-rmSync(output, { force: true });
-rmSync(manifestPath, { force: true });
-rmSync(signaturePath, { force: true });
-rmSync(launcherOutput, { force: true });
-rmSync(smokeFixtureOutput, { force: true });
+// Build beside the committed release set. Existing finals remain immutable
+// baselines; publication either verifies byte equality or uses no-replace.
 const temporaryOutput = join(buildWorkspace, "connect-authority-supervisor.exe");
 const temporarySource = join(buildWorkspace, "windows-authority-supervisor.cs");
+const temporaryServiceSource = join(buildWorkspace, "windows-connect-authority-service.cs");
+const temporaryService = join(buildWorkspace, "ProPRConnectAuthority.exe");
+const temporaryServiceInstallerSource = join(buildWorkspace, "windows-connect-authority.wxs");
+const temporaryServiceInstallerObject = join(buildWorkspace, "windows-connect-authority.wixobj");
+const temporaryServiceInstaller = join(buildWorkspace, "ProPRConnectAuthority.msi");
 const temporaryCompilerConfig = join(buildWorkspace, "windows-authority-compiler.config");
 const temporaryPolicy = join(buildWorkspace, "windows-authority-signing-policy.txt");
 const temporaryLauncherSource = join(buildWorkspace, "windows-authority-launcher.c");
@@ -622,6 +773,8 @@ const temporarySmokeFixtureSource = join(buildWorkspace, "windows-connect-docker
 const temporarySmokeFixtureObject = join(buildWorkspace, "windows-connect-docker-fixture.obj");
 const temporarySmokeFixture = join(buildWorkspace, "windows-connect-docker-fixture.exe");
 let sourceLease;
+let serviceSourceLease;
+let serviceInstallerSourceLease;
 let compilerConfigLease;
 let policyLease;
 let launcherSourceLease;
@@ -632,9 +785,11 @@ let publishedLauncher = false;
 let publishedManifest = false;
 let publishedSignature = false;
 let publishedSmokeFixture = false;
+let publishedService = false;
+let publishedServiceInstaller = false;
 function closeBuildInputLeases() {
   for (const lease of [signToolLease, heldPowerShell, bootstrapAuthority, committedBootstrapSource,
-    committedSmokeFixtureSource, committedLauncherSource, committedSource,
+    committedSmokeFixtureSource, committedLauncherSource, committedServiceInstallerSource, committedServiceSource, committedSource,
     ...heldReferences, heldNativeLinker, heldNativeCompiler, heldCompiler]) {
     if (lease?.fd === undefined) continue;
     try { closeSync(lease.fd); } catch { /* Fixed build diagnostic owns failure output. */ }
@@ -656,6 +811,26 @@ try {
   }
   closeSync(sourceLease);
   sourceLease = openSync(temporarySource, constants.O_RDONLY | constants.O_NOFOLLOW);
+  serviceSourceLease = openSync(temporaryServiceSource, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
+  let serviceSourceOffset = 0;
+  while (serviceSourceOffset < serviceSourceBytes.byteLength) {
+    const count = writeSync(serviceSourceLease, serviceSourceBytes, serviceSourceOffset,
+      serviceSourceBytes.byteLength - serviceSourceOffset, serviceSourceOffset);
+    if (count <= 0) throw new WindowsHelperBuildError("BUILD_SOURCE", "UNEXPECTED_EXIT");
+    serviceSourceOffset += count;
+  }
+  fsyncSync(serviceSourceLease);
+  closeSync(serviceSourceLease);
+  serviceSourceLease = openSync(temporaryServiceSource, constants.O_RDONLY | constants.O_NOFOLLOW);
+  serviceInstallerSourceLease = openSync(temporaryServiceInstallerSource,
+    constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
+  if (writeSync(serviceInstallerSourceLease, serviceInstallerSourceBytes, 0,
+    serviceInstallerSourceBytes.byteLength, 0) !== serviceInstallerSourceBytes.byteLength) {
+    throw new WindowsHelperBuildError("BUILD_SOURCE", "UNEXPECTED_EXIT");
+  }
+  fsyncSync(serviceInstallerSourceLease);
+  closeSync(serviceInstallerSourceLease);
+  serviceInstallerSourceLease = openSync(temporaryServiceInstallerSource, constants.O_RDONLY | constants.O_NOFOLLOW);
   const compilerConfigBytes = Buffer.from(
     '<?xml version="1.0" encoding="utf-8"?>\n<configuration><runtime /></configuration>\n',
     "utf8",
@@ -684,6 +859,14 @@ try {
     ...references.map((item) => `/reference:${item}`),
     temporarySource,
   ];
+  const serviceArgs = [
+    "/nologo", "/noconfig", "/nostdlib+", "/target:exe", "/platform:anycpu", "/optimize+", "/deterministic+",
+    ...(validation ? ["/define:PROPR_VALIDATION"] : []),
+    `/appconfig:${temporaryCompilerConfig}`,
+    `/out:${temporaryService}`,
+    ...references.map((item) => `/reference:${item}`),
+    temporaryServiceSource,
+  ];
   smokeFixtureSourceLease = openSync(temporarySmokeFixtureSource, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR, 0o600);
   if (writeSync(smokeFixtureSourceLease, smokeFixtureSourceBytes, 0,
     smokeFixtureSourceBytes.byteLength, 0) !== smokeFixtureSourceBytes.byteLength) {
@@ -700,9 +883,7 @@ try {
     sensitiveValues: [compiler, source, temporarySource, temporaryOutput, buildWorkspace, ...references],
   };
   if (evidenceStage === "BUILD_SOURCE") {
-    // Mutate the actual staged production source immediately before its real
-    // compiler input lease. The pinned canonical digest must reject it.
-    writeFileSync(temporarySource, "same-user staged source replacement\n");
+    compilerOptions.evidenceLeaseTarget = temporarySource;
   } else if (evidenceStage === "BUILD_COMPILER") {
     // Attack a real compiler input after the native authority reports that all
     // inputs are leased and immediately before the compiler would be spawned.
@@ -720,6 +901,20 @@ try {
   ]);
   const deterministicSecond = heldIdentity(temporaryOutput);
   if (sha256(deterministicFirst.bytes) !== sha256(deterministicSecond.bytes)) {
+    throw new WindowsHelperBuildError("BUILD_COMPILER", "BAD_FLAG");
+  }
+  await runAuthorityLeasedBuildTool(compiler, serviceArgs, compilerOptions, [
+    ...managedToolInputs, { path: temporaryServiceSource, sha256: sha256(serviceSourceBytes) },
+    { path: temporaryCompilerConfig, sha256: sha256(compilerConfigBytes) },
+  ]);
+  const serviceFirst = heldIdentity(temporaryService);
+  rmSync(temporaryService, { force: true });
+  await runAuthorityLeasedBuildTool(compiler, serviceArgs, compilerOptions, [
+    ...managedToolInputs, { path: temporaryServiceSource, sha256: sha256(serviceSourceBytes) },
+    { path: temporaryCompilerConfig, sha256: sha256(compilerConfigBytes) },
+  ]);
+  const serviceSecond = heldIdentity(temporaryService);
+  if (sha256(serviceFirst.bytes) !== sha256(serviceSecond.bytes)) {
     throw new WindowsHelperBuildError("BUILD_COMPILER", "BAD_FLAG");
   }
   const nativeArgs = [
@@ -797,6 +992,7 @@ try {
   }
   let launcherSha256 = sha256(launcherSecond.bytes);
   let derivedSigningPins = { authenticodeLeafSha256: null, authenticodeSpkiSha256: null };
+  let signBuildPath;
   if (!validation) {
     const signTool = process.env.PROPR_WINDOWS_SIGNTOOL;
     const certificate = process.env.PROPR_WINDOWS_CODESIGN_SHA1;
@@ -816,6 +1012,7 @@ try {
         stage: "BUILD_OUTPUT", timeout: 30_000, maxBytes: 64 * 1024, sensitiveValues: [signTool, target],
       }, [signToolInput, { path: target, sha256: sha256(heldIdentity(target).bytes) }]);
     };
+    signBuildPath = signPath;
     const readSigningPins = async () => {
       const outputInput = { path: temporaryOutput, sha256: sha256(heldIdentity(temporaryOutput).bytes), tool: true };
       const pinResult = await runAuthorityLeasedBuildTool(temporaryOutput, ["--print-signing-pins-v1"], {
@@ -878,6 +1075,33 @@ try {
     }
     await signPath(temporaryLauncher);
     launcherSha256 = sha256(heldIdentity(temporaryLauncher).bytes);
+    await signPath(temporaryService);
+  }
+  const candle = join(wixRuntimePath, "candle.exe");
+  const light = join(wixRuntimePath, "light.exe");
+  const wixInputs = wixRuntimeInventory.inputs;
+  await runAuthorityLeasedBuildTool(candle, [
+    "-nologo", "-arch", "x64", `-dAuthorityServicePath=${temporaryService}`,
+    "-out", temporaryServiceInstallerObject, temporaryServiceInstallerSource,
+  ], {
+    stage: "BUILD_OUTPUT", timeout: 60_000, maxBytes: 64 * 1024, allowUnsignedTool: true,
+    env: { SystemRoot: windowsDirectory, TEMP: buildWorkspace, TMP: buildWorkspace },
+    sensitiveValues: [candle, temporaryService, temporaryServiceInstallerSource, temporaryServiceInstallerObject],
+  }, [{ path: candle, sha256: sha256(heldIdentity(candle).bytes), tool: true }, ...wixInputs,
+    { path: temporaryService, sha256: sha256(heldIdentity(temporaryService).bytes) },
+    { path: temporaryServiceInstallerSource, sha256: sha256(serviceInstallerSourceBytes) }]);
+  await runAuthorityLeasedBuildTool(light, [
+    "-nologo", "-sval", "-out", temporaryServiceInstaller, temporaryServiceInstallerObject,
+  ], {
+    stage: "BUILD_OUTPUT", timeout: 60_000, maxBytes: 64 * 1024, allowUnsignedTool: true,
+    env: { SystemRoot: windowsDirectory, TEMP: buildWorkspace, TMP: buildWorkspace },
+    sensitiveValues: [light, temporaryServiceInstallerObject, temporaryServiceInstaller],
+  }, [{ path: light, sha256: sha256(heldIdentity(light).bytes), tool: true }, ...wixInputs,
+    { path: temporaryServiceInstallerObject, sha256: sha256(heldIdentity(temporaryServiceInstallerObject).bytes) }]);
+  if (signBuildPath) await signBuildPath(temporaryServiceInstaller);
+  const serviceInstaller = heldIdentity(temporaryServiceInstaller);
+  if (serviceInstaller.bytes.length < 4096 || serviceInstaller.bytes.length > 4 * 1024 * 1024) {
+    throw new WindowsHelperBuildError("BUILD_OUTPUT", "UNEXPECTED_EXIT");
   }
   const helper = heldIdentity(temporaryOutput);
   if (helper.bytes.length < 1024 || helper.bytes.length > 512 * 1024 || helper.bytes[0] !== 0x4d || helper.bytes[1] !== 0x5a) {
@@ -914,6 +1138,12 @@ try {
     || launcher.bytes[0] !== 0x4d || launcher.bytes[1] !== 0x5a) {
     throw new WindowsHelperBuildError("BUILD_OUTPUT", "UNEXPECTED_EXIT");
   }
+  const service = heldIdentity(temporaryService);
+  if (service.bytes.length < 1024 || service.bytes.length > 1024 * 1024
+    || service.bytes[0] !== 0x4d || service.bytes[1] !== 0x5a) {
+    throw new WindowsHelperBuildError("BUILD_OUTPUT", "UNEXPECTED_EXIT");
+  }
+  const serviceSha256 = sha256(service.bytes);
   const launcherPeOffset = launcher.bytes.readUInt32LE(0x3c);
   if (launcher.bytes.toString("ascii", launcherPeOffset, launcherPeOffset + 4) !== "PE\0\0"
     || launcher.bytes.readUInt16LE(launcherPeOffset + 4) !== 0x8664) {
@@ -952,7 +1182,8 @@ try {
       throw new WindowsHelperBuildError("BUILD_COMPILER", "NONZERO_OUTPUT");
     }
   }
-  for (const [path, before] of [[source, committedSource], [launcherSource, committedLauncherSource],
+  for (const [path, before] of [[source, committedSource], [serviceSource, committedServiceSource],
+    [serviceInstallerSource, committedServiceInstallerSource], [launcherSource, committedLauncherSource],
     [smokeFixtureSource, committedSmokeFixtureSource]]) {
     const after = heldIdentity(path);
     if (after.device !== before.device || after.file !== before.file || sha256(after.bytes) !== sha256(before.bytes)) {
@@ -960,6 +1191,8 @@ try {
     }
   }
   verifyStagedLease(temporarySource, sourceLease, sourceBytes);
+  verifyStagedLease(temporaryServiceSource, serviceSourceLease, serviceSourceBytes);
+  verifyStagedLease(temporaryServiceInstallerSource, serviceInstallerSourceLease, serviceInstallerSourceBytes);
   verifyStagedLease(temporaryCompilerConfig, compilerConfigLease, compilerConfigBytes);
   verifyStagedLease(temporaryLauncherSource, launcherSourceLease, launcherSourceBytes);
   verifyStagedLease(temporarySmokeFixtureSource, smokeFixtureSourceLease, smokeFixtureSourceBytes);
@@ -976,6 +1209,13 @@ try {
     launcherSourceSha256,
     helperSha256,
     launcherSha256,
+    service: {
+      version: "3.0.0", sourceSha256: serviceSourceSha256, imageSha256: serviceSha256,
+      installerSourceSha256: serviceInstallerSourceSha256,
+      installerSha256: sha256(serviceInstaller.bytes),
+      authenticodeLeafSha256: validation ? null : derivedSigningPins.authenticodeLeafSha256,
+      authenticodeSpkiSha256: validation ? null : derivedSigningPins.authenticodeSpkiSha256,
+    },
     pe: { architecture: "anycpu", managed: true, deterministic: true },
     build: {
       compilerSha256: sha256(heldCompiler.bytes),
@@ -995,8 +1235,8 @@ try {
           authenticodeLeafSha256: nativeLinkerInputs[0].authenticodeLeafSha256,
           authenticodeSpkiSha256: nativeLinkerInputs[0].authenticodeSpkiSha256 },
       ],
-      toolDependencies: toolRuntimeInventories.map((item, index) => ({
-        name: index === 0 ? "roslyn-runtime" : "msvc-host-runtime",
+      toolDependencies: [...toolRuntimeInventories, wixRuntimeInventory].map((item, index) => ({
+        name: index === 0 ? "roslyn-runtime" : index === 1 ? "msvc-host-runtime" : "wix-runtime",
         sha256: item.sha256, files: item.files, bytes: item.bytes,
       })),
       references: heldReferences.map((item) => ({
@@ -1017,6 +1257,13 @@ try {
         authenticodeSpkiSha256: derivedSigningPins.authenticodeSpkiSha256,
       },
   };
+  if (evidenceStage === "BUILD_OUTPUT") {
+    await runAuthorityLeasedBuildTool(temporaryOutput, ["--print-signing-pins-v1"], {
+      stage: "BUILD_OUTPUT", timeout: 60_000, maxBytes: 1024,
+      sensitiveValues: [temporaryOutput], allowUnsignedTool: true,
+      evidenceLeaseTarget: temporaryOutput,
+    }, [{ path: temporaryOutput, sha256: sha256(heldIdentity(temporaryOutput).bytes), tool: true }]);
+  }
   if (!validation && (!/^[0-9a-f]{64}$/.test(manifest.trust.authenticodeLeafSha256)
     || !/^[0-9a-f]{64}$/.test(manifest.trust.authenticodeSpkiSha256))) {
     throw new Error("production Authenticode leaf/SPKI pins are required");
@@ -1029,26 +1276,34 @@ try {
     const key = createPrivateKey(readFileSync(keyPath));
     signature = `${sign(null, Buffer.from(body), key).toString("base64")}\n`;
   }
+  // Evidence executions must retain every committed baseline byte. The real
+  // build reaches this point only after compiler/linker/signing authority and
+  // every candidate artifact have passed; it may then rotate the exact
+  // reviewed release set before no-replace publication below.
+  if (evidenceStage === undefined) {
+    for (const final of [output, launcherOutput, manifestPath, signaturePath, smokeFixtureOutput,
+      serviceOutput, serviceInstallerOutput]) {
+      if (!existsSync(final)) continue;
+      heldIdentity(final);
+      rmSync(final);
+    }
+  }
   // Publication is no-replace at the final names after every byte and held
   // compiler/reference identity has been verified. Cleanup below proves no
   // compiler output survives a failed build.
-  if (evidenceStage === "BUILD_OUTPUT") {
-    // Collide with the actual final production name after deterministic PE and
-    // provenance verification. The no-replace primitive must reject it.
-    writeFileSync(output, "same-user no-replace collision\n", { flag: "wx", mode: 0o600 });
-  }
-  publishWindowsBuildArtifactNoReplace(temporaryOutput, output);
-  publishedOutput = true;
-  publishWindowsBuildArtifactNoReplace(temporaryLauncher, launcherOutput);
-  publishedLauncher = true;
-  writeFileSync(manifestPath, body, { flag: "wx" });
-  publishedManifest = true;
-  writeFileSync(signaturePath, signature, { flag: "wx" });
-  publishedSignature = true;
-  publishWindowsBuildArtifactNoReplace(temporarySmokeFixture, smokeFixtureOutput);
-  publishedSmokeFixture = true;
+  publishedOutput = publishOrVerifyBaseline(temporaryOutput, output);
+  publishedLauncher = publishOrVerifyBaseline(temporaryLauncher, launcherOutput);
+  publishedManifest = writeOrVerifyBaseline(manifestPath, body);
+  publishedSignature = writeOrVerifyBaseline(signaturePath, signature);
+  publishedSmokeFixture = publishOrVerifyBaseline(temporarySmokeFixture, smokeFixtureOutput);
+  publishedService = publishOrVerifyBaseline(temporaryService, serviceOutput);
+  publishedServiceInstaller = publishOrVerifyBaseline(temporaryServiceInstaller, serviceInstallerOutput);
   closeSync(sourceLease);
   sourceLease = undefined;
+  closeSync(serviceSourceLease);
+  serviceSourceLease = undefined;
+  closeSync(serviceInstallerSourceLease);
+  serviceInstallerSourceLease = undefined;
   closeSync(compilerConfigLease);
   compilerConfigLease = undefined;
   if (policyLease !== undefined) {
@@ -1060,6 +1315,9 @@ try {
   closeSync(smokeFixtureSourceLease);
   smokeFixtureSourceLease = undefined;
   rmSync(temporarySource, { force: true });
+  rmSync(temporaryServiceSource, { force: true });
+  rmSync(temporaryServiceInstallerSource, { force: true });
+  rmSync(temporaryServiceInstallerObject, { force: true });
   rmSync(temporaryCompilerConfig, { force: true });
   rmSync(temporaryPolicy, { force: true });
   rmSync(temporaryLauncherSource, { force: true });
@@ -1074,6 +1332,12 @@ try {
   if (sourceLease !== undefined) {
     try { closeSync(sourceLease); } catch { /* Fixed build diagnostic owns failure output. */ }
   }
+  if (serviceSourceLease !== undefined) {
+    try { closeSync(serviceSourceLease); } catch { /* Fixed build diagnostic owns failure output. */ }
+  }
+  if (serviceInstallerSourceLease !== undefined) {
+    try { closeSync(serviceInstallerSourceLease); } catch { /* Fixed build diagnostic owns failure output. */ }
+  }
   if (compilerConfigLease !== undefined) {
     try { closeSync(compilerConfigLease); } catch { /* Fixed build diagnostic owns failure output. */ }
   }
@@ -1087,6 +1351,11 @@ try {
     try { closeSync(smokeFixtureSourceLease); } catch { /* Fixed build diagnostic owns failure output. */ }
   }
   rmSync(temporarySource, { force: true });
+  rmSync(temporaryServiceSource, { force: true });
+  rmSync(temporaryServiceInstallerSource, { force: true });
+  rmSync(temporaryServiceInstallerObject, { force: true });
+  rmSync(temporaryServiceInstaller, { force: true });
+  rmSync(temporaryService, { force: true });
   rmSync(temporaryCompilerConfig, { force: true });
   rmSync(temporaryPolicy, { force: true });
   rmSync(temporaryLauncherSource, { force: true });
@@ -1103,7 +1372,8 @@ try {
   if (publishedSignature) rmSync(signaturePath, { force: true });
   if (publishedLauncher) rmSync(launcherOutput, { force: true });
   if (publishedSmokeFixture) rmSync(smokeFixtureOutput, { force: true });
-  if (evidenceStage === "BUILD_OUTPUT") rmSync(output, { force: true });
+  if (publishedService) rmSync(serviceOutput, { force: true });
+  if (publishedServiceInstaller) rmSync(serviceInstallerOutput, { force: true });
   const failure = error instanceof WindowsHelperBuildError
     ? error
     : new WindowsHelperBuildError("BUILD_OUTPUT", "UNKNOWN", error);

@@ -2,6 +2,7 @@
 # LF bytes.  Keep checkout bytes identical on Windows, macOS, and Linux.
 *.c text eol=lf
 *.cs text eol=lf
+*.wxs text eol=lf
 test/fixtures/*.mjs text eol=lf
 test/fixtures/*.ts text eol=lf
 test/fixtures/*.json text eol=lf

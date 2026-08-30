@@ -49,6 +49,7 @@ const WINDOWS_AUTHORITY_BUILD_TOOL_SIGNERS = [
 const WINDOWS_AUTHORITY_BUILD_TOOL_DEPENDENCIES = [
   ["roslyn-runtime", "72f9aafb187eb7db512466571374fc33d22d3120d1341c2bc6315c4e5e8b2209", 111, "38581501"],
   ["msvc-host-runtime", "b2e20ac87ae5c38d72a2c6c6d2dbcfb013978b9e0240717656cd14b2d7957ac2", 53, "62411793"],
+  ["wix-runtime", "732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298", 33, "31929694"],
 ];
 
 const canonicalJson = (value) => {
@@ -148,6 +149,11 @@ if (supervisorManifestBytes.at(-1) !== 0x0a
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.launcherSourceSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.helperSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.launcherSha256 ?? "")
+  || supervisorManifest.service?.version !== "3.0.0"
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.service?.sourceSha256 ?? "")
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.service?.imageSha256 ?? "")
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.service?.installerSourceSha256 ?? "")
+  || !/^[0-9a-f]{64}$/.test(supervisorManifest.service?.installerSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.compilerSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.launcherCompilerSha256 ?? "")
   || !/^[0-9a-f]{64}$/.test(supervisorManifest.build?.launcherLinkerSha256 ?? "")
@@ -169,6 +175,14 @@ if (supervisorManifestBytes.at(-1) !== 0x0a
   || createHash("sha256").update(readFileSync(windowsSupervisor)).digest("hex") !== supervisorManifest.helperSha256) {
   throw new Error("Prebuilt Windows authority helper manifest failed integrity verification");
 }
+const windowsService = join(stageDir, "dist", "native", "prebuilds", "win32-service", "ProPRConnectAuthority.exe");
+const windowsServiceInstaller = join(stageDir, "dist", "native", "prebuilds", "win32-service", "ProPRConnectAuthority.msi");
+if (!existsSync(windowsService) || !existsSync(windowsServiceInstaller)
+  || createHash("sha256").update(readFileSync(windowsService)).digest("hex") !== supervisorManifest.service.imageSha256) {
+  throw new Error("Windows installed authority service failed integrity verification");
+}
+if (createHash("sha256").update(readFileSync(windowsServiceInstaller)).digest("hex")
+  !== supervisorManifest.service.installerSha256) throw new Error("Windows authority MSI failed integrity verification");
 const windowsLauncher = join(stageDir, "dist", "native", "prebuilds", "win32-x64", "connect-authority-broker.exe");
 if (!existsSync(windowsLauncher)
   || createHash("sha256").update(readFileSync(windowsLauncher)).digest("hex") !== supervisorManifest.launcherSha256) {
@@ -181,7 +195,9 @@ if (supervisorManifest.trust?.mode !== "production-signed"
 }
 if (supervisorManifest.trust?.mode === "production-signed"
   && (!/^[0-9a-f]{64}$/.test(supervisorManifest.trust.authenticodeLeafSha256 ?? "")
-    || !/^[0-9a-f]{64}$/.test(supervisorManifest.trust.authenticodeSpkiSha256 ?? ""))) {
+    || !/^[0-9a-f]{64}$/.test(supervisorManifest.trust.authenticodeSpkiSha256 ?? "")
+    || supervisorManifest.service.authenticodeLeafSha256 !== supervisorManifest.trust.authenticodeLeafSha256
+    || supervisorManifest.service.authenticodeSpkiSha256 !== supervisorManifest.trust.authenticodeSpkiSha256)) {
   throw new Error("Production Windows authority helper signing pins are missing");
 }
 const supervisorSignatureText = readFileSync(windowsSupervisorSignature, "ascii");
@@ -195,6 +211,8 @@ if (supervisorManifest.trust?.mode === "production-signed"
 if (supervisorManifest.trust?.mode === "unsigned-validation"
   && (supervisorManifest.trust.authenticodeLeafSha256 !== null
     || supervisorManifest.trust.authenticodeSpkiSha256 !== null
+    || supervisorManifest.service.authenticodeLeafSha256 !== null
+    || supervisorManifest.service.authenticodeSpkiSha256 !== null
     || supervisorSignatureText !== "UNSIGNED-VALIDATION\n")) {
   throw new Error("Unsigned Windows authority validation metadata contains signer claims");
 }
@@ -211,6 +229,8 @@ for (const auditedFile of [
   "darwin-authority-broker.c",
   "windows-authority-broker.c",
   "windows-authority-supervisor.cs",
+  "windows-connect-authority-service.cs",
+  "windows-connect-authority.wxs",
   "README.md",
 ]) {
   const bundled = join(stageDir, "dist", "native", auditedFile);

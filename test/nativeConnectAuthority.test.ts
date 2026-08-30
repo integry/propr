@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { chmodSync, closeSync, constants, copyFileSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { connect, createServer } from 'node:net';
 import { after, test } from 'node:test';
 import {
   ConnectRootError,
@@ -25,6 +26,11 @@ import {
   WINDOWS_SUPERVISOR_STAGE_VALUES,
   exerciseWindowsAuthorityStageFailureForNativeTest,
 } from '../packages/cli/dist/connectRootAuthority.js';
+import {
+  acquireInstalledWindowsLaunchLease,
+  WINDOWS_CONNECT_AUTHORITY_PIPE,
+  type InstalledAuthorityIdentity,
+} from '../packages/cli/dist/windowsInstalledAuthority.js';
 import { PUBLIC_INSTANCE_IDENTITY_FILENAME } from '@propr/shared';
 import { getOrCreatePublicInstanceIdentityPinned } from '@propr/local-setup';
 
@@ -44,12 +50,12 @@ const expectedScenarios = [
   'packaged-helper-integrity',
   ...(process.platform === 'win32'
     ? [
-      'atomic-publication', 'encoded-loader', 'preprotocol-cleanup', 'invalid-handle-cleanup',
+      'atomic-publication', 'preprotocol-cleanup', 'invalid-handle-cleanup',
       'identity-mismatch-cleanup', 'contents-cleanup', 'cleanup-swap',
       'bootstrap-first-launch', 'bootstrap-aba', 'settling-race',
-      'helper-build-provenance', 'helper-manifest', 'direct-helper-spawn',
-      'helper-lease-swap', 'helper-lease-delete', 'helper-lease-reparse',
-      'helper-lease-hardlink', 'helper-lease-inplace-write', 'helper-lease-aba',
+      'helper-build-provenance', 'helper-manifest', 'installed-authority-mutation',
+      'old-broker-marker', 'authority-pipe-spoof', 'authority-version',
+      'authority-client', 'authority-replay', 'authority-frames', 'authority-lifecycle',
       'no-runtime-compiler', 'forged-control-pipes', 'extra-child-denied',
       'job-assignment-failure', 'job-kill-on-close', 'launcher-unload', 'handle-leak',
     ]
@@ -547,13 +553,14 @@ test('native root/env/data/identity authority accepts the protected object and r
   }
 });
 
-test('native helper replacement is rejected before attacker bytes can execute', { timeout: 75_000 }, async (t) => {
+test('native helper replacement is rejected before attacker bytes can execute', { timeout: 105_000 }, async (t) => {
   if (!nativeOnly(t)) return;
   const platformArch = process.platform === 'win32' ? 'win32-x64' : `${process.platform}-${process.arch}`;
   const executableName = process.platform === 'win32' ? 'connect-authority-broker.exe' : 'connect-authority-broker';
   const artifact = join(process.cwd(), 'packages', 'cli', 'dist', 'native', 'prebuilds', platformArch, executableName);
   const backup = `${artifact}.trusted-test-backup-${process.pid}`;
   const marker = join(tmpdir(), `propr-attacker-marker-${process.pid}`);
+  const firstBoundaryMarker = join(dirname(artifact), 'packaged-broker-attacker-executed');
   const parent = nativeFixtureParent('propr-native-helper-');
   const target = join(parent, 'target');
   writeFileSync(target, 'target\n', { mode: 0o600 });
@@ -570,12 +577,14 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       writeFileSync(artifact, `#!/bin/sh\nprintf attacker > "${marker}"\n`, { mode: 0o700 });
       chmodSync(artifact, 0o700);
     } else {
-      writeFileSync(artifact, Buffer.from('attacker-not-an-executable'), { mode: 0o600 });
+      copyFileSync(join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityReplacementAttacker.exe'), artifact);
     }
     await assert.rejects(assertNativeEntryAuthority(
       nativeConnectRootAuthorityInspector, process.platform, target, 'env', fd,
     ), /authority|broker|integrity|unavailable/);
     assert.throws(() => lstatSync(marker), /ENOENT/);
+    assert.throws(() => lstatSync(firstBoundaryMarker), /ENOENT/);
+    if (process.platform === 'win32') completeScenario('old-broker-marker');
   } finally {
     closeSync(fd);
     if (artifactMoved) {
@@ -583,6 +592,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       renameSync(backup, artifact);
     }
     rmSync(marker, { force: true });
+    rmSync(firstBoundaryMarker, { force: true });
     rmSync(parent, { recursive: true, force: true });
   }
   assert.ok(readFileSync(artifact).byteLength > 0);
@@ -793,13 +803,19 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       version?: number;
       stages?: Array<Record<string, unknown>>;
     };
-    assert.equal(buildEvidence.version, 1);
+    assert.equal(buildEvidence.version, 2);
     assert.deepEqual(buildEvidence.stages?.map((item) => item.stage), [
       'BUILD_COMPILER', 'BUILD_SOURCE', 'BUILD_OUTPUT',
     ]);
     assert.deepEqual(buildEvidence.stages?.map((item) => [
-      item.publishedArtifacts, item.stagingResidue, item.childTerminated,
-    ]), [[0, 0, true], [0, 0, true], [0, 0, true]]);
+      item.nonceAuthenticated, item.hookAuthenticated, item.mutationAttempted, item.mutationDenied,
+      item.childAndJobsTerminated, item.publishedArtifactsChanged, item.baselineArtifactsChanged,
+      item.stagingResidueChanged,
+    ]), [
+      [true, true, true, true, true, 0, 0, 0],
+      [true, true, true, true, true, 0, 0, 0],
+      [true, true, true, true, true, 0, 0, 0],
+    ]);
     completeScenario('atomic-publication');
 
     const startupControl = nativeFixtureParent('propr-supervisor-startup-swap-');
@@ -859,6 +875,9 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     const buildInputs = ['compiler.exe', 'linker.exe', 'reference.dll', 'source.cs', 'include.h', 'library.lib']
       .map((name) => join(buildLeaseDirectory, name));
     const leaseManifest = join(buildLeaseDirectory, 'inputs.lease');
+    const progressKeyPath = join(buildLeaseDirectory, 'progress.key');
+    const progressKey = Buffer.alloc(32, 0x5a);
+    const progressNonce = 'ab'.repeat(32);
     const writeLeaseManifest = (tool = false) => {
       const body = `PROPR_BUILD_LEASE_V1\n${buildInputs.map((path, index) =>
         tool && index === 0
@@ -869,26 +888,41 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     };
     try {
       for (const path of buildInputs) writeFileSync(path, `trusted:${basename(path)}\n`, { mode: 0o600 });
+      writeFileSync(progressKeyPath, progressKey, { mode: 0o600 });
       await protectWindowsSetupEntries([
         { path: buildLeaseDirectory, kind: 'directory' },
         ...buildInputs.map((path) => ({ path, kind: 'file' as const })),
       ]);
       await closeWindowsAuthorityCapability();
+      const leaseArgs = (digest: string) => [
+        'lease-build-inputs-v1', leaseManifest, digest, '1', '1', '0', String(buildInputs.length), '0',
+        String(buildInputs.reduce((total, path) => total + Number(lstatSync(path).size), 0)), progressNonce,
+      ];
+      const runLeaseSync = (digest: string) => {
+        const progressKeyFd = openSync(progressKeyPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          return spawnSync(bootstrapPath, leaseArgs(digest), {
+            shell: false, windowsHide: true, env: {}, encoding: 'buffer', input: Buffer.from('X'),
+            stdio: ['pipe', 'pipe', 'pipe', bootstrapFd, progressKeyFd],
+          });
+        } finally {
+          closeSync(progressKeyFd);
+        }
+      };
+      const expectedProgress = () => {
+        const totalBytes = buildInputs.reduce((total, path) => total + Number(lstatSync(path).size), 0);
+        const body = `PROPR_BUILD_LEASE_PROGRESS_V2 1/1 ${buildInputs.length}/${buildInputs.length} ${totalBytes}/${totalBytes} ${progressNonce}`;
+        return Buffer.from(`${body} ${createHmac('sha256', progressKey).update(body).digest('hex')}\n`);
+      };
       let manifestDigest = writeLeaseManifest();
-      let leaseResult = spawnSync(bootstrapPath, ['lease-build-inputs-v1', leaseManifest, manifestDigest], {
-        shell: false, windowsHide: true, env: {}, encoding: 'buffer', input: Buffer.from('X'),
-        stdio: ['pipe', 'pipe', 'pipe', bootstrapFd],
-      });
+      let leaseResult = runLeaseSync(manifestDigest);
       assert.equal(leaseResult.status, 0);
-      assert.deepEqual(leaseResult.stdout, Buffer.from('R\n'));
+      assert.deepEqual(leaseResult.stdout, expectedProgress());
       assert.deepEqual(leaseResult.stderr, Buffer.alloc(0));
 
       manifestDigest = writeLeaseManifest();
       writeFileSync(buildInputs[3], 'same-user source replacement\n');
-      leaseResult = spawnSync(bootstrapPath, ['lease-build-inputs-v1', leaseManifest, manifestDigest], {
-        shell: false, windowsHide: true, env: {}, encoding: 'buffer', input: Buffer.from('X'),
-        stdio: ['pipe', 'pipe', 'pipe', bootstrapFd],
-      });
+      leaseResult = runLeaseSync(manifestDigest);
       assert.equal(leaseResult.status, 23);
       assert.deepEqual(leaseResult.stdout, Buffer.alloc(0));
       assert.deepEqual(leaseResult.stderr, Buffer.alloc(0));
@@ -898,33 +932,29 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       copyFileSync(join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityReplacementAttacker.exe'), buildInputs[0]);
       await protectWindowsSetupEntry(buildInputs[0], 'file');
       manifestDigest = writeLeaseManifest(true);
-      leaseResult = spawnSync(bootstrapPath, ['lease-build-inputs-v1', leaseManifest, manifestDigest], {
-        shell: false, windowsHide: true, env: {}, encoding: 'buffer', input: Buffer.from('X'),
-        stdio: ['pipe', 'pipe', 'pipe', bootstrapFd],
-      });
+      leaseResult = runLeaseSync(manifestDigest);
       assert.equal(leaseResult.status, 23, 'unsigned wrong-signer tool passed the catalog/signature rule');
 
       writeFileSync(buildInputs[0], `trusted:${basename(buildInputs[0])}\n`);
       await protectWindowsSetupEntry(buildInputs[0], 'file');
       grantBroadWrite(buildInputs[2], false);
       manifestDigest = writeLeaseManifest();
-      leaseResult = spawnSync(bootstrapPath, ['lease-build-inputs-v1', leaseManifest, manifestDigest], {
-        shell: false, windowsHide: true, env: {}, encoding: 'buffer', input: Buffer.from('X'),
-        stdio: ['pipe', 'pipe', 'pipe', bootstrapFd],
-      });
+      leaseResult = runLeaseSync(manifestDigest);
       assert.equal(leaseResult.status, 23, 'arbitrary writable input ACL passed the native rule');
       await protectWindowsSetupEntry(buildInputs[2], 'file');
 
       manifestDigest = writeLeaseManifest();
-      const leaseChild = spawn(bootstrapPath, ['lease-build-inputs-v1', leaseManifest, manifestDigest], {
-        shell: false, windowsHide: true, env: {}, stdio: ['pipe', 'pipe', 'pipe', bootstrapFd],
+      const liveProgressKeyFd = openSync(progressKeyPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const leaseChild = spawn(bootstrapPath, leaseArgs(manifestDigest), {
+        shell: false, windowsHide: true, env: {}, stdio: ['pipe', 'pipe', 'pipe', bootstrapFd, liveProgressKeyFd],
       });
+      closeSync(liveProgressKeyFd);
       await new Promise<void>((resolveReady, rejectReady) => {
         const timer = setTimeout(() => rejectReady(new Error('build lease barrier timed out')), 5_000);
         leaseChild.once('error', rejectReady);
         leaseChild.stdout.once('data', (chunk) => {
           clearTimeout(timer);
-          if (!Buffer.from(chunk).equals(Buffer.from('R\n'))) rejectReady(new Error('build lease readiness malformed'));
+          if (!Buffer.from(chunk).equals(expectedProgress())) rejectReady(new Error('build lease readiness malformed'));
           else resolveReady();
         });
       });
@@ -945,6 +975,108 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     rmSync(attackerResultPath, { force: true });
     let concurrentRequest: Promise<Awaited<ReturnType<typeof exerciseWindowsAuthorityCapabilityForNativeTest>>> | undefined;
     const locked = await exerciseWindowsAuthorityCapabilityForNativeTest({
+      onInstalledAuthorityAuthorized: async ({
+        imagePath, volumeSerialNumber, fileId, sha256, authenticodeLeafSha256,
+        authenticodeSpkiSha256, servicePid, packagedBrokerPath,
+      }) => {
+        assert.match(imagePath, /^[A-Za-z]:\\Program Files\\ProPR Connect Authority\\ProPRConnectAuthority\.exe$/i);
+        assert.equal(servicePid > 0 && servicePid !== process.pid, true);
+        assert.match(volumeSerialNumber, /^(?:0|[1-9]\d*)$/);
+        assert.match(fileId, /^(?:0|[1-9]\d*)$/);
+        assert.equal(sha256Digest(readFileSync(imagePath)), sha256);
+        assert.match(authenticodeLeafSha256, /^[0-9a-f]{64}$/);
+        assert.match(authenticodeSpkiSha256, /^[0-9a-f]{64}$/);
+        const serviceDetached = `${imagePath}.same-user-detached`;
+        const brokerDetached = `${packagedBrokerPath}.same-user-detached`;
+        assert.throws(() => writeFileSync(imagePath, 'same-user write'));
+        assert.throws(() => unlinkSync(imagePath));
+        assert.throws(() => renameSync(imagePath, serviceDetached));
+        assert.throws(() => copyFileSync(replacementAttacker, imagePath));
+        assert.throws(() => writeFileSync(packagedBrokerPath, 'same-user write'));
+        assert.throws(() => unlinkSync(packagedBrokerPath));
+        assert.throws(() => renameSync(packagedBrokerPath, brokerDetached));
+        assert.throws(() => copyFileSync(replacementAttacker, packagedBrokerPath));
+        assert.throws(() => lstatSync(bootstrapMarker), /ENOENT/);
+        completeScenario('installed-authority-mutation');
+
+        await new Promise<void>((resolveSpoof, rejectSpoof) => {
+          const server = createServer();
+          server.once('error', () => resolveSpoof());
+          server.listen(WINDOWS_CONNECT_AUTHORITY_PIPE, () => {
+            server.close();
+            rejectSpoof(new Error('same-user pipe server replaced the installed authority'));
+          });
+        });
+        completeScenario('authority-pipe-spoof');
+
+        const rawRejected = (body: Buffer) => new Promise<void>((resolveRejected, rejectRejected) => {
+          const socket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
+          let received = 0;
+          const timer = setTimeout(() => { socket.destroy(); rejectRejected(new Error('authority frame did not settle')); }, 5_000);
+          socket.once('connect', () => socket.write(body));
+          socket.on('data', (chunk) => { received += chunk.byteLength; });
+          socket.once('error', () => { clearTimeout(timer); resolveRejected(); });
+          socket.once('close', () => {
+            clearTimeout(timer);
+            if (received === 0) resolveRejected();
+            else rejectRejected(new Error('rejected authority frame received a success receipt'));
+          });
+        });
+        const frameDocument = (document: unknown) => {
+          const json = Buffer.from(JSON.stringify(document));
+          const framed = Buffer.alloc(json.byteLength + 4);
+          framed.writeUInt32LE(json.byteLength, 0);
+          json.copy(framed, 4);
+          return framed;
+        };
+        const staleFrame = frameDocument({
+          artifactPath: packagedBrokerPath, artifactSha256: sha256Digest(readFileSync(packagedBrokerPath)),
+          kind: 'authorize-launch', nonce: '3'.repeat(64), requestId: '4'.repeat(32),
+          serviceVersion: '2.9.0', version: 3,
+        });
+        const staleReceipt = await new Promise<Record<string, unknown>>((resolveReceipt, rejectReceipt) => {
+          const socket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
+          let received = Buffer.alloc(0);
+          const timer = setTimeout(() => { socket.destroy(); rejectReceipt(new Error('version mismatch did not settle')); }, 5_000);
+          socket.once('connect', () => socket.write(staleFrame));
+          socket.on('data', (chunk) => {
+            received = Buffer.concat([received, chunk]);
+            if (received.byteLength < 4) return;
+            const length = received.readUInt32LE(0);
+            if (length < 2 || length > 4096 || received.byteLength !== length + 4) return;
+            clearTimeout(timer);
+            socket.destroy();
+            resolveReceipt(JSON.parse(received.subarray(4).toString('utf8')) as Record<string, unknown>);
+          });
+          socket.once('error', rejectReceipt);
+        });
+        assert.deepEqual(staleReceipt, {
+          kind: 'version-mismatch', nonce: '3'.repeat(64), requestId: '4'.repeat(32),
+          serviceVersion: '3.0.0', version: 3,
+        });
+        completeScenario('authority-version');
+        completeScenario('authority-client');
+
+        const expectedService: InstalledAuthorityIdentity = {
+          serviceVersion: '3.0.0', imagePath, volumeSerialNumber, fileId, sha256,
+          authenticodeLeafSha256, authenticodeSpkiSha256,
+        };
+        const replayId = '5'.repeat(32);
+        const abandoned = await acquireInstalledWindowsLaunchLease({
+          path: packagedBrokerPath, sha256: sha256Digest(readFileSync(packagedBrokerPath)),
+        }, expectedService, { requestId: replayId, nonce: '6'.repeat(64) });
+        await assert.rejects(abandoned.release());
+        await assert.rejects(acquireInstalledWindowsLaunchLease({
+          path: packagedBrokerPath, sha256: sha256Digest(readFileSync(packagedBrokerPath)),
+        }, expectedService, { requestId: replayId, nonce: '7'.repeat(64) }));
+        completeScenario('authority-replay');
+
+        const oversized = Buffer.alloc(4);
+        oversized.writeUInt32LE(4097, 0);
+        await rawRejected(oversized);
+        await rawRejected(frameDocument({ version: 3, unexpected: true }));
+        completeScenario('authority-frames');
+      },
       onSupervisorStarting: ({
         stagedPath, helperPath, environmentKeys, executable, packagedBrokerPath, constantArgv, manifest,
       }) => {
@@ -979,9 +1111,13 @@ test('native helper replacement is rejected before attacker bytes can execute', 
             files: 53,
             bytes: '62411793',
           },
+          {
+            name: 'wix-runtime',
+            sha256: '732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298',
+            files: 33,
+            bytes: '31929694',
+          },
         ]);
-        completeScenario('encoded-loader');
-        completeScenario('direct-helper-spawn');
       },
       onSupervisorSpawned: (stagedPath, supervisorPid) => {
         assert.match(stagedPath, /broker-[0-9a-f-]+\.exe$/);
@@ -1032,9 +1168,6 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     rmSync(attackerResultPath, { force: true });
     assert.deepEqual(deniedHooks, { write: true, delete: true, rename: true, replace: true });
     assert.deepEqual(deniedHelperHooks, { write: true, delete: true, rename: true, replace: true });
-    completeScenario('helper-lease-inplace-write');
-    completeScenario('helper-lease-delete');
-    completeScenario('helper-lease-swap');
     assert.equal(locked.stage, 'READY', 'hosted positive startup did not reach READY');
     assert.deepEqual(JSON.parse(locked.output.toString('utf8')), { version: 1, ready: true });
     assert.throws(() => renameSync(locked.stagedPath, `${locked.stagedPath}.between-requests`));
@@ -1087,7 +1220,6 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     const afterAbort = await exerciseWindowsAuthorityCapabilityForNativeTest();
     assert.equal(afterAbort.supervisorPid, restarted.supervisorPid, 'preflight abort mutated the live capability');
     completeScenario('bootstrap-aba');
-    completeScenario('helper-lease-aba');
 
     let hardlinkBarrierFired = false;
     await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
@@ -1097,7 +1229,6 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       },
     }), /capability/);
     assert.equal(hardlinkBarrierFired, true, 'hard-link mutation barrier did not alter the held helper');
-    completeScenario('helper-lease-hardlink');
 
     const afterHardlink = await exerciseWindowsAuthorityCapabilityForNativeTest();
     let reparseBarrierFired = false;
@@ -1123,7 +1254,6 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       },
     }), /capability/);
     assert.equal(reparseBarrierFired, true, 'reparse mutation barrier did not alter the helper path boundary');
-    completeScenario('helper-lease-reparse');
     const afterReparse = await exerciseWindowsAuthorityCapabilityForNativeTest();
     assert.notEqual(afterReparse.stagedPath, afterHardlink.stagedPath);
 
@@ -1221,6 +1351,48 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       if (previousPathext === undefined) delete process.env.PATHEXT; else process.env.PATHEXT = previousPathext;
       rmSync(compilerHookDirectory, { recursive: true, force: true });
     }
+
+    const lifecycleSocket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
+    await new Promise<void>((resolveConnected, rejectConnected) => {
+      lifecycleSocket.once('connect', resolveConnected);
+      lifecycleSocket.once('error', rejectConnected);
+    });
+    const partialFrame = Buffer.alloc(5);
+    partialFrame.writeUInt32LE(128, 0);
+    partialFrame[4] = 0x7b;
+    lifecycleSocket.write(partialFrame);
+    const lifecycleClosed = new Promise<void>((resolveClosed) => lifecycleSocket.once('close', () => resolveClosed()));
+    const serviceControl = join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'sc.exe');
+    const stopped = spawnSync(serviceControl, ['stop', 'ProPRConnectAuthority'], {
+      shell: false, windowsHide: true, encoding: 'utf8', timeout: 15_000,
+    });
+    assert.equal(stopped.status, 0, 'installed authority service could not be stopped during a partial request');
+    await lifecycleClosed;
+    await assert.rejects(new Promise<void>((resolveUnexpected, rejectAbsent) => {
+      const socket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
+      socket.once('connect', () => { socket.destroy(); resolveUnexpected(); });
+      socket.once('error', rejectAbsent);
+    }));
+    assert.throws(() => lstatSync(bootstrapMarker), /ENOENT/);
+    const started = spawnSync(serviceControl, ['start', 'ProPRConnectAuthority'], {
+      shell: false, windowsHide: true, encoding: 'utf8', timeout: 15_000,
+    });
+    assert.equal(started.status, 0, 'installed authority service could not be restarted after lifecycle evidence');
+    const restartDeadline = Date.now() + 10_000;
+    while (true) {
+      try {
+        await new Promise<void>((resolveConnected, rejectConnected) => {
+          const socket = connect(WINDOWS_CONNECT_AUTHORITY_PIPE);
+          socket.once('connect', () => { socket.destroy(); resolveConnected(); });
+          socket.once('error', rejectConnected);
+        });
+        break;
+      } catch {
+        if (Date.now() >= restartDeadline) throw new Error('installed authority service did not restart');
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+      }
+    }
+    completeScenario('authority-lifecycle');
   }
 });
 

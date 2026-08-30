@@ -2,8 +2,10 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { connect } from "node:net";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -43,6 +45,7 @@ function run(command, args, options = {}) {
     windowsHide: true,
     stdio: options.stdio ?? "inherit",
     encoding: options.encoding,
+    timeout: options.timeout ?? 60_000,
     maxBuffer: 2 * 1024 * 1024,
   });
 }
@@ -108,6 +111,8 @@ try {
   assert.equal(paths.includes("dist/native/prebuilds/win32-anycpu/connect-authority-supervisor.manifest.sig"), true);
   assert.equal(paths.includes("dist/native/prebuilds/win32-x64/connect-authority-broker.exe"), true);
   assert.equal(paths.includes("dist/native/prebuilds/win32-x64/connect-authority-bootstrap.exe"), true);
+  assert.equal(paths.includes("dist/native/prebuilds/win32-service/ProPRConnectAuthority.exe"), true);
+  assert.equal(paths.includes("dist/native/prebuilds/win32-service/ProPRConnectAuthority.msi"), true);
   assert.equal(paths.every((path) => path === "README.md" || path === "package.json" || path.startsWith("dist/")), true);
   assert.equal(paths.some((path) => path.endsWith(".map") || path.endsWith(".d.ts")), false);
   const tarball = join(packDirectory, packed.filename);
@@ -122,6 +127,8 @@ try {
   assert.equal(createHash("sha256").update(readFileSync(join(stage, "dist", "native", "prebuilds", "win32-anycpu", "connect-authority-supervisor.exe"))).digest("hex"), manifest.helperSha256);
   assert.equal(createHash("sha256").update(readFileSync(join(stage, "dist", "native", "prebuilds", "win32-x64", "connect-authority-broker.exe"))).digest("hex"), manifest.launcherSha256);
   assert.equal(createHash("sha256").update(readFileSync(join(stage, "dist", "native", "prebuilds", "win32-x64", "connect-authority-bootstrap.exe"))).digest("hex"), manifest.build.bootstrapSha256);
+  assert.equal(createHash("sha256").update(readFileSync(join(stage, "dist", "native", "prebuilds", "win32-service", "ProPRConnectAuthority.exe"))).digest("hex"), manifest.service.imageSha256);
+  assert.equal(createHash("sha256").update(readFileSync(join(stage, "dist", "native", "prebuilds", "win32-service", "ProPRConnectAuthority.msi"))).digest("hex"), manifest.service.installerSha256);
 
   run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--prefix", installDirectory, tarball], {
     cwd: runtimeDirectory,
@@ -139,6 +146,15 @@ try {
   assert.equal(createHash("sha256").update(readFileSync(installedPath(
     "dist", "native", "prebuilds", "win32-x64", "connect-authority-bootstrap.exe",
   ))).digest("hex"), manifest.build.bootstrapSha256);
+  const installedService = installedPath(
+    "dist", "native", "prebuilds", "win32-service", "ProPRConnectAuthority.exe",
+  );
+  const installedServiceInstaller = installedPath(
+    "dist", "native", "prebuilds", "win32-service", "ProPRConnectAuthority.msi",
+  );
+  assert.equal(createHash("sha256").update(readFileSync(installedService)).digest("hex"), manifest.service.imageSha256);
+  assert.equal(createHash("sha256").update(readFileSync(installedServiceInstaller)).digest("hex"), manifest.service.installerSha256);
+  run("msiexec.exe", ["/fa", installedServiceInstaller, "/qn", "/norestart"]);
   const authority = await import(pathToFileURL(installedPath("dist", "connectRootAuthority.js")).href);
   await authority.protectWindowsSetupEntries([
     { path: runtimeDirectory, kind: "directory" },
@@ -289,6 +305,25 @@ process.on('SIGTERM',()=>server.close(()=>process.exit(0)));
   assert.equal(`${wrongTarget.stdout}${wrongTarget.stderr}`.toLowerCase().includes("csc"), false);
   rmSync(helper, { force: true });
   renameSync(saved, helper);
+
+  const uninstallMarker = join(runtimeDirectory, "uninstall-request-marker");
+  const lifecyclePipe = connect(String.raw`\\.\pipe\ProPR.Connect.Authority.v3`);
+  await new Promise((resolveConnected, rejectConnected) => {
+    lifecyclePipe.once("connect", resolveConnected);
+    lifecyclePipe.once("error", rejectConnected);
+  });
+  const partialFrame = Buffer.alloc(5);
+  partialFrame.writeUInt32LE(128, 0);
+  partialFrame[4] = 0x7b;
+  lifecyclePipe.write(partialFrame);
+  const lifecycleClosed = new Promise((resolveClosed) => lifecyclePipe.once("close", resolveClosed));
+  run("msiexec.exe", ["/x", installedServiceInstaller, "/qn", "/norestart"]);
+  await lifecycleClosed;
+  const absentAuthority = invoke();
+  assert.notEqual(absentAuthority.status, 0, "uninstalled authority authorized a package launch");
+  assert.equal(existsSync(uninstallMarker), false, "package marker ran during authority uninstall");
+  run("msiexec.exe", ["/i", installedServiceInstaller, "/qn", "/norestart"]);
+  run("msiexec.exe", ["/fa", installedServiceInstaller, "/qn", "/norestart"]);
   sidecar.kill();
   if (sidecar.exitCode === null) await new Promise((resolveExit) => sidecar.once("exit", resolveExit));
   sidecar = undefined;

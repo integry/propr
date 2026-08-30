@@ -18,12 +18,12 @@ const common = [
   'packaged-helper-integrity',
   ...(platform === 'win32'
     ? [
-      'atomic-publication', 'encoded-loader', 'preprotocol-cleanup', 'invalid-handle-cleanup',
+      'atomic-publication', 'preprotocol-cleanup', 'invalid-handle-cleanup',
       'identity-mismatch-cleanup', 'contents-cleanup', 'cleanup-swap',
       'bootstrap-first-launch', 'bootstrap-aba', 'settling-race',
-      'helper-build-provenance', 'helper-manifest', 'direct-helper-spawn',
-      'helper-lease-swap', 'helper-lease-delete', 'helper-lease-reparse',
-      'helper-lease-hardlink', 'helper-lease-inplace-write', 'helper-lease-aba',
+      'helper-build-provenance', 'helper-manifest', 'installed-authority-mutation',
+      'old-broker-marker', 'authority-pipe-spoof', 'authority-version',
+      'authority-client', 'authority-replay', 'authority-frames', 'authority-lifecycle',
       'no-runtime-compiler', 'forged-control-pipes', 'extra-child-denied',
       'job-assignment-failure', 'job-kill-on-close', 'launcher-unload', 'handle-leak',
     ]

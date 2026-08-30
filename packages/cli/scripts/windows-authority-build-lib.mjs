@@ -329,6 +329,11 @@ export const WINDOWS_BUILD_TOOL_DEPENDENCY_POLICY = Object.freeze({
     files: 53,
     bytes: "62411793",
   }),
+  "wix-runtime": Object.freeze({
+    sha256: "732cdbb86eda6156f859cda583c0e1632e0c1a213aaabc6bee052e335549b298",
+    files: 33,
+    bytes: "31929694",
+  }),
 });
 
 export function authorizeWindowsBuildToolSigner(role, observed) {

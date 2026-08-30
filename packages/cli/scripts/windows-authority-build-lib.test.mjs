@@ -123,9 +123,11 @@ test("canonical source binding rejects ambiguous bytes and stages only canonical
 
 test("every pinned Windows and fixture source hashes the same canonical bytes that are compiled", () => {
   const pins = new Map([
-    ["../native/windows-authority-bootstrap.c", "1b4dd2771e235bb1a4912095667f804a5611397b2706a4db1f7fe9357f7f975e"],
+    ["../native/windows-authority-bootstrap.c", "9c78ab7d06b43dcee72420ec6442fc639b5542a8ef76be3a46d281843d43ef72"],
     ["../native/windows-authority-broker.c", "f5b29a4b2f8fbcce41690e2363d90440d73fbebb10114ec0eae53e9653f34a4c"],
     ["../native/windows-authority-supervisor.cs", "68b38a53d073b032e9ed0c1f5e9c8a69c306b399524b654a691e3eb13d271aff"],
+    ["../native/windows-connect-authority-service.cs", "d192e97ac87d5d09188da0da9cca778ce9e9a578bd1bd22fc0b4d91a44b28d86"],
+    ["../native/windows-connect-authority.wxs", "ea9c99b8f212e7deb6948172a7e3dae1a888147a2610deb6946904c863d7f6f8"],
     ["../../../scripts/fixtures/windows-connect-docker-fixture.c", "3dac9791aa8c9f1dbe6f731bd72277e2b551bac94b72e50c66b71cb87164556c"],
     ["../../../test/fixtures/windowsAuthorityReplacementAttacker.c", "01ccc521cf6784f92cc33bbc4846b218625d61cb3b7dcbd9ed9366f50d12f6fa"],
   ]);
@@ -296,7 +298,8 @@ test("production signer pins cannot be copied from environment claims", () => {
   assert.match(buildSource, /bootstrapSourceSha256/u);
   assert.match(buildSource, /bootstrapSha256/u);
   assert.doesNotMatch(buildSource, /runBoundedBuildTool\(launcherOutput, \["system-paths-v1"\]/u);
-  assert.match(buildSource, /publishWindowsBuildArtifactNoReplace\(temporaryOutput, output\)/u);
+  assert.match(buildSource, /publishedOutput = publishOrVerifyBaseline\(temporaryOutput, output\)/u);
+  assert.doesNotMatch(buildSource, /rmSync\(output, \{ force: true \}\);\s*rmSync\(manifestPath/u);
 });
 
 test("native Windows directory authority accepts hosted and alternate-drive layouts", () => {
