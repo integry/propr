@@ -97,14 +97,18 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   let budgetModelId = modelId;
   let firstRoutingSession: SyntheticRoutingSession | undefined;
   if (agent instanceof SyntheticAgent) {
-    firstRoutingSession = AgentRegistry.getInstance().beginRoutingSession({
+    const registry = AgentRegistry.getInstance();
+    firstRoutingSession = registry.beginRoutingSession({
       requestedAgentAlias: agent.config.alias,
       requestedModel: modelId,
     });
-    const selection = await firstRoutingSession.select();
-    budgetModelId = `${selection.physicalAgentAlias}:${selection.physicalModel}`;
     const model = agent.syntheticConfig.models.find(item => item.id === modelId);
-    const enabledMembers = model?.members.filter(member => member.enabled) ?? [];
+    const enabledMembers = model?.members.filter(member => {
+      const directAgent = registry.getAgentByAlias(member.directAgentAlias);
+      return member.enabled
+        && directAgent?.config.enabled
+        && directAgent.config.supportedModels.includes(member.model);
+    }) ?? [];
     if (enabledMembers.length > 0) {
       const conservativeMember = enabledMembers.reduce((smallest, member) =>
         getModelHardLimit(`${member.directAgentAlias}:${member.model}`)
@@ -166,7 +170,6 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
       ? availableRoutingSession
       : AgentRegistry.getInstance().beginRoutingSession({ requestedAgentAlias: currentAgent.config.alias, requestedModel: currentModel });
     availableRoutingSession = route.fork();
-    await route.select();
     return route;
   };
 

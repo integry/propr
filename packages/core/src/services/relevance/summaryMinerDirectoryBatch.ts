@@ -13,7 +13,7 @@ import {
   recordPrimarySummarizationResponseFailure,
   recordSummarizationCooldown
 } from '../../config/configManager.js';
-import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
+import { SyntheticPoolExhaustedError, type SyntheticRoutingSession } from '../syntheticRoutingService.js';
 import {
   type DirectoryInfo, type DirectoryResult,
   buildBatchDirectoryPrompt, parseBatchDirectoryResponse
@@ -175,13 +175,14 @@ async function handlePrimaryDirectoryFailure(
 ): Promise<void> {
   const { agent, primaryAgentAliasSetting, fallbackAgent, fallbackAgentAliasSetting, fullName, branch } = options;
   const primaryAgentAlias = primaryAgentAliasSetting || agent.config.alias;
+  const syntheticRouteUnavailable = primaryError instanceof SyntheticPoolExhaustedError;
   // Only quota/usage-limit exhaustion and invalid model output switch to the
-  // fallback model. Other failures (transient outages, agent bugs, malformed
-  // prompts) propagate.
-  if (!isQuotaExhaustionError(primaryError)) {
+  // fallback model. An exhausted synthetic route is also eligible because it
+  // represents the configured primary pool being unavailable for this call.
+  if (!isQuotaExhaustionError(primaryError) && !syntheticRouteUnavailable) {
     if (isSummarizationInvalidResponseError(primaryError)) {
       if (fallbackAgent && fallbackAgentAliasSetting) {
-        await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, false);
+        await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, 'invalid-response');
         return;
       }
       await recordSummarizationCooldown({
@@ -195,6 +196,12 @@ async function handlePrimaryDirectoryFailure(
     throw primaryError;
   }
 
+  if (syntheticRouteUnavailable) {
+    if (!fallbackAgent || !fallbackAgentAliasSetting) throw primaryError;
+    await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, 'synthetic-route');
+    return;
+  }
+
   if (!fallbackAgent || !fallbackAgentAliasSetting) {
     await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias });
     await recordSummarizationCooldown({
@@ -206,17 +213,17 @@ async function handlePrimaryDirectoryFailure(
     throw new SummarizationCooldownRecordedError(primaryError);
   }
 
-  await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, true);
+  await analyzeDirectoryBatchWithFallbackAgent(primaryError, primaryAgentAlias, options, 'quota');
 }
 
 async function analyzeDirectoryBatchWithFallbackAgent(
   primaryError: unknown,
   primaryAgentAlias: string,
   options: ProcessDirectoryBatchOptions & { prompt: string; state: DirectoryBatchState },
-  primaryWasQuotaLimited: boolean
+  failureKind: 'quota' | 'invalid-response' | 'synthetic-route'
 ): Promise<void> {
   const { prompt, directories, fallbackAgent, fallbackModelOverride, fallbackModelUsed, fallbackAgentAliasSetting, fullName, branch, log, state } = options;
-  if (primaryWasQuotaLimited) {
+  if (failureKind === 'quota') {
     await recordPrimarySummarizationQuotaFailure({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
   }
   log.warn({
@@ -224,9 +231,11 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     primaryAgentAlias,
     fallbackAgentAlias: fallbackAgent?.config.alias,
     fallbackModel: fallbackModelUsed ?? fallbackModelOverride
-  }, primaryWasQuotaLimited
+  }, failureKind === 'quota'
     ? 'Primary directory summarization model quota-limited; retrying batch with fallback'
-    : 'Primary directory summarization returned unusable output; retrying batch with fallback');
+    : failureKind === 'synthetic-route'
+      ? 'Primary synthetic directory summarization route unavailable; retrying batch with fallback'
+      : 'Primary directory summarization returned unusable output; retrying batch with fallback');
 
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
@@ -243,7 +252,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
     state.fallbackAgentAlias = fallbackAgentAliasSetting;
     state.agentUsed = fallbackAgent as Agent;
     state.modelLogged = fallbackModelUsed ?? fallbackModelOverride ?? fallbackAgent?.config.defaultModel ?? 'unknown';
-    if (primaryWasQuotaLimited) {
+    if (failureKind === 'quota') {
       await clearSummarizationCooldown(fullName, branch, {
         primaryAgentAlias,
         fallbackAgentAlias: fallbackAgentAliasSetting,
@@ -255,7 +264,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       if (fallbackAgentAliasSetting) {
         await promoteSummarizationFallbackIfNeeded({ primaryAgentAlias, fallbackAgentAlias: fallbackAgentAliasSetting });
       }
-    } else if (isSummarizationInvalidResponseError(primaryError)) {
+    } else if (failureKind === 'invalid-response' && isSummarizationInvalidResponseError(primaryError)) {
       await recordPrimarySummarizationResponseFailure({
         primaryAgentAlias,
         fallbackAgentAlias: fallbackAgentAliasSetting as string,
@@ -263,7 +272,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       });
     }
   } catch (fallbackError) {
-    if (!primaryWasQuotaLimited) throw fallbackError;
+    if (failureKind !== 'quota') throw fallbackError;
     await recordSummarizationCooldown({
       repository: fullName,
       branch,

@@ -97,7 +97,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   await startDirectoryPhase(fullName, branch, totalDirs);
 
   const dirSummaryCache = new Map<string, string>();
-  const { modelId, maxBatchTokens, maxDirsPerBatch, routingSession: firstRoutingSession } = await computeDirectoryBatchBudget(agent, modelOverride, log);
+  const { modelId, maxBatchTokens, maxDirsPerBatch, routingSession: firstRoutingSession } = computeDirectoryBatchBudget(agent, modelOverride, log);
 
   const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   const initialConfig: SummarizationAgentConfig = {
@@ -120,7 +120,6 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
       ? availableRoutingSession
       : AgentRegistry.getInstance().beginRoutingSession({ requestedAgentAlias: currentAgent.config.alias, requestedModel: currentModel });
     availableRoutingSession = route.fork();
-    await route.select();
     return route;
   };
 
@@ -181,23 +180,27 @@ async function processDirectoryDepth(options: ProcessDepthOptions): Promise<Dire
   return state;
 }
 
-async function computeDirectoryBatchBudget(
+function computeDirectoryBatchBudget(
   agent: Agent,
   modelOverride: string | undefined,
   log: Logger
-): Promise<{ modelId: string; maxBatchTokens: number; maxDirsPerBatch: number; routingSession?: SyntheticRoutingSession }> {
+): { modelId: string; maxBatchTokens: number; maxDirsPerBatch: number; routingSession?: SyntheticRoutingSession } {
   const modelId = modelOverride || agent.config.defaultModel || 'default';
   let budgetModelId = modelId;
   let routingSession: SyntheticRoutingSession | undefined;
   if (agent instanceof SyntheticAgent) {
-    routingSession = AgentRegistry.getInstance().beginRoutingSession({
+    const registry = AgentRegistry.getInstance();
+    routingSession = registry.beginRoutingSession({
       requestedAgentAlias: agent.config.alias,
       requestedModel: modelId,
     });
-    const selection = await routingSession.select();
-    budgetModelId = `${selection.physicalAgentAlias}:${selection.physicalModel}`;
     const model = agent.syntheticConfig.models.find(item => item.id === modelId);
-    const enabledMembers = model?.members.filter(member => member.enabled) ?? [];
+    const enabledMembers = model?.members.filter(member => {
+      const directAgent = registry.getAgentByAlias(member.directAgentAlias);
+      return member.enabled
+        && directAgent?.config.enabled
+        && directAgent.config.supportedModels.includes(member.model);
+    }) ?? [];
     if (enabledMembers.length > 0) {
       const conservativeMember = enabledMembers.reduce((smallest, member) =>
         getModelHardLimit(`${member.directAgentAlias}:${member.model}`)

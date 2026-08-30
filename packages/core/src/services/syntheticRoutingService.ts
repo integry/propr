@@ -34,6 +34,33 @@ export * from './syntheticRoutingTypes.js';
 const DEFAULT_OUTPUT_RESERVE_TOKENS = 16_000;
 const DEFAULT_USAGE_FRESHNESS_MS = 5 * 60_000;
 
+/**
+ * Estimate every caller-provided field that can become part of an implementation
+ * model's input. Keep this calculation call-scoped so an early selection and all
+ * subsequent failover attempts use the same context constraint.
+ */
+export function estimateTaskRequiredTokens(options: AgentTaskOptions): number {
+  const inputParts = [options.prompt];
+  if (options.systemPrompt) inputParts.push(options.systemPrompt);
+  if (options.retryReason) inputParts.push(options.retryReason);
+  if (options.tools) inputParts.push(options.tools);
+
+  // A missing custom prompt makes the physical adapters generate one from the
+  // task metadata. Account for the token-bearing values used by that path.
+  if (!options.prompt) {
+    inputParts.push(
+      options.issueRef.repoOwner,
+      options.issueRef.repoName,
+      String(options.issueRef.number),
+      options.branchName || '',
+      options.model || '',
+      options.issueDetails ? JSON.stringify(options.issueDetails) || '' : '',
+    );
+  }
+
+  return estimateTokens(inputParts.join('\n')) + DEFAULT_OUTPUT_RESERVE_TOKENS;
+}
+
 interface EligibleMember {
   member: SyntheticModelMember;
   agent: Agent;
@@ -209,7 +236,7 @@ export class SyntheticRoutingSession {
   }
 
   async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-    this.constrain(estimateTokens(options.prompt) + DEFAULT_OUTPUT_RESERVE_TOKENS);
+    this.constrain(estimateTaskRequiredTokens(options));
     for (;;) {
       const selection = await this.select();
       this.executionAttemptCount += 1;

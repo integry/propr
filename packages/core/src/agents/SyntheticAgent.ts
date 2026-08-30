@@ -1,6 +1,6 @@
 import type { SyntheticAgentConfig } from '@propr/shared';
 import type { Agent, AgentConfig, AgentExecutionResult, AgentTaskOptions, AnalysisResult, AnalyzeOptions } from './types.js';
-import type { SyntheticRoutingService } from '../services/syntheticRoutingService.js';
+import { estimateTaskRequiredTokens, type SyntheticRoutingService } from '../services/syntheticRoutingService.js';
 import { estimateTokens } from '../utils/tokenCalculation.js';
 
 /** Agent facade that keeps the requested virtual identity while routing calls centrally. */
@@ -38,7 +38,7 @@ export class SyntheticAgent implements Agent {
     const session = this.routing.begin({
       requestedAgentAlias: this.config.alias,
       requestedModel: options.model || this.config.defaultModel,
-      promptTokens: estimateTokens(options.prompt),
+      requiredTokens: estimateTaskRequiredTokens(options),
     });
     return session.executeTask(options);
   }
