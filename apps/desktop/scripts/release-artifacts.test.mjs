@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, verify } from 'node:crypto';
-import { access, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -99,6 +99,13 @@ const peFixture = machine => {
   return bytes;
 };
 
+const machOFixture = cpuType => {
+  const bytes = Buffer.alloc(32);
+  bytes.writeUInt32LE(0xfeedfacf, 0);
+  bytes.writeUInt32LE(cpuType, 4);
+  return bytes;
+};
+
 const crcTable = Array.from({ length: 256 }, (_, value) => {
   let crc = value;
   for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
@@ -114,7 +121,7 @@ const storedZip = entries => {
   const localParts = [];
   const centralParts = [];
   let offset = 0;
-  for (const [name, contents] of entries) {
+  for (const [name, contents, unixMode = 0] of entries) {
     const nameBytes = Buffer.from(name);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
@@ -133,6 +140,7 @@ const storedZip = entries => {
     central.writeUInt32LE(contents.length, 20);
     central.writeUInt32LE(contents.length, 24);
     central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(((unixMode & 0xffff) << 16) >>> 0, 38);
     central.writeUInt32LE(offset, 42);
     centralParts.push(central, nameBytes);
     offset += local.length + nameBytes.length + contents.length;
@@ -483,9 +491,7 @@ describe('desktop release artifacts', () => {
     const root = await mkdtemp(join(tmpdir(), 'propr-release-canonical-archives-'));
     const fixtures = [
       ['linux.zip', 'zip', 'linux', 'x64', 'propr-desktop-linux-x64/propr-desktop', Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1, ...Array(12).fill(0), 62, 0])],
-      ['darwin.zip', 'zip', 'darwin', 'arm64', 'propr-desktop.app/Contents/MacOS/propr-desktop', (() => {
-        const bytes = Buffer.alloc(32); bytes.writeUInt32LE(0xfeedfacf, 0); bytes.writeUInt32LE(0x0100000c, 4); return bytes;
-      })()],
+      ['darwin.zip', 'zip', 'darwin', 'arm64', 'propr-desktop.app/Contents/MacOS/propr-desktop', machOFixture(0x0100000c)],
       ['windows.nupkg', 'nupkg', 'win32', 'x64', 'lib/net45/propr-desktop.exe', peFixture(0x8664)],
     ];
     for (const [name, kind, platform, arch, executablePath, bytes] of fixtures) {
@@ -494,6 +500,95 @@ describe('desktop release artifacts', () => {
       const result = await inspectArtifactArchitecture({ path, kind, platform, arch });
       assert.equal(result.executable.architectures[0], arch);
     }
+  });
+
+  test('accepts only the real Forge macOS framework-internal symbolic-link layout', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-darwin-framework-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const path = join(root, 'darwin.zip');
+    const framework = 'propr-desktop.app/Contents/Frameworks/Electron Framework.framework';
+    const symlink = (name, target) => [`${framework}/${name}`, Buffer.from(target), 0xa1ff];
+    await writeFile(path, storedZip([
+      ['propr-desktop.app/Contents/MacOS/propr-desktop', machOFixture(0x0100000c)],
+      [`${framework}/Versions/A/Electron Framework`, machOFixture(0x0100000c)],
+      [`${framework}/Versions/A/Resources/Info.plist`, Buffer.from('resources')],
+      [`${framework}/Versions/A/Libraries/libEGL.dylib`, Buffer.from('library')],
+      [`${framework}/Versions/A/Helpers/chrome_crashpad_handler`, Buffer.from('helper')],
+      symlink('Versions/Current', 'A'),
+      symlink('Electron Framework', 'Versions/Current/Electron Framework'),
+      symlink('Resources', 'Versions/Current/Resources'),
+      symlink('Libraries', 'Versions/Current/Libraries'),
+      symlink('Helpers', 'Versions/Current/Helpers'),
+    ]));
+
+    assert.deepEqual(
+      await inspectArtifactArchitecture({ path, kind: 'zip', platform: 'darwin', arch: 'arm64' }),
+      { format: 'zip', executable: { format: 'mach-o', architectures: ['arm64'] } },
+    );
+  });
+
+  test('rejects hostile macOS ZIP symbolic links before trusting their payloads', async context => {
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-hostile-darwin-links-'));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const executablePath = 'propr-desktop.app/Contents/MacOS/propr-desktop';
+    const framework = 'propr-desktop.app/Contents/Frameworks/Electron Framework.framework';
+    const executable = [executablePath, machOFixture(0x0100000c)];
+    const target = [`${framework}/Versions/A/Resources/Info.plist`, Buffer.from('resource')];
+    const link = (name, contents) => [`${framework}/${name}`, Buffer.isBuffer(contents) ? contents : Buffer.from(contents), 0xa1ff];
+    const cases = [
+      ['absolute', [executable, target, link('Resources', '/Applications')], /unsafe relative target/],
+      ['escaping', [executable, target, link('Resources', '../../../../MacOS')], /unsafe relative target/],
+      ['chained-escape', [
+        executable,
+        target,
+        link('Resources', 'Versions/Current/Resources'),
+        link('Versions/Current', '../../../../../outside'),
+      ], /unsafe relative target/],
+      ['cycle', [executable, target, link('Resources', 'Libraries'), link('Libraries', 'Resources')], /contains a cycle/],
+      ['oversized', [executable, target, link('Resources', Buffer.alloc(1025, 0x61))], /oversized payload/],
+      ['malformed-utf8', [executable, target, link('Resources', Buffer.from([0xc3, 0x28]))], /cannot be decoded strictly/],
+      ['duplicate', [executable, target, link('Resources', 'Versions/A/Resources'), link('Resources', 'Versions/A/Resources')], /duplicate or case-colliding/],
+      ['missing', [executable, target, link('Resources', 'Versions/B/Resources')], /missing target/],
+      ['case-mismatched-target', [executable, target, link('Resources', 'Versions/a/Resources')], /missing target/],
+      ['canonical-executable', [
+        [executablePath, Buffer.from('../Frameworks/Electron Framework.framework/Electron Framework'), 0xa1ff],
+        target,
+      ], /symbolic link outside canonical macOS framework internals/],
+      ['helper-executable', [
+        executable,
+        target,
+        ['propr-desktop.app/Contents/Frameworks/propr-desktop Helper.app/Contents/MacOS/propr-desktop Helper', Buffer.from('target'), 0xa1ff],
+      ], /symbolic link outside canonical macOS framework internals/],
+      ['nested-helper-executable', [
+        executable,
+        target,
+        [`${framework}/Helpers/propr-desktop Helper`, Buffer.from('Versions/A/Resources'), 0xa1ff],
+      ], /symbolic link outside canonical macOS framework internals/],
+      ['alternate-root', [executable, target, ['Other.app/Contents/Frameworks/Other.framework/Current', Buffer.from('A'), 0xa1ff]], /symbolic link outside canonical macOS framework internals/],
+      ['special-file', [executable, target, [`${framework}/special`, Buffer.from('special'), 0x11ff]], /symbolic link or special file/],
+    ];
+    for (const [name, entries, pattern] of cases) {
+      const path = join(root, `${name}.zip`);
+      await writeFile(path, storedZip(entries));
+      await assert.rejects(
+        inspectArtifactArchitecture({ path, kind: 'zip', platform: 'darwin', arch: 'arm64' }),
+        pattern,
+        name,
+      );
+    }
+
+    const crcPath = join(root, 'link-crc.zip');
+    const linkName = `${framework}/Resources`;
+    const crcBytes = storedZip([executable, target, link('Resources', 'Versions/A/Resources')]);
+    const localLinkRecord = crcBytes.indexOf(Buffer.from(`${linkName}Versions/A/Resources`));
+    assert.notEqual(localLinkRecord, -1);
+    const payloadOffset = localLinkRecord + Buffer.byteLength(linkName);
+    crcBytes[payloadOffset] ^= 1;
+    await writeFile(crcPath, crcBytes);
+    await assert.rejects(
+      inspectArtifactArchitecture({ path: crcPath, kind: 'zip', platform: 'darwin', arch: 'arm64' }),
+      /size or CRC is invalid/,
+    );
   });
 
   test('rejects unsafe, duplicate, shadowed, forged, alternate, and noncanonical archive layouts', async () => {

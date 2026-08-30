@@ -132,7 +132,7 @@ describe('DEB and RPM executable layouts', () => {
   });
 });
 
-describe('DMG application layout', () => {
+describe('DMG application layout', { skip: process.platform === 'win32' }, () => {
   const createDmgLayout = async root => {
     const macos = join(root, 'propr-desktop.app', 'Contents', 'MacOS');
     const frameworks = join(root, 'propr-desktop.app', 'Contents', 'Frameworks');
@@ -252,7 +252,7 @@ describe('DMG application layout', () => {
     );
   });
 
-  test('rejects special files inside the canonical application bundle', { skip: process.platform === 'win32' }, async context => {
+  test('rejects special files inside the canonical application bundle', async context => {
     const special = await mkdtemp(join(tmpdir(), 'propr-dmg-special-'));
     context.after(() => rm(special, { recursive: true, force: true }));
     await createDmgLayout(special);

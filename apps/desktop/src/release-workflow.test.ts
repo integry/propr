@@ -145,4 +145,20 @@ describe('desktop trusted release workflow', () => {
     assert.equal(normalizedFixture.match(platformArchitecturePattern)?.length, 12);
     assert.equal(normalizedFixture, workflow);
   });
+
+  test('runs the native DMG layout suite on both macOS architectures', () => {
+    for (const [jobName, section] of [
+      ['unsigned validation', job('package', 'finalize')],
+      ['trusted production', job('release-package', 'release-finalize')],
+    ] as const) {
+      assert.match(section, /- platform: darwin\n\s+arch: x64\n\s+runner: macos-15-intel/, `${jobName} is missing native macOS x64`);
+      assert.match(section, /- platform: darwin\n\s+arch: arm64\n\s+runner: macos-15/, `${jobName} is missing native macOS arm64`);
+      assert.match(
+        section,
+        /- name: Typecheck and test (?:unsigned|production) desktop runtime\n\s+shell: bash\n\s+run: \|\n\s+npm run desktop:typecheck\n\s+npm run desktop:test/,
+        `${jobName} must run the complete desktop tests without a platform condition`,
+      );
+      assert.match(section, /Expected \$\{process\.env\.EXPECTED_PLATFORM\}-\$\{process\.env\.EXPECTED_ARCH\}/);
+    }
+  });
 });

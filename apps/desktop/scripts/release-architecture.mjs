@@ -15,6 +15,8 @@ const DMG_HELPER_BUNDLES = new Set([
   `${EXECUTABLE_NAME} Helper (Plugin).app`,
   `${EXECUTABLE_NAME} Helper (Renderer).app`,
 ]);
+const DMG_HELPER_EXECUTABLES = new Set([...DMG_HELPER_BUNDLES]
+  .map(name => name.slice(0, -'.app'.length).toLocaleLowerCase('en-US')));
 const LINUX_APP_DIRECTORY = join('usr', 'lib', EXECUTABLE_NAME);
 const LINUX_PAYLOAD = join(LINUX_APP_DIRECTORY, EXECUTABLE_NAME);
 const LINUX_LAUNCHER = join('usr', 'bin', EXECUTABLE_NAME);
@@ -24,6 +26,8 @@ const MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024;
 const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const MAX_ZIP_ENTRY_METADATA_BYTES = 1024 * 1024;
 const MAX_ZIP_ENTRIES = 100_000;
+const MAX_ZIP_SYMLINK_BYTES = 1024;
+const MAX_ZIP_SYMLINKS = 32;
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 const EXPECTED_PACKAGE_ARCHITECTURE = {
   deb: { x64: 'amd64', arm64: 'arm64' },
@@ -325,6 +329,82 @@ const archiveExecutablePath = (kind, platform, arch) => {
   throw new Error(`${kind} does not have a canonical executable path for ${platform}-${arch}`);
 };
 
+const darwinFrameworkRoot = entryPath => {
+  const components = entryPath.split('/');
+  if (components.length < 5
+    || components[0] !== `${EXECUTABLE_NAME}.app`
+    || components[1] !== 'Contents'
+    || components[2] !== 'Frameworks'
+    || !components[3].endsWith('.framework')
+    || components[3] === '.framework'
+    || components.slice(4).some(component => component.toLocaleLowerCase('en-US').endsWith('.app'))
+    || DMG_HELPER_EXECUTABLES.has(components.at(-1).toLocaleLowerCase('en-US'))) return undefined;
+  return components.slice(0, 4).join('/');
+};
+
+const decodeZipSymlinkTarget = entry => {
+  if (entry.bytes.length === 0 || entry.bytes.length > MAX_ZIP_SYMLINK_BYTES) {
+    throw new Error(`ZIP symbolic link ${entry.name} has an empty or oversized payload`);
+  }
+  let target;
+  try {
+    target = UTF8_DECODER.decode(entry.bytes);
+  } catch (error) {
+    throw new Error(`ZIP symbolic link ${entry.name} target cannot be decoded strictly: ${error.message}`);
+  }
+  if (target.includes('\0') || target.includes('\\') || target.normalize('NFC') !== target
+    || target.startsWith('/') || target.startsWith('//') || /^[A-Za-z]:/.test(target)
+    || posix.normalize(target) !== target
+    || target.split('/').some(component => !component || component === '.' || component === '..')) {
+    throw new Error(`ZIP symbolic link ${entry.name} has an unsafe relative target`);
+  }
+  return target;
+};
+
+const validateDarwinFrameworkSymlinks = entries => {
+  const symlinks = entries.filter(entry => entry.symbolicLink);
+  if (symlinks.length > MAX_ZIP_SYMLINKS) throw new Error('ZIP contains too many symbolic links');
+  const entriesByPath = new Map(entries.map(entry => [entry.path, entry]));
+  const entryPaths = [...entriesByPath.keys()];
+  for (const entry of symlinks) entry.target = decodeZipSymlinkTarget(entry);
+
+  const pathExistsAsDirectory = candidate => entryPaths.some(entryPath => entryPath.startsWith(`${candidate}/`));
+  for (const link of symlinks) {
+    const frameworkRoot = link.frameworkRoot;
+    let components = link.path.split('/');
+    const visited = new Set();
+    let index = 0;
+    while (index < components.length) {
+      const candidate = components.slice(0, index + 1).join('/');
+      const entry = entriesByPath.get(candidate);
+      if (entry?.symbolicLink) {
+        if (visited.has(candidate)) throw new Error(`ZIP symbolic link ${link.name} contains a cycle`);
+        visited.add(candidate);
+        if (visited.size > MAX_ZIP_SYMLINKS) throw new Error(`ZIP symbolic link ${link.name} chain is too long`);
+        const resolvedTarget = posix.normalize(posix.join(posix.dirname(candidate), entry.target));
+        if (resolvedTarget !== frameworkRoot && !resolvedTarget.startsWith(`${frameworkRoot}/`)) {
+          throw new Error(`ZIP symbolic link ${link.name} escapes its canonical framework`);
+        }
+        components = [...resolvedTarget.split('/'), ...components.slice(index + 1)];
+        index = 0;
+        continue;
+      }
+      const hasRemainingComponents = index < components.length - 1;
+      if (!entry && !pathExistsAsDirectory(candidate)) {
+        throw new Error(`ZIP symbolic link ${link.name} has a missing target ${candidate}`);
+      }
+      if (hasRemainingComponents && entry && !entry.directory) {
+        throw new Error(`ZIP symbolic link ${link.name} traverses non-directory target ${candidate}`);
+      }
+      index += 1;
+    }
+    const resolved = components.join('/');
+    if (resolved !== frameworkRoot && !resolved.startsWith(`${frameworkRoot}/`)) {
+      throw new Error(`ZIP symbolic link ${link.name} escapes its canonical framework`);
+    }
+  }
+};
+
 const readValidatedZipExecutable = async (path, kind, platform, arch) => {
   const handle = await open(path, 'r');
   try {
@@ -382,13 +462,34 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
       const extra = central.subarray(offset + 46 + nameLength, offset + 46 + nameLength + extraLength);
       validateExtraFields(extra, `ZIP entry ${decoded.name}`);
       const unixType = (externalAttributes >>> 16) & 0xf000;
-      if (unixType && unixType !== 0x4000 && unixType !== 0x8000) {
+      const symbolicLink = unixType === 0xa000;
+      const frameworkRoot = symbolicLink && kind === 'zip' && platform === 'darwin'
+        ? darwinFrameworkRoot(decoded.path)
+        : undefined;
+      if (symbolicLink && (!frameworkRoot || decoded.directory)) {
+        throw new Error(`ZIP entry ${decoded.name} is a symbolic link outside canonical macOS framework internals`);
+      }
+      if (unixType && unixType !== 0x4000 && unixType !== 0x8000 && !symbolicLink) {
         throw new Error(`ZIP entry ${decoded.name} is a symbolic link or special file`);
       }
       if ((decoded.directory && unixType === 0x8000) || (!decoded.directory && unixType === 0x4000)) {
         throw new Error(`ZIP entry ${decoded.name} has conflicting file and directory metadata`);
       }
-      entries.push({ ...decoded, flags, method, checksum, compressedSize, uncompressedSize, localOffset, nameBytes });
+      if (symbolicLink && (compressedSize > MAX_ZIP_SYMLINK_BYTES || uncompressedSize > MAX_ZIP_SYMLINK_BYTES)) {
+        throw new Error(`ZIP symbolic link ${decoded.name} has an oversized payload`);
+      }
+      entries.push({
+        ...decoded,
+        flags,
+        method,
+        checksum,
+        compressedSize,
+        uncompressedSize,
+        localOffset,
+        nameBytes,
+        symbolicLink,
+        frameworkRoot,
+      });
       offset = nextOffset;
     }
     if (entries.length !== entryCount) throw new Error('ZIP central directory entry count is inconsistent');
@@ -488,6 +589,7 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
         throw new Error(`ZIP central and local sizes or CRC disagree for ${entry.name}`);
       }
       ranges.push({ start: entry.localOffset, end: recordEnd, name: entry.name });
+      if (entry.symbolicLink) entry.bytes = bytes;
       if (entry.path === canonicalExecutable) executableBytes = bytes;
     }
     ranges.sort((left, right) => left.start - right.start);
@@ -499,6 +601,7 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
       expectedOffset = range.end;
     }
     if (expectedOffset !== centralOffset) throw new Error('ZIP contains unclaimed data before its central directory');
+    validateDarwinFrameworkSymlinks(entries);
     if (!executableBytes) throw new Error(`ZIP is missing canonical executable ${canonicalExecutable}`);
     return executableBytes;
   } finally {
