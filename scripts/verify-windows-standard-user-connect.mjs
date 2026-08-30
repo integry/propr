@@ -37,6 +37,13 @@ const data = join(root, "data");
 const endpoint = "https://t-abc123.propr.dev";
 const identity = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
+function tunnelFixtureEnvLines({ enabled }) {
+  return [
+    `PROPR_UI_TUNNEL_ENABLED=${enabled ? "true" : "false"}`,
+    ...(enabled ? ["PROPR_UI_TUNNEL_TOKEN=root-token-SENTINEL"] : []),
+  ];
+}
+
 const scenarioAllowlist = Object.freeze([
   "ready", "down", "disabled", "restart-required", "malformed", "oversized", "timeout",
   "identity-mismatch", "secret-sentinel", "api",
@@ -128,8 +135,7 @@ try {
       "PROPR_STACK=authorized",
       "PROPR_INSTANCE_ID=abc123",
       `PROPR_UI_PUBLIC_API_URL=${endpoint}`,
-      `PROPR_UI_TUNNEL_ENABLED=${scenario.enabled ? "true" : "false"}`,
-      "PROPR_UI_TUNNEL_TOKEN=root-token-SENTINEL",
+      ...tunnelFixtureEnvLines(scenario),
       "",
     ].join("\n"));
     currentStage = "spawn";

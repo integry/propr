@@ -29,6 +29,44 @@ function diagnosticDefinitions(): {
   })`) as ReturnType<typeof diagnosticDefinitions>;
 }
 
+type FixtureScenario = { name: string; enabled: boolean };
+
+function tunnelFixtureEnvLines(scenario: FixtureScenario): string[] {
+  const start = harness.indexOf('function tunnelFixtureEnvLines(');
+  const end = harness.indexOf('\n\nconst scenarioAllowlist =', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const definitions = runInNewContext(`${harness.slice(start, end)}\n({ tunnelFixtureEnvLines })`) as {
+    tunnelFixtureEnvLines: (value: FixtureScenario) => string[];
+  };
+  return [...definitions.tunnelFixtureEnvLines(scenario)];
+}
+
+function fixtureScenarios(): FixtureScenario[] {
+  const start = harness.indexOf('const cases = [');
+  const end = harness.indexOf('\n];', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return runInNewContext(`${harness.slice(start, end + 3)}\ncases`) as FixtureScenario[];
+}
+
+test('the disabled Windows scenario omits its token while enabled scenarios retain the sentinel', () => {
+  const scenarios = fixtureScenarios();
+  const disabled = scenarios.find((scenario) => scenario.name === 'disabled');
+  assert.ok(disabled);
+  assert.equal(disabled.enabled, false);
+  assert.deepEqual(tunnelFixtureEnvLines(disabled), [
+    'PROPR_UI_TUNNEL_ENABLED=false',
+  ]);
+  for (const scenario of scenarios.filter(({ name }) => name !== 'disabled')) {
+    assert.equal(scenario.enabled, true, scenario.name);
+    assert.deepEqual(tunnelFixtureEnvLines(scenario), [
+      'PROPR_UI_TUNNEL_ENABLED=true',
+      'PROPR_UI_TUNNEL_TOKEN=root-token-SENTINEL',
+    ], scenario.name);
+  }
+});
+
 test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all other values', () => {
   const definitions = diagnosticDefinitions();
   assert.deepEqual([...definitions.scenarioAllowlist], [
