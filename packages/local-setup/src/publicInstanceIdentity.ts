@@ -247,7 +247,7 @@ async function recoverPublishedLinkRemnant(
       || !sameIdentity(recoveryAfterIdentity, namedRecovery)
     ) throw new Error("public identity hardlink state changed during recovery");
     directory.unlink(READY_NAME);
-    fsyncSync(directory.fd);
+    syncDirectory(directory.fd);
     await options.onBoundary?.("directory-synced");
     return await readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options) ?? recovered;
   } finally {
@@ -262,6 +262,13 @@ function unlinkIfPresent(directory: PinnedPublicIdentityDirectory, name: string)
   } catch (error) {
     if (errno(error) !== "ENOENT") throw error;
   }
+}
+
+function syncDirectory(fd: number): void {
+  // FlushFileBuffers does not support directory handles on Windows. The
+  // identity file itself is flushed before publication; retain directory
+  // syncing on platforms where the operation is supported.
+  if (process.platform !== "win32") fsyncSync(fd);
 }
 
 async function publishRecovery(
@@ -287,7 +294,7 @@ async function publishRecovery(
       if (recoveryFd !== undefined) closeSync(recoveryFd);
     }
     unlinkIfPresent(directory, READY_NAME);
-    fsyncSync(directory.fd);
+    syncDirectory(directory.fd);
     return undefined;
   }
 
@@ -298,7 +305,7 @@ async function publishRecovery(
     if (errno(error) !== "EEXIST") throw error;
     unlinkIfPresent(directory, READY_NAME);
   }
-  fsyncSync(directory.fd);
+  syncDirectory(directory.fd);
   await onBoundary?.("directory-synced");
   try {
     return await readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, { onBoundary }) ?? recovered;

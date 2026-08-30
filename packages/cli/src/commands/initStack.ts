@@ -9,7 +9,7 @@
 
 import { Command } from "commander";
 import { randomBytes } from "node:crypto";
-import { existsSync, chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, chmodSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -179,7 +179,12 @@ export async function scaffoldStack(
   // The public installation identity belongs to the durable data boundary, not
   // .env or a tunnel credential. Re-scaffolding/upgrading preserves it; replacing
   // the stack data creates a fresh identity on the next initialization.
-  await getOrCreatePublicInstanceIdentity(join(rootDir, "data"));
+  // macOS commonly spells its temporary-directory ancestor as /var even
+  // though the already-created root is canonically beneath /private/var.
+  // Canonicalize the root, then append the literal data entry so the identity
+  // layer still observes and rejects a symlink at data itself.
+  const canonicalRootDir = realpathSync.native(rootDir);
+  await getOrCreatePublicInstanceIdentity(join(canonicalRootDir, "data"));
 
   // 2. Load the environment content that will be used below.
   const envExists = existsSync(envPath);

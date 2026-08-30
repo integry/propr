@@ -81,6 +81,8 @@ test('the ordinary-user Windows diagnostic has fixed allowlists and redacts all 
     'identity-mismatch', 'secret-sentinel', 'api',
   ]);
   assert.deepEqual([...definitions.assertionStageAllowlist], [
+    'authority-probe', 'scaffold', 'identity-assertion', 'config-init', 'config-save',
+    'config-assertion',
     'write-env', 'spawn', 'signal', 'exit', 'bounds', 'schema', 'status', 'endpoint',
     'identity', 'reasons', 'api-ready', 'restart', 'stderr', 'sentinel', 'api-spawn',
     'api-exit', 'api-count',

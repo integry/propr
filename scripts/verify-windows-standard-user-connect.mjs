@@ -51,6 +51,8 @@ const scenarioAllowlist = Object.freeze([
   "identity-mismatch", "secret-sentinel", "api",
 ]);
 const assertionStageAllowlist = Object.freeze([
+  "authority-probe", "scaffold", "identity-assertion", "config-init", "config-save",
+  "config-assertion",
   "write-env", "spawn", "signal", "exit", "bounds", "schema", "status", "endpoint",
   "identity", "reasons", "api-ready", "restart", "stderr", "sentinel", "api-spawn",
   "api-exit", "api-count",
@@ -115,6 +117,7 @@ let currentStage = "write-env";
 let failureStatus = null;
 try {
   assert.ok(expectedUser && actualUser.toLowerCase() === expectedUser.toLowerCase(), "proof did not run as the limited user");
+  currentStage = "authority-probe";
   const authority = await import(authorityModule);
   await assert.rejects(
     authority.protectWindowsSetupEntries([{ path: root, kind: "directory" }]),
@@ -126,6 +129,7 @@ try {
 
   // Discovery authority remains unavailable, but it must not be invoked by
   // the CLI mutation paths which existed before discovery was introduced.
+  currentStage = "scaffold";
   const { scaffoldStack } = await import(initStackModule);
   const mutationRoot = realpathSync.native(mkdtempSync(join(fixture, "stack-")));
   writeFileSync(join(mutationRoot, ".env"), "SESSION_SECRET=existing\nNODE_ENV=production\n");
@@ -133,14 +137,18 @@ try {
     { root: mutationRoot },
     { persistStackRoot: async () => undefined },
   );
+  currentStage = "identity-assertion";
   assert.equal(scaffold.envSkipped, true);
   assert.ok(readFileSync(join(mutationRoot, "data", "public-instance-identity.json"), "utf8").length > 0);
 
+  currentStage = "config-init";
   const { ConfigManager } = await import(configManagerModule);
   const configDirectory = join(fixture, "config");
   const manager = new ConfigManager(configDirectory, { warn: () => undefined });
   await manager.init();
+  currentStage = "config-save";
   await manager.save();
+  currentStage = "config-assertion";
   assert.deepEqual(JSON.parse(readFileSync(join(configDirectory, "config.json"), "utf8")), {});
 
   mkdirSync(data, { recursive: true });
