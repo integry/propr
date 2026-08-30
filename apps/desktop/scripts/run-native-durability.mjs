@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 const EXPECTED = Object.freeze({
   'credential-service': 36,
-  'profile-store': 32,
+  'profile-store': 34,
 });
 const expectedTotal = Object.values(EXPECTED).reduce((total, count) => total + count, 0);
 const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'));
@@ -61,6 +61,8 @@ const countedCategory = (category, expected) => ({
 const scenarioCategories = {
   barriers: reportedCategory('barriers'),
   'transaction-boundaries': reportedCategory('transaction-boundaries'),
+  'bootstrap-migration': reportedCategory('bootstrap-migration'),
+  'verified-handle-swap': reportedCategory('verified-handle-swap'),
   'reordered-visibility': reportedCategory('reordered-visibility'),
   'mirror-repair': countedCategory('mirror-repair', 6),
   'revocation-crash': countedCategory('revocation-crash', 2),

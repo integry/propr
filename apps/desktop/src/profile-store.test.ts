@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
@@ -19,6 +19,14 @@ const NATIVE_VISIBILITY_SCENARIOS = [
   'mirror-missing', 'mirror-truncated', 'mirror-malformed', 'mirror-stale',
   'mirror-schema-invalid', 'mirror-attacker', 'alternate-slot-rollback',
 ] as const;
+const RECOVERY_KILL_STEPS: ProfileStoreDurabilityStep[] = [
+  'state-written', 'state-fsynced',
+  'journal-written', 'journal-fsynced', 'journal-closed', 'journal-reopened',
+  'journal-prepared-verified', 'journal-committed', 'journal-commit-fsynced',
+  'journal-commit-verified', 'journal-commit-closed', 'state-renamed',
+  ...(process.platform === 'win32' ? [] : ['state-directory-fsynced'] as const),
+];
+const RECOVERY_KILL_MODES = ['bootstrap', 'migration-v1', 'migration-v2'] as const;
 
 const createDirectory = async (): Promise<string> => {
   const directory = await mkdtemp(join(tmpdir(), 'propr-desktop-test-'));
@@ -48,6 +56,39 @@ const bounded = <T>(promise: Promise<T>, milliseconds = 1_000): Promise<T> => {
   return Promise.race([promise, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
   });
+};
+
+const legacyProfile = {
+  id: 'profile-1', label: 'Legacy', apiBaseUrl: 'https://propr.example.com',
+  createdAt: '2026-08-29T00:00:00.000Z', updatedAt: '2026-08-29T00:00:00.000Z',
+};
+
+const seedRecoveryMode = async (
+  directory: string,
+  mode: (typeof RECOVERY_KILL_MODES)[number],
+): Promise<void> => {
+  if (mode === 'bootstrap') return;
+  const desktop = join(directory, 'desktop');
+  const credentials = join(desktop, 'credentials');
+  await mkdir(credentials, { recursive: true });
+  if (mode === 'migration-v1') {
+    await writeFile(join(desktop, 'profiles.json'), JSON.stringify({
+      version: 1, activeProfileId: legacyProfile.id, profiles: [legacyProfile],
+    }));
+    await writeFile(
+      join(credentials, `${legacyProfile.id}.bin`),
+      encryption().encrypt(JSON.stringify(credential(legacyProfile.id))),
+    );
+    return;
+  }
+  const slot = `${legacyProfile.id}.00000000-0000-4000-8000-000000000001.bin`;
+  await writeFile(join(credentials, slot), encryption().encrypt(JSON.stringify(credential(legacyProfile.id))));
+  await writeFile(join(desktop, 'profiles.json'), JSON.stringify({
+    version: 2,
+    activeProfileId: legacyProfile.id,
+    profiles: [legacyProfile],
+    credentialSlots: { [legacyProfile.id]: slot },
+  }));
 };
 
 afterEach(async () => {
@@ -523,10 +564,11 @@ describe('desktop profile store', () => {
       ...(process.platform === 'win32' ? [] : ['credential-directory-fsynced'] as const),
       'state-written', 'state-fsynced', 'journal-written', 'journal-fsynced',
       'journal-closed', 'journal-reopened', 'journal-prepared-verified',
-      'journal-committed', 'journal-commit-fsynced', 'state-renamed',
+      'journal-committed', 'journal-commit-fsynced', 'journal-commit-verified',
+      'journal-commit-closed', 'state-renamed',
       ...(process.platform === 'win32' ? [] : ['state-directory-fsynced'] as const),
     ];
-    assert.equal(steps.length, process.platform === 'win32' ? 14 : 16);
+    assert.equal(steps.length, process.platform === 'win32' ? 16 : 18);
     let completed = 0;
     for (const step of steps) {
       const directory = await createDirectory();
@@ -552,6 +594,8 @@ describe('desktop profile store', () => {
       const snapshot = await restarted.readProfileCredential(profileA.id);
       const committed = step === 'journal-committed'
         || step === 'journal-commit-fsynced'
+        || step === 'journal-commit-verified'
+        || step === 'journal-commit-closed'
         || step === 'state-renamed'
         || step === 'state-directory-fsynced';
       assert.equal(snapshot.profile?.label, committed ? 'Replacement' : 'Original', step);
@@ -565,6 +609,136 @@ describe('desktop profile store', () => {
     }
     assert.equal(completed, steps.length, 'a native durability boundary fixture was skipped');
     console.log(`NATIVE_CATEGORY transaction-boundaries expected=${steps.length} executed=${completed}`);
+  });
+
+  it('recovers every first bootstrap and v1/v2 migration child-process kill without activating prepared B', async () => {
+    let completed = 0;
+    for (const mode of RECOVERY_KILL_MODES) {
+      for (const step of RECOVERY_KILL_STEPS) {
+        const directory = await createDirectory();
+        await seedRecoveryMode(directory, mode);
+        const child = spawn(process.execPath, [
+          '--import', 'tsx', join(import.meta.dirname, 'profile-store-crash-fixture.ts'),
+          directory, `recovery:${mode}:${step}`,
+        ], { stdio: 'ignore' });
+        const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+          child.once('exit', (code, signal) => resolve({ code, signal }));
+        });
+        assert.equal(
+          result.signal === 'SIGKILL' || (process.platform === 'win32' && result.code !== 0),
+          true,
+          `${mode}/${step}: child did not crash at the requested boundary`,
+        );
+
+        const desktop = join(directory, 'desktop');
+        const committed = step === 'journal-committed'
+          || step === 'journal-commit-fsynced'
+          || step === 'journal-commit-verified'
+          || step === 'journal-commit-closed'
+          || step === 'state-renamed'
+          || step === 'state-directory-fsynced';
+        const journals = await Promise.all([0, 1].map(async index => {
+          try { return await readFile(join(desktop, `profiles.journal.${index}`), 'utf8'); } catch { return null; }
+        }));
+        if (committed) assert.equal(journals.some(value => value?.startsWith('C')), true, `${mode}/${step}`);
+        else assert.equal(journals.some(value => value?.startsWith('C')), false, `${mode}/${step}`);
+
+        for (let restart = 0; restart < 3; restart += 1) {
+          const recovered = new ProfileStore(directory, encryption());
+          if (mode === 'bootstrap') {
+            assert.deepEqual(await recovered.list(), { profiles: [], activeProfileId: null }, `${mode}/${step}/${restart}`);
+          } else {
+            const snapshot = await recovered.readProfileCredential(legacyProfile.id);
+            assert.deepEqual(snapshot.profile, legacyProfile, `${mode}/${step}/${restart}`);
+            assert.deepEqual(snapshot.credential, credential(legacyProfile.id), `${mode}/${step}/${restart}`);
+            assert.equal(snapshot.activeProfileId, legacyProfile.id, `${mode}/${step}/${restart}`);
+            assert.match(snapshot.identityEpoch ?? '', /^[A-Za-z0-9_-]{22}$/, `${mode}/${step}/${restart}`);
+          }
+          const state = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as { version: number };
+          assert.equal(state.version, 3, `${mode}/${step}/${restart}`);
+        }
+        completed += 1;
+      }
+    }
+    assert.equal(completed, RECOVERY_KILL_MODES.length * RECOVERY_KILL_STEPS.length);
+    console.log(`NATIVE_CATEGORY bootstrap-migration expected=${completed} executed=${completed}`);
+  });
+
+  it('binds verified prepared bytes to one handle across same-size swaps and path-restoration ABA', async () => {
+    let completed = 0;
+    for (const restoreOriginalPath of [false, true]) {
+      const directory = await createDirectory();
+      const desktop = join(directory, 'desktop');
+      let swapPrepared = false;
+      let attackerPath = '';
+      const store = new ProfileStore(directory, encryption(), {
+        afterDurabilityStep: async step => {
+          if (!swapPrepared || step !== 'journal-prepared-verified') return;
+          swapPrepared = false;
+          const state = JSON.parse(await readFile(join(desktop, 'profiles.json'), 'utf8')) as { generation: string };
+          const preparedPath = join(desktop, `profiles.journal.${Number((BigInt(state.generation) + 1n) % 2n)}`);
+          const preparedContents = await readFile(preparedPath, 'utf8');
+          assert.equal(preparedContents[0], 'P');
+          const envelope = JSON.parse(preparedContents.slice(1)) as {
+            version: 2; generation: string; encryptedPayload: string; checksum: string;
+          };
+          const payload = JSON.parse(encryption().decrypt(Buffer.from(envelope.encryptedPayload, 'base64url'))) as {
+            state: { profiles: Array<{ label: string }>; credentialSlots: Record<string, string> };
+            encryptedSlots: Record<string, string>;
+          };
+          payload.state.profiles[0].label = 'Attacker!!!';
+          const slot = payload.state.credentialSlots['profile-1'];
+          const attackerCredential = JSON.parse(
+            encryption().decrypt(Buffer.from(payload.encryptedSlots[slot], 'base64url')),
+          ) as ReturnType<typeof credential>;
+          attackerCredential.token = `propr_it_${'X'.repeat(43)}`;
+          payload.encryptedSlots[slot] = encryption().encrypt(JSON.stringify(attackerCredential)).toString('base64url');
+          const encryptedPayload = encryption().encrypt(JSON.stringify(payload)).toString('base64url');
+          const attackerContents = `P${JSON.stringify({
+            ...envelope,
+            encryptedPayload,
+            checksum: createHash('sha256').update(encryptedPayload).digest('base64url'),
+          })}\n`;
+          assert.equal(Buffer.byteLength(attackerContents), Buffer.byteLength(preparedContents));
+          const heldPath = `${preparedPath}.held`;
+          attackerPath = restoreOriginalPath ? `${preparedPath}.attacker` : preparedPath;
+          await rename(preparedPath, heldPath);
+          await writeFile(preparedPath, attackerContents, { mode: 0o600 });
+          if (restoreOriginalPath) {
+            await rename(preparedPath, attackerPath);
+            await rename(heldPath, preparedPath);
+          }
+        },
+      });
+      const profile = await store.save({
+        id: 'profile-1', label: 'Original', apiBaseUrl: 'https://propr.example.com',
+      });
+      const credentialA = credential(profile.id, 'A');
+      await store.writeCredential(credentialA);
+      const baseline = await store.readProfileCredential(profile.id);
+      swapPrepared = true;
+      const transaction = store.commitPairedProfile(
+        { id: profile.id, label: 'Replacement', apiBaseUrl: profile.apiBaseUrl },
+        credential(profile.id, 'B'), baseline, () => true,
+      );
+      if (restoreOriginalPath) {
+        const committed = await transaction;
+        assert.ok(committed && !('stored' in committed));
+      } else {
+        await assert.rejects(transaction, /Desktop profile recovery state is unavailable/);
+      }
+      assert.equal((await readFile(attackerPath, 'utf8')).startsWith('P'), true);
+
+      const restarted = new ProfileStore(directory, encryption());
+      const snapshot = await restarted.readProfileCredential(profile.id);
+      assert.equal(snapshot.profile?.label, restoreOriginalPath ? 'Replacement' : 'Original');
+      assert.deepEqual(snapshot.credential, credential(profile.id, restoreOriginalPath ? 'B' : 'A'));
+      assert.notEqual(snapshot.profile?.label, 'Attacker!!!');
+      assert.notDeepEqual(snapshot.credential, credential(profile.id, 'X'));
+      completed += 1;
+    }
+    assert.equal(completed, 2);
+    console.log(`NATIVE_CATEGORY verified-handle-swap expected=2 executed=${completed}`);
   });
 
   for (const visibility of ['pointer-rollback', 'missing-target', 'state-before-journal'] as const) {

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { ProfileStore, type EncryptionProvider, type ProfileStoreDurabilityStep } from './profile-store';
 
 const [directory, requestedStep] = process.argv.slice(2) as [string, string];
-const crashStep = requestedStep as ProfileStoreDurabilityStep;
+const crashStep = requestedStep.split(':').at(-1) as ProfileStoreDurabilityStep;
 const encryption: EncryptionProvider = {
   isEncryptionAvailable: () => true,
   backend: () => 'keychain',
@@ -15,6 +15,10 @@ const store = new ProfileStore(directory, encryption, {
     if (!requestedStep.startsWith('visibility:') && step === crashStep) process.kill(process.pid, 'SIGKILL');
   },
 });
+if (requestedStep.startsWith('recovery:')) {
+  await store.list();
+  throw new Error(`Recovery fixture did not reach ${crashStep}`);
+}
 const desktop = join(directory, 'desktop');
 const stateA = requestedStep.startsWith('visibility:')
   ? await readFile(join(desktop, 'profiles.json'))

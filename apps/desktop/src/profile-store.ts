@@ -1,6 +1,18 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+  type FileHandle,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   DesktopProfile,
@@ -124,6 +136,8 @@ export type ProfileStoreDurabilityStep =
   | 'journal-prepared-verified'
   | 'journal-committed'
   | 'journal-commit-fsynced'
+  | 'journal-commit-verified'
+  | 'journal-commit-closed'
   | 'state-renamed'
   | 'state-directory-fsynced'
   | 'old-credential-removed';
@@ -846,35 +860,30 @@ export class ProfileStore {
     }
     await this.#step('journal-closed');
 
-    // Verification deliberately reopens the prepared slot and does not use an
-    // in-memory authentication cache. This proves the exact persisted bytes,
-    // encrypted schema, generation, and every active/pending credential link.
+    // Verification deliberately reopens the prepared slot through a writable
+    // handle and does not use an in-memory authentication cache. The same held
+    // handle remains bound to the verified bytes through C publication.
     await this.#io('journal-reopen');
-    const verificationHandle = await open(path, constants.O_RDONLY);
-    let verifiedContents: string;
+    const verificationHandle = await open(path, constants.O_RDWR);
     try {
       await this.#step('journal-reopened');
-      verifiedContents = await verificationHandle.readFile('utf8');
-    } finally {
-      await verificationHandle.close();
-    }
-    await this.#io('journal-verify');
-    if (verifiedContents !== preparedContents) throw new Error(RECOVERY_ERROR);
-    const prepared = await this.#authenticateJournal(verifiedContents, false, false);
-    if (prepared.generation !== BigInt(state.generation)
-      || JSON.stringify(prepared.state) !== JSON.stringify(state)
-      || JSON.stringify(prepared.encryptedSlots) !== JSON.stringify(encryptedSlots)) {
-      throw new Error(RECOVERY_ERROR);
-    }
-    await this.#step('journal-prepared-verified');
+      const verifiedContents = await this.#readHandleContents(verificationHandle);
+      await this.#io('journal-verify');
+      if (verifiedContents !== preparedContents) throw new Error(RECOVERY_ERROR);
+      const prepared = await this.#authenticateJournal(verifiedContents, false, false);
+      if (prepared.generation !== BigInt(state.generation)
+        || JSON.stringify(prepared.state) !== JSON.stringify(state)
+        || JSON.stringify(prepared.encryptedSlots) !== JSON.stringify(encryptedSlots)) {
+        throw new Error(RECOVERY_ERROR);
+      }
+      await this.#step('journal-prepared-verified');
 
-    // The only authority transition is a one-byte write through a writable
-    // handle. FileHandle.sync maps to the supported Windows FlushFileBuffers
-    // operation because this handle has write access; C is never rolled back.
-    await this.#io('journal-commit');
-    const commitHandle = await open(path, constants.O_WRONLY);
-    try {
-      const written = await commitHandle.write(Buffer.from('C'), 0, 1, 0);
+      // Refuse a pathname replacement before the authority transition. The
+      // marker is nevertheless written through the already verified handle,
+      // so a same-user same-size/generation replacement can never receive C.
+      await this.#io('journal-commit');
+      await this.#assertHandleStillNamesPath(verificationHandle, path, preparedContents.length);
+      const written = await verificationHandle.write(Buffer.from('C'), 0, 1, 0);
       if (written.bytesWritten !== 1) throw new Error('Desktop transaction journal commit failed');
       // From this point B may be observed after a crash even if the explicit
       // flush reports failure. Notify the shared gate before anything fallible
@@ -882,12 +891,51 @@ export class ProfileStore {
       onPublished?.();
       await this.#step('journal-committed');
       await this.#io('journal-commit-flush');
-      await commitHandle.sync();
+      await verificationHandle.sync();
       await this.#step('journal-commit-fsynced');
+      const committedContents = await this.#readHandleContents(verificationHandle);
+      if (committedContents !== `C${preparedContents.slice(1)}`) throw new Error(RECOVERY_ERROR);
+      const committed = await this.#authenticateJournal(committedContents, true, false);
+      if (committed.generation !== prepared.generation
+        || JSON.stringify(committed.state) !== JSON.stringify(prepared.state)
+        || JSON.stringify(committed.encryptedSlots) !== JSON.stringify(prepared.encryptedSlots)) {
+        throw new Error(RECOVERY_ERROR);
+      }
+      await this.#step('journal-commit-verified');
     } finally {
-      await commitHandle.close();
+      await verificationHandle.close();
     }
+    await this.#step('journal-commit-closed');
     await chmod(path, 0o600).catch(() => undefined);
+  }
+
+  async #readHandleContents(handle: FileHandle): Promise<string> {
+    const info = await handle.stat({ bigint: true });
+    if (info.size > BigInt(MAX_JOURNAL_BYTES) || info.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(RECOVERY_ERROR);
+    }
+    const bytes = Buffer.alloc(Number(info.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const result = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (result.bytesRead === 0) throw new Error(RECOVERY_ERROR);
+      offset += result.bytesRead;
+    }
+    return bytes.toString('utf8');
+  }
+
+  async #assertHandleStillNamesPath(handle: FileHandle, path: string, expectedSize: number): Promise<void> {
+    const [held, named] = await Promise.all([
+      handle.stat({ bigint: true }),
+      lstat(path, { bigint: true }),
+    ]);
+    if (named.isSymbolicLink() || !named.isFile()
+      || held.dev !== named.dev || held.ino !== named.ino
+      || held.size !== BigInt(expectedSize) || named.size !== held.size
+      || held.mode !== named.mode || held.uid !== named.uid || held.gid !== named.gid
+      || held.nlink !== named.nlink || held.nlink !== 1n) {
+      throw new Error(RECOVERY_ERROR);
+    }
   }
 
   async #stageCredential(credential: StoredCredential): Promise<string> {
@@ -1001,7 +1049,9 @@ export class ProfileStore {
     await this.#ensureDirectories();
     const journalRecords: AuthenticatedJournal[] = [];
     const legacyJournalRecords: LegacyJournalRecord[] = [];
+    const preparedJournalRecords: AuthenticatedJournal[] = [];
     let invalidCommittedJournal = false;
+    let invalidPreparedJournal = false;
     let sawPreparedJournal = false;
     let sawNonPreparedJournal = false;
     for (const path of this.#journalPaths) {
@@ -1019,6 +1069,11 @@ export class ProfileStore {
             }
           } else {
             sawPreparedJournal = true;
+            try {
+              preparedJournalRecords.push(await this.#authenticateJournal(contents, false, false));
+            } catch {
+              invalidPreparedJournal = true;
+            }
           }
           // A prepared record is deliberately not authoritative. The other
           // alternating slot (or the legacy mirror before the first commit)
@@ -1082,8 +1137,18 @@ export class ProfileStore {
       }
     } else {
       if (!parsed) {
-        if (mirrorMissing && !sawPreparedJournal && !invalidCommittedJournal
-          && legacyJournalRecords.length === 0) {
+        const preparedIsOnlyCanonicalEmptyBootstrap = sawPreparedJournal
+          && !invalidPreparedJournal
+          && preparedJournalRecords.length > 0
+          && preparedJournalRecords.every(record => record.generation === 1n
+            && JSON.stringify(record.state) === JSON.stringify({ ...emptyState(), generation: '1' })
+            && Object.keys(record.encryptedSlots).length === 0);
+        if (mirrorMissing && !invalidCommittedJournal && legacyJournalRecords.length === 0
+          && (!sawPreparedJournal || preparedIsOnlyCanonicalEmptyBootstrap)) {
+          // An authenticated generation-1 empty P is the one narrow prepared
+          // bootstrap exception. It is never made authoritative: recovery
+          // reconstructs empty A and retries publication. Any A-to-B P remains
+          // ignored and cannot manufacture a missing mirror authority.
           parsed = { version: 1, activeProfileId: null, profiles: [] };
         } else {
           throw new Error(RECOVERY_ERROR);
