@@ -5,7 +5,9 @@ import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
 import { db } from '../../db/connection.js';
 import { startDirectoryPhase, updateDirectoryProgress, publishProgress, isIndexingCancelled } from './indexingCancellation.js';
-import { MODEL_LIMITS } from '../../config/modelLimits.js';
+import { getModelHardLimit } from '../../config/modelLimits.js';
+import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
+import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import type { IndexingProgress } from './indexingCancellation.js';
 import type { SummarizationAgentConfig } from './summaryMinerHelpers.js';
 import {
@@ -93,7 +95,7 @@ export async function aggregateDirectories(options: AggregateDirectoriesOptions)
   await startDirectoryPhase(fullName, branch, totalDirs);
 
   const dirSummaryCache = new Map<string, string>();
-  const { modelId, maxBatchTokens, maxDirsPerBatch } = computeDirectoryBatchBudget(agent, modelOverride, log);
+  const { modelId, maxBatchTokens, maxDirsPerBatch } = await computeDirectoryBatchBudget(agent, modelOverride, log);
 
   const state: DirectoryAggregationState = { totalBatches: 0, failedBatches: 0, dirsProcessed: 0, fallbackUsed: false, stopProcessing: false };
   const initialConfig: SummarizationAgentConfig = {
@@ -164,14 +166,24 @@ async function processDirectoryDepth(options: ProcessDepthOptions): Promise<Dire
   return state;
 }
 
-function computeDirectoryBatchBudget(
+async function computeDirectoryBatchBudget(
   agent: Agent,
   modelOverride: string | undefined,
   log: Logger
-): { modelId: string; maxBatchTokens: number; maxDirsPerBatch: number } {
+): Promise<{ modelId: string; maxBatchTokens: number; maxDirsPerBatch: number }> {
   const modelId = modelOverride || agent.config.defaultModel || 'default';
-  const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(modelId);
+  let budgetModelId = modelId;
+  if (agent instanceof SyntheticAgent) {
+    const route = AgentRegistry.getInstance().beginRoutingSession({
+      requestedAgentAlias: agent.config.alias,
+      requestedModel: modelId,
+    });
+    const selection = await route.select();
+    budgetModelId = `${selection.physicalAgentAlias}:${selection.physicalModel}`;
+  }
+  const maxTokens = getModelHardLimit(budgetModelId);
+  const budgetModelName = budgetModelId.includes(':') ? budgetModelId.slice(budgetModelId.indexOf(':') + 1) : budgetModelId;
+  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(budgetModelName);
   const defaultMaxBatchTokens = modelBatchLimitOverride?.maxBatchTokens ?? DEFAULT_MAX_DIRECTORY_BATCH_TOKENS;
   const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_DIRECTORY_BATCH_TOKENS || String(defaultMaxBatchTokens), 10);
   const maxBatchTokens = Math.min(Math.floor(maxTokens * BATCH_TOKEN_RATIO), maxBatchTokensCap);
@@ -184,7 +196,7 @@ function computeDirectoryBatchBudget(
     maxBatchTokens,
     maxBatchTokensCap,
     maxDirsPerBatch,
-    model: modelId,
+    model: budgetModelId,
     modelBatchLimitOverride: modelBatchLimitOverride ? { maxBatchTokens: modelBatchLimitOverride.maxBatchTokens, maxItemsPerBatch: modelBatchLimitOverride.maxItemsPerBatch } : null
   }, 'Calculated directory batch budget');
   return { modelId, maxBatchTokens, maxDirsPerBatch };

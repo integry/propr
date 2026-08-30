@@ -93,7 +93,7 @@ export async function callLLMForPlan(opts: CallLLMOptions): Promise<CallLLMForPl
     tokenLimit: opts.tokenLimit,
     contextLength: fullContext.length,
   };
-  const response = await runLightweightLLMAnalysis({ prompt: fullContext, model, correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef, taskId: draftId, executionType: 'plan-generation', metadata: planGenerationMetadata });
+  const response = await runLightweightLLMAnalysis({ prompt: fullContext, model, correlationId: correlationId || 'plan-generation', worktreePath, githubToken, issueRef, taskId: draftId, executionType: 'plan-generation', metadata: planGenerationMetadata, routingSession: opts.routingSession });
 
   let plan: Plan;
   try {
@@ -131,7 +131,8 @@ ${response}`;
           githubToken,
           issueRef,
           taskId: draftId,
-          executionType: 'plan-generation'
+          executionType: 'plan-generation',
+          routingSession: opts.routingSession?.fork()
         });
 
         plan = parseLlmJson<PlanItem[]>(repairedResponse);

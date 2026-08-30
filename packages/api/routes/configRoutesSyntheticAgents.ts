@@ -22,6 +22,7 @@ interface SyntheticAgentConfigRoutesDeps {
     type: string,
     username?: string,
   ) => Promise<void>;
+  refreshAgentRegistry?: () => Promise<void>;
 }
 
 function schemaValidationMessage(issues: Array<{ message: string; path: PropertyKey[] }>): string {
@@ -50,6 +51,7 @@ export function createSyntheticAgentConfigRoutes({
   configStore = configManager,
   publishConfigUpdate,
   logActivityHelper,
+  refreshAgentRegistry,
 }: SyntheticAgentConfigRoutesDeps) {
   async function getSyntheticAgents(_req: Request, res: Response): Promise<void> {
     try {
@@ -81,12 +83,12 @@ export function createSyntheticAgentConfigRoutes({
       const configuredDefault = typeof settings.default_agent_alias === 'string'
         ? settings.default_agent_alias.trim()
         : '';
-      const isSyntheticDefault = configuredDefault.length > 0
-        && [...previousSyntheticAgents, ...parsed.syntheticAgents]
-          .some(agent => agent.alias === configuredDefault);
-      if (isSyntheticDefault) {
+      const wasSyntheticDefault = previousSyntheticAgents.some(agent => agent.alias === configuredDefault);
+      const proposedDefault = parsed.syntheticAgents.find(agent => agent.alias === configuredDefault);
+      const proposedDefaultModel = proposedDefault?.models.find(model => model.id === proposedDefault.defaultModel);
+      if (wasSyntheticDefault && (!proposedDefault?.enabled || !proposedDefaultModel?.enabled || !proposedDefaultModel.members.some(member => member.enabled))) {
         throw new ConfigRouteError(409, {
-          error: `Cannot update synthetic agents while configured default '${configuredDefault}' is synthetic and cannot execute at runtime. Select a direct default agent first.`,
+          error: `Cannot remove or disable configured synthetic default '${configuredDefault}'. Select another default agent first.`,
         });
       }
 
@@ -105,6 +107,13 @@ export function createSyntheticAgentConfigRoutes({
     });
 
     if (result.status === 200) {
+      if (refreshAgentRegistry) {
+        try {
+          await refreshAgentRegistry();
+        } catch (error) {
+          console.error('Synthetic agents were saved but the local AgentRegistry refresh failed:', error);
+        }
+      }
       try {
         await logActivityHelper(
           `Updated synthetic agents configuration (${parsed.syntheticAgents.length} agents)`,

@@ -5,7 +5,7 @@ import {
     getRepoUrl,
     resolveLlmLabel,
 } from '@propr/core';
-import type { Agent, AgentRegistry, AnalysisResult, WorktreeInfo } from '@propr/core';
+import type { Agent, AgentRegistry, AnalysisResult, AnalyzeOptions, SyntheticRoutingSession, WorktreeInfo } from '@propr/core';
 import type { Logger } from 'pino';
 import { validateAndExtractScoutContext } from './reviewContextScoutValidation.js';
 
@@ -41,6 +41,7 @@ export interface GatherReviewContextOptions {
     taskId: string;
     correlationId: string;
     correlatedLogger: Logger;
+    routingSession?: SyntheticRoutingSession;
 }
 
 interface ScoutAssignment {
@@ -116,7 +117,28 @@ function getRepositoryConfinedAgent(options: PrepareRelatedReviewContextOptions,
     return agent;
 }
 
-async function selectScoutCandidate(options: PrepareRelatedReviewContextOptions): Promise<{ candidate: ScoutCandidate; agent: Agent } | null> {
+async function routeScoutCandidate(options: PrepareRelatedReviewContextOptions, candidate: ScoutCandidate): Promise<{
+    candidate: ScoutCandidate;
+    agent: Agent;
+    model: string;
+    routingSession: SyntheticRoutingSession;
+} | null> {
+    const routingSession = options.registry.beginRoutingSession({
+        requestedAgentAlias: candidate.assignment.agentAlias,
+        requestedModel: candidate.assignment.model,
+    });
+    const selection = await routingSession.select();
+    const agent = options.registry.getAgentByAlias(selection.physicalAgentAlias);
+    if (!agent || !supportsRuntimeEnforcedRepositoryInspection(agent)) return null;
+    return { candidate, agent, model: selection.physicalModel, routingSession };
+}
+
+async function selectScoutCandidate(options: PrepareRelatedReviewContextOptions): Promise<{
+    candidate: ScoutCandidate;
+    agent: Agent;
+    model: string;
+    routingSession: SyntheticRoutingSession;
+} | null> {
     const consideredCandidates: ScoutCandidate[] = [];
     const configuredCandidates: Array<{ model: string; source: Exclude<ScoutCandidateSource, 'reviewer model'> }> = [
         { model: options.configuredModel, source: 'dedicated context model' },
@@ -131,12 +153,12 @@ async function selectScoutCandidate(options: PrepareRelatedReviewContextOptions)
         if (!candidate) continue;
         consideredCandidates.push(candidate);
         const agent = getRepositoryConfinedAgent(options, candidate);
-        if (agent) return { candidate, agent };
+        if (agent) return routeScoutCandidate(options, candidate);
     }
     const reviewerCandidate: ScoutCandidate = { source: 'reviewer model', assignment: options.fallbackAssignment };
     consideredCandidates.push(reviewerCandidate);
     const reviewerAgent = getRepositoryConfinedAgent(options, reviewerCandidate);
-    if (reviewerAgent) return { candidate: reviewerCandidate, agent: reviewerAgent };
+    if (reviewerAgent) return routeScoutCandidate(options, reviewerCandidate);
 
     options.correlatedLogger.info({
         candidates: consideredCandidates.map(candidate => ({
@@ -172,7 +194,8 @@ export async function gatherReviewContext(options: GatherReviewContextOptions): 
     if (!supportsRuntimeEnforcedRepositoryInspection(options.agent)) {
         throw new Error(`Context scouting is unavailable for agent type: ${options.agent.config.type}`);
     }
-    const analysisResult = await options.agent.analyze(buildScoutPrompt(options), {
+    const prompt = buildScoutPrompt(options);
+    const analyzeOptions: AnalyzeOptions = {
         model: options.model,
         taskId: options.taskId,
         prNumber: options.pullRequestNumber,
@@ -183,7 +206,10 @@ export async function gatherReviewContext(options: GatherReviewContextOptions): 
         timeoutMs: SCOUT_TIMEOUT_MS,
         readOnlyWorkspacePath: options.worktreePath,
         allowReadOnlyCommands: true,
-    });
+    };
+    const analysisResult = options.routingSession
+        ? await options.routingSession.analyze(prompt, analyzeOptions)
+        : await options.agent.analyze(prompt, analyzeOptions);
     if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Context scout analysis failed');
     }
@@ -199,8 +225,7 @@ export async function gatherReviewContext(options: GatherReviewContextOptions): 
 export async function prepareRelatedReviewContext(options: PrepareRelatedReviewContextOptions): Promise<string> {
     const selection = await selectScoutCandidate(options);
     if (!selection) return '';
-    const { assignment } = selection.candidate;
-    const { agent } = selection;
+    const { agent, model, routingSession } = selection;
 
     await ensureGitRepository(options.correlatedLogger);
     const repoUrl = getRepoUrl({ repoOwner: options.repoOwner, repoName: options.repoName });
@@ -218,7 +243,7 @@ export async function prepareRelatedReviewContext(options: PrepareRelatedReviewC
     });
     const result = await gatherReviewContext({
         agent,
-        model: assignment.model,
+        model,
         worktreePath: options.state.worktreeInfo.worktreePath,
         prDiff: options.prDiff,
         changedFiles: options.changedFiles,
@@ -229,6 +254,7 @@ export async function prepareRelatedReviewContext(options: PrepareRelatedReviewC
         taskId: options.taskId,
         correlationId: options.correlationId,
         correlatedLogger: options.correlatedLogger,
+        routingSession,
     });
     return result.context;
 }

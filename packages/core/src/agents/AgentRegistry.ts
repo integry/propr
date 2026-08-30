@@ -16,6 +16,12 @@ import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 import { loadAgentRuntimePackageState, resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
 import { AGENT_DEFAULTS } from '../config/modelDefinitions.js';
+import { SyntheticAgent } from './SyntheticAgent.js';
+import {
+    SyntheticRoutingService,
+    type BeginSyntheticRoutingOptions,
+    type SyntheticRoutingSession,
+} from '../services/syntheticRoutingService.js';
 
 export interface AgentRegistryOperationalStatus {
     unifiedAgentImage: {
@@ -46,6 +52,7 @@ export class AgentRegistry {
     private pendingBackgroundRefresh: Promise<void> | null = null;
     private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
     private unifiedAgentImageRetryTimer: NodeJS.Timeout | null = null;
+    private syntheticRoutingService: SyntheticRoutingService | null = null;
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -143,6 +150,8 @@ export class AgentRegistry {
                 }
             }
 
+            await this.registerSyntheticAgents();
+
             await this.captureRuntimePackageStateVersion();
             this.initialized = true;
             logger.info({
@@ -174,6 +183,14 @@ export class AgentRegistry {
      */
     getAgentByAlias(alias: string): Agent | undefined {
         return this.agentsByAlias.get(alias);
+    }
+
+    /** Begin a call-scoped route before any context-sensitive budget is calculated. */
+    beginRoutingSession(options: BeginSyntheticRoutingOptions): SyntheticRoutingSession {
+        if (!this.syntheticRoutingService) {
+            this.syntheticRoutingService = this.createSyntheticRoutingService();
+        }
+        return this.syntheticRoutingService.begin(options);
     }
 
     /**
@@ -495,11 +512,38 @@ export class AgentRegistry {
         this.agents.set(defaultConfig.id, agent);
         this.agentsByAlias.set(defaultConfig.alias, agent);
 
+        await this.registerSyntheticAgents();
+
         logger.info({
             agentId: defaultConfig.id,
             agentAlias: defaultConfig.alias,
             dockerImage: defaultConfig.dockerImage
         }, 'Default Claude agent registered');
+    }
+
+    private createSyntheticRoutingService(): SyntheticRoutingService {
+        return new SyntheticRoutingService({
+            getDirectAgent: alias => {
+                const agent = this.agentsByAlias.get(alias);
+                return agent instanceof SyntheticAgent ? undefined : agent;
+            }
+        });
+    }
+
+    private async registerSyntheticAgents(): Promise<void> {
+        const configs = await configManager.loadSyntheticAgents();
+        this.syntheticRoutingService = this.createSyntheticRoutingService();
+        for (const config of configs) {
+            if (!config.enabled) continue;
+            if (this.agentsByAlias.has(config.alias)) {
+                logger.error({ syntheticAgentAlias: config.alias }, 'Synthetic agent alias conflicts with a registered direct agent');
+                continue;
+            }
+            const agent = new SyntheticAgent(config, this.syntheticRoutingService);
+            this.agents.set(config.id, agent);
+            this.agentsByAlias.set(config.alias, agent);
+            logger.info({ syntheticAgentAlias: config.alias, modelCount: config.models.length }, 'Synthetic agent registered');
+        }
     }
 
     /**
@@ -512,6 +556,7 @@ export class AgentRegistry {
             // Clear agents and state
             this.agents.clear();
             this.agentsByAlias.clear();
+            this.syntheticRoutingService = null;
             this.initialized = false;
 
             // Close database connection

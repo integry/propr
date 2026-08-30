@@ -236,9 +236,10 @@ export async function applyAgentsUpdate({
   if (integrityError) return integrityError;
   const settings = await configStore.loadSettings();
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
-  // Only direct agents are executable registry entries. A previously stored
-  // synthetic default must fall back instead of being installed in live state.
-  const newDefault = resolveDefaultAgentAlias(processedAgents, currentDefault);
+  const currentSyntheticDefault = syntheticAgents.some(agent => agent.enabled && agent.alias === currentDefault);
+  const newDefault = currentSyntheticDefault
+    ? currentDefault
+    : resolveDefaultAgentAlias(processedAgents, currentDefault);
   const defaultChanged = newDefault !== currentDefault;
 
   try {

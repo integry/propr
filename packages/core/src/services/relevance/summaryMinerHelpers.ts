@@ -2,7 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
-import { MODEL_LIMITS } from '../../config/modelLimits.js';
+import { getModelHardLimit } from '../../config/modelLimits.js';
+import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
+import { AgentRegistry } from '../../agents/AgentRegistry.js';
 import type { GitFileInfo } from './summaryFileFilter.js';
 import { getSummarizationMetricsSummary, getSummarizationCallHistory } from './summaryMinerMetrics.js';
 import type { SummarizationCallMetrics, SummarizationMetricsSummary } from './summaryMinerMetrics.js';
@@ -91,8 +93,18 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
   } = options;
   // Calculate budget based on model limits (use override if provided)
   const modelId = modelOverride || agent.config.defaultModel || 'default';
-  const maxTokens = MODEL_LIMITS[modelId] || MODEL_LIMITS['default'];
-  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(modelId);
+  let budgetModelId = modelId;
+  if (agent instanceof SyntheticAgent) {
+    const route = AgentRegistry.getInstance().beginRoutingSession({
+      requestedAgentAlias: agent.config.alias,
+      requestedModel: modelId,
+    });
+    const selection = await route.select();
+    budgetModelId = `${selection.physicalAgentAlias}:${selection.physicalModel}`;
+  }
+  const maxTokens = getModelHardLimit(budgetModelId);
+  const budgetModelName = budgetModelId.includes(':') ? budgetModelId.slice(budgetModelId.indexOf(':') + 1) : budgetModelId;
+  const modelBatchLimitOverride = getSummarizationBatchLimitOverride(budgetModelName);
   const defaultMaxBatchTokens = modelBatchLimitOverride?.maxBatchTokens ?? DEFAULT_MAX_BATCH_TOKENS;
   const defaultMaxBatchFiles = modelBatchLimitOverride?.maxItemsPerBatch ?? DEFAULT_MAX_BATCH_FILES;
   const maxBatchTokensCap = parseInt(process.env.SUMMARIZATION_MAX_BATCH_TOKENS || String(defaultMaxBatchTokens), 10);
@@ -105,7 +117,7 @@ export async function processBatches(options: ProcessBatchesOptions): Promise<Pr
     maxBatchTokens,
     maxBatchTokensCap,
     maxBatchFiles,
-    model: modelId,
+    model: budgetModelId,
     modelBatchLimitOverride: modelBatchLimitOverride ? { maxBatchTokens: modelBatchLimitOverride.maxBatchTokens, maxItemsPerBatch: modelBatchLimitOverride.maxItemsPerBatch } : null
   }, 'Calculated batch budget');
 

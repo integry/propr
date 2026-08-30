@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
 import { Agent } from '../../agents/types.js';
+import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import { logSummarizationCall } from './summaryMinerMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
@@ -326,7 +327,7 @@ async function analyzeDirectoryBatchWithAgent(options: {
         executionType: 'summarization',
         repository: fullName,
         metadata: { phase: 'directory_aggregation', directoryCount: directories.length },
-        suppressLlmLog: true
+        suppressLlmLog: !(agent instanceof SyntheticAgent)
       });
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Directory summarization agent analysis failed');

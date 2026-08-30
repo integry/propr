@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import logger from '../../utils/logger.js';
 import { Agent } from '../../agents/types.js';
+import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
 import { resolveExpectedSummaryPath } from './summaryMinerDirectoryHelpers.js';
 import { saveBatchSummaries, logFileBatchCall, type SummaryResult } from './summaryMinerBatchPersistence.js';
@@ -344,7 +345,7 @@ async function analyzeBatchWithAgent(options: {
         executionType: 'summarization',
         repository: fullName,
         metadata: { phase: 'batch_summarization', fileCount: batch.length },
-        suppressLlmLog: true
+        suppressLlmLog: !(agent instanceof SyntheticAgent)
       });
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Summarization agent analysis failed');

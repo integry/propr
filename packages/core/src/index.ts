@@ -314,6 +314,21 @@ export { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetectio
 // Agent abstraction exports
 export { AgentRegistry, getAgentRegistry } from './agents/AgentRegistry.js';
 export type { AgentRegistryOperationalStatus } from './agents/AgentRegistry.js';
+export { SyntheticAgent } from './agents/SyntheticAgent.js';
+export {
+  AliasSpecificAgentTankSnapshotProvider,
+  SyntheticPoolExhaustedError,
+  SyntheticRoutingService,
+  SyntheticRoutingSession,
+  isNonRetryableSyntheticFailure,
+} from './services/syntheticRoutingService.js';
+export type {
+  BeginSyntheticRoutingOptions,
+  SyntheticMemberDiagnostic,
+  SyntheticPhysicalSelection,
+  SyntheticUsageSnapshot,
+  SyntheticUsageSnapshotProvider,
+} from './services/syntheticRoutingService.js';
 export { describeAgentTermination, isIncompleteAgentExecution, resolveAgentTerminationReason } from './agents/termination.js';
 export { ClaudeAgent } from './agents/impl/ClaudeAgent.js';
 export { CodexAgent } from './agents/impl/CodexAgent.js';

@@ -139,7 +139,13 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
     preparationDeps: deps.agentPreparationDeps,
   });
   const syntheticAgentRoutes = createSyntheticAgentConfigRoutes(
-    { redisClient, configStore, publishConfigUpdate, logActivityHelper },
+    {
+      redisClient,
+      configStore,
+      publishConfigUpdate,
+      logActivityHelper,
+      refreshAgentRegistry: () => configManager.AgentRegistry.getInstance().refresh(),
+    },
   );
   const createJsonPostHandler = <T>({ lockKey, pickValue, validate, save, subtype, body, committedErrorMessage, activity }: JsonPostHandlerConfig<T>) => async (req: Request, res: Response): Promise<void> => {
     const bodyValidation = validateJsonObjectBody(req.body);
@@ -317,18 +323,11 @@ export function createConfigRoutes(deps: ConfigRoutesDeps) {
         return;
       }
     }
+    if (typeof settingsValidation.value.default_agent_alias === 'string') {
+      settingsValidation.value.default_agent_alias = settingsValidation.value.default_agent_alias.trim();
+    }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
-      const requestedDefault = settingsValidation.value.default_agent_alias;
-      if (typeof requestedDefault === 'string') {
-        const normalizedDefault = requestedDefault.trim();
-        const syntheticAgents = await configStore.loadSyntheticAgents();
-        if (syntheticAgents.some(agent => agent.alias === normalizedDefault)) {
-          throw new ConfigRouteError(409, {
-            error: `Cannot set default_agent_alias to synthetic agent '${normalizedDefault}' because synthetic agents cannot execute at runtime. Select a direct default agent instead.`,
-          });
-        }
-      }
       return saveSettingsWithRollback({ settings: settingsValidation.value, publishConfigUpdate, configStore, database, lock });
     });
     if (result.status === 200 && result.body.noop !== true) {

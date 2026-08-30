@@ -244,7 +244,23 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         fastAnalysisModel,
         configuredReviewMaxContextTokens,
     } = await loadReviewRuntimeSettings(correlatedLogger);
-    const reviewBudgetModels = assignments.map(assignment => `${assignment.agentAlias}:${assignment.model}`);
+    // Select every physical reviewer before deriving the shared diff/prompt budget.
+    const registry = AgentRegistry.getInstance();
+    await registry.ensureInitialized();
+    const routedAssignments = await Promise.all(assignments.map(async assignment => {
+        const routingSession = registry.beginRoutingSession({
+            requestedAgentAlias: assignment.agentAlias,
+            requestedModel: assignment.model,
+        });
+        const selection = await routingSession.select();
+        return {
+            ...assignment,
+            routingSession,
+            physicalAgentAlias: selection.physicalAgentAlias,
+            physicalModel: selection.physicalModel,
+        };
+    }));
+    const reviewBudgetModels = routedAssignments.map(assignment => `${assignment.physicalAgentAlias}:${assignment.physicalModel}`);
     const reviewMaxContextTokens = resolveReviewContextTokenBudget(
         reviewBudgetModels,
         configuredReviewMaxContextTokens,
@@ -295,9 +311,6 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         titleContext: buildPrTaskTitleContextHistoryMetadata(titleContext),
     });
 
-    const registry = AgentRegistry.getInstance();
-    await registry.ensureInitialized();
-
     let originalTaskSpec = linkedIssueResult.context || prData!.data.body || '';
     if (job.data.ultrafixMeta) {
         originalTaskSpec = await retainOriginalScope(redisClient, {
@@ -314,7 +327,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         try {
             relatedContext = await prepareRelatedReviewContext({
                 registry,
-                fallbackAssignment: assignments[0],
+                fallbackAssignment: routedAssignments[0],
                 configuredModel: reviewContextModel,
                 fastAnalysisModel,
                 state,
@@ -364,7 +377,7 @@ export async function executeReviewProcessing(params: ExecuteReviewParams): Prom
         allComments,
         state.startingWorkComment.data.user?.login,
     );
-    for (const assignment of assignments) {
+    for (const assignment of routedAssignments) {
         const result = await runSingleReview(assignment, {
             ...reviewCtx,
             findingStartNumber: nextFindingNumber,
