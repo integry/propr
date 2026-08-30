@@ -203,6 +203,15 @@ async function loadReasoningLevelWarnings(
     return [];
   }
 }
+function resolveUpdatedDefaultAgent(
+  processedAgents: AgentConfig[],
+  syntheticAgents: SyntheticAgentConfig[],
+  currentDefault: string | undefined,
+): string | undefined {
+  return syntheticAgents.some(agent => agent.enabled && agent.alias === currentDefault)
+    ? currentDefault
+    : resolveDefaultAgentAlias(processedAgents, currentDefault);
+}
 export async function applyAgentsUpdate({
   agents,
   processedAgents: providedProcessedAgents,
@@ -236,10 +245,7 @@ export async function applyAgentsUpdate({
   if (integrityError) return integrityError;
   const settings = await configStore.loadSettings();
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
-  const currentSyntheticDefault = syntheticAgents.some(agent => agent.enabled && agent.alias === currentDefault);
-  const newDefault = currentSyntheticDefault
-    ? currentDefault
-    : resolveDefaultAgentAlias(processedAgents, currentDefault);
+  const newDefault = resolveUpdatedDefaultAgent(processedAgents, syntheticAgents, currentDefault);
   const defaultChanged = newDefault !== currentDefault;
 
   try {

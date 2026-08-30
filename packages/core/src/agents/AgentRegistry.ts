@@ -3,10 +3,6 @@ import os from 'os';
 import logger from '../utils/logger.js';
 import { Agent, AgentConfig } from './types.js';
 import { ClaudeAgent } from './impl/ClaudeAgent.js';
-import { CodexAgent } from './impl/CodexAgent.js';
-import { AntigravityAgent } from './impl/AntigravityAgent.js';
-import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
-import { VibeAgent } from './impl/VibeAgent.js';
 import * as configManager from '../config/configManager.js';
 import { ensureAgentBundleImage, ensureAgentDockerImage, executeDockerCommand } from '../claude/docker/dockerExecutor.js';
 import { closeConnection } from '../db/connection.js';
@@ -16,12 +12,8 @@ import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import { DEFAULT_AGENT_DOCKER_IMAGES } from './constants.js';
 import { loadAgentRuntimePackageState, resolveAgentRuntimeImage } from './runtime/agentRuntimePackages.js';
 import { AGENT_DEFAULTS } from '../config/modelDefinitions.js';
-import { SyntheticAgent } from './SyntheticAgent.js';
-import {
-    SyntheticRoutingService,
-    type BeginSyntheticRoutingOptions,
-    type SyntheticRoutingSession,
-} from '../services/syntheticRoutingService.js';
+import { SyntheticAgentRegistry, type BeginSyntheticRoutingOptions, type SyntheticRoutingSession } from './SyntheticAgentRegistry.js';
+import { createAgentFromConfig } from './createAgentFromConfig.js';
 
 export interface AgentRegistryOperationalStatus {
     unifiedAgentImage: {
@@ -52,7 +44,7 @@ export class AgentRegistry {
     private pendingBackgroundRefresh: Promise<void> | null = null;
     private unavailableUnifiedAgentImage: { imageTag?: string; error: string; recordedAt: string } | null = null;
     private unifiedAgentImageRetryTimer: NodeJS.Timeout | null = null;
-    private syntheticRoutingService: SyntheticRoutingService | null = null;
+    private syntheticAgents = new SyntheticAgentRegistry(this.agents, this.agentsByAlias);
 
     private constructor() {
         // Private constructor for singleton pattern
@@ -150,7 +142,7 @@ export class AgentRegistry {
                 }
             }
 
-            await this.registerSyntheticAgents();
+            await this.syntheticAgents.register();
 
             await this.captureRuntimePackageStateVersion();
             this.initialized = true;
@@ -185,12 +177,8 @@ export class AgentRegistry {
         return this.agentsByAlias.get(alias);
     }
 
-    /** Begin a call-scoped route before any context-sensitive budget is calculated. */
     beginRoutingSession(options: BeginSyntheticRoutingOptions): SyntheticRoutingSession {
-        if (!this.syntheticRoutingService) {
-            this.syntheticRoutingService = this.createSyntheticRoutingService();
-        }
-        return this.syntheticRoutingService.begin(options);
+        return this.syntheticAgents.begin(options);
     }
 
     /**
@@ -445,20 +433,7 @@ export class AgentRegistry {
      * This is the factory method that handles different agent types.
      */
     createAgentFromConfig(config: AgentConfig): Agent {
-        switch (config.type) {
-            case 'claude':
-                return new ClaudeAgent(config);
-            case 'codex':
-                return new CodexAgent(config);
-            case 'antigravity':
-                return new AntigravityAgent(config);
-            case 'opencode':
-                return new OpenCodeAgent(config);
-            case 'vibe':
-                return new VibeAgent(config);
-            default:
-                throw new Error(`Unknown agent type: ${config.type}`);
-        }
+        return createAgentFromConfig(config);
     }
 
     /**
@@ -512,38 +487,13 @@ export class AgentRegistry {
         this.agents.set(defaultConfig.id, agent);
         this.agentsByAlias.set(defaultConfig.alias, agent);
 
-        await this.registerSyntheticAgents();
+        await this.syntheticAgents.register();
 
         logger.info({
             agentId: defaultConfig.id,
             agentAlias: defaultConfig.alias,
             dockerImage: defaultConfig.dockerImage
         }, 'Default Claude agent registered');
-    }
-
-    private createSyntheticRoutingService(): SyntheticRoutingService {
-        return new SyntheticRoutingService({
-            getDirectAgent: alias => {
-                const agent = this.agentsByAlias.get(alias);
-                return agent instanceof SyntheticAgent ? undefined : agent;
-            }
-        });
-    }
-
-    private async registerSyntheticAgents(): Promise<void> {
-        const configs = await configManager.loadSyntheticAgents();
-        this.syntheticRoutingService = this.createSyntheticRoutingService();
-        for (const config of configs) {
-            if (!config.enabled) continue;
-            if (this.agentsByAlias.has(config.alias)) {
-                logger.error({ syntheticAgentAlias: config.alias }, 'Synthetic agent alias conflicts with a registered direct agent');
-                continue;
-            }
-            const agent = new SyntheticAgent(config, this.syntheticRoutingService);
-            this.agents.set(config.id, agent);
-            this.agentsByAlias.set(config.alias, agent);
-            logger.info({ syntheticAgentAlias: config.alias, modelCount: config.models.length }, 'Synthetic agent registered');
-        }
     }
 
     /**
@@ -556,7 +506,7 @@ export class AgentRegistry {
             // Clear agents and state
             this.agents.clear();
             this.agentsByAlias.clear();
-            this.syntheticRoutingService = null;
+            this.syntheticAgents.clear();
             this.initialized = false;
 
             // Close database connection

@@ -18,61 +18,21 @@ import type {
 } from '../agents/types.js';
 import logger from '../utils/logger.js';
 import { estimateTokens } from '../utils/tokenCalculation.js';
+import {
+  SyntheticPoolExhaustedError,
+  isNonRetryableSyntheticFailure,
+  type BeginSyntheticRoutingOptions,
+  type SyntheticMemberDiagnostic,
+  type SyntheticPhysicalSelection,
+  type SyntheticRoutingServiceOptions,
+  type SyntheticUsageSnapshot,
+  type SyntheticUsageSnapshotProvider,
+} from './syntheticRoutingTypes.js';
+
+export * from './syntheticRoutingTypes.js';
 
 const DEFAULT_OUTPUT_RESERVE_TOKENS = 16_000;
 const DEFAULT_USAGE_FRESHNESS_MS = 5 * 60_000;
-
-export interface SyntheticUsageSnapshot {
-  directAgentAlias: string;
-  capturedAt: Date;
-  sessionPercent?: number;
-  weeklyPercent?: number;
-}
-
-export interface SyntheticUsageSnapshotProvider {
-  getSnapshot(directAgentAlias: string): Promise<SyntheticUsageSnapshot | null>;
-}
-
-export interface SyntheticMemberDiagnostic {
-  memberId: string;
-  directAgentAlias: string;
-  model: string;
-  eligible: boolean;
-  reason: string;
-}
-
-export interface SyntheticPhysicalSelection {
-  virtualAgentAlias: string;
-  virtualModel: string;
-  physicalAgent: Agent;
-  physicalAgentAlias: string;
-  physicalModel: string;
-  memberId?: string;
-  callId: string;
-  attemptNumber: number;
-  selectionReason: string;
-  requiredTokens: number;
-  diagnostics: SyntheticMemberDiagnostic[];
-  synthetic: boolean;
-}
-
-export interface BeginSyntheticRoutingOptions {
-  requestedAgentAlias: string;
-  requestedModel?: string;
-  /** Prompt plus output/runtime reserve. This constraint is immutable for retries. */
-  requiredTokens?: number;
-  promptTokens?: number;
-  outputReserveTokens?: number;
-  callId?: string;
-}
-
-export interface SyntheticRoutingServiceOptions {
-  database?: Knex;
-  loadSyntheticConfigs?: () => Promise<SyntheticAgentConfig[]>;
-  getDirectAgent: (alias: string) => Agent | undefined;
-  usageSnapshotProvider?: SyntheticUsageSnapshotProvider;
-  now?: () => Date;
-}
 
 interface EligibleMember {
   member: SyntheticModelMember;
@@ -135,31 +95,6 @@ export class AliasSpecificAgentTankSnapshotProvider implements SyntheticUsageSna
   }
 }
 
-export class SyntheticPoolExhaustedError extends Error {
-  constructor(
-    public readonly virtualAgentAlias: string,
-    public readonly virtualModel: string,
-    public readonly callId: string,
-    public readonly diagnostics: SyntheticMemberDiagnostic[],
-  ) {
-    const details = diagnostics.length === 0
-      ? 'no configured members'
-      : diagnostics.map(item => `${item.directAgentAlias}:${item.model} (${item.reason})`).join('; ');
-    super(`Synthetic pool exhausted for '${virtualAgentAlias}:${virtualModel}' [call ${callId}]: ${details}`);
-    this.name = 'SyntheticPoolExhaustedError';
-  }
-}
-
-export function isNonRetryableSyntheticFailure(error: unknown): boolean {
-  const value = error as { name?: string; code?: string; message?: string };
-  const name = value?.name || '';
-  const code = value?.code || '';
-  const message = value?.message || String(error || '');
-  if (['AbortError', 'ExecutionAbortedError', 'IndexingCancelledError', 'SecurityException', 'ContextTokenLimitError'].includes(name)) return true;
-  if (['ABORT_ERR', 'ERR_CANCELED', 'SECURITY_POLICY_VIOLATION', 'INVALID_CONFIGURATION', 'PROMPT_TOO_LARGE'].includes(code)) return true;
-  return /(?:aborted|cancelled|canceled) by (?:the )?user|security[- ]policy|security violation|invalid (?:user )?configuration|prompt (?:is )?too (?:large|long)|exceeds (?:the )?(?:model )?context window|context token limit/i.test(message);
-}
-
 function resultFailure(result: AnalysisResult | AgentExecutionResult): Error {
   const error = new Error(result.error || 'Physical agent execution failed');
   const resultError = result as typeof result & { errorName?: string; errorCode?: string };
@@ -174,13 +109,20 @@ export class SyntheticRoutingSession {
   private readonly attemptFailures = new Map<string, string>();
   private executionAttemptCount = 0;
 
+  public readonly requestedAgentAlias: string;
+  public readonly requestedModel: string;
+  public readonly callId: string;
+  private _requiredTokens: number;
+
   constructor(
     private readonly service: SyntheticRoutingService,
-    public readonly requestedAgentAlias: string,
-    public readonly requestedModel: string,
-    private _requiredTokens: number,
-    public readonly callId: string,
-  ) {}
+    options: Required<Pick<BeginSyntheticRoutingOptions, 'requestedAgentAlias' | 'requestedModel' | 'requiredTokens' | 'callId'>>,
+  ) {
+    this.requestedAgentAlias = options.requestedAgentAlias;
+    this.requestedModel = options.requestedModel;
+    this._requiredTokens = options.requiredTokens;
+    this.callId = options.callId;
+  }
 
   get requiredTokens(): number {
     return this._requiredTokens;
@@ -307,13 +249,12 @@ export class SyntheticRoutingService {
   begin(options: BeginSyntheticRoutingOptions): SyntheticRoutingSession {
     const requiredTokens = options.requiredTokens
       ?? Math.max(0, options.promptTokens ?? 0) + (options.outputReserveTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS);
-    return new SyntheticRoutingSession(
-      this,
-      options.requestedAgentAlias,
-      options.requestedModel || '',
+    return new SyntheticRoutingSession(this, {
+      requestedAgentAlias: options.requestedAgentAlias,
+      requestedModel: options.requestedModel || '',
       requiredTokens,
-      options.callId || randomUUID(),
-    );
+      callId: options.callId || randomUUID(),
+    });
   }
 
   private async loadSyntheticModel(alias: string, requestedModel: string, callId: string): Promise<{
