@@ -170,6 +170,9 @@ test('system catalog policy is standalone, cache-only, held, and independently d
   assert.match(source, /kMicrosoftCatalogPolicy/);
   assert.match(source, /ApprovedMicrosoftCatalog/);
   assert.match(source, /GUID driver_action = DRIVER_ACTION_VERIFY/);
+  assert.match(source, /member\.pcCatalogContext = nullptr;/);
+  assert.match(source, /member\.hCatAdmin = admin;/);
+  assert.match(source, /ExactCatalogBinding\(acquired_admin, enumerated_catalog, supplied_admin, supplied_catalog,/);
   assert.doesNotMatch(source, /&DRIVER_ACTION_VERIFY/);
   assert.doesNotMatch(source, /compiler-(?:wrong-signer|same-root-wrong-certificate|same-root-wrong-signer|subject-spoof|wrong-spki|manifest-replacement)/);
   assert.doesNotMatch(source, /\(void\)presented/);
@@ -184,6 +187,40 @@ test('system catalog policy is standalone, cache-only, held, and independently d
     assert.match(source, new RegExp(`"${code}"`));
   }
 });
+
+test('native WinTrust catalog binding requires the exact retained SHA-256 admin and catalog pair',
+  windowsNativeBuildOnly, async () => {
+    for (const fault of [
+      'catalog-binding-null-admin',
+      'catalog-binding-mismatched-admin',
+      'catalog-binding-released-early',
+      'catalog-binding-wrong-hash-algorithm',
+      'catalog-binding-foreign-catalog-context',
+    ]) {
+      await prepareWindowsAuthorityBuildDirectory();
+      await Promise.all([
+        rm(WINDOWS_AUTHORITY_EXECUTABLE, { force: true }),
+        rm(WINDOWS_AUTHORITY_MANIFEST, { force: true }),
+      ]);
+      await assert.rejects(
+        buildWindowsAuthorityHelper({
+          ...process.env,
+          PROPR_WINDOWS_AUTHORITY_TEST_DIRECTORY_PROBE_FAULT: fault,
+        }),
+        error => error instanceof Error
+          && error.message === 'Windows authority helper build failed [win-authority:BUILD_COMPILER:WINTRUST_POLICY]'
+          && !error.message.includes('\\') && !error.message.includes('C:'),
+        `${fault} must fail before the production C# compiler is spawned`,
+      );
+    }
+    const exact = await buildWindowsAuthorityHelper({
+      ...process.env,
+      PROPR_WINDOWS_AUTHORITY_TEST_DIRECTORY_PROBE_FAULT: 'catalog-binding-exact-held-pair',
+    });
+    assert.equal(exact.skipped, false);
+    assert.match(exact.sourceSha256, /^[a-f0-9]{64}$/);
+    assert.equal(exact.compiler.inputs.length, 3);
+  });
 
 test('compiler layout treats SystemRoot and windir as disagreement checks and rejects reparse references', async () => {
   const canonicalTempRoot = await realpath(tmpdir());

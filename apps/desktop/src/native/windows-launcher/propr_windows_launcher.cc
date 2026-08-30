@@ -67,6 +67,33 @@ struct CatalogContextLease {
   CatalogContextLease& operator=(const CatalogContextLease&) = delete;
 };
 
+enum class CatalogBindingFault {
+  None,
+  NullAdmin,
+  MismatchedAdmin,
+  ReleasedEarly,
+  WrongHashAlgorithm,
+  ForeignCatalogContext,
+};
+
+CatalogBindingFault CatalogBindingFaultFromString(const std::string& fault) {
+  if (fault == "catalog-binding-null-admin") return CatalogBindingFault::NullAdmin;
+  if (fault == "catalog-binding-mismatched-admin") return CatalogBindingFault::MismatchedAdmin;
+  if (fault == "catalog-binding-released-early") return CatalogBindingFault::ReleasedEarly;
+  if (fault == "catalog-binding-wrong-hash-algorithm") return CatalogBindingFault::WrongHashAlgorithm;
+  if (fault == "catalog-binding-foreign-catalog-context") return CatalogBindingFault::ForeignCatalogContext;
+  return CatalogBindingFault::None;
+}
+
+bool ExactCatalogBinding(HCATADMIN acquired_admin, HCATINFO enumerated_catalog,
+    HCATADMIN supplied_admin, HCATINFO supplied_catalog, const wchar_t* hash_algorithm,
+    bool admin_retained, bool catalog_retained) {
+  return acquired_admin != nullptr && enumerated_catalog != nullptr
+    && supplied_admin == acquired_admin && supplied_catalog == enumerated_catalog
+    && hash_algorithm != nullptr && lstrcmpW(hash_algorithm, BCRYPT_SHA256_ALGORITHM) == 0
+    && admin_retained && catalog_retained;
+}
+
 void CloseFileLeases(FileLeases* leases) {
   if (!leases || leases->closed) return;
   leases->closed = true;
@@ -645,7 +672,8 @@ bool CanonicalMicrosoftCatalog(const std::wstring& path, std::string* sha256, Fi
 
 bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* catalog_path,
     std::string* catalog_sha256, FileIdInfo* catalog_identity, HANDLE* held_catalog,
-    CatalogContextLease* context_lease, CatalogFailure* failure) {
+    CatalogContextLease* context_lease, CatalogFailure* failure,
+    CatalogBindingFault binding_fault = CatalogBindingFault::None) {
   *failure = CatalogFailure::Enumeration;
   HCATADMIN admin = nullptr;
   GUID driver_action = DRIVER_ACTION_VERIFY;
@@ -659,9 +687,47 @@ bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* cat
     && CryptCATAdminCalcHashFromFileHandle2(admin, file, &hash_bytes, hash.data(), 0);
   if (!ok) *failure = CatalogFailure::CatalogHash;
   HCATINFO catalog = ok ? CryptCATAdminEnumCatalogFromHash(admin, hash.data(), hash_bytes, 0, nullptr) : nullptr;
+  const HCATADMIN acquired_admin = admin;
+  const HCATINFO enumerated_catalog = catalog;
+  HCATADMIN supplied_admin = admin;
+  HCATINFO supplied_catalog = catalog;
+  const wchar_t* supplied_hash_algorithm = BCRYPT_SHA256_ALGORITHM;
+  bool admin_retained = admin != nullptr;
+  bool catalog_retained = catalog != nullptr;
+  CatalogContextLease foreign_context{};
+  if (binding_fault == CatalogBindingFault::NullAdmin) {
+    supplied_admin = nullptr;
+  } else if (binding_fault == CatalogBindingFault::MismatchedAdmin) {
+    CryptCATAdminAcquireContext2(&foreign_context.admin, &driver_action, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
+    supplied_admin = foreign_context.admin;
+  } else if (binding_fault == CatalogBindingFault::WrongHashAlgorithm) {
+    CryptCATAdminAcquireContext2(&foreign_context.admin, &driver_action, BCRYPT_SHA1_ALGORITHM, nullptr, 0);
+    supplied_admin = foreign_context.admin;
+    supplied_hash_algorithm = BCRYPT_SHA1_ALGORITHM;
+  } else if (binding_fault == CatalogBindingFault::ForeignCatalogContext) {
+    if (CryptCATAdminAcquireContext2(&foreign_context.admin, &driver_action,
+        BCRYPT_SHA256_ALGORITHM, nullptr, 0)) {
+      foreign_context.catalog = CryptCATAdminEnumCatalogFromHash(
+        foreign_context.admin, hash.data(), hash_bytes, 0, nullptr);
+    }
+    supplied_catalog = foreign_context.catalog;
+  } else if (binding_fault == CatalogBindingFault::ReleasedEarly) {
+    if (catalog) CryptCATAdminReleaseCatalogContext(admin, catalog, 0);
+    catalog = nullptr;
+    if (admin) CryptCATAdminReleaseContext(admin, 0);
+    admin = nullptr;
+    admin_retained = false;
+    catalog_retained = false;
+  }
+  const bool catalog_enumerated = ok && enumerated_catalog != nullptr;
+  const bool exact_binding = catalog_enumerated
+    && ExactCatalogBinding(acquired_admin, enumerated_catalog, supplied_admin, supplied_catalog,
+      supplied_hash_algorithm, admin_retained, catalog_retained);
+  if (catalog_enumerated && !exact_binding) *failure = CatalogFailure::WinTrustPolicy;
+  ok = exact_binding;
   CATALOG_INFO catalog_info{};
   catalog_info.cbStruct = sizeof(catalog_info);
-  ok = ok && catalog && CryptCATCatalogInfoFromContext(catalog, &catalog_info, 0);
+  ok = ok && supplied_catalog && CryptCATCatalogInfoFromContext(supplied_catalog, &catalog_info, 0);
   std::wstring member_tag;
   if (ok) {
     *catalog_path = catalog_info.wszCatalogFile;
@@ -687,6 +753,12 @@ bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* cat
     member.hMemberFile = file;
     member.pbCalculatedFileHash = hash.data();
     member.cbCalculatedFileHash = hash_bytes;
+    // pbCalculatedFileHash/member tag were produced by this exact retained
+    // SHA-256 admin. Keep the exact enumerated HCATINFO alive through VERIFY
+    // and CLOSE; pcCatalogContext is deliberately absent rather than sourced
+    // from a different catalog-admin context.
+    member.pcCatalogContext = nullptr;
+    member.hCatAdmin = admin;
     WINTRUST_DATA data{};
     data.cbStruct = sizeof(data);
     data.dwUIChoice = WTD_UI_NONE;
@@ -722,14 +794,15 @@ bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* cat
 bool VerifyMicrosoftCompilerInput(const std::wstring& path, HANDLE file, std::string* certificate,
     std::string* spki, std::string* root_spki, std::string* catalog_sha256,
     std::string* catalog_name, std::wstring* catalog_path, FileIdInfo* catalog_identity,
-    HANDLE* held_catalog, CatalogContextLease* context_lease, CatalogFailure* failure) {
+    HANDLE* held_catalog, CatalogContextLease* context_lease, CatalogFailure* failure,
+    CatalogBindingFault binding_fault = CatalogBindingFault::None) {
   // Inbox compiler/reference authorization is membership in the immutable,
   // OS-serviced Windows catalog rooted at the canonical CatRoot namespace.
   // An arbitrary embedded Authenticode signature, even under a Microsoft root,
   // is deliberately insufficient.
   std::wstring evidence_path;
   const bool trusted = VerifyCatalogTrust(path, file, &evidence_path, catalog_sha256,
-    catalog_identity, held_catalog, context_lease, failure);
+    catalog_identity, held_catalog, context_lease, failure, binding_fault);
   std::wstring publisher;
   DWORD chain_errors = 0xffffffff;
   if (!trusted) return false;
@@ -868,7 +941,8 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
     && SecureServicedSystemFile(candidate, static_cast<DWORD>(size.QuadPart), &identity)
     && VerifyMicrosoftCompilerInput(powershell, candidate, &system_certificate, &system_spki,
       &system_root_spki, &system_catalog_sha256, &system_catalog_name, &system_catalog_path,
-      &system_catalog_identity, &system_catalog, &system_catalog_context, &catalog_failure);
+      &system_catalog_identity, &system_catalog, &system_catalog_context, &catalog_failure,
+      CatalogBindingFaultFromString(fault));
   if (system_catalog != INVALID_HANDLE_VALUE) CloseHandle(system_catalog);
   CloseHandle(candidate);
   if (!valid) { Throw(env, catalog_failure == CatalogFailure::None
