@@ -17,6 +17,10 @@ const releaseArtifacts = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/release-artifacts.mjs', import.meta.url)),
   'utf8',
 ));
+const makeDmg = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('../scripts/make-dmg.mjs', import.meta.url)),
+  'utf8',
+));
 const releasePreflight = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/release-preflight.mjs', import.meta.url)),
   'utf8',
@@ -233,6 +237,11 @@ describe('desktop trusted release workflow', () => {
     assert.ok(!releaseArtifacts.includes('modified: stats.mtimeNs'));
     assert.ok(!releaseArtifacts.includes('changed: stats.ctimeNs'));
     assert.match(releaseArchitecture, /'hdiutil', \['attach', '-readonly', '-nobrowse', '-mountpoint', directory, privatePath\]/);
+    assert.match(releaseArchitecture, /try \{\n\s+if \(mounted\) await execFile\('hdiutil', \['detach', directory\]\);\n\s+\} finally \{\n\s+await rm\(directory/);
+    assert.match(makeDmg, /for \(let attempt = 0; attempt < 2 && !created; attempt \+= 1\)/);
+    assert.match(makeDmg, /\^hdiutil: create failed - Resource busy\\s\*\$/);
+    assert.match(makeDmg, /await rename\(temporaryOutput, outputPath\)/);
+    assert.match(makeDmg, /try \{ await rm\(temporaryOutput, \{ force: true \}\); \} finally \{\n\s+await rm\(stagingDirectory/);
     assert.ok(
       releaseArchitecture.indexOf("['attach', '-readonly', '-nobrowse', '-mountpoint', directory, privatePath]")
         < releaseArchitecture.indexOf('inspectDmgLayout({ root: directory'),
@@ -251,6 +260,7 @@ describe('desktop trusted release workflow', () => {
   });
 
   test('runs the short-argv native Windows broker smoke before both x64 and arm64 suites', () => {
+    assert.equal(workflow.match(/Probe Windows authority production C# before desktop suite/g)?.length, 2);
     assert.equal(workflow.match(/Smoke Windows authority broker before the runtime suite/g)?.length, 2);
     for (const [jobName, section] of [
       ['unsigned validation', job('package', 'finalize')],
@@ -258,7 +268,13 @@ describe('desktop trusted release workflow', () => {
     ] as const) {
       assert.match(section, /- platform: win32\n\s+arch: x64\n\s+runner: windows-2025/);
       assert.match(section, /- platform: win32\n\s+arch: arm64\n\s+runner: windows-11-arm/);
+      assert.match(section, /Probe Windows authority production C# before desktop suite\n\s+if: matrix\.platform == 'win32'/);
       assert.match(section, /Smoke Windows authority broker before the runtime suite\n\s+if: matrix\.platform == 'win32'/);
+      assert.ok(
+        section.indexOf('Probe Windows authority production C# before desktop suite')
+          < section.indexOf('Smoke Windows authority broker before the runtime suite'),
+        `${jobName} must run the exact-source compile probe before starting the production broker`,
+      );
       assert.ok(
         section.indexOf('Smoke Windows authority broker before the runtime suite')
           < section.indexOf(`Typecheck and test ${jobName === 'unsigned validation' ? 'unsigned' : 'production'} desktop runtime`),
@@ -274,5 +290,17 @@ describe('desktop trusted release workflow', () => {
     assert.match(windowsAuthority, /type = 'ready'/);
     assert.match(windowsAuthority, /nativeSmoke = \$true/);
     assert.match(windowsAuthority, /compileCount = 1/);
+    for (const stage of [
+      'source_decode',
+      'language_version',
+      'reference_load',
+      'type_compile',
+      'entrypoint_resolve',
+      'protocol_init',
+      'ready',
+    ]) assert.match(windowsAuthority, new RegExp(`'${stage}'`));
+    assert.match(windowsAuthority, /-CompilerOptions '\/langversion:5'/);
+    assert.match(windowsAuthority, /purpose: BrokerPurpose/);
+    assert.match(windowsAuthority, /expectedBytes: number \| null/);
   });
 });

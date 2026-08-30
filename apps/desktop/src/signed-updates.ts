@@ -728,7 +728,19 @@ const acquireFilesystemCacheLock = async (cacheDirectory: string): Promise<() =>
       await owner.writeFile(`${JSON.stringify({ schemaVersion: 1, pid: process.pid })}\n`);
       await owner.sync();
       await owner.close();
-      const windowsLock = process.platform === 'win32' ? await openWindowsLockedArtifact(ownerPath) : undefined;
+      const ownerInspection = process.platform === 'win32' ? await inspectPrivatePath(ownerPath) : undefined;
+      const ownerBytes = ownerInspection ? Number(ownerInspection.size) : 0;
+      const windowsLock = process.platform === 'win32' && ownerInspection && Number.isSafeInteger(ownerBytes)
+        && ownerBytes > 0
+        ? await openWindowsLockedArtifact(
+          ownerPath,
+          ownerBytes,
+          undefined,
+          undefined,
+          ownerInspection.identity as WindowsFileIdentity,
+        )
+        : undefined;
+      if (process.platform === 'win32' && !windowsLock) throw new Error('Verified update cache lock is unavailable');
       return async () => {
         await windowsLock?.close();
         await removeCachePath(lockPath);
@@ -1267,7 +1279,18 @@ const openPrivateRegularFile = async (
   ) => Promise<void>,
 ): Promise<HeldPrivateFile> => {
   if (process.platform === 'win32') {
-    const windowsLock = await openWindowsLockedArtifact(path, maxBytes, beforeWindowsOpenForTest);
+    const setup = expectedBeforeAcquisition ?? await inspectPrivatePath(path);
+    const exactBytes = Number(setup.size);
+    if (!Number.isSafeInteger(exactBytes) || exactBytes <= 0 || exactBytes > maxBytes
+      || setup.identity.platform !== 'win32') throw new Error('Verified update artifact is invalid');
+    const windowsLock = await openWindowsLockedArtifact(
+      path,
+      exactBytes,
+      beforeWindowsOpenForTest,
+      undefined,
+      setup.identity,
+      expectedBeforeAcquisition?.sha256,
+    );
     if (expectedBeforeAcquisition
       && (!sameExactFileIdentity(windowsLock.inspection.identity, expectedBeforeAcquisition.identity)
         || BigInt(windowsLock.inspection.size) !== expectedBeforeAcquisition.size

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { access, chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { access, chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -975,7 +975,12 @@ describe('verified update artifact cache', () => {
                 await rename(artifactPath, displaced);
                 if (scenario === 'swap-aba') await rename(attacker, artifactPath);
                 else if (scenario === 'reparse') {
-                  await execFileAsync('cmd.exe', ['/d', '/s', '/c', `mklink /J "${artifactPath}" "${reparseTarget}"`]);
+                  await symlink(reparseTarget, artifactPath, 'junction');
+                  assert.equal(
+                    (await lstat(artifactPath)).isSymbolicLink(),
+                    true,
+                    'fixture must create a real junction reparse point',
+                  );
                 }
               }
             },

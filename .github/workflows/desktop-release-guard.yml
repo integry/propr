@@ -107,6 +107,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Probe Windows authority production C# before desktop suite
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: npx tsx --test --test-name-pattern="native Windows exact production C# compile probe reaches ready" apps/desktop/src/windows-update-authority.test.ts
+
       - name: Smoke Windows authority broker before the runtime suite
         if: matrix.platform == 'win32'
         shell: bash
@@ -370,6 +375,11 @@ jobs:
 
       - name: Install locked dependencies
         run: npm ci
+
+      - name: Probe Windows authority production C# before desktop suite
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: npx tsx --test --test-name-pattern="native Windows exact production C# compile probe reaches ready" apps/desktop/src/windows-update-authority.test.ts
 
       - name: Smoke Windows authority broker before the runtime suite
         if: matrix.platform == 'win32'

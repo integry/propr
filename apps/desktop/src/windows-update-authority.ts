@@ -59,6 +59,18 @@ export const WINDOWS_AUTHORITY_REASON_CODES = Object.freeze([
 
 type WindowsAuthorityReason = typeof WINDOWS_AUTHORITY_REASON_CODES[number];
 type BrokerOperation = 'inspect' | 'ensure-directory' | 'protect-directory' | 'protect-file';
+type BrokerPurpose = 'setup' | 'artifact';
+
+export const WINDOWS_AUTHORITY_COMPILE_STAGES = Object.freeze([
+  'source_decode',
+  'language_version',
+  'reference_load',
+  'type_compile',
+  'entrypoint_resolve',
+  'protocol_init',
+  'ready',
+] as const);
+export type WindowsAuthorityCompileStage = typeof WINDOWS_AUTHORITY_COMPILE_STAGES[number];
 
 const BROKER_TIMEOUT_MS = 10_000;
 const BROKER_STARTUP_TIMEOUT_MS = 60_000;
@@ -71,6 +83,8 @@ const BROKER_MAX_FRAMES = 8192;
 const BROKER_MAX_INPUT_BYTES = 64 * 1024 * 1024;
 const BROKER_MAX_OUTPUT_BYTES = 2 * 1024 * 1024 * 1024;
 const BROKER_MAX_QUEUE_ENTRIES = 256;
+const BROKER_ARTIFACT_BYTES = 1024 * 1024 * 1024;
+const BROKER_SETUP_FILE_BYTES = 1024 * 1024 * 1024 + 64 * 1024;
 const MAX_READ_BYTES = 1024 * 1024;
 const reasonCodes = new Set<string>(WINDOWS_AUTHORITY_REASON_CODES);
 const INSPECTION_KEYS = Object.freeze([
@@ -153,6 +167,7 @@ public static class ProprUpdateAuthority {
   const int WRITE_AUTHORITY = unchecked((int)0x500D0156);
   const int MAX_SECURITY_DESCRIPTOR = 65536;
   const int MAX_READ = 1048576;
+  static readonly string CURRENT_USER_SID = WindowsIdentity.GetCurrent(TokenAccessLevels.Query).User.Value;
 
   [StructLayout(LayoutKind.Sequential)]
   struct FILE_STANDARD_INFO {
@@ -219,11 +234,8 @@ public static class ProprUpdateAuthority {
       byte[] bytes = new byte[length];
       Marshal.Copy(descriptor, bytes, 0, length);
       RawSecurityDescriptor security = new RawSecurityDescriptor(bytes, 0);
-      SecurityIdentifier current;
-      using (WindowsIdentity identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query)) {
-        current = identity.User;
-      }
-      if (current == null || security.Owner == null || !security.Owner.Equals(current)) {
+      SecurityIdentifier current = new SecurityIdentifier(CURRENT_USER_SID);
+      if (security.Owner == null || !security.Owner.Equals(current)) {
         throw new BrokerFailure("owner_sid", 6);
       }
       if ((security.ControlFlags & ControlFlags.DiscretionaryAclProtected) == 0
@@ -310,14 +322,19 @@ public static class ProprUpdateAuthority {
     }
   }
 
-  static InspectionResult InspectHandle(SafeFileHandle handle, bool expectedDirectory, long maxBytes, bool hash) {
+  static InspectionResult InspectHandle(SafeFileHandle handle, bool expectedDirectory, string purpose, long expectedBytes) {
     FILE_ATTRIBUTE_TAG_INFO attributes = ReadInfo<FILE_ATTRIBUTE_TAG_INFO>(handle, FileAttributeTagInfo, "reparse_query", 3);
     if ((attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 || attributes.ReparseTag != 0) {
       throw new BrokerFailure("reparse_point", 4);
     }
     FILE_STANDARD_INFO standard = ReadInfo<FILE_STANDARD_INFO>(handle, FileStandardInfo, "type_link_size", 5);
+    bool setup = purpose == "setup";
+    bool artifact = purpose == "artifact";
     if (standard.DeletePending || standard.Directory != expectedDirectory || (!standard.Directory && standard.NumberOfLinks != 1)
-      || (!standard.Directory && (standard.EndOfFile <= 0 || standard.EndOfFile > maxBytes))) {
+      || (standard.Directory && (!setup || expectedBytes != 0))
+      || (!standard.Directory && setup && (expectedBytes != 0 || standard.EndOfFile < 0 || standard.EndOfFile > 1073807360L))
+      || (!standard.Directory && artifact && (expectedBytes <= 0 || standard.EndOfFile != expectedBytes))
+      || (!setup && !artifact)) {
       throw new BrokerFailure("type_link_size", 5);
     }
     SecurityResult security = VerifySecurity(handle);
@@ -337,7 +354,7 @@ public static class ProprUpdateAuthority {
       inheritedWriteAces = "0",
       broadWriteAces = "0"
     };
-    if (hash) {
+    if (artifact) {
       string[] hashes = Hash(handle, standard.EndOfFile);
       result.sha256 = hashes[0];
       result.sha1 = hashes[1];
@@ -355,15 +372,13 @@ public static class ProprUpdateAuthority {
   }
 
   static string PrivateSddl() {
-    using (WindowsIdentity identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query)) {
-      string owner = identity.User.Value;
-      return "O:" + owner + "G:" + owner + "D:P(A;;FA;;;" + owner + ")(A;;FA;;;SY)(A;;FA;;;BA)";
-    }
+    return "O:" + CURRENT_USER_SID + "G:" + CURRENT_USER_SID + "D:P(A;;FA;;;" + CURRENT_USER_SID
+      + ")(A;;FA;;;SY)(A;;FA;;;BA)";
   }
 
   public static InspectionResult Inspect(string path, bool expectedDirectory) {
     using (SafeFileHandle handle = OpenPinned(path, false)) {
-      return InspectHandle(handle, expectedDirectory, long.MaxValue, false);
+      return InspectHandle(handle, expectedDirectory, "setup", 0);
     }
   }
 
@@ -392,14 +407,21 @@ public static class ProprUpdateAuthority {
 
   public sealed class HeldArtifact : IDisposable {
     SafeFileHandle handle;
-    readonly long maxBytes;
-    readonly InspectionResult initial;
+    long expectedBytes;
+    InspectionResult initial;
 
-    public HeldArtifact(string path, long maximumBytes) {
-      maxBytes = maximumBytes;
+    public HeldArtifact(string path, long exactBytes, string expectedVolumeSerial, string expectedFileId128,
+      string purpose, string expectedSha256) {
+      expectedBytes = exactBytes;
       handle = OpenPinned(path, true);
       try {
-        initial = InspectHandle(handle, false, maxBytes, true);
+        initial = InspectHandle(handle, false, "artifact", expectedBytes);
+        if (initial.volumeSerial != expectedVolumeSerial || initial.fileId128 != expectedFileId128) {
+          throw new BrokerFailure("final_verify", 14);
+        }
+        if (purpose == "artifact" && initial.sha256 != expectedSha256) {
+          throw new BrokerFailure("hash_read", 11);
+        }
         ProveNoShareLock(path);
       } catch {
         handle.Dispose();
@@ -424,7 +446,7 @@ public static class ProprUpdateAuthority {
 
     public InspectionResult Verify() {
       RequireOpen();
-      InspectionResult verified = InspectHandle(handle, false, maxBytes, true);
+      InspectionResult verified = InspectHandle(handle, false, "artifact", expectedBytes);
       if (!Same(initial, verified)) throw new BrokerFailure("final_verify", 14);
       return verified;
     }
@@ -441,9 +463,15 @@ public static class ProprUpdateAuthority {
     }
   }
 
-  public static HeldArtifact OpenHeld(string path, long maxBytes) {
-    if (maxBytes <= 0) throw new BrokerFailure("request_protocol", 1);
-    return new HeldArtifact(path, maxBytes);
+  public static HeldArtifact OpenHeld(string path, long expectedBytes, string expectedVolumeSerial, string expectedFileId128,
+    string purpose, string expectedSha256) {
+    if (expectedBytes <= 0 || expectedBytes > 1073741824L || expectedVolumeSerial == null || expectedFileId128 == null
+      || (purpose != "setup" && purpose != "artifact")
+      || (purpose == "artifact" && (expectedSha256 == null || expectedSha256.Length != 64))
+      || (purpose == "setup" && expectedSha256 != null)) {
+      throw new BrokerFailure("request_protocol", 1);
+    }
+    return new HeldArtifact(path, expectedBytes, expectedVolumeSerial, expectedFileId128, purpose, expectedSha256);
   }
 
   public static void Smoke() {
@@ -454,7 +482,8 @@ public static class ProprUpdateAuthority {
       string artifact = Path.Combine(root, "smoke.bin");
       File.WriteAllBytes(artifact, new byte[] { 0x50 });
       ProtectFile(artifact);
-      held = OpenHeld(artifact, 1);
+      InspectionResult setup = Inspect(artifact, false);
+      held = OpenHeld(artifact, 1, setup.volumeSerial, setup.fileId128, "setup", null);
       if (held.Read(0, 1)[0] != 0x50) throw new BrokerFailure("held_read", 13);
       held.CloseVerified();
       held = null;
@@ -466,7 +495,7 @@ public static class ProprUpdateAuthority {
     }
   }
 }
-'@ -Language CSharp
+'@ -Language CSharp -CompilerOptions '/langversion:5'
 } catch {
   Write-ProprFailure 'compile_load' 0
   exit 0
@@ -485,6 +514,11 @@ function Test-ProprFields($value, [string[]]$fields) {
   return $true
 }
 
+function Test-ProprNullFields($value, [string[]]$fields) {
+  foreach ($field in $fields) { if ($null -ne $value.$field) { return $false } }
+  return $true
+}
+
 function Write-ProprInspection([string]$type, [string]$id, [string]$challenge, $value) {
   Write-ProprFrame @{
     version = 1; type = $type; id = $id; challenge = $challenge
@@ -498,9 +532,11 @@ function Write-ProprInspection([string]$type, [string]$id, [string]$challenge, $
 }
 
 $startFields = @('version', 'type', 'challenge', 'protocol')
-$requestFields = @('version', 'type', 'id', 'operation', 'path', 'directory', 'maxBytes', 'challenge', 'barrier', 'offset', 'length')
+$requestFields = @('version', 'type', 'id', 'operation', 'purpose', 'path', 'directory', 'expectedBytes', 'expectedVolumeSerial', 'expectedFileId128', 'expectedSha256', 'challenge', 'barrier', 'offset', 'length')
 $held = $null
 $heldChallenge = ''
+$heldId = ''
+$heldPurpose = ''
 $frameCount = 0
 $inputBytes = 0L
 try {
@@ -531,9 +567,15 @@ try {
       if ($operation -eq 'hold') {
         $requestPath = [string]$request.path
         if ($null -ne $held -or $requestPath -eq '' -or $requestPath.Length -gt 8192
-          -or [string]$request.challenge -notmatch '^[a-f0-9]{32}$') { throw 'request' }
-        $maximum = [Convert]::ToInt64($request.maxBytes)
-        if ($maximum -le 0) { throw 'request' }
+          -or ($request.purpose -ne 'setup' -and $request.purpose -ne 'artifact')
+          -or -not (Test-ProprNullFields $request @('directory', 'offset', 'length'))
+          -or [string]$request.challenge -notmatch '^[a-f0-9]{32}$'
+          -or [string]$request.expectedVolumeSerial -notmatch '^[a-f0-9]{16}$'
+          -or [string]$request.expectedFileId128 -notmatch '^[a-f0-9]{32}$') { throw 'request' }
+        if (($request.purpose -eq 'artifact' -and [string]$request.expectedSha256 -notmatch '^[a-f0-9]{64}$')
+          -or ($request.purpose -eq 'setup' -and $null -ne $request.expectedSha256)) { throw 'request' }
+        $expectedBytes = [Convert]::ToInt64($request.expectedBytes)
+        if ($expectedBytes -le 0) { throw 'request' }
         if ($null -ne $request.barrier) {
           $barrier = [string]$request.barrier
           if ($barrier -notmatch '^[a-f0-9]{32}$') { throw 'request' }
@@ -546,41 +588,71 @@ try {
           if ($inputBytes -gt 67108864) { throw 'bound' }
           $continue = $continueLine | ConvertFrom-Json
           if (-not (Test-ProprFields $continue $requestFields) -or $continue.version -ne 1 -or $continue.type -ne 'request'
-            -or $continue.id -ne $id -or $continue.operation -ne 'continue' -or $continue.challenge -ne $request.challenge
-            -or $continue.barrier -ne $barrier) { throw 'request' }
+            -or $continue.id -ne $id -or $continue.operation -ne 'continue' -or $continue.purpose -ne $request.purpose
+            -or $continue.challenge -ne $request.challenge
+            -or $continue.barrier -ne $barrier
+            -or -not (Test-ProprNullFields $continue @('path', 'directory', 'expectedBytes', 'expectedVolumeSerial',
+              'expectedFileId128', 'expectedSha256', 'offset', 'length'))) { throw 'request' }
         }
-        $held = [ProprUpdateAuthority]::OpenHeld($requestPath, $maximum)
+        $held = [ProprUpdateAuthority]::OpenHeld($requestPath, $expectedBytes,
+          [string]$request.expectedVolumeSerial, [string]$request.expectedFileId128,
+          [string]$request.purpose, $request.expectedSha256)
         $heldChallenge = [string]$request.challenge
+        $heldId = $id
+        $heldPurpose = [string]$request.purpose
         Write-ProprInspection 'held' $id $heldChallenge $held.Initial
       } elseif ($operation -eq 'read') {
-        if ($null -eq $held -or $request.challenge -ne $heldChallenge) { throw 'request' }
+        if ($null -eq $held -or $id -ne $heldId -or $request.purpose -ne $heldPurpose
+          -or $request.challenge -ne $heldChallenge
+          -or -not (Test-ProprNullFields $request @('path', 'directory', 'expectedBytes', 'expectedVolumeSerial',
+            'expectedFileId128', 'expectedSha256', 'barrier'))) { throw 'request' }
         $offset = [Convert]::ToInt64($request.offset)
         $length = [Convert]::ToInt32($request.length)
         $bytes = $held.Read($offset, $length)
         Write-ProprFrame @{ version = 1; type = 'bytes'; id = $id; challenge = $heldChallenge
           bytes = [Convert]::ToBase64String($bytes) }
       } elseif ($operation -eq 'verify') {
-        if ($null -eq $held -or $request.challenge -ne $heldChallenge -or [string]$request.barrier -notmatch '^[a-f0-9]{32}$') { throw 'request' }
+        if ($null -eq $held -or $id -ne $heldId -or $request.purpose -ne $heldPurpose -or $request.challenge -ne $heldChallenge
+          -or [string]$request.barrier -notmatch '^[a-f0-9]{32}$'
+          -or -not (Test-ProprNullFields $request @('path', 'directory', 'expectedBytes', 'expectedVolumeSerial',
+            'expectedFileId128', 'expectedSha256', 'offset', 'length'))) { throw 'request' }
         Write-ProprInspection 'verified' $id ([string]$request.barrier) ($held.Verify())
       } elseif ($operation -eq 'close') {
-        if ($null -eq $held -or $request.challenge -ne $heldChallenge) { throw 'request' }
+        if ($null -eq $held -or $id -ne $heldId -or $request.purpose -ne $heldPurpose
+          -or $request.challenge -ne $heldChallenge
+          -or -not (Test-ProprNullFields $request @('path', 'directory', 'expectedBytes', 'expectedVolumeSerial',
+            'expectedFileId128', 'expectedSha256', 'barrier', 'offset', 'length'))) { throw 'request' }
         $final = $held.CloseVerified()
         $held = $null
         $heldChallenge = ''
+        $heldId = ''
+        $heldPurpose = ''
         Write-ProprInspection 'closed' $id '' $final
       } elseif ($null -ne $held) {
         throw 'request'
       } elseif ($operation -eq 'inspect') {
+        if ($request.purpose -ne 'setup'
+          -or -not (Test-ProprNullFields $request @('expectedBytes', 'expectedVolumeSerial', 'expectedFileId128',
+            'expectedSha256', 'challenge', 'barrier', 'offset', 'length'))) { throw 'request' }
         Write-ProprInspection 'inspection' $id '' ([ProprUpdateAuthority]::Inspect([string]$request.path, [bool]$request.directory))
       } elseif ($operation -eq 'ensure-directory') {
+        if ($request.purpose -ne 'setup' -or $request.directory -ne $true
+          -or -not (Test-ProprNullFields $request @('expectedBytes', 'expectedVolumeSerial', 'expectedFileId128',
+            'expectedSha256', 'challenge', 'barrier', 'offset', 'length'))) { throw 'request' }
         Write-ProprInspection 'inspection' $id '' ([ProprUpdateAuthority]::EnsureDirectory([string]$request.path))
       } elseif ($operation -eq 'protect-directory') {
+        if ($request.purpose -ne 'setup' -or $request.directory -ne $true
+          -or -not (Test-ProprNullFields $request @('expectedBytes', 'expectedVolumeSerial', 'expectedFileId128',
+            'expectedSha256', 'challenge', 'barrier', 'offset', 'length'))) { throw 'request' }
         Write-ProprInspection 'inspection' $id '' ([ProprUpdateAuthority]::ProtectDirectory([string]$request.path))
       } elseif ($operation -eq 'protect-file') {
+        if ($request.purpose -ne 'setup' -or $request.directory -ne $false
+          -or -not (Test-ProprNullFields $request @('expectedBytes', 'expectedVolumeSerial', 'expectedFileId128',
+            'expectedSha256', 'challenge', 'barrier', 'offset', 'length'))) { throw 'request' }
         Write-ProprInspection 'inspection' $id '' ([ProprUpdateAuthority]::ProtectFile([string]$request.path))
       } else { throw 'request' }
     } catch {
-      if ($null -ne $held) { $held.Dispose(); $held = $null; $heldChallenge = '' }
+      if ($null -ne $held) { $held.Dispose(); $held = $null; $heldChallenge = ''; $heldId = ''; $heldPurpose = '' }
       $failure = $_.Exception
       while ($null -ne $failure.InnerException) { $failure = $failure.InnerException }
       if ($failure -is [BrokerFailure]) { Write-ProprFailure $failure.Code $failure.Scenario $id }
@@ -602,8 +674,47 @@ try {
 // inherited stdin before the versioned request stream begins.
 const POWERSHELL_STDIN_BOOTSTRAP = String.raw`$ErrorActionPreference='Stop';try{$line=[Console]::In.ReadLine();if($null -eq $line -or $line.Length -gt 349528){throw 'source'};$bytes=[Convert]::FromBase64String($line);if($bytes.Length -le 0 -or $bytes.Length -gt 262144){throw 'source'};$utf8=New-Object System.Text.UTF8Encoding($false,$true);$source=$utf8.GetString($bytes);& ([ScriptBlock]::Create($source))}catch{[Console]::Out.WriteLine('{"version":1,"type":"error","reason":"compile_load","scenario":0}');[Console]::Out.Flush()}`;
 
+const POWERSHELL_COMPILE_PROBE = String.raw`
+$ErrorActionPreference = 'Stop'
+$stage = 'source_decode'
+try {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line -or $line.Length -gt 349528) { throw 'probe' }
+  $bytes = [Convert]::FromBase64String($line)
+  if ($bytes.Length -le 0 -or $bytes.Length -gt 262144) { throw 'probe' }
+  $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+  $csharp = $utf8.GetString($bytes)
+  $stage = 'language_version'
+  if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'probe' }
+  $stage = 'reference_load'
+  $references = @([System.Security.AccessControl.RawSecurityDescriptor],
+    [System.Security.Principal.WindowsIdentity], [Microsoft.Win32.SafeHandles.SafeFileHandle],
+    [System.Security.Cryptography.SHA256])
+  if ($references.Count -ne 4 -or $references -contains $null) { throw 'probe' }
+  $stage = 'type_compile'
+  Add-Type -TypeDefinition $csharp -Language CSharp -CompilerOptions '/langversion:5'
+  $stage = 'entrypoint_resolve'
+  $authorityType = [ProprUpdateAuthority]
+  if ($null -eq $authorityType.GetMethod('Smoke')
+    -or $null -eq $authorityType.GetMethod('OpenHeld')) { throw 'probe' }
+  $stage = 'protocol_init'
+  [ProprUpdateAuthority]::Smoke()
+  $stage = 'ready'
+} catch { }
+[Console]::Out.WriteLine('{"version":1,"type":"compile-probe","stage":"' + $stage + '"}')
+[Console]::Out.Flush()
+`;
+
 const brokerSource = (): string => {
   const bytes = Buffer.from(WINDOWS_AUTHORITY_BROKER, 'utf8');
+  if (bytes.length <= 0 || bytes.length > BROKER_SOURCE_BYTES) throw authorityError('compile_load', 0);
+  return bytes.toString('base64');
+};
+
+const brokerCSharpSource = (): string => {
+  const match = WINDOWS_AUTHORITY_BROKER.match(/Add-Type -TypeDefinition @'\r?\n([\s\S]*?)\r?\n'@ -Language CSharp/);
+  if (!match) throw authorityError('compile_load', 0);
+  const bytes = Buffer.from(match[1], 'utf8');
   if (bytes.length <= 0 || bytes.length > BROKER_SOURCE_BYTES) throw authorityError('compile_load', 0);
   return bytes.toString('base64');
 };
@@ -614,15 +725,17 @@ const windowsPowerShellPath = (): string => {
   return join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 };
 
-const spawnBroker = (): ChildProcessWithoutNullStreams => spawn(windowsPowerShellPath(), [
+const spawnPowerShell = (bootstrap: string): ChildProcessWithoutNullStreams => spawn(windowsPowerShellPath(), [
   '-NoLogo',
   '-NoProfile',
   '-NonInteractive',
   '-ExecutionPolicy',
   'Bypass',
   '-Command',
-  POWERSHELL_STDIN_BOOTSTRAP,
+  bootstrap,
 ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+
+const spawnBroker = (): ChildProcessWithoutNullStreams => spawnPowerShell(POWERSHELL_STDIN_BOOTSTRAP);
 
 class WindowsAuthorityError extends Error {
   constructor(readonly reason: WindowsAuthorityReason, readonly scenario: number) {
@@ -641,6 +754,67 @@ const throwIfAborted = (signal?: AbortSignal): void => {
 
 const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
   Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+
+/**
+ * Hosted-runner compile probe. It loads the exact production C# body with the
+ * production System32 Windows PowerShell executable and flags, but reports only
+ * one bounded, enumerated stage and discards compiler/OS diagnostics.
+ */
+const runWindowsAuthorityCompileProbe = async (csharpSource: string): Promise<WindowsAuthorityCompileStage> => {
+  let child: ChildProcessWithoutNullStreams;
+  try { child = spawnPowerShell(POWERSHELL_STDIN_BOOTSTRAP); } catch { return 'source_decode'; }
+  const stdout: Buffer[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let settled = false;
+  const completed = new Promise<WindowsAuthorityCompileStage>(resolve => {
+    const finish = (stage: WindowsAuthorityCompileStage) => {
+      if (settled) return;
+      settled = true;
+      resolve(stage);
+    };
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes <= BROKER_OUTPUT_BYTES) stdout.push(chunk);
+      else child.kill();
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > BROKER_OUTPUT_BYTES) child.kill();
+    });
+    child.once('error', () => finish('source_decode'));
+    child.once('close', () => {
+      if (stdoutBytes > BROKER_OUTPUT_BYTES || stderrBytes > BROKER_OUTPUT_BYTES) return finish('source_decode');
+      const output = Buffer.concat(stdout).toString('utf8');
+      if (!output.endsWith('\n')) return finish('source_decode');
+      const line = output.slice(0, -1).replace(/\r$/, '');
+      if (!line || /[\r\n]/.test(line)) return finish('source_decode');
+      let frame: unknown;
+      try { frame = JSON.parse(line); } catch {
+        return finish('source_decode');
+      }
+      if (typeof frame !== 'object' || frame === null || Array.isArray(frame)) return finish('source_decode');
+      const candidate = frame as Record<string, unknown>;
+      const stage = candidate.stage;
+      if (!hasExactKeys(candidate, ['version', 'type', 'stage'])
+        || candidate.version !== WINDOWS_AUTHORITY_PROTOCOL_VERSION || candidate.type !== 'compile-probe'
+        || typeof stage !== 'string'
+        || !(WINDOWS_AUTHORITY_COMPILE_STAGES as readonly string[]).includes(stage)) return finish('source_decode');
+      finish(stage as WindowsAuthorityCompileStage);
+    });
+  });
+  const timer = setTimeout(() => child.kill(), BROKER_STARTUP_TIMEOUT_MS);
+  child.stdin.write(`${Buffer.from(POWERSHELL_COMPILE_PROBE, 'utf8').toString('base64')}\n`);
+  child.stdin.end(`${csharpSource}\n`);
+  try { return await completed; } finally { clearTimeout(timer); }
+};
+
+export const probeWindowsAuthorityCompile = (): Promise<WindowsAuthorityCompileStage> =>
+  runWindowsAuthorityCompileProbe(brokerCSharpSource());
+
+/** Native-test-only negative compile probe; no compiler text leaves the child. */
+export const probeWindowsAuthorityCompileFailureForTest = (): Promise<WindowsAuthorityCompileStage> =>
+  runWindowsAuthorityCompileProbe(Buffer.from('public class {', 'utf8').toString('base64'));
 
 const parseFailure = (value: unknown, expectedId?: string): Error | undefined => {
   if (typeof value !== 'object' || value === null) return undefined;
@@ -670,6 +844,7 @@ const parseInspection = (
     || candidate.directory !== directory
     || !/^(0|[1-9]\d*)$/.test(String(candidate.links))
     || !/^(0|[1-9]\d*)$/.test(String(candidate.size))
+    || (!hashes && !directory && BigInt(String(candidate.size)) > BigInt(BROKER_SETUP_FILE_BYTES))
     || !/^[a-f0-9]{8}$/.test(String(candidate.reparseTag))
     || candidate.reparseTag !== '00000000'
     || !/^S-1-(?:\d+-){1,14}\d+$/.test(String(candidate.ownerSid))
@@ -712,9 +887,13 @@ interface BrokerRequestFrame {
   type: 'request';
   id: string;
   operation: BrokerRequestOperation;
+  purpose: BrokerPurpose;
   path: string | null;
   directory: boolean | null;
-  maxBytes: number | null;
+  expectedBytes: number | null;
+  expectedVolumeSerial: string | null;
+  expectedFileId128: string | null;
+  expectedSha256: string | null;
   challenge: string | null;
   barrier: string | null;
   offset: number | null;
@@ -732,6 +911,9 @@ interface FrameWaiter {
 interface LockedArtifactProcess {
   session: WindowsAuthoritySession;
   exited: Promise<void>;
+  challenge: string;
+  heldId: string;
+  purpose: BrokerPurpose;
   release(): void;
   timeout: NodeJS.Timeout;
 }
@@ -833,6 +1015,7 @@ class WindowsAuthoritySession {
       if (waiter.signal && waiter.abort) waiter.signal.removeEventListener('abort', waiter.abort);
       waiter.reject(this.terminalError);
     }
+    rejectBrokerQueue(this.terminalError);
     if (kill && !this.child.killed) this.child.kill();
   }
 
@@ -870,6 +1053,14 @@ class WindowsAuthoritySession {
       throw authorityError('output_bound', 17);
     }
     this.child.stdin.write(`${line}\n`);
+  }
+
+  writeRawForTest(chunks: readonly string[]): void {
+    if (this.terminalError || chunks.length === 0
+      || chunks.some(chunk => chunk.length === 0 || Buffer.byteLength(chunk) > BROKER_REQUEST_LINE_BYTES)) {
+      throw authorityError('request_protocol', 1);
+    }
+    for (const chunk of chunks) this.child.stdin.write(chunk);
   }
 
   async exchange(frame: BrokerRequestFrame, signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -912,9 +1103,13 @@ const requestFrame = (operation: BrokerRequestOperation, values: Partial<BrokerR
   type: 'request',
   id: randomBytes(16).toString('hex'),
   operation,
+  purpose: 'setup',
   path: null,
   directory: null,
-  maxBytes: null,
+  expectedBytes: null,
+  expectedVolumeSerial: null,
+  expectedFileId128: null,
+  expectedSha256: null,
   challenge: null,
   barrier: null,
   offset: null,
@@ -954,6 +1149,26 @@ const startBroker = async (): Promise<WindowsAuthoritySession> => {
   return session;
 };
 
+/** Native-test-only startup failure against an exact-source production child. */
+export const probeWindowsAuthorityStartupFailureForTest = async (): Promise<WindowsAuthorityReason> => {
+  const session = new WindowsAuthoritySession(spawnBroker());
+  try {
+    const response = session.receive(BROKER_STARTUP_TIMEOUT_MS);
+    session.write(brokerSource());
+    session.write(JSON.stringify({
+      version: WINDOWS_AUTHORITY_PROTOCOL_VERSION,
+      type: 'start',
+      challenge: randomBytes(16).toString('hex'),
+      protocol: 'invalid-protocol',
+    }));
+    const failure = parseFailure(await response);
+    if (!(failure instanceof WindowsAuthorityError)) throw authorityError('stdio_protocol', 16);
+    return failure.reason;
+  } finally {
+    await session.shutdown();
+  }
+};
+
 const getBroker = async (): Promise<WindowsAuthoritySession> => {
   if (brokerSession) return brokerSession;
   brokerStartup ??= startBroker().then(session => {
@@ -978,6 +1193,13 @@ const withRestartOnce = async <T>(work: (session: WindowsAuthoritySession) => Pr
 interface QueueEntry { signal?: AbortSignal; resolve(release: () => void): void; reject(error: Error): void; abort?: () => void }
 const brokerQueue: QueueEntry[] = [];
 let brokerLeaseActive = false;
+
+const rejectBrokerQueue = (error: Error): void => {
+  for (const entry of brokerQueue.splice(0)) {
+    if (entry.signal && entry.abort) entry.signal.removeEventListener('abort', entry.abort);
+    entry.reject(error);
+  }
+};
 
 const dispatchLease = (): void => {
   if (brokerLeaseActive) return;
@@ -1026,7 +1248,7 @@ const runBroker = async (
   const release = await acquireLease(signal);
   try {
     return await withRestartOnce(async session => {
-      const request = requestFrame(operation, { path, directory });
+      const request = requestFrame(operation, { purpose: 'setup', path, directory });
       const value = await session.exchange(request, signal);
       const inspected = parseInspection(value, directory, false);
       if (!inspected || value.type !== 'inspection' || value.challenge !== ''
@@ -1062,27 +1284,35 @@ export const protectWindowsPrivateFile = (
 
 const openWindowsLockedArtifactAttempt = async (
   path: string,
-  maxBytes = 1024 * 1024 * 1024,
+  expectedBytes: number,
+  expectedIdentity: WindowsFileIdentity,
+  expectedSha256: string | undefined,
   beforeOpenForTest?: () => Promise<void>,
   signal?: AbortSignal,
   retry = true,
 ): Promise<WindowsLockedArtifact> => {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw authorityError('request_protocol', 1);
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > BROKER_ARTIFACT_BYTES
+    || !/^[a-f0-9]{16}$/.test(expectedIdentity.volumeSerial)
+    || !/^[a-f0-9]{32}$/.test(expectedIdentity.fileId128)) throw authorityError('request_protocol', 1);
   const release = await acquireLease(signal);
-  let session: WindowsAuthoritySession;
+  let session: WindowsAuthoritySession | undefined;
   let capabilityChallenge = randomBytes(16).toString('hex');
   let acquisitionBarrierRan = false;
   try {
-    session = await getBroker();
+    const activeSession = session = await getBroker();
     const barrierChallenge = beforeOpenForTest ? randomBytes(16).toString('hex') : null;
     const hold = requestFrame('hold', {
+      purpose: expectedSha256 ? 'artifact' : 'setup',
       path,
-      maxBytes,
+      expectedBytes,
+      expectedVolumeSerial: expectedIdentity.volumeSerial,
+      expectedFileId128: expectedIdentity.fileId128,
+      expectedSha256: expectedSha256 ?? null,
       challenge: capabilityChallenge,
       barrier: barrierChallenge,
     });
-    let responsePromise = session.receive(BROKER_TIMEOUT_MS, signal);
-    session.write(hold);
+    let responsePromise = activeSession.receive(BROKER_TIMEOUT_MS, signal);
+    activeSession.write(hold);
     let ready = await responsePromise;
     if (barrierChallenge) {
       if (!exactKeys(ready, ['version', 'type', 'id', 'challenge'])
@@ -1092,16 +1322,17 @@ const openWindowsLockedArtifactAttempt = async (
         await beforeOpenForTest!();
         acquisitionBarrierRan = true;
       } catch (error) {
-        session.invalidate(abortError());
+        activeSession.invalidate(abortError());
         throw error;
       }
       const continuation = requestFrame('continue', {
         id: hold.id,
+        purpose: hold.purpose,
         challenge: capabilityChallenge,
         barrier: barrierChallenge,
       });
-      responsePromise = session.receive(BROKER_TIMEOUT_MS, signal);
-      session.write(continuation);
+      responsePromise = activeSession.receive(BROKER_TIMEOUT_MS, signal);
+      activeSession.write(continuation);
       ready = await responsePromise;
     }
     requestCount++;
@@ -1126,14 +1357,18 @@ const openWindowsLockedArtifactAttempt = async (
       let value!: Record<string, unknown>;
       const run = commandQueue.then(async () => {
         throwIfAborted(requestSignal);
-        value = await session.exchange(requestFrame(operation, { challenge: capabilityChallenge, ...values }), requestSignal);
+        value = await activeSession.exchange(requestFrame(operation, {
+          purpose: hold.purpose,
+          challenge: capabilityChallenge,
+          ...values,
+        }), requestSignal);
       });
       commandQueue = run.catch(() => undefined);
       await run;
       return value;
     };
     const heldTimeout = setTimeout(() => {
-      session.invalidate(authorityError('timeout', 18));
+      activeSession.invalidate(authorityError('timeout', 18));
       release();
     }, BROKER_SESSION_TIMEOUT_MS);
     const capability: WindowsLockedArtifact = {
@@ -1146,12 +1381,12 @@ const openWindowsLockedArtifactAttempt = async (
         if (result.type !== 'bytes' || result.challenge !== capabilityChallenge
           || typeof result.bytes !== 'string'
           || !exactKeys(result, ['version', 'type', 'id', 'challenge', 'bytes'])) {
-          session.invalidate(authorityError('stdio_protocol', 16));
+          activeSession.invalidate(authorityError('stdio_protocol', 16));
           throw authorityError('held_read', 13);
         }
         const bytes = Buffer.from(result.bytes, 'base64');
         if (bytes.length !== length || bytes.toString('base64') !== result.bytes) {
-          session.invalidate(authorityError('stdio_protocol', 16));
+          activeSession.invalidate(authorityError('stdio_protocol', 16));
           throw authorityError('held_read', 13);
         }
         return bytes;
@@ -1163,7 +1398,7 @@ const openWindowsLockedArtifactAttempt = async (
         const verified = parseInspection(result, false, true) as WindowsHeldVerification | undefined;
         if (!verified || result.type !== 'verified' || result.challenge !== challenge
           || !exactKeys(result, RESPONSE_INSPECTION_KEYS) || !sameInitial(verified)) {
-          session.invalidate(authorityError('stdio_protocol', 16));
+          activeSession.invalidate(authorityError('stdio_protocol', 16));
           throw authorityError('final_verify', 14);
         }
         return verified;
@@ -1180,7 +1415,7 @@ const openWindowsLockedArtifactAttempt = async (
             throw authorityError('final_verify', 14);
           }
         } catch (error) {
-          session.invalidate(error instanceof Error ? error : authorityError('clean_shutdown', 15));
+          activeSession.invalidate(error instanceof Error ? error : authorityError('clean_shutdown', 15));
           throw error;
         } finally {
           lockedArtifactProcesses.delete(capability);
@@ -1188,8 +1423,16 @@ const openWindowsLockedArtifactAttempt = async (
         }
       },
     };
-    lockedArtifactProcesses.set(capability, { session, exited: session.exited, release, timeout: heldTimeout });
-    session.exited.then(() => {
+    lockedArtifactProcesses.set(capability, {
+      session: activeSession,
+      exited: activeSession.exited,
+      challenge: capabilityChallenge,
+      heldId: hold.id,
+      purpose: hold.purpose,
+      release,
+      timeout: heldTimeout,
+    });
+    activeSession.exited.then(() => {
       clearTimeout(heldTimeout);
       release();
     }).catch(() => {
@@ -1199,10 +1442,19 @@ const openWindowsLockedArtifactAttempt = async (
     return capability;
   } catch (error) {
     release();
+    if (signal?.aborted && session) session.invalidate(abortError());
     if (retry && !acquisitionBarrierRan && retryableInfrastructureError(error)) {
       if (brokerSession) brokerSession.invalidate(error as Error);
       brokerSession = undefined;
-      return openWindowsLockedArtifactAttempt(path, maxBytes, beforeOpenForTest, signal, false);
+      return openWindowsLockedArtifactAttempt(
+        path,
+        expectedBytes,
+        expectedIdentity,
+        expectedSha256,
+        beforeOpenForTest,
+        signal,
+        false,
+      );
     }
     throw error;
   }
@@ -1210,15 +1462,102 @@ const openWindowsLockedArtifactAttempt = async (
 
 export const openWindowsLockedArtifact = (
   path: string,
-  maxBytes = 1024 * 1024 * 1024,
+  expectedBytes: number,
   beforeOpenForTest?: () => Promise<void>,
   signal?: AbortSignal,
-): Promise<WindowsLockedArtifact> => openWindowsLockedArtifactAttempt(
-  path,
-  maxBytes,
-  beforeOpenForTest,
-  signal,
-);
+  expectedIdentity?: WindowsFileIdentity,
+  expectedSha256?: string,
+): Promise<WindowsLockedArtifact> => (async () => {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > BROKER_ARTIFACT_BYTES) {
+    throw authorityError('request_protocol', 1);
+  }
+  if (expectedSha256 !== undefined && !/^[a-f0-9]{64}$/.test(expectedSha256)) throw authorityError('request_protocol', 1);
+  const setup = expectedIdentity ?? (await inspectWindowsPrivatePath(path)).identity;
+  return openWindowsLockedArtifactAttempt(path, expectedBytes, setup, expectedSha256, beforeOpenForTest, signal);
+})();
+
+/** Native-test-only live protocol injection against the persistent child. */
+export const injectWindowsAuthorityProtocolFaultForTest = async (
+  kind: 'partial-frame' | 'extra-frame' | 'wrong-purpose' | 'wrong-identity',
+  path: string,
+  expectedBytes: number,
+): Promise<WindowsAuthorityReason | 'accepted'> => {
+  const setup = await inspectWindowsPrivatePath(path);
+  const release = await acquireLease();
+  try {
+    const session = await getBroker();
+    const inspect = requestFrame('inspect', { purpose: 'setup', path, directory: false });
+    if (kind === 'partial-frame') {
+      const response = session.receive(BROKER_TIMEOUT_MS);
+      const line = `${JSON.stringify(inspect)}\n`;
+      const split = Math.floor(line.length / 2);
+      session.writeRawForTest([line.slice(0, split), line.slice(split)]);
+      const value = await response;
+      const parsed = parseInspection(value, false, false);
+      if (!parsed || value.id !== inspect.id || value.type !== 'inspection') throw authorityError('stdio_protocol', 16);
+      return 'accepted';
+    }
+    if (kind === 'extra-frame') {
+      const response = session.receive(BROKER_TIMEOUT_MS);
+      session.writeRawForTest([`${JSON.stringify(inspect)}\n${JSON.stringify(requestFrame('inspect', {
+        purpose: 'setup',
+        path,
+        directory: false,
+      }))}\n`]);
+      await response;
+      await session.exited;
+      return 'stdio_protocol';
+    }
+    const request = kind === 'wrong-purpose'
+      ? requestFrame('inspect', { purpose: 'artifact', path, directory: false })
+      : requestFrame('hold', {
+        purpose: 'setup',
+        path,
+        expectedBytes,
+        expectedVolumeSerial: setup.identity.volumeSerial === '0000000000000000'
+          ? 'ffffffffffffffff'
+          : '0000000000000000',
+        expectedFileId128: setup.identity.fileId128,
+        expectedSha256: null,
+        challenge: randomBytes(16).toString('hex'),
+      });
+    try {
+      await session.exchange(request);
+      throw authorityError('stdio_protocol', 16);
+    } catch (error) {
+      if (error instanceof WindowsAuthorityError) return error.reason;
+      throw error;
+    }
+  } finally { release(); }
+};
+
+/** Native-test-only held-session ID/purpose confusion injection. */
+export const injectWindowsAuthorityHeldFaultForTest = async (
+  held: WindowsLockedArtifact,
+  kind: 'wrong-id' | 'wrong-purpose',
+): Promise<WindowsAuthorityReason> => {
+  const process = lockedArtifactProcesses.get(held);
+  if (!process) throw authorityError('request_protocol', 1);
+  const frame = requestFrame('read', {
+    id: kind === 'wrong-id' ? randomBytes(16).toString('hex') : process.heldId,
+    purpose: kind === 'wrong-purpose' ? (process.purpose === 'setup' ? 'artifact' : 'setup') : process.purpose,
+    challenge: process.challenge,
+    offset: 0,
+    length: 1,
+  });
+  try {
+    await process.session.exchange(frame);
+    throw authorityError('stdio_protocol', 16);
+  } catch (error) {
+    if (!(error instanceof WindowsAuthorityError)) throw error;
+    process.session.invalidate(error);
+    await process.exited;
+    clearTimeout(process.timeout);
+    process.release();
+    lockedArtifactProcesses.delete(held);
+    return error.reason;
+  }
+};
 
 /** Native-test-only crash injection used to prove that OS termination releases the exact target handle. */
 export const crashWindowsLockedArtifactForTest = async (held: WindowsLockedArtifact): Promise<void> => {
@@ -1292,7 +1631,10 @@ process.once('exit', () => {
 });
 
 export const smokeWindowsUpdateAuthority = async (path: string): Promise<readonly string[]> => {
-  const held = await openWindowsLockedArtifact(path, 1024 * 1024);
+  const setup = await inspectWindowsPrivatePath(path);
+  const exactBytes = Number(setup.size);
+  if (!Number.isSafeInteger(exactBytes) || exactBytes <= 0) throw authorityError('type_link_size', 5);
+  const held = await openWindowsLockedArtifact(path, exactBytes, undefined, undefined, setup.identity);
   try {
     if (!/^[a-f0-9]{16}$/.test(held.inspection.identity.volumeSerial)
       || !/^[a-f0-9]{32}$/.test(held.inspection.identity.fileId128)

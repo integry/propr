@@ -858,8 +858,11 @@ const inspectDmg = async (heldArtifact, platform, arch, onDmgMounted) => {
       return { format: 'dmg', executable };
     }
   } finally {
-    if (mounted) await execFile('hdiutil', ['detach', directory]);
-    await rm(directory, { recursive: true, force: true });
+    try {
+      if (mounted) await execFile('hdiutil', ['detach', directory]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 };
 
