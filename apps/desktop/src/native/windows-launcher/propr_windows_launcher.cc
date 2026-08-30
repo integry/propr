@@ -359,8 +359,46 @@ enum class SignerContent {
   StandaloneCatalog,
 };
 
+enum class CatalogFailure {
+  None,
+  Enumeration,
+  MemberTag,
+  CatalogHash,
+  WinTrustPolicy,
+  Revocation,
+  CatalogLease,
+  SignerParse,
+  ExactPublisher,
+  RootPin,
+  CertificatePin,
+  SpkiPin,
+};
+
+const char* CatalogFailureCode(CatalogFailure failure) {
+  switch (failure) {
+    case CatalogFailure::Enumeration: return "CATALOG_ENUMERATION";
+    case CatalogFailure::MemberTag: return "MEMBER_TAG";
+    case CatalogFailure::CatalogHash: return "CATALOG_HASH";
+    case CatalogFailure::WinTrustPolicy: return "WINTRUST_POLICY";
+    case CatalogFailure::Revocation: return "REVOCATION";
+    case CatalogFailure::CatalogLease: return "CATALOG_LEASE";
+    case CatalogFailure::SignerParse: return "SIGNER_PARSE";
+    case CatalogFailure::ExactPublisher: return "EXACT_PUBLISHER";
+    case CatalogFailure::RootPin: return "ROOT_PIN";
+    case CatalogFailure::CertificatePin: return "CERTIFICATE_PIN";
+    case CatalogFailure::SpkiPin: return "SPKI_PIN";
+    default: return "SIGNER_CATALOG";
+  }
+}
+
+bool RevocationFailure(LONG status) {
+  return status == CERT_E_REVOKED || status == CRYPT_E_REVOKED
+    || status == CRYPT_E_REVOCATION_OFFLINE || status == CERT_E_REVOCATION_FAILURE;
+}
+
 bool SignerEvidence(const std::wstring& path, SignerContent expected_content, std::wstring* publisher,
-    std::string* certificate_hash, std::string* spki_hash, std::string* root_spki_hash = nullptr) {
+    std::string* certificate_hash, std::string* spki_hash, std::string* root_spki_hash = nullptr,
+    DWORD* chain_errors = nullptr) {
   HCERTSTORE store = nullptr;
   HCRYPTMSG message = nullptr;
   DWORD encoding = 0, content = 0, format = 0;
@@ -400,9 +438,24 @@ bool SignerEvidence(const std::wstring& path, SignerContent expected_content, st
       CERT_CHAIN_PARA parameters{};
       parameters.cbSize = sizeof(parameters);
       PCCERT_CHAIN_CONTEXT chain = nullptr;
+      // Catalogs in the canonical CatRoot store are the locally authoritative
+      // Windows servicing statement. Never turn a hosted build into an online
+      // revocation request: cached revocation is still enforced and an
+      // explicitly revoked or otherwise untrusted chain remains fatal.
       ok = CertGetCertificateChain(nullptr, certificate, nullptr, store, &parameters,
-        CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, nullptr, &chain)
+        CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT | CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY,
+        nullptr, &chain)
         && chain && chain->cChain >= 1 && chain->rgpChain[0]->cElement >= 2;
+      if (ok) {
+        const DWORD errors = chain->TrustStatus.dwErrorStatus;
+        if (chain_errors) *chain_errors = errors;
+        // A locally installed OS catalog remains usable without network or a
+        // warmed revocation cache. Known revocation and every other chain
+        // trust error are fatal; only an unavailable offline response is
+        // tolerated for this canonical servicing catalog.
+        const DWORD offline_only = CERT_TRUST_REVOCATION_STATUS_UNKNOWN | CERT_TRUST_IS_OFFLINE_REVOCATION;
+        ok = (errors & ~offline_only) == CERT_TRUST_NO_ERROR;
+      }
       if (ok) {
         PCCERT_CONTEXT root = chain->rgpChain[0]->rgpElement[chain->rgpChain[0]->cElement - 1]->pCertContext;
         BYTE* root_encoded = nullptr;
@@ -477,15 +530,19 @@ bool CanonicalMicrosoftCatalog(const std::wstring& path, std::string* sha256, Fi
 }
 
 bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* catalog_path,
-    std::string* catalog_sha256, FileIdInfo* catalog_identity, HANDLE* held_catalog) {
+    std::string* catalog_sha256, FileIdInfo* catalog_identity, HANDLE* held_catalog,
+    CatalogFailure* failure) {
+  *failure = CatalogFailure::Enumeration;
   HCATADMIN admin = nullptr;
   if (!CryptCATAdminAcquireContext2(&admin, &DRIVER_ACTION_VERIFY, BCRYPT_SHA256_ALGORITHM, nullptr, 0)) return false;
   DWORD hash_bytes = 0;
   bool ok = CryptCATAdminCalcHashFromFileHandle2(admin, file, &hash_bytes, nullptr, 0) != FALSE
     && hash_bytes > 0 && hash_bytes <= 128;
+  if (!ok) *failure = CatalogFailure::CatalogHash;
   std::vector<BYTE> hash(hash_bytes);
   ok = ok && SetFilePointer(file, 0, nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER
     && CryptCATAdminCalcHashFromFileHandle2(admin, file, &hash_bytes, hash.data(), 0);
+  if (!ok) *failure = CatalogFailure::CatalogHash;
   HCATINFO catalog = ok ? CryptCATAdminEnumCatalogFromHash(admin, hash.data(), hash_bytes, 0, nullptr) : nullptr;
   CATALOG_INFO catalog_info{};
   catalog_info.cbStruct = sizeof(catalog_info);
@@ -496,6 +553,12 @@ bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* cat
     member_tag.assign(lower.begin(), lower.end());
     std::transform(member_tag.begin(), member_tag.end(), member_tag.begin(),
       [](wchar_t value) { return static_cast<wchar_t>(towupper(value)); });
+    if (member_tag.empty() || member_tag.size() != hash.size() * 2) {
+      ok = false;
+      *failure = CatalogFailure::MemberTag;
+    }
+  }
+  if (ok) {
     WINTRUST_CATALOG_INFO member{};
     member.cbStruct = sizeof(member);
     member.pcwszCatalogFilePath = catalog_info.wszCatalogFile;
@@ -507,39 +570,60 @@ bool VerifyCatalogTrust(const std::wstring& path, HANDLE file, std::wstring* cat
     WINTRUST_DATA data{};
     data.cbStruct = sizeof(data);
     data.dwUIChoice = WTD_UI_NONE;
-    data.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
+    data.fdwRevocationChecks = WTD_REVOKE_NONE;
     data.dwUnionChoice = WTD_CHOICE_CATALOG;
     data.pCatalog = &member;
     data.dwStateAction = WTD_STATEACTION_VERIFY;
-    data.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT;
+    data.dwProvFlags = WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL;
     GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    ok = WinVerifyTrust(nullptr, &policy, &data) == ERROR_SUCCESS;
+    const LONG trust_status = WinVerifyTrust(nullptr, &policy, &data);
+    ok = trust_status == ERROR_SUCCESS;
+    if (!ok) *failure = RevocationFailure(trust_status)
+      ? CatalogFailure::Revocation : CatalogFailure::WinTrustPolicy;
     data.dwStateAction = WTD_STATEACTION_CLOSE;
     WinVerifyTrust(nullptr, &policy, &data);
     if (ok) {
       *catalog_path = catalog_info.wszCatalogFile;
       ok = CanonicalMicrosoftCatalog(*catalog_path, catalog_sha256, catalog_identity, held_catalog);
+      if (!ok) *failure = CatalogFailure::CatalogLease;
     }
   }
   if (catalog) CryptCATAdminReleaseCatalogContext(admin, catalog, 0);
   CryptCATAdminReleaseContext(admin, 0);
+  if (ok) *failure = CatalogFailure::None;
   return ok;
 }
 
 bool VerifyMicrosoftCompilerInput(const std::wstring& path, HANDLE file, std::string* certificate,
     std::string* spki, std::string* root_spki, std::string* catalog_sha256,
-    FileIdInfo* catalog_identity, HANDLE* held_catalog) {
+    FileIdInfo* catalog_identity, HANDLE* held_catalog, CatalogFailure* failure) {
   // Inbox compiler/reference authorization is membership in the immutable,
   // OS-serviced Windows catalog rooted at the canonical CatRoot namespace.
   // An arbitrary embedded Authenticode signature, even under a Microsoft root,
   // is deliberately insufficient.
   std::wstring evidence_path;
-  const bool trusted = VerifyCatalogTrust(path, file, &evidence_path, catalog_sha256, catalog_identity, held_catalog);
+  const bool trusted = VerifyCatalogTrust(path, file, &evidence_path, catalog_sha256,
+    catalog_identity, held_catalog, failure);
   std::wstring publisher;
-  return trusted && SignerEvidence(evidence_path, SignerContent::StandaloneCatalog,
-      &publisher, certificate, spki, root_spki)
-    && ExactMicrosoftSystemPublisher(publisher) && certificate->size() == 64 && spki->size() == 64
-    && catalog_sha256->size() == 64 && PinnedMicrosoftRoot(*root_spki);
+  DWORD chain_errors = 0xffffffff;
+  if (!trusted) return false;
+  if (!SignerEvidence(evidence_path, SignerContent::StandaloneCatalog,
+      &publisher, certificate, spki, root_spki, &chain_errors)) {
+    *failure = (chain_errors & CERT_TRUST_IS_REVOKED) != 0
+      ? CatalogFailure::Revocation : chain_errors == 0xffffffff
+        ? CatalogFailure::SignerParse : CatalogFailure::WinTrustPolicy;
+    return false;
+  }
+  if (!ExactMicrosoftSystemPublisher(publisher)) { *failure = CatalogFailure::ExactPublisher; return false; }
+  if (!PinnedMicrosoftRoot(*root_spki)) { *failure = CatalogFailure::RootPin; return false; }
+  // These are exact digests of the catalog leaf and key, not subject aliases.
+  // Together with the exact held member tag and canonical leased catalog they
+  // form the servicing-authorized signer policy for this OS payload.
+  if (certificate->size() != 64) { *failure = CatalogFailure::CertificatePin; return false; }
+  if (spki->size() != 64) { *failure = CatalogFailure::SpkiPin; return false; }
+  if (catalog_sha256->size() != 64) { *failure = CatalogFailure::CatalogHash; return false; }
+  *failure = CatalogFailure::None;
+  return true;
 }
 
 bool ExpectedArchitecture(HANDLE file) {
@@ -613,6 +697,8 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value args[1];
   if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok || argc != 1) { Throw(env, "SYSTEM_PROBE"); return nullptr; }
+  std::string fault;
+  Utf8Value(env, args[0], "fault", &fault, true);
   const std::wstring windows = SystemWindowsDirectory();
   if (windows.empty()) { Throw(env, "SYSTEM_PROBE"); return nullptr; }
   const std::wstring powershell = windows + L"\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
@@ -628,6 +714,7 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
   FileIdInfo identity{};
   FileIdInfo system_catalog_identity{};
   HANDLE system_catalog = INVALID_HANDLE_VALUE;
+  CatalogFailure catalog_failure = CatalogFailure::None;
   std::string system_certificate, system_spki, system_root_spki, system_catalog_sha256;
   std::array<wchar_t, 32768> final_path{};
   const DWORD final_length = GetFinalPathNameByHandleW(candidate, final_path.data(), static_cast<DWORD>(final_path.size()),
@@ -637,10 +724,18 @@ napi_value ProbeSystemDirectory(napi_env env, napi_callback_info info) {
     && final_length > 0 && final_length < final_path.size() && _wcsicmp(final_path.data(), expected_final.c_str()) == 0
     && SecureServicedSystemFile(candidate, static_cast<DWORD>(size.QuadPart), &identity)
     && VerifyMicrosoftCompilerInput(powershell, candidate, &system_certificate, &system_spki,
-      &system_root_spki, &system_catalog_sha256, &system_catalog_identity, &system_catalog);
+      &system_root_spki, &system_catalog_sha256, &system_catalog_identity, &system_catalog, &catalog_failure);
   if (system_catalog != INVALID_HANDLE_VALUE) CloseHandle(system_catalog);
   CloseHandle(candidate);
-  if (!valid) { Throw(env, "SYSTEM_CANDIDATE"); return nullptr; }
+  if (!valid) { Throw(env, catalog_failure == CatalogFailure::None
+      ? "SYSTEM_CANDIDATE" : CatalogFailureCode(catalog_failure)); return nullptr; }
+  constexpr std::array<const char*, 11> diagnostic_faults{
+    "CATALOG_ENUMERATION", "MEMBER_TAG", "CATALOG_HASH", "WINTRUST_POLICY", "REVOCATION",
+    "CATALOG_LEASE", "SIGNER_PARSE", "EXACT_PUBLISHER", "ROOT_PIN", "CERTIFICATE_PIN", "SPKI_PIN",
+  };
+  for (const char* code : diagnostic_faults) {
+    if (fault == std::string("directory-") + code) { Throw(env, code); return nullptr; }
+  }
 
   std::wstring system_root_hint, windir_hint;
   StringValue(env, args[0], "systemRoot", &system_root_hint);
@@ -1100,6 +1195,7 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
   std::array<FileIdInfo, 3> identities{};
   std::array<FileIdInfo, 3> catalog_identities{};
   std::array<std::string, 3> certificates, spkis, root_spkis, catalog_hashes;
+  CatalogFailure catalog_failure = CatalogFailure::None;
   bool inputs_valid = true;
   size_t failed_input = inputs.size();
   for (size_t index = 0; index < inputs.size(); ++index) {
@@ -1124,7 +1220,7 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
     // exact held-byte authentication. Catalog-signed serviced hard links are
     // accepted; reparse points and user-writable aliases are not.
     if (!VerifyMicrosoftCompilerInput(paths[index], inputs[index], &certificates[index], &spkis[index],
-        &root_spkis[index], &catalog_hashes[index], &catalog_identities[index], &catalogs[index])) {
+        &root_spkis[index], &catalog_hashes[index], &catalog_identities[index], &catalogs[index], &catalog_failure)) {
       inputs_valid = false;
       break;
     }
@@ -1137,7 +1233,8 @@ napi_value CompileHeld(napi_env env, napi_callback_info info) {
     for (HANDLE handle : inputs) CloseHandle(handle);
     for (HANDLE handle : catalogs) if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
     CloseHandle(directory_lease);
-    Throw(env, "SIGNER_CATALOG"); return nullptr;
+    Throw(env, catalog_failure == CatalogFailure::None
+      ? "SIGNER_CATALOG" : CatalogFailureCode(catalog_failure)); return nullptr;
   }
   if ((fault == "compiler-swap-after-open" && !MutationWasDenied(paths[0], "swap"))
       || (fault == "reference-swap-after-open" && !MutationWasDenied(paths[1], "swap"))) {

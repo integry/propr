@@ -70,10 +70,24 @@ test('bounded Windows system-directory channel rejects NT aliases, malformed rec
 
 test('compiler failures expose only fixed non-secret authenticate-to-spawn substages', () => {
   assert.deepEqual(WINDOWS_AUTHORITY_COMPILER_SUBSTAGES, [
-    'DIRECTORY_PROBE', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY',
-    'SPAWN', 'IMAGE', 'EXIT', 'OUTPUT_VALIDATION',
+    'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY',
+    'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
+    'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY', 'SPAWN',
+    'IMAGE', 'EXIT', 'OUTPUT_VALIDATION',
   ]);
   assert.ok(WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.every(stage => /^[A-Z_]{4,24}$/.test(stage)));
+});
+
+test('system catalog policy is standalone, cache-only, held, and independently diagnosable', async () => {
+  const source = await readFile(new URL('../src/native/windows-launcher/propr_windows_launcher.cc', import.meta.url), 'utf8');
+  assert.match(source, /SignerContent::StandaloneCatalog/);
+  assert.match(source, /WTD_CACHE_ONLY_URL_RETRIEVAL/);
+  assert.match(source, /CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY/);
+  assert.match(source, /CERT_TRUST_IS_REVOKED/);
+  assert.match(source, /SameHeldCatalog\(catalogs\[index\], catalog_identities\[index\], catalog_hashes\[index\]\)/);
+  for (const code of WINDOWS_AUTHORITY_COMPILER_SUBSTAGES.slice(1, 12)) {
+    assert.match(source, new RegExp(`"${code}"`));
+  }
 });
 
 test('compiler layout treats SystemRoot and windir as disagreement checks and rejects reparse references', async () => {
@@ -143,6 +157,23 @@ test('native compiler signer, image, job, exit, and output failures stay bounded
   for (const [fault, substage] of cases) {
     await assert.rejects(
       buildWindowsAuthorityHelper({ ...process.env, PROPR_WINDOWS_AUTHORITY_TEST_COMPILER_FAULT: fault }),
+      error => error instanceof Error
+        && error.message === `Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`
+        && !error.message.includes('\\') && !error.message.includes('C:'),
+    );
+  }
+});
+
+test('native directory catalog failures expose their exact bounded offline-policy substage', windowsNativeBuildOnly, async () => {
+  for (const substage of [
+    'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY', 'REVOCATION', 'CATALOG_LEASE',
+    'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN', 'SPKI_PIN',
+  ]) {
+    await assert.rejects(
+      buildWindowsAuthorityHelper({
+        ...process.env,
+        PROPR_WINDOWS_AUTHORITY_TEST_DIRECTORY_PROBE_FAULT: `directory-${substage}`,
+      }),
       error => error instanceof Error
         && error.message === `Windows authority helper build failed [win-authority:BUILD_COMPILER:${substage}]`
         && !error.message.includes('\\') && !error.message.includes('C:'),

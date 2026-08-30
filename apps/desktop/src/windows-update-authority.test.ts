@@ -30,6 +30,7 @@ import {
   protectWindowsPrivateFile,
   shutdownWindowsAuthorityBrokerForTest,
   smokeWindowsUpdateAuthority,
+  validateBootstrapIdentityRecordForTest,
   windowsAuthorityBrokerStatsForTest,
   WINDOWS_AUTHORITY_COMPILE_STAGES,
 } from './windows-update-authority';
@@ -207,12 +208,47 @@ test('production verifier is kernel-rooted and never selected by the process com
   assert.match(implementation, /GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe/);
   assert.match(implementation, /const child = spawn\(KERNEL_SYSTEM_POWERSHELL/);
   assert.match(implementation, /env: \{\}/);
-  assert.match(implementation, /\$fsutilPath = Join-Path \$self\.item\.Directory\.Parent\.Parent\.FullName 'fsutil\.exe'/);
-  assert.match(implementation, /Open-AuthenticatedFile \$selfPath \$true/);
-  assert.match(implementation, /Open-AuthenticatedFile \$fsutilPath \$true/);
+  assert.doesNotMatch(implementation, /\bfsutil\b|queryfileid|Get-Item|-LiteralPath|Get-Acl/);
+  assert.match(implementation, /stdio: \['pipe', 'pipe', 'pipe', heldHandle\.fd\]/);
+  assert.match(implementation, /\$heldHandle=\$native::_get_osfhandle\(3\)/);
+  assert.match(implementation, /GetFileInformationByHandleEx/);
+  assert.match(implementation, /GetSecurityInfo/);
+  assert.match(implementation, /Get-AuthenticodeSignature -Content \$bytes/);
+  assert.match(implementation, /CryptCATAdminCalcHashFromFileHandle2/);
+  assert.match(implementation, /CryptCATAdminEnumCatalogFromHash/);
+  assert.match(implementation, /selfCatalogFileId128/);
+  assert.match(implementation, /record\.nodeDev === nodeIdentity\.dev && record\.nodeIno === nodeIdentity\.ino/);
+  assert.match(implementation, /MICROSOFT_SYSTEM_ROOT_SPKI_SHA256\.has\(selfRootSpkiSha256\)/);
   assert.ok(implementation.indexOf('acquireBootstrapPackageAuthority(')
     < implementation.indexOf('require(bootstrapProof.path)'));
   assert.match(implementation, /bootstrap\.loadVerifiedModule\(\{/);
+});
+
+test('bootstrap authority rejects a forged or split held-object identity record', () => {
+  const policy = { size: 4096, sha256: 'a'.repeat(64) };
+  const identity = { dev: '1234', ino: '5678' };
+  const record = {
+    sha256: policy.sha256,
+    size: policy.size,
+    volumeSerial: '1'.repeat(16),
+    fileId128: '2'.repeat(32),
+    nodeDev: identity.dev,
+    nodeIno: identity.ino,
+    ownerSid: 'S-1-5-18',
+    daclProtected: true,
+    reparseTag: '00000000',
+    subject: null,
+    certificate: null,
+    selfCertificate: 'certificate',
+    selfRootCertificate: 'root',
+    selfCatalogSha256: '3'.repeat(64),
+    selfCatalogVolumeSerial: '4'.repeat(16),
+    selfCatalogFileId128: '5'.repeat(32),
+  };
+  assert.equal(validateBootstrapIdentityRecordForTest(record, policy, identity), true);
+  assert.equal(validateBootstrapIdentityRecordForTest({ ...record, nodeIno: '5679' }, policy, identity), false);
+  assert.equal(validateBootstrapIdentityRecordForTest({ ...record, fileId128: '2'.repeat(31) }, policy, identity), false);
+  assert.equal(validateBootstrapIdentityRecordForTest({ ...record, unexpected: true }, policy, identity), false);
 });
 
 test('hostile Windows command environment cannot select a verifier or execute its observable initializer', windowsOnly,
@@ -358,7 +394,8 @@ test('native Windows helper authentication rejects manifest/output/compiler, lin
   };
 
   for (const scenario of ['manifest', 'output', 'compiler', 'hardlink', 'reparse', 'same-name-aba',
-    'launcher-output', 'launcher-hardlink', 'launcher-reparse', 'launcher-same-name-aba'] as const) {
+    'launcher-output', 'launcher-hardlink', 'launcher-reparse', 'launcher-same-name-aba',
+    'bootstrap-output', 'bootstrap-hardlink', 'bootstrap-reparse', 'bootstrap-same-name-aba'] as const) {
     await t.test(scenario, async () => {
       const current = await fixture();
       try {
@@ -388,12 +425,25 @@ test('native Windows helper authentication rejects manifest/output/compiler, lin
         } else if (scenario === 'launcher-reparse') {
           await rm(current.launcher);
           await symlink(join(sourceDirectory, 'propr-windows-launcher.node'), current.launcher, 'file');
+        } else if (scenario === 'bootstrap-output') {
+          const bytes = await readFile(current.bootstrap);
+          bytes[bytes.length - 1] ^= 1;
+          await writeFile(current.bootstrap, bytes);
+        } else if (scenario === 'bootstrap-hardlink') {
+          await link(current.bootstrap, join(current.root, 'alternate-bootstrap.node'));
+        } else if (scenario === 'bootstrap-reparse') {
+          await rm(current.bootstrap);
+          await symlink(join(sourceDirectory, 'propr-windows-bootstrap.node'), current.bootstrap, 'file');
         }
-        const barrier = scenario === 'same-name-aba' || scenario === 'launcher-same-name-aba' ? async () => {
-          const target = scenario === 'same-name-aba' ? current.executable : current.launcher;
+        const barrier = scenario === 'same-name-aba' || scenario === 'launcher-same-name-aba'
+          || scenario === 'bootstrap-same-name-aba' ? async () => {
+          const target = scenario === 'same-name-aba' ? current.executable
+            : scenario === 'launcher-same-name-aba' ? current.launcher : current.bootstrap;
           const sourcePath = scenario === 'same-name-aba' ? source.executable
-            : join(sourceDirectory, 'propr-windows-launcher.node');
-          await rename(target, join(current.root, scenario === 'same-name-aba' ? 'displaced.exe' : 'displaced.node'));
+            : join(sourceDirectory, scenario === 'launcher-same-name-aba'
+              ? 'propr-windows-launcher.node' : 'propr-windows-bootstrap.node');
+          await rename(target, join(current.root, scenario === 'same-name-aba' ? 'displaced.exe'
+            : scenario === 'launcher-same-name-aba' ? 'displaced.node' : 'displaced-bootstrap.node'));
           await copyFile(sourcePath, target);
         } : undefined;
         await assert.rejects(authenticateWindowsAuthorityHelperForTest(current.root, barrier), /compile_load:(?:4|7|8|9)/);

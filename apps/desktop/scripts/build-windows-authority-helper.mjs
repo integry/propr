@@ -13,8 +13,10 @@ export const WINDOWS_AUTHORITY_EXECUTABLE = join(WINDOWS_AUTHORITY_BUILD_DIRECTO
 export const WINDOWS_AUTHORITY_MANIFEST = join(WINDOWS_AUTHORITY_BUILD_DIRECTORY, 'propr-windows-authority.manifest.json');
 export const WINDOWS_AUTHORITY_BUILD_STAGES = Object.freeze(['BUILD_COMPILER', 'BUILD_SOURCE', 'BUILD_OUTPUT']);
 export const WINDOWS_AUTHORITY_COMPILER_SUBSTAGES = Object.freeze([
-  'DIRECTORY_PROBE', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY',
-  'SPAWN', 'IMAGE', 'EXIT', 'OUTPUT_VALIDATION',
+  'DIRECTORY_PROBE', 'CATALOG_ENUMERATION', 'MEMBER_TAG', 'CATALOG_HASH', 'WINTRUST_POLICY',
+  'REVOCATION', 'CATALOG_LEASE', 'SIGNER_PARSE', 'EXACT_PUBLISHER', 'ROOT_PIN', 'CERTIFICATE_PIN',
+  'SPKI_PIN', 'COMPILER_OPEN', 'REFERENCE_OPEN', 'SIGNER_CATALOG', 'LEASE', 'SOURCE_COPY', 'SPAWN',
+  'IMAGE', 'EXIT', 'OUTPUT_VALIDATION',
 ]);
 const MAX_SOURCE_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -273,8 +275,10 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
         return fail('BUILD_COMPILER', 'DIRECTORY_PROBE');
       }
       let record;
-      try { record = nativeLauncher.probeSystemDirectory({ systemRoot: probeEnv.SystemRoot ?? '', windir: probeEnv.windir ?? '' }); }
-      catch { return fail('BUILD_COMPILER', 'DIRECTORY_PROBE'); }
+      try { record = nativeLauncher.probeSystemDirectory({ systemRoot: probeEnv.SystemRoot ?? '', windir: probeEnv.windir ?? '',
+        fault: probeEnv.PROPR_WINDOWS_AUTHORITY_TEST_DIRECTORY_PROBE_FAULT ?? null }); }
+      catch (error) { return fail('BUILD_COMPILER', compilerSubstage(error) === 'SPAWN'
+        ? 'DIRECTORY_PROBE' : compilerSubstage(error)); }
       try { return decodeWindowsSystemDirectoryRecord(record); }
       catch { return fail('BUILD_COMPILER', 'DIRECTORY_PROBE'); }
     },
