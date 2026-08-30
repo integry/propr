@@ -149,6 +149,23 @@ const WINDOWS_BROKER_REQUEST_MAX_BYTES = 4 * 1024;
 const WINDOWS_CAPABILITY_RESPONSE_MAX_BYTES = 4 * 1024;
 const WINDOWS_CAPABILITY_MAX_MESSAGES = 256;
 
+export const WINDOWS_SUPERVISOR_STAGE_VALUES = [
+  "PATH_NAME", "CHANNEL_CREATE", "TEMP_WORKSPACE_CREATE", "TEMP_WORKSPACE_DACL_APPLY",
+  "TEMP_WORKSPACE_DACL_VERIFY", "SOURCE_READ", "SOURCE_UTF8", "SCRIPT_PARSE",
+  "REFERENCE_LOAD", "TYPE_COMPILE", "ENTRYPOINT_RESOLUTION", "TEMP_WORKSPACE_CLEANUP",
+  "PROTOCOL_INIT", "JOB_CREATE", "JOB_ASSIGN", "PARENT_OPEN", "PROCESS_DACL",
+  "IMAGE_OPEN", "IMAGE_HASH", "IMAGE_IDENTITY", "OWNER_DACL", "REPARSE", "LOCK",
+  "READY_FRAME", "PRE_CHALLENGE", "BATCH_LAUNCH", "FD_DUPLICATE", "BATCH_RESPONSE",
+  "POST_CHALLENGE", "SHUTDOWN",
+] as const;
+export type WindowsSupervisorStage = typeof WINDOWS_SUPERVISOR_STAGE_VALUES[number];
+const WINDOWS_SUPERVISOR_STAGES = new Set<WindowsSupervisorStage>(WINDOWS_SUPERVISOR_STAGE_VALUES);
+const WINDOWS_PRE_PROTOCOL_STAGES = new Set<WindowsSupervisorStage>([
+  "TEMP_WORKSPACE_CREATE", "TEMP_WORKSPACE_DACL_APPLY", "TEMP_WORKSPACE_DACL_VERIFY",
+  "SOURCE_READ", "SOURCE_UTF8", "SCRIPT_PARSE", "REFERENCE_LOAD", "TYPE_COMPILE",
+  "ENTRYPOINT_RESOLUTION", "TEMP_WORKSPACE_CLEANUP", "PROTOCOL_INIT",
+]);
+
 // The long-lived supervisor receives its private path, expected digest, and
 // parent identity only through anonymous inherited stdio. Possession of those
 // two unadvertised handles is the control capability; there is deliberately no
@@ -156,8 +173,7 @@ const WINDOWS_CAPABILITY_MAX_MESSAGES = 256;
 const WINDOWS_SUPERVISOR_SCRIPT = String.raw`
 $ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
 $inputStream=[Console]::OpenStandardInput();$outputStream=[Console]::OpenStandardOutput()
-$parent=[IntPtr]::Zero;$job=[IntPtr]::Zero;$file=$null;$dir=$null;$heldIdentity=$null;$expected=$null;$sequence=0;$ready=$false;$requestId=('0'*32);$stage='SCRIPT_LOAD';$testFailureStage=$null
-function EnterStage([string]$value) {$script:stage=$value;if($script:testFailureStage -ceq $value){throw 'injected-stage-failure'}}
+$parent=[IntPtr]::Zero;$job=[IntPtr]::Zero;$file=$null;$dir=$null;$heldIdentity=$null;$expected=$null;$sequence=0;$ready=$false;$requestId=('0'*32)
 function ExactKeys($value,[string[]]$keys) {
   if($null -eq $value){return $false};$names=@($value.PSObject.Properties.Name)
   if($names.Count -ne $keys.Count){return $false};foreach($key in $keys){if($names -cnotcontains $key){return $false}};return $true
@@ -222,6 +238,9 @@ function HeldResponse($kind,$id,$sequence,$identity,$digest) {
     volumeSerialNumber=$identity[0];fileId=$identity[1];sha256=$digest}
 }
 try {
+  EnterStage 'REFERENCE_LOAD'
+  foreach($requiredType in @([Runtime.InteropServices.Marshal],[Microsoft.Win32.SafeHandles.SafeFileHandle],[Security.AccessControl.DirectorySecurity])){if($null -eq $requiredType){throw 'reference'}}
+  EnterStage 'TYPE_COMPILE'
   Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -260,10 +279,12 @@ public static class ProprSupervisorNative {
   }
 }
 '@
-  EnterStage 'CHANNEL_CREATE';$initText=ReadFrame $inputStream ([IntPtr]::Zero);EnterStage 'SCRIPT_LOAD';$init=$initText|ConvertFrom-Json
+  EnterStage 'ENTRYPOINT_RESOLUTION';if($null -eq ('ProprSupervisorNative' -as [type])){throw 'entrypoint'}
+  CloseCompilerWorkspace
+  EnterStage 'PROTOCOL_INIT';$initText=ReadFrame $inputStream ([IntPtr]::Zero);$init=$initText|ConvertFrom-Json
   if($init.requestId -is [string] -and $init.requestId -cmatch '^[0-9a-f]{32}$'){$requestId=$init.requestId}
   $testInit=ExactKeys $init @('version','kind','requestId','path','sha256','parentPid','testFailureStage')
-  if($testInit){$testFailureStage=$init.testFailureStage;if(@('PATH_NAME','CHANNEL_CREATE','SCRIPT_LOAD','JOB_CREATE','JOB_ASSIGN','PARENT_OPEN','PROCESS_DACL','IMAGE_OPEN','IMAGE_HASH','IMAGE_IDENTITY','OWNER_DACL','REPARSE','LOCK','READY_FRAME','PRE_CHALLENGE','BATCH_LAUNCH','FD_DUPLICATE','BATCH_RESPONSE','POST_CHALLENGE','SHUTDOWN') -cnotcontains $testFailureStage){throw 'test-stage'}}
+  if($testInit){$global:ProprTestFailureStage=$init.testFailureStage;if(@('PATH_NAME','CHANNEL_CREATE','TEMP_WORKSPACE_CREATE','TEMP_WORKSPACE_DACL_APPLY','TEMP_WORKSPACE_DACL_VERIFY','SOURCE_READ','SOURCE_UTF8','SCRIPT_PARSE','REFERENCE_LOAD','TYPE_COMPILE','ENTRYPOINT_RESOLUTION','TEMP_WORKSPACE_CLEANUP','PROTOCOL_INIT','JOB_CREATE','JOB_ASSIGN','PARENT_OPEN','PROCESS_DACL','IMAGE_OPEN','IMAGE_HASH','IMAGE_IDENTITY','OWNER_DACL','REPARSE','LOCK','READY_FRAME','PRE_CHALLENGE','BATCH_LAUNCH','FD_DUPLICATE','BATCH_RESPONSE','POST_CHALLENGE','SHUTDOWN') -cnotcontains $global:ProprTestFailureStage){throw 'test-stage'}}
   if((!$testInit -and !(ExactKeys $init @('version','kind','requestId','path','sha256','parentPid'))) -or $init.version -ne 1 -or $init.kind -cne 'init' -or
      $init.requestId -cnotmatch '^[0-9a-f]{32}$' -or $init.path -isnot [string] -or $init.path.Length -lt 1 -or $init.path.Length -gt 1024 -or
      $init.path.IndexOf([char]0) -ge 0 -or $init.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $init.parentPid -cnotmatch '^[1-9][0-9]{0,9}$'){throw 'init'}
@@ -307,28 +328,47 @@ public static class ProprSupervisorNative {
   try {
     if($ready -and $null -ne $heldIdentity -and $null -ne $expected){
       WriteFrame $outputStream ([ordered]@{version=1;kind='capability-error';requestId=$requestId;supervisorPid=$PID.ToString([Globalization.CultureInfo]::InvariantCulture);sequence=$sequence;
-        volumeSerialNumber=$heldIdentity[0];fileId=$heldIdentity[1];sha256=$expected;stage=$stage})
-    } else {WriteFrame $outputStream ([ordered]@{version=1;kind='startup-error';requestId=$requestId;stage=$stage})}
+        volumeSerialNumber=$heldIdentity[0];fileId=$heldIdentity[1];sha256=$expected;stage=$global:ProprStage})
+    } else {WriteFrame $outputStream ([ordered]@{version=1;kind='startup-error';requestId=$requestId;stage=$global:ProprStage})}
   } catch {}
   try{if($file){$file.Dispose()}}catch{};try{if($dir){$dir.Dispose()}}catch{};try{if($parent -ne [IntPtr]::Zero){[void][ProprSupervisorNative]::CloseHandle($parent)}}catch{};exit 23
 }
 `;
 const WINDOWS_SUPERVISOR_SOURCE_MAX_BYTES = 64 * 1024;
 const WINDOWS_SUPERVISOR_LOADER = String.raw`
-$ErrorActionPreference='Stop'
-$stream=[Console]::OpenStandardInput()
-function ReadExact($count){$bytes=New-Object byte[] $count;$offset=0;while($offset -lt $count){$read=$stream.Read($bytes,$offset,$count-$offset);if($read -le 0){throw 'eof'};$offset+=$read};return $bytes}
-$header=ReadExact 4;$length=[BitConverter]::ToUInt32($header,0)
-if($length -lt 2 -or $length -gt ${WINDOWS_SUPERVISOR_SOURCE_MAX_BYTES}){throw 'source'}
-$source=([Text.UTF8Encoding]::new($false,$true)).GetString((ReadExact ([int]$length)))
-&([ScriptBlock]::Create($source))
+$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';$global:ProprStage='TEMP_WORKSPACE_CREATE';$global:ProprTestFailureStage=$null;$compilerWorkspace=$null;$workspaceVerified=$false;$workspaceRemoved=$false
+function EnterStage([string]$value){$global:ProprStage=$value;if($global:ProprTestFailureStage -ceq $value){throw 'injected-stage-failure'}}
+function WriteStartupFailure(){try{$body=[Text.Encoding]::UTF8.GetBytes(('{"version":1,"kind":"startup-error","requestId":"00000000000000000000000000000000","stage":"'+$global:ProprStage+'"}'));if($body.Length -gt 256){return};$out=[Console]::OpenStandardOutput();$header=[BitConverter]::GetBytes([uint32]$body.Length);$out.Write($header,0,4);$out.Write($body,0,$body.Length);$out.Flush()}catch{}}
+function WorkspaceRule($sid){return [Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::FullControl,[Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)}
+function RequireWorkspaceOrdinary([string]$path){$attributes=[IO.File]::GetAttributes($path);if(($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or ($attributes -band [IO.FileAttributes]::Directory) -eq 0){throw 'workspace'}}
+function VerifyWorkspace([string]$path,$owner){RequireWorkspaceOrdinary $path;$security=[IO.Directory]::GetAccessControl($path);if(!$security.AreAccessRulesProtected -or $security.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $owner.Value){throw 'workspace-acl'};$rules=@($security.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));if($rules.Count -ne 3){throw 'workspace-acl'};$expected=@($owner.Value,'S-1-5-18','S-1-5-32-544');foreach($rule in $rules){if($rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or [int64]$rule.FileSystemRights -ne 2032127 -or [int]$rule.InheritanceFlags -ne 3 -or $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None -or $expected -cnotcontains $rule.IdentityReference.Value){throw 'workspace-acl'}}}
+function CloseCompilerWorkspace(){if($script:workspaceRemoved -or $null -eq $script:compilerWorkspace){return};EnterStage 'TEMP_WORKSPACE_CLEANUP';if(!$script:workspaceVerified){throw 'workspace-unverified'};[GC]::Collect();[GC]::WaitForPendingFinalizers();RequireWorkspaceOrdinary $script:compilerWorkspace;[IO.Directory]::Delete($script:compilerWorkspace,$true);$script:workspaceRemoved=$true}
+function FinalCompilerWorkspaceCleanup(){if($script:workspaceRemoved -or $null -eq $script:compilerWorkspace -or ![IO.Directory]::Exists($script:compilerWorkspace)){return};$attributes=[IO.File]::GetAttributes($script:compilerWorkspace);if(($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or !$script:workspaceVerified){[IO.Directory]::Delete($script:compilerWorkspace,$false)}else{[IO.Directory]::Delete($script:compilerWorkspace,$true)};$script:workspaceRemoved=$true}
+function ReadExact($stream,[int]$count,$watch){$bytes=New-Object byte[] $count;$offset=0;while($offset -lt $count){$pending=$stream.BeginRead($bytes,$offset,$count-$offset,$null,$null);try{while(!$pending.AsyncWaitHandle.WaitOne(25)){if($watch.ElapsedMilliseconds -ge 10000){throw 'deadline'}};$read=$stream.EndRead($pending);if($read -le 0){throw 'eof'};$offset+=$read}finally{try{$pending.AsyncWaitHandle.Close()}catch{}}};return $bytes}
+try{
+  EnterStage 'TEMP_WORKSPACE_CREATE';$systemRoot=[IO.Path]::GetFullPath($env:SystemRoot);$tempRoot=[IO.Path]::GetFullPath([IO.Path]::Combine($systemRoot,'Temp'));if($tempRoot -cne [IO.Path]::Combine($systemRoot,'Temp') -or ![IO.Directory]::Exists($tempRoot)){throw 'temp-root'};RequireWorkspaceOrdinary $tempRoot
+  $random=New-Object byte[] 32;$rng=[Security.Cryptography.RandomNumberGenerator]::Create();try{$rng.GetBytes($random)}finally{$rng.Dispose()};$name='propr-supervisor-'+$PID.ToString([Globalization.CultureInfo]::InvariantCulture)+'-'+([BitConverter]::ToString($random)).Replace('-','').ToLowerInvariant();$compilerWorkspace=[IO.Path]::Combine($tempRoot,$name);[void][IO.Directory]::CreateDirectory($compilerWorkspace);RequireWorkspaceOrdinary $compilerWorkspace
+  EnterStage 'TEMP_WORKSPACE_DACL_APPLY';$owner=[Security.Principal.WindowsIdentity]::GetCurrent().User;$security=[Security.AccessControl.DirectorySecurity]::new();$security.SetOwner($owner);$security.SetAccessRuleProtection($true,$false);foreach($text in @($owner.Value,'S-1-5-18','S-1-5-32-544')){[void]$security.AddAccessRule((WorkspaceRule ([Security.Principal.SecurityIdentifier]::new($text)))};[IO.Directory]::SetAccessControl($compilerWorkspace,$security)
+  EnterStage 'TEMP_WORKSPACE_DACL_VERIFY';VerifyWorkspace $compilerWorkspace $owner;$script:workspaceVerified=$true;[Environment]::SetEnvironmentVariable('TEMP',$compilerWorkspace,[EnvironmentVariableTarget]::Process);[Environment]::SetEnvironmentVariable('TMP',$compilerWorkspace,[EnvironmentVariableTarget]::Process);if($env:TEMP -cne $compilerWorkspace -or $env:TMP -cne $compilerWorkspace){throw 'workspace-env'}
+  $stream=[Console]::OpenStandardInput();$watch=[Diagnostics.Stopwatch]::StartNew();EnterStage 'SOURCE_READ';$header=ReadExact $stream 4 $watch;$length=[BitConverter]::ToUInt32($header,0);if($length -lt 2 -or $length -gt ${WINDOWS_SUPERVISOR_SOURCE_MAX_BYTES}){throw 'source-length'};$sourceBytes=ReadExact $stream ([int]$length) $watch
+  EnterStage 'SOURCE_UTF8';$source=([Text.UTF8Encoding]::new($false,$true)).GetString($sourceBytes)
+  EnterStage 'SCRIPT_PARSE';$entrypoint=[ScriptBlock]::Create($source);if($null -eq $entrypoint){throw 'script'}
+  &$entrypoint
+}catch{WriteStartupFailure;exit 23}finally{$global:ProprTestFailureStage=$null;try{FinalCompilerWorkspaceCleanup}catch{};[Environment]::SetEnvironmentVariable('TEMP',$null,[EnvironmentVariableTarget]::Process);[Environment]::SetEnvironmentVariable('TMP',$null,[EnvironmentVariableTarget]::Process);Remove-Variable ProprStage,ProprTestFailureStage -Scope Global -ErrorAction SilentlyContinue}
 `;
-const WINDOWS_SUPERVISOR_LOADER_ENCODED = Buffer.from(WINDOWS_SUPERVISOR_LOADER, "utf16le").toString("base64");
+
+function windowsSupervisorLoader(testFailureStage?: WindowsSupervisorStage): string {
+  if (!testFailureStage) return WINDOWS_SUPERVISOR_LOADER;
+  return WINDOWS_SUPERVISOR_LOADER.replace(
+    "$global:ProprTestFailureStage=$null",
+    `$global:ProprTestFailureStage='${testFailureStage}'`,
+  );
+}
 
 function encodeWindowsSupervisorSource(): Buffer {
   const payload = Buffer.from(WINDOWS_SUPERVISOR_SCRIPT, "utf8");
   if (payload.byteLength < 2 || payload.byteLength > WINDOWS_SUPERVISOR_SOURCE_MAX_BYTES) {
-    throw new WindowsSupervisorStartupError("SCRIPT_LOAD");
+    throw new WindowsSupervisorStartupError("SOURCE_READ");
   }
   const frame = Buffer.allocUnsafe(payload.byteLength + 4);
   frame.writeUInt32LE(payload.byteLength, 0);
@@ -564,7 +604,7 @@ export interface WindowsAuthorityCapabilityProbe {
   readonly onSupervisorStarting?: (details: {
     readonly stagedPath: string;
     readonly environmentKeys: readonly string[];
-    readonly encodedLoaderLength: number;
+    readonly loaderCommandLength: number;
   }) => void;
   readonly onSupervisorSpawned?: (stagedPath: string, supervisorPid: number) => void;
   readonly onRequestLocked?: (stagedPath: string, supervisorPid: number) => void | Promise<void>;
@@ -639,15 +679,6 @@ function revalidateWindowsCapabilityFiles(capability: WindowsAuthorityCapability
   });
 }
 
-export const WINDOWS_SUPERVISOR_STAGE_VALUES = [
-  "PATH_NAME", "CHANNEL_CREATE", "SCRIPT_LOAD", "JOB_CREATE", "JOB_ASSIGN", "PARENT_OPEN",
-  "PROCESS_DACL", "IMAGE_OPEN", "IMAGE_HASH", "IMAGE_IDENTITY", "OWNER_DACL",
-  "REPARSE", "LOCK", "READY_FRAME", "PRE_CHALLENGE", "BATCH_LAUNCH",
-  "FD_DUPLICATE", "BATCH_RESPONSE", "POST_CHALLENGE", "SHUTDOWN",
-] as const;
-export type WindowsSupervisorStage = typeof WINDOWS_SUPERVISOR_STAGE_VALUES[number];
-const WINDOWS_SUPERVISOR_STAGES = new Set<WindowsSupervisorStage>(WINDOWS_SUPERVISOR_STAGE_VALUES);
-
 export class WindowsSupervisorStartupError extends Error {
   constructor(readonly stage: WindowsSupervisorStage) {
     super(`Windows system authority capability is unavailable (${stage})`);
@@ -702,9 +733,9 @@ class WindowsSupervisorChannel {
     supervisor.stdout.once("error", () => this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE")));
     supervisor.stdin.once("error", () => this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE")));
     supervisor.stderr.on("data", (chunk: Buffer | string) => {
-      if (Buffer.byteLength(chunk) > 0) this.invalidate(new WindowsSupervisorStartupError("SCRIPT_LOAD"));
+      if (Buffer.byteLength(chunk) > 0) this.invalidate(new WindowsSupervisorStartupError("SCRIPT_PARSE"));
     });
-    supervisor.stderr.once("error", () => this.invalidate(new WindowsSupervisorStartupError("SCRIPT_LOAD")));
+    supervisor.stderr.once("error", () => this.invalidate(new WindowsSupervisorStartupError("SCRIPT_PARSE")));
     supervisor.once("error", () => this.invalidate(new WindowsSupervisorStartupError("CHANNEL_CREATE")));
     supervisor.once("exit", () => this.invalidate(new WindowsSupervisorStartupError(this.closing ? "SHUTDOWN" : "CHANNEL_CREATE")));
   }
@@ -771,7 +802,7 @@ class WindowsSupervisorChannel {
     this.supervisor.stderr?.destroy();
   }
 
-  async exchange(value: unknown, timeout: number, signal?: AbortSignal): Promise<Buffer> {
+  async exchange(value: unknown, timeout: number, signal?: AbortSignal, prefix?: Buffer): Promise<Buffer> {
     if (this.invalidError) throw this.invalidError;
     if (this.pending || this.settling) throw new Error("Windows system authority capability request ordering failed");
     if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Windows authority request aborted");
@@ -791,7 +822,8 @@ class WindowsSupervisorChannel {
       this.pending = pending;
     });
     try {
-      await this.write(encodeControlFrame(value));
+      const control = encodeControlFrame(value);
+      await this.write(prefix ? Buffer.concat([prefix, control]) : control);
     } catch (error) {
       this.invalidate(error instanceof Error ? error : new Error("Windows system authority capability is unavailable"));
     }
@@ -1002,14 +1034,19 @@ async function acquireWindowsAuthorityCapability(
     if (probe?.testFailureStage === parentStage) throw new WindowsSupervisorStartupError(parentStage);
     const systemRoot = trustedWindowsSystemRoot();
     const supervisorEnvironment = { SystemRoot: systemRoot };
+    const loader = windowsSupervisorLoader(
+      probe?.testFailureStage && WINDOWS_PRE_PROTOCOL_STAGES.has(probe.testFailureStage)
+        ? probe.testFailureStage
+        : undefined,
+    );
     probe?.onSupervisorStarting?.({
       stagedPath: staged.path,
       environmentKeys: Object.freeze(Object.keys(supervisorEnvironment)),
-      encodedLoaderLength: WINDOWS_SUPERVISOR_LOADER_ENCODED.length,
+      loaderCommandLength: loader.length,
     });
     supervisor = spawn(join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
       "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-      "-EncodedCommand", WINDOWS_SUPERVISOR_LOADER_ENCODED,
+      "-Command", loader,
     ], {
       shell: false,
       windowsHide: true,
@@ -1036,9 +1073,7 @@ async function acquireWindowsAuthorityCapability(
     supervisor.once("exit", () => { capability!.alive = false; });
     if (!supervisor.pid) throw new WindowsSupervisorStartupError("CHANNEL_CREATE");
     probe?.onSupervisorSpawned?.(staged.path, supervisor.pid);
-    parentStage = "SCRIPT_LOAD";
-    if (probe?.testFailureStage === parentStage) throw new WindowsSupervisorStartupError(parentStage);
-    await channel.write(encodeWindowsSupervisorSource());
+    parentStage = "SOURCE_READ";
     const requestId = randomBytes(16).toString("hex");
     const output = await channel.exchange({
       version: 1,
@@ -1048,19 +1083,24 @@ async function acquireWindowsAuthorityCapability(
       sha256: artifact.digest,
       parentPid: String(process.pid),
       ...(probe?.testFailureStage === undefined ? {} : { testFailureStage: probe.testFailureStage }),
-    }, WINDOWS_CAPABILITY_STARTUP_TIMEOUT_MS, signal);
+    }, WINDOWS_CAPABILITY_STARTUP_TIMEOUT_MS, signal, encodeWindowsSupervisorSource());
     let parsed: unknown;
     try {
       parsed = JSON.parse(decodeBoundedUtf8(output));
     } catch {
-      throw new WindowsSupervisorStartupError("SCRIPT_LOAD");
+      throw new WindowsSupervisorStartupError("PROTOCOL_INIT");
     }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const startup = parsed as Record<string, unknown>;
+      const startupStage = typeof startup.stage === "string"
+        && WINDOWS_SUPERVISOR_STAGES.has(startup.stage as WindowsSupervisorStage)
+        ? startup.stage as WindowsSupervisorStage
+        : undefined;
       if (exactKeys(startup, ["version", "kind", "requestId", "stage"])
-        && startup.version === 1 && startup.kind === "startup-error" && startup.requestId === requestId
-        && typeof startup.stage === "string" && WINDOWS_SUPERVISOR_STAGES.has(startup.stage as WindowsSupervisorStage)) {
-        throw new WindowsSupervisorStartupError(startup.stage as WindowsSupervisorStage);
+        && startup.version === 1 && startup.kind === "startup-error" && startupStage
+        && (startup.requestId === requestId
+          || (startup.requestId === "0".repeat(32) && WINDOWS_PRE_PROTOCOL_STAGES.has(startupStage)))) {
+        throw new WindowsSupervisorStartupError(startupStage);
       }
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !exactKeys(parsed, [
@@ -1096,7 +1136,7 @@ async function acquireWindowsAuthorityCapability(
   } catch (error) {
     if (capability) {
       capability.channel.invalidate(
-        error instanceof Error ? error : new WindowsSupervisorStartupError("SCRIPT_LOAD"),
+        error instanceof Error ? error : new WindowsSupervisorStartupError(parentStage),
       );
       await destroyWindowsAuthorityCapability(capability);
     }

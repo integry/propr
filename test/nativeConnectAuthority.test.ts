@@ -576,10 +576,13 @@ test('native helper replacement is rejected before attacker bytes can execute', 
 
   if (process.platform === 'win32') {
     assert.deepEqual(WINDOWS_SUPERVISOR_STAGE_VALUES, [
-      'PATH_NAME', 'CHANNEL_CREATE', 'SCRIPT_LOAD', 'JOB_CREATE', 'JOB_ASSIGN', 'PARENT_OPEN',
-      'PROCESS_DACL', 'IMAGE_OPEN', 'IMAGE_HASH', 'IMAGE_IDENTITY', 'OWNER_DACL',
-      'REPARSE', 'LOCK', 'READY_FRAME', 'PRE_CHALLENGE', 'BATCH_LAUNCH',
-      'FD_DUPLICATE', 'BATCH_RESPONSE', 'POST_CHALLENGE', 'SHUTDOWN',
+      'PATH_NAME', 'CHANNEL_CREATE', 'TEMP_WORKSPACE_CREATE', 'TEMP_WORKSPACE_DACL_APPLY',
+      'TEMP_WORKSPACE_DACL_VERIFY', 'SOURCE_READ', 'SOURCE_UTF8', 'SCRIPT_PARSE',
+      'REFERENCE_LOAD', 'TYPE_COMPILE', 'ENTRYPOINT_RESOLUTION', 'TEMP_WORKSPACE_CLEANUP',
+      'PROTOCOL_INIT', 'JOB_CREATE', 'JOB_ASSIGN', 'PARENT_OPEN', 'PROCESS_DACL',
+      'IMAGE_OPEN', 'IMAGE_HASH', 'IMAGE_IDENTITY', 'OWNER_DACL', 'REPARSE', 'LOCK',
+      'READY_FRAME', 'PRE_CHALLENGE', 'BATCH_LAUNCH', 'FD_DUPLICATE', 'BATCH_RESPONSE',
+      'POST_CHALLENGE', 'SHUTDOWN',
     ]);
     for (const stage of WINDOWS_SUPERVISOR_STAGE_VALUES) {
       assert.deepEqual(await exerciseWindowsAuthorityStageFailureForNativeTest(stage), {
@@ -632,11 +635,11 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     rmSync(attackerResultPath, { force: true });
     let concurrentRequest: Promise<Awaited<ReturnType<typeof exerciseWindowsAuthorityCapabilityForNativeTest>>> | undefined;
     const locked = await exerciseWindowsAuthorityCapabilityForNativeTest({
-      onSupervisorStarting: ({ stagedPath, environmentKeys, encodedLoaderLength }) => {
+      onSupervisorStarting: ({ stagedPath, environmentKeys, loaderCommandLength }) => {
         assert.deepEqual(environmentKeys, ['SystemRoot']);
         assert.equal(environmentKeys.some((key) => key.startsWith('PROPR_')), false);
         assert.equal(environmentKeys.includes(stagedPath), false);
-        assert.ok(encodedLoaderLength > 0 && encodedLoaderLength < 2_048, 'supervisor loader exceeded its fixed launch bound');
+        assert.ok(loaderCommandLength > 0 && loaderCommandLength < 8_192, 'supervisor loader exceeded its fixed launch bound');
       },
       onSupervisorSpawned: (stagedPath, supervisorPid) => {
         const query = spawnSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
@@ -648,7 +651,8 @@ test('native helper replacement is rejected before attacker bytes can execute', 
           timeout: 5_000,
         });
         assert.equal(query.status, 0, query.stderr);
-        assert.equal(query.stdout.includes('EncodedCommand'), true, 'supervisor command line was not inspected');
+        assert.equal(query.stdout.includes('-Command'), true, 'supervisor command line was not inspected');
+        assert.equal(query.stdout.includes('EncodedCommand'), false, 'supervisor restored EncodedCommand');
         assert.equal(query.stdout.includes(stagedPath), false);
         assert.equal(query.stdout.includes('PROPR_CAPABILITY'), false);
       },

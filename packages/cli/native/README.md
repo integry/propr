@@ -47,6 +47,17 @@ stdin/stdout plus the staged image handle. Startup material travels in the
 first control frame, never argv or the environment. Readiness, pre-launch,
 post-response, and shutdown use strict 4-byte-length-prefixed versioned frames
 with fresh parent request IDs and sequence/PID/full-identity/digest binding.
+The constant raw loader derives its compiler root only as `SystemRoot\Temp`.
+Before `Add-Type`, it creates a 256-bit-random directory, rejects reparse
+points, replaces inherited access with exact full-control entries for the
+caller, SYSTEM, and Administrators, then verifies the owner and every DACL
+field using built-in .NET APIs. Only that private directory is assigned to
+process-local `TEMP` and `TMP`; no caller value is inherited. Compiler
+finalizers and handles are drained and the directory is removed before job
+creation, so normal shutdown, protocol errors, timeouts, and job termination
+cannot leave a post-compilation workspace. The loader's final guard retries
+cleanup for every caught pre-compilation failure without reporting the path or
+the underlying ACL/compiler diagnostic.
 The parent uses only the documented asynchronous ChildProcess streams with an
 incremental bounded parser, backpressure-aware writes, abort propagation, and
 startup/request/shutdown deadlines; it never extracts private pipe descriptors
