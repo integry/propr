@@ -104,6 +104,12 @@ export const SIGNED_UPDATE_CACHE_POLICY = {
   inspectionDepth: 3,
   inspectionElapsedMs: 250,
   cleanupEntryCap: 64,
+  cleanupByteCap: 128 * 1024 * 1024,
+  quarantineSlots: 4,
+  quarantineGlobalNames: 256,
+  quarantineGlobalBytes: 4 * 1024 * 1024 * 1024,
+  quarantineMaxAgeMs: 7 * 24 * 60 * 60_000,
+  quarantineStateBytes: 4096,
 } as const;
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -677,6 +683,13 @@ interface SignedUpdateOperationOptions {
   ) => Promise<SignedUpdateSigner>;
   /** Platform adapter that consumes only held bytes; mutable path adapters are intentionally unsupported. */
   applyHeldArtifact?: (source: HeldUpdateArtifactSource) => Promise<void>;
+  /** Native-test-only deterministic barrier immediately before the broker's CreateFileW. */
+  beforeWindowsArtifactOpenForTest?: (packagePath: string) => Promise<void>;
+  /** Native-test-only restoration point after a mismatched handle has been closed but before rejection. */
+  afterWindowsArtifactMismatchForTest?: (
+    packagePath: string,
+    acquired: Readonly<{ identity: WindowsFileIdentity; size: string; sha256: string }>,
+  ) => Promise<void>;
 }
 
 interface PreparedSignedUpdate {
@@ -689,6 +702,7 @@ interface PreparedSignedUpdate {
 }
 
 const acquireFilesystemCacheLock = async (cacheDirectory: string): Promise<() => Promise<void>> => {
+  await collectQuarantines(cacheDirectory);
   if (process.platform !== 'win32') await mkdir(cacheDirectory, { recursive: true, mode: 0o700 });
   await ensurePrivateDirectory(cacheDirectory);
   await preflightCacheNamespace(cacheDirectory);
@@ -870,15 +884,22 @@ const syncDirectory = async (path: string): Promise<void> => {
 interface NamespaceBudget {
   entries: number;
   nameBytes: number;
+  bytes: number;
   readonly startedAt: number;
   readonly entryCap: number;
+  readonly byteCap: number;
 }
 
-const newNamespaceBudget = (entryCap = SIGNED_UPDATE_CACHE_POLICY.inspectionEntryCap): NamespaceBudget => ({
+const newNamespaceBudget = (
+  entryCap = SIGNED_UPDATE_CACHE_POLICY.inspectionEntryCap,
+  byteCap = Number.MAX_SAFE_INTEGER,
+): NamespaceBudget => ({
   entries: 0,
   nameBytes: 0,
+  bytes: 0,
   startedAt: Date.now(),
   entryCap,
+  byteCap,
 });
 
 const assertNamespaceBudget = (budget: NamespaceBudget, name?: string): void => {
@@ -925,7 +946,9 @@ const boundedRemoveCachePath = async (
   }
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
     assertNamespaceBudget(budget);
+    if (budget.bytes > 0 && budget.bytes + stats.size > budget.byteCap) return false;
     budget.entries += 1;
+    budget.bytes += stats.size;
     await unlink(path);
     return true;
   }
@@ -959,11 +982,150 @@ const removeCachePath = async (path: string): Promise<void> => {
   }
 };
 
-const quarantineCacheNamespace = async (cacheDirectory: string): Promise<void> => {
-  const quarantine = join(
-    dirname(cacheDirectory),
-    `.${basename(cacheDirectory)}.quarantine-${randomBytes(16).toString('hex')}`,
+interface QuarantineRecord {
+  slot: number;
+  createdAt: number;
+  names: number;
+  bytes: number;
+  saturated: boolean;
+}
+
+interface QuarantineState {
+  schemaVersion: 1;
+  cursor: number;
+  records: QuarantineRecord[];
+}
+
+const quarantineRootFor = (cacheDirectory: string): string =>
+  join(dirname(cacheDirectory), `.${basename(cacheDirectory)}.quarantine`);
+
+const quarantineSlotPath = (root: string, slot: number): string => join(root, `slot-${slot}`);
+
+const ensureQuarantineRoot = async (cacheDirectory: string): Promise<string> => {
+  const root = quarantineRootFor(cacheDirectory);
+  if (process.platform !== 'win32') {
+    try { await mkdir(root, { mode: 0o700 }); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  } else await ensureWindowsPrivateDirectory(root);
+  await inspectPrivatePath(root, true);
+  return root;
+};
+
+const validQuarantineRecord = (value: unknown): value is QuarantineRecord => isRecord(value)
+  && Number.isInteger(value.slot) && Number(value.slot) >= 0
+  && Number(value.slot) < SIGNED_UPDATE_CACHE_POLICY.quarantineSlots
+  && Number.isSafeInteger(value.createdAt) && Number(value.createdAt) >= 0
+  && Number.isSafeInteger(value.names) && Number(value.names) >= 0
+  && Number.isSafeInteger(value.bytes) && Number(value.bytes) >= 0
+  && typeof value.saturated === 'boolean'
+  && Object.keys(value).length === 5;
+
+const readQuarantineState = async (root: string): Promise<QuarantineState> => {
+  const statePath = join(root, 'collector.json');
+  let value: unknown = { schemaVersion: 1, cursor: 0, records: [] };
+  try {
+    const inspected = await inspectPrivatePath(statePath);
+    if (inspected.size <= 0n || inspected.size > BigInt(SIGNED_UPDATE_CACHE_POLICY.quarantineStateBytes)) throw new Error('invalid');
+    value = JSON.parse(await readFile(statePath, 'utf8'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      // A missing state record is recoverable from the fixed slot namespace;
+      // malformed or broad metadata is never trusted.
+      try { await lstat(statePath); } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') return value as QuarantineState;
+      }
+      throw new Error('Verified update quarantine metadata is invalid');
+    }
+  }
+  if (!isRecord(value) || value.schemaVersion !== 1
+    || !Number.isInteger(value.cursor) || Number(value.cursor) < 0
+    || Number(value.cursor) >= SIGNED_UPDATE_CACHE_POLICY.quarantineSlots
+    || !Array.isArray(value.records) || value.records.length > SIGNED_UPDATE_CACHE_POLICY.quarantineSlots
+    || !value.records.every(validQuarantineRecord)
+    || new Set(value.records.map(record => record.slot)).size !== value.records.length
+    || Object.keys(value).length !== 3) {
+    throw new Error('Verified update quarantine metadata is invalid');
+  }
+  return value as unknown as QuarantineState;
+};
+
+const writeQuarantineState = async (root: string, state: QuarantineState): Promise<void> => {
+  const statePath = join(root, 'collector.json');
+  const temporary = join(root, 'collector.next');
+  const bytes = Buffer.from(`${JSON.stringify(state)}\n`);
+  if (bytes.length > SIGNED_UPDATE_CACHE_POLICY.quarantineStateBytes) {
+    throw new Error('Verified update quarantine metadata is invalid');
+  }
+  await rm(temporary, { force: true });
+  let handle = await open(
+    temporary,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+    0o600,
   );
+  await handle.close();
+  await protectPrivateFile(temporary);
+  handle = await open(temporary, fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW);
+  try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+  await rename(temporary, statePath);
+  await syncDirectory(root);
+};
+
+const collectQuarantines = async (cacheDirectory: string): Promise<{ root: string; state: QuarantineState }> => {
+  const root = await ensureQuarantineRoot(cacheDirectory);
+  const state = await readQuarantineState(root);
+  const records = new Map(state.records.map(record => [record.slot, record]));
+  // Fixed slots avoid an attacker-controlled parent-directory walk. Missing
+  // metadata is reconstructed conservatively and marks the backlog saturated.
+  for (let slot = 0; slot < SIGNED_UPDATE_CACHE_POLICY.quarantineSlots; slot += 1) {
+    try {
+      await lstat(quarantineSlotPath(root, slot));
+      if (!records.has(slot)) records.set(slot, { slot, createdAt: 0, names: 0, bytes: 0, saturated: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      records.delete(slot);
+    }
+  }
+  const budget = newNamespaceBudget(
+    SIGNED_UPDATE_CACHE_POLICY.cleanupEntryCap,
+    SIGNED_UPDATE_CACHE_POLICY.cleanupByteCap,
+  );
+  for (let count = 0; count < SIGNED_UPDATE_CACHE_POLICY.quarantineSlots; count += 1) {
+    const slot = (state.cursor + count) % SIGNED_UPDATE_CACHE_POLICY.quarantineSlots;
+    const record = records.get(slot);
+    if (!record) continue;
+    const entriesBefore = budget.entries;
+    const bytesBefore = budget.bytes;
+    let complete = false;
+    try { complete = await boundedRemoveCachePath(quarantineSlotPath(root, slot), budget); } catch { complete = false; }
+    record.names += budget.entries - entriesBefore;
+    record.bytes += budget.bytes - bytesBefore;
+    record.saturated = !complete;
+    if (complete) records.delete(slot);
+    state.cursor = (slot + 1) % SIGNED_UPDATE_CACHE_POLICY.quarantineSlots;
+    if (!complete) break;
+  }
+  state.records = [...records.values()].sort((left, right) => left.slot - right.slot);
+  await writeQuarantineState(root, state);
+  return { root, state };
+};
+
+const quarantineCacheNamespace = async (cacheDirectory: string): Promise<void> => {
+  const { root, state } = await collectQuarantines(cacheDirectory);
+  const now = Date.now();
+  const globalNames = state.records.reduce((total, record) => total + record.names, 0);
+  const globalBytes = state.records.reduce((total, record) => total + record.bytes, 0);
+  if (state.records.some(record => record.saturated || now - record.createdAt > SIGNED_UPDATE_CACHE_POLICY.quarantineMaxAgeMs)
+    || state.records.length >= SIGNED_UPDATE_CACHE_POLICY.quarantineSlots
+    || globalNames >= SIGNED_UPDATE_CACHE_POLICY.quarantineGlobalNames
+    || globalBytes >= SIGNED_UPDATE_CACHE_POLICY.quarantineGlobalBytes) {
+    throw new Error('Verified update quarantine backlog exceeds the global bound');
+  }
+  const occupied = new Set(state.records.map(record => record.slot));
+  const slot = Array.from({ length: SIGNED_UPDATE_CACHE_POLICY.quarantineSlots }, (_, index) => index)
+    .find(candidate => !occupied.has(candidate));
+  if (slot === undefined) throw new Error('Verified update quarantine backlog exceeds the global bound');
+  const quarantine = quarantineSlotPath(root, slot);
   try {
     await rename(cacheDirectory, quarantine);
   } catch {
@@ -975,11 +1137,26 @@ const quarantineCacheNamespace = async (cacheDirectory: string): Promise<void> =
     try { await rename(quarantine, cacheDirectory); } catch { /* preserve quarantine if a concurrent creator won */ }
     throw error;
   }
-  // Cleanup is deliberately incremental. An attacker-controlled quarantine that
-  // exceeds any cap remains isolated for a later bounded pass; it is never walked
-  // recursively without limits.
-  try { await boundedRemoveCachePath(quarantine); } catch { /* quarantined content is no longer authoritative */ }
+  state.records.push({ slot, createdAt: now, names: 0, bytes: 0, saturated: false });
+  state.records.sort((left, right) => left.slot - right.slot);
+  await writeQuarantineState(root, state);
+  // One bounded pass makes small quarantines disappear immediately. Oversized
+  // trees resume from their mutated filesystem cursor on later launches.
+  await collectQuarantines(cacheDirectory);
 };
+
+/** Native-test-only bounded collector probe; returns fixed non-secret progress metadata. */
+export const collectUpdateCacheQuarantinesForTest = async (cacheDirectory: string): Promise<Readonly<QuarantineState>> => {
+  const { state } = await collectQuarantines(cacheDirectory);
+  return Object.freeze({
+    schemaVersion: 1,
+    cursor: state.cursor,
+    records: state.records.map(record => Object.freeze({ ...record })),
+  });
+};
+
+/** Native-test-only invalid-namespace transition into the fixed quarantine slots. */
+export const quarantineUpdateCacheNamespaceForTest = quarantineCacheNamespace;
 
 const preflightCacheNamespace = async (cacheDirectory: string): Promise<void> => {
   const budget = newNamespaceBudget();
@@ -1021,6 +1198,7 @@ const preflightCacheNamespace = async (cacheDirectory: string): Promise<void> =>
 };
 
 const prepareCacheDirectory = async (cacheDirectory: string, now: number): Promise<void> => {
+  await collectQuarantines(cacheDirectory);
   if (process.platform !== 'win32') await mkdir(cacheDirectory, { recursive: true, mode: 0o700 });
   await ensurePrivateDirectory(cacheDirectory);
 
@@ -1082,9 +1260,28 @@ interface HeldPrivateFile {
 const openPrivateRegularFile = async (
   path: string,
   maxBytes = SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes,
+  expectedBeforeAcquisition?: { identity: ExactFileIdentity; size: bigint; sha256?: string },
+  beforeWindowsOpenForTest?: () => Promise<void>,
+  afterWindowsMismatchForTest?: (
+    acquired: Readonly<{ identity: WindowsFileIdentity; size: string; sha256: string }>,
+  ) => Promise<void>,
 ): Promise<HeldPrivateFile> => {
   if (process.platform === 'win32') {
-    const windowsLock = await openWindowsLockedArtifact(path, maxBytes);
+    const windowsLock = await openWindowsLockedArtifact(path, maxBytes, beforeWindowsOpenForTest);
+    if (expectedBeforeAcquisition
+      && (!sameExactFileIdentity(windowsLock.inspection.identity, expectedBeforeAcquisition.identity)
+        || BigInt(windowsLock.inspection.size) !== expectedBeforeAcquisition.size
+        || expectedBeforeAcquisition.sha256 !== undefined
+          && windowsLock.inspection.sha256 !== expectedBeforeAcquisition.sha256)) {
+      const acquired = Object.freeze({
+        identity: windowsLock.inspection.identity,
+        size: windowsLock.inspection.size,
+        sha256: windowsLock.inspection.sha256,
+      });
+      await windowsLock.close();
+      await afterWindowsMismatchForTest?.(acquired);
+      throw new Error('Verified update artifact acquisition changed [update-acquire:capability-mismatch]');
+    }
     return {
       identity: windowsLock.inspection.identity,
       path,
@@ -1268,8 +1465,25 @@ const withVerifiedArtifact = async <T>(
   prepared: PreparedSignedUpdate,
   verifyNativeSigner: NonNullable<SignedUpdateOperationOptions['verifyNativeSigner']>,
   use: (held: HeldPrivateFile) => Promise<T>,
+  beforeWindowsOpenForTest?: SignedUpdateOperationOptions['beforeWindowsArtifactOpenForTest'],
+  afterWindowsMismatchForTest?: SignedUpdateOperationOptions['afterWindowsArtifactMismatchForTest'],
 ): Promise<T> => {
-  const held = await openPrivateRegularFile(packagePath);
+  // A pathname capability is captured before the broker's first artifact open.
+  // The native test barrier runs inside the broker launch protocol immediately
+  // before CreateFileW; the returned full identity/size/hash must still bind A.
+  const expectedBeforeAcquisition = {
+    ...await inspectPrivatePath(packagePath),
+    sha256: prepared.feed.artifact.sha256,
+  };
+  const held = await openPrivateRegularFile(
+    packagePath,
+    SIGNED_UPDATE_DOWNLOAD_LIMITS.artifactBytes,
+    expectedBeforeAcquisition,
+    beforeWindowsOpenForTest ? () => beforeWindowsOpenForTest(packagePath) : undefined,
+    afterWindowsMismatchForTest
+      ? acquired => afterWindowsMismatchForTest(packagePath, acquired)
+      : undefined,
+  );
   try {
     const entryDirectory = dirname(packagePath);
     const cacheDirectory = dirname(entryDirectory);
@@ -1539,7 +1753,14 @@ const usePreparedArtifact = async <T>(
         expected: prepared.feed.artifact,
       });
       await protectPrivateFile(packagePath);
-      return await withVerifiedArtifact(packagePath, prepared, verifySigner, use);
+      return await withVerifiedArtifact(
+        packagePath,
+        prepared,
+        verifySigner,
+        use,
+        options.beforeWindowsArtifactOpenForTest,
+        options.afterWindowsArtifactMismatchForTest,
+      );
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -1554,12 +1775,12 @@ const usePreparedArtifact = async <T>(
       const result = await withVerifiedArtifact(packagePath, prepared, verifySigner, held => {
         useStarted = true;
         return use(held);
-      });
+      }, options.beforeWindowsArtifactOpenForTest, options.afterWindowsArtifactMismatchForTest);
       if (consume) await removeCachePath(entryPath);
       return result;
     } catch (error) {
       await removeCachePath(entryPath);
-      if (useStarted) throw error;
+      if (useStarted || options.beforeWindowsArtifactOpenForTest) throw error;
       packagePath = undefined;
     }
   }
@@ -1572,7 +1793,14 @@ const usePreparedArtifact = async <T>(
     now,
   );
   try {
-    return await withVerifiedArtifact(packagePath, prepared, verifySigner, use);
+    return await withVerifiedArtifact(
+      packagePath,
+      prepared,
+      verifySigner,
+      use,
+      options.beforeWindowsArtifactOpenForTest,
+      options.afterWindowsArtifactMismatchForTest,
+    );
   } finally {
     if (consume) await removeCachePath(entryPath);
   }

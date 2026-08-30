@@ -230,29 +230,49 @@ const lstatPrivateDmgPath = async (path, label) => {
   }
 };
 
+const privateDmgAuthorityError = code => new Error(`Private DMG authority rejected [dmg-private:${code}]`);
+
 const assertPrivateDmgDirectory = async (path, publicOutputDirectory, fixtureAuthority) => {
   const relationship = relative(resolve(publicOutputDirectory), resolve(path));
   if (relationship === '' || (!isAbsolute(relationship) && relationship !== '..' && !relationship.startsWith(`..${sep}`))) {
     throw new Error('Private DMG snapshot directory must be outside the public output path');
   }
   const stats = await lstatPrivateDmgPath(path, 'Private DMG snapshot directory');
-  const platformAuthority = isCurrentPosixOwner(stats) && (stats.mode & 0o777n) === 0o700n;
-  if (!stats.isDirectory() || stats.isSymbolicLink()
-    || (!platformAuthority && !isScopedWindowsDmgFixtureAuthority(fixtureAuthority))) {
-    throw new Error('Private DMG snapshot directory must be a real owner-only mode-0700 directory');
+  if (stats.isSymbolicLink()) throw privateDmgAuthorityError('directory-symlink');
+  if (!stats.isDirectory()) throw privateDmgAuthorityError('directory-type');
+  if (!isScopedWindowsDmgFixtureAuthority(fixtureAuthority) && !isCurrentPosixOwner(stats)) {
+    throw privateDmgAuthorityError('directory-owner');
   }
+  if (!isScopedWindowsDmgFixtureAuthority(fixtureAuthority) && (stats.mode & 0o777n) !== 0o700n) {
+    throw privateDmgAuthorityError('directory-mode');
+  }
+};
+
+const assertPrivateDmgHeldAuthority = async (handle, fixtureAuthority) => {
+  const stats = await handle.stat({ bigint: true });
+  if (!stats.isFile()) throw privateDmgAuthorityError('file-type');
+  if (!isScopedWindowsDmgFixtureAuthority(fixtureAuthority) && !isCurrentPosixOwner(stats)) {
+    throw privateDmgAuthorityError('file-owner');
+  }
+  if (!isScopedWindowsDmgFixtureAuthority(fixtureAuthority) && (stats.mode & 0o777n) !== 0o600n) {
+    throw privateDmgAuthorityError('file-mode');
+  }
+  if (stats.nlink !== 1n) throw privateDmgAuthorityError('file-link');
+  return stats;
 };
 
 const assertPrivateDmgPathNamesHeldFile = async (path, held, fixtureAuthority) => {
   const pathStats = await lstatPrivateDmgPath(path, 'Private DMG snapshot pathname');
-  const invalidPlatformMode = (pathStats.mode & 0o777n) !== 0o600n;
-  const platformAuthority = isCurrentPosixOwner(pathStats) && !invalidPlatformMode;
-  if (!pathStats.isFile() || pathStats.isSymbolicLink()
-    || (!platformAuthority && !isScopedWindowsDmgFixtureAuthority(fixtureAuthority))
-    || pathStats.nlink !== 1n
-    || !sameDmgFileState(dmgFileState(pathStats), held.state)) {
-    throw new Error('Private DMG snapshot pathname no longer names the held owner-only single-link regular file');
+  if (pathStats.isSymbolicLink()) throw privateDmgAuthorityError('file-symlink');
+  if (!pathStats.isFile()) throw privateDmgAuthorityError('file-type');
+  if (!isScopedWindowsDmgFixtureAuthority(fixtureAuthority) && !isCurrentPosixOwner(pathStats)) {
+    throw privateDmgAuthorityError('file-owner');
   }
+  if (!isScopedWindowsDmgFixtureAuthority(fixtureAuthority) && (pathStats.mode & 0o777n) !== 0o600n) {
+    throw privateDmgAuthorityError('file-mode');
+  }
+  if (pathStats.nlink !== 1n) throw privateDmgAuthorityError('file-link');
+  if (!sameDmgFileState(dmgFileState(pathStats), held.state)) throw privateDmgAuthorityError('file-identity');
 };
 
 const assertStableDmgBytes = (before, after) => {
@@ -284,7 +304,10 @@ const openHeldDmg = async (path, { privateSnapshot = false, fixtureAuthority } =
   }
   try {
     const captured = await captureHeldDmgBytes(handle);
-    if (privateSnapshot) await assertPrivateDmgPathNamesHeldFile(path, captured, fixtureAuthority);
+    if (privateSnapshot) {
+      await assertPrivateDmgHeldAuthority(handle, fixtureAuthority);
+      await assertPrivateDmgPathNamesHeldFile(path, captured, fixtureAuthority);
+    }
     else await assertDmgPathNamesHeldFile(path, captured);
     return { handle, captured };
   } catch (error) {
@@ -566,6 +589,14 @@ export const stageArtifacts = async ({
           fixtureAuthority: privateDmgFixtureAuthority,
         });
         const inspection = await inspectArchitecture({ heldArtifact: snapshot.heldArtifact, kind, platform, arch });
+        // Authority reasons intentionally precede byte/identity stability after
+        // any native validation hook. The same descriptor remains authoritative.
+        await assertPrivateDmgHeldAuthority(snapshot.held.handle, privateDmgFixtureAuthority);
+        await assertPrivateDmgPathNamesHeldFile(
+          snapshot.privatePath,
+          snapshot.held.captured,
+          privateDmgFixtureAuthority,
+        );
         const afterInspection = await captureHeldDmgBytes(snapshot.held.handle);
         assertStableDmgBytes(snapshot.held.captured, afterInspection);
         await assertPrivateDmgPathNamesHeldFile(snapshot.privatePath, afterInspection, privateDmgFixtureAuthority);

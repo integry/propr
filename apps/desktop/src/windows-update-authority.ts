@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { isAbsolute, join } from 'node:path';
 
 export interface WindowsFileIdentity {
   platform: 'win32';
@@ -60,10 +61,17 @@ type WindowsAuthorityReason = typeof WINDOWS_AUTHORITY_REASON_CODES[number];
 type BrokerOperation = 'inspect' | 'ensure-directory' | 'protect-directory' | 'protect-file';
 
 const BROKER_TIMEOUT_MS = 10_000;
+const BROKER_SESSION_TIMEOUT_MS = 10 * 60_000;
 const BROKER_OUTPUT_BYTES = 16 * 1024;
 const BROKER_PROTOCOL_LINE_BYTES = 2 * 1024 * 1024;
+const BROKER_SOURCE_BYTES = 256 * 1024;
 const MAX_READ_BYTES = 1024 * 1024;
 const reasonCodes = new Set<string>(WINDOWS_AUTHORITY_REASON_CODES);
+const INSPECTION_KEYS = Object.freeze([
+  'version', 'type', 'volumeSerial', 'fileId128', 'directory', 'links', 'size', 'reparseTag',
+  'ownerSid', 'daclProtected', 'aceCount', 'inheritedWriteAces', 'broadWriteAces', 'sha256', 'sha1',
+] as const);
+const HELD_INSPECTION_KEYS = Object.freeze([...INSPECTION_KEYS, 'challenge'] as const);
 const lockedArtifactProcesses = new WeakMap<WindowsLockedArtifact, {
   child: ChildProcessWithoutNullStreams;
   exited: Promise<void>;
@@ -450,6 +458,14 @@ try {
   if ($null -eq $line -or $line.Length -gt 16384) { throw 'request' }
   $request = $line | ConvertFrom-Json
   if ($request.operation -eq 'hold') {
+    if ($null -ne $request.beforeOpenChallenge) {
+      $beforeOpenChallenge = [string]$request.beforeOpenChallenge
+      if ($beforeOpenChallenge -notmatch '^[a-f0-9]{32}$') { throw 'request' }
+      [Console]::Out.WriteLine((@{ version = 1; type = 'before-open'; challenge = $beforeOpenChallenge } | ConvertTo-Json -Compress))
+      [Console]::Out.Flush()
+      $continue = [Console]::In.ReadLine()
+      if ($continue -ne ('open|' + $beforeOpenChallenge)) { throw 'request' }
+    }
     [ProprUpdateAuthority]::Hold([string]$request.path, [Int64]$request.maxBytes, [string]$request.challenge)
     exit 0
   }
@@ -472,13 +488,44 @@ try {
 }
 `;
 
+// The command line is constant and contains neither the broker nor request data.
+// The bounded UTF-8 broker is authenticated by this process and transported over
+// inherited stdin before the versioned request stream begins.
+const POWERSHELL_STDIN_BOOTSTRAP = String.raw`$ErrorActionPreference='Stop';try{$line=[Console]::In.ReadLine();if($null -eq $line -or $line.Length -gt 349528){throw 'source'};$bytes=[Convert]::FromBase64String($line);if($bytes.Length -le 0 -or $bytes.Length -gt 262144){throw 'source'};$utf8=New-Object System.Text.UTF8Encoding($false,$true);$source=$utf8.GetString($bytes);& ([ScriptBlock]::Create($source))}catch{[Console]::Out.WriteLine('{"version":1,"type":"error","reason":"compile_load","scenario":0}');[Console]::Out.Flush()}`;
+
+const brokerSource = (): string => {
+  const bytes = Buffer.from(WINDOWS_AUTHORITY_BROKER, 'utf8');
+  if (bytes.length <= 0 || bytes.length > BROKER_SOURCE_BYTES) throw authorityError('compile_load', 0);
+  return bytes.toString('base64');
+};
+
+const windowsPowerShellPath = (): string => {
+  const systemRoot = process.env.SystemRoot;
+  if (!systemRoot || !isAbsolute(systemRoot)) throw authorityError('compile_load', 0);
+  return join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+};
+
+const spawnBroker = (): ChildProcessWithoutNullStreams => spawn(windowsPowerShellPath(), [
+  '-NoLogo',
+  '-NoProfile',
+  '-NonInteractive',
+  '-ExecutionPolicy',
+  'Bypass',
+  '-Command',
+  POWERSHELL_STDIN_BOOTSTRAP,
+], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+
 const authorityError = (reason: WindowsAuthorityReason, scenario: number): Error =>
   new Error(`Verified update cache authority inspection failed [win-authority:${reason}:${scenario}]`);
+
+const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
+  Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 
 const parseFailure = (value: unknown): Error | undefined => {
   if (typeof value !== 'object' || value === null) return undefined;
   const candidate = value as Record<string, unknown>;
   if (candidate.version !== WINDOWS_AUTHORITY_PROTOCOL_VERSION || candidate.type !== 'error'
+    || !hasExactKeys(candidate, ['version', 'type', 'reason', 'scenario'])
     || typeof candidate.reason !== 'string' || !reasonCodes.has(candidate.reason)
     || !Number.isInteger(candidate.scenario) || Number(candidate.scenario) < 0 || Number(candidate.scenario) > 99) {
     return undefined;
@@ -531,16 +578,13 @@ const parseInspection = (
   } : inspection;
 };
 
-const encodedBroker = (): string => Buffer.from(WINDOWS_AUTHORITY_BROKER, 'utf16le').toString('base64');
-
 const runBroker = async (
   operation: BrokerOperation,
   path: string,
   directory: boolean,
 ): Promise<WindowsPrivatePathInspection> => new Promise((resolve, reject) => {
-  const child = spawn('powershell.exe', [
-    '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedBroker(),
-  ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  let child: ChildProcessWithoutNullStreams;
+  try { child = spawnBroker(); } catch { reject(authorityError('compile_load', 0)); return; }
   let stdout = Buffer.alloc(0);
   let stderrBytes = 0;
   let settled = false;
@@ -563,15 +607,20 @@ const runBroker = async (
   });
   child.stderr.on('data', (chunk: Buffer) => {
     stderrBytes += chunk.length;
-    if (stderrBytes > BROKER_OUTPUT_BYTES) child.kill();
+    if (stderrBytes > BROKER_OUTPUT_BYTES) fail('output_bound', 17);
+    else fail('process_exit', 19);
+    child.kill();
   });
+  child.stdin.on('error', () => fail('stdio_protocol', 16));
   child.on('error', () => fail('process_exit', 19));
   child.on('close', code => {
     clearTimeout(timeout);
     if (settled) return;
-    if (code !== 0 || stderrBytes > BROKER_OUTPUT_BYTES) return fail('process_exit', 19);
+    if (code !== 0 || stderrBytes !== 0) return fail('process_exit', 19);
+    const output = stdout.toString('utf8');
+    if (!/^\{[^\r\n]*\}\r?\n$/.test(output)) return fail('stdio_protocol', 16);
     let value: unknown;
-    try { value = JSON.parse(stdout.toString('utf8')); } catch { return fail('stdio_protocol', 16); }
+    try { value = JSON.parse(output.slice(0, output.endsWith('\r\n') ? -2 : -1)); } catch { return fail('stdio_protocol', 16); }
     const brokerFailure = parseFailure(value);
     if (brokerFailure) {
       settled = true;
@@ -579,11 +628,12 @@ const runBroker = async (
       return;
     }
     const inspected = parseInspection(value, directory, false);
-    if (!inspected) return fail('stdio_protocol', 16);
+    if (!inspected || (value as Record<string, unknown>).type !== 'inspection'
+      || !hasExactKeys(value as Record<string, unknown>, INSPECTION_KEYS)) return fail('stdio_protocol', 16);
     settled = true;
     resolve(inspected);
   });
-  child.stdin.end(`${JSON.stringify({ operation, path, directory })}\n`);
+  child.stdin.end(`${brokerSource()}\n${JSON.stringify({ operation, path, directory })}\n`);
 });
 
 export const inspectWindowsPrivatePath = (path: string, directory = false): Promise<WindowsPrivatePathInspection> =>
@@ -601,18 +651,22 @@ export const protectWindowsPrivateFile = (path: string): Promise<WindowsPrivateP
 export const openWindowsLockedArtifact = async (
   path: string,
   maxBytes = 1024 * 1024 * 1024,
+  beforeOpenForTest?: () => Promise<void>,
 ): Promise<WindowsLockedArtifact> => {
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw authorityError('request_protocol', 1);
-  const child = spawn('powershell.exe', [
-    '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedBroker(),
-  ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  let child: ChildProcessWithoutNullStreams;
+  try { child = spawnBroker(); } catch { throw authorityError('compile_load', 0); }
   const readyChallenge = randomBytes(16).toString('hex');
-  child.stdin.write(`${JSON.stringify({ operation: 'hold', path, maxBytes, challenge: readyChallenge })}\n`);
+  const beforeOpenChallenge = beforeOpenForTest ? randomBytes(16).toString('hex') : undefined;
+  child.stdin.write(`${brokerSource()}\n${JSON.stringify({
+    operation: 'hold', path, maxBytes, challenge: readyChallenge, beforeOpenChallenge,
+  })}\n`);
 
   let buffered = '';
   let stderrBytes = 0;
   let processClosed = false;
   let terminalError: Error | undefined;
+  let totalStdoutBytes = 0;
   const lines: string[] = [];
   const waiters: Array<{ resolve: (line: string) => void; reject: (error: Error) => void }> = [];
   const rejectWaiters = (error: Error): void => {
@@ -621,6 +675,13 @@ export const openWindowsLockedArtifact = async (
   };
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
+    totalStdoutBytes += Buffer.byteLength(chunk);
+    const sessionOutputLimit = Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(maxBytes * 8 / 3) + BROKER_PROTOCOL_LINE_BYTES);
+    if (totalStdoutBytes > sessionOutputLimit) {
+      child.kill();
+      rejectWaiters(authorityError('output_bound', 17));
+      return;
+    }
     buffered += chunk;
     if (Buffer.byteLength(buffered) > BROKER_PROTOCOL_LINE_BYTES) {
       child.kill();
@@ -629,11 +690,21 @@ export const openWindowsLockedArtifact = async (
     }
     while (buffered.includes('\n')) {
       const newline = buffered.indexOf('\n');
-      const line = buffered.slice(0, newline).trimEnd();
+      const rawLine = buffered.slice(0, newline);
+      const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+      if (!line || /[\r\n]/.test(line)) {
+        child.kill();
+        rejectWaiters(authorityError('stdio_protocol', 16));
+        return;
+      }
       buffered = buffered.slice(newline + 1);
       const waiter = waiters.shift();
       if (waiter) waiter.resolve(line);
-      else lines.push(line);
+      else if (lines.length === 0) lines.push(line);
+      else {
+        child.kill();
+        rejectWaiters(authorityError('stdio_protocol', 16));
+      }
     }
   });
   child.stderr.on('data', (chunk: Buffer) => {
@@ -641,18 +712,27 @@ export const openWindowsLockedArtifact = async (
     if (stderrBytes > BROKER_OUTPUT_BYTES) {
       child.kill();
       rejectWaiters(authorityError('output_bound', 17));
+    } else {
+      child.kill();
+      rejectWaiters(authorityError('process_exit', 19));
     }
   });
+  child.stdin.on('error', () => rejectWaiters(authorityError('stdio_protocol', 16)));
   child.on('error', () => rejectWaiters(authorityError('process_exit', 19)));
   const exited = new Promise<void>(resolve => child.on('close', code => {
     processClosed = true;
-    if (code !== 0 || stderrBytes > BROKER_OUTPUT_BYTES || buffered.trim()) {
+    if (code !== 0 || stderrBytes !== 0 || buffered) {
       rejectWaiters(authorityError('process_exit', 19));
     } else {
       rejectWaiters(authorityError('clean_shutdown', 15));
     }
     resolve();
   }));
+  const sessionTimeout = setTimeout(() => {
+    child.kill();
+    rejectWaiters(authorityError('timeout', 18));
+  }, BROKER_SESSION_TIMEOUT_MS);
+  exited.finally(() => clearTimeout(sessionTimeout)).catch(() => undefined);
 
   const readLine = (): Promise<string> => new Promise((resolve, reject) => {
     if (lines.length) return resolve(lines.shift()!);
@@ -692,13 +772,35 @@ export const openWindowsLockedArtifact = async (
     return result;
   };
 
+  if (beforeOpenForTest) {
+    let barrier: Record<string, unknown>;
+    try { barrier = await parseLine(); } catch (error) {
+      child.kill();
+      throw error;
+    }
+    if (barrier.version !== WINDOWS_AUTHORITY_PROTOCOL_VERSION || barrier.type !== 'before-open'
+      || barrier.challenge !== beforeOpenChallenge || Object.keys(barrier).length !== 3) {
+      child.kill();
+      throw authorityError('ready_protocol', 12);
+    }
+    try {
+      await beforeOpenForTest();
+      child.stdin.write(`open|${beforeOpenChallenge}\n`);
+    } catch (error) {
+      child.stdin.end();
+      child.kill();
+      throw error;
+    }
+  }
+
   let ready: Record<string, unknown>;
   try { ready = await parseLine(); } catch (error) {
     child.kill();
     throw error;
   }
   const initial = parseInspection(ready, false, true) as WindowsHeldVerification | undefined;
-  if (!initial || ready.type !== 'ready' || ready.challenge !== readyChallenge) {
+  if (!initial || ready.type !== 'ready' || ready.challenge !== readyChallenge
+    || !hasExactKeys(ready, HELD_INSPECTION_KEYS)) {
     child.kill();
     throw authorityError('ready_protocol', 12);
   }
@@ -722,7 +824,9 @@ export const openWindowsLockedArtifact = async (
         || offset + length > Number(initial.size)) throw authorityError('request_protocol', 1);
       const result = await exchange(`read|${offset}|${length}`);
       if (result.version !== WINDOWS_AUTHORITY_PROTOCOL_VERSION || result.type !== 'bytes'
-        || typeof result.bytes !== 'string') throw authorityError('held_read', 13);
+        || typeof result.bytes !== 'string' || !hasExactKeys(result, ['version', 'type', 'bytes'])) {
+        throw authorityError('held_read', 13);
+      }
       const bytes = Buffer.from(result.bytes, 'base64');
       if (bytes.length !== length || bytes.toString('base64') !== result.bytes) throw authorityError('held_read', 13);
       return bytes;
@@ -732,7 +836,8 @@ export const openWindowsLockedArtifact = async (
       const challenge = randomBytes(16).toString('hex');
       const result = await exchange(`verify|${challenge}`);
       const verified = parseInspection(result, false, true) as WindowsHeldVerification | undefined;
-      if (!verified || result.type !== 'verified' || result.challenge !== challenge || !sameInitial(verified)) {
+      if (!verified || result.type !== 'verified' || result.challenge !== challenge
+        || !hasExactKeys(result, HELD_INSPECTION_KEYS) || !sameInitial(verified)) {
         throw authorityError('final_verify', 14);
       }
       return verified;
@@ -744,7 +849,9 @@ export const openWindowsLockedArtifact = async (
       try {
         result = await exchange('close');
         const final = parseInspection(result, false, true) as WindowsHeldVerification | undefined;
-        if (!final || result.type !== 'closed' || !sameInitial(final)) throw authorityError('final_verify', 14);
+        if (!final || result.type !== 'closed' || result.challenge !== ''
+          || !hasExactKeys(result, HELD_INSPECTION_KEYS)
+          || !sameInitial(final)) throw authorityError('final_verify', 14);
         child.stdin.end();
         await Promise.race([
           exited,
@@ -781,8 +888,18 @@ export const crashWindowsLockedArtifactForTest = async (held: WindowsLockedArtif
 export const smokeWindowsUpdateAuthority = async (path: string): Promise<readonly string[]> => {
   const held = await openWindowsLockedArtifact(path, 1024 * 1024);
   try {
+    if (!/^[a-f0-9]{16}$/.test(held.inspection.identity.volumeSerial)
+      || !/^[a-f0-9]{32}$/.test(held.inspection.identity.fileId128)
+      || !/^[a-f0-9]{64}$/.test(held.inspection.sha256)
+      || !/^[a-f0-9]{40}$/.test(held.inspection.sha1)
+      || held.inspection.daclProtected !== true
+      || held.inspection.reparseTag !== '00000000') throw authorityError('ready_protocol', 12);
     await held.read(0, Math.min(1, Number(held.inspection.size)));
-    await held.verify();
+    const verified = await held.verify();
+    if (verified.identity.fileId128 !== held.inspection.identity.fileId128
+      || verified.sha256 !== held.inspection.sha256 || verified.sha1 !== held.inspection.sha1) {
+      throw authorityError('final_verify', 14);
+    }
   } finally {
     await held.close();
   }
@@ -791,6 +908,7 @@ export const smokeWindowsUpdateAuthority = async (path: string): Promise<readonl
     'owner-sid',
     'dacl-protection',
     'file-id-info',
+    'same-handle-sha256-sha1',
     'reparse-query',
     'no-share-lock',
     'ready-protocol',

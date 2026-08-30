@@ -21,6 +21,10 @@ const releasePreflight = normalizeWorkflowText(readFileSync(
   fileURLToPath(new URL('../scripts/release-preflight.mjs', import.meta.url)),
   'utf8',
 ));
+const windowsAuthority = normalizeWorkflowText(readFileSync(
+  fileURLToPath(new URL('./windows-update-authority.ts', import.meta.url)),
+  'utf8',
+));
 
 const preflightAppTokenPermissions = (preflight: string): string[] => (
   [...preflight.matchAll(/^\s+permission-([a-z-]+): (read|write)$/gm)]
@@ -244,5 +248,26 @@ describe('desktop trusted release workflow', () => {
         < releaseArtifacts.indexOf('createNativeDmgEvidence({'),
       'staging must inspect the copied canonical DMG before binding native evidence',
     );
+  });
+
+  test('runs the short-argv native Windows broker smoke before both x64 and arm64 suites', () => {
+    assert.equal(workflow.match(/Smoke Windows authority broker before the runtime suite/g)?.length, 2);
+    for (const [jobName, section] of [
+      ['unsigned validation', job('package', 'finalize')],
+      ['trusted production', job('release-package', 'release-finalize')],
+    ] as const) {
+      assert.match(section, /- platform: win32\n\s+arch: x64\n\s+runner: windows-2025/);
+      assert.match(section, /- platform: win32\n\s+arch: arm64\n\s+runner: windows-11-arm/);
+      assert.match(section, /Smoke Windows authority broker before the runtime suite\n\s+if: matrix\.platform == 'win32'/);
+      assert.ok(
+        section.indexOf('Smoke Windows authority broker before the runtime suite')
+          < section.indexOf(`Typecheck and test ${jobName === 'unsigned validation' ? 'unsigned' : 'production'} desktop runtime`),
+        `${jobName} must compile, load, and exercise the broker before the complete runtime suite`,
+      );
+    }
+    assert.ok(!windowsAuthority.includes('-EncodedCommand'));
+    assert.match(windowsAuthority, /System32', 'WindowsPowerShell', 'v1\.0', 'powershell\.exe'/);
+    assert.match(windowsAuthority, /'-ExecutionPolicy',\n\s+'Bypass'/);
+    assert.match(windowsAuthority, /child\.stdin\.end\(`\$\{brokerSource\(\)\}\\n/);
   });
 });

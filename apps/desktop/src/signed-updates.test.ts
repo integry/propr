@@ -10,10 +10,12 @@ import {
   applySignedUpdate,
   canonicalPosixFileIdentity,
   checkForSignedUpdates,
+  collectUpdateCacheQuarantinesForTest,
   downloadBoundedUpdateFile,
   fetchBoundedUpdateBytes,
   parseSquirrelReleaseEntry,
   posixAuthorityIsPrivate,
+  quarantineUpdateCacheNamespaceForTest,
   SIGNED_UPDATE_CACHE_POLICY,
   SIGNED_UPDATE_DOWNLOAD_LIMITS,
   sameExactFileIdentity,
@@ -22,7 +24,7 @@ import {
   validateMacOSUpdateApplicationLayout,
   verifySignedUpdateManifest,
 } from './signed-updates';
-import { ensureWindowsPrivateDirectory } from './windows-update-authority';
+import { ensureWindowsPrivateDirectory, protectWindowsPrivateFile } from './windows-update-authority';
 
 const execFileAsync = promisify(execFile);
 
@@ -795,6 +797,81 @@ describe('verified update artifact cache', () => {
     }
   });
 
+  test('bounded quarantine collector persists progress, refuses backlog growth, and eventually completes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-update-quarantine-restart-'));
+    const cacheDirectory = join(directory, 'cache');
+    const quarantineRoot = join(directory, '.cache.quarantine');
+    try {
+      if (process.platform === 'win32') await ensureWindowsPrivateDirectory(cacheDirectory);
+      else await mkdir(cacheDirectory, { mode: 0o700 });
+      await Promise.all(Array.from({ length: 400 }, (_, index) =>
+        writeFile(join(cacheDirectory, `attacker-${String(index).padStart(3, '0')}`), 'x')));
+      await quarantineUpdateCacheNamespaceForTest(cacheDirectory);
+
+      await writeFile(join(cacheDirectory, 'next-invalid'), 'x');
+      await assert.rejects(
+        quarantineUpdateCacheNamespaceForTest(cacheDirectory),
+        /quarantine backlog exceeds the global bound/,
+        'an incomplete fixed-slot backlog must prevent accumulation',
+      );
+
+      let previousNames = -1;
+      let passes = 0;
+      while (passes < 12) {
+        const state = await collectUpdateCacheQuarantinesForTest(cacheDirectory);
+        passes += 1;
+        if (state.records.length === 0) break;
+        const names = state.records.reduce((total, record) => total + record.names, 0);
+        if (previousNames >= 0) {
+          assert.ok(names - previousNames <= SIGNED_UPDATE_CACHE_POLICY.cleanupEntryCap);
+        }
+        previousNames = names;
+      }
+      assert.ok(passes > 1, 'oversized attacker trees must require bounded restart passes');
+      assert.deepEqual((await collectUpdateCacheQuarantinesForTest(cacheDirectory)).records, []);
+      assert.deepEqual(await readdir(quarantineRoot), ['collector.json']);
+
+      // Once the bounded backlog is gone a later invalid namespace can rotate
+      // through the same fixed slots and complete without adjacent accumulation.
+      await quarantineUpdateCacheNamespaceForTest(cacheDirectory);
+      assert.deepEqual((await collectUpdateCacheQuarantinesForTest(cacheDirectory)).records, []);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('quarantine cleanup unlinks loops and resumes after a permission failure', async t => {
+    const directory = await mkdtemp(join(tmpdir(), 'propr-update-quarantine-hostile-'));
+    const cacheDirectory = join(directory, 'cache');
+    const external = join(directory, 'external');
+    try {
+      if (process.platform === 'win32') await ensureWindowsPrivateDirectory(cacheDirectory);
+      else await mkdir(cacheDirectory, { mode: 0o700 });
+      await mkdir(external);
+      await writeFile(join(external, 'preserved'), 'outside');
+      await symlink(external, join(cacheDirectory, 'loop'), process.platform === 'win32' ? 'junction' : 'dir');
+      await quarantineUpdateCacheNamespaceForTest(cacheDirectory);
+      assert.equal(await readFile(join(external, 'preserved'), 'utf8'), 'outside');
+      assert.deepEqual((await collectUpdateCacheQuarantinesForTest(cacheDirectory)).records, []);
+
+      await t.test('permission failure resumes', { skip: process.platform === 'win32' }, async () => {
+        const blocked = join(cacheDirectory, 'blocked');
+        await mkdir(blocked, { mode: 0o700 });
+        await writeFile(join(blocked, 'entry'), 'x');
+        await chmod(blocked, 0o000);
+        await quarantineUpdateCacheNamespaceForTest(cacheDirectory);
+        let state = await collectUpdateCacheQuarantinesForTest(cacheDirectory);
+        assert.equal(state.records.length, 1);
+        assert.equal(state.records[0].saturated, true);
+        await chmod(join(directory, '.cache.quarantine', `slot-${state.records[0].slot}`, 'blocked'), 0o700);
+        state = await collectUpdateCacheQuarantinesForTest(cacheDirectory);
+        assert.deepEqual(state.records, []);
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test('never consumes attacker B across post-verify swap/delete/link/reparse/ABA barriers', async t => {
     for (const scenario of ['swap', 'delete', 'hardlink', 'symlink', 'aba'] as const) {
       await t.test(scenario, async () => {
@@ -849,6 +926,89 @@ describe('verified update artifact cache', () => {
           else await assert.rejects(applying);
           assert.deepEqual(consumed, [artifact]);
           assert.equal(counted.count(), 1);
+        } finally {
+          await rm(directory, { recursive: true, force: true });
+        }
+      });
+    }
+  });
+
+  test('native Windows rejects deterministic pre-CreateFileW swap, deletion, reparse, and hardlink acquisition', {
+    skip: process.platform !== 'win32',
+  }, async t => {
+    for (const scenario of ['swap-aba', 'delete', 'reparse', 'hardlink'] as const) {
+      await t.test(scenario, async () => {
+        const directory = await mkdtemp(join(tmpdir(), `propr-update-acquire-${scenario}-`));
+        const cacheDirectory = join(directory, 'cache');
+        const counted = countingFetcher(signed());
+        let hookCount = 0;
+        let restoreCount = 0;
+        let signerCalls = 0;
+        let installerCalls = 0;
+        let heldReadCalls = 0;
+        const displaced = join(directory, 'capability-A');
+        const attacker = join(directory, 'attacker-B');
+        const extraLink = join(directory, 'extra-link');
+        const reparseTarget = join(directory, 'reparse-target');
+        try {
+          const options = makeOptions(cacheDirectory, counted.request);
+          await checkForSignedUpdates(options);
+          const artifactPath = join(
+            cacheDirectory,
+            SIGNED_UPDATE_CACHE_POLICY.entryName,
+            SIGNED_UPDATE_CACHE_POLICY.artifactName,
+          );
+          await writeFile(attacker, Buffer.alloc(artifact.length, 0x42), { mode: 0o600 });
+          await protectWindowsPrivateFile(attacker);
+          await mkdir(reparseTarget);
+          await assert.rejects(applySignedUpdate({
+            ...options,
+            verifyNativeSigner: async () => {
+              signerCalls += 1;
+              return windowsSigner();
+            },
+            beforeWindowsArtifactOpenForTest: async acquiredPath => {
+              hookCount += 1;
+              assert.equal(acquiredPath, artifactPath);
+              if (scenario === 'hardlink') await link(artifactPath, extraLink);
+              else {
+                await rename(artifactPath, displaced);
+                if (scenario === 'swap-aba') await rename(attacker, artifactPath);
+                else if (scenario === 'reparse') {
+                  await execFileAsync('cmd.exe', ['/d', '/s', '/c', `mklink /J "${artifactPath}" "${reparseTarget}"`]);
+                }
+              }
+            },
+            ...(scenario === 'swap-aba' ? {
+              afterWindowsArtifactMismatchForTest: async (acquiredPath: string, acquired: {
+                size: string;
+                sha256: string;
+              }) => {
+                assert.equal(acquiredPath, artifactPath);
+                assert.equal(acquired.size, String(artifact.length));
+                assert.equal(acquired.sha256, createHash('sha256').update(Buffer.alloc(artifact.length, 0x42)).digest('hex'));
+                await rename(artifactPath, attacker);
+                await rename(displaced, artifactPath);
+                assert.deepEqual(await readFile(artifactPath), artifact, 'A must be restored before caller rejection');
+                restoreCount += 1;
+              },
+            } : {}),
+            applyHeldArtifact: async source => {
+              heldReadCalls += 1;
+              await source.read(0, artifact.length);
+            },
+            installVerifiedArtifact: async verified => {
+              installerCalls += 1;
+              await verified.apply();
+            },
+          }));
+          assert.equal(hookCount, 1, 'the pre-CreateFileW hook must fire exactly once');
+          assert.equal(restoreCount, scenario === 'swap-aba' ? 1 : 0);
+          assert.equal(signerCalls, 0, 'native signer inspection must not see attacker bytes');
+          assert.equal(installerCalls, 0, 'installer handoff must not receive attacker bytes');
+          assert.equal(heldReadCalls, 0, 'the held-byte adapter must not read attacker bytes');
+
+          if (scenario === 'hardlink') await rm(extraLink, { force: true });
         } finally {
           await rm(directory, { recursive: true, force: true });
         }

@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHash, generateKeyPairSync, verify } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, chmod, lstat, mkdtemp, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, link, lstat, mkdtemp, mkdir, open, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { promisify } from 'node:util';
 import {
@@ -323,7 +323,7 @@ describe('desktop release artifacts', () => {
             return inspection;
           },
         }),
-        /Staged DMG identity or content changed during native validation|pathname no longer names the held (?:exact artifact|owner-only single-link regular file)/,
+        /Staged DMG identity or content changed during native validation|pathname no longer names the held exact artifact|\[dmg-private:file-(?:identity|mode)\]/,
         operation,
       );
       await assert.rejects(access(join(outputDirectory, 'release-fragment.json')), undefined, operation);
@@ -392,16 +392,57 @@ describe('desktop release artifacts', () => {
     );
   });
 
-  test('keeps owner-only private DMG mode enforcement strict on native macOS', {
+  test('accepts real Darwin mode-0700 directory and mode-0600 single-link file authority', {
     skip: process.platform !== 'darwin',
   }, async () => {
-    const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-private-mode-'));
+    const root = await mkdtemp(join(tmpdir(), 'propr-release-dmg-private-accept-'));
     const makeDirectory = join(root, 'make');
     await mkdir(makeDirectory);
     await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
     await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
     const previousSnapshots = new Set(await privateDmgSnapshotPaths());
     try {
+      await stageFixtureArtifacts({
+        makeDirectory,
+        outputDirectory: join(root, 'stage'),
+        platform: 'darwin',
+        arch: 'arm64',
+        version: '1.2.3',
+        inspectArchitecture: async arguments_ => {
+          const inspection = await architectureInspector(arguments_);
+          if (arguments_.kind === 'dmg') {
+            const privatePath = await findNewPrivateDmgSnapshot(previousSnapshots);
+            const directoryStats = await lstat(dirname(privatePath), { bigint: true });
+            const fileStats = await lstat(privatePath, { bigint: true });
+            assert.equal(directoryStats.mode & 0o777n, 0o700n);
+            assert.equal(fileStats.mode & 0o777n, 0o600n);
+            assert.equal(fileStats.nlink, 1n);
+          }
+          return inspection;
+        },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects native Darwin broad mode, foreign owner, extra link, replacement type, and symlink with fixed authority codes', {
+    skip: process.platform !== 'darwin',
+  }, async t => {
+    const cases = [
+      ['broad-mode', 'file-mode'],
+      ['foreign-owner', 'file-owner'],
+      ['hardlink', 'file-link'],
+      ['directory', 'file-type'],
+      ['symlink', 'file-symlink'],
+    ];
+    for (const [scenario, code] of cases) await t.test(scenario, async () => {
+      const root = await mkdtemp(join(tmpdir(), `propr-release-dmg-private-${scenario}-`));
+      const makeDirectory = join(root, 'make');
+      await mkdir(makeDirectory);
+      await writeFile(join(makeDirectory, 'desktop.dmg'), 'darwin-arm64-dmg');
+      await writeFile(join(makeDirectory, 'desktop.zip'), 'darwin-arm64-zip');
+      const previousSnapshots = new Set(await privateDmgSnapshotPaths());
       await assert.rejects(
         stageFixtureArtifacts({
           makeDirectory,
@@ -412,16 +453,24 @@ describe('desktop release artifacts', () => {
           inspectArchitecture: async arguments_ => {
             const inspection = await architectureInspector(arguments_);
             if (arguments_.kind === 'dmg') {
-              await chmod(await findNewPrivateDmgSnapshot(previousSnapshots), 0o644);
+              const privatePath = await findNewPrivateDmgSnapshot(previousSnapshots);
+              if (scenario === 'broad-mode') await chmod(privatePath, 0o644);
+              else if (scenario === 'foreign-owner') await execFile('/usr/bin/sudo', ['-n', 'chown', '0', privatePath]);
+              else if (scenario === 'hardlink') await link(privatePath, `${privatePath}.link`);
+              else {
+                const displaced = `${privatePath}.displaced`;
+                await rename(privatePath, displaced);
+                if (scenario === 'directory') await mkdir(privatePath, { mode: 0o700 });
+                else await symlink(displaced, privatePath);
+              }
             }
             return inspection;
           },
         }),
-        /owner-only single-link regular file/,
+        new RegExp(`^Private DMG authority rejected \\[dmg-private:${code}\\]$`),
       );
-    } finally {
       await rm(root, { recursive: true, force: true });
-    }
+    });
   });
 
   test('accepts native xattr/ctime-only change when held bytes and identity are unchanged', {

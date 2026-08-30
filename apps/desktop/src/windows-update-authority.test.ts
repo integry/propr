@@ -39,6 +39,7 @@ test('native Windows authority binds protected owner DACL and complete file iden
       'owner-sid',
       'dacl-protection',
       'file-id-info',
+      'same-handle-sha256-sha1',
       'reparse-query',
       'no-share-lock',
       'ready-protocol',
