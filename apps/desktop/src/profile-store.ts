@@ -30,6 +30,12 @@ export interface SavedProfileTransaction {
   originChanged: boolean;
 }
 
+export interface PairedProfileTransaction {
+  profile: DesktopProfile;
+  replacedCredential: StoredCredential | null;
+  originChanged: boolean;
+}
+
 export interface ProfileCredentialSnapshot {
   profile: DesktopProfile | null;
   credential: StoredCredential | null;
@@ -174,6 +180,109 @@ export class ProfileStore {
     });
   }
 
+  commitPairedProfile(
+    input: DesktopProfileInput,
+    credential: StoredCredential,
+    expected: ProfileCredentialSnapshot,
+    isCurrent: () => boolean,
+  ): Promise<PairedProfileTransaction | null | { stored: false; reason: 'encryption-unavailable' }> {
+    const normalized = normalizedProfileInput(input);
+    if (credential.version !== 1
+      || credential.profileId !== normalized.id
+      || credential.origin !== normalized.apiBaseUrl
+      || typeof credential.token !== 'string'
+      || credential.token.length > MAX_CREDENTIAL_LENGTH
+      || !/^propr_it_[A-Za-z0-9_-]{43}$/.test(credential.token)) {
+      throw new Error('Credential does not match the paired desktop profile');
+    }
+    if (!this.security().available) return Promise.resolve({ stored: false, reason: 'encryption-unavailable' });
+
+    return this.#mutate(async () => {
+      const state = await this.#readState();
+      const existing = state.profiles.find(profile => profile.id === normalized.id) ?? null;
+      const existingCredential = await this.#readCredentialFile(normalized.id);
+      if (!isCurrent()
+        || state.activeProfileId !== expected.activeProfileId
+        || !this.#sameProfile(existing, expected.profile)
+        || !this.#sameOptionalCredential(existingCredential, expected.credential)) return null;
+
+      const now = new Date().toISOString();
+      const profile: DesktopProfile = {
+        ...normalized,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+      const originChanged = existing !== null && existing.apiBaseUrl !== profile.apiBaseUrl;
+      const previousState: PersistedState = {
+        ...state,
+        profiles: state.profiles.map(item => ({ ...item })),
+      };
+      state.profiles = [...state.profiles.filter(item => item.id !== profile.id), profile];
+      if (originChanged && state.activeProfileId === profile.id) state.activeProfileId = null;
+
+      await this.#ensureDirectories();
+      const target = this.#credentialPath(profile.id);
+      const suffix = `${process.pid}.${randomUUID()}.pair`;
+      const credentialTemporary = `${target}.${suffix}.tmp`;
+      const stateTemporary = `${this.#statePath}.${suffix}.tmp`;
+      let credentialReplaced = false;
+      let stateReplaced = false;
+      const previousCredentialBytes = await readFile(target).catch(error => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      });
+
+      try {
+        // Stage both encrypted credential and profile state before replacing
+        // either visible file. In particular, keychain/encryption and write
+        // failures leave the working profile and credential untouched.
+        await writeFile(
+          credentialTemporary,
+          this.#encryption.encrypt(JSON.stringify(credential)),
+          { mode: 0o600 },
+        );
+        await writeFile(
+          stateTemporary,
+          `${JSON.stringify(state, null, 2)}\n`,
+          { encoding: 'utf8', mode: 0o600 },
+        );
+        if (!isCurrent()) return null;
+
+        await rename(credentialTemporary, target);
+        credentialReplaced = true;
+        if (!isCurrent()) {
+          await this.#restoreCredential(target, previousCredentialBytes);
+          credentialReplaced = false;
+          return null;
+        }
+        await rename(stateTemporary, this.#statePath);
+        stateReplaced = true;
+        if (!isCurrent()) {
+          await this.#writeState(previousState);
+          stateReplaced = false;
+          await this.#restoreCredential(target, previousCredentialBytes);
+          credentialReplaced = false;
+          return null;
+        }
+        await chmod(target, 0o600).catch(() => undefined);
+        await chmod(this.#statePath, 0o600).catch(() => undefined);
+        return {
+          profile: { ...profile },
+          replacedCredential: existingCredential,
+          originChanged,
+        };
+      } catch (error) {
+        if (!stateReplaced && credentialReplaced) {
+          await this.#restoreCredential(target, previousCredentialBytes);
+        }
+        throw error;
+      } finally {
+        await unlink(credentialTemporary).catch(() => undefined);
+        await unlink(stateTemporary).catch(() => undefined);
+      }
+    });
+  }
+
   remove(profileId: string): Promise<void> {
     return this.detachProfile(profileId).then(() => undefined);
   }
@@ -301,6 +410,36 @@ export class ProfileStore {
       && actual.profileId === expected.profileId
       && actual.origin === expected.origin
       && actual.token === expected.token;
+  }
+
+  #sameOptionalCredential(actual: StoredCredential | null, expected: StoredCredential | null): boolean {
+    return expected === null ? actual === null : this.#sameCredential(actual, expected);
+  }
+
+  #sameProfile(actual: DesktopProfile | null, expected: DesktopProfile | null): boolean {
+    return expected === null ? actual === null : actual !== null
+      && actual.id === expected.id
+      && actual.label === expected.label
+      && actual.apiBaseUrl === expected.apiBaseUrl
+      && actual.createdAt === expected.createdAt
+      && actual.updatedAt === expected.updatedAt;
+  }
+
+  async #restoreCredential(target: string, contents: Buffer | null): Promise<void> {
+    if (contents === null) {
+      await unlink(target).catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
+      return;
+    }
+    const temporary = `${target}.${process.pid}.${randomUUID()}.restore.tmp`;
+    try {
+      await writeFile(temporary, contents, { mode: 0o600 });
+      await rename(temporary, target);
+      await chmod(target, 0o600).catch(() => undefined);
+    } finally {
+      await unlink(temporary).catch(() => undefined);
+    }
   }
 
   async writeCredential(credential: StoredCredential): Promise<{ stored: true } | { stored: false; reason: 'encryption-unavailable' }> {

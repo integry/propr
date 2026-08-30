@@ -117,6 +117,25 @@ describe('Electron remote instance adapters', () => {
     }), expect.anything());
   });
 
+  it('clears renderer storage after a successful same-origin profile switch', async () => {
+    const fixture = bridgeFixture();
+    await fixture.bridge.profiles.setActive('profile-a');
+    const adapters = createElectronDesktopAdapters(fixture.bridge);
+    const profile = (await adapters.profiles.list())[0];
+    window.localStorage.setItem('profile-state', 'from-profile-a');
+    window.sessionStorage.setItem('profile-session', 'from-profile-a');
+
+    const activated = await adapters.connection.activate?.(profile, {
+      status: 'ready',
+      version: '0.8.15',
+      activationTicket: 'ticket-7',
+    });
+
+    expect(activated?.status).toBe('ready');
+    expect(window.localStorage.getItem('profile-state')).toBeNull();
+    expect(window.sessionStorage.getItem('profile-session')).toBeNull();
+  });
+
   it('cancels pairing and removes profiles entirely through main-process IPC', async () => {
     const fixture = bridgeFixture();
     const adapters = createElectronDesktopAdapters(fixture.bridge);

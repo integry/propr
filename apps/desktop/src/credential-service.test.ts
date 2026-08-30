@@ -686,6 +686,144 @@ describe('main-process desktop credential service', () => {
     });
   });
 
+  for (const failure of ['browser-launch', 'cancellation', 'expiry', 'polling', 'secure-storage'] as const) {
+    it(`preserves the active profile and credential when an origin edit fails during ${failure}`, async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'propr-credential-service-'));
+      temporaryDirectories.push(directory);
+      let rejectReplacementEncryption = false;
+      const provider: EncryptionProvider = {
+        ...encryption,
+        encrypt: value => {
+          const stored = JSON.parse(value) as StoredCredential;
+          if (rejectReplacementEncryption && stored.token === token('B')) {
+            throw new Error('keychain encrypt failed');
+          }
+          return Buffer.from(value, 'utf8');
+        },
+      };
+      const store = new ProfileStore(directory, provider);
+      const profile = await store.save({
+        id: 'profile-a', label: 'Working A', apiBaseUrl: 'https://a.example.test',
+      });
+      const oldCredential = credential(profile.id, profile.apiBaseUrl, 'A');
+      await store.writeCredential(oldCredential);
+      await store.setActive(profile.id);
+      const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+      const requests: Array<{ url: string; authorization: string | null }> = [];
+      let service!: DesktopCredentialService;
+      service = new DesktopCredentialService({
+        profiles: store,
+        clientName: 'Test desktop',
+        pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
+        openExternal: async () => {
+          if (failure === 'browser-launch') throw new Error('Browser launch failed.');
+          if (failure === 'cancellation') service.cancelPairing(profile.id);
+        },
+        fetch: async (input, init) => {
+          const url = input.toString();
+          const authorization = new Headers(init?.headers).get('Authorization');
+          requests.push({ url, authorization });
+          if (url === 'https://a.example.test/api/desktop/discovery') return json(discovery);
+          if (url === 'https://a.example.test/api/auth/user') return json({ username: 'working-a' });
+          if (url === 'https://b.example.test/api/desktop/pairings') return json({
+            pairingId: `dpr_${'A'.repeat(22)}`,
+            deviceSecret: 'C'.repeat(43),
+            approvalUrl: 'https://b.example.test/approve',
+            expiresAt: new Date(pairingNow + (failure === 'expiry' ? -1 : 10_000)).toISOString(),
+            interval: 1,
+          }, 201);
+          if (url.endsWith('/poll')) {
+            if (failure === 'polling') throw new Error('Pairing poll failed.');
+            return json({ status: 'complete', token: token('B'), tokenType: 'Bearer', expiresAt: null });
+          }
+          if (url === 'https://b.example.test/api/desktop/tokens/current') {
+            return new Response(null, { status: 204 });
+          }
+          throw new Error(`Unexpected request: ${url}`);
+        },
+      });
+      const ready = await service.probe({
+        id: profile.id, label: profile.label, apiBaseUrl: profile.apiBaseUrl,
+      });
+      assert.equal(ready.status, 'ready');
+      if (ready.status !== 'ready') return;
+      const activated = await service.activate(ready.activationTicket);
+      rejectReplacementEncryption = failure === 'secure-storage';
+
+      await assert.rejects(service.pair({
+        id: profile.id,
+        label: 'Proposed B',
+        apiBaseUrl: 'https://b.example.test',
+      }));
+
+      assert.deepEqual(await store.list(), { profiles: [profile], activeProfileId: profile.id });
+      assert.deepEqual(await store.readCredential(profile.id), oldCredential);
+      assert.deepEqual(service.prepareRequest(
+        'https://a.example.test/api/tasks',
+        transportHeaders(activated.transportScope),
+      ).requestHeaders, { Authorization: `Bearer ${oldCredential.token}` });
+      assert.equal(requests.some(request => request.url === 'https://a.example.test/api/desktop/tokens/current'
+        && request.authorization === `Bearer ${oldCredential.token}`), false);
+    });
+  }
+
+  it('commits an edited profile and replacement credential before revoking the old token', async () => {
+    const store = await createStore();
+    const profile = await store.save({
+      id: 'profile-a', label: 'Working A', apiBaseUrl: 'https://a.example.test',
+    });
+    const oldCredential = credential(profile.id, profile.apiBaseUrl, 'A');
+    const replacement = credential(profile.id, 'https://b.example.test', 'B');
+    await store.writeCredential(oldCredential);
+    await store.setActive(profile.id);
+    const pairingNow = Date.parse('2026-01-01T00:00:00.000Z');
+    const revocationSnapshot = deferred<{
+      state: Awaited<ReturnType<ProfileStore['list']>>;
+      credential: StoredCredential | null;
+    }>();
+    const service = new DesktopCredentialService({
+      profiles: store,
+      clientName: 'Test desktop',
+      pairingTiming: { now: () => pairingNow, sleep: async () => undefined },
+      openExternal: async () => undefined,
+      fetch: async (input, init) => {
+        const url = input.toString();
+        if (url === 'https://b.example.test/api/desktop/pairings') return json({
+          pairingId: `dpr_${'A'.repeat(22)}`,
+          deviceSecret: 'C'.repeat(43),
+          approvalUrl: 'https://b.example.test/approve',
+          expiresAt: new Date(pairingNow + 10_000).toISOString(),
+          interval: 1,
+        }, 201);
+        if (url.endsWith('/poll')) {
+          return json({ status: 'complete', token: replacement.token, tokenType: 'Bearer', expiresAt: null });
+        }
+        if (url === 'https://a.example.test/api/desktop/tokens/current') {
+          assert.equal(new Headers(init?.headers).get('Authorization'), `Bearer ${oldCredential.token}`);
+          revocationSnapshot.resolve({
+            state: await store.list(),
+            credential: await store.readCredential(profile.id),
+          });
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+
+    await service.pair({
+      id: profile.id,
+      label: 'Connected B',
+      apiBaseUrl: replacement.origin,
+    });
+
+    const stateAtRevocation = await revocationSnapshot.promise;
+    assert.equal(stateAtRevocation.state.profiles[0]?.label, 'Connected B');
+    assert.equal(stateAtRevocation.state.profiles[0]?.apiBaseUrl, replacement.origin);
+    assert.equal(stateAtRevocation.state.activeProfileId, null);
+    assert.deepEqual(stateAtRevocation.credential, replacement);
+    assert.deepEqual(await store.readCredential(profile.id), replacement);
+  });
+
   it('ignores delayed A invalidation after B connects and preserves tokens for authorization/transient codes', async () => {
     const store = await createStore();
     const profileA = await store.save({ id: 'profile-a', label: 'A', apiBaseUrl: 'https://a.example.test' });
@@ -1016,6 +1154,15 @@ describe('main-process desktop credential service', () => {
         },
         saveAndDetachCredential: (input: Parameters<ProfileStore['saveAndDetachCredential']>[0]) =>
           store.saveAndDetachCredential(input),
+        commitPairedProfile: (...args: Parameters<ProfileStore['commitPairedProfile']>) => {
+          if (!raced) {
+            raced = true;
+            raceOperation = race === 'delete'
+              ? service.removeProfile(profileA.id)
+              : service.setActiveProfile(profileB.id);
+          }
+          return store.commitPairedProfile(...args);
+        },
         detachProfile: (profileId: string) => store.detachProfile(profileId),
         setActive: (profileId: string | null) => store.setActive(profileId),
         activateProfile: (...args: Parameters<ProfileStore['activateProfile']>) => store.activateProfile(...args),

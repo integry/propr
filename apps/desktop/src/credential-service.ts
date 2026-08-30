@@ -18,7 +18,7 @@ const DEFINITIVE_INVALID_CODES = new Set([
 
 export interface CredentialServiceDependencies {
   profiles: Pick<ProfileStore,
-    'list' | 'saveAndDetachCredential' | 'detachProfile' | 'setActive' | 'activateProfile' | 'security'
+    'list' | 'saveAndDetachCredential' | 'commitPairedProfile' | 'detachProfile' | 'setActive' | 'activateProfile' | 'security'
     | 'readCredential' | 'readProfileCredential' | 'writeCredential' | 'removeCredential'
     | 'removeCredentialIfCurrent'>;
   fetch: typeof globalThis.fetch;
@@ -168,54 +168,72 @@ export class DesktopCredentialService {
   }
 
   cancelPairing(profileId: string): void {
-    this.#bumpGeneration(profileId);
+    const generation = this.#bumpGeneration(profileId);
+    // Cancelling an in-progress edit must not disable the still-committed
+    // credential for an active profile.
+    if (this.#active?.profileId === profileId) this.#active.profileGeneration = generation;
     this.#pairingControllers.get(profileId)?.abort();
     this.#pairingControllers.delete(profileId);
   }
 
   async pair(input: DesktopProfileInput): Promise<{ paired: true }> {
-    const profile = await this.saveProfile(input);
-    this.cancelPairing(profile.id);
+    if (!input.id) throw new Error('Desktop profile id is required');
+    const origin = normalizeApiBaseUrl(input.apiBaseUrl ?? '');
+    if (!origin) throw new Error('Invalid desktop API URL');
+    const label = input.label?.trim();
+    if (!label || label.length > 80) throw new Error('Profile label must contain 1 to 80 characters');
+    const proposed = { ...input, id: input.id, label, apiBaseUrl: origin };
+    const baseline = await this.#profiles.readProfileCredential(proposed.id);
+    this.cancelPairing(proposed.id);
+    if (this.#pendingActivation?.profileId === proposed.id) this.#pendingActivation = null;
     const controller = new AbortController();
-    this.#pairingControllers.set(profile.id, controller);
-    const profileGeneration = this.#generation(profile.id);
+    this.#pairingControllers.set(proposed.id, controller);
+    const profileGeneration = this.#generation(proposed.id);
     const selectionGeneration = this.#selectionGeneration;
     let transient: StoredCredential | null = null;
-    const client = this.#client(profile.apiBaseUrl);
+    const client = this.#client(proposed.apiBaseUrl);
 
     try {
       const completed = await client.pairDesktop(this.#clientName, {
         ...this.#pairingTiming,
         signal: controller.signal,
         onApprovalRequired: async approvalUrl => {
-          this.#assertPairingCurrent(profile.id, profile.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal);
+          this.#assertPairingCurrent(
+            proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
+          );
           await this.#openExternal(approvalUrl);
         },
       });
       transient = {
         version: 1,
-        profileId: profile.id,
-        origin: profile.apiBaseUrl,
+        profileId: proposed.id,
+        origin: proposed.apiBaseUrl,
         token: completed.token,
       };
-      await this.#assertPersistedPairingCurrent(
-        profile.id, profile.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
+      this.#assertPairingCurrent(
+        proposed.id, proposed.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
       );
-      const stored = await this.#profiles.writeCredential(transient);
-      if (!stored.stored) throw new Error('OS-backed secure storage is required for desktop pairing.');
-      await this.#assertPersistedPairingCurrent(
-        profile.id, profile.apiBaseUrl, profileGeneration, selectionGeneration, controller.signal,
+      const committed = await this.#profiles.commitPairedProfile(
+        proposed,
+        transient,
+        baseline,
+        () => !controller.signal.aborted
+          && this.#generation(proposed.id) === profileGeneration
+          && this.#selectionGeneration === selectionGeneration,
       );
+      if (committed && 'stored' in committed) {
+        throw new Error('OS-backed secure storage is required for desktop pairing.');
+      }
+      if (!committed) throw new ProprClientError('Desktop pairing was cancelled.', { kind: 'aborted' });
       transient = null;
+      if (committed.replacedCredential) this.#clearActiveIfCredential(committed.replacedCredential);
+      if (committed.originChanged && this.#active?.profileId === committed.profile.id) this.#active = null;
+      if (committed.replacedCredential) {
+        await this.#revoke(committed.replacedCredential).catch(() => undefined);
+      }
       return { paired: true };
     } catch (error) {
       if (transient) {
-        await this.#profiles.removeCredentialIfCurrent(
-          transient,
-          profile.apiBaseUrl,
-          () => true,
-        ).catch(() => undefined);
-        this.#clearActiveIfCredential(transient);
         await this.#revoke(transient).catch(() => undefined);
       }
       if (error instanceof ProprClientError && error.kind === 'aborted') {
@@ -223,7 +241,7 @@ export class DesktopCredentialService {
       }
       throw error;
     } finally {
-      if (this.#pairingControllers.get(profile.id) === controller) this.#pairingControllers.delete(profile.id);
+      if (this.#pairingControllers.get(proposed.id) === controller) this.#pairingControllers.delete(proposed.id);
     }
   }
 
@@ -581,18 +599,4 @@ export class DesktopCredentialService {
     if (normalizeApiBaseUrl(origin) !== origin) throw new Error('Invalid desktop API URL');
   }
 
-  async #assertPersistedPairingCurrent(
-    profileId: string,
-    origin: string,
-    profileGeneration: number,
-    selectionGeneration: number,
-    signal: AbortSignal,
-  ): Promise<void> {
-    this.#assertPairingCurrent(profileId, origin, profileGeneration, selectionGeneration, signal);
-    const current = (await this.#profiles.list()).profiles.find(profile => profile.id === profileId);
-    if (!current || current.apiBaseUrl !== origin) {
-      throw new ProprClientError('Desktop pairing was cancelled.', { kind: 'aborted' });
-    }
-    this.#assertPairingCurrent(profileId, origin, profileGeneration, selectionGeneration, signal);
-  }
 }

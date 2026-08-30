@@ -97,7 +97,9 @@ export const createElectronDesktopAdapters = (bridge: DesktopBridge): DesktopAda
     },
     async activate(profile, result) {
       if (result.activationTicket === undefined) throw new Error('Desktop activation ticket is missing.');
+      const previousProfileId = (await bridge.profiles.list()).activeProfileId;
       const activated = await bridge.connection.activate(result.activationTicket);
+      if (previousProfileId !== activated.profileId) clearRendererProfileState();
       if (activated.profileId !== profile.id) {
         setDesktopConnectionScope(null);
         return {
