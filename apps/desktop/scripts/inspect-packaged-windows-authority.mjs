@@ -78,7 +78,7 @@ const parseManifest = bytes => {
     || JSON.stringify(manifest.bootstrap.signerPins) !== JSON.stringify(manifest.signerPins)
     || manifest.bootstrap.signerCertificateSha256 !== manifest.signerCertificateSha256
     || manifest.bootstrap.signerSpkiSha256 !== manifest.signerSpkiSha256
-    || manifest.compiler.kind !== 'kernel-system-directory-probe-dotnet-framework-csc'
+    || manifest.compiler.kind !== 'windows-catalog-authorized-dotnet-framework-csc-v1'
     || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(manifest.compiler.framework)
     || !/^[a-f0-9]{64}$/.test(manifest.compiler.signerCertificateSha256)
     || !/^[a-f0-9]{64}$/.test(manifest.compiler.signerSpkiSha256)
@@ -88,8 +88,19 @@ const parseManifest = bytes => {
     || !Array.isArray(manifest.compiler.inputs) || manifest.compiler.inputs.length !== 3
     || manifest.compiler.inputs.map(input => input?.name).join(',') !== 'csc.exe,System.dll,System.Web.Extensions.dll'
     || manifest.compiler.inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input)
-      || !exactKeys(input, ['name', 'size', 'sha256']) || !Number.isSafeInteger(input.size) || input.size <= 0
-      || input.size > 32 * 1024 * 1024 || !/^[a-f0-9]{64}$/.test(input.sha256))) fail();
+      || !exactKeys(input, ['name', 'size', 'sha256', 'signerCertificateSha256', 'signerSpkiSha256',
+        'signerRootSpkiSha256', 'catalogSha256', 'catalogVolumeSerial', 'catalogFileId128'])
+      || !Number.isSafeInteger(input.size) || input.size <= 0 || input.size > 32 * 1024 * 1024
+      || !/^[a-f0-9]{64}$/.test(input.sha256)
+      || !/^[a-f0-9]{64}$/.test(input.signerCertificateSha256)
+      || !/^[a-f0-9]{64}$/.test(input.signerSpkiSha256)
+      || !/^[a-f0-9]{64}$/.test(input.signerRootSpkiSha256)
+      || !/^[a-f0-9]{64}$/.test(input.catalogSha256)
+      || !/^[a-f0-9]{16}$/.test(input.catalogVolumeSerial)
+      || !/^[a-f0-9]{32}$/.test(input.catalogFileId128))
+    || manifest.compiler.inputs[0].signerCertificateSha256 !== manifest.compiler.signerCertificateSha256
+    || manifest.compiler.inputs[0].signerSpkiSha256 !== manifest.compiler.signerSpkiSha256
+    || manifest.compiler.inputs[0].signerRootSpkiSha256 !== manifest.compiler.signerRootSpkiSha256) fail();
   return manifest;
 };
 

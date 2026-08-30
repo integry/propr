@@ -129,6 +129,11 @@ jobs:
         shell: bash
         run: npx tsx --test apps/desktop/src/windows-update-authority.test.ts
 
+      - name: Execute both inherited Windows launcher fault variables
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: npx tsx --test --test-name-pattern="explicit inherited fault environment" apps/desktop/src/windows-update-authority.test.ts
+
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'
         run: |
@@ -192,7 +197,7 @@ jobs:
             rpm -qip "$(find apps/desktop/out/make -type f -name '*.rpm' -print -quit)" >/dev/null
             unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
           elif [ "${{ matrix.platform }}" = darwin ]; then
-            hdiutil verify "$(find apps/desktop/out/make -type f -name '*.dmg' -print -quit)"
+            node apps/desktop/scripts/verify-darwin-image.mjs "$(find apps/desktop/out/make -type f -name '*.dmg' -print -quit)"
             unzip -t "$(find apps/desktop/out/make -type f -name '*.zip' -print -quit)"
           fi
 
@@ -415,6 +420,11 @@ jobs:
         shell: bash
         run: npx tsx --test apps/desktop/src/windows-update-authority.test.ts
 
+      - name: Execute both inherited Windows launcher fault variables
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: npx tsx --test --test-name-pattern="explicit inherited fault environment" apps/desktop/src/windows-update-authority.test.ts
+
       - name: Install native Linux package tools
         if: matrix.platform == 'linux'
         run: |
@@ -569,6 +579,7 @@ jobs:
             --wait
           xcrun stapler staple "$dmg"
           xcrun stapler validate "$dmg"
+          node apps/desktop/scripts/verify-darwin-image.mjs "$dmg"
 
       - name: Make signed Windows production installer
         if: matrix.platform == 'win32'

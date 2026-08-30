@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access, cp, mkdir, mkdtemp, readFile, rename, rm, symlink } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, open, readFile, rename, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { basename, join, resolve } from 'node:path';
@@ -37,6 +37,12 @@ for (let attempt = 0; attempt < 2 && !created; attempt += 1) {
       temporaryOutput,
     ]);
     await rename(temporaryOutput, outputPath);
+    // Publish only after both the image and containing directory have reached
+    // stable storage, and close every maker handle before a verifier opens it.
+    const image = await open(outputPath, 'r');
+    try { await image.sync(); } finally { await image.close(); }
+    const directory = await open(outputDirectory, 'r');
+    try { await directory.sync(); } finally { await directory.close(); }
     created = true;
   } catch (error) {
     const resourceBusy = typeof error === 'object' && error !== null

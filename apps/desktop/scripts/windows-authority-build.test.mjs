@@ -21,6 +21,17 @@ import {
 const windowsNativeBuildOnly = {
   skip: process.platform !== 'win32' || process.env.PROPR_WINDOWS_AUTHORITY_NATIVE_BUILD_TESTS !== '1',
 };
+const compilerInputEvidence = (name, sha256) => ({
+  name,
+  size: 1,
+  sha256,
+  signerCertificateSha256: '1'.repeat(64),
+  signerSpkiSha256: '2'.repeat(64),
+  signerRootSpkiSha256: '3'.repeat(64),
+  catalogSha256: '4'.repeat(64),
+  catalogVolumeSerial: '5'.repeat(16),
+  catalogFileId128: '6'.repeat(32),
+});
 
 const managedPe = () => {
   const bytes = Buffer.alloc(1024);
@@ -106,14 +117,22 @@ test('native compiler leases defeat compiler, reference, and exact-source substi
     assert.match(result.compiler.fileId128, /^[a-f0-9]{32}$/);
     assert.match(result.compiler.signerCertificateSha256, /^[a-f0-9]{64}$/);
     assert.match(result.compiler.signerSpkiSha256, /^[a-f0-9]{64}$/);
+    for (const input of result.compiler.inputs) {
+      assert.match(input.catalogSha256, /^[a-f0-9]{64}$/);
+      assert.match(input.catalogVolumeSerial, /^[a-f0-9]{16}$/);
+      assert.match(input.catalogFileId128, /^[a-f0-9]{32}$/);
+    }
   }
 });
 
 test('native compiler signer, image, job, exit, and output failures stay bounded and clean', windowsNativeBuildOnly, async () => {
   const cases = [
     ['compiler-wrong-signer', 'SIGNER_CATALOG'],
+    ['compiler-same-root-wrong-certificate', 'SIGNER_CATALOG'],
+    ['compiler-subject-spoof', 'SIGNER_CATALOG'],
     ['compiler-wrong-spki', 'SIGNER_CATALOG'],
     ['compiler-wrong-catalog', 'SIGNER_CATALOG'],
+    ['compiler-manifest-replacement', 'SIGNER_CATALOG'],
     ['compiler-job', 'IMAGE'],
     ['compiler-image', 'IMAGE'],
     ['compiler-exit', 'EXIT'],
@@ -202,7 +221,7 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
         signerSpkiSha256: null,
       },
       compiler: {
-        kind: 'kernel-system-directory-probe-dotnet-framework-csc',
+        kind: 'windows-catalog-authorized-dotnet-framework-csc-v1',
         framework: 'Framework64-v4.0.30319',
         signerCertificateSha256: '1'.repeat(64),
         signerSpkiSha256: '2'.repeat(64),
@@ -210,9 +229,9 @@ test('packaged helper refresh and inspection bind the exact held manifest and si
         volumeSerial: '4'.repeat(16),
         fileId128: '5'.repeat(32),
         inputs: [
-          { name: 'csc.exe', size: 1, sha256: 'b'.repeat(64) },
-          { name: 'System.dll', size: 1, sha256: 'c'.repeat(64) },
-          { name: 'System.Web.Extensions.dll', size: 1, sha256: 'd'.repeat(64) },
+          compilerInputEvidence('csc.exe', 'b'.repeat(64)),
+          compilerInputEvidence('System.dll', 'c'.repeat(64)),
+          compilerInputEvidence('System.Web.Extensions.dll', 'd'.repeat(64)),
         ],
       },
     })}\n`);

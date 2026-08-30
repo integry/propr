@@ -758,7 +758,7 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
           'fileId128', 'framework', 'inputs', 'kind', 'signerCertificateSha256', 'signerRootSpkiSha256',
           'signerSpkiSha256', 'volumeSerial',
         ])
-        || authorityManifest.compiler.kind !== 'kernel-system-directory-probe-dotnet-framework-csc'
+        || authorityManifest.compiler.kind !== 'windows-catalog-authorized-dotnet-framework-csc-v1'
         || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String(authorityManifest.compiler.framework))
         || !/^[a-f0-9]{64}$/.test(String(authorityManifest.compiler.signerCertificateSha256))
         || !/^[a-f0-9]{64}$/.test(String(authorityManifest.compiler.signerSpkiSha256))
@@ -769,9 +769,23 @@ const readValidatedZipExecutable = async (path, kind, platform, arch) => {
         || authorityManifest.compiler.inputs.map(input => input?.name).join(',')
           !== 'csc.exe,System.dll,System.Web.Extensions.dll'
         || authorityManifest.compiler.inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input)
-          || JSON.stringify(Object.keys(input).sort()) !== JSON.stringify(['name', 'sha256', 'size'])
+          || JSON.stringify(Object.keys(input).sort()) !== JSON.stringify([
+            'catalogFileId128', 'catalogSha256', 'catalogVolumeSerial', 'name', 'sha256', 'signerCertificateSha256',
+            'signerRootSpkiSha256', 'signerSpkiSha256', 'size',
+          ])
           || !Number.isSafeInteger(input.size) || input.size <= 0 || input.size > 32 * 1024 * 1024
-          || !/^[a-f0-9]{64}$/.test(String(input.sha256)))
+          || !/^[a-f0-9]{64}$/.test(String(input.sha256))
+          || !/^[a-f0-9]{64}$/.test(String(input.signerCertificateSha256))
+          || !/^[a-f0-9]{64}$/.test(String(input.signerSpkiSha256))
+          || !/^[a-f0-9]{64}$/.test(String(input.signerRootSpkiSha256))
+          || !/^[a-f0-9]{64}$/.test(String(input.catalogSha256))
+          || !/^[a-f0-9]{16}$/.test(String(input.catalogVolumeSerial))
+          || !/^[a-f0-9]{32}$/.test(String(input.catalogFileId128)))
+        || authorityManifest.compiler.inputs[0].signerCertificateSha256
+          !== authorityManifest.compiler.signerCertificateSha256
+        || authorityManifest.compiler.inputs[0].signerSpkiSha256 !== authorityManifest.compiler.signerSpkiSha256
+        || authorityManifest.compiler.inputs[0].signerRootSpkiSha256
+          !== authorityManifest.compiler.signerRootSpkiSha256
         || !['unsigned-validation', 'production-signed'].includes(authorityManifest.trust)
         || !Array.isArray(authorityManifest.signerPins) || authorityManifest.signerPins.length > 16
         || authorityManifest.signerPins.some(pin => typeof pin !== 'string'

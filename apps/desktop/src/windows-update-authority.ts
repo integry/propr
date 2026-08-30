@@ -1,4 +1,5 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, X509Certificate } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { constants as fsConstants, createReadStream, createWriteStream } from 'node:fs';
 import { lstat, open, realpath, type FileHandle } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -149,14 +150,24 @@ interface WindowsAuthorityHelperManifest {
   launcher: WindowsNativeLauncherPolicy;
   bootstrap: WindowsNativeLauncherPolicy;
   compiler: {
-    kind: 'kernel-system-directory-probe-dotnet-framework-csc';
+    kind: 'windows-catalog-authorized-dotnet-framework-csc-v1';
     framework: string;
     signerCertificateSha256: string;
     signerSpkiSha256: string;
     signerRootSpkiSha256: string;
     volumeSerial: string;
     fileId128: string;
-    inputs: readonly { name: string; size: number; sha256: string }[];
+    inputs: readonly {
+      name: string;
+      size: number;
+      sha256: string;
+      signerCertificateSha256: string;
+      signerSpkiSha256: string;
+      signerRootSpkiSha256: string;
+      catalogSha256: string;
+      catalogVolumeSerial: string;
+      catalogFileId128: string;
+    }[];
   };
 }
 
@@ -187,10 +198,16 @@ interface WindowsNativeLauncher {
   terminate(lease: object): void;
   close(lease: object): void;
   compileHeld?(policy: Record<string, unknown>): Record<string, unknown>;
+  dangerousAclForTest?(policy: { sddl: string }): boolean;
 }
 
 interface WindowsNativeBootstrap {
   loadVerifiedModule(policy: Record<string, unknown>): WindowsNativeLauncher;
+}
+
+interface BootstrapAuthorityLease {
+  proof: { sha256: string; size: number; volumeSerial: string; fileId128: string };
+  release(): Promise<void>;
 }
 
 interface BrokerChild extends EventEmitter {
@@ -206,6 +223,51 @@ interface BrokerChild extends EventEmitter {
 }
 
 const require = createRequire(import.meta.url);
+
+const BOOTSTRAP_AUTHORITY_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$policy = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadLine())) | ConvertFrom-Json
+$stream = [IO.File]::Open($policy.path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+  $item = Get-Item -LiteralPath $policy.path -Force
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -or $item.Length -ne $policy.size) { throw 'type' }
+  $acl = Get-Acl -LiteralPath $policy.path
+  if (!$acl.Owner) { throw 'acl' }
+  $dangerous = [Security.AccessControl.FileSystemRights]::WriteData -bor
+    [Security.AccessControl.FileSystemRights]::AppendData -bor [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+    [Security.AccessControl.FileSystemRights]::WriteAttributes -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+    [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+    [Security.AccessControl.FileSystemRights]::TakeOwnership -bor [Security.AccessControl.FileSystemRights]::FullControl
+  $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+  $current = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $owner = ([Security.Principal.NTAccount]$acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value
+  if ($owner -ne $current -and $trusted -notcontains $owner) { throw 'owner' }
+  foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+    if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+      (($rule.FileSystemRights -band $dangerous) -ne 0) -and $rule.IdentityReference.Value -ne $current -and
+      $trusted -notcontains $rule.IdentityReference.Value) { throw 'acl' }
+  }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $digest = ([BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()) } finally { $sha.Dispose() }
+  if ($digest -cne $policy.sha256) { throw 'hash' }
+  $fsutil = Join-Path $env:SystemRoot 'System32\fsutil.exe'
+  $fileIdOutput = (& $fsutil file queryfileid $policy.path 2>$null) -join [Environment]::NewLine
+  if ($LASTEXITCODE -ne 0) { throw 'identity' }
+  $volumeOutput = (& $fsutil fsinfo volumeinfo $item.Directory.Root.FullName 2>$null) -join [Environment]::NewLine
+  if ($LASTEXITCODE -ne 0) { throw 'identity' }
+  $fileIdMatches = [regex]::Matches($fileIdOutput, '(?i)0x([0-9a-f]{32})\b')
+  $volumeMatches = [regex]::Matches($volumeOutput, '(?i)0x([0-9a-f]{16})\b')
+  if ($fileIdMatches.Count -ne 1 -or $volumeMatches.Count -ne 1) { throw 'identity' }
+  $identity = @($volumeMatches[0].Groups[1].Value.ToLowerInvariant(), $fileIdMatches[0].Groups[1].Value.ToLowerInvariant())
+  $signature = Get-AuthenticodeSignature -LiteralPath $policy.path
+  $certificate = if ($signature.SignerCertificate) { [Convert]::ToBase64String($signature.SignerCertificate.RawData) } else { $null }
+  if ($policy.production -and ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or !$certificate)) { throw 'signature' }
+  [Console]::Out.WriteLine((@{ sha256=$digest; size=[int64]$item.Length; volumeSerial=$identity[0]; fileId128=$identity[1];
+    subject=if ($signature.SignerCertificate) {$signature.SignerCertificate.Subject} else {$null}; certificate=$certificate } | ConvertTo-Json -Compress))
+  [Console]::Out.Flush()
+  if ([Console]::In.ReadLine() -cne 'release') { throw 'release' }
+} finally { $stream.Dispose() }
+`;
 
 const helperError = (stage: WindowsAuthorityCompileStage): WindowsAuthorityBootstrapError =>
   new WindowsAuthorityBootstrapError('MALFORMED_OUTPUT', WINDOWS_AUTHORITY_COMPILE_STAGES.indexOf(stage));
@@ -224,6 +286,99 @@ const embeddedExpectedPublisher = (): string | undefined => {
 const embeddedExpectedSignerPins = (): readonly string[] => {
   if (process.platform !== 'win32' || typeof __PROPR_DESKTOP_WINDOWS_SIGNER_PINS__ === 'undefined') return [];
   return __PROPR_DESKTOP_WINDOWS_SIGNER_PINS__;
+};
+
+const acquireBootstrapPackageAuthority = async (
+  path: string,
+  policy: WindowsNativeLauncherPolicy,
+  allowUnsignedValidation: boolean,
+): Promise<BootstrapAuthorityLease> => {
+  if (process.platform !== 'win32' || (policy.trust !== 'production-signed' && !allowUnsignedValidation)) {
+    throw helperError('HELPER_OWNER_DACL');
+  }
+  const systemRoot = process.env.SystemRoot;
+  if (!systemRoot || !/^[A-Za-z]:\\[^\0]+$/.test(systemRoot) || systemRoot.indexOf(':', 2) >= 0) {
+    throw helperError('HELPER_OWNER_DACL');
+  }
+  const powershell = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const canonicalPowerShell = await realpath(powershell).catch(() => { throw helperError('HELPER_OWNER_DACL'); });
+  if (canonicalPowerShell.toLowerCase() !== resolve(powershell).toLowerCase()) throw helperError('HELPER_OWNER_DACL');
+  const loader = '$p=[Console]::In.ReadLine();$s=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p));&([ScriptBlock]::Create($s))';
+  const child = spawn(canonicalPowerShell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-Command', loader], {
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let output = Buffer.alloc(0);
+  let errorOutput = 0;
+  const cleanup = (): void => { if (!child.killed) child.kill(); };
+  const proofPromise = new Promise<Record<string, unknown>>((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => { cleanup(); rejectPromise(helperError('HELPER_OWNER_DACL')); }, 30_000);
+    const reject = (): void => { clearTimeout(timer); cleanup(); rejectPromise(helperError('HELPER_OWNER_DACL')); };
+    child.once('error', reject);
+    child.once('exit', reject);
+    child.stderr.on('data', (chunk: Buffer) => {
+      errorOutput += chunk.length;
+      if (errorOutput > 0) reject();
+    });
+    child.stdout.on('data', (chunk: Buffer) => {
+      output = Buffer.concat([output, chunk]);
+      if (output.length > 16 * 1024) { reject(); return; }
+      const newline = output.indexOf(0x0a);
+      if (newline < 0) return;
+      if (output.subarray(newline + 1).some(byte => byte !== 0x0d && byte !== 0x0a)) { reject(); return; }
+      clearTimeout(timer);
+      try { resolvePromise(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(output.subarray(0, newline)))); }
+      catch { reject(); }
+    });
+  });
+  const wirePolicy = Buffer.from(JSON.stringify({
+    path,
+    size: policy.size,
+    sha256: policy.sha256,
+    production: policy.trust === 'production-signed',
+  }), 'utf8').toString('base64');
+  child.stdin.write(`${Buffer.from(BOOTSTRAP_AUTHORITY_SCRIPT, 'utf8').toString('base64')}\n${wirePolicy}\n`);
+  let record: Record<string, unknown>;
+  try { record = await proofPromise; } catch (error) { cleanup(); throw error; }
+  if (!exactRecordKeys(record, ['sha256', 'size', 'volumeSerial', 'fileId128', 'subject', 'certificate'])
+    || record.sha256 !== policy.sha256 || record.size !== policy.size
+    || !/^[a-f0-9]{16}$/.test(String(record.volumeSerial))
+    || !/^[a-f0-9]{32}$/.test(String(record.fileId128))) {
+    cleanup(); throw helperError('HELPER_IDENTITY');
+  }
+  if (policy.trust === 'production-signed') {
+    if (record.subject !== policy.publisher || typeof record.certificate !== 'string') {
+      cleanup(); throw helperError('HELPER_OWNER_DACL');
+    }
+    let certificateSha256: string;
+    let spkiSha256: string;
+    try {
+      const certificate = new X509Certificate(Buffer.from(record.certificate, 'base64'));
+      certificateSha256 = certificate.fingerprint256.replaceAll(':', '').toLowerCase();
+      spkiSha256 = createHash('sha256').update(certificate.publicKey.export({ format: 'der', type: 'spki' })).digest('hex');
+    } catch { cleanup(); throw helperError('HELPER_OWNER_DACL'); }
+    if (certificateSha256 !== policy.signerCertificateSha256 || spkiSha256 !== policy.signerSpkiSha256
+      || !policy.signerPins.some(pin => pin === `certificate-sha256:${certificateSha256}`
+        || pin === `spki-sha256:${spkiSha256}`)) {
+      cleanup(); throw helperError('HELPER_OWNER_DACL');
+    }
+  }
+  return {
+    proof: {
+      sha256: String(record.sha256),
+      size: Number(record.size),
+      volumeSerial: String(record.volumeSerial),
+      fileId128: String(record.fileId128),
+    },
+    release: async () => {
+      child.stdin.end('release\n');
+      await new Promise<void>(resolvePromise => {
+        const timer = setTimeout(() => { cleanup(); resolvePromise(); }, 5_000);
+        child.once('exit', () => { clearTimeout(timer); resolvePromise(); });
+      });
+    },
+  };
 };
 
 const exactRecordKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean =>
@@ -310,7 +465,7 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
     || JSON.stringify((bootstrap as Record<string, unknown>).signerPins) !== JSON.stringify(manifest.signerPins)
     || (bootstrap as Record<string, unknown>).signerCertificateSha256 !== manifest.signerCertificateSha256
     || (bootstrap as Record<string, unknown>).signerSpkiSha256 !== manifest.signerSpkiSha256
-    || (compiler as Record<string, unknown>).kind !== 'kernel-system-directory-probe-dotnet-framework-csc'
+    || (compiler as Record<string, unknown>).kind !== 'windows-catalog-authorized-dotnet-framework-csc-v1'
     || !/^(?:Framework64|Framework)-v4\.0\.30319$/.test(String((compiler as Record<string, unknown>).framework))
     || !/^[a-f0-9]{64}$/.test(String((compiler as Record<string, unknown>).signerCertificateSha256))
     || !/^[a-f0-9]{64}$/.test(String((compiler as Record<string, unknown>).signerSpkiSha256))
@@ -323,9 +478,24 @@ export const parseWindowsAuthorityHelperManifestForTest = (bytes: Buffer): Windo
       .map(input => input?.name).join(',') !== 'csc.exe,System.dll,System.Web.Extensions.dll'
     || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[]).some(input =>
       typeof input !== 'object' || input === null || Array.isArray(input)
-      || !exactRecordKeys(input, ['name', 'size', 'sha256']) || !Number.isSafeInteger(input.size)
+      || !exactRecordKeys(input, [
+        'name', 'size', 'sha256', 'signerCertificateSha256', 'signerSpkiSha256', 'signerRootSpkiSha256',
+        'catalogSha256', 'catalogVolumeSerial', 'catalogFileId128',
+      ]) || !Number.isSafeInteger(input.size)
       || Number(input.size) <= 0 || Number(input.size) > 32 * 1024 * 1024
-      || !/^[a-f0-9]{64}$/.test(String(input.sha256)))) {
+      || !/^[a-f0-9]{64}$/.test(String(input.sha256))
+      || !/^[a-f0-9]{64}$/.test(String(input.signerCertificateSha256))
+      || !/^[a-f0-9]{64}$/.test(String(input.signerSpkiSha256))
+      || !/^[a-f0-9]{64}$/.test(String(input.signerRootSpkiSha256))
+      || !/^[a-f0-9]{64}$/.test(String(input.catalogSha256))
+      || !/^[a-f0-9]{16}$/.test(String(input.catalogVolumeSerial))
+      || !/^[a-f0-9]{32}$/.test(String(input.catalogFileId128)))
+    || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])[0].signerCertificateSha256
+      !== (compiler as Record<string, unknown>).signerCertificateSha256
+    || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])[0].signerSpkiSha256
+      !== (compiler as Record<string, unknown>).signerSpkiSha256
+    || ((compiler as Record<string, unknown>).inputs as Record<string, unknown>[])[0].signerRootSpkiSha256
+      !== (compiler as Record<string, unknown>).signerRootSpkiSha256) {
     throw helperError('MANIFEST');
   }
   return manifest as unknown as WindowsAuthorityHelperManifest;
@@ -416,6 +586,7 @@ const authenticateWindowsAuthorityHelper = async (
   expectedSignerPins = embeddedExpectedSignerPins(),
   nativeLoadFaultForTest?: 'barrier-before-module-load-swap' | 'barrier-before-module-load-write'
     | 'barrier-before-module-load-delete',
+  allowUnsignedBootstrapForValidation = expectedPublisher === undefined && directory === helperDirectory(),
 ): Promise<AuthenticatedWindowsAuthorityHelper> => {
   if (!isAbsolute(directory) || directory.indexOf(':', 2) >= 0) throw helperError('MANIFEST');
   const executableProof = await proveCanonicalTree(directory, join(directory, HELPER_NAME));
@@ -487,17 +658,22 @@ const authenticateWindowsAuthorityHelper = async (
       || bootstrapAfter.size !== bootstrapBefore.size || bootstrapAfter.nlink !== bootstrapBefore.nlink) {
       throw helperError('HELPER_IDENTITY');
     }
-    // The bootstrap is the separately signed and release-manifest-bound native
-    // trust root. It is the only native path loaded directly. The target
-    // launcher remains unopened by the Windows loader until the bootstrap has
-    // authenticated its held bytes, full identity, ACL/reparse state and
-    // production Authenticode pins.
+    // A canonical OS PowerShell image executes the fixed, ASAR-packaged verifier
+    // before the Windows loader sees this addon. Its no-write/no-delete file
+    // lease spans DACL/reparse/full FILE_ID_128/hash/Authenticode verification,
+    // N-API initialization, and the authenticated launcher load. Therefore a
+    // manifest replacement cannot bless a malicious bootstrap initializer.
+    const bootstrapAuthority = await acquireBootstrapPackageAuthority(
+      bootstrapProof.path,
+      manifest.bootstrap,
+      allowUnsignedBootstrapForValidation,
+    );
+    const bootstrapAuthorityPath = bootstrapProof.path;
     let bootstrap: WindowsNativeBootstrap;
-    try { bootstrap = require(bootstrapProof.path) as WindowsNativeBootstrap; }
-    catch { throw helperError('HELPER_OPEN'); }
-    if (!bootstrap || typeof bootstrap.loadVerifiedModule !== 'function') throw helperError('HELPER_OPEN');
     let nativeLauncher: WindowsNativeLauncher;
     try {
+      bootstrap = require(bootstrapAuthorityPath) as WindowsNativeBootstrap;
+      if (!bootstrap || typeof bootstrap.loadVerifiedModule !== 'function') throw helperError('HELPER_OPEN');
       nativeLauncher = bootstrap.loadVerifiedModule({
         path: launcherProof.path,
         size: manifest.launcher.size,
@@ -509,6 +685,7 @@ const authenticateWindowsAuthorityHelper = async (
         fault: nativeLoadFaultForTest ?? null,
       });
     } catch { throw helperError('HELPER_IDENTITY'); }
+    finally { await bootstrapAuthority.release(); }
     if (!nativeLauncher || typeof nativeLauncher.launch !== 'function') throw helperError('HELPER_IDENTITY');
     return { executable: executableProof.path, executableHandle, launcherHandle, bootstrapHandle, manifestHandle, manifest,
       launcher: nativeLauncher };
@@ -1042,6 +1219,7 @@ interface StartBrokerOptions {
   helperDirectory?: string;
   expectedPublisher?: string;
   nativeFault?: string;
+  allowUnsignedBootstrapForValidation?: boolean;
 }
 
 const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAuthoritySession> => {
@@ -1052,6 +1230,9 @@ const startBroker = async (options: StartBrokerOptions = {}): Promise<WindowsAut
     options.helperDirectory,
     undefined,
     options.expectedPublisher ?? embeddedExpectedPublisher(),
+    embeddedExpectedSignerPins(),
+    undefined,
+    options.allowUnsignedBootstrapForValidation,
   );
   let child: BrokerChild;
   try {
@@ -1137,7 +1318,11 @@ export const probePackagedWindowsAuthorityHelper = (directory: string): Promise<
   if (process.env.PROPR_DESKTOP_PRODUCTION_RELEASE === '1' && !expectedPublisher) {
     return Promise.reject(helperError('MANIFEST'));
   }
-  return runWindowsAuthorityCompileProbe({ helperDirectory: directory, expectedPublisher });
+  return runWindowsAuthorityCompileProbe({
+    helperDirectory: directory,
+    expectedPublisher,
+    allowUnsignedBootstrapForValidation: process.env.PROPR_DESKTOP_PRODUCTION_RELEASE !== '1',
+  });
 };
 
 /** Native-test-only corrupt-output classification; no compiler diagnostics leave the build boundary. */

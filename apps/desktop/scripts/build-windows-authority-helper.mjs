@@ -32,6 +32,8 @@ const fail = (stage, substage) => {
 };
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+const isProofArray = (value, pattern) => Array.isArray(value) && value.length === 3
+  && value.every(entry => typeof entry === 'string' && pattern.test(entry));
 const samePath = (left, right) => process.platform === 'win32'
   ? left.toLowerCase() === right.toLowerCase()
   : left === right;
@@ -320,7 +322,13 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
       || !/^[a-f0-9]{64}$/.test(String(compileProof.compilerSpkiSha256))
       || !/^[a-f0-9]{64}$/.test(String(compileProof.compilerRootSpkiSha256))
       || !/^[a-f0-9]{16}$/.test(String(compileProof.compilerVolumeSerial))
-      || !/^[a-f0-9]{32}$/.test(String(compileProof.compilerFileId128))) fail('BUILD_OUTPUT');
+      || !/^[a-f0-9]{32}$/.test(String(compileProof.compilerFileId128))
+      || !isProofArray(compileProof.inputCertificateSha256, /^[a-f0-9]{64}$/)
+      || !isProofArray(compileProof.inputSpkiSha256, /^[a-f0-9]{64}$/)
+      || !isProofArray(compileProof.inputRootSpkiSha256, /^[a-f0-9]{64}$/)
+      || !isProofArray(compileProof.inputCatalogSha256, /^[a-f0-9]{64}$/)
+      || !isProofArray(compileProof.inputCatalogVolumeSerial, /^[a-f0-9]{16}$/)
+      || !isProofArray(compileProof.inputCatalogFileId128, /^[a-f0-9]{32}$/)) fail('BUILD_OUTPUT');
     await writeAtomic(WINDOWS_AUTHORITY_EXECUTABLE, output);
     const publishedOutput = await readHeldBuildOutput(WINDOWS_AUTHORITY_BUILD_DIRECTORY, WINDOWS_AUTHORITY_EXECUTABLE);
     if (!publishedOutput.equals(output)) fail('BUILD_OUTPUT');
@@ -367,17 +375,23 @@ export const buildWindowsAuthorityHelper = async (env = process.env) => {
         signerSpkiSha256: null,
       },
       compiler: {
-        kind: 'kernel-system-directory-probe-dotnet-framework-csc',
+        kind: 'windows-catalog-authorized-dotnet-framework-csc-v1',
         framework: frameworkIdentity,
         signerCertificateSha256: compileProof.compilerCertificateSha256,
         signerSpkiSha256: compileProof.compilerSpkiSha256,
         signerRootSpkiSha256: compileProof.compilerRootSpkiSha256,
         volumeSerial: compileProof.compilerVolumeSerial,
         fileId128: compileProof.compilerFileId128,
-        inputs: buildInputs.map(input => ({
+        inputs: buildInputs.map((input, index) => ({
           name: input.name,
           size: Number(input.before.size),
           sha256: input.sha256,
+          signerCertificateSha256: compileProof.inputCertificateSha256[index],
+          signerSpkiSha256: compileProof.inputSpkiSha256[index],
+          signerRootSpkiSha256: compileProof.inputRootSpkiSha256[index],
+          catalogSha256: compileProof.inputCatalogSha256[index],
+          catalogVolumeSerial: compileProof.inputCatalogVolumeSerial[index],
+          catalogFileId128: compileProof.inputCatalogFileId128[index],
         })),
       },
     };

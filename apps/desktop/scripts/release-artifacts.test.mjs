@@ -36,6 +36,17 @@ const spkiSha256 = '2'.repeat(64);
 const windowsSignerPins = `certificate-sha256:${certificateSha256},spki-sha256:${spkiSha256}`;
 const execFile = promisify(execFileCallback);
 const nativeDarwinArch = process.arch === 'arm64' ? 'arm64' : 'x64';
+const compilerInputEvidence = (name, sha256) => ({
+  name,
+  size: 1,
+  sha256,
+  signerCertificateSha256: '1'.repeat(64),
+  signerSpkiSha256: '2'.repeat(64),
+  signerRootSpkiSha256: '3'.repeat(64),
+  catalogSha256: '4'.repeat(64),
+  catalogVolumeSerial: '5'.repeat(16),
+  catalogFileId128: '6'.repeat(32),
+});
 
 const privateDmgSnapshotPaths = async () => {
   const entries = await readdir(tmpdir(), { withFileTypes: true });
@@ -239,7 +250,7 @@ const windowsAuthorityFixtureEntries = (executablePath, executable) => {
       signerSpkiSha256: null,
     },
     compiler: {
-      kind: 'kernel-system-directory-probe-dotnet-framework-csc',
+      kind: 'windows-catalog-authorized-dotnet-framework-csc-v1',
       framework: 'Framework64-v4.0.30319',
       signerCertificateSha256: '1'.repeat(64),
       signerSpkiSha256: '2'.repeat(64),
@@ -247,9 +258,9 @@ const windowsAuthorityFixtureEntries = (executablePath, executable) => {
       volumeSerial: '4'.repeat(16),
       fileId128: '5'.repeat(32),
       inputs: [
-        { name: 'csc.exe', size: 1, sha256: 'b'.repeat(64) },
-        { name: 'System.dll', size: 1, sha256: 'c'.repeat(64) },
-        { name: 'System.Web.Extensions.dll', size: 1, sha256: 'd'.repeat(64) },
+        compilerInputEvidence('csc.exe', 'b'.repeat(64)),
+        compilerInputEvidence('System.dll', 'c'.repeat(64)),
+        compilerInputEvidence('System.Web.Extensions.dll', 'd'.repeat(64)),
       ],
     },
   })}\n`);

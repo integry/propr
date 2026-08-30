@@ -582,7 +582,7 @@ public static class ProprUpdateAuthority {
     string[] fields = { "kind", "framework", "signerCertificateSha256", "signerSpkiSha256",
       "signerRootSpkiSha256", "volumeSerial", "fileId128", "inputs" };
     if (compiler == null || !ExactFields(compiler, fields)
-      || Text(compiler, "kind") != "kernel-system-directory-probe-dotnet-framework-csc"
+      || Text(compiler, "kind") != "windows-catalog-authorized-dotnet-framework-csc-v1"
       || (Text(compiler, "framework") != "Framework64-v4.0.30319"
         && Text(compiler, "framework") != "Framework-v4.0.30319")
       || !Hex(Text(compiler, "signerCertificateSha256"), 64)
@@ -595,12 +595,24 @@ public static class ProprUpdateAuthority {
     if (inputs == null || inputs.Count != names.Length) throw new BrokerFailure("compile_load", 4);
     for (int index = 0; index < names.Length; index++) {
       Dictionary<string, object> input = inputs[index] as Dictionary<string, object>;
-      string[] inputFields = { "name", "size", "sha256" };
+      string[] inputFields = { "name", "size", "sha256", "signerCertificateSha256", "signerSpkiSha256",
+        "signerRootSpkiSha256", "catalogSha256", "catalogVolumeSerial", "catalogFileId128" };
       if (input == null || !ExactFields(input, inputFields)) throw new BrokerFailure("compile_load", 4);
       long size;
       try { size = Convert.ToInt64(input["size"]); } catch { throw new BrokerFailure("compile_load", 4); }
       if (Text(input, "name") != names[index] || size <= 0 || size > 33554432
-        || !Hex(Text(input, "sha256"), 64)) {
+        || !Hex(Text(input, "sha256"), 64)
+        || !Hex(Text(input, "signerCertificateSha256"), 64)
+        || !Hex(Text(input, "signerSpkiSha256"), 64)
+        || !Hex(Text(input, "signerRootSpkiSha256"), 64)
+        || !Hex(Text(input, "catalogSha256"), 64)
+        || !Hex(Text(input, "catalogVolumeSerial"), 16)
+        || !Hex(Text(input, "catalogFileId128"), 32)) {
+        throw new BrokerFailure("compile_load", 4);
+      }
+      if (index == 0 && (Text(input, "signerCertificateSha256") != Text(compiler, "signerCertificateSha256")
+        || Text(input, "signerSpkiSha256") != Text(compiler, "signerSpkiSha256")
+        || Text(input, "signerRootSpkiSha256") != Text(compiler, "signerRootSpkiSha256"))) {
         throw new BrokerFailure("compile_load", 4);
       }
     }

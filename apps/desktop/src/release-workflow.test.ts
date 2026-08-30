@@ -325,7 +325,9 @@ describe('desktop trusted release workflow', () => {
     assert.match(windowsNativeLauncher, /HANDLE inherited\[\] = \{child_stdin, child_stdout, child_stderr\}/);
     assert.match(windowsNativeLauncher, /SameIdentity\(identities\[0\], loaded_id\)/);
     assert.match(windowsNativeLauncher, /DangerousUntrustedAcl/);
-    assert.ok(!windowsAuthority.toLowerCase().includes('powershell'));
+    assert.match(windowsAuthority, /acquireBootstrapPackageAuthority/);
+    assert.match(windowsAuthority, /Get-AuthenticodeSignature/);
+    assert.match(windowsAuthority, /fsutil file queryfileid/);
     assert.ok(!windowsAuthority.includes('writeBootstrap'));
     assert.ok(!windowsAuthority.includes('brokerSource'));
     assert.match(windowsAuthority, /await session\.write\(JSON\.stringify\(\{/);
@@ -353,6 +355,7 @@ describe('desktop trusted release workflow', () => {
     assert.doesNotMatch(windowsAuthorityBuild, /execFileAsync\(compiler/);
     assert.doesNotMatch(windowsAuthorityBuild, /require\(launcher\.path\)/);
     assert.doesNotMatch(windowsAuthority, /require\(launcherProof\.path\)/);
+    assert.doesNotMatch(windowsAuthority, /require\(bootstrapProof\.path\)/);
     assert.match(windowsAuthority, /bootstrap\.loadVerifiedModule\(\{/);
     assert.match(forgeConfig, /extraResource: \[resolve\('build', 'windows-authority'\)\]/);
     assert.match(forgeConfig, /refreshPackagedWindowsAuthorityManifest/);
