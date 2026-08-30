@@ -47,6 +47,10 @@ stdin/stdout plus the staged image handle. Startup material travels in the
 first control frame, never argv or the environment. Readiness, pre-launch,
 post-response, and shutdown use strict 4-byte-length-prefixed versioned frames
 with fresh parent request IDs and sequence/PID/full-identity/digest binding.
+The parent uses only the documented asynchronous ChildProcess streams with an
+incremental bounded parser, backpressure-aware writes, abort propagation, and
+startup/request/shutdown deadlines; it never extracts private pipe descriptors
+or performs synchronous filesystem I/O on a pipe.
 There is no reconnectable IPC name, environment secret, readiness file, or stop
 file. Subsequent bounded
 broker batches inherit the caller's held setup or inspection descriptors

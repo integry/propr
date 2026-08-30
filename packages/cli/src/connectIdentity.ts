@@ -74,7 +74,7 @@ export interface TrustedConnectConfigOptions {
     | "config-before-open"
     | "config-opened"
     | "config-read"
-  ) => void;
+  ) => void | Promise<void>;
 }
 
 export type ConnectRootSnapshotBoundary = "acquired" | "env-read" | "before-identity" | "identity-read";
@@ -91,7 +91,7 @@ export interface ConnectRootSnapshotOptions {
   platform?: NodeJS.Platform;
   /** Structured native authority source; deterministic fixtures use this same policy path. */
   authorityInspector?: ConnectRootAuthorityInspector;
-  onBoundary?: (boundary: ConnectRootSnapshotBoundary) => void;
+  onBoundary?: (boundary: ConnectRootSnapshotBoundary) => void | Promise<void>;
   parseEnvFile?: (contents: string) => Record<string, string>;
 }
 
@@ -334,10 +334,10 @@ function parseTrustedTunnelOverride(contents: string, requestedRoot: string, pla
  * directory and file stay pinned throughout a bounded synchronous read; no
  * ambient HOME/cwd, profile, token, or unrelated setting is consumed.
  */
-export function readTrustedConnectTunnelOverride(
+export async function readTrustedConnectTunnelOverride(
   requestedRoot: string,
   options: TrustedConnectConfigOptions = {},
-): boolean | undefined {
+): Promise<boolean | undefined> {
   const platform = options.platform ?? process.platform;
   const ioPlatform = platform === process.platform ? platform : process.platform;
   if (
@@ -357,12 +357,12 @@ export function readTrustedConnectTunnelOverride(
     }
     const namedHomeBefore = lstatSync(homePath);
     if (namedHomeBefore.isSymbolicLink()) throw new TrustedConnectConfigError("REPARSE_POINT");
-    options.onBoundary?.("home-before-open");
+    await options.onBoundary?.("home-before-open");
     home = openRootNoFollow(homePath, ioPlatform);
-    options.onBoundary?.("home-opened");
+    await options.onBoundary?.("home-opened");
     if (!sameIdentity(namedHomeBefore, fstatSync(home.root.fd))) throw new TrustedConnectConfigError();
     if (platform !== "win32") {
-      assertTrustedHomeAuthority(home, platform, inspector, callerUid);
+      await assertTrustedHomeAuthority(home, platform, inspector, callerUid);
       closeAcquiredAncestors(home);
       homeAncestorsClosed = true;
     }
@@ -379,19 +379,19 @@ export function readTrustedConnectTunnelOverride(
     if (namedConfigDirectoryBefore.isSymbolicLink()) {
       throw new TrustedConnectConfigError("CONFIG_DIRECTORY_REPARSE");
     }
-    options.onBoundary?.("config-directory-before-open");
+    await options.onBoundary?.("config-directory-before-open");
     const configDirectoryFd = home.root.openChild(
       ".propr",
       constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
     );
     configDir = heldDirectory(configDirectoryFd, ioPlatform, join(homePath, ".propr"));
-    options.onBoundary?.("config-directory-opened");
+    await options.onBoundary?.("config-directory-opened");
     verifyNamedHome();
     if (!sameIdentity(namedConfigDirectoryBefore, fstatSync(configDir.fd))) throw new TrustedConnectConfigError();
     const directoryStat = fstatSync(configDir.fd);
     assertPrivateData(directoryStat, callerUid, platform);
     assertNamedEntry(homePath, ".propr", directoryStat);
-    if (platform === "darwin") authorityEntry(inspector, platform, configDir.visiblePath, "data", configDir.fd);
+    if (platform === "darwin") await authorityEntry(inspector, platform, configDir.visiblePath, "data", configDir.fd);
     const verifyNamedConfigDirectory = () => {
       verifyNamedHome();
       const held = fstatSync(configDir!.fd);
@@ -410,7 +410,7 @@ export function readTrustedConnectTunnelOverride(
       // below can authenticate an absent config entry.
       verifyNamedConfigDirectory();
     }
-    options.onBoundary?.("config-before-open");
+    await options.onBoundary?.("config-before-open");
     try {
       configFd = configDir.openChild("config.json", constants.O_RDONLY | constants.O_NOFOLLOW);
     } catch (error) {
@@ -420,7 +420,7 @@ export function readTrustedConnectTunnelOverride(
         verifyNamedConfigDirectory();
         if (namedConfigBefore !== undefined) throw new TrustedConnectConfigError();
         if (platform === "win32") {
-          authorityEntries(inspector, [
+          await authorityEntries(inspector, [
             ...home.ancestry.slice(0, -1).map((entry) => ({
               path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
             })),
@@ -449,9 +449,9 @@ export function readTrustedConnectTunnelOverride(
     validateConfig(fstatSync(configFd));
     assertNamedEntry(configDir.visiblePath, "config.json", fstatSync(configFd));
     if (platform === "darwin") {
-      authorityEntry(inspector, platform, join(configDir.visiblePath, "config.json"), "env", configFd);
+      await authorityEntry(inspector, platform, join(configDir.visiblePath, "config.json"), "env", configFd);
     } else if (platform === "win32") {
-      authorityEntries(inspector, [
+      await authorityEntries(inspector, [
         ...home.ancestry.slice(0, -1).map((entry) => ({
           path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
         })),
@@ -463,9 +463,9 @@ export function readTrustedConnectTunnelOverride(
       homeAncestorsClosed = true;
     }
     verifyNamedConfigDirectory();
-    options.onBoundary?.("config-opened");
+    await options.onBoundary?.("config-opened");
     const contents = readBoundedPrivateFile(configFd, MAX_CONNECT_CONFIG_BYTES, validateConfig);
-    options.onBoundary?.("config-read");
+    await options.onBoundary?.("config-read");
 
     const fileAfter = fstatSync(configFd);
     assertNamedEntry(configDir.visiblePath, "config.json", fileAfter);
@@ -477,10 +477,10 @@ export function readTrustedConnectTunnelOverride(
     const namedHome = lstatSync(homePath);
     if (namedHome.isSymbolicLink() || !sameIdentity(namedHome, homeAfter)) throw new TrustedConnectConfigError();
     if (platform === "darwin") {
-      authorityEntry(inspector, platform, configDir.visiblePath, "data", configDir.fd);
-      authorityEntry(inspector, platform, join(configDir.visiblePath, "config.json"), "env", configFd);
+      await authorityEntry(inspector, platform, configDir.visiblePath, "data", configDir.fd);
+      await authorityEntry(inspector, platform, join(configDir.visiblePath, "config.json"), "env", configFd);
     } else if (platform === "win32") {
-      authorityEntries(inspector, [
+      await authorityEntries(inspector, [
         { path: home.root.visiblePath, kind: "home", pinnedFd: home.root.fd },
         { path: configDir.visiblePath, kind: "data", pinnedFd: configDir.fd },
         { path: join(configDir.visiblePath, "config.json"), kind: "env", pinnedFd: configFd },
@@ -504,36 +504,36 @@ export function readTrustedConnectTunnelOverride(
   }
 }
 
-function authorityEntry(
+async function authorityEntry(
   inspector: ConnectRootAuthorityInspector,
   platform: NodeJS.Platform,
   path: string,
   kind: ConnectAuthorityEntryKind,
   pinnedFd: number,
-): void {
+): Promise<void> {
   try {
-    assertNativeEntryAuthority(inspector, platform, path, kind, pinnedFd);
+    await assertNativeEntryAuthority(inspector, platform, path, kind, pinnedFd);
   } catch (error) {
     if (error instanceof WindowsAuthorityPolicyError) throw error;
     throw new ConnectRootError();
   }
 }
 
-function authorityEntries(
+async function authorityEntries(
   inspector: ConnectRootAuthorityInspector,
   entries: readonly { path: string; kind: ConnectAuthorityEntryKind; pinnedFd: number }[],
-): void {
-  assertNativeWindowsEntriesAuthority(inspector, entries);
+): Promise<void> {
+  await assertNativeWindowsEntriesAuthority(inspector, entries);
 }
 
-function assertPlatformAuthority(
+async function assertPlatformAuthority(
   acquired: AcquiredRoot,
   platform: NodeJS.Platform,
   inspector: ConnectRootAuthorityInspector,
   callerUid: number | undefined,
-): void {
+): Promise<void> {
   if (platform === "win32") {
-    authorityEntries(inspector, [
+    await authorityEntries(inspector, [
       ...acquired.ancestry.slice(0, -1).map((entry) => ({
         path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
       })),
@@ -546,20 +546,20 @@ function assertPlatformAuthority(
   assertPrivateRoot(fstatSync(acquired.root.fd), callerUid, platform);
   if (platform === "darwin") {
     for (const entry of acquired.ancestry.slice(0, -1)) {
-      authorityEntry(inspector, platform, entry.path, "ancestor", entry.fd);
+      await authorityEntry(inspector, platform, entry.path, "ancestor", entry.fd);
     }
-    authorityEntry(inspector, platform, acquired.root.visiblePath, "root", acquired.root.fd);
+    await authorityEntry(inspector, platform, acquired.root.visiblePath, "root", acquired.root.fd);
   }
 }
 
-function assertTrustedHomeAuthority(
+async function assertTrustedHomeAuthority(
   acquired: AcquiredRoot,
   platform: NodeJS.Platform,
   inspector: ConnectRootAuthorityInspector,
   callerUid: number | undefined,
-): void {
+): Promise<void> {
   if (platform === "win32") {
-    authorityEntries(inspector, [
+    await authorityEntries(inspector, [
       ...acquired.ancestry.slice(0, -1).map((entry) => ({
         path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
       })),
@@ -572,9 +572,9 @@ function assertTrustedHomeAuthority(
   assertPrivateRoot(fstatSync(acquired.root.fd), callerUid, platform);
   if (platform === "darwin") {
     for (const entry of acquired.ancestry.slice(0, -1)) {
-      authorityEntry(inspector, platform, entry.path, "ancestor", entry.fd);
+      await authorityEntry(inspector, platform, entry.path, "ancestor", entry.fd);
     }
-    authorityEntry(inspector, platform, acquired.root.visiblePath, "home", acquired.root.fd);
+    await authorityEntry(inspector, platform, acquired.root.visiblePath, "home", acquired.root.fd);
   }
 }
 
@@ -613,14 +613,14 @@ function identifyHeldChild(directory: HeldDirectory, platform: NodeJS.Platform, 
 }
 
 /**
- * Run all root-dependent work inside one synchronous, descriptor-anchored snapshot.
+ * Run all root-dependent work inside one descriptor-anchored snapshot.
  * No trusted pathname escapes the callback, and every named identity is checked again.
  */
-export function withOwnedConnectRootSnapshot<T>(
+export async function withOwnedConnectRootSnapshot<T>(
   flagRoot: string | undefined,
-  operation: (snapshot: ConnectRootSnapshot) => T,
+  operation: (snapshot: ConnectRootSnapshot) => T | Promise<T>,
   options: ConnectRootSnapshotOptions,
-): T {
+): Promise<T> {
   if (!flagRoot || !options.parseEnvFile) throw new ConnectRootError();
   const platform = options.platform ?? process.platform;
   if (platform !== "linux" && platform !== "darwin" && platform !== "win32") throw new ConnectRootError();
@@ -653,7 +653,7 @@ export function withOwnedConnectRootSnapshot<T>(
     acquiredRoot = acquired;
     root = acquired.root;
     if (platform !== "win32") {
-      assertPlatformAuthority(acquired, platform, inspector, callerUid);
+      await assertPlatformAuthority(acquired, platform, inspector, callerUid);
       closeAcquiredAncestors(acquired);
       acquiredAncestorsClosed = true;
     }
@@ -673,7 +673,7 @@ export function withOwnedConnectRootSnapshot<T>(
     const initialDataStat = fstatSync(data.fd);
     assertPrivateData(initialDataStat, callerUid, platform);
     assertNamedEntry(requestedRoot, "data", initialDataStat);
-    if (platform === "darwin") authorityEntry(inspector, platform, data.visiblePath, "data", data.fd);
+    if (platform === "darwin") await authorityEntry(inspector, platform, data.visiblePath, "data", data.fd);
     verifyNamedRoot();
     envFd = root.openChild(".env", constants.O_RDONLY | constants.O_NOFOLLOW);
     verifyNamedRoot();
@@ -681,9 +681,9 @@ export function withOwnedConnectRootSnapshot<T>(
     assertPrivateEnv(initialEnvStat, callerUid, platform);
     assertNamedEntry(requestedRoot, ".env", initialEnvStat);
     if (platform === "darwin") {
-      authorityEntry(inspector, platform, join(requestedRoot, ".env"), "env", envFd);
+      await authorityEntry(inspector, platform, join(requestedRoot, ".env"), "env", envFd);
     } else if (platform === "win32") {
-      authorityEntries(inspector, [
+      await authorityEntries(inspector, [
         ...acquired.ancestry.slice(0, -1).map((entry) => ({
           path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
         })),
@@ -694,10 +694,10 @@ export function withOwnedConnectRootSnapshot<T>(
       closeAcquiredAncestors(acquired);
       acquiredAncestorsClosed = true;
     }
-    options.onBoundary?.("acquired");
+    await options.onBoundary?.("acquired");
 
     const envFileValues = options.parseEnvFile(readHeldEnv(envFd, platform));
-    options.onBoundary?.("env-read");
+    await options.onBoundary?.("env-read");
     const verifyNamedData = (): Stats => {
       const held = fstatSync(data!.fd);
       assertPrivateData(held, callerUid, platform);
@@ -736,12 +736,12 @@ export function withOwnedConnectRootSnapshot<T>(
         verifyNamedData();
         return identity;
       },
-      validateEntry: (name, fd, newlyCreated = false) => {
+      validateEntry: async (name, fd, newlyCreated = false) => {
         const entryPath = join(data!.visiblePath, name);
         if (newlyCreated && platform === "win32" && process.platform === "win32") {
-          protectWindowsSetupEntry(entryPath, "file");
+          await protectWindowsSetupEntry(entryPath, "file");
         }
-        if (platform !== "linux") authorityEntry(inspector, platform, entryPath, "env", fd);
+        if (platform !== "linux") await authorityEntry(inspector, platform, entryPath, "env", fd);
       },
       publishNoReplace: (oldName, newName) => {
         verifyNamedData();
@@ -764,7 +764,7 @@ export function withOwnedConnectRootSnapshot<T>(
     let result: T | undefined;
     let operationError: unknown;
     try {
-      result = operation({
+      result = await operation({
         envFileValues,
         identityDirectory,
         requestedRoot,
@@ -772,8 +772,6 @@ export function withOwnedConnectRootSnapshot<T>(
     } catch (error) {
       operationError = error;
     }
-    if (result && typeof (result as { then?: unknown }).then === "function") throw new ConnectRootError();
-
     const namedRoot = lstatSync(requestedRoot);
     const heldRootStat = fstatSync(root.fd);
     if (namedRoot.isSymbolicLink() || !sameIdentity(namedRoot, heldRootStat)) throw new ConnectRootError();
@@ -785,8 +783,8 @@ export function withOwnedConnectRootSnapshot<T>(
     assertNamedEntry(requestedRoot, "data", heldDataStat);
     assertNamedEntry(requestedRoot, ".env", heldEnvStat);
     if (platform === "darwin") {
-      authorityEntry(inspector, platform, data.visiblePath, "data", data.fd);
-      authorityEntry(inspector, platform, join(requestedRoot, ".env"), "env", envFd);
+      await authorityEntry(inspector, platform, data.visiblePath, "data", data.fd);
+      await authorityEntry(inspector, platform, join(requestedRoot, ".env"), "env", envFd);
     }
     const reacquired = openRootNoFollow(requestedRoot, ioPlatform);
     try {
@@ -797,7 +795,7 @@ export function withOwnedConnectRootSnapshot<T>(
         || before.some((entry, index) => !sameIdentity(entry.stat, after[index].stat))
       ) throw new ConnectRootError();
       if (platform === "win32") {
-        authorityEntries(inspector, [
+        await authorityEntries(inspector, [
           ...reacquired.ancestry.slice(0, -1).map((entry) => ({
             path: entry.path, kind: "ancestor" as const, pinnedFd: entry.fd,
           })),
@@ -806,7 +804,7 @@ export function withOwnedConnectRootSnapshot<T>(
           { path: join(requestedRoot, ".env"), kind: "env", pinnedFd: envFd },
         ]);
       } else {
-        assertPlatformAuthority(reacquired, platform, inspector, callerUid);
+        await assertPlatformAuthority(reacquired, platform, inspector, callerUid);
       }
     } finally {
       closeAcquired(reacquired);
@@ -830,10 +828,10 @@ export function withOwnedConnectRootSnapshot<T>(
 }
 
 /** Host-side access used by stack initialization outside the Connect snapshot. */
-export function getOrCreatePublicInstanceIdentity(
+export async function getOrCreatePublicInstanceIdentity(
   dataDir: string,
   generate: () => string = randomUUID,
-): string {
+): Promise<string> {
   const dataPath = resolve(dataDir);
   const platform = process.platform;
   if (platform === "win32") {
@@ -845,7 +843,7 @@ export function getOrCreatePublicInstanceIdentity(
       const acquired = openRootNoFollow(dataPath, platform);
       held = acquired.root;
       try {
-        assertPlatformAuthority(acquired, platform, nativeConnectRootAuthorityInspector, undefined);
+        await assertPlatformAuthority(acquired, platform, nativeConnectRootAuthorityInspector, undefined);
       } finally {
         closeAcquiredAncestors(acquired);
       }
@@ -856,7 +854,6 @@ export function getOrCreatePublicInstanceIdentity(
         const pinned = fstatSync(held!.fd);
         if (visible.isSymbolicLink() || !sameIdentity(visible, pinned)) throw new PublicInstanceIdentityError();
         assertPrivateData(pinned, undefined, platform);
-        authorityEntry(nativeConnectRootAuthorityInspector, platform, dataPath, "data", held!.fd);
       };
       const directory: PinnedPublicIdentityDirectory = {
         fd: held.fd,
@@ -882,10 +879,10 @@ export function getOrCreatePublicInstanceIdentity(
           verifyVisible();
           return identity;
         },
-        validateEntry: (name, fd, newlyCreated = false) => {
+        validateEntry: async (name, fd, newlyCreated = false) => {
           const entryPath = join(dataPath, name);
-          if (newlyCreated) protectWindowsSetupEntry(entryPath, "file");
-          authorityEntry(nativeConnectRootAuthorityInspector, platform, entryPath, "env", fd);
+          if (newlyCreated) await protectWindowsSetupEntry(entryPath, "file");
+          await authorityEntry(nativeConnectRootAuthorityInspector, platform, entryPath, "env", fd);
         },
         publishNoReplace: (oldName, newName) => {
           verifyVisible();
@@ -899,8 +896,9 @@ export function getOrCreatePublicInstanceIdentity(
           verifyVisible();
         },
       };
-      const identity = getOrCreatePublicInstanceIdentityPinned(directory, { generate, role: "host" });
+      const identity = await getOrCreatePublicInstanceIdentityPinned(directory, { generate, role: "host" });
       verifyVisible();
+      await authorityEntry(nativeConnectRootAuthorityInspector, platform, dataPath, "data", held.fd);
       return identity;
     } catch (error) {
       if (error instanceof PublicInstanceIdentityError) throw error;
@@ -923,7 +921,7 @@ export function getOrCreatePublicInstanceIdentity(
       const acquiredParent = openRootNoFollow(parentPath, platform);
       try {
         try {
-          assertPlatformAuthority(acquiredParent, platform, nativeConnectRootAuthorityInspector, callerUid);
+          await assertPlatformAuthority(acquiredParent, platform, nativeConnectRootAuthorityInspector, callerUid);
         } finally {
           closeAcquiredAncestors(acquiredParent);
         }
@@ -952,7 +950,7 @@ export function getOrCreatePublicInstanceIdentity(
     const acquired = openRootNoFollow(dataPath, platform);
     held = acquired.root;
     try {
-      assertPlatformAuthority(acquired, platform, nativeConnectRootAuthorityInspector, callerUid);
+      await assertPlatformAuthority(acquired, platform, nativeConnectRootAuthorityInspector, callerUid);
     } finally {
       closeAcquiredAncestors(acquired);
     }
@@ -962,15 +960,15 @@ export function getOrCreatePublicInstanceIdentity(
       ownerUid: callerUid,
       open: (name, flags, mode = 0) => held!.openChild(name, flags, mode),
       identify: (name) => identifyHeldChild(held!, platform, name),
-      validateEntry: (name, fd) => {
+      validateEntry: async (name, fd) => {
         if (platform === "darwin") {
-          authorityEntry(nativeConnectRootAuthorityInspector, platform, join(dataPath, name), "env", fd);
+          await authorityEntry(nativeConnectRootAuthorityInspector, platform, join(dataPath, name), "env", fd);
         }
       },
       publishNoReplace: (oldName, newName) => renameAt(held!.fd, oldName, newName),
       unlink: (name) => unlinkAt(held!.fd, name),
     };
-    const identity = getOrCreatePublicInstanceIdentityPinned(directory, { generate, role: "host" });
+    const identity = await getOrCreatePublicInstanceIdentityPinned(directory, { generate, role: "host" });
     const named = lstatSync(dataPath);
     const pinned = fstatSync(held.fd);
     if (named.isSymbolicLink() || !sameIdentity(named, pinned)) throw new PublicInstanceIdentityError();
@@ -984,12 +982,12 @@ export function getOrCreatePublicInstanceIdentity(
   }
 }
 
-export function getOrCreateSnapshotPublicInstanceIdentity(
+export async function getOrCreateSnapshotPublicInstanceIdentity(
   directory: PinnedPublicIdentityDirectory,
   generate: () => string = randomUUID,
-): string {
+): Promise<string> {
   try {
-    return getOrCreatePublicInstanceIdentityPinned(directory, { generate, role: "host" });
+    return await getOrCreatePublicInstanceIdentityPinned(directory, { generate, role: "host" });
   } catch (error) {
     if (error instanceof PublicInstanceIdentityError) throw error;
     throw new PublicInstanceIdentityError();

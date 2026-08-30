@@ -262,7 +262,7 @@ export function connectExecutionEnvironment(
 export async function prepareConnectHostConfig(): Promise<{
   orch: OrchestratorModule;
   parseEnvFile(contents: string): Record<string, string>;
-  resolveSnapshot(input: ConnectHostConfigSnapshotInput): OrchestratorConfig;
+  resolveSnapshot(input: ConnectHostConfigSnapshotInput): Promise<OrchestratorConfig>;
   inspectTunnel(cfg: OrchestratorConfig): { kind: "ok"; running: boolean } | { kind: "internalFailure" };
 }> {
   const orch = await loadOrchestrator();
@@ -275,8 +275,8 @@ export async function prepareConnectHostConfig(): Promise<{
   return {
     orch,
     parseEnvFile: (contents) => orch.parseEnvFileContents(contents),
-    resolveSnapshot: ({ requestedRoot, envFileValues }) => {
-      const tunnelOverride = readTrustedConnectTunnelOverride(requestedRoot);
+    resolveSnapshot: async ({ requestedRoot, envFileValues }) => {
+      const tunnelOverride = await readTrustedConnectTunnelOverride(requestedRoot);
       return orch.resolveConfig(executionEnv, {
         envFileValues,
         stack: envFileValues.PROPR_STACK || "propr",

@@ -89,18 +89,18 @@ function identityPath(data: string): string {
   return join(data, PUBLIC_INSTANCE_IDENTITY_FILENAME);
 }
 
-test('public identity persists across CLI/API restart and changes with replaced stack data', () => {
+test('public identity persists across CLI/API restart and changes with replaced stack data', async () => {
   const root = temporaryRoot('propr-public-identity-');
   const data = join(root, 'data');
   privateDirectory(data);
   try {
-    const first = getCliIdentity(data, () => IDS.first);
-    assert.equal(getApiIdentity(data, () => IDS.second), first);
-    assert.equal(getCliIdentity(data, () => IDS.third), first);
+    const first = await getCliIdentity(data, () => IDS.first);
+    assert.equal(await getApiIdentity(data, () => IDS.second), first);
+    assert.equal(await getCliIdentity(data, () => IDS.third), first);
 
     rmSync(data, { recursive: true });
     privateDirectory(data);
-    const replacement = getApiIdentity(data, () => IDS.fourth);
+    const replacement = await getApiIdentity(data, () => IDS.fourth);
     assert.notEqual(replacement, first);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -140,7 +140,7 @@ test('concurrent CLI and API creators publish one complete durable winner', asyn
     ]);
     assert.equal(cli, api);
     assert.ok(cli === IDS.first || cli === IDS.second);
-    assert.equal(getCliIdentity(data, () => IDS.third), cli);
+    assert.equal(await getCliIdentity(data, () => IDS.third), cli);
     const bytes = readFileSync(identityPath(data), 'utf8');
     assert.ok(bytes.length > 0);
     assert.equal(JSON.parse(bytes).publicInstanceIdentity, cli);
@@ -158,13 +158,13 @@ for (const boundary of [
   'identity-published',
   'directory-synced',
 ] as const satisfies readonly PublicIdentityBoundary[]) {
-  test(`identity restart is durable after interruption at ${boundary}`, () => {
+  test(`identity restart is durable after interruption at ${boundary}`, async () => {
     const root = temporaryRoot(`propr-public-identity-${boundary}-`);
     const data = join(root, 'data');
     privateDirectory(data);
     let interrupted = false;
     try {
-      assert.throws(() => getOrCreatePublicInstanceIdentity(data, {
+      await assert.rejects(getOrCreatePublicInstanceIdentity(data, {
         generate: () => IDS.first,
         role: 'host',
         onBoundary: (current) => {
@@ -174,9 +174,9 @@ for (const boundary of [
           }
         },
       }), /simulated interruption/);
-      const winner = getApiIdentity(data, () => IDS.second);
+      const winner = await getApiIdentity(data, () => IDS.second);
       assert.ok(winner === IDS.first || winner === IDS.second);
-      assert.equal(getCliIdentity(data, () => IDS.third), winner);
+      assert.equal(await getCliIdentity(data, () => IDS.third), winner);
       assert.ok(lstatSync(identityPath(data)).size > 0);
       assert.equal(lstatSync(identityPath(data)).nlink, 1);
     } finally {
@@ -185,12 +185,12 @@ for (const boundary of [
   });
 }
 
-test('creation modes are independent of umask', () => {
+test('creation modes are independent of umask', async () => {
   const root = temporaryRoot('propr-public-identity-umask-');
   const data = join(root, 'data');
   const previous = process.umask(0);
   try {
-    assert.equal(getCliIdentity(data, () => IDS.first), IDS.first);
+    assert.equal(await getCliIdentity(data, () => IDS.first), IDS.first);
     assert.equal(lstatSync(data).mode & 0o777, PUBLIC_IDENTITY_DIRECTORY_MODE);
     assert.equal(lstatSync(identityPath(data)).mode & 0o777, PUBLIC_IDENTITY_FILE_MODE);
   } finally {
@@ -199,65 +199,65 @@ test('creation modes are independent of umask', () => {
   }
 });
 
-test('identity storage rejects replaceable directories, symlinks, hardlinks, and unsafe modes', () => {
+test('identity storage rejects replaceable directories, symlinks, hardlinks, and unsafe modes', async () => {
   const root = temporaryRoot('propr-public-identity-malicious-');
   try {
     const unsafe = join(root, 'unsafe');
     mkdirSync(unsafe, { mode: 0o777 });
     chmodSync(unsafe, 0o777);
-    assert.throws(() => getCliIdentity(unsafe), /identity/);
+    await assert.rejects(getCliIdentity(unsafe), /identity/);
 
     const real = join(root, 'real');
     privateDirectory(real);
     const alias = join(root, 'alias');
     symlinkSync(real, alias, 'dir');
-    assert.throws(() => getCliIdentity(alias), /identity/);
+    await assert.rejects(getCliIdentity(alias), /identity/);
 
-    assert.equal(getCliIdentity(real, () => IDS.first), IDS.first);
+    assert.equal(await getCliIdentity(real, () => IDS.first), IDS.first);
     chmodSync(identityPath(real), 0o666);
-    assert.throws(() => getApiIdentity(real), /permissions/);
+    await assert.rejects(getApiIdentity(real), /permissions/);
     chmodSync(identityPath(real), PUBLIC_IDENTITY_FILE_MODE);
     linkSync(identityPath(real), join(real, 'identity-hardlink'));
-    assert.throws(() => getApiIdentity(real), /single-link/);
+    await assert.rejects(getApiIdentity(real), /single-link/);
 
     const special = join(root, 'special');
     privateDirectory(special);
     mkdirSync(identityPath(special), { mode: 0o700 });
-    assert.throws(() => getApiIdentity(special), /regular file|identity file/);
+    await assert.rejects(getApiIdentity(special), /regular file|identity file/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('identity repairs only the exact recovery/final same-inode crash remnant', () => {
+test('identity repairs only the exact recovery/final same-inode crash remnant', async () => {
   const root = temporaryRoot('propr-public-identity-link-crash-');
   const data = join(root, 'data');
   privateDirectory(data);
   const recovery = join(data, `.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.ready-v1`);
   try {
-    assert.equal(getCliIdentity(data, () => IDS.first), IDS.first);
+    assert.equal(await getCliIdentity(data, () => IDS.first), IDS.first);
     linkSync(identityPath(data), recovery);
     assert.equal(lstatSync(identityPath(data)).nlink, 2);
-    assert.equal(getApiIdentity(data, () => IDS.second), IDS.first);
+    assert.equal(await getApiIdentity(data, () => IDS.second), IDS.first);
     assert.equal(lstatSync(identityPath(data)).nlink, 1);
     assert.throws(() => lstatSync(recovery), /ENOENT/);
 
     linkSync(identityPath(data), join(data, 'hostile-unknown-hardlink'));
-    assert.throws(() => getApiIdentity(data), /identity|single-link/);
+    await assert.rejects(getApiIdentity(data), /identity|single-link/);
     assert.equal(lstatSync(identityPath(data)).nlink, 2);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('identity bounded reads reject growth and named replacement after the initial stat', () => {
+test('identity bounded reads reject growth and named replacement after the initial stat', async () => {
   const root = temporaryRoot('propr-public-identity-read-race-');
   const data = join(root, 'data');
   privateDirectory(data);
   try {
-    assert.equal(getCliIdentity(data, () => IDS.first), IDS.first);
+    assert.equal(await getCliIdentity(data, () => IDS.first), IDS.first);
     let grew = false;
-    assert.throws(() => getOrCreatePublicInstanceIdentity(data, {
+    await assert.rejects(getOrCreatePublicInstanceIdentity(data, {
       role: 'host',
       onBoundary: (boundary) => {
         if (boundary === 'identity-read-statted' && !grew) {
@@ -272,7 +272,7 @@ test('identity bounded reads reject growth and named replacement after the initi
       publicInstanceIdentity: IDS.first,
     })}\n`, { mode: PUBLIC_IDENTITY_FILE_MODE });
     let replaced = false;
-    assert.throws(() => getOrCreatePublicInstanceIdentity(data, {
+    await assert.rejects(getOrCreatePublicInstanceIdentity(data, {
       role: 'host',
       onBoundary: (boundary) => {
         if (boundary !== 'identity-read-statted' || replaced) return;
@@ -299,15 +299,15 @@ test('the cross-container model accepts a host-readable root-owned file only', (
   assert.equal(publicIdentityFilePermissionsAllowed({ uid: 0, mode: 0o100666 }, hostOwner, 'linux'), false);
 });
 
-test('Connect root replacement never redirects env/data reads and fails closed', () => {
+test('Connect root replacement never redirects env/data reads and fails closed', async () => {
   const parent = temporaryRoot('propr-connect-root-race-');
   const root = connectRoot(parent, 'ORIGINAL=value\n');
   const detached = join(parent, 'detached');
   let parsedBytes = '';
   try {
-    assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => {
+    await assert.rejects(withOwnedConnectRootSnapshot(root, async (snapshot) => {
       assert.equal(snapshot.envFileValues.ORIGINAL, 'value');
-      assert.equal(getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory, () => IDS.first), IDS.first);
+      assert.equal(await getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory, () => IDS.first), IDS.first);
     }, {
       parseEnvFile: (contents) => {
         parsedBytes = contents;
@@ -326,15 +326,15 @@ test('Connect root replacement never redirects env/data reads and fails closed',
   }
 });
 
-test('Connect data replacement before identity access never reads the replacement winner', () => {
+test('Connect data replacement before identity access never reads the replacement winner', async () => {
   const parent = temporaryRoot('propr-connect-data-race-');
   const root = connectRoot(parent);
   const data = join(root, 'data');
   const detachedData = join(root, 'data-detached');
   let observedIdentity = '';
   try {
-    assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => {
-      observedIdentity = getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory, () => IDS.first);
+    await assert.rejects(withOwnedConnectRootSnapshot(root, async (snapshot) => {
+      observedIdentity = await getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory, () => IDS.first);
     }, {
       parseEnvFile: () => ({}),
       onBoundary: (boundary) => {
@@ -354,24 +354,24 @@ test('Connect data replacement before identity access never reads the replacemen
   }
 });
 
-test('Connect root authority rejects symlinks, unsafe modes, and Windows pathname simulation', () => {
+test('Connect root authority rejects symlinks, unsafe modes, and Windows pathname simulation', async () => {
   const parent = temporaryRoot('propr-connect-root-validation-');
   const root = connectRoot(parent);
   const alias = join(parent, 'stack-alias');
   symlinkSync(root, alias, 'dir');
   const parseEnvFile = () => ({});
   try {
-    assert.throws(() => withOwnedConnectRootSnapshot(undefined, () => undefined, { parseEnvFile }), ConnectRootError);
-    assert.throws(() => withOwnedConnectRootSnapshot(alias, () => undefined, { parseEnvFile }), ConnectRootError);
-    assert.throws(
-      () => withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile, platform: 'win32' }),
+    await assert.rejects(withOwnedConnectRootSnapshot(undefined, () => undefined, { parseEnvFile }), ConnectRootError);
+    await assert.rejects(withOwnedConnectRootSnapshot(alias, () => undefined, { parseEnvFile }), ConnectRootError);
+    await assert.rejects(
+      withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile, platform: 'win32' }),
       ConnectRootError,
     );
     chmodSync(join(root, 'data'), 0o777);
-    assert.throws(() => withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile }), ConnectRootError);
+    await assert.rejects(withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile }), ConnectRootError);
     chmodSync(join(root, 'data'), 0o700);
     chmodSync(parent, 0o777);
-    assert.throws(() => withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile }), ConnectRootError);
+    await assert.rejects(withOwnedConnectRootSnapshot(root, () => undefined, { parseEnvFile }), ConnectRootError);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
@@ -428,7 +428,7 @@ test('Windows DACL policy accepts only explicit narrow mutators and rejects inhe
   }, 'root'), /authority/);
 });
 
-test('Windows batch binding keeps adjacent full 128-bit identities, indexes, and types exact', () => {
+test('Windows batch binding keeps adjacent full 128-bit identities, indexes, and types exact', async () => {
   const parent = temporaryRoot('propr-windows-full-identity-');
   const firstPath = join(parent, 'first');
   const secondPath = join(parent, 'second');
@@ -442,31 +442,31 @@ test('Windows batch binding keeps adjacent full 128-bit identities, indexes, and
   ];
   const exactInspector: ConnectRootAuthorityInspector = {
     inspectDarwinAcl: (_path, _fd, identity) => ({ version: 1, ...identity, acl: '!#acl 1\n' }),
-    inspectWindowsAcl: (_path, identity, _fd, kind = 'env') => safeWindowsAuthority(identity, kind),
-    inspectWindowsAcls: () => [
+    inspectWindowsAcl: async (_path, identity, _fd, kind = 'env') => safeWindowsAuthority(identity, kind),
+    inspectWindowsAcls: async () => [
       safeWindowsAuthority({ device: '18446744073709551614', file: '9007199254740992' }, 'env', 0),
       safeWindowsAuthority({ device: '18446744073709551614', file: '9007199254740993' }, 'env', 1),
     ],
   };
   try {
-    assert.doesNotThrow(() => assertNativeWindowsEntriesAuthority(exactInspector, entries));
-    assert.throws(() => assertNativeWindowsEntriesAuthority({
+    await assert.doesNotReject(assertNativeWindowsEntriesAuthority(exactInspector, entries));
+    await assert.rejects(assertNativeWindowsEntriesAuthority({
       ...exactInspector,
-      inspectWindowsAcls: () => [
+      inspectWindowsAcls: async () => [
         safeWindowsAuthority({ device: '9', file: '9007199254740993' }, 'env', 1),
         safeWindowsAuthority({ device: '9', file: '9007199254740992' }, 'env', 0),
       ],
     }, entries), /pinned object/);
-    assert.throws(() => assertNativeWindowsEntriesAuthority({
+    await assert.rejects(assertNativeWindowsEntriesAuthority({
       ...exactInspector,
-      inspectWindowsAcls: () => [{
+      inspectWindowsAcls: async () => [{
         ...safeWindowsAuthority({ device: '9', file: '9007199254740992' }, 'env', 0),
         verifiedFileId: '9007199254740993',
       }, safeWindowsAuthority({ device: '9', file: '4' }, 'env', 1)],
     }, entries), /pinned object/);
-    assert.throws(() => assertNativeWindowsEntriesAuthority({
+    await assert.rejects(assertNativeWindowsEntriesAuthority({
       ...exactInspector,
-      inspectWindowsAcls: () => [{
+      inspectWindowsAcls: async () => [{
         ...safeWindowsAuthority({ device: '9', file: '1' }, 'env', 0),
         unexpected: 'unbounded-schema-extension',
       } as WindowsAuthorityInspection, safeWindowsAuthority({ device: '9', file: '2' }, 'env', 1)],
@@ -494,7 +494,7 @@ test('Darwin ACL parser accepts absent/read-only ACLs and rejects write or unkno
   assert.throws(() => assertSafeDarwinAclOutput('!#acl 1\nunparseable acl'), /malformed/);
 });
 
-test('injected Windows and Darwin inspectors exercise the real root policy path', () => {
+test('injected Windows and Darwin inspectors exercise the real root policy path', async () => {
   const parent = temporaryRoot('propr-connect-platform-authority-');
   const root = connectRoot(parent);
   const calls: string[] = [];
@@ -503,32 +503,32 @@ test('injected Windows and Darwin inspectors exercise the real root policy path'
       calls.push(`darwin:${path}`);
       return { version: 1, ...expectedIdentity, acl: '!#acl 1\n' };
     },
-    inspectWindowsAcl: (path, expectedIdentity, _fd, kind = 'env') => {
+    inspectWindowsAcl: async (path, expectedIdentity, _fd, kind = 'env') => {
       calls.push(`win32:${path}`);
       return safeWindowsAuthority(expectedIdentity, kind);
     },
   };
   try {
-    assert.equal(withOwnedConnectRootSnapshot(root, (snapshot) => (
+    assert.equal(await withOwnedConnectRootSnapshot(root, (snapshot) => (
       getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory, () => IDS.first)
     ), { platform: 'win32', authorityInspector: inspector, parseEnvFile: () => ({}) }), IDS.first);
     assert.ok(calls.some((entry) => entry.endsWith('/stack')));
     calls.length = 0;
-    assert.equal(withOwnedConnectRootSnapshot(root, (snapshot) => snapshot.envFileValues, {
+    assert.equal((await withOwnedConnectRootSnapshot(root, (snapshot) => snapshot.envFileValues, {
       platform: 'darwin',
       authorityInspector: inspector,
       parseEnvFile: () => ({ safe: 'yes' }),
-    }).safe, 'yes');
+    })).safe, 'yes');
     assert.ok(calls.some((entry) => entry.startsWith('darwin:')));
 
     const rejecting: ConnectRootAuthorityInspector = {
       ...inspector,
-      inspectWindowsAcl: (_path, expectedIdentity, _fd, kind = 'env') => ({
+      inspectWindowsAcl: async (_path, expectedIdentity, _fd, kind = 'env') => ({
         ...safeWindowsAuthority(expectedIdentity, kind),
         rules: [{ identitySid: 'S-1-1-0', inherited: true, accessType: 'allow', appliesToSelf: true, rights: '2' }],
       }),
     };
-    assert.throws(() => withOwnedConnectRootSnapshot(root, () => undefined, {
+    await assert.rejects(withOwnedConnectRootSnapshot(root, () => undefined, {
       platform: 'win32', authorityInspector: rejecting, parseEnvFile: () => ({}),
     }), ConnectRootError);
   } finally {
@@ -536,7 +536,7 @@ test('injected Windows and Darwin inspectors exercise the real root policy path'
   }
 });
 
-test('trusted Connect config read is bounded, root-specific, replacement-safe, and Windows-case canonical', () => {
+test('trusted Connect config read is bounded, root-specific, replacement-safe, and Windows-case canonical', async () => {
   const parent = temporaryRoot('propr-connect-trusted-config-');
   const home = join(parent, 'os-home');
   const configDir = join(home, '.propr');
@@ -552,28 +552,28 @@ test('trusted Connect config read is bounded, root-specific, replacement-safe, a
       githubToken: 'must-never-cross',
       tunnelEnabledByRoot: { [root]: false, '/other/stack': true },
     });
-    assert.equal(readTrustedConnectTunnelOverride(root, { trustedHome: home }), false);
-    assert.equal(readTrustedConnectTunnelOverride('/other/stack', { trustedHome: home }), true);
-    assert.equal(readTrustedConnectTunnelOverride('/unset/stack', { trustedHome: home }), undefined);
+    assert.equal(await readTrustedConnectTunnelOverride(root, { trustedHome: home }), false);
+    assert.equal(await readTrustedConnectTunnelOverride('/other/stack', { trustedHome: home }), true);
+    assert.equal(await readTrustedConnectTunnelOverride('/unset/stack', { trustedHome: home }), undefined);
     writeConfig({ githubToken: 'must-never-cross', tunnelEnabledByRoot: { [root]: true } });
-    assert.equal(readTrustedConnectTunnelOverride(root, { trustedHome: home }), true);
+    assert.equal(await readTrustedConnectTunnelOverride(root, { trustedHome: home }), true);
 
     writeConfig({ tunnelEnabledByRoot: { 'C:\\Work\\Stack': false, 'c:\\work\\stack': false } });
     const inspector: ConnectRootAuthorityInspector = {
       inspectDarwinAcl: (_path, _fd, identity) => ({ version: 1, ...identity, acl: '!#acl 1\n' }),
-      inspectWindowsAcl: (_path, identity, _fd, kind = 'env') => safeWindowsAuthority(identity, kind),
+      inspectWindowsAcl: async (_path, identity, _fd, kind = 'env') => safeWindowsAuthority(identity, kind),
     };
-    assert.equal(readTrustedConnectTunnelOverride('c:\\WORK\\STACK', {
+    assert.equal(await readTrustedConnectTunnelOverride('c:\\WORK\\STACK', {
       platform: 'win32', trustedHome: home, authorityInspector: inspector,
     }), false);
     writeConfig({ tunnelEnabledByRoot: { 'C:\\Work\\Stack': false, 'c:\\work\\stack': true } });
-    assert.throws(() => readTrustedConnectTunnelOverride('c:\\work\\stack', {
+    await assert.rejects(readTrustedConnectTunnelOverride('c:\\work\\stack', {
       platform: 'win32', trustedHome: home, authorityInspector: inspector,
     }), TrustedConnectConfigError);
 
     writeConfig({ tunnelEnabledByRoot: { [root]: false } });
     let swapped = false;
-    assert.throws(() => readTrustedConnectTunnelOverride(root, {
+    await assert.rejects(readTrustedConnectTunnelOverride(root, {
       trustedHome: home,
       onBoundary: (boundary) => {
         if (boundary !== 'config-opened' || swapped) return;
@@ -584,18 +584,18 @@ test('trusted Connect config read is bounded, root-specific, replacement-safe, a
     }), TrustedConnectConfigError);
 
     writeFileSync(configPath, '{malformed', { mode: 0o600 });
-    assert.throws(() => readTrustedConnectTunnelOverride(root, { trustedHome: home }), TrustedConnectConfigError);
+    await assert.rejects(readTrustedConnectTunnelOverride(root, { trustedHome: home }), TrustedConnectConfigError);
     writeConfig({ tunnelEnabledByRoot: { [root]: false } });
     chmodSync(configPath, 0o666);
-    assert.throws(() => readTrustedConnectTunnelOverride(root, { trustedHome: home }), TrustedConnectConfigError);
+    await assert.rejects(readTrustedConnectTunnelOverride(root, { trustedHome: home }), TrustedConnectConfigError);
     chmodSync(configPath, 0o000);
-    assert.throws(() => readTrustedConnectTunnelOverride(root, { trustedHome: home }), TrustedConnectConfigError);
+    await assert.rejects(readTrustedConnectTunnelOverride(root, { trustedHome: home }), TrustedConnectConfigError);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
 });
 
-test('trusted config authenticates absence only at the exact config child open', () => {
+test('trusted config authenticates absence only at the exact config child open', async () => {
   const root = '/trusted/stack';
   const boundaries = [
     'home-before-open',
@@ -615,7 +615,7 @@ test('trusted config authenticates absence only at the exact config child open',
     chmodSync(configPath, 0o600);
     let replaced = false;
     try {
-      assert.throws(() => readTrustedConnectTunnelOverride(root, {
+      await assert.rejects(readTrustedConnectTunnelOverride(root, {
         trustedHome: home,
         onBoundary: (current) => {
           if (current !== boundary || replaced) return;
@@ -646,10 +646,10 @@ test('trusted config authenticates absence only at the exact config child open',
   const configDir = join(home, '.propr');
   try {
     privateDirectory(configDir);
-    assert.equal(readTrustedConnectTunnelOverride(root, { trustedHome: home }), undefined);
+    assert.equal(await readTrustedConnectTunnelOverride(root, { trustedHome: home }), undefined);
     rmSync(configDir, { recursive: true });
-    assert.throws(
-      () => readTrustedConnectTunnelOverride(root, { trustedHome: home }),
+    await assert.rejects(
+      readTrustedConnectTunnelOverride(root, { trustedHome: home }),
       TrustedConnectConfigError,
     );
   } finally {

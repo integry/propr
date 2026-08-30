@@ -245,7 +245,7 @@ test('/api/desktop/discovery returns the bounded public identity and runtime ori
     getPublicInstanceIdentity: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   });
 
-  routes.getDesktopDiscovery({} as Request, response);
+  await routes.getDesktopDiscovery({} as Request, response);
 
   assert.deepEqual(body(), {
     schemaVersion: 1,
@@ -278,7 +278,7 @@ test('/api/desktop/discovery redacts identity persistence failures', async () =>
     },
   });
 
-  routes.getDesktopDiscovery({} as Request, response);
+  await routes.getDesktopDiscovery({} as Request, response);
 
   assert.equal(status(), 503);
   assert.deepEqual(body(), { schemaVersion: 1, code: 'IDENTITY_UNAVAILABLE' });

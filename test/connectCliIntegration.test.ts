@@ -209,7 +209,7 @@ function invoke(
   return { status: result.status, stdout: result.stdout, stderr: result.stderr, document };
 }
 
-test('the built CLI emits one bounded secret-free JSON document for every exit class', () => {
+test('the built CLI emits one bounded secret-free JSON document for every exit class', async () => {
   const parent = mkdtempSync(join(tmpdir(), 'propr-built-connect-cli-'));
   chmodSync(parent, 0o700);
   const bin = installFakeDocker(parent);
@@ -228,7 +228,7 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
   ].join('\n'), { mode: 0o600 });
   try {
     const readyRoot = makeRoot(parent, 'ready-private-root-SENTINEL');
-    assert.equal(getOrCreatePublicInstanceIdentity(join(readyRoot, 'data'), () => IDENTITY), IDENTITY);
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(readyRoot, 'data'), () => IDENTITY), IDENTITY);
     const ready = invoke(readyRoot, 'ready', bin, parent);
     assert.equal(ready.status, 0, JSON.stringify(ready.document));
     assert.equal(ready.document.status, 'ready');
@@ -268,7 +268,7 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(invoke(readyRoot, 'ready', bin, parent).status, 0);
 
     const tokenlessRoot = makeRoot(parent, 'tokenless-root', ENDPOINT, {});
-    assert.equal(getOrCreatePublicInstanceIdentity(join(tokenlessRoot, 'data'), () => IDENTITY), IDENTITY);
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(tokenlessRoot, 'data'), () => IDENTITY), IDENTITY);
     persistTunnelOverride(join(parent, 'home-private-SENTINEL'), tokenlessRoot, false);
     const tokenlessOff = invoke(tokenlessRoot, 'ready', bin, parent);
     assert.deepEqual(tokenlessOff.document.reasonCodes, ['TUNNEL_DISABLED']);
@@ -312,7 +312,7 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     }
 
     const invalidEndpointRoot = makeRoot(parent, 'invalid-endpoint-root', `${ENDPOINT}/path`);
-    assert.equal(getOrCreatePublicInstanceIdentity(join(invalidEndpointRoot, 'data'), () => IDENTITY), IDENTITY);
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(invalidEndpointRoot, 'data'), () => IDENTITY), IDENTITY);
     const invalidEndpoint = invoke(invalidEndpointRoot, 'ready', bin, parent);
     assert.equal(invalidEndpoint.status, 1);
     assert.deepEqual(invalidEndpoint.document.reasonCodes, ['INVALID_ENDPOINT']);
@@ -326,7 +326,7 @@ test('the built CLI emits one bounded secret-free JSON document for every exit c
     assert.equal(timeout.document.status, 'timeout');
 
     const replacedRoot = makeRoot(parent, 'replaced-private-root');
-    assert.equal(getOrCreatePublicInstanceIdentity(join(replacedRoot, 'data'), () => IDENTITY), IDENTITY);
+    assert.equal(await getOrCreatePublicInstanceIdentity(join(replacedRoot, 'data'), () => IDENTITY), IDENTITY);
     const replaced = invoke(replacedRoot, 'ready', bin, parent, { replaceRoot: true });
     assert.equal(replaced.status, 1);
     assert.deepEqual(replaced.document.reasonCodes, ['INVALID_ROOT']);

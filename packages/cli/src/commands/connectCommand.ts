@@ -337,9 +337,9 @@ export async function resolveConnectStatus({
 export async function getLocalConnectStatus(root: string | undefined): Promise<ConnectStatusDocument> {
   try {
     const prepared = await prepareConnectHostConfig();
-    const local = withOwnedConnectRootSnapshot(root, (snapshot) => {
-      const cfg = prepared.resolveSnapshot(snapshot);
-      const publicInstanceIdentity = getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory);
+    const local = await withOwnedConnectRootSnapshot(root, async (snapshot) => {
+      const cfg = await prepared.resolveSnapshot(snapshot);
+      const publicInstanceIdentity = await getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory);
       const sidecarInspection = prepared.inspectTunnel(cfg);
       return {
         cfg: {

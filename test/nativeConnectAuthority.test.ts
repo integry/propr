@@ -17,11 +17,11 @@ import {
   closeWindowsAuthorityCapability,
   exerciseWindowsAuthorityCapabilityControlForNativeTest,
   exerciseWindowsAuthorityCapabilityForNativeTest,
-  exerciseWindowsAuthorityBootstrapForNativeTest,
-  exerciseWindowsAuthorityExistingStageForNativeTest,
   protectWindowsSetupEntries,
   protectWindowsSetupEntry,
   stableAuthorityIdentity,
+  WINDOWS_SUPERVISOR_STAGE_VALUES,
+  windowsAuthorityStageResultForNativeTest,
 } from '../packages/cli/dist/connectRootAuthority.js';
 import { PUBLIC_INSTANCE_IDENTITY_FILENAME } from '@propr/shared';
 import { getOrCreatePublicInstanceIdentityPinned } from '@propr/local-setup';
@@ -63,10 +63,11 @@ function isFixedPublicIdentityError(error: unknown): boolean {
     && error.message === 'the public instance identity is unavailable or invalid';
 }
 
-after(() => {
+after(async () => {
   if (process.platform !== 'darwin' && process.platform !== 'win32') return;
   const counters = Object.fromEntries(expectedScenarios.map((name) => [name, completedScenarios.get(name) ?? 0]));
   process.stdout.write(`# PROPR_NATIVE_AUTHORITY_SUMMARY ${JSON.stringify({ version: 1, platform: process.platform, counters })}\n`);
+  await closeWindowsAuthorityCapability();
 });
 
 function nativeFixtureParent(prefix: string): string {
@@ -74,7 +75,7 @@ function nativeFixtureParent(prefix: string): string {
   return realpathSync(mkdtempSync(join(base, prefix)));
 }
 
-test('native ordinary file and directory authority is accepted without an extended ACL', { timeout: 15_000 }, (t) => {
+test('native ordinary file and directory authority is accepted without an extended ACL', { timeout: 15_000 }, async (t) => {
   if (!nativeOnly(t)) return;
   const parent = nativeFixtureParent('propr native ordinary ');
   const directory = join(parent, 'protected directory');
@@ -85,7 +86,7 @@ test('native ordinary file and directory authority is accepted without an extend
     chmodSync(directory, 0o700);
     chmodSync(file, 0o600);
     if (process.platform === 'win32') {
-      protectWindowsSetupEntries([
+      await protectWindowsSetupEntries([
         { path: parent, kind: 'directory' },
         { path: directory, kind: 'directory' },
         { path: file, kind: 'file' },
@@ -94,7 +95,7 @@ test('native ordinary file and directory authority is accepted without an extend
     for (const [path, kind] of [[directory, 'data'], [file, 'env']] as const) {
       const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
-        assert.doesNotThrow(() => assertNativeEntryAuthority(
+        await assert.doesNotReject(assertNativeEntryAuthority(
           nativeConnectRootAuthorityInspector, process.platform, path, kind, fd,
         ));
         completeScenario(kind === 'data' ? 'ordinary-directory' : 'ordinary-file');
@@ -114,7 +115,7 @@ test('native ordinary file and directory authority is accepted without an extend
   }
 });
 
-test('native broker carries distinct file identities losslessly', { timeout: 15_000 }, (t) => {
+test('native broker carries distinct file identities losslessly', { timeout: 15_000 }, async (t) => {
   if (!nativeOnly(t)) return;
   const parent = nativeFixtureParent('propr-native-identity-');
   const firstPath = join(parent, 'first');
@@ -122,7 +123,7 @@ test('native broker carries distinct file identities losslessly', { timeout: 15_
   writeFileSync(firstPath, 'first', { mode: 0o600 });
   writeFileSync(secondPath, 'second', { mode: 0o600 });
   if (process.platform === 'win32') {
-    protectWindowsSetupEntries([
+    await protectWindowsSetupEntries([
       { path: parent, kind: 'directory' },
       { path: firstPath, kind: 'file' },
       { path: secondPath, kind: 'file' },
@@ -139,7 +140,7 @@ test('native broker carries distinct file identities losslessly', { timeout: 15_
       const second = nativeConnectRootAuthorityInspector.inspectDarwinAcl(secondPath, secondFd, secondIdentity);
       assert.notEqual(`${first.device}:${first.file}`, `${second.device}:${second.file}`);
     } else {
-      const inspections = nativeConnectRootAuthorityInspector.inspectWindowsAcls!([
+      const inspections = await nativeConnectRootAuthorityInspector.inspectWindowsAcls!([
         { path: firstPath, kind: 'env', expectedIdentity: firstIdentity, pinnedFd: firstFd },
         { path: secondPath, kind: 'env', expectedIdentity: secondIdentity, pinnedFd: secondFd },
       ]);
@@ -194,7 +195,7 @@ function createWindowsJunction(linkPath: string, targetPath: string): void {
   assert.equal(result.status, 0, result.stderr);
 }
 
-function makeStack(parent: string, name = 'stack'): string {
+async function makeStack(parent: string, name = 'stack'): Promise<string> {
   const root = join(parent, name);
   mkdirSync(join(root, 'data'), { recursive: true, mode: 0o700 });
   chmodSync(root, 0o700);
@@ -202,7 +203,7 @@ function makeStack(parent: string, name = 'stack'): string {
   writeFileSync(join(root, '.env'), 'PROPR_STACK=native\n', { mode: 0o600 });
   chmodSync(join(root, '.env'), 0o600);
   if (process.platform === 'win32') {
-    protectWindowsSetupEntries([
+    await protectWindowsSetupEntries([
       { path: parent, kind: 'directory' },
       { path: root, kind: 'directory' },
       { path: join(root, 'data'), kind: 'directory' },
@@ -212,7 +213,7 @@ function makeStack(parent: string, name = 'stack'): string {
   return root;
 }
 
-function assertPublishedNative(path: string, links = 1): void {
+async function assertPublishedNative(path: string, links = 1): Promise<void> {
   const stat = lstatSync(path);
   assert.equal(stat.isFile(), true);
   assert.equal(stat.isSymbolicLink(), false);
@@ -223,7 +224,7 @@ function assertPublishedNative(path: string, links = 1): void {
   }
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    assertNativeEntryAuthority(nativeConnectRootAuthorityInspector, process.platform, path, 'env', fd);
+    await assertNativeEntryAuthority(nativeConnectRootAuthorityInspector, process.platform, path, 'env', fd);
   } finally {
     closeSync(fd);
   }
@@ -292,12 +293,12 @@ function mutateWindowsAcl(path: string, operation: 'inherit' | 'administrator-ow
   assert.equal(result.status, 0, result.stderr);
 }
 
-test('native root/env/data/identity authority accepts the protected object and rejects broad grants', { timeout: 45_000 }, (t) => {
+test('native root/env/data/identity authority accepts the protected object and rejects broad grants', { timeout: 45_000 }, async (t) => {
   if (!nativeOnly(t)) return;
   const parent = nativeFixtureParent('propr-native-authority-');
   const broadReason = process.platform === 'win32' ? /BROAD_WRITE/ : /explicit stack root|write authority/;
   try {
-    const root = makeStack(parent);
+    const root = await makeStack(parent);
     for (const [path, kind, scenario] of [
       [root, 'root', 'protected-root'],
       [join(root, 'data'), 'data', 'protected-data'],
@@ -305,7 +306,7 @@ test('native root/env/data/identity authority accepts the protected object and r
     ] as const) {
       const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
-        assert.doesNotThrow(() => assertNativeEntryAuthority(
+        await assert.doesNotReject(assertNativeEntryAuthority(
           nativeConnectRootAuthorityInspector, process.platform, path, kind, fd,
         ));
         completeScenario(scenario);
@@ -313,59 +314,59 @@ test('native root/env/data/identity authority accepts the protected object and r
         closeSync(fd);
       }
     }
-    assert.equal(withOwnedConnectRootSnapshot(root, (snapshot) => (
+    assert.equal(await withOwnedConnectRootSnapshot(root, (snapshot) => (
       getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory, () => ID)
     ), { parseEnvFile: () => ({}) }), ID);
     const finalPath = join(root, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME);
-    assertPublishedNative(finalPath);
+    await assertPublishedNative(finalPath);
 
-    const publicationRoot = makeStack(parent, 'publication-state');
+    const publicationRoot = await makeStack(parent, 'publication-state');
     let temporaryChecked = false;
-    assert.equal(withOwnedConnectRootSnapshot(publicationRoot, (snapshot) => (
+    assert.equal(await withOwnedConnectRootSnapshot(publicationRoot, (snapshot) => (
       getOrCreatePublicInstanceIdentityPinned(snapshot.identityDirectory, {
         role: 'host',
         generate: () => ID,
-        onBoundary: (boundary) => {
+        onBoundary: async (boundary) => {
           if (boundary !== 'temporary-synced' || temporaryChecked) return;
           const name = readdirSync(join(publicationRoot, 'data'))
             .find((entry) => entry.startsWith(`.${PUBLIC_INSTANCE_IDENTITY_FILENAME}.creating-v1-`));
           assert.ok(name);
-          assertPublishedNative(join(publicationRoot, 'data', name));
+          await assertPublishedNative(join(publicationRoot, 'data', name));
           temporaryChecked = true;
         },
       })
     ), { parseEnvFile: () => ({}) }), ID);
     assert.equal(temporaryChecked, true);
     const publishedPath = join(publicationRoot, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME);
-    assertPublishedNative(publishedPath);
+    await assertPublishedNative(publishedPath);
     completeScenario('publication');
 
     const crashReady = join(publicationRoot, 'data', READY);
     linkSync(publishedPath, crashReady);
-    assertPublishedNative(publishedPath, 2);
-    assertPublishedNative(crashReady, 2);
-    assert.equal(withOwnedConnectRootSnapshot(publicationRoot, (snapshot) => (
+    await assertPublishedNative(publishedPath, 2);
+    await assertPublishedNative(crashReady, 2);
+    assert.equal(await withOwnedConnectRootSnapshot(publicationRoot, (snapshot) => (
       getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
     ), { parseEnvFile: () => ({}) }), ID);
-    assertPublishedNative(publishedPath);
+    await assertPublishedNative(publishedPath);
     assert.throws(() => lstatSync(crashReady), /ENOENT/);
     completeScenario('recovery');
 
     if (process.platform === 'darwin') {
-      const readyRoot = makeStack(parent, 'ready-denial-root');
+      const readyRoot = await makeStack(parent, 'ready-denial-root');
       const readyPath = join(readyRoot, 'data', READY);
       const finalReadyPath = join(readyRoot, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME);
       const fixtureStop = new Error('production READY fixture captured');
-      assert.throws(() => withOwnedConnectRootSnapshot(readyRoot, (snapshot) => (
+      await assert.rejects(withOwnedConnectRootSnapshot(readyRoot, (snapshot) => (
         getOrCreatePublicInstanceIdentityPinned(snapshot.identityDirectory, {
           role: 'host',
           generate: () => ID,
-          onBoundary: (boundary) => {
+          onBoundary: async (boundary) => {
             if (boundary === 'recovery-published') throw fixtureStop;
           },
         })
       ), { parseEnvFile: () => ({}) }), (error) => error === fixtureStop);
-      assertPublishedNative(readyPath);
+      await assertPublishedNative(readyPath);
       const productionIdentity = (() => {
         const productionFd = openSync(readyPath, constants.O_RDONLY | constants.O_NOFOLLOW);
         try {
@@ -378,7 +379,7 @@ test('native root/env/data/identity authority accepts the protected object and r
       // First prove the untouched production READY entry is accepted and fully
       // recovered. Move that exact inode back to the production recovery slot so
       // the ACL is the sole variable in the denial half of the fixture.
-      assert.equal(withOwnedConnectRootSnapshot(readyRoot, (snapshot) => (
+      assert.equal(await withOwnedConnectRootSnapshot(readyRoot, (snapshot) => (
         getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
       ), { parseEnvFile: () => ({}) }), ID);
       assert.throws(() => lstatSync(readyPath), /ENOENT/);
@@ -389,13 +390,13 @@ test('native root/env/data/identity authority accepts the protected object and r
         closeSync(recoveredFd);
       }
       renameSync(finalReadyPath, readyPath);
-      assertPublishedNative(readyPath);
+      await assertPublishedNative(readyPath);
       const heldReadyFd = openSync(readyPath, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         assert.deepEqual(stableAuthorityIdentity(heldReadyFd), productionIdentity);
         grantBroadWrite(readyPath, false);
         assert.deepEqual(stableAuthorityIdentity(heldReadyFd), productionIdentity);
-        assert.throws(() => withOwnedConnectRootSnapshot(readyRoot, (snapshot) => (
+        await assert.rejects(withOwnedConnectRootSnapshot(readyRoot, (snapshot) => (
           getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
         ), { parseEnvFile: () => ({}) }), isFixedPublicIdentityError);
       } finally {
@@ -405,9 +406,9 @@ test('native root/env/data/identity authority accepts the protected object and r
     } else {
       const readyPath = join(root, 'data', READY);
       writeFileSync(readyPath, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: ID })}\n`, { mode: 0o644 });
-      protectWindowsSetupEntry(readyPath, 'file');
+      await protectWindowsSetupEntry(readyPath, 'file');
       grantBroadWrite(readyPath, false);
-      assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => (
+      await assert.rejects(withOwnedConnectRootSnapshot(root, (snapshot) => (
         getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
       ), { parseEnvFile: () => ({}) }), broadReason);
       completeScenario('ready-denial');
@@ -416,11 +417,11 @@ test('native root/env/data/identity authority accepts the protected object and r
 
     let identityReplaced = false;
     let identitySwapProven = false;
-    assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => {
+    await assert.rejects(withOwnedConnectRootSnapshot(root, async (snapshot) => {
       try {
         return getOrCreatePublicInstanceIdentityPinned(snapshot.identityDirectory, {
           role: 'host',
-          onBoundary: (boundary) => {
+          onBoundary: async (boundary) => {
             if (boundary !== 'identity-read-statted' || identityReplaced) return;
             identityReplaced = true;
             const path = join(root, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME);
@@ -429,7 +430,7 @@ test('native root/env/data/identity authority accepts the protected object and r
             renameSync(path, detached);
             writeFileSync(path, `${JSON.stringify({ schemaVersion: 1, publicInstanceIdentity: ID })}\n`, { mode: 0o644 });
             chmodSync(path, 0o644);
-            if (process.platform === 'win32') protectWindowsSetupEntry(path, 'file');
+            if (process.platform === 'win32') await protectWindowsSetupEntry(path, 'file');
             const held = lstatSync(detached, { bigint: true });
             const replacement = lstatSync(path, { bigint: true });
             assert.equal(held.dev, before.dev);
@@ -447,7 +448,7 @@ test('native root/env/data/identity authority accepts the protected object and r
     completeScenario('identity-swap');
 
     grantBroadWrite(join(root, 'data', PUBLIC_INSTANCE_IDENTITY_FILENAME), false);
-    assert.throws(() => withOwnedConnectRootSnapshot(root, (snapshot) => (
+    await assert.rejects(withOwnedConnectRootSnapshot(root, (snapshot) => (
       getOrCreateSnapshotPublicInstanceIdentity(snapshot.identityDirectory)
     ), { parseEnvFile: () => ({}) }), process.platform === 'darwin' ? isFixedPublicIdentityError : broadReason);
     completeScenario('broad-publication');
@@ -457,43 +458,43 @@ test('native root/env/data/identity authority accepts the protected object and r
       ['broad-data', 'data', true],
       ['broad-env', '.env', false],
     ] as const) {
-      const candidate = makeStack(parent, name);
+      const candidate = await makeStack(parent, name);
       grantBroadWrite(relative ? join(candidate, relative) : candidate, directory);
-      assert.throws(
-        () => withOwnedConnectRootSnapshot(candidate, () => undefined, { parseEnvFile: () => ({}) }),
+      await assert.rejects(
+        withOwnedConnectRootSnapshot(candidate, () => undefined, { parseEnvFile: () => ({}) }),
         process.platform === 'darwin' ? isFixedInvalidRoot : broadReason,
       );
       completeScenario(name);
     }
 
-    const denied = makeStack(parent, 'explicit-deny-root');
+    const denied = await makeStack(parent, 'explicit-deny-root');
     grantBroadDeny(denied, true);
-    assert.doesNotThrow(() => withOwnedConnectRootSnapshot(denied, () => undefined, { parseEnvFile: () => ({}) }));
+    await assert.doesNotReject(withOwnedConnectRootSnapshot(denied, () => undefined, { parseEnvFile: () => ({}) }));
     completeScenario('explicit-deny');
 
     const unsafeAncestor = join(parent, 'broad-ancestor');
     mkdirSync(unsafeAncestor, { mode: 0o700 });
-    if (process.platform === 'win32') protectWindowsSetupEntry(unsafeAncestor, 'directory');
-    const descendant = makeStack(unsafeAncestor, 'descendant');
+    if (process.platform === 'win32') await protectWindowsSetupEntry(unsafeAncestor, 'directory');
+    const descendant = await makeStack(unsafeAncestor, 'descendant');
     grantBroadWrite(unsafeAncestor, true);
-    assert.throws(
-      () => withOwnedConnectRootSnapshot(descendant, () => undefined, { parseEnvFile: () => ({}) }),
+    await assert.rejects(
+      withOwnedConnectRootSnapshot(descendant, () => undefined, { parseEnvFile: () => ({}) }),
       process.platform === 'darwin' ? isFixedInvalidRoot : broadReason,
     );
     completeScenario('broad-ancestor');
 
     if (process.platform === 'win32') {
-      const inherited = makeStack(parent, 'inherited-root');
+      const inherited = await makeStack(parent, 'inherited-root');
       mutateWindowsAcl(inherited, 'inherit');
-      assert.throws(
-        () => withOwnedConnectRootSnapshot(inherited, () => undefined, { parseEnvFile: () => ({}) }),
+      await assert.rejects(
+        withOwnedConnectRootSnapshot(inherited, () => undefined, { parseEnvFile: () => ({}) }),
         /INHERITED_WRITE|DACL_NOT_PROTECTED/,
       );
       completeScenario('inherited-dacl');
 
-      const foreignOwned = makeStack(parent, 'foreign-owner-root');
+      const foreignOwned = await makeStack(parent, 'foreign-owner-root');
       mutateWindowsAcl(foreignOwned, 'administrator-owner');
-      assert.throws(() => withOwnedConnectRootSnapshot(foreignOwned, () => undefined, { parseEnvFile: () => ({}) }), /OWNER_MISMATCH/);
+      await assert.rejects(withOwnedConnectRootSnapshot(foreignOwned, () => undefined, { parseEnvFile: () => ({}) }), /OWNER_MISMATCH/);
       completeScenario('foreign-owner');
     } else {
       const inheritanceDirectory = join(parent, 'darwin-inherited-acl');
@@ -515,7 +516,7 @@ test('native root/env/data/identity authority accepts the protected object and r
           identity,
         );
         assert.match(inspection.acl, /(?:^|,)inherited(?:,|:)/m);
-        assert.throws(() => assertNativeEntryAuthority(
+        await assert.rejects(assertNativeEntryAuthority(
           nativeConnectRootAuthorityInspector,
           process.platform,
           inheritedFile,
@@ -542,13 +543,13 @@ test('native helper replacement is rejected before attacker bytes can execute', 
   const parent = nativeFixtureParent('propr-native-helper-');
   const target = join(parent, 'target');
   writeFileSync(target, 'target\n', { mode: 0o600 });
-  if (process.platform === 'win32') protectWindowsSetupEntries([
+  if (process.platform === 'win32') await protectWindowsSetupEntries([
     { path: parent, kind: 'directory' }, { path: target, kind: 'file' },
   ]);
   const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
   let artifactMoved = false;
   try {
-    if (process.platform === 'win32') closeWindowsAuthorityCapability();
+    if (process.platform === 'win32') await closeWindowsAuthorityCapability();
     renameSync(artifact, backup);
     artifactMoved = true;
     if (process.platform === 'darwin') {
@@ -557,7 +558,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     } else {
       writeFileSync(artifact, Buffer.from('attacker-not-an-executable'), { mode: 0o600 });
     }
-    assert.throws(() => assertNativeEntryAuthority(
+    await assert.rejects(assertNativeEntryAuthority(
       nativeConnectRootAuthorityInspector, process.platform, target, 'env', fd,
     ), /authority|broker|integrity|unavailable/);
     assert.throws(() => lstatSync(marker), /ENOENT/);
@@ -574,18 +575,29 @@ test('native helper replacement is rejected before attacker bytes can execute', 
   if (process.platform === 'darwin') completeScenario('packaged-helper-integrity');
 
   if (process.platform === 'win32') {
+    assert.deepEqual(WINDOWS_SUPERVISOR_STAGE_VALUES, [
+      'CHANNEL_CREATE', 'SCRIPT_LOAD', 'JOB_CREATE', 'JOB_ASSIGN', 'PARENT_OPEN',
+      'PROCESS_DACL', 'IMAGE_OPEN', 'IMAGE_HASH', 'IMAGE_IDENTITY', 'OWNER_DACL',
+      'REPARSE', 'LOCK', 'READY_FRAME', 'PRE_CHALLENGE', 'BATCH_LAUNCH',
+      'FD_DUPLICATE', 'BATCH_RESPONSE', 'POST_CHALLENGE', 'SHUTDOWN',
+    ]);
+    for (const stage of WINDOWS_SUPERVISOR_STAGE_VALUES) {
+      assert.deepEqual(windowsAuthorityStageResultForNativeTest(stage), {
+        version: 1,
+        status: 'failed',
+        stage,
+        publicError: 'Windows system authority capability is unavailable',
+      });
+    }
     const command = join(process.env.SystemRoot!, 'System32', 'cmd.exe');
     const preLockControl = nativeFixtureParent('propr-bootstrap-before-lock-');
     try {
-      const preLockMarker = join(preLockControl, 'attacker-executed');
-      assert.throws(() => exerciseWindowsAuthorityBootstrapForNativeTest({
-        args: ['/d', '/c', `echo attacker>"${preLockMarker}"`],
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
         onStaged: (stagedPath) => {
           renameSync(stagedPath, `${stagedPath}.trusted-detached`);
           copyFileSync(command, stagedPath);
         },
-      }), /bootstrap|authority/);
-      assert.throws(() => lstatSync(preLockMarker), /ENOENT/);
+      }), /capability|authority/);
       completeScenario('packaged-helper-integrity');
     } finally {
       rmSync(preLockControl, { recursive: true, force: true });
@@ -594,25 +606,26 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     const startupControl = nativeFixtureParent('propr-supervisor-startup-swap-');
     try {
       let swapFired = false;
-      assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest({
+      await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
         onSupervisorSpawned: (stagedPath) => {
           const detached = `${stagedPath}.startup-detached`;
           renameSync(stagedPath, detached);
           copyFileSync(command, stagedPath);
           swapFired = true;
         },
-      }), /capability|FULL_IDENTITY|NO_SHARE_LOCK/);
+      }), /capability|IMAGE_IDENTITY|LOCK/);
       assert.equal(swapFired, true, 'startup swap hook did not execute');
       completeScenario('bootstrap-during-launch');
     } finally {
-      closeWindowsAuthorityCapability();
+      await closeWindowsAuthorityCapability();
       rmSync(startupControl, { recursive: true, force: true });
     }
 
     const deniedHooks = { write: false, delete: false, rename: false, replace: false };
     const attackerResultPath = join(tmpdir(), `propr-control-handle-attacker-${process.pid}.json`);
     rmSync(attackerResultPath, { force: true });
-    const locked = exerciseWindowsAuthorityCapabilityForNativeTest({
+    let concurrentRequest: Promise<Awaited<ReturnType<typeof exerciseWindowsAuthorityCapabilityForNativeTest>>> | undefined;
+    const locked = await exerciseWindowsAuthorityCapabilityForNativeTest({
       onSupervisorStarting: ({ stagedPath, environmentKeys }) => {
         assert.deepEqual(environmentKeys, ['SystemRoot']);
         assert.equal(environmentKeys.some((key) => key.startsWith('PROPR_')), false);
@@ -632,16 +645,16 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         assert.equal(query.stdout.includes(stagedPath), false);
         assert.equal(query.stdout.includes('PROPR_CAPABILITY'), false);
       },
-      onRequestLocked: (stagedPath, supervisorPid) => {
+      onRequestLocked: async (stagedPath, supervisorPid) => {
         const fixture = join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityHandleAttacker.mjs');
         const attacker = spawn(process.execPath, [fixture, attackerResultPath, String(supervisorPid)], {
           stdio: 'ignore', windowsHide: true, env: { SystemRoot: process.env.SystemRoot },
         });
-        attacker.unref();
-        const deadline = Date.now() + 8_000;
-        while (!existsSync(attackerResultPath) && Date.now() < deadline) {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-        }
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('unrelated hostile process timed out')), 8_000);
+          attacker.once('error', reject);
+          attacker.once('exit', () => { clearTimeout(timer); resolve(); });
+        });
         assert.equal(existsSync(attackerResultPath), true, 'unrelated hostile process did not complete');
         const attackerResult = JSON.parse(readFileSync(attackerResultPath, 'utf8')) as {
           inheritedControlHandle: boolean;
@@ -661,14 +674,15 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         assert.throws(() => renameSync(stagedPath, `${stagedPath}.attacker`));
         deniedHooks.replace = true;
         assert.throws(() => copyFileSync(command, stagedPath));
-        assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability probe/);
+        concurrentRequest = exerciseWindowsAuthorityCapabilityForNativeTest();
       },
     });
     rmSync(attackerResultPath, { force: true });
     assert.deepEqual(deniedHooks, { write: true, delete: true, rename: true, replace: true });
+    assert.equal(locked.stage, 'READY_FRAME', 'hosted positive startup did not reach READY_FRAME');
     assert.deepEqual(JSON.parse(locked.output.toString('utf8')), { version: 1, ready: true });
     assert.throws(() => renameSync(locked.stagedPath, `${locked.stagedPath}.between-requests`));
-    const betweenRequests = exerciseWindowsAuthorityCapabilityForNativeTest();
+    const betweenRequests = await concurrentRequest!;
     assert.equal(betweenRequests.stagedPath, locked.stagedPath);
     assert.equal(betweenRequests.supervisorPid, locked.supervisorPid);
     assert.deepEqual(JSON.parse(betweenRequests.output.toString('utf8')), { version: 1, ready: true });
@@ -678,15 +692,13 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     let replacementFired = false;
     let replacementChangedIdentity = false;
     let pathRestored = false;
-    const abaMarker = join(tmpdir(), `propr-capability-aba-marker-${process.pid}`);
-    rmSync(abaMarker, { force: true });
-    assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest({
-      onRequestLocked: (stagedPath, supervisorPid) => {
+    await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({
+      onRequestLocked: async (stagedPath, supervisorPid) => {
         process.kill(supervisorPid);
         const deadline = Date.now() + 5_000;
         while (Date.now() < deadline) {
           try { process.kill(supervisorPid, 0); } catch { break; }
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+          await new Promise((resolve) => setTimeout(resolve, 10));
         }
         const detached = `${stagedPath}.trusted-detached`;
         renameSync(stagedPath, detached);
@@ -694,11 +706,6 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         replacementFired = true;
         const attackerIdentity = lstatSync(stagedPath, { bigint: true });
         replacementChangedIdentity = attackerIdentity.dev !== lockedIdentity.dev || attackerIdentity.ino !== lockedIdentity.ino;
-        assert.throws(() => exerciseWindowsAuthorityExistingStageForNativeTest(
-          stagedPath,
-          ['/d', '/c', `echo attacker>"${abaMarker}"`],
-        ), /bootstrap|authority/);
-        assert.throws(() => lstatSync(abaMarker), /ENOENT/);
         unlinkSync(stagedPath);
         renameSync(detached, stagedPath);
         const restoredIdentity = lstatSync(stagedPath, { bigint: true });
@@ -708,40 +715,51 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     assert.equal(replacementFired, true);
     assert.equal(replacementChangedIdentity, true);
     assert.equal(pathRestored, true);
-    assert.throws(() => lstatSync(abaMarker), /ENOENT/);
-    const restarted = exerciseWindowsAuthorityCapabilityForNativeTest();
+    const restarted = await exerciseWindowsAuthorityCapabilityForNativeTest();
     assert.notEqual(restarted.stagedPath, locked.stagedPath);
     assert.deepEqual(JSON.parse(restarted.output.toString('utf8')), { version: 1, ready: true });
-    rmSync(abaMarker, { force: true });
+    let eventLoopTicked = false;
+    setTimeout(() => { eventLoopTicked = true; }, 0);
+    const responsive = await exerciseWindowsAuthorityCapabilityForNativeTest();
+    assert.equal(eventLoopTicked, true, 'documented stream exchange blocked the event loop');
+    assert.equal(responsive.supervisorPid, restarted.supervisorPid);
+    const aborted = new AbortController();
+    aborted.abort(new Error('native cancellation sentinel'));
+    await assert.rejects(
+      exerciseWindowsAuthorityCapabilityForNativeTest({ signal: aborted.signal }),
+      /native cancellation sentinel/,
+    );
+    const afterAbort = await exerciseWindowsAuthorityCapabilityForNativeTest();
+    assert.equal(afterAbort.supervisorPid, restarted.supervisorPid, 'preflight abort mutated the live capability');
     completeScenario('bootstrap-aba');
 
-    assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest({ args: ['batch-v1'] }), /capability/);
-    const afterRejectedCommand = exerciseWindowsAuthorityCapabilityForNativeTest();
+    await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest({ args: ['batch-v1'] }), /capability/);
+    const afterRejectedCommand = await exerciseWindowsAuthorityCapabilityForNativeTest();
     assert.equal(afterRejectedCommand.stagedPath, restarted.stagedPath);
 
-    const unboundResponse = exerciseWindowsAuthorityCapabilityControlForNativeTest({ mode: 'unparsed-response' });
+    const unboundResponse = await exerciseWindowsAuthorityCapabilityControlForNativeTest({ mode: 'unparsed-response' });
     assert.ok(unboundResponse.byteLength > 0, 'unparsed response hook did not fire');
-    assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);
-    const protocolRestarted = exerciseWindowsAuthorityCapabilityForNativeTest();
+    await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);
+    const protocolRestarted = await exerciseWindowsAuthorityCapabilityForNativeTest();
     assert.notEqual(protocolRestarted.stagedPath, afterRejectedCommand.stagedPath);
     assert.deepEqual(JSON.parse(protocolRestarted.output.toString('utf8')), { version: 1, ready: true });
 
     for (const mode of [
       'replay', 'wrong-request-id', 'wrong-identity', 'malformed', 'extra-frame', 'partial-frame', 'eof',
     ] as const) {
-      assert.throws(() => exerciseWindowsAuthorityCapabilityControlForNativeTest({ mode }), /capability|malformed|extra output/);
-      const recovered = exerciseWindowsAuthorityCapabilityForNativeTest();
+      await assert.rejects(exerciseWindowsAuthorityCapabilityControlForNativeTest({ mode }), /capability|malformed|extra output/);
+      const recovered = await exerciseWindowsAuthorityCapabilityForNativeTest();
       assert.deepEqual(JSON.parse(recovered.output.toString('utf8')), { version: 1, ready: true });
     }
-    const afterFramingRecovery = exerciseWindowsAuthorityCapabilityForNativeTest();
+    const afterFramingRecovery = await exerciseWindowsAuthorityCapabilityForNativeTest();
 
     process.kill(afterFramingRecovery.supervisorPid);
     const crashDeadline = Date.now() + 5_000;
     while (Date.now() < crashDeadline) {
       try { process.kill(afterFramingRecovery.supervisorPid, 0); } catch { break; }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);
+    await assert.rejects(exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);
     const [queuedFirst, queuedSecond] = await Promise.all([
       Promise.resolve().then(() => exerciseWindowsAuthorityCapabilityForNativeTest()),
       Promise.resolve().then(() => exerciseWindowsAuthorityCapabilityForNativeTest()),
@@ -750,43 +768,43 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     assert.equal(queuedSecond.supervisorPid, queuedFirst.supervisorPid);
     completeScenario('bootstrap-restart');
 
-    closeWindowsAuthorityCapability();
+    await closeWindowsAuthorityCapability();
     assert.throws(() => lstatSync(queuedSecond.directory), /ENOENT/);
     assert.throws(() => process.kill(queuedSecond.supervisorPid, 0));
   }
 });
 
-test('native reparse, replacement, and inspection-path swap never authorize another held object', { timeout: 20_000 }, (t) => {
+test('native reparse, replacement, and inspection-path swap never authorize another held object', { timeout: 20_000 }, async (t) => {
   if (!nativeOnly(t)) return;
   const parent = nativeFixtureParent('propr-native-swap-');
   try {
-    const root = makeStack(parent, 'real');
+    const root = await makeStack(parent, 'real');
     const alias = join(parent, 'alias');
     if (process.platform === 'win32') {
       createWindowsJunction(alias, root);
     } else {
       symlinkSync(root, alias, 'dir');
     }
-    assert.throws(
-      () => withOwnedConnectRootSnapshot(alias, () => undefined, { parseEnvFile: () => ({}) }),
+    await assert.rejects(
+      withOwnedConnectRootSnapshot(alias, () => undefined, { parseEnvFile: () => ({}) }),
       (error) => isFixedInvalidRoot(error, 'REPARSE_POINT'),
     );
     completeScenario('reparse');
 
     let replaced = false;
-    assert.throws(() => withOwnedConnectRootSnapshot(root, () => undefined, {
+    await assert.rejects(withOwnedConnectRootSnapshot(root, () => undefined, {
       parseEnvFile: () => ({}),
-      onBoundary: (boundary) => {
+      onBoundary: async (boundary) => {
         if (boundary !== 'acquired' || replaced) return;
         replaced = true;
         if (process.platform === 'win32') {
           const envPath = join(root, '.env');
           renameSync(envPath, `${envPath}.detached`);
           writeFileSync(envPath, 'PROPR_STACK=replacement\n', { mode: 0o600 });
-          protectWindowsSetupEntry(envPath, 'file');
+          await protectWindowsSetupEntry(envPath, 'file');
         } else {
           renameSync(root, `${root}.detached`);
-          makeStack(parent, 'real');
+          await makeStack(parent, 'real');
         }
       },
     }), (error) => process.platform === 'win32'
@@ -795,13 +813,13 @@ test('native reparse, replacement, and inspection-path swap never authorize anot
     assert.equal(replaced, true);
     completeScenario('replacement-barrier');
 
-    const unsafeRoot = makeStack(parent, 'unsafe');
+    const unsafeRoot = await makeStack(parent, 'unsafe');
     const unsafe = join(unsafeRoot, '.env');
     grantBroadWrite(unsafe, false);
     const safe = join(unsafeRoot, '.env.safe');
     writeFileSync(safe, 'PROPR_STACK=safe\n', { mode: 0o600 });
     chmodSync(safe, 0o600);
-    if (process.platform === 'win32') protectWindowsSetupEntry(safe, 'file');
+    if (process.platform === 'win32') await protectWindowsSetupEntry(safe, 'file');
     let swapped = false;
     let heldInspectionProven = false;
     const inspector = {
@@ -823,20 +841,20 @@ test('native reparse, replacement, and inspection-path swap never authorize anot
         }
         return nativeConnectRootAuthorityInspector.inspectDarwinAcl(path, fd, identity);
       },
-      inspectWindowsAcl(path: string, identity: { device: string; file: string }, fd?: number, kind?: 'ancestor' | 'home' | 'root' | 'data' | 'env') {
+      async inspectWindowsAcl(path: string, identity: { device: string; file: string }, fd?: number, kind?: 'ancestor' | 'home' | 'root' | 'data' | 'env') {
         if (!swapped && path === unsafe) { swapped = true; renameSync(unsafe, `${unsafe}.held`); renameSync(safe, unsafe); }
         return nativeConnectRootAuthorityInspector.inspectWindowsAcl(path, identity, fd, kind);
       },
-      inspectWindowsAcls(entries: Parameters<NonNullable<typeof nativeConnectRootAuthorityInspector.inspectWindowsAcls>>[0]) {
+      async inspectWindowsAcls(entries: Parameters<NonNullable<typeof nativeConnectRootAuthorityInspector.inspectWindowsAcls>>[0]) {
         if (!swapped && entries.some((entry) => entry.path === unsafe)) {
           swapped = true;
           renameSync(unsafe, `${unsafe}.held`);
           renameSync(safe, unsafe);
         }
-        return nativeConnectRootAuthorityInspector.inspectWindowsAcls!(entries);
+        return await nativeConnectRootAuthorityInspector.inspectWindowsAcls!(entries);
       },
     };
-    assert.throws(() => withOwnedConnectRootSnapshot(unsafeRoot, () => undefined, {
+    await assert.rejects(withOwnedConnectRootSnapshot(unsafeRoot, () => undefined, {
       authorityInspector: inspector,
       parseEnvFile: () => ({}),
     }), process.platform === 'win32' ? /BROAD_WRITE/ : isFixedInvalidRoot);
@@ -848,7 +866,7 @@ test('native reparse, replacement, and inspection-path swap never authorize anot
   }
 });
 
-test('native persisted tunnel config authority rejects broad ACLs and replacement', { timeout: 30_000 }, (t) => {
+test('native persisted tunnel config authority rejects broad ACLs and replacement', { timeout: 30_000 }, async (t) => {
   if (!nativeOnly(t)) return;
   const parent = nativeFixtureParent('propr-native-config-');
   const home = join(parent, 'home');
@@ -865,34 +883,34 @@ test('native persisted tunnel config authority rejects broad ACLs and replacemen
     }), { mode: 0o600 });
     chmodSync(configPath, 0o600);
     if (process.platform === 'win32') {
-      protectWindowsSetupEntry(parent, 'directory');
-      protectWindowsSetupEntry(home, 'directory');
-      protectWindowsSetupEntry(configDir, 'directory');
-      protectWindowsSetupEntry(configPath, 'file');
+      await protectWindowsSetupEntry(parent, 'directory');
+      await protectWindowsSetupEntry(home, 'directory');
+      await protectWindowsSetupEntry(configDir, 'directory');
+      await protectWindowsSetupEntry(configPath, 'file');
     }
     const requested = process.platform === 'win32' ? 'c:\\WORK\\STACK' : root;
-    assert.equal(readTrustedConnectTunnelOverride(requested, { trustedHome: home }), false);
+    assert.equal(await readTrustedConnectTunnelOverride(requested, { trustedHome: home }), false);
     completeScenario('config-off');
 
     writeFileSync(configPath, JSON.stringify({ tunnelEnabledByRoot: { [root]: true } }), { mode: 0o600 });
     chmodSync(configPath, 0o600);
-    if (process.platform === 'win32') protectWindowsSetupEntry(configPath, 'file');
-    assert.equal(readTrustedConnectTunnelOverride(requested, { trustedHome: home }), true);
+    if (process.platform === 'win32') await protectWindowsSetupEntry(configPath, 'file');
+    assert.equal(await readTrustedConnectTunnelOverride(requested, { trustedHome: home }), true);
     completeScenario('config-on');
 
     unlinkSync(configPath);
-    assert.equal(readTrustedConnectTunnelOverride(requested, { trustedHome: home }), undefined);
+    assert.equal(await readTrustedConnectTunnelOverride(requested, { trustedHome: home }), undefined);
     completeScenario('config-absence');
     writeFileSync(configPath, JSON.stringify({
       tunnelEnabledByRoot: { [root]: false },
     }), { mode: 0o600 });
     chmodSync(configPath, 0o600);
-    if (process.platform === 'win32') protectWindowsSetupEntry(configPath, 'file');
+    if (process.platform === 'win32') await protectWindowsSetupEntry(configPath, 'file');
 
     let disappeared = false;
-    assert.throws(() => readTrustedConnectTunnelOverride(requested, {
+    await assert.rejects(readTrustedConnectTunnelOverride(requested, {
       trustedHome: home,
-      onBoundary: (boundary) => {
+      onBoundary: async (boundary) => {
         if (boundary === 'config-before-open') {
           disappeared = true;
           unlinkSync(configPath);
@@ -905,51 +923,51 @@ test('native persisted tunnel config authority rejects broad ACLs and replacemen
       tunnelEnabledByRoot: { [root]: false },
     }), { mode: 0o600 });
     chmodSync(configPath, 0o600);
-    if (process.platform === 'win32') protectWindowsSetupEntry(configPath, 'file');
+    if (process.platform === 'win32') await protectWindowsSetupEntry(configPath, 'file');
 
     grantBroadWrite(configPath, false);
-    assert.throws(
-      () => readTrustedConnectTunnelOverride(requested, { trustedHome: home }),
+    await assert.rejects(
+      readTrustedConnectTunnelOverride(requested, { trustedHome: home }),
       process.platform === 'win32' ? /BROAD_WRITE/ : /unsafe|write authority/,
     );
     completeScenario('config-broad-file');
-    if (process.platform === 'win32') protectWindowsSetupEntry(configPath, 'file');
+    if (process.platform === 'win32') await protectWindowsSetupEntry(configPath, 'file');
     else run('/bin/chmod', ['-a#', '0', configPath]);
 
     grantBroadWrite(configDir, true);
-    assert.throws(
-      () => readTrustedConnectTunnelOverride(requested, { trustedHome: home }),
+    await assert.rejects(
+      readTrustedConnectTunnelOverride(requested, { trustedHome: home }),
       process.platform === 'win32' ? /BROAD_WRITE/ : /unsafe|write authority/,
     );
     completeScenario('config-broad-directory');
-    if (process.platform === 'win32') protectWindowsSetupEntry(configDir, 'directory');
+    if (process.platform === 'win32') await protectWindowsSetupEntry(configDir, 'directory');
     else run('/bin/chmod', ['-a#', '0', configDir]);
 
     const reparseHome = join(parent, 'reparse-home');
     mkdirSync(reparseHome, { mode: 0o700 });
     chmodSync(reparseHome, 0o700);
     if (process.platform === 'win32') {
-      protectWindowsSetupEntry(reparseHome, 'directory');
+      await protectWindowsSetupEntry(reparseHome, 'directory');
       createWindowsJunction(join(reparseHome, '.propr'), configDir);
     } else {
       symlinkSync(configDir, join(reparseHome, '.propr'), 'dir');
     }
-    assert.throws(
-      () => readTrustedConnectTunnelOverride(requested, { trustedHome: reparseHome }),
+    await assert.rejects(
+      readTrustedConnectTunnelOverride(requested, { trustedHome: reparseHome }),
       /CONFIG_DIRECTORY_REPARSE/,
     );
     completeScenario('config-reparse');
 
     let swapped = false;
-    assert.throws(() => readTrustedConnectTunnelOverride(requested, {
+    await assert.rejects(readTrustedConnectTunnelOverride(requested, {
       trustedHome: home,
-      onBoundary: (boundary) => {
+      onBoundary: async (boundary) => {
         if (boundary !== 'config-opened' || swapped) return;
         swapped = true;
         renameSync(configPath, `${configPath}.detached`);
         writeFileSync(configPath, JSON.stringify({ tunnelEnabledByRoot: { [root]: true } }), { mode: 0o600 });
         chmodSync(configPath, 0o600);
-        if (process.platform === 'win32') protectWindowsSetupEntry(configPath, 'file');
+        if (process.platform === 'win32') await protectWindowsSetupEntry(configPath, 'file');
       },
     }), /NAMED_REPLACED|unsafe/);
     assert.equal(swapped, true);

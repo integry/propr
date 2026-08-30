@@ -111,10 +111,10 @@ export class ConfigManager {
     try {
       const directoryExists = this.readOnly
         ? validateExistingPrivateDirectory(this.configDir)
-        : secureExistingPrivateDirectory(this.configDir);
+        : await secureExistingPrivateDirectory(this.configDir);
       if (directoryExists) {
         if (this.readOnly) validateExistingPrivateFile(this.configFilePath);
-        else secureExistingPrivateFile(this.configFilePath);
+        else await secureExistingPrivateFile(this.configFilePath);
       }
       const data = await fs.promises.readFile(this.configFilePath, "utf-8");
       const parsed = JSON.parse(data);
@@ -289,7 +289,7 @@ export class ConfigManager {
    */
   async save(): Promise<void> {
     if (this.readOnly) throw new Error("Configuration manager is read-only");
-    ensurePrivateDirectory(this.configDir);
+    await ensurePrivateDirectory(this.configDir);
 
     // Only write non-undefined values
     const dataToWrite: Record<string, unknown> = {};
@@ -300,7 +300,7 @@ export class ConfigManager {
     }
 
     const content = JSON.stringify(dataToWrite, null, 2);
-    writePrivateFileAtomic(this.configFilePath, content);
+    await writePrivateFileAtomic(this.configFilePath, content);
   }
 
   /**

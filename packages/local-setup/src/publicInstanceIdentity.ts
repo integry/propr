@@ -44,7 +44,7 @@ export type PublicIdentityBoundary =
 export interface PublicIdentityOptions {
   generate?: () => string;
   role?: PublicIdentityRole;
-  onBoundary?: (boundary: PublicIdentityBoundary) => void;
+  onBoundary?: (boundary: PublicIdentityBoundary) => void | Promise<void>;
 }
 
 export interface PinnedPublicIdentityDirectory {
@@ -57,7 +57,7 @@ export interface PinnedPublicIdentityDirectory {
     kind: "file" | "directory" | "symbolic-link" | "other";
   };
   /** Validate native owner/ACL/no-reparse authority for this exact open file. */
-  validateEntry(name: string, fd: number, newlyCreated?: boolean): void;
+  validateEntry(name: string, fd: number, newlyCreated?: boolean): void | Promise<void>;
   publishNoReplace(oldName: string, newName: string): void;
   unlink(name: string): void;
 }
@@ -129,20 +129,20 @@ function validateFileStat(stat: Stats, directoryOwnerUid: number, allowedLinks =
   }
 }
 
-function readIdentity(
+async function readIdentity(
   directory: PinnedPublicIdentityDirectory,
   name: string,
   options: Pick<PublicIdentityOptions, "onBoundary"> = {},
   allowedLinks = 1,
-): string {
+): Promise<string> {
   let fd: number | undefined;
   try {
     fd = directory.open(name, constants.O_RDONLY | constants.O_NOFOLLOW);
     const before = fstatSync(fd);
     const beforeIdentity = exactIdentity(fd);
     validateFileStat(before, directory.ownerUid, allowedLinks);
-    directory.validateEntry(name, fd);
-    options.onBoundary?.("identity-read-statted");
+    await directory.validateEntry(name, fd);
+    await options.onBoundary?.("identity-read-statted");
     const bytes = Buffer.allocUnsafe(PUBLIC_IDENTITY_MAX_BYTES + 1);
     let length = 0;
     while (length < bytes.byteLength) {
@@ -153,7 +153,7 @@ function readIdentity(
     const after = fstatSync(fd);
     const afterIdentity = exactIdentity(fd);
     validateFileStat(after, directory.ownerUid, allowedLinks);
-    directory.validateEntry(name, fd);
+    await directory.validateEntry(name, fd);
     const namedAfter = directory.identify(name);
     if (
       !sameIdentity(beforeIdentity, afterIdentity)
@@ -183,13 +183,13 @@ function readIdentity(
   }
 }
 
-function readIdentityIfPresent(
+async function readIdentityIfPresent(
   directory: PinnedPublicIdentityDirectory,
   name: string,
   options: Pick<PublicIdentityOptions, "onBoundary"> = {},
-): string | undefined {
+): Promise<string | undefined> {
   try {
-    return readIdentity(directory, name, options);
+    return await readIdentity(directory, name, options);
   } catch (error) {
     if (errno(error) === "ENOENT") return undefined;
     throw error;
@@ -202,10 +202,10 @@ function readIdentityIfPresent(
  * inode; a hardlink at any other name is deliberately indistinguishable from
  * an attack and remains rejected.
  */
-function recoverPublishedLinkRemnant(
+async function recoverPublishedLinkRemnant(
   directory: PinnedPublicIdentityDirectory,
   options: Pick<PublicIdentityOptions, "onBoundary"> = {},
-): string | undefined {
+): Promise<string | undefined> {
   let finalFd: number | undefined;
   let recoveryFd: number | undefined;
   try {
@@ -222,12 +222,12 @@ function recoverPublishedLinkRemnant(
     const recoveryIdentity = exactIdentity(recoveryFd);
     validateFileStat(finalStat, directory.ownerUid, 2);
     validateFileStat(recoveryStat, directory.ownerUid, 2);
-    directory.validateEntry(PUBLIC_INSTANCE_IDENTITY_FILENAME, finalFd);
-    directory.validateEntry(READY_NAME, recoveryFd);
+    await directory.validateEntry(PUBLIC_INSTANCE_IDENTITY_FILENAME, finalFd);
+    await directory.validateEntry(READY_NAME, recoveryFd);
     if (!sameIdentity(finalIdentity, recoveryIdentity)) {
       throw new Error("public identity hardlink state is ambiguous");
     }
-    const recovered = readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options, 2);
+    const recovered = await readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options, 2);
     // Revalidate both held handles immediately before removing the private name.
     const finalAfter = fstatSync(finalFd);
     const recoveryAfter = fstatSync(recoveryFd);
@@ -248,8 +248,8 @@ function recoverPublishedLinkRemnant(
     ) throw new Error("public identity hardlink state changed during recovery");
     directory.unlink(READY_NAME);
     fsyncSync(directory.fd);
-    options.onBoundary?.("directory-synced");
-    return readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options) ?? recovered;
+    await options.onBoundary?.("directory-synced");
+    return await readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options) ?? recovered;
   } finally {
     if (recoveryFd !== undefined) closeSync(recoveryFd);
     if (finalFd !== undefined) closeSync(finalFd);
@@ -264,13 +264,13 @@ function unlinkIfPresent(directory: PinnedPublicIdentityDirectory, name: string)
   }
 }
 
-function publishRecovery(
+async function publishRecovery(
   directory: PinnedPublicIdentityDirectory,
   onBoundary?: PublicIdentityOptions["onBoundary"],
-): string | undefined {
+): Promise<string | undefined> {
   let recovered: string;
   try {
-    recovered = readIdentity(directory, READY_NAME, { onBoundary });
+    recovered = await readIdentity(directory, READY_NAME, { onBoundary });
   } catch (error) {
     if (errno(error) === "ENOENT") return undefined;
     if (error instanceof IdentityBusyError) return undefined;
@@ -282,7 +282,7 @@ function publishRecovery(
       const stat = fstatSync(recoveryFd);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw error;
       if (!publicIdentityFilePermissionsAllowed(stat, directory.ownerUid)) throw error;
-      directory.validateEntry(READY_NAME, recoveryFd);
+      await directory.validateEntry(READY_NAME, recoveryFd);
     } finally {
       if (recoveryFd !== undefined) closeSync(recoveryFd);
     }
@@ -293,15 +293,15 @@ function publishRecovery(
 
   try {
     directory.publishNoReplace(READY_NAME, PUBLIC_INSTANCE_IDENTITY_FILENAME);
-    onBoundary?.("identity-published");
+    await onBoundary?.("identity-published");
   } catch (error) {
     if (errno(error) !== "EEXIST") throw error;
     unlinkIfPresent(directory, READY_NAME);
   }
   fsyncSync(directory.fd);
-  onBoundary?.("directory-synced");
+  await onBoundary?.("directory-synced");
   try {
-    return readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, { onBoundary }) ?? recovered;
+    return await readIdentity(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, { onBoundary }) ?? recovered;
   } catch (error) {
     if (error instanceof IdentityBusyError) return undefined;
     throw error;
@@ -309,35 +309,35 @@ function publishRecovery(
 }
 
 /** Central CLI/API creation algorithm operating only through a held data-directory handle. */
-export function getOrCreatePublicInstanceIdentityPinned(
+export async function getOrCreatePublicInstanceIdentityPinned(
   directory: PinnedPublicIdentityDirectory,
   options: PublicIdentityOptions = {},
-): string {
+): Promise<string> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     let recoveryEntryBusy = false;
     try {
       // READY is public state in the same authority boundary as the final
       // identity. Validate it even when a healthy final file already exists;
       // otherwise a hostile stale entry could remain outside the policy.
-      readIdentityIfPresent(directory, READY_NAME, options);
+      await readIdentityIfPresent(directory, READY_NAME, options);
     } catch (error) {
       if (!(error instanceof IdentityBusyError)) throw error;
       recoveryEntryBusy = true;
     }
     try {
-      const existing = readIdentityIfPresent(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options);
+      const existing = await readIdentityIfPresent(directory, PUBLIC_INSTANCE_IDENTITY_FILENAME, options);
       if (existing) {
         if (recoveryEntryBusy) throw new Error("public identity recovery state is ambiguous");
         return existing;
       }
     } catch (error) {
       if (!(error instanceof IdentityBusyError)) throw error;
-      const repaired = recoverPublishedLinkRemnant(directory, options);
+      const repaired = await recoverPublishedLinkRemnant(directory, options);
       if (repaired) return repaired;
     }
     if (recoveryEntryBusy) throw new Error("public identity recovery state is ambiguous");
 
-    const recovered = publishRecovery(directory, options.onBoundary);
+    const recovered = await publishRecovery(directory, options.onBoundary);
     if (recovered) return recovered;
 
     const generated = (options.generate ?? randomUUID)();
@@ -360,23 +360,23 @@ export function getOrCreatePublicInstanceIdentityPinned(
       );
       temporaryPresent = true;
       if (process.platform !== "win32") fchmodSync(temporaryFd, PUBLIC_IDENTITY_TEMPORARY_MODE);
-      options.onBoundary?.("temporary-opened");
+      await options.onBoundary?.("temporary-opened");
       writeFileSync(temporaryFd, document);
-      options.onBoundary?.("temporary-written");
+      await options.onBoundary?.("temporary-written");
       fsyncSync(temporaryFd);
       if (process.platform !== "win32") {
         fchmodSync(temporaryFd, PUBLIC_IDENTITY_FILE_MODE);
         fsyncSync(temporaryFd);
       }
-      directory.validateEntry(temporaryName, temporaryFd, true);
-      options.onBoundary?.("temporary-synced");
+      await directory.validateEntry(temporaryName, temporaryFd, true);
+      await options.onBoundary?.("temporary-synced");
       closeSync(temporaryFd);
       temporaryFd = undefined;
 
       try {
         directory.publishNoReplace(temporaryName, READY_NAME);
         temporaryPresent = false;
-        options.onBoundary?.("recovery-published");
+        await options.onBoundary?.("recovery-published");
       } catch (error) {
         if (errno(error) !== "EEXIST") throw error;
       }
@@ -385,7 +385,7 @@ export function getOrCreatePublicInstanceIdentityPinned(
       if (temporaryPresent) unlinkIfPresent(directory, temporaryName);
     }
 
-    const winner = publishRecovery(directory, options.onBoundary);
+    const winner = await publishRecovery(directory, options.onBoundary);
     if (winner) return winner;
   }
   throw new Error("public instance identity remained a non-single-link file or creation did not settle");
@@ -516,13 +516,13 @@ function openPinnedDataDirectory(dataDir: string, role: PublicIdentityRole): {
 }
 
 /** Path entry point used by both host initialization and the root API container. */
-export function getOrCreatePublicInstanceIdentity(
+export async function getOrCreatePublicInstanceIdentity(
   dataDir: string,
   options: PublicIdentityOptions = {},
-): string {
+): Promise<string> {
   const pinned = openPinnedDataDirectory(dataDir, options.role ?? "host");
   try {
-    const identity = getOrCreatePublicInstanceIdentityPinned(pinned.directory, options);
+    const identity = await getOrCreatePublicInstanceIdentityPinned(pinned.directory, options);
     pinned.validateVisible();
     return identity;
   } finally {

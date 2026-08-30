@@ -37,7 +37,7 @@ interface StatusRoutesDeps {
     snapshot: Record<string, unknown> & { timestamp: string },
     additionalAdministratorIds: readonly string[],
   ) => Promise<void>;
-  getPublicInstanceIdentity?: () => string;
+  getPublicInstanceIdentity?: () => string | Promise<string>;
 }
 
 interface IndexingStatusQueue {
@@ -77,7 +77,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
     res.json(getProprCompatibilityMetadata(!isDemoMode()));
   }
 
-  function getDesktopDiscovery(_req: Request, res: Response): void {
+  async function getDesktopDiscovery(_req: Request, res: Response): Promise<void> {
     // This endpoint is intentionally unauthenticated. Keep it cache-safe and
     // bounded, and never include environment/account/credential state.
     res.set({
@@ -90,7 +90,7 @@ export function createStatusRoutes(deps: StatusRoutesDeps) {
         schemaVersion: PROPR_CONNECT_DISCOVERY_SCHEMA_VERSION,
         product: 'ProPR',
         canonicalEndpoint: canonicalProprProxyUrl(process.env.API_PUBLIC_URL) ?? null,
-        publicInstanceIdentity: loadPublicInstanceIdentity(),
+        publicInstanceIdentity: await loadPublicInstanceIdentity(),
         ...getProprCompatibilityMetadata(!isDemoMode()),
       });
     } catch {
