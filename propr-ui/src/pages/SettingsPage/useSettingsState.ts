@@ -11,12 +11,14 @@ import {
   getPrimaryProcessingLabels,
   updatePrimaryProcessingLabels,
   getAgents,
+  getInstanceCatalog,
   getSummarizationSettings,
   updateSummarizationSettings,
   triggerReindexAll,
   AgentConfig,
   SummarizationSettings
 } from '../../api/proprApi';
+import type { InstanceCatalogAgent } from '@propr/shared';
 import {
   getAgentTankSettings,
   updateAgentTankSettings,
@@ -80,6 +82,7 @@ export function useSettingsState() {
   });
   const [prLabel, setPrLabel] = useState('');
   const [agents, setAgents] = useState<AgentConfig[]>([]);
+  const [catalogAgents, setCatalogAgents] = useState<InstanceCatalogAgent[]>([]);
   const [summarizationSettings, setSummarizationSettings] = useState<SummarizationSettings>({
     enabled: false,
     agent_alias: '',
@@ -237,11 +240,14 @@ export function useSettingsState() {
       const agentTankSettingsRequest = requireCompleteConfiguration
         ? getAgentTankSettings()
         : getAgentTankSettings().catch(() => ({ enabled: false, url: 'http://0.0.0.0:3456' }));
-      const results = await Promise.all([
-        getSettings(), getFollowupKeywords(), getFollowupIgnoreKeywords(),
-        getPrLabel(), getPrimaryProcessingLabels(), getAgents(),
-        getSummarizationSettings(),
-        agentTankSettingsRequest
+      const [results, catalog] = await Promise.all([
+        Promise.all([
+          getSettings(), getFollowupKeywords(), getFollowupIgnoreKeywords(),
+          getPrLabel(), getPrimaryProcessingLabels(), getAgents(),
+          getSummarizationSettings(),
+          agentTankSettingsRequest
+        ]),
+        getInstanceCatalog().catch(() => ({ agents: [], repositories: [] }))
       ]);
       const parsed = parseLoadedData(results);
       configurationReloadRequiredRef.current = false;
@@ -252,6 +258,7 @@ export function useSettingsState() {
       setPrLabel(parsed.prLabel);
       setPrimaryLabels(parsed.primaryLabels);
       setAgents(parsed.agents);
+      setCatalogAgents(catalog.agents);
       setSummarizationSettings(parsed.summarizationSettings);
       setAgentTankSettings(parsed.agentTankSettings);
       if (parsed.agentTankSettings.enabled) {
@@ -402,7 +409,7 @@ export function useSettingsState() {
   }, []);
 
   return {
-    loading, saveStatus, globalError, settings, prLabel, agents,
+    loading, saveStatus, globalError, settings, prLabel, agents, catalogAgents,
     summarizationSettings, isReindexing, agentTankSettings,
     agentTankAvailable, agentTankCheckingStatus,
     setSettings, setPrLabel,

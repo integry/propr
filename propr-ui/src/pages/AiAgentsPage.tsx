@@ -1,16 +1,28 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { GripVertical, MessageSquare, Settings } from 'lucide-react';
+import type { SyntheticAgentConfig } from '@propr/shared';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import {
   getAgents,
   saveAgents,
+  getSyntheticAgents,
+  saveSyntheticAgents,
   AgentConfig
 } from '../api/proprApi';
 import AgentsListSection from './SettingsPage/AgentsListSection';
 import ChatPanel, { type AgentModelSelection } from '../components/AgentChat/ChatPanel';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { isCommittedConfigWriteError } from '../api/apiClient';
+import { useDesktopLayout } from '../hooks/useDesktopLayout';
+import SyntheticPoolsSection from './SyntheticPoolsSection';
+
+type ConfigurationLayout = 'mobile' | 'desktop';
+
+interface AddPoolRequest {
+  id: number;
+  owner: ConfigurationLayout;
+}
 
 const AiAgentsPage: React.FC = () => {
   useDocumentTitle('AI Agents');
@@ -22,6 +34,17 @@ const AiAgentsPage: React.FC = () => {
   const [agentsSuccess, setAgentsSuccess] = useState<string | null>(null);
   const [agentsWarning, setAgentsWarning] = useState<string | null>(null);
   const agentsReloadRequiredRef = useRef(false);
+  const [syntheticAgents, setSyntheticAgents] = useState<SyntheticAgentConfig[]>([]);
+  const [syntheticLoading, setSyntheticLoading] = useState(true);
+  const [syntheticSaving, setSyntheticSaving] = useState(false);
+  const [syntheticError, setSyntheticError] = useState<string | null>(null);
+  const [syntheticWarning, setSyntheticWarning] = useState<string | null>(null);
+  const [syntheticSuccess, setSyntheticSuccess] = useState<string | null>(null);
+  const [syntheticReloadRequired, setSyntheticReloadRequired] = useState(true);
+  const [configView, setConfigView] = useState<'direct' | 'synthetic'>('direct');
+  const [addPoolRequest, setAddPoolRequest] = useState<AddPoolRequest | null>(null);
+  const addPoolRequestId = useRef(0);
+  const isDesktopLayout = useDesktopLayout();
 
   // Mobile tab state: 'config' or 'playground'
   const [mobileTab, setMobileTab] = useState<'config' | 'playground'>('playground');
@@ -43,6 +66,73 @@ const AiAgentsPage: React.FC = () => {
     };
     loadAgents();
   }, []);
+
+  useEffect(() => {
+    const loadPools = async () => {
+      try {
+        setSyntheticLoading(true);
+        setSyntheticError(null);
+        // Keeps the page compatible with older servers and isolated UI mocks.
+        if (typeof getSyntheticAgents !== 'function') return;
+        const data = await getSyntheticAgents();
+        setSyntheticAgents(data.synthetic_agents ?? []);
+        setSyntheticReloadRequired(false);
+      } catch (err) {
+        setSyntheticReloadRequired(true);
+        setSyntheticError((err as Error).message || 'Failed to load synthetic pools');
+      } finally {
+        setSyntheticLoading(false);
+      }
+    };
+    void loadPools();
+  }, []);
+
+  const handleSaveSyntheticAgents = async (updated: SyntheticAgentConfig[]): Promise<SyntheticAgentConfig[] | undefined> => {
+    if (isDemoMode) {
+      setSyntheticError('Demo mode is read-only. Synthetic pools cannot be saved.');
+      return undefined;
+    }
+    if (syntheticReloadRequired) {
+      setSyntheticError('Reload the current synthetic pool configuration before saving again.');
+      return undefined;
+    }
+    try {
+      setSyntheticSaving(true);
+      setSyntheticError(null);
+      setSyntheticWarning(null);
+      setSyntheticSuccess(null);
+      const result = await saveSyntheticAgents(updated);
+      const saved = result.synthetic_agents ?? updated;
+      setSyntheticAgents(saved);
+      setSyntheticReloadRequired(false);
+      setSyntheticWarning(result.warnings?.join(' ') || null);
+      setSyntheticSuccess('Synthetic pools updated successfully.');
+      return saved;
+    } catch (err) {
+      if (isCommittedConfigWriteError(err)) {
+        try {
+          const current = await getSyntheticAgents();
+          const saved = current.synthetic_agents ?? [];
+          setSyntheticAgents(saved);
+          setSyntheticReloadRequired(false);
+          setSyntheticError(null);
+          setSyntheticWarning(`${err.message} The saved synthetic pool configuration has been reloaded.`);
+          return saved;
+        } catch (refreshError) {
+          setSyntheticReloadRequired(true);
+          const refreshMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
+          setSyntheticError(`${err.message} Automatic refresh failed (${refreshMessage}). Reload this page before editing synthetic pools again.`);
+          return undefined;
+        }
+      }
+      // Do not replace local configuration here: the editor intentionally stays
+      // open with its unsaved draft when backend validation fails.
+      setSyntheticError((err as Error).message || 'Failed to update synthetic pools');
+      return undefined;
+    } finally {
+      setSyntheticSaving(false);
+    }
+  };
 
   const handleSaveAgents = async (updatedAgents: AgentConfig[]): Promise<AgentConfig[] | undefined> => {
     if (isDemoMode) {
@@ -93,6 +183,33 @@ const AiAgentsPage: React.FC = () => {
     setShowAddModal(true);
   }, [isDemoMode]);
 
+  const handleAddClick = useCallback(() => {
+    if (configView === 'synthetic') {
+      if (isDemoMode) {
+        setSyntheticError('Demo mode is read-only. Synthetic pool configuration cannot be changed.');
+        return;
+      }
+      if (syntheticReloadRequired) {
+        setSyntheticError('Reload the current synthetic pool configuration before editing again.');
+        return;
+      }
+      addPoolRequestId.current += 1;
+      setAddPoolRequest({
+        id: addPoolRequestId.current,
+        owner: isDesktopLayout ? 'desktop' : 'mobile',
+      });
+      return;
+    }
+    handleAddAgentClick();
+  }, [configView, handleAddAgentClick, isDemoMode, isDesktopLayout, syntheticReloadRequired]);
+
+  const handleAddPoolRequestConsumed = useCallback((requestId: number) => {
+    setAddPoolRequest(current => current?.id === requestId ? null : current);
+  }, []);
+
+  const addDisabled = agentsLoading || agentsSaving || syntheticLoading || syntheticSaving || isDemoMode
+    || (configView === 'synthetic' && syntheticReloadRequired);
+
   const handleCloseModal = useCallback(() => {
     setShowAddModal(false);
   }, []);
@@ -105,6 +222,43 @@ const AiAgentsPage: React.FC = () => {
     setMobileTab('playground');
   }, [agents]);
 
+  const renderConfiguration = (layout: ConfigurationLayout) => (
+    <>
+      <div className="mb-4 flex rounded-md bg-slate-100 p-1 text-xs font-medium">
+        <button type="button" onClick={() => setConfigView('direct')} className={`flex-1 rounded px-2 py-1.5 ${configView === 'direct' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Direct agents</button>
+        <button type="button" onClick={() => setConfigView('synthetic')} className={`flex-1 rounded px-2 py-1.5 ${configView === 'synthetic' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}>Synthetic Pools</button>
+      </div>
+      {configView === 'direct' ? <AgentsListSection
+        agents={agents}
+        loading={agentsLoading}
+        saving={agentsSaving}
+        error={agentsError}
+        success={agentsSuccess}
+        warning={agentsWarning}
+        onSaveAgents={handleSaveAgents}
+        showAddModal={showAddModal}
+        onCloseAddModal={handleCloseModal}
+        onAddClick={handleAddAgentClick}
+        onSelectModel={handleSelectModel}
+        readOnly={isDemoMode}
+      /> : <SyntheticPoolsSection
+        agents={agents}
+        pools={syntheticAgents}
+        loading={syntheticLoading}
+        saving={syntheticSaving}
+        error={syntheticError}
+        success={syntheticSuccess}
+        warning={syntheticWarning}
+        readOnly={isDemoMode || syntheticReloadRequired}
+        readOnlyMessage={syntheticReloadRequired ? 'Synthetic pool changes are blocked because the saved configuration could not be reloaded. Reload this page to continue.' : undefined}
+        editorActive={layout === (isDesktopLayout ? 'desktop' : 'mobile')}
+        addRequested={addPoolRequest?.owner === layout ? addPoolRequest.id : 0}
+        onAddRequestConsumed={handleAddPoolRequestConsumed}
+        onSave={handleSaveSyntheticAgents}
+      />}
+    </>
+  );
+
   // Mobile layout
   const renderMobileLayout = () => (
     <div className="h-full flex flex-col overflow-hidden sm:hidden">
@@ -114,15 +268,15 @@ const AiAgentsPage: React.FC = () => {
           <h1 className="text-lg font-bold text-gray-800">AI Agents</h1>
           {mobileTab === 'config' && (
             <button
-              onClick={handleAddAgentClick}
-              disabled={agentsLoading || agentsSaving || isDemoMode}
+              onClick={handleAddClick}
+              disabled={addDisabled}
               className={`px-2 py-1 text-xs font-medium rounded-md border transition-colors ${
-                agentsLoading || agentsSaving || isDemoMode
+                addDisabled
                   ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                   : 'border-gray-300 text-gray-700 hover:bg-gray-50'
               }`}
             >
-              + Add
+              {configView === 'synthetic' ? '+ Pool' : '+ Add'}
             </button>
           )}
         </div>
@@ -161,6 +315,7 @@ const AiAgentsPage: React.FC = () => {
               {!agentsLoading && (
                 <ChatPanel
                   agents={agents}
+                  syntheticAgents={syntheticAgents}
                   selectedModels={selectedModels}
                   onSelectedModelsChange={setSelectedModels}
                   disabled={isDemoMode}
@@ -171,20 +326,7 @@ const AiAgentsPage: React.FC = () => {
         ) : (
           <div className="h-full bg-white">
             <div className="px-4 py-4">
-              <AgentsListSection
-                agents={agents}
-                loading={agentsLoading}
-                saving={agentsSaving}
-                error={agentsError}
-                success={agentsSuccess}
-                warning={agentsWarning}
-                onSaveAgents={handleSaveAgents}
-                showAddModal={showAddModal}
-                onCloseAddModal={handleCloseModal}
-                onAddClick={handleAddAgentClick}
-                onSelectModel={handleSelectModel}
-                readOnly={isDemoMode}
-              />
+              {renderConfiguration('mobile')}
             </div>
           </div>
         )}
@@ -201,17 +343,19 @@ const AiAgentsPage: React.FC = () => {
           {/* Left Header */}
           <Panel defaultSize={40} minSize={25}>
             <div className="h-14 px-6 flex items-center justify-between">
-              <h2 className="text-gray-900 text-lg font-semibold">Agent Configuration</h2>
+              <div>
+                <h2 className="text-gray-900 text-lg font-semibold">Agent Configuration</h2>
+              </div>
               <button
-                onClick={handleAddAgentClick}
-                disabled={agentsLoading || agentsSaving || isDemoMode}
+                onClick={handleAddClick}
+                disabled={addDisabled}
                 className={`px-3 py-1.5 text-sm font-medium rounded-md border transition-colors ${
-                  agentsLoading || agentsSaving || isDemoMode
+                  addDisabled
                     ? 'border-gray-200 text-gray-400 cursor-not-allowed'
                     : 'border-gray-300 text-gray-700 hover:bg-gray-50 hover:border-gray-400'
                 }`}
               >
-                + Add Agent
+                {configView === 'synthetic' ? '+ Add Pool' : '+ Add Agent'}
               </button>
             </div>
           </Panel>
@@ -235,20 +379,7 @@ const AiAgentsPage: React.FC = () => {
           <Panel defaultSize={40} minSize={25}>
             <div className="h-full bg-white flex flex-col overflow-y-auto">
               <div className="px-6 py-4">
-                <AgentsListSection
-                  agents={agents}
-                  loading={agentsLoading}
-                  saving={agentsSaving}
-                  error={agentsError}
-                  success={agentsSuccess}
-                  warning={agentsWarning}
-                  onSaveAgents={handleSaveAgents}
-                  showAddModal={showAddModal}
-                  onCloseAddModal={handleCloseModal}
-                  onAddClick={handleAddAgentClick}
-                  onSelectModel={handleSelectModel}
-                  readOnly={isDemoMode}
-                />
+                {renderConfiguration('desktop')}
               </div>
             </div>
           </Panel>
@@ -265,6 +396,7 @@ const AiAgentsPage: React.FC = () => {
                 {!agentsLoading && (
                   <ChatPanel
                     agents={agents}
+                    syntheticAgents={syntheticAgents}
                     selectedModels={selectedModels}
                     onSelectedModelsChange={setSelectedModels}
                     disabled={isDemoMode}

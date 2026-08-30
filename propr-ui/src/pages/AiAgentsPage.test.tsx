@@ -2,12 +2,16 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PropsWithChildren } from 'react';
 import type { AgentConfig } from '../api/proprApi';
+import type { SyntheticAgentConfig } from '@propr/shared';
+import { CommittedConfigWriteError } from '../api/apiClient';
 import AiAgentsPage from './AiAgentsPage';
 
 const apiMocks = vi.hoisted(() => ({
   chatWithAgents: vi.fn(),
   getAgents: vi.fn(),
-  saveAgents: vi.fn()
+  saveAgents: vi.fn(),
+  getSyntheticAgents: vi.fn(),
+  saveSyntheticAgents: vi.fn(),
 }));
 
 vi.mock('../api/proprApi', () => apiMocks);
@@ -50,11 +54,34 @@ const agents: AgentConfig[] = [
   }
 ];
 
+const syntheticPool: SyntheticAgentConfig = {
+  id: '11111111-1111-4111-8111-111111111111',
+  alias: 'Balanced Pool',
+  enabled: true,
+  defaultModel: 'balanced',
+  models: [{
+    id: 'balanced',
+    displayName: 'Balanced',
+    enabled: true,
+    strategy: 'round_robin',
+    members: [{
+      id: '22222222-2222-4222-8222-222222222222',
+      directAgentAlias: 'First Codex',
+      model: sharedModelId,
+      enabled: true,
+      priority: 100,
+    }],
+  }],
+};
+
 describe('AiAgentsPage model selection', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     apiMocks.getAgents.mockResolvedValue({ agents });
     apiMocks.chatWithAgents.mockResolvedValue({ results: [] });
     apiMocks.saveAgents.mockResolvedValue({ success: true, agents });
+    apiMocks.getSyntheticAgents.mockResolvedValue({ synthetic_agents: [syntheticPool] });
+    apiMocks.saveSyntheticAgents.mockResolvedValue({ success: true, synthetic_agents: [syntheticPool] });
   });
 
   it('replaces Playground selections with the exact enabled agent/model pair and opens the mobile Playground', async () => {
@@ -122,5 +149,117 @@ describe('AiAgentsPage model selection', () => {
         ''
       );
     });
+  });
+
+  it('sends the stable synthetic configuration ID and virtual model from the Playground', async () => {
+    render(<AiAgentsPage />);
+
+    const directChips = await screen.findAllByRole('button', { name: `First Codex: ${sharedModelId}` });
+    await waitFor(() => directChips.forEach(chip => expect(chip).toHaveAttribute('aria-pressed', 'true')));
+    const poolChips = await screen.findAllByRole('button', { name: 'Balanced Pool: Balanced' });
+    fireEvent.click(poolChips[0]);
+    fireEvent.click(directChips[0]);
+
+    const playgroundInput = screen.getAllByPlaceholderText('Type a message to test...')[0];
+    fireEvent.change(playgroundInput, { target: { value: 'Route this' } });
+    fireEvent.keyDown(playgroundInput, { key: 'Enter' });
+
+    await waitFor(() => expect(apiMocks.chatWithAgents).toHaveBeenCalledWith(
+      [{
+        agentId: syntheticPool.id,
+        syntheticConfigId: syntheticPool.id,
+        model: 'balanced',
+      }],
+      'Route this',
+      '',
+    ));
+  });
+
+  it('reloads persisted synthetic pools and closes the editor after a committed save warning', async () => {
+    const persistedPool = { ...syntheticPool, alias: 'Persisted Pool' };
+    apiMocks.getSyntheticAgents
+      .mockResolvedValueOnce({ synthetic_agents: [syntheticPool] })
+      .mockResolvedValueOnce({ synthetic_agents: [persistedPool] });
+    apiMocks.saveSyntheticAgents.mockRejectedValueOnce(new CommittedConfigWriteError(500, {
+      committed: true,
+      warning: 'Synthetic pools were saved, but registry publication failed.',
+    }));
+
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Synthetic Pools' }));
+    const poolName = await screen.findByText('Balanced Pool');
+    fireEvent.click(poolName.closest('button')!);
+    fireEvent.change(screen.getByLabelText('Alias'), { target: { value: 'Draft Pool' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save pool' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Synthetic pool editor' })).not.toBeInTheDocument());
+    expect(apiMocks.getSyntheticAgents).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('Persisted Pool')).toBeInTheDocument();
+    expect(screen.getByText(/Synthetic pools were saved, but registry publication failed.*has been reloaded/)).toBeInTheDocument();
+  });
+
+  it('blocks synthetic mutations when committed state cannot be reloaded', async () => {
+    apiMocks.getSyntheticAgents
+      .mockResolvedValueOnce({ synthetic_agents: [syntheticPool] })
+      .mockRejectedValueOnce(new Error('refresh unavailable'));
+    apiMocks.saveSyntheticAgents.mockRejectedValueOnce(new CommittedConfigWriteError(500, {
+      committed: true,
+      error: 'Synthetic pools were saved, but registry publication failed.',
+    }));
+
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Synthetic Pools' }));
+    const poolName = await screen.findByText('Balanced Pool');
+    fireEvent.click(poolName.closest('button')!);
+    fireEvent.change(screen.getByLabelText('Alias'), { target: { value: 'Draft Pool' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save pool' }));
+
+    expect(await screen.findByText(/Automatic refresh failed \(refresh unavailable\).*Reload this page/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Alias')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save pool' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save pool' }));
+    expect(apiMocks.saveSyntheticAgents).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close synthetic pool editor' }));
+    expect(screen.getByRole('button', { name: '+ Add Pool' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete synthetic pool Balanced Pool' })).toBeDisabled();
+  });
+
+  it('blocks synthetic mutations when the initial configuration load fails', async () => {
+    apiMocks.getSyntheticAgents.mockRejectedValueOnce(new Error('initial load unavailable'));
+
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Synthetic Pools' }));
+    expect(await screen.findByText('initial load unavailable')).toBeInTheDocument();
+
+    const addPoolButton = screen.getByRole('button', { name: '+ Add Pool' });
+    const createPoolButton = screen.getByRole('button', { name: 'Create synthetic pool' });
+    expect(addPoolButton).toBeDisabled();
+    expect(createPoolButton).toBeDisabled();
+
+    fireEvent.click(addPoolButton);
+    fireEvent.click(createPoolButton);
+
+    expect(screen.queryByRole('dialog', { name: 'Synthetic pool editor' })).not.toBeInTheDocument();
+    expect(apiMocks.saveSyntheticAgents).not.toHaveBeenCalled();
+  });
+
+  it('consumes a cancelled add request before switching configuration views', async () => {
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Synthetic Pools' }));
+    fireEvent.click(screen.getByRole('button', { name: '+ Add Pool' }));
+    expect(await screen.findByRole('dialog', { name: 'Synthetic pool editor' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog', { name: 'Synthetic pool editor' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Direct agents' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Synthetic Pools' }));
+
+    expect(screen.queryByRole('dialog', { name: 'Synthetic pool editor' })).not.toBeInTheDocument();
   });
 });

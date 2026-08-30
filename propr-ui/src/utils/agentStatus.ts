@@ -4,6 +4,7 @@ export const formatAgentLabel = (
   agent: Pick<SystemAgentStatus, 'type' | 'alias'>,
   agents: Pick<SystemAgentStatus, 'type' | 'alias'>[] = []
 ): string => {
+  if (agent.type === 'synthetic') return `Synthetic (${agent.alias})`;
   const matchingTypeCount = agents.filter(candidate => candidate.type === agent.type).length;
   const shouldShowAlias = agent.alias !== 'default' && (agents.length === 0 || matchingTypeCount > 1);
   const alias = shouldShowAlias ? ` (${agent.alias})` : '';
