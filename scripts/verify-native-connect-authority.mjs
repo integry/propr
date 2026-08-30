@@ -17,7 +17,7 @@ const common = [
   ...(platform === 'win32' ? ['foreign-owner'] : []),
   'packaged-helper-integrity',
   ...(platform === 'win32'
-    ? ['bootstrap-before-lock', 'bootstrap-after-lock', 'bootstrap-during-launch', 'bootstrap-aba']
+    ? ['bootstrap-after-lock', 'bootstrap-during-launch', 'bootstrap-aba', 'bootstrap-restart']
     : []),
   'reparse', 'replacement-barrier', 'inspection-handle-swap',
   'config-off', 'config-on', 'config-absence', 'config-disappearance',

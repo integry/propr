@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, closeSync, constants, copyFileSync, linkSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -15,8 +15,10 @@ import {
   nativeConnectRootAuthorityInspector,
   assertNativeEntryAuthority,
   closeWindowsAuthorityCapability,
+  exerciseWindowsAuthorityCapabilityControlForNativeTest,
   exerciseWindowsAuthorityCapabilityForNativeTest,
   exerciseWindowsAuthorityBootstrapForNativeTest,
+  exerciseWindowsAuthorityExistingStageForNativeTest,
   protectWindowsSetupEntries,
   protectWindowsSetupEntry,
   stableAuthorityIdentity,
@@ -36,7 +38,7 @@ const expectedScenarios = [
   ...(process.platform === 'win32' ? ['foreign-owner'] : []),
   'packaged-helper-integrity',
   ...(process.platform === 'win32'
-    ? ['bootstrap-before-lock', 'bootstrap-after-lock', 'bootstrap-during-launch', 'bootstrap-aba']
+    ? ['bootstrap-after-lock', 'bootstrap-during-launch', 'bootstrap-aba', 'bootstrap-restart']
     : []),
   'reparse', 'replacement-barrier', 'inspection-handle-swap',
   'config-off', 'config-on', 'config-absence', 'config-disappearance',
@@ -530,7 +532,7 @@ test('native root/env/data/identity authority accepts the protected object and r
   }
 });
 
-test('native helper replacement is rejected before attacker bytes can execute', { timeout: 30_000 }, (t) => {
+test('native helper replacement is rejected before attacker bytes can execute', { timeout: 45_000 }, async (t) => {
   if (!nativeOnly(t)) return;
   const platformArch = `${process.platform}-${process.arch}`;
   const executableName = process.platform === 'win32' ? 'connect-authority-broker.exe' : 'connect-authority-broker';
@@ -569,7 +571,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
     rmSync(parent, { recursive: true, force: true });
   }
   assert.ok(readFileSync(artifact).byteLength > 0);
-  completeScenario('packaged-helper-integrity');
+  if (process.platform === 'darwin') completeScenario('packaged-helper-integrity');
 
   if (process.platform === 'win32') {
     const command = join(process.env.SystemRoot!, 'System32', 'cmd.exe');
@@ -584,7 +586,7 @@ test('native helper replacement is rejected before attacker bytes can execute', 
         },
       }), /bootstrap|authority/);
       assert.throws(() => lstatSync(preLockMarker), /ENOENT/);
-      completeScenario('bootstrap-before-lock');
+      completeScenario('packaged-helper-integrity');
     } finally {
       rmSync(preLockControl, { recursive: true, force: true });
     }
@@ -621,36 +623,136 @@ test('native helper replacement is rejected before attacker bytes can execute', 
       }
     }
 
+    for (const mode of ['stale', 'current'] as const) {
+      const control = nativeFixtureParent(`propr-capability-${mode}-response-`);
+      let attacker: ReturnType<typeof spawn> | undefined;
+      try {
+        const readyPath = join(control, 'attacker-ready');
+        const resultPath = join(control, 'attacker-result.json');
+        const fixture = join(process.cwd(), 'test', 'fixtures', 'windowsAuthorityPipeAttacker.mjs');
+        assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest({
+          onSupervisorStarting: ({ pipePath }) => {
+            attacker = spawn(process.execPath, [fixture, pipePath, readyPath, resultPath, mode], {
+              stdio: 'ignore', windowsHide: true,
+            });
+            const deadline = Date.now() + 3_000;
+            while (!existsSync(readyPath) && Date.now() < deadline) {
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+            }
+            assert.equal(existsSync(readyPath), true, 'forged pipe did not bind before supervisor startup');
+          },
+        }), /capability/);
+        const deadline = Date.now() + 3_000;
+        while (!existsSync(resultPath) && Date.now() < deadline) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+        const result = JSON.parse(readFileSync(resultPath, 'utf8')) as { fired: boolean; mode: string };
+        assert.deepEqual(result, { fired: true, mode });
+      } finally {
+        try { attacker?.kill(); } catch { /* The forged server normally exits after one response. */ }
+        closeWindowsAuthorityCapability();
+        rmSync(control, { recursive: true, force: true });
+      }
+    }
+
+    const deniedHooks = { write: false, delete: false, rename: false, replace: false };
     const locked = exerciseWindowsAuthorityCapabilityForNativeTest({
       onRequestLocked: (stagedPath) => {
+        deniedHooks.write = true;
+        assert.throws(() => writeFileSync(stagedPath, 'attacker'));
+        deniedHooks.delete = true;
+        assert.throws(() => unlinkSync(stagedPath));
+        deniedHooks.rename = true;
         assert.throws(() => renameSync(stagedPath, `${stagedPath}.attacker`));
+        deniedHooks.replace = true;
+        assert.throws(() => copyFileSync(command, stagedPath));
         assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability probe/);
       },
     });
+    assert.deepEqual(deniedHooks, { write: true, delete: true, rename: true, replace: true });
     assert.deepEqual(JSON.parse(locked.output.toString('utf8')), { version: 1, ready: true });
     assert.throws(() => renameSync(locked.stagedPath, `${locked.stagedPath}.between-requests`));
+    assert.throws(() => exerciseWindowsAuthorityCapabilityControlForNativeTest({ nonce: 'stale', operation: 'stop' }), /capability/);
+    assert.throws(() => exerciseWindowsAuthorityCapabilityControlForNativeTest({
+      nonce: 'current', operation: 'challenge', extra: '|extra',
+    }), /capability/);
     const betweenRequests = exerciseWindowsAuthorityCapabilityForNativeTest();
     assert.equal(betweenRequests.stagedPath, locked.stagedPath);
+    assert.equal(betweenRequests.supervisorPid, locked.supervisorPid);
     assert.deepEqual(JSON.parse(betweenRequests.output.toString('utf8')), { version: 1, ready: true });
-    completeScenario('bootstrap-aba');
 
-    process.kill(locked.supervisorPid);
-    const crashDeadline = Date.now() + 5_000;
-    while (Date.now() < crashDeadline) {
-      try { process.kill(locked.supervisorPid, 0); } catch { break; }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-    }
-    assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);
+    const lockedIdentity = lstatSync(locked.stagedPath, { bigint: true });
+    let replacementFired = false;
+    let replacementChangedIdentity = false;
+    let pathRestored = false;
+    const abaMarker = join(tmpdir(), `propr-capability-aba-marker-${process.pid}`);
+    rmSync(abaMarker, { force: true });
+    assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest({
+      onRequestLocked: (stagedPath, supervisorPid) => {
+        process.kill(supervisorPid);
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          try { process.kill(supervisorPid, 0); } catch { break; }
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+        const detached = `${stagedPath}.trusted-detached`;
+        renameSync(stagedPath, detached);
+        copyFileSync(command, stagedPath);
+        replacementFired = true;
+        const attackerIdentity = lstatSync(stagedPath, { bigint: true });
+        replacementChangedIdentity = attackerIdentity.dev !== lockedIdentity.dev || attackerIdentity.ino !== lockedIdentity.ino;
+        assert.throws(() => exerciseWindowsAuthorityExistingStageForNativeTest(
+          stagedPath,
+          ['/d', '/c', `echo attacker>"${abaMarker}"`],
+        ), /bootstrap|authority/);
+        assert.throws(() => lstatSync(abaMarker), /ENOENT/);
+        unlinkSync(stagedPath);
+        renameSync(detached, stagedPath);
+        const restoredIdentity = lstatSync(stagedPath, { bigint: true });
+        pathRestored = restoredIdentity.dev === lockedIdentity.dev && restoredIdentity.ino === lockedIdentity.ino;
+      },
+    }), /capability/);
+    assert.equal(replacementFired, true);
+    assert.equal(replacementChangedIdentity, true);
+    assert.equal(pathRestored, true);
+    assert.throws(() => lstatSync(abaMarker), /ENOENT/);
     const restarted = exerciseWindowsAuthorityCapabilityForNativeTest();
     assert.notEqual(restarted.stagedPath, locked.stagedPath);
     assert.deepEqual(JSON.parse(restarted.output.toString('utf8')), { version: 1, ready: true });
+    rmSync(abaMarker, { force: true });
+    completeScenario('bootstrap-aba');
+
     assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest({ args: ['batch-v1'] }), /capability/);
+    const afterRejectedCommand = exerciseWindowsAuthorityCapabilityForNativeTest();
+    assert.equal(afterRejectedCommand.stagedPath, restarted.stagedPath);
+
+    const unboundResponse = exerciseWindowsAuthorityCapabilityControlForNativeTest({
+      nonce: 'current', operation: 'challenge',
+    });
+    assert.ok(unboundResponse.byteLength > 0, 'current-nonce replay hook did not fire');
+    assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);
     const protocolRestarted = exerciseWindowsAuthorityCapabilityForNativeTest();
-    assert.notEqual(protocolRestarted.stagedPath, restarted.stagedPath);
+    assert.notEqual(protocolRestarted.stagedPath, afterRejectedCommand.stagedPath);
     assert.deepEqual(JSON.parse(protocolRestarted.output.toString('utf8')), { version: 1, ready: true });
+
+    process.kill(protocolRestarted.supervisorPid);
+    const crashDeadline = Date.now() + 5_000;
+    while (Date.now() < crashDeadline) {
+      try { process.kill(protocolRestarted.supervisorPid, 0); } catch { break; }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+    assert.throws(() => exerciseWindowsAuthorityCapabilityForNativeTest(), /capability/);
+    const [queuedFirst, queuedSecond] = await Promise.all([
+      Promise.resolve().then(() => exerciseWindowsAuthorityCapabilityForNativeTest()),
+      Promise.resolve().then(() => exerciseWindowsAuthorityCapabilityForNativeTest()),
+    ]);
+    assert.equal(queuedSecond.stagedPath, queuedFirst.stagedPath);
+    assert.equal(queuedSecond.supervisorPid, queuedFirst.supervisorPid);
+    completeScenario('bootstrap-restart');
+
     closeWindowsAuthorityCapability();
-    assert.throws(() => lstatSync(protocolRestarted.directory), /ENOENT/);
-    assert.throws(() => process.kill(protocolRestarted.supervisorPid, 0));
+    assert.throws(() => lstatSync(queuedSecond.directory), /ENOENT/);
+    assert.throws(() => process.kill(queuedSecond.supervisorPid, 0));
   }
 });
 

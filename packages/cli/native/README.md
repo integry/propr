@@ -41,17 +41,23 @@ packaged pathname. On Windows, one bounded System32 PowerShell bootstrap opens
 the randomized directory and executable with write/delete sharing denied, binds
 the full file identity and SHA-256 through that handle, and establishes and
 verifies the exact protected DACL. A parent-bound supervisor retains that
-authenticated image lock for the lifetime of the cached capability. Subsequent
-bounded broker batches inherit the caller's held setup or inspection descriptors
+authenticated image lock for the lifetime of the cached capability. Readiness,
+pre-launch, post-response, and shutdown exchanges use a random protected named
+pipe, HMAC transcripts under a fresh 256-bit parent nonce, a fresh challenge,
+and strict sequence/PID/full-identity/digest binding; the nonce never crosses
+the pipe, and there is no readiness or stop file. Subsequent bounded
+broker batches inherit the caller's held setup or inspection descriptors
 directly and are serialized. Their 4 KiB stdin protocol carries only a fixed
 version, random request ID, operation, count, and fixed entry kinds—never a
 pathname or secret—and the response echoes the request ID while binding every
-index, kind, DACL, and full 128-bit file identity. Both staged and packaged held
-identities and digests are revalidated before and after each batch. A crash,
-timeout, protocol error, or image mismatch destroys the capability, fails that
-request, and requires fresh authentication before a later request. Normal exit
-signals the supervisor and removes the staged capability; unexpected parent
-death also closes its locks.
+index, kind, DACL, and full 128-bit file identity. The supervisor-held image
+identity and lock are challenged on both sides of every batch, and the staged
+and packaged held identities and digests receive supplemental revalidation. A
+crash, timeout, EOF, extra output, protocol error, or image mismatch destroys
+the capability, fails that request, and requires fresh authentication before a
+later request. Normal exit sends the authenticated stop exchange, reaps the
+supervisor, and removes the staged capability; unexpected parent death also
+closes its locks.
 Missing, unsupported, malformed, truncated, timed-out, signaled, or replaced
 brokers and an unavailable system bootstrap fail closed. The checked-in release
 artifacts are cross-built with Zig 0.13.0 for `aarch64-macos`, `x86_64-macos`,
