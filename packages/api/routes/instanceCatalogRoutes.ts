@@ -2,7 +2,6 @@ import type { Request, Response } from 'express';
 import {
   getRepositoriesIndexingStatus,
   loadAgents,
-  loadSyntheticAgents,
   loadMonitoredReposRaw,
   loadSettings,
   type AgentConfig,
@@ -13,12 +12,10 @@ import type {
   InstanceCatalogAgent,
   InstanceCatalogRepository,
   InstanceCatalogResponse,
-  SyntheticAgentConfig,
 } from '@propr/shared';
 
 interface InstanceCatalogServices {
   loadAgents: () => Promise<AgentConfig[]>;
-  loadSyntheticAgents: () => Promise<SyntheticAgentConfig[]>;
   loadIndexingStatuses: () => Promise<RepositoryIndexingStatus[]>;
   loadRepositories: () => Promise<RepoToMonitor[]>;
   loadSettings: () => Promise<Record<string, unknown>>;
@@ -37,39 +34,6 @@ function catalogAgent(agent: AgentConfig): InstanceCatalogAgent {
     supportedModels: [...agent.supportedModels],
     ...(agent.defaultModel ? { defaultModel: agent.defaultModel } : {}),
   };
-}
-
-export function catalogSyntheticAgents(
-  syntheticAgents: SyntheticAgentConfig[],
-  directAgents: AgentConfig[],
-): InstanceCatalogAgent[] {
-  const directByAlias = new Map(directAgents.map(agent => [agent.alias, agent]));
-
-  return syntheticAgents.flatMap(syntheticAgent => {
-    if (!syntheticAgent.enabled) return [];
-    const supportedModels = syntheticAgent.models.flatMap(model => {
-      if (!model.enabled) return [];
-      const usable = model.members.some(member => {
-        const direct = directByAlias.get(member.directAgentAlias);
-        return member.enabled
-          && direct?.enabled === true
-          && direct.supportedModels.includes(member.model);
-      });
-      return usable ? [model.id] : [];
-    });
-    if (supportedModels.length === 0) return [];
-
-    return [{
-      id: syntheticAgent.id,
-      kind: 'synthetic' as const,
-      alias: syntheticAgent.alias,
-      enabled: true,
-      supportedModels,
-      ...(supportedModels.includes(syntheticAgent.defaultModel)
-        ? { defaultModel: syntheticAgent.defaultModel }
-        : {}),
-    }];
-  });
 }
 
 function catalogRepository(repository: RepoToMonitor): InstanceCatalogRepository {
@@ -112,7 +76,6 @@ function catalogIndexingStatus(status: RepositoryIndexingStatus): RepositoryInde
 export function createInstanceCatalogRoutes({ services: overrides }: InstanceCatalogRoutesDeps = {}) {
   const services: InstanceCatalogServices = {
     loadAgents,
-    loadSyntheticAgents,
     loadIndexingStatuses: getRepositoriesIndexingStatus,
     loadRepositories: loadMonitoredReposRaw,
     loadSettings,
@@ -121,16 +84,14 @@ export function createInstanceCatalogRoutes({ services: overrides }: InstanceCat
 
   async function getCatalog(_req: Request, res: Response): Promise<void> {
     try {
-      const [agents, syntheticAgents, repositories, settings] = await Promise.all([
+      const [agents, repositories, settings] = await Promise.all([
         services.loadAgents(),
-        services.loadSyntheticAgents(),
         services.loadRepositories(),
         services.loadSettings(),
       ]);
-      const catalogAgents = [
-        ...agents.filter(agent => agent.enabled).map(catalogAgent),
-        ...catalogSyntheticAgents(syntheticAgents, agents),
-      ];
+      // Synthetic aliases are persisted configuration, but they are not runtime
+      // agents yet. Keep the operational catalog limited to executable entries.
+      const catalogAgents = agents.filter(agent => agent.enabled).map(catalogAgent);
       const defaultAgentAlias = typeof settings.default_agent_alias === 'string'
         ? settings.default_agent_alias.trim()
         : '';

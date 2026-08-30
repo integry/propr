@@ -41,23 +41,6 @@ function validateDirectAgentUpdateIntegrity(
     ? { status: 400, body: { error: referenceValidation.errors.join('; ') } }
     : undefined;
 }
-function operationalSyntheticAgentAliases(
-  syntheticAgents: SyntheticAgentConfig[],
-  directAgents: AgentConfig[],
-): string[] {
-  const directByAlias = new Map(directAgents.map(agent => [agent.alias, agent]));
-  return syntheticAgents.flatMap(syntheticAgent => {
-    const isOperational = syntheticAgent.enabled && syntheticAgent.models.some(model =>
-      model.enabled && model.members.some(member => {
-        const directAgent = directByAlias.get(member.directAgentAlias);
-        return member.enabled
-          && directAgent?.enabled === true
-          && directAgent.supportedModels.includes(member.model);
-      }),
-    );
-    return isOperational ? [syntheticAgent.alias] : [];
-  });
-}
 async function rollbackAgentConfigState({
   configStore,
   registry,
@@ -253,11 +236,9 @@ export async function applyAgentsUpdate({
   if (integrityError) return integrityError;
   const settings = await configStore.loadSettings();
   const currentDefault = ((settings as Record<string, unknown>).default_agent_alias as string | undefined) ?? undefined;
-  const newDefault = resolveDefaultAgentAlias(
-    processedAgents,
-    currentDefault,
-    operationalSyntheticAgentAliases(syntheticAgents, processedAgents),
-  );
+  // Only direct agents are executable registry entries. A previously stored
+  // synthetic default must fall back instead of being installed in live state.
+  const newDefault = resolveDefaultAgentAlias(processedAgents, currentDefault);
   const defaultChanged = newDefault !== currentDefault;
 
   try {

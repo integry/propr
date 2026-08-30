@@ -13,7 +13,7 @@ interface SyntheticAgentConfigRoutesDeps {
   redisClient: RedisClientType;
   configStore?: Pick<
     typeof configManager,
-    'loadAgents' | 'loadSyntheticAgents' | 'saveSyntheticAgents'
+    'loadAgents' | 'loadSettings' | 'loadSyntheticAgents' | 'saveSyntheticAgents'
   >;
   publishConfigUpdate: (subtype: string) => Promise<void>;
   logActivityHelper: (
@@ -68,10 +68,25 @@ export function createSyntheticAgentConfigRoutes({
     }
 
     const result = await withConfigLock(redisClient, SETTINGS_CONFIG_LOCK_KEY, async lock => {
-      const directAgents = await configStore.loadAgents();
+      const [directAgents, previousSyntheticAgents, settings] = await Promise.all([
+        configStore.loadAgents(),
+        configStore.loadSyntheticAgents(),
+        configStore.loadSettings(),
+      ]);
       const validation = validateSyntheticAgentReferences(parsed.syntheticAgents, directAgents);
       if (validation.errors.length > 0) {
         throw new ConfigRouteError(400, { error: validation.errors.join('; ') });
+      }
+
+      const configuredDefault = typeof settings.default_agent_alias === 'string'
+        ? settings.default_agent_alias.trim()
+        : '';
+      const wasSyntheticDefault = configuredDefault.length > 0
+        && previousSyntheticAgents.some(agent => agent.alias === configuredDefault);
+      if (wasSyntheticDefault) {
+        throw new ConfigRouteError(409, {
+          error: `Cannot update synthetic agents while configured default '${configuredDefault}' is synthetic and cannot execute at runtime. Select a direct default agent first.`,
+        });
       }
 
       return saveThenPublishConfigUpdate({
