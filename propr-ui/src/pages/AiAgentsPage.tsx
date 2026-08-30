@@ -32,7 +32,7 @@ const AiAgentsPage: React.FC = () => {
   const [syntheticError, setSyntheticError] = useState<string | null>(null);
   const [syntheticWarning, setSyntheticWarning] = useState<string | null>(null);
   const [syntheticSuccess, setSyntheticSuccess] = useState<string | null>(null);
-  const [syntheticReloadRequired, setSyntheticReloadRequired] = useState(false);
+  const [syntheticReloadRequired, setSyntheticReloadRequired] = useState(true);
   const [configView, setConfigView] = useState<'direct' | 'synthetic'>('direct');
   const [addPoolRequest, setAddPoolRequest] = useState(0);
 
@@ -68,6 +68,7 @@ const AiAgentsPage: React.FC = () => {
         setSyntheticAgents(data.synthetic_agents ?? []);
         setSyntheticReloadRequired(false);
       } catch (err) {
+        setSyntheticReloadRequired(true);
         setSyntheticError((err as Error).message || 'Failed to load synthetic pools');
       } finally {
         setSyntheticLoading(false);

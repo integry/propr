@@ -226,4 +226,24 @@ describe('AiAgentsPage model selection', () => {
     expect(screen.getByRole('button', { name: '+ Add Pool' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Delete synthetic pool Balanced Pool' })).toBeDisabled();
   });
+
+  it('blocks synthetic mutations when the initial configuration load fails', async () => {
+    apiMocks.getSyntheticAgents.mockRejectedValueOnce(new Error('initial load unavailable'));
+
+    render(<AiAgentsPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Synthetic Pools' }));
+    expect(await screen.findByText('initial load unavailable')).toBeInTheDocument();
+
+    const addPoolButton = screen.getByRole('button', { name: '+ Add Pool' });
+    const createPoolButton = screen.getByRole('button', { name: 'Create synthetic pool' });
+    expect(addPoolButton).toBeDisabled();
+    expect(createPoolButton).toBeDisabled();
+
+    fireEvent.click(addPoolButton);
+    fireEvent.click(createPoolButton);
+
+    expect(screen.queryByRole('dialog', { name: 'Synthetic pool editor' })).not.toBeInTheDocument();
+    expect(apiMocks.saveSyntheticAgents).not.toHaveBeenCalled();
+  });
 });
