@@ -19,6 +19,16 @@ const cli = join(repo, "packages", "cli", "dist", "index.js");
 const fetchFixture = pathToFileURL(join(repo, "test", "fixtures", "connectFetchMock.mjs")).href;
 const processFixture = pathToFileURL(join(repo, "test", "fixtures", "windowsConnectProcessMock.mjs")).href;
 const authorityModule = pathToFileURL(join(repo, "packages", "cli", "dist", "connectRootAuthority.js")).href;
+const fixtureNodeArgs = Object.freeze([
+  "--no-warnings",
+  "--import", processFixture,
+  "--import", fetchFixture,
+]);
+assert.deepEqual(fixtureNodeArgs, [
+  "--no-warnings",
+  "--import", processFixture,
+  "--import", fetchFixture,
+]);
 const fixture = realpathSync.native(mkdtempSync(join(tmpdir(), "propr-windows-discovery-")));
 const createdRoot = join(fixture, "stack-private-path-SENTINEL");
 mkdirSync(createdRoot);
@@ -91,8 +101,7 @@ try {
       "",
     ].join("\n"));
     const result = spawnSync(process.execPath, [
-      "--import", processFixture,
-      "--import", fetchFixture,
+      ...fixtureNodeArgs,
       cli,
       "connect", "status", "--json", "--root", root,
     ], {

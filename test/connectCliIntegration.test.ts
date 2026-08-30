@@ -19,6 +19,9 @@ const CLI = join(process.cwd(), 'packages', 'cli', 'dist', 'index.js');
 const FETCH_FIXTURE = join(process.cwd(), 'test', 'fixtures', 'connectFetchMock.mjs');
 const IDENTITY = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ENDPOINT = 'https://t-abc123.propr.dev';
+const FIXTURE_NODE_ARGS = Object.freeze(['--no-warnings', '--import', FETCH_FIXTURE]);
+
+assert.deepEqual(FIXTURE_NODE_ARGS, ['--no-warnings', '--import', FETCH_FIXTURE]);
 
 function makeRoot(
   parent: string,
@@ -128,8 +131,7 @@ function invoke(
     writeFileSync(expectationsPath, JSON.stringify(options.dockerEnvironmentExpectations), { mode: 0o600 });
   }
   const result = spawnSync(process.execPath, [
-    '--import',
-    FETCH_FIXTURE,
+    ...FIXTURE_NODE_ARGS,
     options.cli ?? CLI,
     ...(options.arguments ?? ['connect', 'status', '--json', '--root', root]),
   ], {
@@ -165,12 +167,12 @@ function invoke(
       UNTRUSTED_RAW_URL: 'https://userinfo:secret@raw-url-SENTINEL.invalid/path',
       DOCKER_AUTH_CONFIG: 'docker-auth-SENTINEL',
       REGISTRY_PASSWORD: 'registry-password-SENTINEL',
-      NODE_OPTIONS: '--no-warnings',
       HTTP_PROXY: 'http://proxy-SENTINEL.invalid',
       HTTPS_PROXY: 'http://proxy-SENTINEL.invalid',
       NO_PROXY: 'no-proxy-SENTINEL',
       UNTRUSTED_AMBIENT: 'ambient-SENTINEL',
       ...options.environment,
+      NODE_OPTIONS: undefined,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
