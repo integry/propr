@@ -175,8 +175,8 @@ export const runtimeConfigWarning = (
   // https://t-<id>.propr.dev. A well-formed http(s) URL pointing anywhere
   // else (e.g. https://custom.example.com) parses fine but requests will not be
   // routed to the local stack, so warn rather than letting it fail silently at
-  // request time. This is a warning, not a hard block — a future hosting setup
-  // could legitimately front a different proxy domain.
+  // request time. The same condition is also returned as a blocked connection
+  // issue before the hosted API client is constructed.
   if (!isProprProxyUrl(apiBaseUrl)) {
     return `[propr] ${INVALID_RUNTIME_CONFIGURATION_CODE}`;
   }
@@ -359,13 +359,9 @@ export const getRuntimeApiBaseUrlState = (): RuntimeApiBaseUrlState => {
 
   const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
   const search = typeof window !== 'undefined' ? window.location.search : '';
-  if (
-    isHostedUiOrigin(hostname)
-    && hasHostedTunnelQueryParameter(search)
-    && !hostedTunnelQueryApiBaseUrl(hostname, search)
-  ) {
-    return { apiBaseUrl: '', issue: invalidRuntimeConfigurationIssue() };
-  }
+  const storage = storageForWindow();
+  const hostedIssue = hostedUiConnectionIssue(hostname, runtimeConfig, search, storage);
+  if (hostedIssue) return { apiBaseUrl: '', issue: hostedIssue };
 
   try {
     return {
@@ -374,7 +370,7 @@ export const getRuntimeApiBaseUrlState = (): RuntimeApiBaseUrlState => {
         search,
         runtimeConfig,
         import.meta.env.VITE_API_BASE_URL,
-        storageForWindow()
+        storage
       ),
       issue: null,
     };

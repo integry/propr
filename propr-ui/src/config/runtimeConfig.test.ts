@@ -189,10 +189,16 @@ describe('getApiBaseUrl', () => {
       search: '?oauth_complete=true',
     });
 
-    const { getActiveHostedTunnelFlowId, getApiBaseUrl, HOSTED_TUNNEL_API_BASE_STORAGE_KEY } =
+    const {
+      getActiveHostedTunnelFlowId,
+      getApiBaseUrl,
+      getRuntimeApiBaseUrlState,
+      HOSTED_TUNNEL_API_BASE_STORAGE_KEY,
+    } =
       await import('./runtimeConfig');
 
     expect(getApiBaseUrl()).toBe('');
+    expect(getRuntimeApiBaseUrlState()).toEqual({ apiBaseUrl: '', issue: null });
     expectNoSessionStorageAccess(hostedWindow.sessionStorage);
     expect(hostedWindow.localStorage.getItem).not.toHaveBeenCalled();
     expect(hostedWindow.localStorage.setItem).not.toHaveBeenCalled();
@@ -215,6 +221,37 @@ describe('getApiBaseUrl', () => {
     expect(hostedWindow.history.replaceState).toHaveBeenCalled();
     expect(hostedWindow.name).not.toBe('original-window-name');
     expect(getActiveHostedTunnelFlowId()).toBeTruthy();
+  });
+
+  it('blocks API client construction when the hosted UI has no selected stack', async () => {
+    stubHostedWindow({ search: '', pathname: '/' });
+
+    const { getRuntimeApiBaseUrlState } = await import('./runtimeConfig');
+    expect(getRuntimeApiBaseUrlState()).toMatchObject({
+      apiBaseUrl: '',
+      issue: { code: 'HOSTED_STACK_REQUIRED' },
+    });
+
+    const { getProprClient, proprClient } = await import('../api/apiClient');
+    expect(proprClient).toBeNull();
+    expect(() => getProprClient()).toThrow('The ProPR connection configuration is invalid.');
+  });
+
+  it('blocks API client construction for a non-Connect hosted runtime URL', async () => {
+    stubHostedWindow({
+      config: { apiBaseUrl: 'https://custom.example.com' },
+      search: '',
+      pathname: '/',
+    });
+
+    const { getRuntimeApiBaseUrlState } = await import('./runtimeConfig');
+    expect(getRuntimeApiBaseUrlState()).toMatchObject({
+      apiBaseUrl: '',
+      issue: { code: 'INVALID_RUNTIME_CONFIGURATION' },
+    });
+
+    const { proprClient } = await import('../api/apiClient');
+    expect(proprClient).toBeNull();
   });
 });
 
@@ -261,6 +298,8 @@ describe('hosted tunnel query API base', () => {
       '?tunnel=t-abc123.propr.dev:443',
       '?tunnel=t-abc123.propr.dev:8443',
       '?tunnel=t-%61bc123.propr.dev',
+      '?tunnel=t%2Dabc123.propr.dev',
+      '?%74unnel=t-abc123.propr.dev',
       '?tunnel=T-abc123.propr.dev',
       '?tunnel=t-abc123.propr.dev.',
       '?tunnel=t-abc123.propr.dev.evil.example',

@@ -37,6 +37,17 @@ describe('ProPR Connect desktop pairing approval URLs', () => {
     }
   });
 
+  it('matches the hosted UI raw query contract for approval parameters', () => {
+    for (const approvalUrl of [
+      `https://app.propr.dev/desktop/pairing?pairing_id=${pairingId}&tunnel=t%2Dinstance123.propr.dev`,
+      `https://app.propr.dev/desktop/pairing?pairing_id=${pairingId}&%74unnel=t-instance123.propr.dev`,
+      `https://app.propr.dev/desktop/pairing?pairing%5Fid=${pairingId}&tunnel=t-instance123.propr.dev`,
+      `https://app.propr.dev/desktop/pairing?pairing_id=dpr%5FABCDEFGHIJKLMNOPQRSTUV&tunnel=t-instance123.propr.dev`,
+    ]) {
+      assert.equal(normalizeDesktopPairingApprovalUrl({ apiBaseUrl, pairingId, approvalUrl }), null, approvalUrl);
+    }
+  });
+
   it('requires a normalized, validated API origin', () => {
     const approvalUrl = `${apiBaseUrl}/api/desktop/pairings/${pairingId}/browser`;
     for (const untrustedBase of [

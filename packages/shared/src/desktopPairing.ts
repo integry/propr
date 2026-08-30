@@ -54,6 +54,26 @@ const hasExactSearchParameters = (url: URL, names: readonly string[]): boolean =
     && names.every(name => actual.filter(candidate => candidate === name).length === 1);
 };
 
+const hasCanonicalRawSearchParameters = (
+  url: URL,
+  expected: Readonly<Record<string, string>>,
+): boolean => {
+  const query = url.search.startsWith('?') ? url.search.slice(1) : url.search;
+  const parameters = query.split('&');
+  const names = Object.keys(expected);
+  if (parameters.length !== names.length) return false;
+
+  const actual = new Map<string, string>();
+  for (const parameter of parameters) {
+    const separator = parameter.indexOf('=');
+    if (separator === -1) return false;
+    const name = parameter.slice(0, separator);
+    if (!Object.hasOwn(expected, name) || actual.has(name)) return false;
+    actual.set(name, parameter.slice(separator + 1));
+  }
+  return names.every(name => actual.get(name) === expected[name]);
+};
+
 /**
  * Validate an API-returned browser approval URL against the pairing bootstrap
  * that supplied it. Two existing server contracts are accepted:
@@ -101,5 +121,9 @@ export function normalizeDesktopPairingApprovalUrl(
   if (!hasExactSearchParameters(approval, ['pairing_id', 'tunnel'])) return null;
   if (approval.searchParams.get('pairing_id') !== input.pairingId) return null;
   if (approval.searchParams.get('tunnel') !== connectEndpoint.hostname) return null;
+  if (!hasCanonicalRawSearchParameters(approval, {
+    pairing_id: input.pairingId,
+    tunnel: connectEndpoint.hostname,
+  })) return null;
   return approval.toString();
 }
